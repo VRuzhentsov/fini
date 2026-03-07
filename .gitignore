@@ -15,6 +15,10 @@ dist-ssr
 # Rust build artifacts
 src-tauri/target/
 
+# Flatpak build artifacts
+flatpak-build/
+.flatpak-builder/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Fini
+Comment=A quest-based productivity system for ADHD brains
+Exec=fini
+Icon=com.fini.app
+Type=Application
+Categories=Utility;
+StartupWMClass=fini
