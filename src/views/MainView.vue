@@ -13,12 +13,16 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="quest-view">
+  <div class="main-view">
     <div v-if="store.error" class="error">{{ store.error }}</div>
 
     <section class="active-section">
       <ActiveQuestPanel v-if="store.activeQuest" :quest="store.activeQuest" />
-      <NewQuestForm v-else />
+      <div v-else class="no-quest">No active quest.</div>
+    </section>
+
+    <section class="input-section">
+      <NewQuestForm />
     </section>
 
     <section class="history-section" v-if="store.quests.length">
@@ -29,7 +33,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.quest-view {
+.main-view {
   padding: 1.5rem;
   display: flex;
   flex-direction: column;
@@ -38,6 +42,11 @@ onMounted(async () => {
 
 .error {
   color: red;
+  font-size: 0.875rem;
+}
+
+.no-quest {
+  opacity: 0.4;
   font-size: 0.875rem;
 }
 
