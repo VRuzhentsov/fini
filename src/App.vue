@@ -1,3 +1,7 @@
+<script setup lang="ts">
+import ToastStack from "./components/ToastStack.vue";
+</script>
+
 <template>
   <div class="app-shell">
     <nav class="nav">
@@ -7,6 +11,7 @@
     <main class="content">
       <router-view />
     </main>
+    <ToastStack />
   </div>
 </template>
 
@@ -43,6 +48,7 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
+  padding-top: env(safe-area-inset-top);
 }
 
 .nav {

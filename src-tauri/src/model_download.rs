@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
 const HF_BASE: &str =
-    "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-small-en-2023-06-26/resolve/main";
+    "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main";
 
 const MODEL_FILES: &[&str] = &[
     "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",

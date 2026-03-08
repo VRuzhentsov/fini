@@ -1,6 +1,6 @@
 mod voice;
 mod model_download;
-use voice::{model_downloaded, start_recognition, stop_recognition, VoiceState};
+use voice::{model_downloaded, start_recognition, stop_recognition, warm_recognizer, RecognizerCache, VoiceState};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -250,6 +250,8 @@ pub fn run() {
             let conn = open_db(&app.handle()).expect("failed to open database");
             app.manage(DbState(Mutex::new(conn)));
             app.manage(VoiceState(Mutex::new(None)));
+            app.manage(RecognizerCache(std::sync::Arc::new(Mutex::new(None))));
+            warm_recognizer(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

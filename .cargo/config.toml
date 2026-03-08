@@ -1,2 +1,14 @@
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-Wl,-rpath,/var/home/will/.local/lib/sherpa-onnx"]
+
+[target.aarch64-linux-android]
+rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a", "-C", "link-arg=-lc++_shared"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/armeabi-v7a"]
+
+[target.i686-linux-android]
+rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/x86"]
+
+[target.x86_64-linux-android]
+rustflags = ["-L/var/home/will/projects/fini/src-tauri/gen/android/app/src/main/jniLibs/x86_64"]

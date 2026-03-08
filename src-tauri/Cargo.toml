@@ -14,6 +14,9 @@ edition = "2021"
 name = "fini_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[patch.crates-io]
+sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -26,7 +29,7 @@ serde_json = "1"
 sherpa-onnx = "0.1.9"
 sherpa-onnx-sys = "0.1.9"
 cpal = "0.15"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "io-util"] }
 
