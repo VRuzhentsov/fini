@@ -28,8 +28,8 @@ pub(crate) struct RecognizerWrap(OnlineRecognizer);
 unsafe impl Send for RecognizerWrap {}
 unsafe impl Sync for RecognizerWrap {}
 
-/// Pre-warmed recognizer cache — populated at boot in a background thread.
-pub struct RecognizerCache(pub Arc<Mutex<Option<RecognizerWrap>>>);
+/// Pool of pre-warmed recognizers. Each PTT press pops one; session end pushes a fresh one back.
+pub struct RecognizerPool(pub Arc<Mutex<Vec<RecognizerWrap>>>);
 
 // ---------------------------------------------------------------------------
 // Events
@@ -113,18 +113,22 @@ fn build_recognizer_config(paths: &ModelPaths) -> OnlineRecognizerConfig {
     }
 }
 
-/// Call at boot to pre-warm the recognizer in the background.
+/// Call at boot to fill the recognizer pool in the background.
 pub fn warm_recognizer(app: &AppHandle) {
     let Ok(paths) = ModelPaths::from_app_data(app) else { return };
     if !paths.all_exist() { return }
 
-    let cache = app.state::<RecognizerCache>().inner().0.clone();
-    std::thread::spawn(move || {
-        let config = build_recognizer_config(&paths);
-        if let Some(r) = OnlineRecognizer::create(&config) {
-            *cache.lock().unwrap() = Some(RecognizerWrap(r));
-        }
-    });
+    let pool = app.state::<RecognizerPool>().inner().0.clone();
+    let config_a = build_recognizer_config(&paths);
+    let config_b = build_recognizer_config(&paths);
+    for config in [config_a, config_b] {
+        let pool = pool.clone();
+        std::thread::spawn(move || {
+            if let Some(r) = OnlineRecognizer::create(&config) {
+                pool.lock().unwrap().push(RecognizerWrap(r));
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -135,11 +139,14 @@ pub fn warm_recognizer(app: &AppHandle) {
 pub fn start_recognition(
     app: AppHandle,
     state: State<VoiceState>,
-    cache: State<RecognizerCache>,
+    pool: State<RecognizerPool>,
 ) -> Result<(), String> {
-    let mut guard = state.inner().0.lock().unwrap();
-    if guard.is_some() {
-        return Err("Recognition already running".into());
+    // Quick check — release lock immediately so we don't block during setup
+    {
+        let guard = state.inner().0.lock().unwrap();
+        if guard.is_some() {
+            return Err("Recognition already running".into());
+        }
     }
 
     let paths = ModelPaths::from_app_data(&app)?;
@@ -147,17 +154,12 @@ pub fn start_recognition(
         return Err("ASR model not found. Go to Settings → Download Voice Model first.".into());
     }
 
-    // Take pre-warmed recognizer or create fresh
-    let recognizer = {
-        let mut c = cache.inner().0.lock().unwrap();
-        c.take().map(|w| w.0)
-    };
-    let recognizer = match recognizer {
-        Some(r) => r,
-        None => OnlineRecognizer::create(&build_recognizer_config(&paths))
-            .ok_or("Failed to create recognizer")?,
+    let recognizer = match pool.inner().0.lock().unwrap().pop() {
+        Some(w) => w.0,
+        None => return Err("warming_up".into()),
     };
 
+    // Expensive setup runs without holding VoiceState lock
     let (stop_tx, stop_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(64);
 
@@ -195,18 +197,22 @@ pub fn start_recognition(
 
     stream.play().map_err(|e| e.to_string())?;
 
-    let app_handle = app.clone();
-    let cache_arc = cache.inner().0.clone();
-    let paths_clone = ModelPaths::from_app_data(&app).ok();
-    // Wrap to make it Send across thread boundary
-    let recognizer_wrap = RecognizerWrap(recognizer);
+    // Commit session under lock — another concurrent start may have snuck in
+    let mut guard = state.inner().0.lock().unwrap();
+    if guard.is_some() {
+        return Err("Recognition already running".into());
+    }
 
+    let app_handle = app.clone();
+    let pool_arc = pool.inner().0.clone();
+    let paths_clone = ModelPaths::from_app_data(&app).ok();
+
+    let recognizer_wrap = RecognizerWrap(recognizer);
     std::thread::spawn(move || {
         recognition_worker(&app_handle, recognizer_wrap, audio_rx, stop_rx, sample_rate, channels);
-        // Re-warm for next PTT press
         if let Some(p) = paths_clone {
             if let Some(r) = OnlineRecognizer::create(&build_recognizer_config(&p)) {
-                *cache_arc.lock().unwrap() = Some(RecognizerWrap(r));
+                pool_arc.lock().unwrap().push(RecognizerWrap(r));
             }
         }
     });

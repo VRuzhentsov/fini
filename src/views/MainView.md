@@ -1,26 +1,30 @@
 # MainView
 
-Main screen of the app. Route: `/quests`.
+Route: `/main`. Tab: Main. See [[App.md]].
 
 ## Concept
 
-There is always an active quest. The text input and microphone input are always visible and accessible — the user can capture a new quest or add to the current one at any time without navigating away.
+Focus screen — one quest at a time. The user sees their current active quest and a quick-capture input. No history, no completed quests — those live in [[HistoryView]].
 
-## Layout
+## Sections
 
 ### Active quest
-Always shown. Displays the current quest title and its steps with checkboxes. Includes complete and abandon actions.
+Shows the first quest with `status = "active"`. If none exists, a placeholder is shown. Renders [[ActiveQuestPanel]] with Complete and Abandon actions.
 
-### Input bar (always visible)
-- **Text input** — type a quest description and submit
-- **Microphone button** — start voice input, transcribe on-device, confirm steps
+### Input
+Always visible. Captures a new quest title and creates it immediately via [[NewQuestForm]].
 
-### History section
-Listed below the active quest. Shows all past quests with status badges and a delete button.
+### Backlog
+Shown only when more than one quest is active. Lists the other active quests (all active except the hero) via [[QuestList]], each with a "Make active" button to promote it to the hero slot.
 
-## Components used
+## State
+
+Uses [[quest.ts]] store. Loads all quests on mount; `activeQuest` and `backlog` are derived computed values — no separate fetch.
+
+## Components
+
 | Component | Purpose |
 |---|---|
-| `ActiveQuestPanel` | Current quest + steps |
-| `NewQuestForm` | Text and voice input for new quests |
-| `QuestList` | Quest history |
+| [[ActiveQuestPanel]] | Hero quest with Complete / Abandon actions |
+| [[NewQuestForm]] | Quick-capture input |
+| [[QuestList]] | Backlog list with "Make active" per row |

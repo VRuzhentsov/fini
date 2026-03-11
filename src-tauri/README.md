@@ -7,37 +7,68 @@ Rust backend of the Fini app, powered by Tauri 2.0.
 ```
 src-tauri/
 ├── src/
-│   ├── lib.rs         # App entry point — registers plugins and commands
+│   ├── lib.rs         # App entry point — DB setup, models, command handlers
+│   ├── schema.rs      # Diesel table definitions
 │   └── main.rs        # Binary entry point (calls lib::run)
+├── migrations/        # SQL migrations (Diesel format)
 ├── gen/
-│   └── android/       # Generated Android Studio project (see gen/android/README.md)
+│   └── android/       # Generated Android Studio project
 ├── icons/             # App icons for all platforms
 ├── capabilities/      # Tauri capability definitions (permission scopes)
 ├── Cargo.toml         # Rust dependencies
 ├── build.rs           # Tauri build script
-└── tauri.conf.json    # Tauri configuration (app identity, window, plugins, bundle)
+└── tauri.conf.json    # Tauri configuration (app identity, window, bundle)
 ```
 
-## Key files
+## Data model
 
-### `tauri.conf.json`
+### Space
 
-Central config for the app:
-- `identifier`: `com.fini.app` — used as the app ID across all platforms
-- `plugins.sql.preloadConnections`: SQLite databases to open on startup
-- `bundle.targets`: which formats to build (`deb`, `rpm`, `appimage` on Linux; `msi`, `nsis` on Windows)
+A named context for grouping quests (e.g. Personal, Work, Side Project).
 
-### `src/lib.rs`
+| Field        | Type    | Notes                        |
+|--------------|---------|------------------------------|
+| `id`         | i64     | Auto-increment PK            |
+| `name`       | String  |                              |
+| `item_order` | i64     | Display order, set by client |
+| `created_at` | String  | UTC datetime                 |
 
-Registers all Tauri plugins and command handlers. Add new Rust commands here via `tauri::generate_handler![]`.
+### Quest
 
-Currently registered plugins:
-- `tauri-plugin-opener` — opens URLs/files with the system default app
-- `tauri-plugin-sql` (SQLite) — local database access from the frontend
+A task. Belongs to an optional Space.
 
-### `capabilities/`
+| Field            | Type         | Notes                               |
+|------------------|--------------|-------------------------------------|
+| `id`             | i64          | Auto-increment PK                   |
+| `space_id`       | Option<i64>  | FK → spaces, nullable               |
+| `title`          | String       |                                     |
+| `description`    | Option<String> |                                   |
+| `status`         | String       | `active` \| `completed` \| `abandoned` |
+| `priority`       | i64          | 1 = none, 2 = low, 3 = med, 4 = urgent |
+| `pinned`         | bool         |                                     |
+| `due`            | Option<String> | ISO date string                   |
+| `energy_required`| Option<i64>  | Subjective effort level             |
+| `completed_at`   | Option<String> | Set automatically on completion   |
+| `created_at`     | String       |                                     |
+| `updated_at`     | String       |                                     |
 
-Defines what permissions the frontend has. Each capability file scopes which Tauri APIs and plugins the app can call.
+## Commands
+
+### Spaces
+| Command        | Input                          | Returns       |
+|----------------|--------------------------------|---------------|
+| `get_spaces`   | —                              | `Vec<Space>`  |
+| `create_space` | `{ name, item_order }`         | `Space`       |
+| `update_space` | `id`, `{ name?, item_order? }` | `Space`       |
+| `delete_space` | `id`                           | —             |
+
+### Quests
+| Command        | Input                                                        | Returns      |
+|----------------|--------------------------------------------------------------|--------------|
+| `get_quests`   | —                                                            | `Vec<Quest>` |
+| `create_quest` | `{ space_id?, title, description?, priority?, due?, energy_required? }` | `Quest` |
+| `update_quest` | `id`, `{ space_id?, title?, description?, status?, priority?, pinned?, due?, energy_required? }` | `Quest` |
+| `delete_quest` | `id`                                                         | —            |
 
 ## Platform notes
 
@@ -45,8 +76,6 @@ Defines what permissions the frontend has. Each capability file scopes which Tau
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
-## Adding a Rust command
+## Postponed
 
-1. Define the function in `src/lib.rs` with `#[tauri::command]`
-2. Register it in `tauri::generate_handler![your_command]`
-3. Call it from the frontend with `invoke("your_command", { ...args })`
+- **Voice / ASR** (`src/voice.rs`, `src/model_download.rs`) — offline speech recognition via sherpa-onnx. Code is present but not compiled or registered. Will be revisited after the core quest flow is stable.

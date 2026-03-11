@@ -19,6 +19,10 @@ src-tauri/target/
 flatpak-build/
 .flatpak-builder/
 
+# Obsidian
+.obsidian/*
+!.obsidian/app.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

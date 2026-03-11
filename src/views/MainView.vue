@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import { useQuestStore } from "../stores/quest";
 import ActiveQuestPanel from "../components/ActiveQuestPanel.vue";
 import NewQuestForm from "../components/NewQuestForm.vue";
 import QuestList from "../components/QuestList.vue";
 
 const store = useQuestStore();
+const activeQuest = computed(() => store.quests.find((q) => q.status === "active") ?? null);
+const backlog = computed(() => store.quests.filter((q) => q.status === "active" && q.id !== activeQuest.value?.id));
 
-onMounted(async () => {
-  await Promise.all([store.fetchActiveQuest(), store.fetchQuests()]);
-});
+onMounted(() => store.fetchQuests());
 </script>
 
 <template>
@@ -17,7 +17,7 @@ onMounted(async () => {
     <div v-if="store.error" class="error">{{ store.error }}</div>
 
     <section class="active-section">
-      <ActiveQuestPanel v-if="store.activeQuest" :quest="store.activeQuest" />
+      <ActiveQuestPanel v-if="activeQuest" :quest="activeQuest" />
       <div v-else class="no-quest">No active quest.</div>
     </section>
 
@@ -25,9 +25,9 @@ onMounted(async () => {
       <NewQuestForm />
     </section>
 
-    <section class="history-section" v-if="store.quests.length">
-      <h3>All Quests</h3>
-      <QuestList :quests="store.quests" />
+    <section class="backlog-section" v-if="backlog.length">
+      <h3>Backlog</h3>
+      <QuestList :quests="backlog" />
     </section>
   </div>
 </template>
@@ -50,7 +50,7 @@ onMounted(async () => {
   font-size: 0.875rem;
 }
 
-.history-section h3 {
+.backlog-section h3 {
   margin-bottom: 0.75rem;
   font-size: 0.875rem;
   text-transform: uppercase;

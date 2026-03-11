@@ -16,13 +16,13 @@ modules:
   - name: fini
     buildsystem: simple
     build-commands:
-      - install -Dm755 tauri-app /app/bin/fini
+      - install -Dm755 fini /app/bin/fini
       - install -Dm644 com.fini.app.desktop /app/share/applications/com.fini.app.desktop
       - install -Dm644 icon.png /app/share/icons/hicolor/128x128/apps/com.fini.app.png
     sources:
       - type: file
-        path: src-tauri/target/release/tauri-app
-        dest-filename: tauri-app
+        path: src-tauri/target/release/fini
+        dest-filename: fini
       - type: file
         path: src-tauri/icons/128x128.png
         dest-filename: icon.png

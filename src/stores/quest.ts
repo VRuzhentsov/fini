@@ -4,28 +4,41 @@ import { ref } from "vue";
 
 export interface Quest {
   id: number;
+  space_id: number | null;
   title: string;
+  description: string | null;
   status: "active" | "completed" | "abandoned";
   energy_required: number | null;
+  priority: number;
+  pinned: boolean;
+  due: string | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface QuestStep {
-  id: number;
-  quest_id: number;
-  body: string;
-  done: boolean;
-  step_order: number;
+export interface CreateQuestInput {
+  space_id?: number | null;
+  title: string;
+  description?: string | null;
+  energy_required?: number | null;
+  priority?: number;
+  due?: string | null;
 }
 
-export interface QuestWithSteps extends Quest {
-  steps: QuestStep[];
+export interface UpdateQuestInput {
+  space_id?: number | null;
+  title?: string;
+  description?: string | null;
+  status?: "active" | "completed" | "abandoned";
+  energy_required?: number | null;
+  priority?: number;
+  pinned?: boolean;
+  due?: string | null;
 }
 
 export const useQuestStore = defineStore("quest", () => {
   const quests = ref<Quest[]>([]);
-  const activeQuest = ref<QuestWithSteps | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
 
@@ -41,79 +54,23 @@ export const useQuestStore = defineStore("quest", () => {
     }
   }
 
-  async function fetchActiveQuest() {
-    loading.value = true;
-    error.value = null;
-    try {
-      activeQuest.value = await invoke<QuestWithSteps | null>("get_active_quest");
-    } catch (e) {
-      error.value = String(e);
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  async function createQuest(title: string, energyRequired?: number) {
-    error.value = null;
-    const quest = await invoke<Quest>("create_quest", {
-      title,
-      energy_required: energyRequired ?? null,
-    });
+  async function createQuest(input: CreateQuestInput) {
+    const quest = await invoke<Quest>("create_quest", { input });
     quests.value.unshift(quest);
     return quest;
   }
 
-  async function updateQuestStatus(id: number, status: Quest["status"]) {
-    error.value = null;
-    await invoke("update_quest_status", { id, status });
-    const q = quests.value.find((q) => q.id === id);
-    if (q) q.status = status;
-    if (activeQuest.value?.id === id) {
-      if (status !== "active") activeQuest.value = null;
-      else activeQuest.value.status = status;
-    }
+  async function updateQuest(id: number, input: UpdateQuestInput) {
+    const quest = await invoke<Quest>("update_quest", { id, input });
+    const idx = quests.value.findIndex((q) => q.id === id);
+    if (idx !== -1) quests.value[idx] = quest;
+    return quest;
   }
 
   async function deleteQuest(id: number) {
-    error.value = null;
     await invoke("delete_quest", { id });
     quests.value = quests.value.filter((q) => q.id !== id);
-    if (activeQuest.value?.id === id) activeQuest.value = null;
   }
 
-  async function createStep(questId: number, body: string, stepOrder: number) {
-    error.value = null;
-    const step = await invoke<QuestStep>("create_step", {
-      quest_id: questId,
-      body,
-      step_order: stepOrder,
-    });
-    if (activeQuest.value?.id === questId) {
-      activeQuest.value.steps.push(step);
-    }
-    return step;
-  }
-
-  async function updateStepDone(id: number, done: boolean) {
-    error.value = null;
-    await invoke("update_step_done", { id, done });
-    if (activeQuest.value) {
-      const step = activeQuest.value.steps.find((s) => s.id === id);
-      if (step) step.done = done;
-    }
-  }
-
-  return {
-    quests,
-    activeQuest,
-    loading,
-    error,
-    fetchQuests,
-    fetchActiveQuest,
-    createQuest,
-    updateQuestStatus,
-    deleteQuest,
-    createStep,
-    updateStepDone,
-  };
+  return { quests, loading, error, fetchQuests, createQuest, updateQuest, deleteQuest };
 });

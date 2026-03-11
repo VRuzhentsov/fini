@@ -1,21 +1,15 @@
 <script setup lang="ts">
-import { useQuestStore, type QuestWithSteps } from "../stores/quest";
+import { useQuestStore, type Quest } from "../stores/quest";
 
-const props = defineProps<{ quest: QuestWithSteps }>();
+const props = defineProps<{ quest: Quest }>();
 const store = useQuestStore();
 
-async function toggleStep(id: number, done: boolean) {
-  await store.updateStepDone(id, done);
-}
-
 async function completeQuest() {
-  await store.updateQuestStatus(props.quest.id, "completed");
-  await store.fetchActiveQuest();
+  await store.updateQuest(props.quest.id, { status: "completed" });
 }
 
 async function abandonQuest() {
-  await store.updateQuestStatus(props.quest.id, "abandoned");
-  await store.fetchActiveQuest();
+  await store.updateQuest(props.quest.id, { status: "abandoned" });
 }
 </script>
 
@@ -28,23 +22,7 @@ async function abandonQuest() {
         <button class="btn-primary" @click="completeQuest">Complete</button>
       </div>
     </div>
-
-    <ul class="steps" v-if="quest.steps.length">
-      <li
-        v-for="step in quest.steps"
-        :key="step.id"
-        class="step"
-        :class="{ done: step.done }"
-      >
-        <input
-          type="checkbox"
-          :checked="step.done"
-          @change="toggleStep(step.id, !step.done)"
-        />
-        <span>{{ step.body }}</span>
-      </li>
-    </ul>
-    <p v-else class="no-steps">No steps yet.</p>
+    <p v-if="quest.description" class="description">{{ quest.description }}</p>
   </div>
 </template>
 
@@ -60,7 +38,6 @@ async function abandonQuest() {
   justify-content: space-between;
   align-items: flex-start;
   gap: 1rem;
-  margin-bottom: 1rem;
 }
 
 .panel-header h2 {
@@ -73,26 +50,9 @@ async function abandonQuest() {
   flex-shrink: 0;
 }
 
-.steps {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.step {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.step.done span {
-  text-decoration: line-through;
-  opacity: 0.5;
-}
-
-.no-steps {
-  opacity: 0.5;
+.description {
+  margin-top: 0.75rem;
+  opacity: 0.7;
   font-size: 0.875rem;
 }
 
@@ -113,5 +73,6 @@ async function abandonQuest() {
   background: transparent;
   cursor: pointer;
   font-size: 0.875rem;
+  color: inherit;
 }
 </style>

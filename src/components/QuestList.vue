@@ -4,8 +4,8 @@ import { useQuestStore, type Quest } from "../stores/quest";
 defineProps<{ quests: Quest[] }>();
 const store = useQuestStore();
 
-async function remove(id: number) {
-  await store.deleteQuest(id);
+async function makeActive(id: number) {
+  await store.updateQuest(id, { status: "active" });
 }
 </script>
 
@@ -13,8 +13,13 @@ async function remove(id: number) {
   <ul class="list">
     <li v-for="quest in quests" :key="quest.id" class="item">
       <span class="title">{{ quest.title }}</span>
-      <span class="badge" :class="quest.status">{{ quest.status }}</span>
-      <button class="delete" @click="remove(quest.id)" title="Delete">✕</button>
+      <button
+        v-if="quest.status !== 'active'"
+        class="btn-activate"
+        @click="makeActive(quest.id)"
+      >
+        Make active
+      </button>
     </li>
   </ul>
 </template>
@@ -41,27 +46,18 @@ async function remove(id: number) {
   font-size: 0.95rem;
 }
 
-.badge {
+.btn-activate {
+  background: none;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
   font-size: 0.75rem;
   padding: 0.2rem 0.5rem;
-  border-radius: 4px;
-  text-transform: capitalize;
+  color: inherit;
+  opacity: 0.6;
 }
 
-.badge.active { background: #646cff22; color: #646cff; }
-.badge.completed { background: #22c55e22; color: #22c55e; }
-.badge.abandoned { background: #f59e0b22; color: #f59e0b; }
-
-.delete {
-  background: none;
-  border: none;
-  cursor: pointer;
-  opacity: 0.4;
-  font-size: 0.75rem;
-  padding: 0.2rem;
-}
-
-.delete:hover {
+.btn-activate:hover {
   opacity: 1;
 }
 </style>

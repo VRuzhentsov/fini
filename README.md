@@ -10,14 +10,17 @@ ADHD brains don't struggle with laziness — they struggle with task paralysis, 
 
 ## The Idea
 
-Fini replaces the todo list with a quest system inspired by RPG games like Skyrim, Cyberpunk, and The Witcher. Instead of staring at a wall of obligations, you see one active quest with clear steps.
+Fini replaces the todo list with a quest system inspired by RPG games like Skyrim, Cyberpunk, and The Witcher. Instead of staring at a wall of obligations, you see one active quest at a time.
+
+Quests are organized into **Spaces** — named contexts like Personal, Work, or any project. A Space is a lightweight container; quests belong to one space or none at all.
 
 ### Core Principles (Target — not all implemented yet)
 
-- **One quest at a time.** No overwhelming lists. Just your current mission and the next step.
-- **Voice-first input.** Tap the mic, say what's on your mind. AI breaks it into small, achievable steps.
-- **Energy-aware.** Tell the app how you feel today. Low energy = tiny steps. High energy = bigger chunks.
-- **Abandon is okay.** Quests can be paused or released without guilt. Closing a chapter is a decision, not a failure.
+- **One quest at a time.** No overwhelming lists. Just your current mission.
+- **Spaces for context.** Group quests by area of life (personal, work, side project) without building a hierarchy.
+- **Voice-first input.** Tap the mic, say what's on your mind. AI breaks it into small, achievable steps. _(planned)_
+- **Energy-aware.** Tell the app how you feel today. Low energy = lighter quests. High energy = bigger chunks.
+- **Abandon is okay.** Quests can be abandoned without guilt. Closing a chapter is a decision, not a failure. Completed and abandoned quests live in History — out of sight, but recoverable.
 - **Zero guilt accumulation.** The app never shows you a pile of unfinished tasks. Ever.
 - **The app leads, not you.** It tells you what to do next. No planning, no prioritizing, no organizing.
 - **Privacy & cyber security.** Your brain is your business. Data is encrypted, the codebase is open for audit, and protection follows you across every device and platform.
@@ -36,18 +39,24 @@ Fini replaces the todo list with a quest system inspired by RPG games like Skyri
 
 ## Architecture
 
-```
-fini/
-├── src/                   # Vue 3 frontend (TypeScript, Tailwind CSS)
-├── src-tauri/             # Rust backend (Tauri 2.0)
-│   ├── src/               # Rust source code
-│   ├── gen/android/       # Generated Android project
-│   └── icons/             # App icons for all platforms
-├── com.fini.app.yml       # Flatpak manifest
-└── com.fini.app.desktop   # Linux desktop entry
-```
+| Folder | Role |
+|---|---|
+| `src/` | Vue 3 frontend — see `src/README.md` |
+| `src-tauri/` | Rust backend (Tauri 2.0) — see `src-tauri/README.md` |
 
-See each folder's `README.md` for details.
+Each folder has its own `README.md` with structure and conventions. Each significant source file has a companion `.md` spec — see **Spec files** below.
+
+## Spec files
+
+Every significant source file has a companion `.md` file with the same name (e.g. `App.vue` → [[App.md]]). These files are the **source of truth** for that file: they describe its purpose, the sections or structure it must contain, its props/events/commands, and any design decisions. Code should be written to match the spec, not the other way around.
+
+Convention:
+- Spec files live next to the source file they describe
+- A spec file for a view lists what sections/components it renders
+- A spec file for a store lists its state shape and actions
+- A spec file for a Rust module lists its commands and data types
+- Folder-level `README.md` files describe the folder's role and overall structure
+- Use `[[wikilinks]]` liberally to cross-reference related spec files, views, stores, and components — every mention of another file or concept should link to its spec
 
 ## Tech Stack
 
@@ -57,7 +66,7 @@ See each folder's `README.md` for details.
 | Frontend  | Vue 3 + TypeScript + Vite   |
 | Styling   | Tailwind CSS                |
 | State     | Pinia                       |
-| Database  | SQLite via tauri-plugin-sql |
+| Database  | SQLite via Diesel ORM       |
 | Backend   | Rust                        |
 
 ## Target Platforms

@@ -5,7 +5,10 @@ import ToastStack from "./components/ToastStack.vue";
 <template>
   <div class="app-shell">
     <nav class="nav">
+      <router-link to="/main">Main</router-link>
       <router-link to="/quests">Quests</router-link>
+      <router-link to="/history">History</router-link>
+      <router-link to="/spaces">Spaces</router-link>
       <router-link to="/settings">Settings</router-link>
     </nav>
     <main class="content">
@@ -72,5 +75,6 @@ import ToastStack from "./components/ToastStack.vue";
 .content {
   flex: 1;
   overflow: auto;
+  padding-bottom: calc(4rem + env(safe-area-inset-bottom));
 }
 </style>
