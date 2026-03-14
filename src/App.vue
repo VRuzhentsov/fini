@@ -8,7 +8,6 @@ import ToastStack from "./components/ToastStack.vue";
       <router-link to="/main">Main</router-link>
       <router-link to="/quests">Quests</router-link>
       <router-link to="/history">History</router-link>
-      <router-link to="/spaces">Spaces</router-link>
       <router-link to="/settings">Settings</router-link>
     </nav>
     <main class="content">
@@ -39,10 +38,8 @@ import ToastStack from "./components/ToastStack.vue";
   }
 }
 
-* {
+*, *::before, *::after {
   box-sizing: border-box;
-  margin: 0;
-  padding: 0;
 }
 </style>
 

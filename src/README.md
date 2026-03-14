@@ -1,6 +1,6 @@
 # src/
 
-Vue 3 frontend of the Fini app. Built with TypeScript, Vite, and Tailwind CSS.
+Vue 3 frontend of the Fini app. Built with TypeScript, Vite, Tailwind CSS, and DaisyUI.
 
 ## Structure
 
@@ -31,6 +31,8 @@ Each view, component, and store has a companion `.md` spec file.
 
 - **Composition API** with `<script setup>` in all components
 - **Pinia** for shared state — one store per domain (`quest`, `space`, etc.)
+- **Tailwind CSS + DaisyUI** for styling — use DaisyUI component classes where available, Tailwind utilities for layout and custom elements
+- **Heroicons** (`@heroicons/vue`) for icons — use the `24/outline` set, sized with `size-4` / `size-5`
 - Communicate with the Rust backend via `invoke()` from `@tauri-apps/api/core`
 - All store actions accept typed input objects matching the Rust command signatures
 

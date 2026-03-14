@@ -57,22 +57,21 @@ function onKeydown(e: KeyboardEvent) {
     onSubmit();
   }
 }
-
 </script>
 
 <template>
-  <div class="chat-wrap">
+  <div class="fixed bottom-0 left-0 right-0 z-50 bg-base-200 border-t border-base-content/10" style="padding-bottom: env(safe-area-inset-bottom)">
     <Transition name="transcript">
-      <div v-if="recording" class="live-transcript">
+      <div v-if="recording" class="px-4 py-2 text-sm opacity-50 border-b border-base-content/10">
         {{ voice.transcript.value || "Listening…" }}
       </div>
     </Transition>
 
-    <form class="chat-bar" @submit.prevent="onSubmit">
+    <form class="flex items-center gap-1 px-3 py-2" @submit.prevent="onSubmit">
       <textarea
         ref="textarea"
         v-model="text"
-        class="chat-input"
+        class="textarea textarea-ghost flex-1 resize-none overflow-y-auto text-base leading-normal py-2 min-h-0"
         placeholder="Write a message…"
         rows="1"
         :readonly="recording"
@@ -81,7 +80,7 @@ function onKeydown(e: KeyboardEvent) {
       />
       <button
         type="submit"
-        class="icon-btn"
+        class="btn btn-ghost btn-circle btn-sm shrink-0"
         :disabled="!text.trim()"
         aria-label="Send"
       >
@@ -92,8 +91,8 @@ function onKeydown(e: KeyboardEvent) {
       <!-- mic button: hidden until voice is re-enabled
       <button
         type="button"
-        class="icon-btn"
-        :class="{ 'icon-btn--recording': recording, 'icon-btn--warming': voice.warming.value }"
+        class="btn btn-ghost btn-circle btn-sm shrink-0"
+        :class="{ 'text-error': recording, 'opacity-40': voice.warming.value }"
         @pointerdown.prevent="onMicPress($event)"
         @pointerup="onMicRelease"
         @pointercancel="onMicRelease"
@@ -110,91 +109,6 @@ function onKeydown(e: KeyboardEvent) {
 </template>
 
 <style scoped>
-.chat-wrap {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding-bottom: env(safe-area-inset-bottom);
-  background: #1e1e2e;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  z-index: 100;
-}
-
-.live-transcript {
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  color: rgba(255, 255, 255, 0.5);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.chat-bar {
-  display: flex;
-  align-items: center;
-  padding: 0.5rem 0.75rem;
-  gap: 0.25rem;
-}
-
-.chat-input {
-  flex: 1;
-  padding: 0.6rem 0.75rem;
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: 1rem;
-  font-family: inherit;
-  color: inherit;
-  min-width: 0;
-  resize: none;
-  overflow-y: auto;
-  line-height: 1.5;
-}
-
-.chat-input::placeholder {
-  color: rgba(255, 255, 255, 0.3);
-}
-
-.icon-btn {
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border: none;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.5);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  user-select: none;
-  -webkit-user-select: none;
-  touch-action: none;
-  transition: color 0.15s;
-}
-
-.icon-btn:active { color: rgba(255, 255, 255, 0.9); }
-
-.icon-btn--recording {
-  color: #ef4444;
-  animation: pulse-ring 1.2s ease-out infinite;
-}
-
-.icon-btn--warming {
-  color: rgba(255, 255, 255, 0.3);
-  animation: spin 1s linear infinite;
-}
-
-@keyframes pulse-ring {
-  0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-  70%  { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 .transcript-enter-active, .transcript-leave-active { transition: opacity 0.15s; }
 .transcript-enter-from, .transcript-leave-to { opacity: 0; }
-
 </style>

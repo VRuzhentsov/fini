@@ -66,7 +66,8 @@ Convention:
 | --------- | --------------------------- |
 | Framework | Tauri 2.0                   |
 | Frontend  | Vue 3 + TypeScript + Vite   |
-| Styling   | Tailwind CSS                |
+| Styling   | Tailwind CSS + DaisyUI      |
+| Icons     | Heroicons                   |
 | State     | Pinia                       |
 | Database  | SQLite via Diesel ORM       |
 | Backend   | Rust                        |

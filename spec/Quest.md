@@ -21,15 +21,17 @@ Core domain model. A quest is a single unit of intention — something the user 
 | `created_at` | datetime | — | |
 | `updated_at` | datetime | — | |
 
-## Status
+## State vs status
 
-| Value | Meaning |
-|---|---|
-| `active` | In play — visible in [[MainView]] and [[QuestsView]] |
-| `completed` | Done — moves to [[HistoryView]] |
-| `abandoned` | Dropped — moves to [[HistoryView]] |
+A quest is either **active** (in progress — the ongoing state) or has reached a terminal **status**: `completed` or `abandoned`. Active is not a status outcome; it is the default state of a quest while it is being worked on.
 
-A quest in History can be restored to `active`.
+| Value | Kind | Meaning |
+|---|---|---|
+| `active` | state | In play — visible in [[MainView]] and [[QuestsView]] |
+| `completed` | status | Done — moves to [[HistoryView]] |
+| `abandoned` | status | Dropped — moves to [[HistoryView]] |
+
+A quest in History can be restored to the active state. When restored, it is automatically pinned — it surfaces at the top of the active list, since it was previously in progress.
 
 ## Priority
 

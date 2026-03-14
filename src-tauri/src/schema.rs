@@ -9,18 +9,20 @@ diesel::table! {
 
 diesel::table! {
     quests (id) {
-        id              -> BigInt,
-        space_id        -> Nullable<BigInt>,
-        title           -> Text,
-        description     -> Nullable<Text>,
-        status          -> Text,
-        energy_required -> Nullable<BigInt>,
-        priority        -> BigInt,
-        pinned          -> Bool,
-        due             -> Nullable<Text>,
-        completed_at    -> Nullable<Text>,
-        created_at      -> Text,
-        updated_at      -> Text,
+        id          -> BigInt,
+        space_id    -> Nullable<BigInt>,
+        title       -> Text,
+        description -> Nullable<Text>,
+        status      -> Text,
+        energy      -> Text,
+        priority    -> BigInt,
+        pinned      -> Bool,
+        due         -> Nullable<Text>,
+        due_time    -> Nullable<Text>,
+        repeat_rule -> Nullable<Text>,
+        completed_at -> Nullable<Text>,
+        created_at  -> Text,
+        updated_at  -> Text,
     }
 }
 

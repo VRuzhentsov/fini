@@ -16,7 +16,7 @@ const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 pub struct DbState(pub Mutex<SqliteConnection>);
 
 fn utc_now() -> String {
-    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 // ── DB models (Queryable) ─────────────────────────────────────────────────────
@@ -40,11 +40,15 @@ pub struct Quest {
     pub title: String,
     pub description: Option<String>,
     pub status: String,
-    pub energy_required: Option<i64>,
+    /// "low" | "medium" | "high"
+    pub energy: String,
     /// 1 = none, 2 = low, 3 = medium, 4 = urgent
     pub priority: i64,
     pub pinned: bool,
     pub due: Option<String>,
+    pub due_time: Option<String>,
+    /// JSON-encoded RepeatRule, or null
+    pub repeat_rule: Option<String>,
     pub completed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -73,14 +77,18 @@ pub struct CreateQuestInput {
     pub space_id: Option<i64>,
     pub title: String,
     pub description: Option<String>,
-    pub energy_required: Option<i64>,
+    #[serde(default = "default_energy")]
+    pub energy: String,
     #[serde(default = "default_priority")]
     pub priority: i64,
     pub due: Option<String>,
+    pub due_time: Option<String>,
+    pub repeat_rule: Option<String>,
 }
 
 fn default_priority() -> i64 { 1 }
 fn default_space_id() -> Option<i64> { Some(1) }
+fn default_energy() -> String { "medium".to_string() }
 
 #[derive(Deserialize, AsChangeset)]
 #[diesel(table_name = quests)]
@@ -89,10 +97,12 @@ pub struct UpdateQuestInput {
     pub title: Option<String>,
     pub description: Option<String>,
     pub status: Option<String>,
-    pub energy_required: Option<i64>,
+    pub energy: Option<String>,
     pub priority: Option<i64>,
     pub pinned: Option<bool>,
     pub due: Option<String>,
+    pub due_time: Option<String>,
+    pub repeat_rule: Option<String>,
 }
 
 // ── DB setup ──────────────────────────────────────────────────────────────────

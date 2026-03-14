@@ -11,37 +11,16 @@ onMounted(() => store.fetchQuests());
 </script>
 
 <template>
-  <div class="main-view">
-    <div v-if="store.error" class="error">{{ store.error }}</div>
+  <div class="flex flex-col gap-8 px-4 pt-4">
+    <div v-if="store.error" class="text-error text-sm">{{ store.error }}</div>
 
-    <section class="active-section">
+    <section>
       <ActiveQuestPanel v-if="activeQuest" :quest="activeQuest" />
-      <div v-else class="no-quest">No active quest.</div>
+      <p v-else class="text-sm opacity-40">No active quest.</p>
     </section>
 
-    <section class="input-section">
+    <section>
       <NewQuestForm />
     </section>
-
   </div>
 </template>
-
-<style scoped>
-.main-view {
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
-}
-
-.error {
-  color: red;
-  font-size: 0.875rem;
-}
-
-.no-quest {
-  opacity: 0.4;
-  font-size: 0.875rem;
-}
-
-</style>

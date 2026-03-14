@@ -2,16 +2,20 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { ref } from "vue";
 
+export type Energy = "low" | "medium" | "high";
+
 export interface Quest {
   id: number;
   space_id: number | null;
   title: string;
   description: string | null;
   status: "active" | "completed" | "abandoned";
-  energy_required: number | null;
+  energy: Energy;
   priority: number;
   pinned: boolean;
   due: string | null;
+  due_time: string | null;
+  repeat_rule: string | null;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
@@ -21,9 +25,11 @@ export interface CreateQuestInput {
   space_id?: number | null;
   title: string;
   description?: string | null;
-  energy_required?: number | null;
+  energy?: Energy;
   priority?: number;
   due?: string | null;
+  due_time?: string | null;
+  repeat_rule?: string | null;
 }
 
 export interface UpdateQuestInput {
@@ -31,10 +37,12 @@ export interface UpdateQuestInput {
   title?: string;
   description?: string | null;
   status?: "active" | "completed" | "abandoned";
-  energy_required?: number | null;
+  energy?: Energy;
   priority?: number;
   pinned?: boolean;
   due?: string | null;
+  due_time?: string | null;
+  repeat_rule?: string | null;
 }
 
 export const useQuestStore = defineStore("quest", () => {

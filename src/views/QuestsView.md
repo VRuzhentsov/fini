@@ -9,9 +9,9 @@ Full quest browser. Where [[MainView]] enforces single-quest focus, this view ex
 ## Responsibilities
 
 - List all active quests
-- Support filtering (by space, priority, energy) and sorting
-- Allow creating, editing, and reordering quests
+- Allow creating and editing quests
 - Promote a quest to the hero slot in [[MainView]] ("Make active")
+
 
 ## Out of scope
 
