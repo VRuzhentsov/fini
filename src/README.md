@@ -6,17 +6,26 @@ Vue 3 frontend of the Fini app. Built with TypeScript, Vite, and Tailwind CSS.
 
 ```
 src/
-├── main.ts            # App entry point
-├── App.vue            # Root component — see [[App.md]]
+├── main.ts                  # App entry point
+├── App.vue                  # Root component — see [[App.md]]
 ├── router/
-│   └── index.ts       # Route definitions
-├── views/             # Page-level components, one per tab
-├── stores/            # Pinia stores, one per domain
-├── components/        # Reusable UI components
-└── composables/       # Shared Vue composables
+│   └── index.ts             # Route definitions
+├── views/                   # Page-level components, one per tab
+├── stores/                  # Pinia stores, one per domain
+├── components/
+│   ├── MainView/            # Components specific to MainView
+│   │   ├── ActiveQuestPanel.vue
+│   │   └── NewQuestForm.vue
+│   ├── QuestsView/          # Components specific to QuestsView
+│   │   └── QuestList.vue
+│   ├── ChatInput.vue        # Shared input bar
+│   └── ToastStack.vue       # Global toast notifications
+└── composables/             # Shared Vue composables
 ```
 
-Each view and store has a companion `.md` spec file. See the root [[README]] for the full convention.
+View-specific components live in a subfolder named after their view. Shared components sit at the `components/` root.
+
+Each view, component, and store has a companion `.md` spec file.
 
 ## Conventions
 

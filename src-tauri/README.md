@@ -22,35 +22,7 @@ src-tauri/
 
 ## Data model
 
-### Space
-
-A named context for grouping quests (e.g. Personal, Work, Side Project).
-
-| Field        | Type    | Notes                        |
-|--------------|---------|------------------------------|
-| `id`         | i64     | Auto-increment PK            |
-| `name`       | String  |                              |
-| `item_order` | i64     | Display order, set by client |
-| `created_at` | String  | UTC datetime                 |
-
-### Quest
-
-A task. Belongs to an optional Space.
-
-| Field            | Type         | Notes                               |
-|------------------|--------------|-------------------------------------|
-| `id`             | i64          | Auto-increment PK                   |
-| `space_id`       | Option<i64>  | FK → spaces, nullable               |
-| `title`          | String       |                                     |
-| `description`    | Option<String> |                                   |
-| `status`         | String       | `active` \| `completed` \| `abandoned` |
-| `priority`       | i64          | 1 = none, 2 = low, 3 = med, 4 = urgent |
-| `pinned`         | bool         |                                     |
-| `due`            | Option<String> | ISO date string                   |
-| `energy_required`| Option<i64>  | Subjective effort level             |
-| `completed_at`   | Option<String> | Set automatically on completion   |
-| `created_at`     | String       |                                     |
-| `updated_at`     | String       |                                     |
+See `spec/` at the repo root for domain model specs ([[Quest]], [[Space]], [[RepeatRule]]).
 
 ## Commands
 

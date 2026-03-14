@@ -43,6 +43,7 @@ Quests are organized into **Spaces** — named contexts like Personal, Work, or 
 |---|---|
 | `src/` | Vue 3 frontend — see `src/README.md` |
 | `src-tauri/` | Rust backend (Tauri 2.0) — see `src-tauri/README.md` |
+| `spec/` | Domain model specs shared between frontend and backend |
 
 Each folder has its own `README.md` with structure and conventions. Each significant source file has a companion `.md` spec — see **Spec files** below.
 
@@ -51,12 +52,13 @@ Each folder has its own `README.md` with structure and conventions. Each signifi
 Every significant source file has a companion `.md` file with the same name (e.g. `App.vue` → [[App.md]]). These files are the **source of truth** for that file: they describe its purpose, the sections or structure it must contain, its props/events/commands, and any design decisions. Code should be written to match the spec, not the other way around.
 
 Convention:
-- Spec files live next to the source file they describe
-- A spec file for a view lists what sections/components it renders
-- A spec file for a store lists its state shape and actions
-- A spec file for a Rust module lists its commands and data types
+- **Domain model specs** live in `spec/` — shared between frontend and backend
+- **UI specs** live next to the source file they describe (e.g. `App.vue` → `App.md`)
+- A spec file for a view describes its concept and sections
+- A spec file for a component describes its props, events, and behaviour
+- A spec file for a store lists its actions
 - Folder-level `README.md` files describe the folder's role and overall structure
-- Use `[[wikilinks]]` liberally to cross-reference related spec files, views, stores, and components — every mention of another file or concept should link to its spec
+- Use `[[wikilinks]]` liberally to cross-reference related specs — every mention of another file or concept should link to its spec
 
 ## Tech Stack
 
