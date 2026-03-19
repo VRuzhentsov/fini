@@ -9,7 +9,7 @@ Configuration screen. Sections are presented as an accordion — one section ope
 ## Sections
 
 ### Spaces
-Manage named contexts that quests can belong to. See [[Space]].
+Manage named contexts that quests can belong to. See [[spec/Space]].
 
 - List all spaces with inline edit and delete (default space id=1 cannot be deleted)
 - Add new space by name

@@ -1,6 +1,4 @@
-# space store
-
-Frontend state for [[Space|spaces]]. Single source of truth for space data in the UI.
+Frontend state for [[Space]]. Single source of truth for space data in the UI.
 
 ## Actions
 

@@ -1,4 +1,5 @@
 mod schema;
+pub mod mcp;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
@@ -15,7 +16,7 @@ const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
 pub struct DbState(pub Mutex<SqliteConnection>);
 
-fn utc_now() -> String {
+pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
@@ -107,14 +108,15 @@ pub struct UpdateQuestInput {
 
 // ── DB setup ──────────────────────────────────────────────────────────────────
 
-fn open_db(app: &tauri::AppHandle) -> SqliteConnection {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .expect("failed to resolve app data dir");
-    std::fs::create_dir_all(&data_dir).expect("failed to create app data dir");
-    let db_path = data_dir.join("fini.db");
-    let mut conn = SqliteConnection::establish(db_path.to_str().unwrap())
+pub fn db_default_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .expect("failed to get data dir")
+        .join("com.fini.app")
+        .join("fini.db")
+}
+
+pub fn open_db_at_path(path: &std::path::Path) -> SqliteConnection {
+    let mut conn = SqliteConnection::establish(path.to_str().unwrap())
         .expect("failed to open database");
     diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
         .execute(&mut conn)
@@ -122,6 +124,16 @@ fn open_db(app: &tauri::AppHandle) -> SqliteConnection {
     conn.run_pending_migrations(MIGRATIONS)
         .expect("failed to run migrations");
     conn
+}
+
+fn open_db(app: &tauri::AppHandle) -> SqliteConnection {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .expect("failed to resolve app data dir");
+    std::fs::create_dir_all(&data_dir).expect("failed to create app data dir");
+    let db_path = data_dir.join("fini.db");
+    open_db_at_path(&db_path)
 }
 
 // ── Space commands ────────────────────────────────────────────────────────────
@@ -221,6 +233,17 @@ fn delete_quest(state: State<DbState>, id: i64) -> Result<(), String> {
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── MCP entry point ───────────────────────────────────────────────────────────
+
+pub fn run_mcp() {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(mcp::run())
+        .unwrap();
 }
 
 // ── App entry point ───────────────────────────────────────────────────────────

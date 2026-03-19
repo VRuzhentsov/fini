@@ -22,7 +22,7 @@ src-tauri/
 
 ## Data model
 
-See `spec/` at the repo root for domain model specs ([[Quest]], [[Space]], [[RepeatRule]]).
+See `spec/` at the repo root for domain model specs ([[Quest]], [[spec/Space]], [[RepeatRule]]).
 
 ## Commands
 

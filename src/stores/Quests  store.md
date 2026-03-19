@@ -1,6 +1,4 @@
-# quest store
-
-Frontend state for [[Quest|quests]]. Single source of truth for quest data in the UI.
+Frontend state for [[Quest]]. Single source of truth for quest data in the UI.
 
 ## Actions
 

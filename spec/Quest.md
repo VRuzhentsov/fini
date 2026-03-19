@@ -15,7 +15,7 @@ Core domain model. A quest is a single unit of intention — something the user 
 | `energy` | enum | `medium` | See [Energy](#energy) |
 | `pinned` | boolean | false | Pinned quests sort above others |
 | `due` | date \| null | null | Due date |
-| `due_time` | time \| null | null | Optional time component of the due date |
+| `due_time` | time \| null | null | Optional time component of the due date; required for `relative` [[Reminder]]s to compute their fire time |
 | `repeat` | RepeatRule \| null | null | Recurrence rule; see [Repeat](#repeat) |
 | `completed_at` | datetime \| null | null | Set when status transitions to `completed` |
 | `created_at` | datetime | — | |

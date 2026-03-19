@@ -60,6 +60,69 @@ Convention:
 - Folder-level `README.md` files describe the folder's role and overall structure
 - Use `[[wikilinks]]` liberally to cross-reference related specs — every mention of another file or concept should link to its spec
 
+## Local Network Sync
+
+Fini is local-first with optional LAN sharing. Devices on the same network discover each other via mDNS and share a live dataset with no manual configuration. See [[Network]] for the full design.
+
+## MCP Server
+
+Fini exposes a **Model Context Protocol (MCP) server** so external AI clients — primarily Claude Desktop — can read and manage quests directly.
+
+### Entry point
+
+`fini` — the single app binary. Its behaviour depends on how it is invoked:
+
+| Invocation | Mode |
+|---|---|
+| `fini` | Launch GUI (Tauri) |
+| `fini mcp` | Start MCP server over stdio, no GUI |
+
+Claude Desktop launches `fini mcp` as a subprocess. Both modes share the same SQLite database at `$DATA_DIR/fini/fini.db`.
+
+### Transport
+
+`stdio` — launched as a subprocess by the MCP client via `fini mcp`.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `list_quests` | Return all active quests, optionally filtered by space |
+| `get_quest` | Return a single quest by id |
+| `create_quest` | Create a quest with title, optional space, due date, repeat rule |
+| `update_quest` | Update any quest field (title, description, status, pinned, due, etc.) |
+| `delete_quest` | Delete a quest |
+| `complete_quest` | Mark a quest completed |
+| `abandon_quest` | Mark a quest abandoned |
+| `list_history` | Return completed and abandoned quests |
+| `get_active_quest` | Return the current focus quest (top pinned or highest priority active) |
+| `list_spaces` | Return all spaces |
+| `create_space` | Create a space |
+| `update_space` | Rename or reorder a space |
+| `delete_space` | Delete a space |
+
+### Usage (Claude Desktop)
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "fini": {
+      "command": "/path/to/fini",
+      "args": []
+    }
+  }
+}
+```
+
+The `fini` binary is produced by the normal Tauri build:
+
+```bash
+npm run tauri build
+# binary at: src-tauri/target/release/fini
+```
+
 ## Tech Stack
 
 | Layer     | Technology                  |
@@ -71,6 +134,7 @@ Convention:
 | State     | Pinia                       |
 | Database  | SQLite via Diesel ORM       |
 | Backend   | Rust                        |
+| MCP       | rmcp (Rust MCP SDK), stdio  |
 
 ## Target Platforms
 
