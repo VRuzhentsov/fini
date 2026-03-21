@@ -4,7 +4,7 @@ Route: `/history`. Tab: History. See [[App.md]].
 
 ## Concept
 
-Read-only list of completed and abandoned quests. No editing — only restore (make active) or delete via a context menu.
+Read-only list of completed and abandoned quests/occurrences. No inline editing - only restore (make active) or permanent delete via context menu.
 
 ## Sections
 
@@ -17,13 +17,15 @@ Each row shows a status badge and the quest title.
 | Action | Description |
 |---|---|
 | Make active | Sets `status = "active"`; quest reappears in [[MainView]] |
-| Delete | Permanently removes the quest |
+| Delete | Permanently removes the quest after confirmation |
 
 The menu is teleported to `<body>` and closes on any click outside.
 
 ## State
 
 Uses [[quest.ts]] store. Loads on mount; `history` is a computed filter (`completed` or `abandoned`).
+
+For repeating quests, history is occurrence-level (each occurrence appears as its own entry).
 
 ## Dependencies
 

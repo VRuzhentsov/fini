@@ -1,48 +1,59 @@
 # QuestList
 
-Shared quest list used in [[QuestsView]] and [[HistoryView]]. Rendering adapts per `quest.status`.
+Shared list UI used by [[MainView]] (active backlog section) and [[HistoryView]]. Rendering adapts per `quest.status`.
 
 ## Props
 
 | Prop | Type | Description |
 |---|---|---|
-| `quests` | `Quest[]` | Quests to display — any mix of statuses |
+| `quests` | `Quest[]` | Quest rows to display |
 
 ## Row states
 
-Each row has two states: **collapsed** and **expanded**. Tapping a row toggles it. Only one row is expanded at a time.
+Each row supports collapsed and expanded states. One row can be expanded at a time.
 
-## Active quests (state: in progress)
+## Active quests
 
 ### Collapsed
+
 Checkbox + title.
 
 ### Expanded
-**Header** — checkbox · editable title · golden pin (!) · collapse chevron
 
-**Body** — editable description textarea
+- Header: checkbox, editable title, Main-focus indicator/action, collapse
+- Body: editable description
+- Footer:
+  - Left: due/time/repeat summary (opens [[ReminderMenu]])
+  - Right: attachment (future), labels (future), priority, more menu
 
-**Footer**
-- Left: clock button + due/time/repeat hint — opens [[ReminderMenu]]
-- Right: Attachment _(future)_ · Label _(future)_ · Flag (priority) · Energy · ⋮ (Abandon / Delete)
+### Active row actions
 
-## Resolved quests (status: completed or abandoned)
+| Action | Behavior |
+|---|---|
+| Complete | Sets `status = completed` |
+| Set Main | Writes manual focus timestamp (`set_main_at`) |
+| Abandon | Sets `status = abandoned` |
+| Delete | Permanent delete with confirmation |
+
+Energy is stored but hidden from MVP controls.
+
+## History rows
 
 ### Collapsed
-Checked checkbox (green = completed, amber = abandoned) · timestamp badge · strikethrough title.
+
+Checked checkbox (green completed / amber abandoned), timestamp badge, struck-through title.
 
 ### Expanded
-**Header** — checked checkbox · strikethrough title · timestamp badge · collapse chevron
 
-**Body** — description (read-only)
+- Header: checked checkbox, title, timestamp, collapse
+- Body: read-only description
+- Footer menu: Make active, Delete
 
-**Footer** — ⋮ (Make active / Delete)
-
-Clicking the checkbox restores the quest to `active`.
+Deleting from history is permanent and requires confirmation.
 
 ## Dependencies
 
 | Dep | Role |
 |---|---|
 | [[quest.ts]] | `updateQuest`, `deleteQuest` |
-| [[ReminderMenu]] | Due date / time / repeat picker (active quests only) |
+| [[ReminderMenu]] | Due date / time / repeat controls |

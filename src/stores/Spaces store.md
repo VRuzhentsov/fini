@@ -12,3 +12,4 @@ Frontend state for [[Space]]. Single source of truth for space data in the UI.
 ## Notes
 
 - For the domain model see [[Space]].
+- Space ids are string-based (`"1"`, `"2"`, `"3"`, or UUID).

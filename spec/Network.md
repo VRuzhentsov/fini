@@ -1,53 +1,63 @@
 # Network & Local Sync
 
-Fini is local-first. All data lives on-device. Network features are opt-in and operate entirely within the local network — no cloud, no accounts.
+Fini is local-first and accountless. LAN sync is introduced in **MVP.1**.
 
 ## Goals
 
-- Devices on the same LAN can discover each other automatically — no IP addresses, no router config.
-- Before any data is shared, devices must **pair** explicitly. Discovery is passive; sync is opt-in.
-- After pairing, the user selects which [[Space]]s to synchronise. Only chosen spaces are shared.
-- Pairing is a one-time action per device pair, secured by mutual confirmation. It survives app restarts.
-- MCP clients (Claude Desktop, opencode) on any paired device can read and write quests.
-- Unpairing immediately stops sync and revokes access.
+- Zero-cloud architecture: no central account service required
+- Nearby device discovery on LAN
+- Explicit pairing before any data sharing
+- Per-space sync selection
+- Near-real-time propagation with offline queue/replay
 
 ## Entry points
 
-Fini data can be accessed from multiple entry points:
+- GUI app
+- MCP server
+- Headless runtime
 
-- **GUI app** — the primary experience on desktop and mobile.
-- **MCP server** — allows AI clients to read and write quests.
-- **Headless** — running without a UI, suitable for an always-on shared node on a home network or NAS.
+All entry points operate on the same local dataset.
 
-All entry points operate on the same data. A change made through any one of them should be reflected in all others without requiring a manual refresh.
+## Pairing
 
-## Local network discovery
+- Discovery is passive; data exchange starts only after pairing
+- Pairing uses mutual confirmation code (both devices confirm same code)
+- Pairing survives restarts until unpaired
 
-Fini instances on the same LAN advertise their presence so other devices can find them without manual configuration. The exact discovery mechanism is an implementation detail; the intent is zero-config — open the app, see nearby devices.
+## Space selection
 
-### Pairing
+- User selects which spaces replicate to each paired device
+- Space identity is id-based, not name-based
+  - Built-ins use reserved ids: `"1"`, `"2"`, `"3"`
+  - Custom spaces use UUID ids
 
-Discovered devices are visible but inert until paired. Pairing requires confirmation on both sides. Once paired, sync begins automatically on every subsequent connection.
+## Sync model
 
-The user can:
+- Push on change + reconnect catch-up
+- Offline edits queue locally and replay on reconnect
+- Conflict resolution: last-write-wins by `updated_at` UTC
+- Deletes replicate globally (tombstone semantics; no resurrection)
 
-- **Pair** — initiate pairing with a nearby device.
-- **Unpair** — revoke access and stop sync.
-- **Ignore** — hide the device from the nearby list.
+## Shared repeating behavior
 
-### Space selection
+- Repeating quests use series + occurrences
+- One occurrence completion resolves for all paired devices
+- Deterministic occurrence identity uses `series_id + period_key`
+- `period_key` uses UTC period boundaries
+- Completion of shared occurrence cancels pending reminders for that occurrence on all peers
 
-After pairing, the user chooses which spaces to synchronise. Spaces are matched by name across devices — "Personal" on one device maps to "Personal" on the other.
+## Focus sync
 
-To make this reliable, certain spaces are built-in and non-deletable: **Personal** and **Family**. These exist on every Fini install under the same name, giving devices a guaranteed common ground. User-created spaces can also be synced if both devices have a space with the same name.
+- Manual and reminder focus override metadata replicate across paired devices
+- Main quest is computed from synced data/events, not from a device-local singleton state
 
-### Sync
+## Collaboration metadata
 
-Quests in selected spaces are kept in sync across paired devices in real time. Conflicts are resolved by last-write-wins based on `updated_at` (UTC).
+- Completion actor is stored as device hostname (no account identity)
+- Teammate completion updates are subtle in-app updates
 
 ## Security
 
-- LAN sharing is off by default. The user opts in explicitly.
-- All peer-to-peer communication is encrypted in transit.
-- All data at rest is encrypted.
-- Pairing is authenticated — both devices must confirm before any data flows. Unpaired devices receive no data, even if they can discover the instance.
+- LAN sharing is off by default
+- Encrypted transport required for paired communication
+- At-rest encryption is post-MVP work

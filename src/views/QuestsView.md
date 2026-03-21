@@ -1,16 +1,15 @@
 # QuestsView
 
-Route: `/quests`. Tab: Quests. See [[App.md]].
+Legacy route: `/quests`.
 
 ## Concept
 
-Full quest browser. Where [[MainView]] enforces single-quest focus, this view exposes all active quests at once — for planning, prioritisation, and management.
+Transitional active-quest browser kept during migration. Final MVP navigation removes the Quests tab and moves active backlog management into [[MainView]].
 
 ## Responsibilities
 
-- List all active quests
-- Allow creating and editing quests
-- Promote a quest to the hero slot in [[MainView]] ("Make active")
+- Keep parity while Main backlog UI is being consolidated
+- Reuse [[QuestList]] behavior for active quest editing
 
 
 ## Out of scope

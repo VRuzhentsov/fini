@@ -1,17 +1,19 @@
 # SpacesView
 
-Route: `/spaces`. Tab: Spaces. See [[App.md]].
+Legacy route: `/spaces`.
 
 ## Concept
 
-Manage named contexts that group quests. Spaces are ordered by `item_order`. The **default space** ("Personal", `id = 1`) is seeded at DB init and cannot be deleted.
+Transitional spaces manager. Final MVP navigation keeps spaces management in [[SettingsView]] only.
+
+Spaces are ordered by `item_order`. Built-in spaces use reserved ids (`1`, `2`, `3`) and cannot be deleted.
 
 ## Sections
 
 ### Space list
 Each row shows the space name with Edit and Delete actions.
 - **Edit** — inline: replaces the name with an input field. Confirm with Enter or Save button, cancel with Escape.
-- **Delete** — hidden for the default space (`id === 1`). Removes the space; quests in it become unassigned (`space_id = null`).
+- **Delete** — hidden for built-ins (`id === "1"`, `"2"`, `"3"`). Removing custom space reassigns member quests to Personal (`space_id = "1"`).
 
 ### Add form
 Text input + Add button at the bottom. Submits on Enter or button click. Clears after submit.
@@ -20,7 +22,7 @@ Text input + Add button at the bottom. Submits on Enter or button click. Clears 
 
 | Rule | Detail |
 |---|---|
-| Default space | `id === 1` ("Personal") — edit allowed, delete not |
+| Built-ins | `id in {"1","2","3"}` — edit allowed, delete not |
 | Empty name | Ignored on submit and on edit confirm |
 
 ## State

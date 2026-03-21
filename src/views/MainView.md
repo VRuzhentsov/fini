@@ -4,13 +4,30 @@ Route: `/main`. Tab: Main. See [[App.md]].
 
 ## Concept
 
-Focus screen — one quest at a time. The user sees only their current active quest and a quick-capture input. All quest management lives in [[QuestsView]]; completed and abandoned quests live in [[HistoryView]].
+Focus-first workspace. Main shows the current Main quest and also hosts active backlog management, so users can act without leaving the focus surface.
 
 ## Sections
 
-### Active quest
-The single hero quest. If none exists, a placeholder is shown. Renders [[ActiveQuestPanel]] with Complete and Abandon actions.
+### Main quest panel
 
-### Input
-Always visible. Quickly captures a new quest title via [[NewQuestForm]].
+- Renders [[ActiveQuestPanel]] for the current computed Main quest
+- If no active quests exist, shows an empty-state placeholder
+- Complete and Abandon actions are one-click
 
+### Active backlog
+
+- Shows all active quests below Main quest
+- Default ordering: overdue/priority, then oldest `created_at`
+- Includes expand/edit controls via [[QuestList]]
+- Each quest has explicit "Set Main" action (manual focus override)
+
+### Quick capture
+
+- Always-visible [[NewQuestForm]] for creating new quests
+
+## Main quest computation contract
+
+- Computed by getter over persisted quest data/events
+- Manual set main and reminder triggers use timestamps
+- Reminder preemption is temporary and unwinds to previous valid target
+- If no active override exists, fallback is overdue > priority > oldest `created_at`

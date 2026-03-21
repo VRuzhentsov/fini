@@ -14,8 +14,8 @@ Space selector sits directly above the input row.
 ## Space selector
 
 - DaisyUI `select select-sm` dropdown listing all spaces from `spaces` store
-- Default: "Personal" space, or the last space the user selected (persisted in `localStorage` as `lastSpaceId`)
-- On mount: restore `lastSpaceId` from `localStorage`; fall back to the space named "Personal"; fall back to first space
+- Default: built-in Personal space (`id = "1"`), or the last selected space (`localStorage.lastSpaceId`)
+- On mount: restore `lastSpaceId`; fall back to built-in Personal; fall back to first available space
 - On change: save selection to `localStorage`
 
 ## Behaviour

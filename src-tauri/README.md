@@ -22,7 +22,7 @@ src-tauri/
 
 ## Data model
 
-See `spec/` at the repo root for domain model specs ([[Quest]], [[spec/Space]], [[RepeatRule]]).
+See `spec/` at the repo root for domain model specs ([[Quest]], [[spec/Space]], [[RepeatRule]], [[QuestSeries]], [[QuestOccurrence]], [[Reminder]]).
 
 ## Commands
 
@@ -38,9 +38,13 @@ See `spec/` at the repo root for domain model specs ([[Quest]], [[spec/Space]], 
 | Command        | Input                                                        | Returns      |
 |----------------|--------------------------------------------------------------|--------------|
 | `get_quests`   | —                                                            | `Vec<Quest>` |
-| `create_quest` | `{ space_id?, title, description?, priority?, due?, energy_required? }` | `Quest` |
-| `update_quest` | `id`, `{ space_id?, title?, description?, status?, priority?, pinned?, due?, energy_required? }` | `Quest` |
+| `create_quest` | `{ space_id?, title, description?, priority?, due?, due_time?, repeat_rule? }` (`space_id` omitted -> `"1"`) | `Quest` |
+| `update_quest` | `id`, `{ space_id?, title?, description?, status?, priority?, due?, due_time?, repeat_rule?, set_main_at?, reminder_triggered_at? }` (`space_id` updates are non-null) | `Quest` |
 | `delete_quest` | `id`                                                         | —            |
+
+Notes:
+- Quest ids are UUIDs
+- Space ids are strings (`"1"`, `"2"`, `"3"`, or UUID)
 
 ## Platform notes
 

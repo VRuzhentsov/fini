@@ -8,22 +8,31 @@ Traditional todo apps fail people with ADHD. They accumulate unfinished tasks, c
 
 ADHD brains don't struggle with laziness — they struggle with task paralysis, energy management, and the inability to finish what they started.
 
+```mermaid
+flowchart TD
+  A[Manual Set Main: Q3] --> B[Reminder fires: Q2 becomes Main]
+  B --> C[Q3 becomes inactive before Q2 resolves]
+  C --> D[Q2 gets completed]
+  D --> E{Return target Q3 active?}
+  E -- No --> F[Option 1: skip Q3 and fallback to next valid Main]
+  E -- No --> G[Option 2: clear Main and wait for manual selection]
+```
 ## The Idea
 
 Fini replaces the todo list with a quest system inspired by RPG games like Skyrim, Cyberpunk, and The Witcher. Instead of staring at a wall of obligations, you see one active quest at a time.
 
-Quests are organized into **Spaces** — named contexts like Personal, Work, or any project. A Space is a lightweight container; quests belong to one space or none at all.
+Quests are organized into **Spaces** — named contexts like Personal, Work, or any project. A Space is a lightweight container; every quest belongs to exactly one space.
 
 ### Core Principles (Target — not all implemented yet)
 
 - **One quest at a time.** No overwhelming lists. Just your current mission.
 - **Spaces for context.** Group quests by area of life (personal, work, side project) without building a hierarchy.
-- **Voice-first input.** Tap the mic, say what's on your mind. AI breaks it into small, achievable steps. _(planned)_
+- **Voice-first input.** Tap the mic, say what's on your mind. AI breaks it into small, achievable steps. _(post-MVP)_
 - **Energy-aware.** Tell the app how you feel today. Low energy = lighter quests. High energy = bigger chunks.
 - **Abandon is okay.** Quests can be abandoned without guilt. Closing a chapter is a decision, not a failure. Completed and abandoned quests live in History — out of sight, but recoverable.
 - **Zero guilt accumulation.** The app never shows you a pile of unfinished tasks. Ever.
 - **The app leads, not you.** It tells you what to do next. No planning, no prioritizing, no organizing.
-- **Privacy & cyber security.** Your brain is your business. Data is encrypted, the codebase is open for audit, and protection follows you across every device and platform.
+- **Privacy & cyber security.** Your brain is your business. Fini is local-first with no cloud accounts. Encrypted LAN transport is part of sync work; local at-rest encryption is planned.
 - **Local-first.** Everything runs on your device. No accounts, no cloud sync required. Optional sync later, on your terms.
 
 ### What Makes Fini Different
@@ -62,7 +71,7 @@ Convention:
 
 ## Local Network Sync
 
-Fini is local-first with optional LAN sharing. Devices on the same network discover each other via mDNS and share a live dataset with no manual configuration. See [[Network]] for the full design.
+Fini is local-first with optional LAN sharing. LAN discovery/pairing/sync is planned for **MVP.1** (immediately after MVP core-loop stabilization). See [[Network]] for the full design.
 
 ## MCP Server
 
@@ -87,15 +96,15 @@ Claude Desktop launches `fini mcp` as a subprocess. Both modes share the same SQ
 
 | Tool | Description |
 |---|---|
-| `list_quests` | Return all active quests, optionally filtered by space |
+| `list_quests` | Return actionable quests (including nearest open occurrence per series), optionally filtered by space |
 | `get_quest` | Return a single quest by id |
-| `create_quest` | Create a quest with title, optional space, due date, repeat rule |
-| `update_quest` | Update any quest field (title, description, status, pinned, due, etc.) |
+| `create_quest` | Create a quest with title, due date, repeat rule, and optional explicit space (defaults to Personal `"1"`) |
+| `update_quest` | Update any quest field (title, description, status, due, repeat, focus timestamps, etc.) |
 | `delete_quest` | Delete a quest |
 | `complete_quest` | Mark a quest completed |
 | `abandon_quest` | Mark a quest abandoned |
 | `list_history` | Return completed and abandoned quests |
-| `get_active_quest` | Return the current focus quest (top pinned or highest priority active) |
+| `get_active_quest` | Return the current Main quest computed from focus events + fallback rules |
 | `list_spaces` | Return all spaces |
 | `create_space` | Create a space |
 | `update_space` | Rename or reorder a space |
@@ -182,6 +191,12 @@ flatpak run com.fini.app
 ## Status
 
 🚧 Early development. Building the MVP.
+
+## Delivery Plan
+
+- **MVP**: Local-first core loop on Linux/Windows/Android with functional parity (`Main` / `History` / `Settings`, reminders, repeating series+occurrences, MCP for daily use)
+- **MVP.1**: LAN pairing + sync (mutual confirmation, encrypted transport, near-real-time replication, offline queue/replay, shared series occurrence behavior)
+- Planning baseline and spec deltas are tracked in `docs/plans/2026-03-21-mvp-baseline.md`
 
 ## Contributing
 

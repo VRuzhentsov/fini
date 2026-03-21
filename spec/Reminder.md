@@ -1,27 +1,26 @@
 # Reminder
 
-A scheduled notification linked to a [[Quest]]. Multiple reminders can be set per quest, each firing independently.
+Scheduled notification linked to a [[Quest]] / [[QuestOccurrence]]. Multiple reminders can exist per quest.
 
 ## Fields
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | integer | Unique identifier |
-| `quest_id` | integer | Parent quest |
-| `type` | enum | `relative` or `absolute` — see [Types](#types) |
-| `mm_offset` | integer \| null | Minutes before quest `due` + `due_time`; used when `type = relative` |
-| `due` | datetime \| null | Exact fire time; used when `type = absolute` |
+| `id` | uuid string | Reminder identifier |
+| `quest_id` | uuid string | Parent quest/occurrence |
+| `type` | enum | `relative` or `absolute` |
+| `mm_offset` | integer \| null | Minutes before `due_at_utc` for `relative` reminders |
+| `due_at_utc` | datetime \| null | Exact trigger time for `absolute` reminders |
+| `created_at` | datetime | |
 
 ## Types
 
-| Value | Behaviour |
+| Value | Behavior |
 |---|---|
-| `relative` | Fires `mm_offset` minutes before the quest's `due` + `due_time`. Requires both to be set on the quest. Automatically adjusts when the quest's due date or time changes. |
-| `absolute` | Fires at the exact `due` datetime stored on the reminder. Independent of the quest's due date. |
+| `relative` | Triggers `mm_offset` minutes before quest `due_at_utc` |
+| `absolute` | Triggers exactly at reminder `due_at_utc` |
 
-### Common relative presets
-
-The UI offers quick-pick options for `mm_offset`:
+## Common relative presets
 
 | Label | mm_offset |
 |---|---|
@@ -30,38 +29,23 @@ The UI offers quick-pick options for `mm_offset`:
 | 1 hour before | 60 |
 | 1 day before | 1440 |
 
-The user can also enter a custom value.
-
 ## Delivery
 
-Notifications are delivered at the OS level — they fire regardless of whether the app is in the foreground, minimized, or closed.
+- Uses OS-level notifications on Android/Linux/Windows/macOS
+- Works with foreground, background, minimized, or closed app
 
-| Platform | Channel |
-|---|---|
-| Android | System notification channel |
-| Linux (Flatpak) | OS notification system |
-| Windows | OS notification system |
-| macOS | OS notification system |
+## Trigger effects
 
-## Content
-
-| Element | Value |
-|---|---|
-| Title | Quest title |
-| Body | Space name, if the quest is assigned to a space |
-
-## Tap action
-
-Tapping the notification brings the app to the foreground and navigates to the quest.
+- If the target quest is already `completed` or `abandoned`, trigger is suppressed.
+- If the target quest is active, reminder trigger can preempt Main quest focus.
+- Reminder preemption is temporary; focus returns to previous valid target after reminder quest resolves.
 
 ## Snooze
 
-The notification offers snooze options: 10 minutes, 30 minutes, 1 hour. Snoozing schedules a new one-off `absolute` reminder at the selected offset and dismisses the current notification.
+- Snooze options: 10m, 30m, 1h
+- Snooze creates a one-off `absolute` reminder for the current occurrence
+- Snooze does not alter repeat cadence or series schedule
 
-## Suppression
+## Permissions
 
-A reminder is not delivered if the quest has already been completed or abandoned by the time it fires.
-
-## Repeating quests
-
-When a repeating quest is completed and the next occurrence is scheduled, all `relative` reminders are automatically re-registered against the new due date. `Absolute` reminders are not carried over.
+If notification permission is denied, reminder metadata remains editable and a subtle visible warning is shown in UI.

@@ -10,13 +10,13 @@ src/
 ├── App.vue                  # Root component — see [[App.md]]
 ├── router/
 │   └── index.ts             # Route definitions
-├── views/                   # Page-level components, one per tab
+├── views/                   # Page-level route components
 ├── stores/                  # Pinia stores, one per domain
 ├── components/
 │   ├── MainView/            # Components specific to MainView
 │   │   ├── ActiveQuestPanel.vue
 │   │   └── NewQuestForm.vue
-│   ├── QuestsView/          # Components specific to QuestsView
+│   ├── QuestsView/          # Transitional/shared list components
 │   │   └── QuestList.vue
 │   ├── ChatInput.vue        # Shared input bar
 │   └── ToastStack.vue       # Global toast notifications
@@ -24,6 +24,8 @@ src/
 ```
 
 View-specific components live in a subfolder named after their view. Shared components sit at the `components/` root.
+
+Current primary tabs are `Main`, `History`, and `Settings`. Active backlog management is part of `Main`.
 
 Each view, component, and store has a companion `.md` spec file.
 

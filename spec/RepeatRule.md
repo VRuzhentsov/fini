@@ -1,6 +1,6 @@
 # RepeatRule
 
-Recurrence rule attached to a [[Quest]] due date. When a quest with a repeat rule is completed, the next occurrence is scheduled automatically.
+Recurrence rule attached to a [[QuestSeries]] (or directly to a [[Quest]] that participates in a series). When an occurrence is completed, the next nearest occurrence is scheduled automatically.
 
 ## Presets
 
@@ -34,3 +34,9 @@ Selected via the "Custom" option in the repeat picker.
 | `never` | Repeats indefinitely |
 | `on_date` | Last occurrence is on or before `end_date` |
 | `after_n` | Stops after `end_after` completions |
+
+## Occurrence generation
+
+- Recurrence evaluation uses UTC period boundaries.
+- Generated occurrences are represented by [[QuestOccurrence]] and surfaced as actionable [[Quest]] records.
+- Active lists should show only the closest unresolved occurrence per series; earlier resolved occurrences stay in history.
