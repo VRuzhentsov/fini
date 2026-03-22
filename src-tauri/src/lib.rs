@@ -3,6 +3,7 @@ mod schema;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use schema::{quests, spaces};
 
 use diesel::prelude::*;
@@ -32,7 +33,7 @@ pub struct Space {
     pub created_at: String,
 }
 
-#[derive(Queryable, Selectable, Serialize, Deserialize)]
+#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
 #[diesel(table_name = quests)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Quest {
@@ -51,6 +52,9 @@ pub struct Quest {
     /// JSON-encoded RepeatRule, or null
     pub repeat_rule: Option<String>,
     pub completed_at: Option<String>,
+    pub set_main_at: Option<String>,
+    pub reminder_triggered_at: Option<String>,
+    pub order_rank: f64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -85,6 +89,7 @@ pub struct CreateQuestInput {
     pub due: Option<String>,
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
+    pub order_rank: Option<f64>,
 }
 
 fn default_priority() -> i64 {
@@ -95,6 +100,115 @@ fn default_space_id() -> String {
 }
 fn default_energy() -> String {
     "medium".to_string()
+}
+
+fn clamp_order_rank(value: f64) -> f64 {
+    value.clamp(-100.0, 100.0)
+}
+
+fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    if let Ok(ts) = DateTime::parse_from_rfc3339(value) {
+        return Some(ts.with_timezone(&Utc));
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    None
+}
+
+fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
+    let due = quest.due.as_deref()?;
+    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
+    let time = match quest.due_time.as_deref() {
+        Some(value) => NaiveTime::parse_from_str(value, "%H:%M")
+            .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M:%S"))
+            .ok()?,
+        None => NaiveTime::from_hms_opt(23, 59, 59)?,
+    };
+    Some(NaiveDateTime::new(date, time).and_utc())
+}
+
+fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
+    parse_due_deadline_utc(quest)
+        .map(|deadline| deadline < *now)
+        .unwrap_or(false)
+}
+
+fn latest_focus_timestamp(quest: &Quest) -> Option<DateTime<Utc>> {
+    [
+        quest.set_main_at.as_deref().and_then(parse_utc_timestamp),
+        quest
+            .reminder_triggered_at
+            .as_deref()
+            .and_then(parse_utc_timestamp),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+}
+
+fn resolve_active_from_loaded(loaded: &[Quest]) -> Option<Quest> {
+    let active: Vec<&Quest> = loaded.iter().filter(|q| q.status == "active").collect();
+    if active.is_empty() {
+        return None;
+    }
+
+    let mut focus_candidates: Vec<(&Quest, DateTime<Utc>)> = active
+        .iter()
+        .filter_map(|quest| latest_focus_timestamp(quest).map(|ts| (*quest, ts)))
+        .collect();
+
+    if !focus_candidates.is_empty() {
+        focus_candidates.sort_by(|(qa, ta), (qb, tb)| tb.cmp(ta).then_with(|| qa.id.cmp(&qb.id)));
+        return Some(focus_candidates[0].0.clone());
+    }
+
+    let now = Utc::now();
+    let mut fallback = active;
+    fallback.sort_by(|a, b| {
+        let a_overdue = is_overdue(a, &now);
+        let b_overdue = is_overdue(b, &now);
+
+        if a_overdue != b_overdue {
+            return b_overdue.cmp(&a_overdue);
+        }
+
+        if (a.order_rank - b.order_rank).abs() > f64::EPSILON {
+            return a
+                .order_rank
+                .partial_cmp(&b.order_rank)
+                .unwrap_or(std::cmp::Ordering::Equal);
+        }
+
+        if a.priority != b.priority {
+            return b.priority.cmp(&a.priority);
+        }
+
+        match (
+            parse_utc_timestamp(&a.created_at),
+            parse_utc_timestamp(&b.created_at),
+        ) {
+            (Some(a_created), Some(b_created)) if a_created != b_created => {
+                a_created.cmp(&b_created)
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => a.created_at.cmp(&b.created_at),
+        }
+        .then_with(|| a.id.cmp(&b.id))
+    });
+
+    Some((*fallback[0]).clone())
+}
+
+pub fn resolve_active_quest(
+    conn: &mut SqliteConnection,
+) -> Result<Option<Quest>, diesel::result::Error> {
+    let loaded: Vec<Quest> = quests::table.select(Quest::as_select()).load(conn)?;
+    Ok(resolve_active_from_loaded(&loaded))
 }
 
 #[derive(Deserialize, AsChangeset)]
@@ -110,6 +224,9 @@ pub struct UpdateQuestInput {
     pub due: Option<String>,
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
+    pub set_main_at: Option<String>,
+    pub reminder_triggered_at: Option<String>,
+    pub order_rank: Option<f64>,
 }
 
 // ── DB setup ──────────────────────────────────────────────────────────────────
@@ -196,24 +313,113 @@ fn delete_space(state: State<DbState>, id: String) -> Result<(), String> {
 #[tauri::command]
 fn get_quests(state: State<DbState>) -> Result<Vec<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    quests::table
+    let mut loaded: Vec<Quest> = quests::table
         .select(Quest::as_select())
-        .order((
-            quests::pinned.desc(),
-            quests::priority.desc(),
-            quests::created_at.desc(),
-        ))
         .load(&mut *conn)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let now = Utc::now();
+    loaded.sort_by(|a, b| {
+        let a_active = a.status == "active";
+        let b_active = b.status == "active";
+        if a_active != b_active {
+            return b_active.cmp(&a_active);
+        }
+
+        if a_active {
+            let a_overdue = is_overdue(a, &now);
+            let b_overdue = is_overdue(b, &now);
+            if a_overdue != b_overdue {
+                return b_overdue.cmp(&a_overdue);
+            }
+
+            if (a.order_rank - b.order_rank).abs() > f64::EPSILON {
+                return a
+                    .order_rank
+                    .partial_cmp(&b.order_rank)
+                    .unwrap_or(std::cmp::Ordering::Equal);
+            }
+
+            if a.priority != b.priority {
+                return b.priority.cmp(&a.priority);
+            }
+            return match (
+                parse_utc_timestamp(&a.created_at),
+                parse_utc_timestamp(&b.created_at),
+            ) {
+                (Some(a_created), Some(b_created)) if a_created != b_created => {
+                    a_created.cmp(&b_created)
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                _ => a.created_at.cmp(&b.created_at),
+            }
+            .then_with(|| a.id.cmp(&b.id));
+        }
+
+        match (
+            parse_utc_timestamp(&a.updated_at),
+            parse_utc_timestamp(&b.updated_at),
+        ) {
+            (Some(a_updated), Some(b_updated)) if a_updated != b_updated => {
+                b_updated.cmp(&a_updated)
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => b.updated_at.cmp(&a.updated_at),
+        }
+        .then_with(|| a.id.cmp(&b.id))
+    });
+
+    Ok(loaded)
 }
 
 #[tauri::command]
 fn create_quest(state: State<DbState>, input: CreateQuestInput) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
+
+    let max_rank = quests::table
+        .select(diesel::dsl::max(quests::order_rank))
+        .first::<Option<f64>>(&mut *conn)
+        .map_err(|e| e.to_string())?
+        .unwrap_or(0.0);
+
+    let payload = CreateQuestInput {
+        order_rank: Some(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
+        ..input
+    };
+
     diesel::insert_into(quests::table)
-        .values(&input)
+        .values(&payload)
         .returning(Quest::as_returning())
         .get_result(&mut *conn)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_active_quest(state: State<DbState>) -> Result<Option<Quest>, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    resolve_active_quest(&mut conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_main_quest(state: State<DbState>, id: String) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let now = utc_now();
+
+    let updated = diesel::update(quests::table.find(&id).filter(quests::status.eq("active")))
+        .set((quests::set_main_at.eq(&now), quests::updated_at.eq(&now)))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Err("cannot set Main on non-active quest".to_string());
+    }
+
+    quests::table
+        .find(&id)
+        .select(Quest::as_select())
+        .first(&mut *conn)
         .map_err(|e| e.to_string())
 }
 
@@ -224,23 +430,37 @@ fn update_quest(
     input: UpdateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let completed_at = input.status.as_deref().map(|s| {
-        if s == "completed" {
-            Some(utc_now())
-        } else {
-            None
-        }
-    });
+    let now = utc_now();
+
+    let mut patch = input;
+    let status = patch.status.clone();
+
+    if let Some(rank) = patch.order_rank {
+        patch.order_rank = Some(clamp_order_rank(rank));
+    }
+
+    if status.as_deref() == Some("active") && patch.set_main_at.is_none() {
+        patch.set_main_at = Some(now.clone());
+    }
+
     diesel::update(quests::table.find(&id))
-        .set((&input, quests::updated_at.eq(utc_now())))
+        .set((&patch, quests::updated_at.eq(&now)))
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
-    if let Some(val) = completed_at {
+
+    let completed_at_update = match status.as_deref() {
+        Some("completed") => Some(Some(now)),
+        Some("active") | Some("abandoned") => Some(None),
+        _ => None,
+    };
+
+    if let Some(val) = completed_at_update {
         diesel::update(quests::table.find(&id))
             .set(quests::completed_at.eq(val))
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
     }
+
     quests::table
         .find(&id)
         .select(Quest::as_select())
@@ -288,7 +508,9 @@ pub fn run() {
             update_space,
             delete_space,
             get_quests,
+            get_active_quest,
             create_quest,
+            set_main_quest,
             update_quest,
             delete_quest,
         ])
@@ -318,6 +540,13 @@ mod tests {
             && value.as_bytes()[23] == b'-'
     }
 
+    #[test]
+    fn order_rank_is_clamped_to_signed_100() {
+        assert_eq!(clamp_order_rank(150.0), 100.0);
+        assert_eq!(clamp_order_rank(-150.0), -100.0);
+        assert_eq!(clamp_order_rank(42.5), 42.5);
+    }
+
     fn execute_sql_script(conn: &mut SqliteConnection, script: &str) {
         for statement in script.split(';') {
             let sql = statement.trim();
@@ -328,6 +557,35 @@ mod tests {
                 .execute(conn)
                 .expect("execute SQL statement from script");
         }
+    }
+
+    fn insert_active_quest(
+        conn: &mut SqliteConnection,
+        title: &str,
+        priority: i64,
+        created_at: &str,
+        due: Option<&str>,
+        due_time: Option<&str>,
+    ) -> String {
+        diesel::insert_into(quests::table)
+            .values((
+                quests::space_id.eq("1"),
+                quests::title.eq(title),
+                quests::status.eq("active"),
+                quests::priority.eq(priority),
+                quests::due.eq(due.map(str::to_string)),
+                quests::due_time.eq(due_time.map(str::to_string)),
+                quests::created_at.eq(created_at),
+                quests::updated_at.eq(created_at),
+            ))
+            .execute(conn)
+            .expect("insert test active quest");
+
+        quests::table
+            .filter(quests::title.eq(title))
+            .select(quests::id)
+            .first(conn)
+            .expect("load inserted quest id")
     }
 
     #[test]
@@ -453,6 +711,261 @@ mod tests {
         assert_eq!(ids.len(), 1, "must have exactly one created quest");
         let id = &ids[0];
         assert!(is_uuid_like(id), "quest id must look like UUID");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn manual_set_main_overrides_fallback_selection() {
+        let db_path = temp_db_path("manual-set-main-overrides-fallback-selection");
+        let mut conn = open_db_at_path(&db_path);
+
+        let low_priority_id = insert_active_quest(
+            &mut conn,
+            "manual-main-low",
+            1,
+            "2026-03-01T10:00:00Z",
+            None,
+            None,
+        );
+        let high_priority_id = insert_active_quest(
+            &mut conn,
+            "manual-main-high",
+            4,
+            "2026-03-02T10:00:00Z",
+            None,
+            None,
+        );
+
+        let before = resolve_active_quest(&mut conn)
+            .expect("resolve before set-main")
+            .expect("must return active quest");
+        assert_eq!(
+            before.id, high_priority_id,
+            "without overrides, fallback should pick higher priority"
+        );
+
+        diesel::update(quests::table.find(&low_priority_id))
+            .set(quests::set_main_at.eq("2026-03-03T12:00:00Z"))
+            .execute(&mut conn)
+            .expect("set manual main timestamp");
+
+        let after = resolve_active_quest(&mut conn)
+            .expect("resolve after set-main")
+            .expect("must return active quest");
+        assert_eq!(
+            after.id, low_priority_id,
+            "manual set-main timestamp must override fallback ordering"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn reminder_preemption_unwinds_after_resolution() {
+        let db_path = temp_db_path("reminder-preemption-unwinds-after-resolution");
+        let mut conn = open_db_at_path(&db_path);
+
+        let manual_id = insert_active_quest(
+            &mut conn,
+            "manual-main",
+            2,
+            "2026-03-01T10:00:00Z",
+            None,
+            None,
+        );
+        let reminder_id = insert_active_quest(
+            &mut conn,
+            "reminder-main",
+            2,
+            "2026-03-01T11:00:00Z",
+            None,
+            None,
+        );
+
+        diesel::update(quests::table.find(&manual_id))
+            .set(quests::set_main_at.eq("2026-03-05T09:00:00Z"))
+            .execute(&mut conn)
+            .expect("set manual override");
+
+        let before_preempt = resolve_active_quest(&mut conn)
+            .expect("resolve before reminder")
+            .expect("must return active quest");
+        assert_eq!(
+            before_preempt.id, manual_id,
+            "manual override should be active before reminder"
+        );
+
+        diesel::update(quests::table.find(&reminder_id))
+            .set(quests::reminder_triggered_at.eq("2026-03-05T09:30:00Z"))
+            .execute(&mut conn)
+            .expect("set reminder override");
+
+        let preempted = resolve_active_quest(&mut conn)
+            .expect("resolve during reminder")
+            .expect("must return active quest");
+        assert_eq!(
+            preempted.id, reminder_id,
+            "latest reminder timestamp should preempt manual Main"
+        );
+
+        diesel::update(quests::table.find(&reminder_id))
+            .set(quests::status.eq("completed"))
+            .execute(&mut conn)
+            .expect("resolve reminder quest by completion");
+
+        let unwound = resolve_active_quest(&mut conn)
+            .expect("resolve after reminder completion")
+            .expect("must return active quest");
+        assert_eq!(
+            unwound.id, manual_id,
+            "after reminder quest resolves, Main should unwind to previous valid override"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn fallback_order_is_overdue_then_priority_then_oldest() {
+        let db_path = temp_db_path("fallback-order-overdue-priority-oldest");
+        let mut conn = open_db_at_path(&db_path);
+
+        let overdue_low = insert_active_quest(
+            &mut conn,
+            "overdue-low",
+            1,
+            "2026-03-01T08:00:00Z",
+            Some("2000-01-01"),
+            None,
+        );
+        let overdue_urgent = insert_active_quest(
+            &mut conn,
+            "overdue-urgent",
+            4,
+            "2026-03-02T08:00:00Z",
+            Some("2000-01-02"),
+            None,
+        );
+        let future_urgent = insert_active_quest(
+            &mut conn,
+            "future-urgent",
+            4,
+            "2026-03-03T08:00:00Z",
+            Some("2999-01-01"),
+            None,
+        );
+
+        let first = resolve_active_quest(&mut conn)
+            .expect("resolve with mixed overdue state")
+            .expect("must return active quest");
+        assert_eq!(
+            first.id, overdue_urgent,
+            "among overdue quests, higher priority should win"
+        );
+
+        diesel::update(quests::table.find(&overdue_urgent))
+            .set(quests::status.eq("completed"))
+            .execute(&mut conn)
+            .expect("complete overdue urgent quest");
+
+        let second = resolve_active_quest(&mut conn)
+            .expect("resolve after completing overdue urgent")
+            .expect("must return active quest");
+        assert_eq!(
+            second.id, overdue_low,
+            "remaining overdue quest should still beat non-overdue urgent quest"
+        );
+
+        diesel::update(quests::table.find(&overdue_low))
+            .set(quests::status.eq("completed"))
+            .execute(&mut conn)
+            .expect("complete overdue low quest");
+
+        let third = resolve_active_quest(&mut conn)
+            .expect("resolve after clearing overdue quests")
+            .expect("must return active quest");
+        assert_eq!(
+            third.id, future_urgent,
+            "when no overdue quests remain, highest priority fallback should win"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn fallback_uses_rank_before_priority() {
+        let db_path = temp_db_path("fallback-uses-rank-before-priority");
+        let mut conn = open_db_at_path(&db_path);
+
+        let lower_rank_lower_priority = insert_active_quest(
+            &mut conn,
+            "rank-first-low-priority",
+            1,
+            "2026-03-01T08:00:00Z",
+            None,
+            None,
+        );
+        let higher_rank_higher_priority = insert_active_quest(
+            &mut conn,
+            "rank-first-high-priority",
+            4,
+            "2026-03-01T09:00:00Z",
+            None,
+            None,
+        );
+
+        diesel::update(quests::table.find(&lower_rank_lower_priority))
+            .set(quests::order_rank.eq(-50.0))
+            .execute(&mut conn)
+            .expect("set lower rank");
+        diesel::update(quests::table.find(&higher_rank_higher_priority))
+            .set(quests::order_rank.eq(50.0))
+            .execute(&mut conn)
+            .expect("set higher rank");
+
+        let winner = resolve_active_quest(&mut conn)
+            .expect("resolve active after rank updates")
+            .expect("must return active quest");
+
+        assert_eq!(
+            winner.id, lower_rank_lower_priority,
+            "rank ordering must beat priority when no overdue or focus overrides exist"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn fallback_uses_oldest_created_at_on_tie() {
+        let db_path = temp_db_path("fallback-uses-oldest-created-at-on-tie");
+        let mut conn = open_db_at_path(&db_path);
+
+        let oldest = insert_active_quest(
+            &mut conn,
+            "tie-oldest",
+            3,
+            "2026-03-01T08:00:00Z",
+            None,
+            None,
+        );
+        let newest = insert_active_quest(
+            &mut conn,
+            "tie-newest",
+            3,
+            "2026-03-02T08:00:00Z",
+            None,
+            None,
+        );
+
+        let winner = resolve_active_quest(&mut conn)
+            .expect("resolve tie on fallback")
+            .expect("must return active quest");
+
+        assert_eq!(
+            winner.id, oldest,
+            "with equal overdue and priority, oldest created_at should win"
+        );
+        assert_ne!(winner.id, newest);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -647,6 +1160,27 @@ mod tests {
         )
         .execute(&mut conn)
         .expect("create spaces table for simulated v4 state");
+
+        diesel::sql_query(
+            "CREATE TABLE quests (
+                id TEXT PRIMARY KEY NOT NULL,
+                space_id TEXT NOT NULL DEFAULT '1' REFERENCES spaces(id) ON DELETE SET DEFAULT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                energy TEXT NOT NULL DEFAULT 'medium',
+                priority INTEGER NOT NULL DEFAULT 1,
+                pinned BOOLEAN NOT NULL DEFAULT 0,
+                due TEXT,
+                due_time TEXT,
+                repeat_rule TEXT,
+                completed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&mut conn)
+        .expect("create quests table for simulated v4 state");
 
         diesel::sql_query(
             "CREATE TABLE __diesel_schema_migrations (

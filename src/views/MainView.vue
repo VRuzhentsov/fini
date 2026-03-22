@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { onMounted } from "vue";
 import { useQuestStore } from "../stores/quest";
 import ActiveQuestPanel from "../components/MainView/ActiveQuestPanel.vue";
 import NewQuestForm from "../components/MainView/NewQuestForm.vue";
 
 const store = useQuestStore();
-const activeQuest = computed(() => store.quests.find((q) => q.status === "active") ?? null);
 
 onMounted(() => store.fetchQuests());
 </script>
@@ -15,7 +14,7 @@ onMounted(() => store.fetchQuests());
     <div v-if="store.error" class="text-error text-sm">{{ store.error }}</div>
 
     <section>
-      <ActiveQuestPanel v-if="activeQuest" :quest="activeQuest" />
+      <ActiveQuestPanel v-if="store.activeQuest" :quest="store.activeQuest" />
       <p v-else class="text-sm opacity-40">No active quest.</p>
     </section>
 

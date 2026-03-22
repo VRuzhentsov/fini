@@ -12,6 +12,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    resolve_active_quest,
     schema::{quests, spaces},
     CreateQuestInput, CreateSpaceInput, Quest, Space, UpdateQuestInput,
 };
@@ -73,6 +74,11 @@ pub struct UpdateQuestParams {
     pub due: Option<String>,
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
+    pub order_rank: Option<f64>,
+    #[schemars(description = "Set this quest as Main now")]
+    pub set_main: Option<bool>,
+    #[schemars(description = "Mark reminder-triggered focus now")]
+    pub trigger_reminder_focus: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -122,11 +128,7 @@ impl FiniServer {
         let mut query = quests::table
             .select(Quest::as_select())
             .filter(quests::status.eq(status))
-            .order((
-                quests::pinned.desc(),
-                quests::priority.desc(),
-                quests::created_at.desc(),
-            ))
+            .order(quests::order_rank.asc())
             .into_boxed();
         if let Some(sid) = p.space_id {
             query = query.filter(quests::space_id.eq(sid));
@@ -153,22 +155,10 @@ impl FiniServer {
         )]))
     }
 
-    #[tool(
-        description = "Get the current focus quest (top pinned or highest priority active quest)."
-    )]
+    #[tool(description = "Get the current Main quest from focus events + fallback rules.")]
     async fn get_active_quest(&self) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
-        let quest = quests::table
-            .select(Quest::as_select())
-            .filter(quests::status.eq("active"))
-            .order((
-                quests::pinned.desc(),
-                quests::priority.desc(),
-                quests::created_at.desc(),
-            ))
-            .first(&mut *conn)
-            .optional()
-            .map_err(db_err)?;
+        let quest = resolve_active_quest(&mut conn).map_err(db_err)?;
         match quest {
             Some(q) => Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&q).unwrap(),
@@ -194,6 +184,7 @@ impl FiniServer {
             due: p.due,
             due_time: p.due_time,
             repeat_rule: p.repeat_rule,
+            order_rank: None,
         };
         let quest: Quest = diesel::insert_into(quests::table)
             .values(&input)
@@ -212,8 +203,7 @@ impl FiniServer {
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let now = crate::utc_now();
-        let set_completed_at = p.status.as_deref() == Some("completed");
-        let input = UpdateQuestInput {
+        let mut input = UpdateQuestInput {
             space_id: p.space_id,
             title: p.title,
             description: p.description,
@@ -224,14 +214,34 @@ impl FiniServer {
             due: p.due,
             due_time: p.due_time,
             repeat_rule: p.repeat_rule,
+            order_rank: p.order_rank,
+            set_main_at: None,
+            reminder_triggered_at: None,
         };
+
+        if p.set_main == Some(true) || input.status.as_deref() == Some("active") {
+            input.set_main_at = Some(now.clone());
+        }
+        if p.trigger_reminder_focus == Some(true) {
+            input.reminder_triggered_at = Some(now.clone());
+        }
+
+        let status = input.status.clone();
+
         diesel::update(quests::table.find(&p.id))
             .set((&input, quests::updated_at.eq(&now)))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        if set_completed_at {
+
+        let completed_at_update = match status.as_deref() {
+            Some("completed") => Some(Some(now.clone())),
+            Some("active") | Some("abandoned") => Some(None),
+            _ => None,
+        };
+
+        if let Some(value) = completed_at_update {
             diesel::update(quests::table.find(&p.id))
-                .set(quests::completed_at.eq(&now))
+                .set(quests::completed_at.eq(value))
                 .execute(&mut *conn)
                 .map_err(db_err)?;
         }

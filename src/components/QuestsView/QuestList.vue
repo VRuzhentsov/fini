@@ -13,7 +13,7 @@ import {
 } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
 
-defineProps<{ quests: Quest[] }>();
+const props = defineProps<{ quests: Quest[] }>();
 const store = useQuestStore();
 
 // ── Expand / collapse ─────────────────────────────────────────────────────────
@@ -30,8 +30,8 @@ async function completeQuest(id: string) {
   await store.updateQuest(id, { status: "completed" });
 }
 
-async function togglePin(quest: Quest) {
-  await store.updateQuest(quest.id, { pinned: !quest.pinned });
+async function setMain(quest: Quest) {
+  await store.setMainQuest(quest.id);
 }
 
 async function onTitleBlur(quest: Quest, e: Event) {
@@ -52,7 +52,7 @@ async function onDescBlur(quest: Quest, e: Event) {
 // ── History actions ───────────────────────────────────────────────────────────
 
 async function restore(id: string) {
-  await store.updateQuest(id, { status: "active", pinned: true });
+  await store.updateQuest(id, { status: "active" });
 }
 
 // ── Priority ──────────────────────────────────────────────────────────────────
@@ -179,12 +179,16 @@ function formatTimestamp(quest: Quest): string {
 
 <template>
   <ul class="flex flex-col gap-1">
-    <li v-for="quest in quests" :key="quest.id">
+    <li
+      v-for="quest in quests"
+      :key="quest.id"
+      class="quest-row"
+    >
 
       <!-- Collapsed row -->
       <div
         v-if="expandedId !== quest.id"
-        class="flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer hover:bg-base-200 transition-colors"
+        class="quest-row-surface flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer hover:bg-base-200 transition-colors select-none"
         @click="toggle(quest.id)"
       >
         <!-- History: checked checkbox restores; Active: unchecked completes -->
@@ -243,10 +247,10 @@ function formatTimestamp(quest: Quest): string {
             <button
               v-else
               class="btn btn-ghost btn-xs btn-square"
-              :class="quest.pinned ? '' : 'opacity-30'"
+              :class="store.activeQuest?.id === quest.id ? '' : 'opacity-30'"
               style="color: oklch(0.85 0.15 85)"
-              @click.stop="togglePin(quest)"
-              title="Pin"
+              @click.stop="setMain(quest)"
+              title="Set Main"
             >
               <ExclamationCircleIcon class="size-5" />
             </button>
@@ -338,3 +342,9 @@ function formatTimestamp(quest: Quest): string {
     </ul>
   </Teleport>
 </template>
+
+<style scoped>
+.quest-row {
+  list-style: none;
+}
+</style>

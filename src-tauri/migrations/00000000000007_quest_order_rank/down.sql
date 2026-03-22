@@ -1,0 +1,2 @@
+-- SQLite does not support dropping columns directly.
+-- Leave order_rank in place on down migration.

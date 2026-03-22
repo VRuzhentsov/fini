@@ -21,6 +21,9 @@ diesel::table! {
         due_time    -> Nullable<Text>,
         repeat_rule -> Nullable<Text>,
         completed_at -> Nullable<Text>,
+        set_main_at -> Nullable<Text>,
+        reminder_triggered_at -> Nullable<Text>,
+        order_rank -> Double,
         created_at  -> Text,
         updated_at  -> Text,
     }
