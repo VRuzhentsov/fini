@@ -20,6 +20,7 @@ Actionable unit shown to the user right now. In repeating flows, this is an occu
 | `repeat_rule` | RepeatRule \| null | null | Recurrence settings; see [[RepeatRule]] |
 | `set_main_at` | datetime \| null | null | Last manual "Set Main" timestamp |
 | `reminder_triggered_at` | datetime \| null | null | Last reminder-triggered focus timestamp |
+| `order_rank` | float | `0` | Ordering rank in signed range `-100..100` (lower first) |
 | `completed_at` | datetime \| null | null | Set on completion |
 | `created_at` | datetime | — | Creation timestamp |
 | `updated_at` | datetime | — | Last update timestamp |
@@ -48,8 +49,14 @@ For active quests, latest override timestamp wins. Reminder overrides are tempor
 If no active override exists:
 
 1. Overdue quests first
-2. Higher priority first
-3. Oldest `created_at` first
+2. Lower `order_rank` first
+3. Higher priority first
+4. Oldest `created_at` first
+
+## Ordering notes
+
+- `order_rank` is currently model/API-level ordering metadata.
+- Drag-and-drop rank editing in UI is deferred for now.
 
 ## Due and overdue semantics
 

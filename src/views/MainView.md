@@ -17,9 +17,10 @@ Focus-first workspace. Main shows the current Main quest and also hosts active b
 ### Active backlog
 
 - Shows all active quests below Main quest
-- Default ordering: overdue/priority, then oldest `created_at`
+- Default ordering: overdue, then `order_rank`, then priority, then oldest `created_at`
 - Includes expand/edit controls via [[QuestList]]
 - Each quest has explicit "Set Main" action (manual focus override)
+- Drag-and-drop reorder is currently deferred in UI
 
 ### Quick capture
 
@@ -30,4 +31,4 @@ Focus-first workspace. Main shows the current Main quest and also hosts active b
 - Computed by getter over persisted quest data/events
 - Manual set main and reminder triggers use timestamps
 - Reminder preemption is temporary and unwinds to previous valid target
-- If no active override exists, fallback is overdue > priority > oldest `created_at`
+- If no active override exists, fallback is overdue > `order_rank` > priority > oldest `created_at`

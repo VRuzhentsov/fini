@@ -34,8 +34,13 @@ This document records the design decisions locked during the product interview a
 - Reminder resolution unwinds to previous valid target
 - Fallback priority (when no active override):
   1. Overdue quests
-  2. Priority
-  3. `created_at` oldest first
+  2. Lower `order_rank`
+  3. Priority
+  4. `created_at` oldest first
+
+Backlog ordering note:
+
+- `order_rank` is in the domain/API model; drag-and-drop editing in the UI is deferred.
 
 ## Domain decisions
 
