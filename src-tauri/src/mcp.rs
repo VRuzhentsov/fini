@@ -3,18 +3,17 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use diesel::prelude::*;
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    schemars,
-    tool, tool_handler, tool_router,
+    schemars, tool, tool_handler, tool_router,
     transport::stdio,
+    ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CreateQuestInput, CreateSpaceInput, Quest, Space, UpdateQuestInput,
     schema::{quests, spaces},
+    CreateQuestInput, CreateSpaceInput, Quest, Space, UpdateQuestInput,
 };
 
 // ── Server ─────────────────────────────────────────────────────────────────────
@@ -39,13 +38,13 @@ impl FiniServer {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct IdParam {
-    pub id: i64,
+    pub id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ListQuestsParams {
     #[schemars(description = "Filter by space id (optional)")]
-    pub space_id: Option<i64>,
+    pub space_id: Option<String>,
     #[schemars(description = "Quest status: 'active' (default), 'completed', or 'abandoned'")]
     pub status: Option<String>,
 }
@@ -54,7 +53,7 @@ pub struct ListQuestsParams {
 pub struct CreateQuestParams {
     pub title: String,
     #[schemars(description = "Space id (optional, defaults to Personal)")]
-    pub space_id: Option<i64>,
+    pub space_id: Option<String>,
     pub description: Option<String>,
     #[schemars(description = "ISO date string e.g. 2026-03-20")]
     pub due: Option<String>,
@@ -64,12 +63,12 @@ pub struct CreateQuestParams {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct UpdateQuestParams {
-    pub id: i64,
+    pub id: String,
     pub title: Option<String>,
     pub description: Option<String>,
     #[schemars(description = "Quest status: 'active', 'completed', or 'abandoned'")]
     pub status: Option<String>,
-    pub space_id: Option<i64>,
+    pub space_id: Option<String>,
     pub pinned: Option<bool>,
     pub due: Option<String>,
     pub due_time: Option<String>,
@@ -83,14 +82,17 @@ pub struct CreateSpaceParams {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct UpdateSpaceParams {
-    pub id: i64,
+    pub id: String,
     pub name: Option<String>,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 fn db_err(e: diesel::result::Error) -> McpError {
-    McpError::internal_error("db_error", Some(serde_json::json!({ "error": e.to_string() })))
+    McpError::internal_error(
+        "db_error",
+        Some(serde_json::json!({ "error": e.to_string() })),
+    )
 }
 
 fn quests_to_text(quests: &[Quest]) -> String {
@@ -108,7 +110,9 @@ fn quests_to_text(quests: &[Quest]) -> String {
 
 #[tool_router]
 impl FiniServer {
-    #[tool(description = "List quests. Defaults to active. Pass status='completed' or 'abandoned' for history.")]
+    #[tool(
+        description = "List quests. Defaults to active. Pass status='completed' or 'abandoned' for history."
+    )]
     async fn list_quests(
         &self,
         Parameters(p): Parameters<ListQuestsParams>,
@@ -128,7 +132,9 @@ impl FiniServer {
             query = query.filter(quests::space_id.eq(sid));
         }
         let result = query.load(&mut *conn).map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(quests_to_text(&result))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            quests_to_text(&result),
+        )]))
     }
 
     #[tool(description = "Get a single quest by id.")]
@@ -138,7 +144,7 @@ impl FiniServer {
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let quest = quests::table
-            .find(p.id)
+            .find(&p.id)
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
@@ -147,7 +153,9 @@ impl FiniServer {
         )]))
     }
 
-    #[tool(description = "Get the current focus quest (top pinned or highest priority active quest).")]
+    #[tool(
+        description = "Get the current focus quest (top pinned or highest priority active quest)."
+    )]
     async fn get_active_quest(&self) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let quest = quests::table
@@ -178,7 +186,7 @@ impl FiniServer {
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let input = CreateQuestInput {
-            space_id: p.space_id.or(Some(1)),
+            space_id: p.space_id.unwrap_or_else(|| "1".to_string()),
             title: p.title,
             description: p.description,
             energy: "medium".to_string(),
@@ -217,18 +225,18 @@ impl FiniServer {
             due_time: p.due_time,
             repeat_rule: p.repeat_rule,
         };
-        diesel::update(quests::table.find(p.id))
+        diesel::update(quests::table.find(&p.id))
             .set((&input, quests::updated_at.eq(&now)))
             .execute(&mut *conn)
             .map_err(db_err)?;
         if set_completed_at {
-            diesel::update(quests::table.find(p.id))
+            diesel::update(quests::table.find(&p.id))
                 .set(quests::completed_at.eq(&now))
                 .execute(&mut *conn)
                 .map_err(db_err)?;
         }
         let quest: Quest = quests::table
-            .find(p.id)
+            .find(&p.id)
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
@@ -244,7 +252,7 @@ impl FiniServer {
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let now = crate::utc_now();
-        diesel::update(quests::table.find(p.id))
+        diesel::update(quests::table.find(&p.id))
             .set((
                 quests::status.eq("completed"),
                 quests::completed_at.eq(&now),
@@ -252,7 +260,9 @@ impl FiniServer {
             ))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text("Quest completed.".to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Quest completed.".to_string(),
+        )]))
     }
 
     #[tool(description = "Mark a quest as abandoned.")]
@@ -262,11 +272,13 @@ impl FiniServer {
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let now = crate::utc_now();
-        diesel::update(quests::table.find(p.id))
+        diesel::update(quests::table.find(&p.id))
             .set((quests::status.eq("abandoned"), quests::updated_at.eq(&now)))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text("Quest abandoned.".to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Quest abandoned.".to_string(),
+        )]))
     }
 
     #[tool(description = "Permanently delete a quest.")]
@@ -275,10 +287,12 @@ impl FiniServer {
         Parameters(p): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
-        diesel::delete(quests::table.find(p.id))
+        diesel::delete(quests::table.find(&p.id))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text("Quest deleted.".to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Quest deleted.".to_string(),
+        )]))
     }
 
     #[tool(description = "List completed and abandoned quests (history).")]
@@ -290,7 +304,9 @@ impl FiniServer {
             .order(quests::updated_at.desc())
             .load(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(quests_to_text(&result))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            quests_to_text(&result),
+        )]))
     }
 
     #[tool(description = "List all spaces.")]
@@ -319,7 +335,10 @@ impl FiniServer {
             .count()
             .get_result::<i64>(&mut *conn)
             .unwrap_or(0);
-        let input = CreateSpaceInput { name: p.name, item_order };
+        let input = CreateSpaceInput {
+            name: p.name,
+            item_order,
+        };
         let space: Space = diesel::insert_into(spaces::table)
             .values(&input)
             .returning(Space::as_returning())
@@ -337,13 +356,13 @@ impl FiniServer {
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         if let Some(name) = p.name {
-            diesel::update(spaces::table.find(p.id))
+            diesel::update(spaces::table.find(&p.id))
                 .set(spaces::name.eq(&name))
                 .execute(&mut *conn)
                 .map_err(db_err)?;
         }
         let space: Space = spaces::table
-            .find(p.id)
+            .find(&p.id)
             .select(Space::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
@@ -358,10 +377,12 @@ impl FiniServer {
         Parameters(p): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
-        diesel::delete(spaces::table.find(p.id))
+        diesel::delete(spaces::table.find(&p.id))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text("Space deleted.".to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            "Space deleted.".to_string(),
+        )]))
     }
 }
 
@@ -370,8 +391,9 @@ impl FiniServer {
 #[tool_handler]
 impl ServerHandler for FiniServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("Quest management for Fini. Use tools to read and manage quests and spaces.")
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            "Quest management for Fini. Use tools to read and manage quests and spaces.",
+        )
     }
 }
 

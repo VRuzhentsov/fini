@@ -4,7 +4,7 @@ import { useSpaceStore } from "../stores/space";
 
 const store = useSpaceStore();
 const newName = ref("");
-const editingId = ref<number | null>(null);
+const editingId = ref<string | null>(null);
 const editingName = ref("");
 
 onMounted(() => store.fetchSpaces());
@@ -16,12 +16,12 @@ async function add() {
   newName.value = "";
 }
 
-function startEdit(id: number, name: string) {
+function startEdit(id: string, name: string) {
   editingId.value = id;
   editingName.value = name;
 }
 
-async function confirmEdit(id: number) {
+async function confirmEdit(id: string) {
   const name = editingName.value.trim();
   if (name) await store.updateSpace(id, { name });
   editingId.value = null;
@@ -54,7 +54,7 @@ function cancelEdit() {
         <template v-else>
           <span class="flex-1 font-medium text-sm">{{ space.name }}</span>
           <button class="btn btn-sm btn-ghost" @click="startEdit(space.id, space.name)">Edit</button>
-          <button v-if="space.id !== 1" class="btn btn-sm btn-error btn-outline" @click="store.deleteSpace(space.id)">Delete</button>
+          <button v-if="!['1', '2', '3'].includes(space.id)" class="btn btn-sm btn-error btn-outline" @click="store.deleteSpace(space.id)">Delete</button>
         </template>
       </li>
     </ul>

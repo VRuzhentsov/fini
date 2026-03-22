@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ref } from "vue";
 
 export interface Space {
-  id: number;
+  id: string;
   name: string;
   item_order: number;
   created_at: string;
@@ -35,14 +35,14 @@ export const useSpaceStore = defineStore("space", () => {
     return space;
   }
 
-  async function updateSpace(id: number, patch: { name?: string; item_order?: number }) {
+  async function updateSpace(id: string, patch: { name?: string; item_order?: number }) {
     const space = await invoke<Space>("update_space", { id, input: patch });
     const idx = spaces.value.findIndex((s) => s.id === id);
     if (idx !== -1) spaces.value[idx] = space;
     return space;
   }
 
-  async function deleteSpace(id: number) {
+  async function deleteSpace(id: string) {
     await invoke("delete_space", { id });
     spaces.value = spaces.value.filter((s) => s.id !== id);
   }

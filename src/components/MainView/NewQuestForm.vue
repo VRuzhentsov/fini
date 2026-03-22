@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, onMounted } from "vue";
 import { useQuestStore } from "../../stores/quest";
 import { useSpaceStore } from "../../stores/space";
 import ChatInput from "../ChatInput.vue";
@@ -9,30 +9,24 @@ const spaceStore = useSpaceStore();
 
 const LAST_SPACE_KEY = "lastSpaceId";
 
-const selectedSpaceId = ref<number | null>(null);
+const selectedSpaceId = ref("1");
 
 onMounted(async () => {
   if (!spaceStore.spaces.length) await spaceStore.fetchSpaces();
   const saved = localStorage.getItem(LAST_SPACE_KEY);
-  if (saved) {
-    const id = Number(saved);
-    if (spaceStore.spaces.find((s) => s.id === id)) {
-      selectedSpaceId.value = id;
-      return;
-    }
+  if (saved && spaceStore.spaces.find((s) => s.id === saved)) {
+    selectedSpaceId.value = saved;
+    return;
   }
-  const personal = spaceStore.spaces.find((s) => s.name.toLowerCase() === "personal");
-  selectedSpaceId.value = personal?.id ?? spaceStore.spaces[0]?.id ?? null;
+  selectedSpaceId.value = spaceStore.spaces.find((s) => s.id === "1")?.id ?? spaceStore.spaces[0]?.id ?? "1";
 });
 
 function onSpaceChange() {
-  if (selectedSpaceId.value != null) {
-    localStorage.setItem(LAST_SPACE_KEY, String(selectedSpaceId.value));
-  }
+  localStorage.setItem(LAST_SPACE_KEY, selectedSpaceId.value);
 }
 
 async function onSubmit(text: string) {
-  await questStore.createQuest({ title: text, space_id: selectedSpaceId.value ?? undefined });
+  await questStore.createQuest({ title: text, space_id: selectedSpaceId.value });
 }
 </script>
 

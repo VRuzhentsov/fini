@@ -13,20 +13,20 @@ import {
 } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
 
-const props = defineProps<{ quests: Quest[] }>();
+defineProps<{ quests: Quest[] }>();
 const store = useQuestStore();
 
 // ── Expand / collapse ─────────────────────────────────────────────────────────
 
-const expandedId = ref<number | null>(null);
+const expandedId = ref<string | null>(null);
 
-function toggle(id: number) {
+function toggle(id: string) {
   expandedId.value = expandedId.value === id ? null : id;
 }
 
 // ── Active actions ────────────────────────────────────────────────────────────
 
-async function completeQuest(id: number) {
+async function completeQuest(id: string) {
   await store.updateQuest(id, { status: "completed" });
 }
 
@@ -51,7 +51,7 @@ async function onDescBlur(quest: Quest, e: Event) {
 
 // ── History actions ───────────────────────────────────────────────────────────
 
-async function restore(id: number) {
+async function restore(id: string) {
   await store.updateQuest(id, { status: "active", pinned: true });
 }
 
@@ -80,7 +80,7 @@ async function cycleEnergy(quest: Quest) {
 
 // ── Reminder menu ─────────────────────────────────────────────────────────────
 
-const reminderQuestId = ref<number | null>(null);
+const reminderQuestId = ref<string | null>(null);
 
 async function onReminderSave(
   quest: Quest,
@@ -333,7 +333,7 @@ function formatTimestamp(quest: Quest): string {
       :style="{ top: `${moreMenu.y}px`, right: `${moreMenu.right}px` }"
       @click.stop
     >
-      <li><a @click="menuAction1">{{ history ? 'Make active' : 'Abandon' }}</a></li>
+      <li><a @click="menuAction1">{{ moreMenu?.quest.status !== 'active' ? 'Make active' : 'Abandon' }}</a></li>
       <li><a class="text-error" @click="menuDelete">Delete</a></li>
     </ul>
   </Teleport>

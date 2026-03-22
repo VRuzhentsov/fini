@@ -5,8 +5,8 @@ import { ref } from "vue";
 export type Energy = "low" | "medium" | "high";
 
 export interface Quest {
-  id: number;
-  space_id: number | null;
+  id: string;
+  space_id: string;
   title: string;
   description: string | null;
   status: "active" | "completed" | "abandoned";
@@ -22,7 +22,7 @@ export interface Quest {
 }
 
 export interface CreateQuestInput {
-  space_id?: number | null;
+  space_id?: string;
   title: string;
   description?: string | null;
   energy?: Energy;
@@ -33,7 +33,7 @@ export interface CreateQuestInput {
 }
 
 export interface UpdateQuestInput {
-  space_id?: number | null;
+  space_id?: string;
   title?: string;
   description?: string | null;
   status?: "active" | "completed" | "abandoned";
@@ -68,14 +68,14 @@ export const useQuestStore = defineStore("quest", () => {
     return quest;
   }
 
-  async function updateQuest(id: number, input: UpdateQuestInput) {
+  async function updateQuest(id: string, input: UpdateQuestInput) {
     const quest = await invoke<Quest>("update_quest", { id, input });
     const idx = quests.value.findIndex((q) => q.id === id);
     if (idx !== -1) quests.value[idx] = quest;
     return quest;
   }
 
-  async function deleteQuest(id: number) {
+  async function deleteQuest(id: string) {
     await invoke("delete_quest", { id });
     quests.value = quests.value.filter((q) => q.id !== id);
   }

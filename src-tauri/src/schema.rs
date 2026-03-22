@@ -1,6 +1,6 @@
 diesel::table! {
     spaces (id) {
-        id         -> BigInt,
+        id         -> Text,
         name       -> Text,
         item_order -> BigInt,
         created_at -> Text,
@@ -9,8 +9,8 @@ diesel::table! {
 
 diesel::table! {
     quests (id) {
-        id          -> BigInt,
-        space_id    -> Nullable<BigInt>,
+        id          -> Text,
+        space_id    -> Text,
         title       -> Text,
         description -> Nullable<Text>,
         status      -> Text,
