@@ -110,6 +110,43 @@ Claude Desktop launches `fini mcp` as a subprocess. Both modes share the same SQ
 | `update_space` | Rename or reorder a space |
 | `delete_space` | Delete a space |
 
+### Tool outputs
+
+MCP tools return structured JSON in `structured_content` (preferred) instead of human-formatted text.
+
+`QuestRecord` fields: `id`, `series_id`, `occurrence_id`, `period_key`, `space_id`, `title`, `description`, `status`, `priority`, `energy`, `due`, `due_time`, `due_at_utc`, `repeat_rule`, `set_main_at`, `reminder_triggered_at`, `order_rank`, `completed_at`, `created_at`, `updated_at`.
+
+`SpaceRecord` fields: `id`, `name`, `item_order`, `created_at`.
+
+Example `list_quests` output:
+
+```json
+[
+  {
+    "id": "b0d3c9c6-1e6a-4bd2-9c77-5ef6b01b9e45",
+    "series_id": "b0d3c9c6-1e6a-4bd2-9c77-5ef6b01b9e45",
+    "occurrence_id": "b0d3c9c6-1e6a-4bd2-9c77-5ef6b01b9e45:2026-03-20",
+    "period_key": "2026-03-20",
+    "space_id": "1",
+    "title": "Morning walk",
+    "description": null,
+    "status": "active",
+    "priority": 1,
+    "energy": "medium",
+    "due": "2026-03-20",
+    "due_time": "09:00",
+    "due_at_utc": "2026-03-20T09:00:00Z",
+    "repeat_rule": "daily",
+    "set_main_at": null,
+    "reminder_triggered_at": null,
+    "order_rank": 0,
+    "completed_at": null,
+    "created_at": "2026-03-19T18:00:00Z",
+    "updated_at": "2026-03-19T18:00:00Z"
+  }
+]
+```
+
 ### Usage (Claude Desktop)
 
 Add to `claude_desktop_config.json`:

@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use diesel::prelude::*;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -92,6 +93,38 @@ pub struct UpdateSpaceParams {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct QuestRecord {
+    pub id: String,
+    pub series_id: Option<String>,
+    pub occurrence_id: Option<String>,
+    pub period_key: Option<String>,
+    pub space_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub priority: i64,
+    pub energy: String,
+    pub due: Option<String>,
+    pub due_time: Option<String>,
+    pub due_at_utc: Option<String>,
+    pub repeat_rule: Option<String>,
+    pub set_main_at: Option<String>,
+    pub reminder_triggered_at: Option<String>,
+    pub order_rank: f64,
+    pub completed_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SpaceRecord {
+    pub id: String,
+    pub name: String,
+    pub item_order: i64,
+    pub created_at: String,
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 fn db_err(e: diesel::result::Error) -> McpError {
@@ -101,15 +134,98 @@ fn db_err(e: diesel::result::Error) -> McpError {
     )
 }
 
-fn quests_to_text(quests: &[Quest]) -> String {
-    if quests.is_empty() {
-        return "No quests found.".to_string();
+fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    if let Ok(ts) = DateTime::parse_from_rfc3339(value) {
+        return Some(ts.with_timezone(&Utc));
     }
-    quests
-        .iter()
-        .map(|q| format!("[{}] {} ({})", q.id, q.title, q.status))
-        .collect::<Vec<_>>()
-        .join("\n")
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    None
+}
+
+fn due_at_utc_string(quest: &Quest) -> Option<String> {
+    let due = quest.due.as_deref()?;
+    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
+    let time = match quest.due_time.as_deref() {
+        Some(value) => NaiveTime::parse_from_str(value, "%H:%M")
+            .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M:%S"))
+            .ok()?,
+        None => NaiveTime::from_hms_opt(23, 59, 59)?,
+    };
+    Some(
+        NaiveDateTime::new(date, time)
+            .and_utc()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string(),
+    )
+}
+
+fn period_key_for(quest: &Quest) -> Option<String> {
+    if let Some(due) = quest.due.as_ref() {
+        return Some(due.clone());
+    }
+    parse_utc_timestamp(&quest.created_at)
+        .map(|ts| ts.date_naive().format("%Y-%m-%d").to_string())
+}
+
+fn repeat_rule_active(rule: Option<&str>) -> bool {
+    let Some(value) = rule else {
+        return false;
+    };
+    let trimmed = value.trim();
+    !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("none")
+}
+
+fn occurrence_fields(quest: &Quest) -> (Option<String>, Option<String>, Option<String>) {
+    if !repeat_rule_active(quest.repeat_rule.as_deref()) {
+        return (None, None, None);
+    }
+    let series_id = Some(quest.id.clone());
+    let period_key = period_key_for(quest);
+    let occurrence_id = match period_key.as_deref() {
+        Some(key) => Some(format!("{}:{}", quest.id, key)),
+        None => Some(quest.id.clone()),
+    };
+    (series_id, occurrence_id, period_key)
+}
+
+fn quest_to_record(quest: &Quest) -> QuestRecord {
+    let (series_id, occurrence_id, period_key) = occurrence_fields(quest);
+    QuestRecord {
+        id: quest.id.clone(),
+        series_id,
+        occurrence_id,
+        period_key,
+        space_id: quest.space_id.clone(),
+        title: quest.title.clone(),
+        description: quest.description.clone(),
+        status: quest.status.clone(),
+        priority: quest.priority,
+        energy: quest.energy.clone(),
+        due: quest.due.clone(),
+        due_time: quest.due_time.clone(),
+        due_at_utc: due_at_utc_string(quest),
+        repeat_rule: quest.repeat_rule.clone(),
+        set_main_at: quest.set_main_at.clone(),
+        reminder_triggered_at: quest.reminder_triggered_at.clone(),
+        order_rank: quest.order_rank,
+        completed_at: quest.completed_at.clone(),
+        created_at: quest.created_at.clone(),
+        updated_at: quest.updated_at.clone(),
+    }
+}
+
+fn space_to_record(space: &Space) -> SpaceRecord {
+    SpaceRecord {
+        id: space.id.clone(),
+        name: space.name.clone(),
+        item_order: space.item_order,
+        created_at: space.created_at.clone(),
+    }
 }
 
 // ── Tools ──────────────────────────────────────────────────────────────────────
@@ -134,9 +250,10 @@ impl FiniServer {
             query = query.filter(quests::space_id.eq(sid));
         }
         let result = query.load(&mut *conn).map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            quests_to_text(&result),
-        )]))
+        let records: Vec<QuestRecord> = result.iter().map(quest_to_record).collect();
+        Ok(CallToolResult::structured(
+            serde_json::to_value(records).unwrap(),
+        ))
     }
 
     #[tool(description = "Get a single quest by id.")]
@@ -150,9 +267,9 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&quest).unwrap(),
-        )]))
+        Ok(CallToolResult::structured(
+            serde_json::to_value(quest_to_record(&quest)).unwrap(),
+        ))
     }
 
     #[tool(description = "Get the current Main quest from focus events + fallback rules.")]
@@ -160,12 +277,10 @@ impl FiniServer {
         let mut conn = self.db.lock().unwrap();
         let quest = resolve_active_quest(&mut conn).map_err(db_err)?;
         match quest {
-            Some(q) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&q).unwrap(),
-            )])),
-            None => Ok(CallToolResult::success(vec![Content::text(
-                "No active quest.".to_string(),
-            )])),
+            Some(q) => Ok(CallToolResult::structured(
+                serde_json::to_value(quest_to_record(&q)).unwrap(),
+            )),
+            None => Ok(CallToolResult::structured(serde_json::Value::Null)),
         }
     }
 
@@ -191,9 +306,9 @@ impl FiniServer {
             .returning(Quest::as_returning())
             .get_result(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&quest).unwrap(),
-        )]))
+        Ok(CallToolResult::structured(
+            serde_json::to_value(quest_to_record(&quest)).unwrap(),
+        ))
     }
 
     #[tool(description = "Update a quest. Only provided fields are changed.")]
@@ -250,9 +365,9 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&quest).unwrap(),
-        )]))
+        Ok(CallToolResult::structured(
+            serde_json::to_value(quest_to_record(&quest)).unwrap(),
+        ))
     }
 
     #[tool(description = "Mark a quest as completed.")]
@@ -270,9 +385,14 @@ impl FiniServer {
             ))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            "Quest completed.".to_string(),
-        )]))
+        let quest: Quest = quests::table
+            .find(&p.id)
+            .select(Quest::as_select())
+            .first(&mut *conn)
+            .map_err(db_err)?;
+        Ok(CallToolResult::structured(
+            serde_json::to_value(quest_to_record(&quest)).unwrap(),
+        ))
     }
 
     #[tool(description = "Mark a quest as abandoned.")]
@@ -286,9 +406,14 @@ impl FiniServer {
             .set((quests::status.eq("abandoned"), quests::updated_at.eq(&now)))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            "Quest abandoned.".to_string(),
-        )]))
+        let quest: Quest = quests::table
+            .find(&p.id)
+            .select(Quest::as_select())
+            .first(&mut *conn)
+            .map_err(db_err)?;
+        Ok(CallToolResult::structured(
+            serde_json::to_value(quest_to_record(&quest)).unwrap(),
+        ))
     }
 
     #[tool(description = "Permanently delete a quest.")]
@@ -300,9 +425,10 @@ impl FiniServer {
         diesel::delete(quests::table.find(&p.id))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            "Quest deleted.".to_string(),
-        )]))
+        Ok(CallToolResult::structured(serde_json::json!({
+            "deleted": true,
+            "id": p.id,
+        })))
     }
 
     #[tool(description = "List completed and abandoned quests (history).")]
@@ -314,9 +440,10 @@ impl FiniServer {
             .order(quests::updated_at.desc())
             .load(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            quests_to_text(&result),
-        )]))
+        let records: Vec<QuestRecord> = result.iter().map(quest_to_record).collect();
+        Ok(CallToolResult::structured(
+            serde_json::to_value(records).unwrap(),
+        ))
     }
 
     #[tool(description = "List all spaces.")]
@@ -327,12 +454,10 @@ impl FiniServer {
             .order(spaces::item_order.asc())
             .load(&mut *conn)
             .map_err(db_err)?;
-        let text = result
-            .iter()
-            .map(|s| format!("[{}] {}", s.id, s.name))
-            .collect::<Vec<_>>()
-            .join("\n");
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        let records: Vec<SpaceRecord> = result.iter().map(space_to_record).collect();
+        Ok(CallToolResult::structured(
+            serde_json::to_value(records).unwrap(),
+        ))
     }
 
     #[tool(description = "Create a new space.")]
@@ -354,9 +479,9 @@ impl FiniServer {
             .returning(Space::as_returning())
             .get_result(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&space).unwrap(),
-        )]))
+        Ok(CallToolResult::structured(
+            serde_json::to_value(space_to_record(&space)).unwrap(),
+        ))
     }
 
     #[tool(description = "Update a space name.")]
@@ -376,9 +501,9 @@ impl FiniServer {
             .select(Space::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&space).unwrap(),
-        )]))
+        Ok(CallToolResult::structured(
+            serde_json::to_value(space_to_record(&space)).unwrap(),
+        ))
     }
 
     #[tool(description = "Delete a space.")]
@@ -390,9 +515,325 @@ impl FiniServer {
         diesel::delete(spaces::table.find(&p.id))
             .execute(&mut *conn)
             .map_err(db_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            "Space deleted.".to_string(),
-        )]))
+        Ok(CallToolResult::structured(serde_json::json!({
+            "deleted": true,
+            "id": p.id,
+        })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("fini-mcp-{label}-{unique}.db"))
+    }
+
+    fn server_for(label: &str) -> (FiniServer, PathBuf) {
+        let db_path = temp_db_path(label);
+        let server = FiniServer::new(&db_path);
+        (server, db_path)
+    }
+
+    fn json_id(value: &Value) -> String {
+        value
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("id string")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn list_quests_returns_occurrence_fields() {
+        let (server, db_path) = server_for("list-quests-occurrence");
+        {
+            let mut conn = server.db.lock().expect("lock db");
+            diesel::insert_into(quests::table)
+                .values((
+                    quests::space_id.eq("1"),
+                    quests::title.eq("Daily quest"),
+                    quests::status.eq("active"),
+                    quests::due.eq("2026-03-20"),
+                    quests::due_time.eq("09:00"),
+                    quests::repeat_rule.eq("daily"),
+                    quests::created_at.eq("2026-03-20T08:00:00Z"),
+                    quests::updated_at.eq("2026-03-20T08:00:00Z"),
+                ))
+                .execute(&mut *conn)
+                .expect("insert repeating quest");
+        }
+
+        let result = server
+            .list_quests(Parameters(ListQuestsParams {
+                space_id: None,
+                status: None,
+            }))
+            .await
+            .expect("list quests");
+
+        let payload = result
+            .structured_content
+            .expect("structured content");
+        let items = payload.as_array().expect("array payload");
+        assert_eq!(items.len(), 1, "must return one quest");
+
+        let item = &items[0];
+        let id = json_id(item);
+        assert_eq!(item["title"], "Daily quest");
+        assert_eq!(
+            item["series_id"].as_str().expect("series_id string"),
+            id
+        );
+        assert_eq!(item["period_key"], "2026-03-20");
+        assert_eq!(
+            item["occurrence_id"].as_str().expect("occurrence_id string"),
+            format!("{}:2026-03-20", id)
+        );
+        assert_eq!(item["due_at_utc"], "2026-03-20T09:00:00Z");
+        assert_eq!(item["repeat_rule"], "daily");
+
+        drop(server);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn quest_tools_return_structured_payloads() {
+        let (server, db_path) = server_for("quest-tools-structured");
+
+        let created = server
+            .create_quest(Parameters(CreateQuestParams {
+                title: "Create quest".to_string(),
+                space_id: None,
+                description: None,
+                due: Some("2026-03-21".to_string()),
+                due_time: Some("10:00".to_string()),
+                repeat_rule: Some("daily".to_string()),
+            }))
+            .await
+            .expect("create quest");
+
+        let created_value = created
+            .structured_content
+            .expect("created structured content");
+        let created_id = json_id(&created_value);
+
+        let fetched = server
+            .get_quest(Parameters(IdParam {
+                id: created_id.clone(),
+            }))
+            .await
+            .expect("get quest");
+        let fetched_value = fetched
+            .structured_content
+            .expect("get structured content");
+        assert_eq!(json_id(&fetched_value), created_id);
+
+        let updated = server
+            .update_quest(Parameters(UpdateQuestParams {
+                id: created_id.clone(),
+                title: None,
+                description: Some("updated".to_string()),
+                status: None,
+                space_id: None,
+                pinned: None,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                set_main: Some(true),
+                trigger_reminder_focus: None,
+            }))
+            .await
+            .expect("update quest");
+        let updated_value = updated
+            .structured_content
+            .expect("update structured content");
+        assert_eq!(updated_value["description"], "updated");
+
+        let completed = server
+            .complete_quest(Parameters(IdParam {
+                id: created_id.clone(),
+            }))
+            .await
+            .expect("complete quest");
+        let completed_value = completed
+            .structured_content
+            .expect("complete structured content");
+        assert_eq!(completed_value["status"], "completed");
+
+        let abandoned = server
+            .create_quest(Parameters(CreateQuestParams {
+                title: "Abandon quest".to_string(),
+                space_id: None,
+                description: None,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+            }))
+            .await
+            .expect("create quest to abandon");
+        let abandoned_id = json_id(
+            &abandoned
+                .structured_content
+                .expect("abandon created structured content"),
+        );
+        let abandoned_result = server
+            .abandon_quest(Parameters(IdParam {
+                id: abandoned_id.clone(),
+            }))
+            .await
+            .expect("abandon quest");
+        let abandoned_value = abandoned_result
+            .structured_content
+            .expect("abandon structured content");
+        assert_eq!(abandoned_value["status"], "abandoned");
+
+        let delete_target = server
+            .create_quest(Parameters(CreateQuestParams {
+                title: "Delete quest".to_string(),
+                space_id: None,
+                description: None,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+            }))
+            .await
+            .expect("create quest to delete");
+        let delete_id = json_id(
+            &delete_target
+                .structured_content
+                .expect("delete created structured content"),
+        );
+        let deleted = server
+            .delete_quest(Parameters(IdParam { id: delete_id }))
+            .await
+            .expect("delete quest");
+        let deleted_value = deleted
+            .structured_content
+            .expect("delete structured content");
+        assert_eq!(deleted_value["deleted"], true);
+
+        let history = server
+            .list_history()
+            .await
+            .expect("list history");
+        let history_value = history
+            .structured_content
+            .expect("history structured content");
+        let history_items = history_value.as_array().expect("history array");
+        assert!(
+            history_items.iter().any(|item| item["status"] == "completed"),
+            "history should include completed quest"
+        );
+
+        let active = server
+            .create_quest(Parameters(CreateQuestParams {
+                title: "Active quest".to_string(),
+                space_id: None,
+                description: None,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+            }))
+            .await
+            .expect("create active quest");
+        let active_id = json_id(
+            &active
+                .structured_content
+                .expect("active created structured content"),
+        );
+        let _ = server
+            .update_quest(Parameters(UpdateQuestParams {
+                id: active_id.clone(),
+                title: None,
+                description: None,
+                status: None,
+                space_id: None,
+                pinned: None,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                set_main: Some(true),
+                trigger_reminder_focus: None,
+            }))
+            .await
+            .expect("set main on active quest");
+
+        let active_result = server
+            .get_active_quest()
+            .await
+            .expect("get active quest");
+        let active_value = active_result
+            .structured_content
+            .expect("active structured content");
+        assert_eq!(json_id(&active_value), active_id);
+
+        drop(server);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn space_tools_return_structured_payloads() {
+        let (server, db_path) = server_for("space-tools-structured");
+
+        let created = server
+            .create_space(Parameters(CreateSpaceParams {
+                name: "Test Space".to_string(),
+            }))
+            .await
+            .expect("create space");
+        let created_value = created
+            .structured_content
+            .expect("space created structured content");
+        let created_id = json_id(&created_value);
+
+        let listed = server.list_spaces().await.expect("list spaces");
+        let listed_value = listed
+            .structured_content
+            .expect("list spaces structured content");
+        let listed_items = listed_value.as_array().expect("spaces array");
+        assert!(
+            listed_items.iter().any(|item| {
+                item.get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| id == created_id)
+                    .unwrap_or(false)
+            }),
+            "list_spaces should include created space"
+        );
+
+        let updated = server
+            .update_space(Parameters(UpdateSpaceParams {
+                id: created_id.clone(),
+                name: Some("Renamed Space".to_string()),
+            }))
+            .await
+            .expect("update space");
+        let updated_value = updated
+            .structured_content
+            .expect("space updated structured content");
+        assert_eq!(updated_value["name"], "Renamed Space");
+
+        let deleted = server
+            .delete_space(Parameters(IdParam { id: created_id }))
+            .await
+            .expect("delete space");
+        let deleted_value = deleted
+            .structured_content
+            .expect("space deleted structured content");
+        assert_eq!(deleted_value["deleted"], true);
+
+        drop(server);
+        let _ = std::fs::remove_file(db_path);
     }
 }
 
