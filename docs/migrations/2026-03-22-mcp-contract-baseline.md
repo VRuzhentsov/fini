@@ -54,16 +54,16 @@ If `repeat_rule` is null or `"none"`, all occurrence fields are `null`.
 
 ## Tool output changes
 
-- `list_quests` -> `QuestRecord[]` (active by default, optional `status` filter)
+- `list_quests` -> `{ "quests": QuestRecord[] }` (active by default, optional `status` filter)
 - `get_quest` -> `QuestRecord`
 - `create_quest` -> `QuestRecord`
 - `update_quest` -> `QuestRecord`
 - `complete_quest` -> `QuestRecord`
 - `abandon_quest` -> `QuestRecord`
 - `delete_quest` -> `{ "deleted": true, "id": "..." }`
-- `list_history` -> `QuestRecord[]` (completed + abandoned)
+- `list_history` -> `{ "quests": QuestRecord[] }` (completed + abandoned)
 - `get_active_quest` -> `QuestRecord` or `null`
-- `list_spaces` -> `SpaceRecord[]`
+- `list_spaces` -> `{ "spaces": SpaceRecord[] }`
 - `create_space` -> `SpaceRecord`
 - `update_space` -> `SpaceRecord`
 - `delete_space` -> `{ "deleted": true, "id": "..." }`

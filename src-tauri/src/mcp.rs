@@ -251,9 +251,9 @@ impl FiniServer {
         }
         let result = query.load(&mut *conn).map_err(db_err)?;
         let records: Vec<QuestRecord> = result.iter().map(quest_to_record).collect();
-        Ok(CallToolResult::structured(
-            serde_json::to_value(records).unwrap(),
-        ))
+        Ok(CallToolResult::structured(serde_json::json!({
+            "quests": records,
+        })))
     }
 
     #[tool(description = "Get a single quest by id.")]
@@ -441,9 +441,9 @@ impl FiniServer {
             .load(&mut *conn)
             .map_err(db_err)?;
         let records: Vec<QuestRecord> = result.iter().map(quest_to_record).collect();
-        Ok(CallToolResult::structured(
-            serde_json::to_value(records).unwrap(),
-        ))
+        Ok(CallToolResult::structured(serde_json::json!({
+            "quests": records,
+        })))
     }
 
     #[tool(description = "List all spaces.")]
@@ -455,9 +455,9 @@ impl FiniServer {
             .load(&mut *conn)
             .map_err(db_err)?;
         let records: Vec<SpaceRecord> = result.iter().map(space_to_record).collect();
-        Ok(CallToolResult::structured(
-            serde_json::to_value(records).unwrap(),
-        ))
+        Ok(CallToolResult::structured(serde_json::json!({
+            "spaces": records,
+        })))
     }
 
     #[tool(description = "Create a new space.")]
@@ -582,7 +582,10 @@ mod tests {
         let payload = result
             .structured_content
             .expect("structured content");
-        let items = payload.as_array().expect("array payload");
+        let items = payload
+            .get("quests")
+            .and_then(Value::as_array)
+            .expect("quests array payload");
         assert_eq!(items.len(), 1, "must return one quest");
 
         let item = &items[0];
@@ -728,7 +731,10 @@ mod tests {
         let history_value = history
             .structured_content
             .expect("history structured content");
-        let history_items = history_value.as_array().expect("history array");
+        let history_items = history_value
+            .get("quests")
+            .and_then(Value::as_array)
+            .expect("history quests array");
         assert!(
             history_items.iter().any(|item| item["status"] == "completed"),
             "history should include completed quest"
@@ -800,7 +806,10 @@ mod tests {
         let listed_value = listed
             .structured_content
             .expect("list spaces structured content");
-        let listed_items = listed_value.as_array().expect("spaces array");
+        let listed_items = listed_value
+            .get("spaces")
+            .and_then(Value::as_array)
+            .expect("spaces array");
         assert!(
             listed_items.iter().any(|item| {
                 item.get("id")
