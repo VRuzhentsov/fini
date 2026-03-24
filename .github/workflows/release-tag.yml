@@ -228,8 +228,18 @@ jobs:
         run: npm run build
 
   build-linux:
-    name: Build Linux Artifact
-    runs-on: ubuntu-latest
+    name: Build Linux Artifact (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
     needs: quality-gates
     steps:
       - name: Checkout
@@ -263,37 +273,70 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             src-tauri -> target
-          shared-key: release-rust
+          shared-key: release-rust-${{ matrix.rust_target }}
 
       - name: Install npm dependencies
         run: npm ci
 
       - name: Build Linux bundles
-        run: npm run tauri build
+        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm
 
-      - name: Archive Linux bundle
+      - name: Collect Linux release files
         run: |
           set -euo pipefail
-          archive_name="fini-${GITHUB_REF_NAME}-linux-bundle.tar.gz"
-          tar -czf "$archive_name" -C src-tauri/target/release bundle
+          bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          mkdir -p release/linux
+          has_deb="false"
+          has_rpm="false"
+          has_appimage="false"
+
+          while IFS= read -r file; do
+            cp "$file" release/linux/
+            if [ -f "${file}.sig" ]; then
+              cp "${file}.sig" release/linux/
+            fi
+            case "$file" in
+              *.deb) has_deb="true" ;;
+              *.rpm) has_rpm="true" ;;
+              *.AppImage) has_appimage="true" ;;
+            esac
+          done < <(find "$bundle_root" -type f \
+            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \))
+
+          if [ "$has_deb" != "true" ] || [ "$has_rpm" != "true" ] || [ "$has_appimage" != "true" ]; then
+            echo "Expected Linux artifacts (.deb, .rpm, .AppImage) were not all produced" >&2
+            exit 1
+          fi
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-linux
-          path: fini-${{ github.ref_name }}-linux-bundle.tar.gz
+          name: release-linux-${{ matrix.arch }}
+          path: release/linux/*
           if-no-files-found: error
           retention-days: 14
 
   build-windows:
-    name: Build Windows Artifact
-    runs-on: windows-latest
+    name: Build Windows Artifact (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+          - arch: arm64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
     needs: quality-gates
     steps:
       - name: Checkout
@@ -317,31 +360,49 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             src-tauri -> target
-          shared-key: release-rust
+          shared-key: release-rust-${{ matrix.rust_target }}
 
       - name: Install npm dependencies
         run: npm ci
 
       - name: Build Windows bundles
-        run: npm run tauri build
+        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles nsis
 
-      - name: Archive Windows bundle
-        shell: pwsh
+      - name: Collect Windows release files
+        shell: bash
         run: |
-          $archiveName = "fini-${{ github.ref_name }}-windows-bundle.zip"
-          Compress-Archive -Path "src-tauri/target/release/bundle/*" -DestinationPath $archiveName -Force
+          set -euo pipefail
+          bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          mkdir -p release/windows
+
+          found_exe="false"
+          while IFS= read -r file; do
+            cp "$file" release/windows/
+            if [ -f "${file}.sig" ]; then
+              cp "${file}.sig" release/windows/
+            fi
+            found_exe="true"
+          done < <(find "$bundle_root" -type f \
+            -name '*.exe')
+
+          if [ "$found_exe" != "true" ]; then
+            echo "Expected Windows .exe artifacts were not produced" >&2
+            exit 1
+          fi
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-windows
-          path: fini-${{ github.ref_name }}-windows-bundle.zip
+          name: release-windows-${{ matrix.arch }}
+          path: release/windows/*
           if-no-files-found: error
           retention-days: 14
 
@@ -554,35 +615,9 @@ jobs:
       - name: Download built artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: release-assets
           merge-multiple: true
-
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
-
-      - name: Generate SBOM
-        run: syft dir:release-assets -o spdx-json=release-assets/fini-${{ github.ref_name }}.sbom.spdx.json
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3.8.1
-
-      - name: Sign release assets
-        run: |
-          set -euo pipefail
-          for file in release-assets/*; do
-            if [ -f "$file" ] && [[ "$file" != *.sig ]] && [[ "$file" != *.pem ]] && [[ "$file" != *.bundle ]]; then
-              cosign sign-blob --yes \
-                --output-signature "${file}.sig" \
-                --output-certificate "${file}.pem" \
-                --bundle "${file}.bundle" \
-                "$file"
-            fi
-          done
-
-      - name: Generate SHA256 checksums
-        run: |
-          set -euo pipefail
-          find release-assets -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 | sort -z | xargs -0 sha256sum > release-assets/SHA256SUMS.txt
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
@@ -618,35 +653,9 @@ jobs:
       - name: Download built artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: release-*
           path: release-assets
           merge-multiple: true
-
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@v0
-
-      - name: Generate SBOM
-        run: syft dir:release-assets -o spdx-json=release-assets/fini-${{ github.ref_name }}.sbom.spdx.json
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3.8.1
-
-      - name: Sign release assets
-        run: |
-          set -euo pipefail
-          for file in release-assets/*; do
-            if [ -f "$file" ] && [[ "$file" != *.sig ]] && [[ "$file" != *.pem ]] && [[ "$file" != *.bundle ]]; then
-              cosign sign-blob --yes \
-                --output-signature "${file}.sig" \
-                --output-certificate "${file}.pem" \
-                --bundle "${file}.bundle" \
-                "$file"
-            fi
-          done
-
-      - name: Generate SHA256 checksums
-        run: |
-          set -euo pipefail
-          find release-assets -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 | sort -z | xargs -0 sha256sum > release-assets/SHA256SUMS.txt
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
