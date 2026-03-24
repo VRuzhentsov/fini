@@ -14,6 +14,7 @@ This document describes the GitHub Actions release flow configured in this repos
     - `npm run build`
   - Push mode (`main`): runs fast checks (quality gates + Docker cache build).
   - Manual mode (`workflow_dispatch`, `full_matrix=true`): also builds Linux, Windows, and Android artifacts.
+  - Android prep build is optimized to a single `aarch64` APK target.
   - Builds Docker image cache for `ghcr.io/<owner>/fini`.
 
 - `.github/workflows/release-tag.yml`
@@ -25,6 +26,7 @@ This document describes the GitHub Actions release flow configured in this repos
     - tag is signed and annotated
     - matching manual release prep check (`workflow_dispatch`) succeeded on same commit within 24h
   - Re-runs full gates and platform builds.
+  - Android release build is optimized to a single `aarch64` APK target.
   - Builds and publishes Docker image to GHCR (`ghcr.io/<owner>/fini:<tag>`).
   - Publishes release atomically (all platforms must succeed).
   - Stable tags use protected `release` environment approval.

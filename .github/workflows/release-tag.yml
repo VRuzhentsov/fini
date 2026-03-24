@@ -321,6 +321,15 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Restore Android project cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/gen/android/.gradle
+          key: android-project-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/gradle.properties', 'src-tauri/gen/android/settings.gradle', 'src-tauri/gen/android/build.gradle.kts', 'src-tauri/gen/android/app/build.gradle.kts', 'src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties', 'src-tauri/Cargo.lock', 'package-lock.json') }}
+          restore-keys: |
+            android-project-${{ runner.os }}-
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -331,7 +340,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add Android Rust targets
-        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+        run: rustup target add aarch64-linux-android
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
@@ -339,8 +348,8 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build Android bundles
-        run: npm run tauri android build
+      - name: Build Android APK (arm64)
+        run: npm run tauri android build -- --ci --apk --target aarch64
 
       - name: Prepare Android keystore
         env:
