@@ -4,14 +4,16 @@ FROM rust:1.88-bookworm AS builder
 
 WORKDIR /workspace
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libasound2-dev \
-    libwebkit2gtk-4.1-dev \
-    libappindicator3-dev \
-    librsvg2-dev \
-    patchelf \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y --no-install-recommends \
+      libasound2-dev \
+      libwebkit2gtk-4.1-dev \
+      libappindicator3-dev \
+      librsvg2-dev \
+      patchelf \
+      pkg-config; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
 COPY src-tauri/build.rs ./src-tauri/build.rs
@@ -26,13 +28,15 @@ RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fi
 
 FROM ubuntu:24.04 AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libasound2t64 \
-    libgtk-3-0 \
-    libwebkit2gtk-4.1-0 \
-    librsvg2-2 \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y --no-install-recommends --fix-missing \
+      ca-certificates \
+      libasound2t64 \
+      libgtk-3-0 \
+      libwebkit2gtk-4.1-0 \
+      librsvg2-2; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
