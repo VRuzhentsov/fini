@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   actions: read
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -137,8 +138,6 @@ jobs:
 
       - name: Validate required signing secrets
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -146,8 +145,6 @@ jobs:
         run: |
           set -euo pipefail
           required=(
-            COSIGN_PRIVATE_KEY
-            COSIGN_PASSWORD
             ANDROID_KEYSTORE_BASE64
             ANDROID_KEYSTORE_PASSWORD
             ANDROID_KEY_ALIAS
@@ -160,15 +157,18 @@ jobs:
             fi
           done
 
-      - name: Validate cosign key can sign
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      - name: Validate cosign keyless signing
         run: |
           set -euo pipefail
-          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
           printf 'release-sign-check' > probe.txt
-          cosign sign-blob --yes --key cosign.key --output-signature probe.txt.sig probe.txt
+          cosign sign-blob --yes \
+            --output-signature probe.txt.sig \
+            --output-certificate probe.txt.pem \
+            --bundle probe.txt.bundle \
+            probe.txt
+          test -s probe.txt.sig
+          test -s probe.txt.pem
+          test -s probe.txt.bundle
 
   quality-gates:
     name: Quality Gates
@@ -406,15 +406,15 @@ jobs:
         uses: sigstore/cosign-installer@v3.8.1
 
       - name: Sign release assets
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           set -euo pipefail
-          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
           for file in release-assets/*; do
-            if [ -f "$file" ]; then
-              cosign sign-blob --yes --key cosign.key --output-signature "${file}.sig" "$file"
+            if [ -f "$file" ] && [[ "$file" != *.sig ]] && [[ "$file" != *.pem ]] && [[ "$file" != *.bundle ]]; then
+              cosign sign-blob --yes \
+                --output-signature "${file}.sig" \
+                --output-certificate "${file}.pem" \
+                --bundle "${file}.bundle" \
+                "$file"
             fi
           done
 
@@ -469,15 +469,15 @@ jobs:
         uses: sigstore/cosign-installer@v3.8.1
 
       - name: Sign release assets
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           set -euo pipefail
-          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
           for file in release-assets/*; do
-            if [ -f "$file" ]; then
-              cosign sign-blob --yes --key cosign.key --output-signature "${file}.sig" "$file"
+            if [ -f "$file" ] && [[ "$file" != *.sig ]] && [[ "$file" != *.pem ]] && [[ "$file" != *.bundle ]]; then
+              cosign sign-blob --yes \
+                --output-signature "${file}.sig" \
+                --output-certificate "${file}.pem" \
+                --bundle "${file}.bundle" \
+                "$file"
             fi
           done
 

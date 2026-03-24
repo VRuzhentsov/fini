@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: release-dry-run-${{ github.ref }}
@@ -26,8 +27,6 @@ jobs:
 
       - name: Validate required signing secrets
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           RELEASE_TAG_GPG_PUBLIC_KEY: ${{ secrets.RELEASE_TAG_GPG_PUBLIC_KEY }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -36,8 +35,6 @@ jobs:
         run: |
           set -euo pipefail
           required=(
-            COSIGN_PRIVATE_KEY
-            COSIGN_PASSWORD
             RELEASE_TAG_GPG_PUBLIC_KEY
             ANDROID_KEYSTORE_BASE64
             ANDROID_KEYSTORE_PASSWORD
@@ -51,15 +48,18 @@ jobs:
             fi
           done
 
-      - name: Validate cosign key can sign
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      - name: Validate cosign keyless signing
         run: |
           set -euo pipefail
-          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
           printf 'release-dry-run' > probe.txt
-          cosign sign-blob --yes --key cosign.key --output-signature probe.txt.sig probe.txt
+          cosign sign-blob --yes \
+            --output-signature probe.txt.sig \
+            --output-certificate probe.txt.pem \
+            --bundle probe.txt.bundle \
+            probe.txt
+          test -s probe.txt.sig
+          test -s probe.txt.pem
+          test -s probe.txt.bundle
 
   quality-gates:
     name: Quality Gates

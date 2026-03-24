@@ -7,6 +7,7 @@ This document describes the GitHub Actions release flow configured in this repos
 - `.github/workflows/release-dry-run.yml`
   - Runs on every push to `main` and on manual dispatch.
   - Enforces signing-readiness checks.
+  - Validates keyless cosign signing through GitHub OIDC.
   - Runs quality gates:
     - `cargo test --manifest-path src-tauri/Cargo.toml`
     - `cargo check --manifest-path src-tauri/Cargo.toml`
@@ -29,12 +30,15 @@ This document describes the GitHub Actions release flow configured in this repos
 ## Required Repository Secrets
 
 - `RELEASE_TAG_GPG_PUBLIC_KEY`
-- `COSIGN_PRIVATE_KEY`
-- `COSIGN_PASSWORD`
 - `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
+
+## Cosign Signing Mode
+
+- Artifact signatures use keyless cosign (GitHub OIDC).
+- No long-lived cosign private key is stored in repository secrets.
 
 ## Required Repository Configuration
 
@@ -68,7 +72,7 @@ This document describes the GitHub Actions release flow configured in this repos
    - Windows bundle archive
    - Signed Android APK
    - SBOM
-   - cosign signatures
+   - cosign signatures and certificates
    - SHA256 checksums
 
 ## Rollback Policy
