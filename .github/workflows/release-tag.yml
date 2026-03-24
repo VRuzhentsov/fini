@@ -195,11 +195,25 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Sync project version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
+          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: release-rust
 
       - name: Install npm dependencies
         run: npm ci
@@ -237,11 +251,25 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Sync project version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
+          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: release-rust
 
       - name: Install npm dependencies
         run: npm ci
@@ -277,11 +305,25 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Sync project version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
+          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: release-rust
 
       - name: Install npm dependencies
         run: npm ci
@@ -336,6 +378,16 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      - name: Sync project version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
+          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -344,6 +396,10 @@ jobs:
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: release-rust
 
       - name: Install npm dependencies
         run: npm ci
@@ -407,6 +463,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Sync project version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
+          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3

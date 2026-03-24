@@ -1,6 +1,6 @@
 [package]
 name = "fini"
-version = "0.1.0"
+version = "0.1.2"
 description = "Fini"
 authors = []
 edition = "2021"
@@ -38,4 +38,3 @@ tokio = { version = "1", features = ["full"] }
 rmcp = { version = "1.2.0", features = ["server", "transport-io", "macros"] }
 dirs = "5"
 anyhow = "1"
-

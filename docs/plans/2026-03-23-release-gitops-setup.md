@@ -27,6 +27,12 @@ This document describes the GitHub Actions release flow configured in this repos
     - matching manual release prep check (`workflow_dispatch`) succeeded on same commit within 24h
   - Re-runs full gates and platform builds.
   - Android release build is optimized to a single `aarch64` APK target.
+  - Automatically propagates tag version (`vX.Y.Z` / `vX.Y.Z-rc.N`) into:
+    - `package.json`
+    - `package-lock.json`
+    - `src-tauri/Cargo.toml`
+    - `src-tauri/Cargo.lock`
+    - `src-tauri/tauri.conf.json`
   - Builds and publishes Docker image to GHCR (`ghcr.io/<owner>/fini:<tag>`).
   - Publishes release atomically (all platforms must succeed).
   - Stable tags use protected `release` environment approval.
