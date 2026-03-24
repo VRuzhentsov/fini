@@ -187,6 +187,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
+            xdg-utils \
             patchelf
 
       - name: Setup Node.js
@@ -253,6 +254,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
+            xdg-utils \
             patchelf
 
       - name: Setup Node.js
