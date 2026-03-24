@@ -173,17 +173,30 @@ jobs:
           set -euo pipefail
           bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
           mkdir -p prep/linux
+          short_sha="${GITHUB_SHA::7}"
           has_deb="false"
           has_rpm="false"
           has_appimage="false"
 
           while IFS= read -r file; do
-            cp "$file" prep/linux/
             case "$file" in
-              *.deb) has_deb="true" ;;
-              *.rpm) has_rpm="true" ;;
-              *.AppImage) has_appimage="true" ;;
+              *.deb)
+                has_deb="true"
+                output_name="fini-prep-${short_sha}-linux-${{ matrix.arch }}.deb"
+                ;;
+              *.rpm)
+                has_rpm="true"
+                output_name="fini-prep-${short_sha}-linux-${{ matrix.arch }}.rpm"
+                ;;
+              *.AppImage)
+                has_appimage="true"
+                output_name="fini-prep-${short_sha}-linux-${{ matrix.arch }}.AppImage"
+                ;;
+              *)
+                continue
+                ;;
             esac
+            cp "$file" "prep/linux/${output_name}"
           done < <(find "$bundle_root" -type f \
             \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \))
 
@@ -249,12 +262,14 @@ jobs:
           set -euo pipefail
           bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
           mkdir -p prep/windows
+          short_sha="${GITHUB_SHA::7}"
 
           found_exe="false"
           while IFS= read -r file; do
-            cp "$file" prep/windows/
+            output_path="prep/windows/fini-prep-${short_sha}-windows-${{ matrix.arch }}-setup.exe"
+            cp "$file" "$output_path"
             found_exe="true"
-          done < <(find "$bundle_root" -type f -name '*.exe')
+          done < <(find "$bundle_root" -type f -name '*-setup.exe')
 
           if [ "$found_exe" != "true" ]; then
             echo "Expected Windows .exe artifacts were not produced" >&2

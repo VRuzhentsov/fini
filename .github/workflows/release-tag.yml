@@ -301,15 +301,29 @@ jobs:
           has_appimage="false"
 
           while IFS= read -r file; do
-            cp "$file" release/linux/
-            if [ -f "${file}.sig" ]; then
-              cp "${file}.sig" release/linux/
-            fi
             case "$file" in
-              *.deb) has_deb="true" ;;
-              *.rpm) has_rpm="true" ;;
-              *.AppImage) has_appimage="true" ;;
+              *.deb)
+                has_deb="true"
+                output_name="fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.deb"
+                ;;
+              *.rpm)
+                has_rpm="true"
+                output_name="fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.rpm"
+                ;;
+              *.AppImage)
+                has_appimage="true"
+                output_name="fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.AppImage"
+                ;;
+              *)
+                continue
+                ;;
             esac
+
+            output_path="release/linux/${output_name}"
+            cp "$file" "$output_path"
+            if [ -f "${file}.sig" ]; then
+              cp "${file}.sig" "${output_path}.sig"
+            fi
           done < <(find "$bundle_root" -type f \
             \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \))
 
@@ -387,13 +401,14 @@ jobs:
 
           found_exe="false"
           while IFS= read -r file; do
-            cp "$file" release/windows/
+            output_path="release/windows/fini-${GITHUB_REF_NAME}-windows-${{ matrix.arch }}-setup.exe"
+            cp "$file" "$output_path"
             if [ -f "${file}.sig" ]; then
-              cp "${file}.sig" release/windows/
+              cp "${file}.sig" "${output_path}.sig"
             fi
             found_exe="true"
           done < <(find "$bundle_root" -type f \
-            -name '*.exe')
+            -name '*-setup.exe')
 
           if [ "$found_exe" != "true" ]; then
             echo "Expected Windows .exe artifacts were not produced" >&2
@@ -637,6 +652,27 @@ jobs:
         with:
           subject-path: "release-assets/*"
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.8.1
+
+      - name: Generate detached signatures
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-assets/*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release assets found to sign" >&2
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            case "$file" in
+              *.sig) continue ;;
+            esac
+            cosign sign-blob --yes \
+              --output-signature "${file}.sig" \
+              "$file"
+          done
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -674,6 +710,27 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "release-assets/*"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.8.1
+
+      - name: Generate detached signatures
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-assets/*)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No release assets found to sign" >&2
+            exit 1
+          fi
+          for file in "${files[@]}"; do
+            case "$file" in
+              *.sig) continue ;;
+            esac
+            cosign sign-blob --yes \
+              --output-signature "${file}.sig" \
+              "$file"
+          done
 
       - name: Publish GitHub prerelease
         env:
