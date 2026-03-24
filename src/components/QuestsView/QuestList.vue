@@ -13,7 +13,7 @@ import {
 } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
 
-const props = defineProps<{ quests: Quest[] }>();
+defineProps<{ quests: Quest[] }>();
 const store = useQuestStore();
 
 // ── Expand / collapse ─────────────────────────────────────────────────────────
