@@ -28,7 +28,7 @@ FROM ubuntu:24.04 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libasound2 \
+    libasound2t64 \
     libgtk-3-0 \
     libwebkit2gtk-4.1-0 \
     librsvg2-2 \

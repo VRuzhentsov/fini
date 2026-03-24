@@ -252,16 +252,21 @@ jobs:
             echo "Unsigned APK not found" >&2
             exit 1
           fi
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
+          if [ -z "$apksigner_path" ]; then
+            echo "apksigner not found in Android build-tools" >&2
+            exit 1
+          fi
           short_sha="${GITHUB_SHA::7}"
           signed_apk="fini-prep-${short_sha}-android.apk"
-          apksigner sign \
+          "$apksigner_path" sign \
             --ks /tmp/release.keystore \
             --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
             --ks-key-alias "${ANDROID_KEY_ALIAS}" \
             --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
             --out "$signed_apk" \
             "$unsigned_apk"
-          apksigner verify "$signed_apk"
+          "$apksigner_path" verify "$signed_apk"
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
