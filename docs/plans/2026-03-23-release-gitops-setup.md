@@ -12,7 +12,8 @@ This document describes the GitHub Actions release flow configured in this repos
     - `cargo test --manifest-path src-tauri/Cargo.toml`
     - `cargo check --manifest-path src-tauri/Cargo.toml`
     - `npm run build`
-  - Builds Linux, Windows, and Android artifacts.
+  - Push mode (`main`): runs fast checks (quality gates + Docker cache build).
+  - Manual mode (`workflow_dispatch`, `full_matrix=true`): also builds Linux, Windows, and Android artifacts.
   - Builds Docker image cache for `ghcr.io/<owner>/fini`.
 
 - `.github/workflows/release-tag.yml`
@@ -22,7 +23,7 @@ This document describes the GitHub Actions release flow configured in this repos
     - tag actor has maintain/admin permissions
     - tag points to current `origin/main` HEAD
     - tag is signed and annotated
-    - matching release prep check succeeded on same commit within 24h
+    - matching manual release prep check (`workflow_dispatch`) succeeded on same commit within 24h
   - Re-runs full gates and platform builds.
   - Builds and publishes Docker image to GHCR (`ghcr.io/<owner>/fini:<tag>`).
   - Publishes release atomically (all platforms must succeed).
@@ -53,7 +54,7 @@ This document describes the GitHub Actions release flow configured in this repos
 ## Release Procedure
 
 1. Merge release-ready commit to `main`.
-2. Confirm `Release Prep Check` passed for that exact commit in last 24h.
+2. Trigger `Release Prep Check` manually with `full_matrix=true` on that exact commit and confirm it passed within 24h.
 3. Create signed annotated tag:
 
    ```bash

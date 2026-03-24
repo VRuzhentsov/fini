@@ -116,6 +116,7 @@ jobs:
 
             const match = runs.find((run) => {
               if (run.head_sha !== tagCommit) return false;
+              if (run.event !== 'workflow_dispatch') return false;
               if (run.conclusion !== 'success') return false;
               const updatedAt = new Date(run.updated_at).getTime();
               return updatedAt >= cutoffMs;
@@ -315,6 +316,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3

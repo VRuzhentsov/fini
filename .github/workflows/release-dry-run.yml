@@ -5,6 +5,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      full_matrix:
+        description: Run full platform artifact matrix
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -105,6 +111,7 @@ jobs:
 
   build-linux:
     name: Build Linux Artifact
+    if: github.event_name == 'workflow_dispatch' && inputs.full_matrix == true
     runs-on: ubuntu-latest
     needs: quality-gates
     steps:
@@ -156,6 +163,7 @@ jobs:
 
   build-windows:
     name: Build Windows Artifact
+    if: github.event_name == 'workflow_dispatch' && inputs.full_matrix == true
     runs-on: windows-latest
     needs: quality-gates
     steps:
@@ -197,6 +205,7 @@ jobs:
 
   build-android:
     name: Build Android Artifact
+    if: github.event_name == 'workflow_dispatch' && inputs.full_matrix == true
     runs-on: ubuntu-latest
     needs: quality-gates
     steps:
@@ -208,6 +217,7 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
