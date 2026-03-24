@@ -1,4 +1,4 @@
-name: Release Dry Run
+name: Release Prep Check
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: release-dry-run-${{ github.ref }}
+  group: release-prep-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -51,7 +51,7 @@ jobs:
       - name: Validate cosign keyless signing
         run: |
           set -euo pipefail
-          printf 'release-dry-run' > probe.txt
+          printf 'release-prep-check' > probe.txt
           cosign sign-blob --yes \
             --output-signature probe.txt.sig \
             --output-certificate probe.txt.pem \
@@ -143,14 +143,14 @@ jobs:
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA::7}"
-          archive_name="fini-dry-run-${short_sha}-linux-bundle.tar.gz"
+          archive_name="fini-prep-${short_sha}-linux-bundle.tar.gz"
           tar -czf "$archive_name" -C src-tauri/target/release bundle
 
       - name: Upload Linux bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dry-run-linux
-          path: fini-dry-run-*-linux-bundle.tar.gz
+          name: prep-linux
+          path: fini-prep-*-linux-bundle.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -184,14 +184,14 @@ jobs:
         shell: pwsh
         run: |
           $shortSha = "${{ github.sha }}".Substring(0, 7)
-          $archiveName = "fini-dry-run-$shortSha-windows-bundle.zip"
+          $archiveName = "fini-prep-$shortSha-windows-bundle.zip"
           Compress-Archive -Path "src-tauri/target/release/bundle/*" -DestinationPath $archiveName -Force
 
       - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dry-run-windows
-          path: fini-dry-run-*-windows-bundle.zip
+          name: prep-windows
+          path: fini-prep-*-windows-bundle.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -253,7 +253,7 @@ jobs:
             exit 1
           fi
           short_sha="${GITHUB_SHA::7}"
-          signed_apk="fini-dry-run-${short_sha}-android.apk"
+          signed_apk="fini-prep-${short_sha}-android.apk"
           apksigner sign \
             --ks /tmp/release.keystore \
             --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
@@ -266,7 +266,45 @@ jobs:
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dry-run-android
-          path: fini-dry-run-*-android.apk
+          name: prep-android
+          path: fini-prep-*-android.apk
           if-no-files-found: error
           retention-days: 7
+
+  build-docker-image:
+    name: Build Docker Image Cache
+    runs-on: ubuntu-latest
+    needs: quality-gates
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve image name
+        id: image
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            return `ghcr.io/${context.repo.owner.toLowerCase()}/fini`;
+
+      - name: Generate docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.result }}
+          tags: |
+            type=sha,format=long,prefix=prep-
+
+      - name: Build Docker image with cache
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=fini-image
+          cache-to: type=gha,mode=max,scope=fini-image

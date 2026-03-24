@@ -13,6 +13,7 @@ This document describes the GitHub Actions release flow configured in this repos
     - `cargo check --manifest-path src-tauri/Cargo.toml`
     - `npm run build`
   - Builds Linux, Windows, and Android artifacts.
+  - Builds Docker image cache for `ghcr.io/<owner>/fini`.
 
 - `.github/workflows/release-tag.yml`
   - Runs on tag push (`v*`).
@@ -21,8 +22,9 @@ This document describes the GitHub Actions release flow configured in this repos
     - tag actor has maintain/admin permissions
     - tag points to current `origin/main` HEAD
     - tag is signed and annotated
-    - matching dry-run succeeded on same commit within 24h
+    - matching release prep check succeeded on same commit within 24h
   - Re-runs full gates and platform builds.
+  - Builds and publishes Docker image to GHCR (`ghcr.io/<owner>/fini:<tag>`).
   - Publishes release atomically (all platforms must succeed).
   - Stable tags use protected `release` environment approval.
   - RC tags publish as prerelease.
@@ -51,7 +53,7 @@ This document describes the GitHub Actions release flow configured in this repos
 ## Release Procedure
 
 1. Merge release-ready commit to `main`.
-2. Confirm `Release Dry Run` passed for that exact commit in last 24h.
+2. Confirm `Release Prep Check` passed for that exact commit in last 24h.
 3. Create signed annotated tag:
 
    ```bash
@@ -74,6 +76,10 @@ This document describes the GitHub Actions release flow configured in this repos
    - SBOM
    - cosign signatures and certificates
    - SHA256 checksums
+6. Verify container transport:
+   - `ghcr.io/<owner>/fini:<tag>` exists
+   - `latest` tag exists for stable releases
+   - image digest signature and attestation are present
 
 ## Rollback Policy
 
