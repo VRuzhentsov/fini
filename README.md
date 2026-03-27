@@ -218,7 +218,14 @@ npm run tauri build
 
 ```bash
 npm run tauri android build
+
+# optional convenience flow
+make android-sign-debug
+make android-install-debug
+make android-launch
 ```
+
+Signed debug APK path from convenience flow: `bin/fini.apk`
 
 ### Build (Flatpak)
 

@@ -15,6 +15,10 @@ dist-ssr
 # Rust build artifacts
 src-tauri/target/
 
+# Local Android build/sign artifacts
+bin/*.apk
+bin/*.idsig
+
 # Flatpak build artifacts
 flatpak-build/
 .flatpak-builder/

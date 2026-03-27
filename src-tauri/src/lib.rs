@@ -1,9 +1,17 @@
+mod services;
 pub mod mcp;
 mod schema;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use services::device_sync::{
+    device_discovery_snapshot, device_enter_add_mode, device_get_identity, device_leave_add_mode,
+    device_presence_snapshot,
+    device_pair_accept_request, device_pair_acknowledge_request, device_pair_complete_request,
+    device_pair_incoming_requests, device_pair_outgoing_completions, device_pair_outgoing_updates,
+    device_send_pair_request, device_sync_debug_status, DeviceSyncState,
+};
 use schema::{quests, spaces};
 
 use diesel::prelude::*;
@@ -500,6 +508,12 @@ pub fn run() {
         .setup(|app| {
             let conn = open_db(&app.handle());
             app.manage(DbState(Mutex::new(conn)));
+
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir");
+            app.manage(DeviceSyncState::new(&data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -513,6 +527,19 @@ pub fn run() {
             set_main_quest,
             update_quest,
             delete_quest,
+            device_get_identity,
+            device_enter_add_mode,
+            device_leave_add_mode,
+            device_discovery_snapshot,
+            device_presence_snapshot,
+            device_send_pair_request,
+            device_pair_incoming_requests,
+            device_pair_outgoing_updates,
+            device_pair_outgoing_completions,
+            device_pair_accept_request,
+            device_pair_complete_request,
+            device_pair_acknowledge_request,
+            device_sync_debug_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

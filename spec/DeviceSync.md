@@ -46,8 +46,9 @@ Display-name editing is deferred for now.
 
 ## Presence model
 
-- While app is open, paired-device presence can be discovered.
+- While app is open, every device emits a presence heartbeat on LAN (all routes/modes).
 - Presence heartbeat interval (normal mode): 60s.
+- `last_seen_at` is updated from the most recent presence heartbeat/discovery packet for that device.
 - Online indicator:
   - green: seen recently
   - gray: offline

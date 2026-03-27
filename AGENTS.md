@@ -10,3 +10,8 @@
 
 - Do not commit implementation changes until the user has verified they work.
 - Docs and spec changes can be committed freely.
+
+## Command preference
+
+- Prefer `Makefile` targets over raw `npm`/`tauri` commands when possible.
+- See `Makefile` for available targets.

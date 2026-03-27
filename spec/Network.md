@@ -25,6 +25,8 @@ All entry points operate on the same local dataset.
 - Discovery is passive; data exchange starts only after pairing
 - Pairing requires a 6-digit passcode
 - Pairing survives restarts until unpaired
+- Presence heartbeat is always emitted while app is running (every 60s)
+- `last_seen_at` is derived from latest heartbeat/discovery receipt
 
 ## Space selection
 

@@ -551,6 +551,97 @@ mod tests {
             .to_string()
     }
 
+    fn sample_quest() -> Quest {
+        Quest {
+            id: "quest-1".to_string(),
+            space_id: "1".to_string(),
+            title: "Quest".to_string(),
+            description: None,
+            status: "active".to_string(),
+            energy: "medium".to_string(),
+            priority: 1,
+            pinned: false,
+            due: None,
+            due_time: None,
+            repeat_rule: None,
+            completed_at: None,
+            set_main_at: None,
+            reminder_triggered_at: None,
+            order_rank: 0.0,
+            created_at: "2026-03-27T10:30:00Z".to_string(),
+            updated_at: "2026-03-27T10:30:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn repeat_rule_active_handles_none_and_whitespace() {
+        assert!(!repeat_rule_active(None));
+        assert!(!repeat_rule_active(Some("")));
+        assert!(!repeat_rule_active(Some("   ")));
+        assert!(!repeat_rule_active(Some("none")));
+        assert!(!repeat_rule_active(Some("NoNe")));
+        assert!(repeat_rule_active(Some("daily")));
+    }
+
+    #[test]
+    fn due_at_utc_string_supports_default_and_explicit_time() {
+        let mut quest = sample_quest();
+        quest.due = Some("2026-04-01".to_string());
+
+        assert_eq!(
+            due_at_utc_string(&quest),
+            Some("2026-04-01T23:59:59Z".to_string())
+        );
+
+        quest.due_time = Some("09:15".to_string());
+        assert_eq!(
+            due_at_utc_string(&quest),
+            Some("2026-04-01T09:15:00Z".to_string())
+        );
+
+        quest.due_time = Some("09:15:30".to_string());
+        assert_eq!(
+            due_at_utc_string(&quest),
+            Some("2026-04-01T09:15:30Z".to_string())
+        );
+    }
+
+    #[test]
+    fn occurrence_fields_for_repeating_quest_use_due_or_created_date() {
+        let mut quest = sample_quest();
+        quest.repeat_rule = Some("daily".to_string());
+        quest.due = Some("2026-04-02".to_string());
+
+        let (series_id, occurrence_id, period_key) = occurrence_fields(&quest);
+        assert_eq!(series_id, Some("quest-1".to_string()));
+        assert_eq!(period_key, Some("2026-04-02".to_string()));
+        assert_eq!(occurrence_id, Some("quest-1:2026-04-02".to_string()));
+
+        quest.due = None;
+        let (_, fallback_occurrence_id, fallback_period_key) = occurrence_fields(&quest);
+        assert_eq!(fallback_period_key, Some("2026-03-27".to_string()));
+        assert_eq!(
+            fallback_occurrence_id,
+            Some("quest-1:2026-03-27".to_string())
+        );
+
+        quest.created_at = "bad-created-at".to_string();
+        let (_, no_period_occurrence_id, no_period_key) = occurrence_fields(&quest);
+        assert_eq!(no_period_key, None);
+        assert_eq!(no_period_occurrence_id, Some("quest-1".to_string()));
+    }
+
+    #[test]
+    fn occurrence_fields_for_non_repeating_quest_are_empty() {
+        let mut quest = sample_quest();
+        quest.repeat_rule = None;
+
+        let (series_id, occurrence_id, period_key) = occurrence_fields(&quest);
+        assert_eq!(series_id, None);
+        assert_eq!(occurrence_id, None);
+        assert_eq!(period_key, None);
+    }
+
     #[tokio::test]
     async fn list_quests_returns_occurrence_fields() {
         let (server, db_path) = server_for("list-quests-occurrence");

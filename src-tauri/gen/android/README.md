@@ -43,16 +43,32 @@ Output:
 ## Install on a connected device
 
 ```bash
-# Sign with a debug key
-apksigner sign --ks debug.keystore --ks-key-alias androiddebugkey \
-  --ks-pass pass:android --key-pass pass:android \
-  --out fini-debug.apk app-universal-release-unsigned.apk
+# Build (repo root)
+npm run tauri android build
 
-# Install
-adb install fini-debug.apk
+# Sign to a short output path/name
+"$ANDROID_HOME/build-tools/36.1.0/apksigner" sign \
+  --ks "$HOME/.android/debug.keystore" \
+  --ks-key-alias androiddebugkey \
+  --ks-pass pass:android \
+  --key-pass pass:android \
+  --out bin/fini.apk \
+  src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+
+# Install signed APK
+adb install -r bin/fini.apk
 
 # Launch
 adb shell am start -n com.fini.app/.MainActivity
+```
+
+Convenience targets from repo root:
+
+```bash
+make android-build
+make android-sign-debug
+make android-install-debug
+make android-launch
 ```
 
 ## Prerequisites

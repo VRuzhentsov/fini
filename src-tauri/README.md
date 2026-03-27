@@ -42,6 +42,16 @@ See `spec/` at the repo root for domain model specs ([[Quest]], [[spec/Space]], 
 | `update_quest` | `id`, `{ space_id?, title?, description?, status?, priority?, due?, due_time?, repeat_rule?, order_rank?, set_main_at?, reminder_triggered_at? }` (`space_id` updates are non-null) | `Quest` |
 | `delete_quest` | `id`                                                         | —            |
 
+### Device sync (discovery baseline)
+| Command | Input | Returns |
+|---|---|---|
+| `device_get_identity` | — | `{ device_id, hostname }` |
+| `device_enter_add_mode` | — | `()` |
+| `device_leave_add_mode` | — | `()` |
+| `device_discovery_snapshot` | — | `Vec<{ device_id, hostname, addr, last_seen_at }>` |
+| `device_presence_snapshot` | — | `Vec<{ device_id, hostname, addr, last_seen_at }>` |
+| `device_sync_debug_status` | — | debug counters/state |
+
 Notes:
 - Quest ids are UUIDs
 - Space ids are strings (`"1"`, `"2"`, `"3"`, or UUID)
@@ -49,7 +59,7 @@ Notes:
 ## Platform notes
 
 - **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
-- **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
+- **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`; convenience signing output is `bin/fini.apk` via `make android-sign-debug`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
 ## Postponed
