@@ -2,6 +2,8 @@
 
 Fini is local-first and accountless. LAN sync is introduced in **MVP.1**.
 
+Detailed product UX and pairing interaction behavior live in [[DeviceSync]].
+
 ## Goals
 
 - Zero-cloud architecture: no central account service required
@@ -21,7 +23,7 @@ All entry points operate on the same local dataset.
 ## Pairing
 
 - Discovery is passive; data exchange starts only after pairing
-- Pairing uses mutual confirmation code (both devices confirm same code)
+- Pairing requires a 6-digit passcode
 - Pairing survives restarts until unpaired
 
 ## Space selection
@@ -35,6 +37,7 @@ All entry points operate on the same local dataset.
 
 - Push on change + reconnect catch-up
 - Offline edits queue locally and replay on reconnect
+- Offline queue must survive restarts/crashes (durable storage)
 - Conflict resolution: last-write-wins by `updated_at` UTC
 - Deletes replicate globally (tombstone semantics; no resurrection)
 
@@ -59,5 +62,6 @@ All entry points operate on the same local dataset.
 ## Security
 
 - LAN sharing is off by default
-- Encrypted transport required for paired communication
+- Pairing passcode is mandatory for pairing attempts
+- Transport encryption is deferred beyond MVP.1 and becomes mandatory later
 - At-rest encryption is post-MVP work

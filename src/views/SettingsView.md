@@ -4,7 +4,12 @@ Route: `/settings`. Tab: Settings. See [[App.md]].
 
 ## Concept
 
-Configuration screen. Sections are presented as an accordion — one section open at a time.
+Configuration screen with inline sections and drill-down routes for device flows.
+
+Device routes:
+
+- `/settings/add-device` -> [[AddDeviceView]]
+- `/settings/device/:id` -> [[DeviceView]]
 
 ## Sections
 
@@ -17,6 +22,16 @@ Manage named contexts that quests can belong to. See [[spec/Space]].
 Notes:
 - Spaces management lives only in Settings (no dedicated Spaces tab)
 - Settings search is planned later and should index this section
+
+### Devices
+
+Device sync settings entry point. See [[spec/DeviceSync]].
+
+- `DeviceList` is visible inline on `/settings`
+- Device rows navigate to [[DeviceView]]
+- `Add device` row is always last and navigates to [[AddDeviceView]]
+- Device status uses green/gray presence indicator
+- Mapping behavior in device details is currently `TBD` (read-only placeholder)
 
 ### Voice Model
 Manages the on-device ASR model (`sherpa-onnx-streaming-zipformer-small-en`, ~60 MB).
@@ -35,6 +50,7 @@ Progress label format: `Downloading <filename> (<file_index+1>/<file_count>) <pc
 |---|---|
 | [[useModelDownload]] | Download state, progress, error, start/check |
 | [[space.ts]] | `fetchSpaces`, `createSpace`, `updateSpace`, `deleteSpace` |
+| Device sync runtime adapter (`TBD`) | Paired devices list, presence state, and pairing actions |
 
 ## Future sections
 
