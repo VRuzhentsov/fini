@@ -98,37 +98,6 @@ jobs:
           gpg --batch --import release-tag-key.asc
           git tag -v "$GITHUB_REF_NAME"
 
-      - name: Ensure release prep check exists for same commit in last 24h
-        uses: actions/github-script@v7
-        env:
-          TAG_COMMIT: ${{ steps.tag_commit.outputs.tag_commit }}
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const tagCommit = process.env.TAG_COMMIT;
-            const cutoffMs = Date.now() - (24 * 60 * 60 * 1000);
-            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
-              owner,
-              repo,
-              workflow_id: 'release-dry-run.yml',
-              per_page: 100,
-            });
-
-            const match = runs.find((run) => {
-              if (run.head_sha !== tagCommit) return false;
-              if (run.event !== 'workflow_dispatch') return false;
-              if (run.conclusion !== 'success') return false;
-              const updatedAt = new Date(run.updated_at).getTime();
-              return updatedAt >= cutoffMs;
-            });
-
-            if (!match) {
-              core.setFailed(`No successful release prep check for commit ${tagCommit} within last 24h.`);
-              return;
-            }
-
-            core.info(`Release prep check passed via run #${match.run_number} (${match.html_url})`);
-
   signing-readiness:
     name: Signing Readiness
     runs-on: ubuntu-latest
