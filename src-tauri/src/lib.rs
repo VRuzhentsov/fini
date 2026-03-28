@@ -822,8 +822,13 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init());
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.plugin(tauri_plugin_mcp_bridge::init());
+    }
+    builder
         .setup(|app| {
             let conn = open_db(&app.handle());
             app.manage(DbState(Mutex::new(conn)));

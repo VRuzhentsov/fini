@@ -172,8 +172,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           npm version "$version" --no-git-tag-version --allow-same-version
           sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
-          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '/^name = "fini"$/,/^version = /{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.lock
           sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+          grep -q "\"version\": \"$version\"" package.json
+          grep -q "^version = \"$version\"" src-tauri/Cargo.toml
+          grep -q "^version = \"$version\"" src-tauri/Cargo.lock
+          grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -239,8 +243,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           npm version "$version" --no-git-tag-version --allow-same-version
           sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
-          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '/^name = "fini"$/,/^version = /{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.lock
           sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+          grep -q "\"version\": \"$version\"" package.json
+          grep -q "^version = \"$version\"" src-tauri/Cargo.toml
+          grep -q "^version = \"$version\"" src-tauri/Cargo.lock
+          grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -340,8 +348,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           npm version "$version" --no-git-tag-version --allow-same-version
           sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
-          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '/^name = "fini"$/,/^version = /{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.lock
           sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+          grep -q "\"version\": \"$version\"" package.json
+          grep -q "^version = \"$version\"" src-tauri/Cargo.toml
+          grep -q "^version = \"$version\"" src-tauri/Cargo.lock
+          grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -432,8 +444,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           npm version "$version" --no-git-tag-version --allow-same-version
           sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
-          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '/^name = "fini"$/,/^version = /{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.lock
           sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+          grep -q "\"version\": \"$version\"" package.json
+          grep -q "^version = \"$version\"" src-tauri/Cargo.toml
+          grep -q "^version = \"$version\"" src-tauri/Cargo.lock
+          grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -459,7 +475,8 @@ jobs:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > /tmp/release.keystore
+          mkdir -p "$HOME/tmp"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$HOME/tmp/release.keystore"
 
       - name: Sign Android APK
         env:
@@ -480,7 +497,7 @@ jobs:
           fi
           signed_apk="fini-${GITHUB_REF_NAME}-android.apk"
           "$apksigner_path" sign \
-            --ks /tmp/release.keystore \
+            --ks "$HOME/tmp/release.keystore" \
             --ks-pass "pass:${ANDROID_KEYSTORE_PASSWORD}" \
             --ks-key-alias "${ANDROID_KEY_ALIAS}" \
             --key-pass "pass:${ANDROID_KEY_PASSWORD}" \
@@ -524,8 +541,12 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           npm version "$version" --no-git-tag-version --allow-same-version
           sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
-          sed -i -E '/^name = "fini"$/{n;s/^version = ".*"/version = "'"$version"'"/;}' src-tauri/Cargo.lock
+          sed -i -E '/^name = "fini"$/,/^version = /{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.lock
           sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+          grep -q "\"version\": \"$version\"" package.json
+          grep -q "^version = \"$version\"" src-tauri/Cargo.toml
+          grep -q "^version = \"$version\"" src-tauri/Cargo.lock
+          grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3

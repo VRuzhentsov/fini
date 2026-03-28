@@ -9,7 +9,14 @@ Frontend state for [[Space]]. Single source of truth for space data in the UI.
 | `updateSpace(id, patch)` | Update a space; replaces it in `spaces` |
 | `deleteSpace(id)` | Delete a space; removes it from `spaces` |
 
+## Computed
+
+| Getter | Description |
+|---|---|
+| `selectedSpaceId` | Active space filter from [[SpacePicker]], `null` = all spaces |
+
 ## Notes
 
 - For the domain model see [[Space]].
 - Space ids are string-based (`"1"`, `"2"`, `"3"`, or UUID).
+- `selectedSpaceId` is persisted to `localStorage` and restored on mount.

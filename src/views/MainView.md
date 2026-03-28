@@ -6,6 +6,10 @@ Route: `/main`. Tab: Main. See [[App.md]].
 
 Focus-first workspace. Main shows the current Main quest and also hosts active backlog management, so users can act without leaving the focus surface.
 
+## Space filtering
+
+All sections respect the active space from [[SpacePicker]]. When a specific space is selected, only quests with that `space_id` are shown. "All spaces" shows everything.
+
 ## Sections
 
 ### Main quest panel

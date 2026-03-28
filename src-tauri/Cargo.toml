@@ -39,3 +39,4 @@ rmcp = { version = "1.2.0", features = ["server", "transport-io", "macros"] }
 dirs = "5"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
+tauri-plugin-mcp-bridge = "0.10"

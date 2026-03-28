@@ -51,9 +51,14 @@ Checked checkbox (green completed / amber abandoned), timestamp badge, struck-th
 
 Deleting from history is permanent and requires confirmation.
 
+## Context menu
+
+Right-click a quest row to open [[ContextMenu]] via `useContextMenu()` with "Move to space" submenu.
+
 ## Dependencies
 
 | Dep | Role |
 |---|---|
 | [[quest.ts]] | `updateQuest`, `deleteQuest` |
 | [[ReminderMenu]] | Due date / time / repeat controls |
+| [[ContextMenu]] | Right-click "Move to space" (via `useContextMenu()`) |
