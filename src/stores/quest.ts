@@ -22,6 +22,8 @@ export interface Quest {
   order_rank: number;
   created_at: string;
   updated_at: string;
+  series_id: string | null;
+  period_key: string | null;
 }
 
 export interface CreateQuestInput {

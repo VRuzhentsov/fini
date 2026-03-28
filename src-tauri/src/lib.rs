@@ -12,7 +12,7 @@ use services::device_sync::{
     device_pair_incoming_requests, device_pair_outgoing_completions, device_pair_outgoing_updates,
     device_send_pair_request, device_sync_debug_status, DeviceSyncState,
 };
-use schema::{quests, spaces};
+use schema::{quest_series, quests, reminders, spaces};
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
@@ -65,6 +65,56 @@ pub struct Quest {
     pub order_rank: f64,
     pub created_at: String,
     pub updated_at: String,
+    pub series_id: Option<String>,
+    pub period_key: Option<String>,
+}
+
+#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
+#[diesel(table_name = quest_series)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct QuestSeries {
+    pub id: String,
+    pub space_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub repeat_rule: String,
+    pub priority: i64,
+    pub energy: String,
+    pub active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Deserialize, Insertable)]
+#[diesel(table_name = quest_series)]
+pub struct CreateSeriesInput {
+    pub space_id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub repeat_rule: String,
+    pub priority: i64,
+    pub energy: String,
+}
+
+#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
+#[diesel(table_name = reminders)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct Reminder {
+    pub id: String,
+    pub quest_id: String,
+    pub kind: String,
+    pub mm_offset: Option<i64>,
+    pub due_at_utc: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Deserialize, Insertable)]
+#[diesel(table_name = reminders)]
+pub struct CreateReminderInput {
+    pub quest_id: String,
+    pub kind: String,
+    pub mm_offset: Option<i64>,
+    pub due_at_utc: Option<String>,
 }
 
 // ── Command input types ───────────────────────────────────────────────────────
@@ -112,6 +162,175 @@ fn default_energy() -> String {
 
 fn clamp_order_rank(value: f64) -> f64 {
     value.clamp(-100.0, 100.0)
+}
+
+// ── Repeat rule logic ────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+struct RepeatRule {
+    preset: Option<String>,
+    interval: Option<i64>,
+    unit: Option<String>,
+    days_of_week: Option<Vec<String>>,
+    end: Option<String>,
+    end_date: Option<String>,
+    end_after: Option<i64>,
+}
+
+fn compute_next_due(current_due: &NaiveDate, rule: &RepeatRule) -> Option<NaiveDate> {
+    use chrono::{Datelike, Months, Weekday};
+
+    match rule.preset.as_deref() {
+        Some("daily") => Some(*current_due + chrono::Duration::days(1)),
+        Some("weekdays") => {
+            let mut next = *current_due + chrono::Duration::days(1);
+            while next.weekday() == Weekday::Sat || next.weekday() == Weekday::Sun {
+                next += chrono::Duration::days(1);
+            }
+            Some(next)
+        }
+        Some("weekends") => {
+            let mut next = *current_due + chrono::Duration::days(1);
+            while next.weekday() != Weekday::Sat && next.weekday() != Weekday::Sun {
+                next += chrono::Duration::days(1);
+            }
+            Some(next)
+        }
+        Some("weekly") => Some(*current_due + chrono::Duration::weeks(1)),
+        Some("monthly") => current_due.checked_add_months(Months::new(1)),
+        Some("yearly") => current_due.checked_add_months(Months::new(12)),
+        Some("custom") => {
+            let interval = rule.interval.unwrap_or(1).max(1);
+            match rule.unit.as_deref() {
+                Some("day") => Some(*current_due + chrono::Duration::days(interval)),
+                Some("week") => Some(*current_due + chrono::Duration::weeks(interval)),
+                Some("month") => current_due.checked_add_months(Months::new(interval as u32)),
+                Some("year") => current_due.checked_add_months(Months::new(interval as u32 * 12)),
+                _ => None,
+            }
+        }
+        Some("none") | None => None,
+        _ => None,
+    }
+}
+
+fn is_series_end_reached(rule: &RepeatRule, next_due: &NaiveDate, completed_count: i64) -> bool {
+    match rule.end.as_deref() {
+        Some("on_date") => {
+            if let Some(ref end_date_str) = rule.end_date {
+                if let Ok(end_date) = NaiveDate::parse_from_str(end_date_str, "%Y-%m-%d") {
+                    return *next_due > end_date;
+                }
+            }
+            false
+        }
+        Some("after_n") => {
+            if let Some(max) = rule.end_after {
+                return completed_count >= max;
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn generate_next_occurrence(
+    conn: &mut SqliteConnection,
+    quest: &Quest,
+) -> Result<Option<Quest>, diesel::result::Error> {
+    let series_id = match quest.series_id.as_ref() {
+        Some(id) => id.clone(),
+        None => return Ok(None),
+    };
+
+    let series: QuestSeries = match quest_series::table
+        .find(&series_id)
+        .select(QuestSeries::as_select())
+        .first(conn)
+    {
+        Ok(s) => s,
+        Err(diesel::NotFound) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    if !series.active {
+        return Ok(None);
+    }
+
+    let rule: RepeatRule = match serde_json::from_str(&series.repeat_rule) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    let current_due = quest
+        .due
+        .as_deref()
+        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .unwrap_or_else(|| Utc::now().date_naive());
+
+    let next_due = match compute_next_due(&current_due, &rule) {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+
+    // Check end conditions
+    let completed_count: i64 = quests::table
+        .filter(quests::series_id.eq(&series_id))
+        .filter(quests::status.ne("active"))
+        .count()
+        .get_result(conn)?;
+
+    if is_series_end_reached(&rule, &next_due, completed_count) {
+        diesel::update(quest_series::table.find(&series_id))
+            .set(quest_series::active.eq(false))
+            .execute(conn)?;
+        return Ok(None);
+    }
+
+    let period_key = next_due.format("%Y-%m-%d").to_string();
+
+    // Check if this occurrence already exists (deterministic dedup)
+    let existing = quests::table
+        .filter(quests::series_id.eq(&series_id))
+        .filter(quests::period_key.eq(&period_key))
+        .count()
+        .get_result::<i64>(conn)?;
+
+    if existing > 0 {
+        return Ok(None);
+    }
+
+    let now = utc_now();
+    let max_rank = quests::table
+        .select(diesel::dsl::max(quests::order_rank))
+        .first::<Option<f64>>(conn)?
+        .unwrap_or(0.0);
+
+    diesel::insert_into(quests::table)
+        .values((
+            quests::space_id.eq(&series.space_id),
+            quests::title.eq(&series.title),
+            quests::description.eq(&series.description),
+            quests::status.eq("active"),
+            quests::energy.eq(&series.energy),
+            quests::priority.eq(series.priority),
+            quests::due.eq(&period_key),
+            quests::due_time.eq(quest.due_time.as_deref()),
+            quests::repeat_rule.eq(&series.repeat_rule),
+            quests::order_rank.eq(max_rank + 1.0),
+            quests::series_id.eq(&series_id),
+            quests::period_key.eq(&period_key),
+            quests::created_at.eq(&now),
+            quests::updated_at.eq(&now),
+        ))
+        .execute(conn)?;
+
+    quests::table
+        .filter(quests::series_id.eq(&series_id))
+        .filter(quests::period_key.eq(&period_key))
+        .select(Quest::as_select())
+        .first(conn)
+        .optional()
 }
 
 fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
@@ -392,6 +611,66 @@ fn create_quest(state: State<DbState>, input: CreateQuestInput) -> Result<Quest,
         .map_err(|e| e.to_string())?
         .unwrap_or(0.0);
 
+    let has_repeat = input
+        .repeat_rule
+        .as_deref()
+        .map(|r| !r.is_empty())
+        .unwrap_or(false);
+
+    if has_repeat {
+        let repeat_rule_str = input.repeat_rule.clone().unwrap();
+        let series_input = CreateSeriesInput {
+            space_id: input.space_id.clone(),
+            title: input.title.clone(),
+            description: input.description.clone(),
+            repeat_rule: repeat_rule_str,
+            priority: input.priority,
+            energy: input.energy.clone(),
+        };
+
+        let series = diesel::insert_into(quest_series::table)
+            .values(&series_input)
+            .returning(QuestSeries::as_returning())
+            .get_result::<QuestSeries>(&mut *conn)
+            .map_err(|e| e.to_string())?;
+
+        let period_key = input
+            .due
+            .as_deref()
+            .unwrap_or(&Utc::now().format("%Y-%m-%d").to_string())
+            .to_string();
+
+        let now = utc_now();
+        diesel::insert_into(quests::table)
+            .values((
+                quests::space_id.eq(&input.space_id),
+                quests::title.eq(&input.title),
+                quests::description.eq(&input.description),
+                quests::status.eq("active"),
+                quests::energy.eq(&input.energy),
+                quests::priority.eq(input.priority),
+                quests::due.eq(&input.due),
+                quests::due_time.eq(&input.due_time),
+                quests::repeat_rule.eq(&input.repeat_rule),
+                quests::order_rank.eq(clamp_order_rank(
+                    input.order_rank.unwrap_or(max_rank + 1.0),
+                )),
+                quests::series_id.eq(&series.id),
+                quests::period_key.eq(&period_key),
+                quests::created_at.eq(&now),
+                quests::updated_at.eq(&now),
+            ))
+            .execute(&mut *conn)
+            .map_err(|e| e.to_string())?;
+
+        return quests::table
+            .filter(quests::series_id.eq(&series.id))
+            .filter(quests::period_key.eq(&period_key))
+            .select(Quest::as_select())
+            .first(&mut *conn)
+            .map_err(|e| e.to_string());
+    }
+
     let payload = CreateQuestInput {
         order_rank: Some(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
         ..input
@@ -469,17 +748,57 @@ fn update_quest(
             .map_err(|e| e.to_string())?;
     }
 
-    quests::table
+    let updated_quest: Quest = quests::table
         .find(&id)
         .select(Quest::as_select())
         .first(&mut *conn)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // Auto-generate next occurrence when a series quest is completed or abandoned
+    if matches!(status.as_deref(), Some("completed") | Some("abandoned")) {
+        if updated_quest.series_id.is_some() {
+            let _ = generate_next_occurrence(&mut conn, &updated_quest);
+        }
+    }
+
+    Ok(updated_quest)
 }
 
 #[tauri::command]
 fn delete_quest(state: State<DbState>, id: String) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
     diesel::delete(quests::table.find(&id))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Reminder commands ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_reminders(state: State<DbState>, quest_id: String) -> Result<Vec<Reminder>, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    reminders::table
+        .filter(reminders::quest_id.eq(&quest_id))
+        .select(Reminder::as_select())
+        .load(&mut *conn)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_reminder(state: State<DbState>, input: CreateReminderInput) -> Result<Reminder, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    diesel::insert_into(reminders::table)
+        .values(&input)
+        .returning(Reminder::as_returning())
+        .get_result(&mut *conn)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_reminder(state: State<DbState>, id: String) -> Result<(), String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    diesel::delete(reminders::table.find(&id))
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -527,6 +846,9 @@ pub fn run() {
             set_main_quest,
             update_quest,
             delete_quest,
+            get_reminders,
+            create_reminder,
+            delete_reminder,
             device_get_identity,
             device_enter_add_mode,
             device_leave_add_mode,

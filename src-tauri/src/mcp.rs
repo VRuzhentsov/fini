@@ -13,9 +13,10 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    resolve_active_quest,
-    schema::{quests, spaces},
-    CreateQuestInput, CreateSpaceInput, Quest, Space, UpdateQuestInput,
+    generate_next_occurrence, resolve_active_quest,
+    schema::{quests, reminders, spaces},
+    CreateQuestInput, CreateReminderInput, CreateSpaceInput, Quest, Reminder, Space,
+    UpdateQuestInput,
 };
 
 // ── Server ─────────────────────────────────────────────────────────────────────
@@ -194,7 +195,19 @@ fn occurrence_fields(quest: &Quest) -> (Option<String>, Option<String>, Option<S
 }
 
 fn quest_to_record(quest: &Quest) -> QuestRecord {
-    let (series_id, occurrence_id, period_key) = occurrence_fields(quest);
+    // Use real persisted series_id/period_key if present, fall back to computed
+    let (series_id, occurrence_id, period_key) = if quest.series_id.is_some() {
+        let sid = quest.series_id.clone();
+        let pk = quest.period_key.clone();
+        let oid = match (sid.as_deref(), pk.as_deref()) {
+            (Some(s), Some(k)) => Some(format!("{}:{}", s, k)),
+            (Some(s), None) => Some(s.to_string()),
+            _ => None,
+        };
+        (sid, oid, pk)
+    } else {
+        occurrence_fields(quest)
+    };
     QuestRecord {
         id: quest.id.clone(),
         series_id,
@@ -390,6 +403,9 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
+        if quest.series_id.is_some() {
+            let _ = generate_next_occurrence(&mut conn, &quest);
+        }
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
         ))
@@ -411,6 +427,9 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
+        if quest.series_id.is_some() {
+            let _ = generate_next_occurrence(&mut conn, &quest);
+        }
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
         ))
@@ -520,6 +539,75 @@ impl FiniServer {
             "id": p.id,
         })))
     }
+
+    // ── Reminder tools ───────────────────────────────────────────────────────
+
+    #[tool(description = "List all reminders for a quest.")]
+    async fn list_reminders(
+        &self,
+        Parameters(p): Parameters<QuestIdParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut conn = self.db.lock().unwrap();
+        let items: Vec<Reminder> = reminders::table
+            .filter(reminders::quest_id.eq(&p.quest_id))
+            .select(Reminder::as_select())
+            .load(&mut *conn)
+            .map_err(db_err)?;
+        Ok(CallToolResult::structured(
+            serde_json::to_value(items).unwrap(),
+        ))
+    }
+
+    #[tool(description = "Create a reminder for a quest. Type 'relative' uses mm_offset (minutes before due). Type 'absolute' uses due_at_utc (ISO datetime).")]
+    async fn create_reminder(
+        &self,
+        Parameters(p): Parameters<CreateReminderParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut conn = self.db.lock().unwrap();
+        let input = CreateReminderInput {
+            quest_id: p.quest_id,
+            kind: p.kind,
+            mm_offset: p.mm_offset,
+            due_at_utc: p.due_at_utc,
+        };
+        let reminder: Reminder = diesel::insert_into(reminders::table)
+            .values(&input)
+            .returning(Reminder::as_returning())
+            .get_result(&mut *conn)
+            .map_err(db_err)?;
+        Ok(CallToolResult::structured(
+            serde_json::to_value(reminder).unwrap(),
+        ))
+    }
+
+    #[tool(description = "Delete a reminder by ID.")]
+    async fn delete_reminder(
+        &self,
+        Parameters(p): Parameters<IdParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let mut conn = self.db.lock().unwrap();
+        diesel::delete(reminders::table.find(&p.id))
+            .execute(&mut *conn)
+            .map_err(db_err)?;
+        Ok(CallToolResult::structured(serde_json::json!({
+            "deleted": true,
+            "id": p.id,
+        })))
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct QuestIdParam {
+    quest_id: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct CreateReminderParams {
+    quest_id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    mm_offset: Option<i64>,
+    due_at_utc: Option<String>,
 }
 
 #[cfg(test)]
@@ -570,6 +658,8 @@ mod tests {
             order_rank: 0.0,
             created_at: "2026-03-27T10:30:00Z".to_string(),
             updated_at: "2026-03-27T10:30:00Z".to_string(),
+            series_id: None,
+            period_key: None,
         }
     }
 

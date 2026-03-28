@@ -6,7 +6,6 @@ import {
   TagIcon,
   FlagIcon,
   ClockIcon,
-  BoltIcon,
   EllipsisVerticalIcon,
   ChevronUpIcon,
   ExclamationCircleIcon,
@@ -67,17 +66,6 @@ async function cyclePriority(quest: Quest) {
   await store.updateQuest(quest.id, { priority: next });
 }
 
-// ── Energy ────────────────────────────────────────────────────────────────────
-
-const ENERGIES = ["low", "medium", "high"] as const;
-const ENERGY_COLORS: Record<string, string> = { low: "oklch(var(--color-success))", medium: "oklch(var(--color-warning))", high: "oklch(var(--color-error))" };
-
-async function cycleEnergy(quest: Quest) {
-  const idx = ENERGIES.indexOf(quest.energy as typeof ENERGIES[number]);
-  const next = ENERGIES[(idx + 1) % ENERGIES.length];
-  await store.updateQuest(quest.id, { energy: next });
-}
-
 // ── Reminder menu ─────────────────────────────────────────────────────────────
 
 const reminderQuestId = ref<string | null>(null);
@@ -122,6 +110,11 @@ async function menuDelete() {
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
+
+function isOverdue(quest: Quest): boolean {
+  if (!quest.due || quest.status !== "active") return false;
+  return quest.due < new Date().toISOString().slice(0, 10);
+}
 
 function formatDue(due: string): string {
   const date = new Date(due + "T00:00:00");
@@ -208,6 +201,7 @@ function formatTimestamp(quest: Quest): string {
           :class="quest.status === 'completed' ? 'badge-success' : 'badge-warning'"
         >{{ formatTimestamp(quest) }}</span>
 
+        <span v-if="isOverdue(quest)" class="badge badge-error badge-xs shrink-0">overdue</span>
         <span class="flex-1 text-sm" :class="{ 'line-through opacity-50': quest.status !== 'active' }">{{ quest.title }}</span>
       </div>
 
@@ -299,14 +293,6 @@ function formatTimestamp(quest: Quest): string {
                   :title="PRIORITY_LABELS[quest.priority]"
                 >
                   <FlagIcon class="size-4" />
-                </button>
-                <button
-                  class="btn btn-ghost btn-xs btn-square"
-                  :style="{ color: ENERGY_COLORS[quest.energy] }"
-                  @click.stop="cycleEnergy(quest)"
-                  :title="`Energy: ${quest.energy}`"
-                >
-                  <BoltIcon class="size-4" />
                 </button>
               </template>
               <button class="btn btn-ghost btn-xs btn-square" @click.stop="openMore($event, quest)" title="More">

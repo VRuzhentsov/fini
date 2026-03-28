@@ -15,3 +15,9 @@
 
 - Prefer `Makefile` targets over raw `npm`/`tauri` commands when possible.
 - See `Makefile` for available targets.
+
+## Release tags
+
+- Release pipeline should be triggered by tag push only (`v*`); main pushes should not start release workflows.
+- Release tags must be annotated and GPG-signed with the configured release key.
+- Create and push release tags only after the target commit is already on `origin/main`.

@@ -14,6 +14,7 @@ dist-ssr
 
 # Rust build artifacts
 src-tauri/target/
+src-tauri/*.db
 
 # Local Android build/sign artifacts
 bin/*.apk

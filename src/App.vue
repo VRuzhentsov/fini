@@ -6,7 +6,6 @@ import ToastStack from "./components/ToastStack.vue";
   <div class="app-shell">
     <nav class="nav">
       <router-link to="/main">Main</router-link>
-      <router-link to="/quests">Quests</router-link>
       <router-link to="/history">History</router-link>
       <router-link to="/settings">Settings</router-link>
     </nav>
