@@ -8,6 +8,8 @@ Dedicated pairing mode view for discovering and pairing local devices.
 
 Only devices currently in add-device mode are shown as pairing candidates.
 
+This view belongs to [[DeviceConnection]] scope only.
+
 ## Behavior
 
 - Entering this view enables add-device mode for local device
@@ -33,4 +35,5 @@ Only devices currently in add-device mode are shown as pairing candidates.
 ## Notes
 
 - Code expiry is tied to view lifecycle (no separate timer while view is open)
-- Transport encryption is deferred beyond MVP.1 (see [[spec/DeviceSync]])
+- UDP remains control-plane for discovery/pairing; sync payloads are handled by [[SpaceSync]] websocket channel
+- Data-plane transport encryption is deferred to follow-up phase

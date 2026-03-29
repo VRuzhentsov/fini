@@ -2,6 +2,8 @@
 
 This note documents the initial MCP contract baseline for series/occurrence alignment and structured outputs.
 
+> Superseded naming note: current docs migrate from `Main` to `Focus` terminology and rename `get_active_quest` to `get_active_focus` in the upcoming contract update.
+
 ## Summary
 
 - MCP tools now return structured JSON in `structured_content` (no human-formatted text output).

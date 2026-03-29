@@ -2,6 +2,8 @@
 
 This document records the design decisions locked during the product interview and serves as the implementation baseline.
 
+> Terminology and sync architecture updates were later introduced. See `docs/plans/2026-03-29-device-synchronizations-design.md` for the current `Focus` naming and `device_connection`/`space_sync` split.
+
 ## Scope by phase
 
 ### MVP

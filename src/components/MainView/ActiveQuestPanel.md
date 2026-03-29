@@ -1,12 +1,12 @@
 # ActiveQuestPanel
 
-Primary card for the current Main quest. Used in [[MainView]].
+Primary card for the current Focus quest. Used in [[MainView]].
 
 ## Props
 
 | Prop | Type | Description |
 |---|---|---|
-| `quest` | `Quest` | The current Main quest to display |
+| `quest` | `Quest` | The current Focus quest to display |
 
 ## Layout
 

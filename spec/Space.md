@@ -27,3 +27,6 @@ Named context that quests belong to. Spaces are shareable units for LAN sync sel
 | Unassigned quests | Not allowed; quest `space_id` is never null |
 | Deleted custom space | Quests in deleted custom space are reassigned to built-in Personal (`space_id = "1"`) |
 | Built-in rename sync | Built-in space renames replicate across paired devices |
+| Mapping contract | Sync mapping is pair-level and symmetric (both peers share one mapping state) |
+| Missing mapped space | Peer auto-creates mapped space with same `space_id` |
+| Focus owner-cluster | Mapping `Personal` (`"1"`) between peers enables owner-scoped [[FocusHistory]] replication |

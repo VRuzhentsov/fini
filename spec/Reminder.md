@@ -37,8 +37,9 @@ Scheduled notification linked to a [[Quest]] / [[QuestOccurrence]]. Multiple rem
 ## Trigger effects
 
 - If the target quest is already `completed` or `abandoned`, trigger is suppressed.
-- If the target quest is active, reminder trigger can preempt Main quest focus.
-- Reminder preemption is temporary; focus returns to previous valid target after reminder quest resolves.
+- If the target quest is active, reminder trigger can preempt current Focus.
+- Reminder preemption is temporary; Focus returns to previous valid target after reminder quest resolves.
+- Reminder-triggered focus writes a `trigger = reminder` event to [[FocusHistory]].
 
 ## Snooze
 

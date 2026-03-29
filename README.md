@@ -10,12 +10,12 @@ ADHD brains don't struggle with laziness — they struggle with task paralysis, 
 
 ```mermaid
 flowchart TD
-  A[Manual Set Main: Q3] --> B[Reminder fires: Q2 becomes Main]
+  A[Manual Set Focus: Q3] --> B[Reminder fires: Q2 becomes Focus]
   B --> C[Q3 becomes inactive before Q2 resolves]
   C --> D[Q2 gets completed]
   D --> E{Return target Q3 active?}
-  E -- No --> F[Option 1: skip Q3 and fallback to next valid Main]
-  E -- No --> G[Option 2: clear Main and wait for manual selection]
+  E -- No --> F[Option 1: skip Q3 and fallback to next valid Focus]
+  E -- No --> G[Option 2: clear Focus and wait for manual selection]
 ```
 ## The Idea
 
@@ -71,7 +71,12 @@ Convention:
 
 ## Local Network Sync
 
-Fini is local-first with optional LAN sharing. LAN discovery/pairing/sync is planned for **MVP.1** (immediately after MVP core-loop stabilization). See [[Network]] for the full design.
+Fini is local-first with optional LAN sharing. MVP.1 networking is split into:
+
+- [[DeviceConnection]] for UDP discovery/pairing/presence
+- [[SpaceSync]] for websocket-based per-space replication
+
+See [[Network]] for transport-level contracts.
 
 ## MCP Server
 
@@ -104,7 +109,7 @@ Claude Desktop launches `fini mcp` as a subprocess. Both modes share the same SQ
 | `complete_quest` | Mark a quest completed |
 | `abandon_quest` | Mark a quest abandoned |
 | `list_history` | Return completed and abandoned quests |
-| `get_active_quest` | Return the current Main quest computed from focus events + fallback rules |
+| `get_active_focus` | Return the current Focus quest computed from focus history + fallback rules |
 | `list_spaces` | Return all spaces |
 | `create_space` | Create a space |
 | `update_space` | Rename or reorder a space |
@@ -114,7 +119,9 @@ Claude Desktop launches `fini mcp` as a subprocess. Both modes share the same SQ
 
 MCP tools return structured JSON in `structured_content` (preferred) instead of human-formatted text.
 
-`QuestRecord` fields: `id`, `series_id`, `occurrence_id`, `period_key`, `space_id`, `title`, `description`, `status`, `priority`, `energy`, `due`, `due_time`, `due_at_utc`, `repeat_rule`, `set_main_at`, `reminder_triggered_at`, `order_rank`, `completed_at`, `created_at`, `updated_at`.
+`QuestRecord` fields: `id`, `series_id`, `occurrence_id`, `period_key`, `space_id`, `title`, `description`, `status`, `priority`, `energy`, `due`, `due_time`, `due_at_utc`, `repeat_rule`, `order_rank`, `completed_at`, `created_at`, `updated_at`.
+
+`FocusHistoryRecord` fields: `id`, `device_id`, `quest_id`, `space_id`, `trigger`, `created_at`.
 
 `SpaceRecord` fields: `id`, `name`, `item_order`, `created_at`.
 
@@ -138,8 +145,6 @@ Example `list_quests` output:
       "due_time": "09:00",
       "due_at_utc": "2026-03-20T09:00:00Z",
       "repeat_rule": "daily",
-      "set_main_at": null,
-      "reminder_triggered_at": null,
       "order_rank": 0,
       "completed_at": null,
       "created_at": "2026-03-19T18:00:00Z",
@@ -240,8 +245,8 @@ flatpak run com.fini.app
 
 ## Delivery Plan
 
-- **MVP**: Local-first core loop on Linux/Windows/Android with functional parity (`Main` / `History` / `Settings`, reminders, repeating series+occurrences, MCP for daily use)
-- **MVP.1**: LAN pairing + sync (mutual confirmation, encrypted transport, near-real-time replication, offline queue/replay, shared series occurrence behavior)
+- **MVP**: Local-first core loop on Linux/Windows/Android with functional parity (`Focus` / `History` / `Settings`, reminders, repeating series+occurrences, MCP for daily use)
+- **MVP.1**: LAN pairing + sync (mutual confirmation, websocket data-plane, near-real-time replication, offline queue/replay, shared series occurrence behavior)
 - Planning baseline and spec deltas are tracked in `docs/plans/2026-03-21-mvp-baseline.md`
 
 ## Contributing
