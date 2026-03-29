@@ -1,10 +1,10 @@
-# MainView
+# FocusView
 
 Route: `/main`. Tab: Focus. See [[App.md]].
 
 ## Concept
 
-Focus-first workspace. MainView shows the current Focus quest and also hosts active backlog management, so users can act without leaving the focus surface.
+Focus-first workspace. FocusView shows the current Focus quest and also hosts active backlog management, so users can act without leaving the focus surface.
 
 ## Space filtering
 

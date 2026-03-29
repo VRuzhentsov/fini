@@ -26,7 +26,7 @@ DaisyUI `dropdown` with a `menu` listing "All spaces" + every space from [[space
 
 | Consumer | How it uses `selectedSpaceId` |
 |---|---|
-| [[MainView]] | Filters active quest + backlog |
+| [[FocusView]] | Filters active quest + backlog |
 | [[QuestsView]] | Filters quest list |
 | [[NewQuestForm]] | Uses as default `space_id` for new quests (falls back to `"1"` when null) |
 

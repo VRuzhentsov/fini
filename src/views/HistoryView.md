@@ -16,7 +16,7 @@ Each row shows a status badge and the quest title.
 ### Context menu
 | Action | Description |
 |---|---|
-| Make active | Sets `status = "active"`; quest reappears in [[MainView]] focus surface |
+| Make active | Sets `status = "active"`; quest reappears in [[FocusView]] focus surface |
 | Delete | Permanently removes the quest after confirmation |
 
 The menu is teleported to `<body>` and closes on any click outside.

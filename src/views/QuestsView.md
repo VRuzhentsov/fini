@@ -4,7 +4,7 @@ Legacy route: `/quests`.
 
 ## Concept
 
-Transitional active-quest browser kept during migration. Final MVP navigation removes the Quests tab and moves active backlog management into [[MainView]].
+Transitional active-quest browser kept during migration. Final MVP navigation removes the Quests tab and moves active backlog management into [[FocusView]].
 
 ## Responsibilities
 

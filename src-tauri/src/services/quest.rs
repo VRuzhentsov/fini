@@ -6,10 +6,12 @@ use std::collections::HashMap;
 use tauri::State;
 
 use crate::models::{
-    clamp_order_rank, CreateQuestInput, CreateSeriesInput, Quest, QuestSeries, UpdateQuestInput,
+    clamp_order_rank, CreateFocusHistoryInput, CreateQuestInput, CreateSeriesInput, Quest,
+    QuestSeries, UpdateQuestInput,
 };
-use crate::schema::{quest_series, quests};
+use crate::schema::{focus_history, quest_series, quests};
 use crate::services::db::{utc_now, DbState};
+use crate::services::device_connection::DeviceConnectionState;
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 
@@ -253,7 +255,7 @@ pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
 
 fn latest_focus_timestamp(quest: &Quest) -> Option<DateTime<Utc>> {
     [
-        quest.set_main_at.as_deref().and_then(parse_utc_timestamp),
+        quest.set_focus_at.as_deref().and_then(parse_utc_timestamp),
         quest
             .reminder_triggered_at
             .as_deref()
@@ -325,7 +327,7 @@ pub fn resolve_active_quest(
     Ok(resolve_active_from_loaded(&loaded))
 }
 
-fn should_set_main_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
+fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
     let Some(due_str) = due else {
         return true;
     };
@@ -335,6 +337,28 @@ fn should_set_main_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> boo
     };
 
     due_date <= now.date_naive()
+}
+
+fn append_focus_history(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    quest_id: &str,
+    space_id: &str,
+    trigger: &str,
+) -> Result<(), String> {
+    let input = CreateFocusHistoryInput {
+        device_id: device_id.to_string(),
+        quest_id: quest_id.to_string(),
+        space_id: space_id.to_string(),
+        trigger: trigger.to_string(),
+    };
+
+    diesel::insert_into(focus_history::table)
+        .values(&input)
+        .execute(conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 fn update_quest_in_db(
@@ -353,7 +377,7 @@ fn update_quest_in_db(
 
     let mut patch = input;
     let status = patch.status.clone();
-    let mut clear_set_main_at = false;
+    let mut clear_set_focus_at = false;
     let mut period_key_to_sync: Option<String> = None;
 
     if let Some(rank) = patch.order_rank {
@@ -377,18 +401,18 @@ fn update_quest_in_db(
         period_key_to_sync = Some(new_due.to_string());
     }
 
-    if status.as_deref() == Some("active") && patch.set_main_at.is_none() {
+    if status.as_deref() == Some("active") && patch.set_focus_at.is_none() {
         let restoring_from_history = existing.status != "active";
 
         if restoring_from_history {
             let effective_due = patch.due.as_deref().or(existing.due.as_deref());
-            if should_set_main_now_for_restore(effective_due, now_dt) {
-                patch.set_main_at = Some(now.clone());
+            if should_set_focus_now_for_restore(effective_due, now_dt) {
+                patch.set_focus_at = Some(now.clone());
             } else {
-                clear_set_main_at = true;
+                clear_set_focus_at = true;
             }
         } else {
-            patch.set_main_at = Some(now.clone());
+            patch.set_focus_at = Some(now.clone());
         }
     }
 
@@ -397,9 +421,9 @@ fn update_quest_in_db(
         .execute(conn)
         .map_err(|e| e.to_string())?;
 
-    if clear_set_main_at {
+    if clear_set_focus_at {
         diesel::update(quests::table.find(id))
-            .set(quests::set_main_at.eq(Option::<String>::None))
+            .set(quests::set_focus_at.eq(Option::<String>::None))
             .execute(conn)
             .map_err(|e| e.to_string())?;
     }
@@ -637,40 +661,90 @@ pub fn create_quest(state: State<DbState>, input: CreateQuestInput) -> Result<Qu
 }
 
 #[tauri::command]
-pub fn get_active_quest(state: State<DbState>) -> Result<Option<Quest>, String> {
+pub fn get_active_focus(state: State<DbState>) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     resolve_active_quest(&mut conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn set_main_quest(state: State<DbState>, id: String) -> Result<Quest, String> {
+pub fn set_focus(
+    state: State<DbState>,
+    device_connection: State<DeviceConnectionState>,
+    id: String,
+) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
     let now = utc_now();
 
     let updated = diesel::update(quests::table.find(&id).filter(quests::status.eq("active")))
-        .set((quests::set_main_at.eq(&now), quests::updated_at.eq(&now)))
+        .set((quests::set_focus_at.eq(&now), quests::updated_at.eq(&now)))
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
 
     if updated == 0 {
-        return Err("cannot set Main on non-active quest".to_string());
+        return Err("cannot set Focus on non-active quest".to_string());
     }
 
-    quests::table
+    let quest: Quest = quests::table
         .find(&id)
         .select(Quest::as_select())
         .first(&mut *conn)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    append_focus_history(
+        &mut conn,
+        &device_connection.identity.device_id,
+        &quest.id,
+        &quest.space_id,
+        "manual",
+    )?;
+
+    Ok(quest)
 }
 
 #[tauri::command]
 pub fn update_quest(
     state: State<DbState>,
+    device_connection: State<DeviceConnectionState>,
     id: String,
     input: UpdateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    update_quest_in_db(&mut conn, &id, input)
+    let previous_status: String = quests::table
+        .find(&id)
+        .select(quests::status)
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    let status_input = input.status.clone();
+    let reminder_triggered = input.reminder_triggered_at.is_some();
+    let quest = update_quest_in_db(&mut conn, &id, input)?;
+
+    if reminder_triggered {
+        append_focus_history(
+            &mut conn,
+            &device_connection.identity.device_id,
+            &quest.id,
+            &quest.space_id,
+            "reminder",
+        )?;
+        return Ok(quest);
+    }
+
+    let restore_transition = previous_status != "active"
+        && matches!(status_input.as_deref(), Some("active"))
+        && quest.set_focus_at.is_some();
+
+    if restore_transition {
+        append_focus_history(
+            &mut conn,
+            &device_connection.identity.device_id,
+            &quest.id,
+            &quest.space_id,
+            "restore",
+        )?;
+    }
+
+    Ok(quest)
 }
 
 #[tauri::command]
@@ -749,7 +823,7 @@ mod tests {
             due: None,
             due_time: None,
             repeat_rule: None,
-            set_main_at: None,
+            set_focus_at: None,
             reminder_triggered_at: None,
             order_rank: None,
         }
@@ -767,7 +841,7 @@ mod tests {
             due: Some(due.to_string()),
             due_time: None,
             repeat_rule: None,
-            set_main_at: None,
+            set_focus_at: None,
             reminder_triggered_at: None,
             order_rank: None,
         }
@@ -844,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_set_main_overrides_fallback_selection() {
+    fn manual_set_focus_overrides_fallback_selection() {
         let db_path = temp_db_path("manual-set-main-overrides-fallback-selection");
         let mut conn = open_db_at_path(&db_path);
 
@@ -874,7 +948,7 @@ mod tests {
         );
 
         diesel::update(quests::table.find(&low_priority_id))
-            .set(quests::set_main_at.eq("2026-03-03T12:00:00Z"))
+            .set(quests::set_focus_at.eq("2026-03-03T12:00:00Z"))
             .execute(&mut conn)
             .expect("set manual main timestamp");
 
@@ -912,7 +986,7 @@ mod tests {
         );
 
         diesel::update(quests::table.find(&manual_id))
-            .set(quests::set_main_at.eq("2026-03-05T09:00:00Z"))
+            .set(quests::set_focus_at.eq("2026-03-05T09:00:00Z"))
             .execute(&mut conn)
             .expect("set manual override");
 
@@ -934,7 +1008,7 @@ mod tests {
             .expect("must return active quest");
         assert_eq!(
             preempted.id, reminder_id,
-            "latest reminder timestamp should preempt manual Main"
+            "latest reminder timestamp should preempt manual Focus"
         );
 
         diesel::update(quests::table.find(&reminder_id))
@@ -947,7 +1021,7 @@ mod tests {
             .expect("must return active quest");
         assert_eq!(
             unwound.id, manual_id,
-            "after reminder quest resolves, Main should unwind to previous valid override"
+            "after reminder quest resolves, Focus should unwind to previous valid override"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -1181,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn restoring_future_due_quest_does_not_set_main_and_clears_existing_override() {
+    fn restoring_future_due_quest_does_not_set_focus_and_clears_existing_override() {
         let db_path = temp_db_path("restore-future-due-does-not-focus-main");
         let mut conn = open_db_at_path(&db_path);
 
@@ -1191,7 +1265,7 @@ mod tests {
                 quests::title.eq("Future restore"),
                 quests::status.eq("completed"),
                 quests::due.eq("2999-01-01"),
-                quests::set_main_at.eq("2026-03-01T09:00:00Z"),
+                quests::set_focus_at.eq("2026-03-01T09:00:00Z"),
                 quests::completed_at.eq("2026-03-01T09:05:00Z"),
                 quests::created_at.eq("2026-03-01T09:00:00Z"),
                 quests::updated_at.eq("2026-03-01T09:05:00Z"),
@@ -1210,15 +1284,15 @@ mod tests {
 
         assert_eq!(restored.status, "active");
         assert_eq!(
-            restored.set_main_at, None,
-            "future-due restore must not focus Main and must clear stale set_main_at"
+            restored.set_focus_at, None,
+            "future-due restore must not set Focus and must clear stale set_focus_at"
         );
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn restoring_past_due_quest_sets_main_to_now() {
+    fn restoring_past_due_quest_sets_focus_to_now() {
         let db_path = temp_db_path("restore-past-due-focuses-main");
         let mut conn = open_db_at_path(&db_path);
 
@@ -1245,8 +1319,8 @@ mod tests {
 
         assert_eq!(restored.status, "active");
         assert!(
-            restored.set_main_at.is_some(),
-            "past-due restore must focus Main by setting set_main_at"
+            restored.set_focus_at.is_some(),
+            "past-due restore must set Focus by setting set_focus_at"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -1308,7 +1382,7 @@ mod tests {
             .set((
                 quests::status.eq("active"),
                 quests::completed_at.eq(Option::<String>::None),
-                quests::set_main_at.eq("2026-04-02T09:00:00Z"),
+                quests::set_focus_at.eq("2026-04-02T09:00:00Z"),
                 quests::updated_at.eq("2026-04-02T09:00:00Z"),
             ))
             .execute(&mut conn)

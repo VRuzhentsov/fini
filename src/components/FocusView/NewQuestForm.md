@@ -1,6 +1,6 @@
 # NewQuestForm
 
-Thin wrapper that connects [[ChatInput]] to quest creation. Used in [[MainView]].
+Thin wrapper that connects [[ChatInput]] to quest creation. Used in [[FocusView]].
 
 ## Layout
 

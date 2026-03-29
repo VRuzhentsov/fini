@@ -94,9 +94,9 @@ function cancelEdit() {
     <section class="rounded-xl bg-base-200 p-3">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Devices</h2>
       <ul class="flex flex-col gap-1">
-        <li v-for="device in deviceStore.pairedDevices" :key="device.id">
+        <li v-for="device in deviceStore.pairedDevices" :key="device.peer_device_id">
           <router-link
-            :to="`/settings/device/${device.id}`"
+            :to="`/settings/device/${device.peer_device_id}`"
             class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2"
           >
             <span
@@ -104,7 +104,7 @@ function cancelEdit() {
               :class="deviceStore.isDeviceOnline(device) ? 'bg-green-500' : 'bg-gray-400'"
             />
             <span class="flex-1 text-sm font-medium">{{ device.display_name }}</span>
-            <span class="text-xs opacity-60">{{ deviceStore.shortDeviceId(device.id) }}</span>
+            <span class="text-xs opacity-60">{{ deviceStore.shortDeviceId(device.peer_device_id) }}</span>
             <span class="text-sm opacity-50">›</span>
           </router-link>
         </li>

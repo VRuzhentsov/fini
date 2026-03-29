@@ -22,7 +22,7 @@ pub struct Quest {
     /// JSON-encoded RepeatRule, or null
     pub repeat_rule: Option<String>,
     pub completed_at: Option<String>,
-    pub set_main_at: Option<String>,
+    pub set_focus_at: Option<String>,
     pub reminder_triggered_at: Option<String>,
     pub order_rank: f64,
     pub created_at: String,
@@ -61,7 +61,7 @@ pub struct UpdateQuestInput {
     pub due: Option<String>,
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
-    pub set_main_at: Option<String>,
+    pub set_focus_at: Option<String>,
     pub reminder_triggered_at: Option<String>,
     pub order_rank: Option<f64>,
 }

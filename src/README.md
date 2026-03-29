@@ -13,7 +13,7 @@ src/
 ├── views/                   # Page-level route components
 ├── stores/                  # Pinia stores, one per domain
 ├── components/
-│   ├── MainView/            # Components specific to MainView
+│   ├── FocusView/           # Components specific to FocusView
 │   │   ├── ActiveQuestPanel.vue
 │   │   └── NewQuestForm.vue
 │   ├── QuestsView/          # Transitional/shared list components

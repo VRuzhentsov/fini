@@ -13,11 +13,12 @@ pub struct DiscoveredDevice {
     pub device_id: String,
     pub hostname: String,
     pub addr: String,
+    pub ws_port: Option<u16>,
     pub last_seen_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceSyncDebugStatus {
+pub struct DeviceConnectionDebugStatus {
     pub add_mode_enabled: bool,
     pub worker_started: bool,
     pub tx_count: u64,
@@ -75,6 +76,8 @@ pub(super) struct DiscoveryBeacon {
     pub device_id: String,
     pub hostname: String,
     pub sent_at: String,
+    #[serde(default)]
+    pub ws_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +124,7 @@ pub(super) struct StoredIncomingPairRequest {
 pub(super) struct SeenPeer {
     pub hostname: String,
     pub addr: String,
+    pub ws_port: Option<u16>,
     pub last_seen_at: String,
     pub last_seen_mono: Instant,
 }

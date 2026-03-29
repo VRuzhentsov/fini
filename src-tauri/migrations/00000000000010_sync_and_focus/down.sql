@@ -1,0 +1,13 @@
+DROP INDEX IF EXISTS idx_tombstones_deleted_at;
+DROP TABLE IF EXISTS tombstones;
+DROP TABLE IF EXISTS sync_seen;
+DROP TABLE IF EXISTS sync_acks;
+DROP INDEX IF EXISTS idx_sync_outbox_created_at;
+DROP INDEX IF EXISTS idx_sync_outbox_space_id;
+DROP TABLE IF EXISTS sync_outbox;
+DROP INDEX IF EXISTS idx_focus_history_device_id;
+DROP INDEX IF EXISTS idx_focus_history_quest_id;
+DROP TABLE IF EXISTS focus_history;
+DROP TABLE IF EXISTS pair_space_mappings;
+DROP TABLE IF EXISTS paired_devices;
+ALTER TABLE quests RENAME COLUMN set_focus_at TO set_main_at;

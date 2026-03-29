@@ -1,26 +1,32 @@
 use chrono::Utc;
+use diesel::prelude::*;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::time::Duration;
 use tauri::State;
 
 use super::{DISCOVERY_PORT, DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
-use crate::services::device_sync::runtime::{
+use crate::models::{CreatePairedDeviceInput, PairedDevice};
+use crate::schema::paired_devices;
+use crate::services::db::DbState;
+use crate::services::device_connection::runtime::{
     generate_passcode, prune_expired_incoming_requests, utc_now,
 };
-use crate::services::device_sync::types::{
-    DeviceIdentity, DevicePairRequestAckInput, DevicePairRequestInput, DeviceSyncDebugStatus,
+use crate::services::device_connection::types::{
+    DeviceConnectionDebugStatus, DeviceIdentity, DevicePairRequestAckInput, DevicePairRequestInput,
     DiscoveredDevice, IncomingPairRequest, PairAcceptPayload, PairCodeUpdate, PairCompletePayload,
     PairCompletionUpdate, PairRequestPayload,
 };
-use crate::services::device_sync::DeviceSyncState;
+use crate::services::device_connection::DeviceConnectionState;
 
 #[tauri::command]
-pub fn device_get_identity(state: State<DeviceSyncState>) -> Result<DeviceIdentity, String> {
+pub fn device_connection_get_identity(
+    state: State<DeviceConnectionState>,
+) -> Result<DeviceIdentity, String> {
     Ok(state.identity.clone())
 }
 
 #[tauri::command]
-pub fn device_enter_add_mode(state: State<DeviceSyncState>) -> Result<(), String> {
+pub fn device_connection_enter_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
     let mut guard = state
         .runtime
         .lock()
@@ -35,7 +41,7 @@ pub fn device_enter_add_mode(state: State<DeviceSyncState>) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn device_leave_add_mode(state: State<DeviceSyncState>) -> Result<(), String> {
+pub fn device_connection_leave_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
     let mut guard = state
         .runtime
         .lock()
@@ -53,8 +59,8 @@ pub fn device_leave_add_mode(state: State<DeviceSyncState>) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn device_send_pair_request(
-    state: State<DeviceSyncState>,
+pub fn device_connection_send_pair_request(
+    state: State<DeviceConnectionState>,
     input: DevicePairRequestInput,
 ) -> Result<(), String> {
     let target_ip: IpAddr = input
@@ -102,8 +108,8 @@ pub fn device_send_pair_request(
 }
 
 #[tauri::command]
-pub fn device_pair_incoming_requests(
-    state: State<DeviceSyncState>,
+pub fn device_connection_pair_incoming_requests(
+    state: State<DeviceConnectionState>,
 ) -> Result<Vec<IncomingPairRequest>, String> {
     let mut guard = state
         .runtime
@@ -127,8 +133,8 @@ pub fn device_pair_incoming_requests(
 }
 
 #[tauri::command]
-pub fn device_pair_outgoing_updates(
-    state: State<DeviceSyncState>,
+pub fn device_connection_pair_outgoing_updates(
+    state: State<DeviceConnectionState>,
 ) -> Result<Vec<PairCodeUpdate>, String> {
     let guard = state
         .runtime
@@ -146,8 +152,8 @@ pub fn device_pair_outgoing_updates(
 }
 
 #[tauri::command]
-pub fn device_pair_outgoing_completions(
-    state: State<DeviceSyncState>,
+pub fn device_connection_pair_outgoing_completions(
+    state: State<DeviceConnectionState>,
 ) -> Result<Vec<PairCompletionUpdate>, String> {
     let guard = state
         .runtime
@@ -166,8 +172,8 @@ pub fn device_pair_outgoing_completions(
 }
 
 #[tauri::command]
-pub fn device_pair_accept_request(
-    state: State<DeviceSyncState>,
+pub fn device_connection_pair_accept_request(
+    state: State<DeviceConnectionState>,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
     let (to_device_id, to_addr) = {
@@ -245,8 +251,8 @@ pub fn device_pair_accept_request(
 }
 
 #[tauri::command]
-pub fn device_pair_complete_request(
-    state: State<DeviceSyncState>,
+pub fn device_connection_pair_complete_request(
+    state: State<DeviceConnectionState>,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
     let (to_device_id, to_addr) = {
@@ -321,8 +327,8 @@ pub fn device_pair_complete_request(
 }
 
 #[tauri::command]
-pub fn device_pair_acknowledge_request(
-    state: State<DeviceSyncState>,
+pub fn device_connection_pair_acknowledge_request(
+    state: State<DeviceConnectionState>,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
     let mut guard = state
@@ -335,8 +341,8 @@ pub fn device_pair_acknowledge_request(
 }
 
 #[tauri::command]
-pub fn device_discovery_snapshot(
-    state: State<DeviceSyncState>,
+pub fn device_connection_discovery_snapshot(
+    state: State<DeviceConnectionState>,
 ) -> Result<Vec<DiscoveredDevice>, String> {
     let ttl = Duration::from_secs(DISCOVERY_TTL_SECS);
     let mut guard = state
@@ -355,6 +361,7 @@ pub fn device_discovery_snapshot(
             device_id: device_id.clone(),
             hostname: peer.hostname.clone(),
             addr: peer.addr.clone(),
+            ws_port: peer.ws_port,
             last_seen_at: peer.last_seen_at.clone(),
         })
         .collect();
@@ -369,8 +376,8 @@ pub fn device_discovery_snapshot(
 }
 
 #[tauri::command]
-pub fn device_presence_snapshot(
-    state: State<DeviceSyncState>,
+pub fn device_connection_presence_snapshot(
+    state: State<DeviceConnectionState>,
 ) -> Result<Vec<DiscoveredDevice>, String> {
     let guard = state
         .runtime
@@ -384,6 +391,7 @@ pub fn device_presence_snapshot(
             device_id: device_id.clone(),
             hostname: peer.hostname.clone(),
             addr: peer.addr.clone(),
+            ws_port: peer.ws_port,
             last_seen_at: peer.last_seen_at.clone(),
         })
         .collect();
@@ -398,15 +406,15 @@ pub fn device_presence_snapshot(
 }
 
 #[tauri::command]
-pub fn device_sync_debug_status(
-    state: State<DeviceSyncState>,
-) -> Result<DeviceSyncDebugStatus, String> {
+pub fn device_connection_debug_status(
+    state: State<DeviceConnectionState>,
+) -> Result<DeviceConnectionDebugStatus, String> {
     let guard = state
         .runtime
         .lock()
         .map_err(|_| "device sync runtime lock poisoned".to_string())?;
 
-    Ok(DeviceSyncDebugStatus {
+    Ok(DeviceConnectionDebugStatus {
         add_mode_enabled: guard.add_mode_enabled,
         worker_started: guard.worker_started,
         tx_count: guard.tx_count,
@@ -418,4 +426,84 @@ pub fn device_sync_debug_status(
         last_error: guard.last_error.clone(),
         discovery_port: DISCOVERY_PORT,
     })
+}
+
+// ── Paired device CRUD (SQLite) ──────────────────────────────────────────────
+
+#[tauri::command]
+pub fn device_connection_get_paired_devices(
+    db: State<DbState>,
+) -> Result<Vec<PairedDevice>, String> {
+    let mut conn = db.inner().0.lock().unwrap();
+    paired_devices::table
+        .select(PairedDevice::as_select())
+        .order(paired_devices::paired_at.desc())
+        .load(&mut *conn)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn device_connection_save_paired_device(
+    db: State<DbState>,
+    peer_device_id: String,
+    display_name: String,
+) -> Result<PairedDevice, String> {
+    let mut conn = db.inner().0.lock().unwrap();
+    let now = utc_now();
+
+    let existing: Option<PairedDevice> = paired_devices::table
+        .find(&peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(_) = existing {
+        diesel::update(paired_devices::table.find(&peer_device_id))
+            .set((
+                paired_devices::display_name.eq(&display_name),
+                paired_devices::last_seen_at.eq(&now),
+            ))
+            .execute(&mut *conn)
+            .map_err(|e| e.to_string())?;
+    } else {
+        let input = CreatePairedDeviceInput {
+            peer_device_id: peer_device_id.clone(),
+            display_name: display_name.clone(),
+            paired_at: now.clone(),
+        };
+        diesel::insert_into(paired_devices::table)
+            .values(&input)
+            .execute(&mut *conn)
+            .map_err(|e| e.to_string())?;
+    }
+
+    paired_devices::table
+        .find(&peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn device_connection_unpair(db: State<DbState>, peer_device_id: String) -> Result<(), String> {
+    let mut conn = db.inner().0.lock().unwrap();
+    diesel::delete(paired_devices::table.find(&peer_device_id))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn device_connection_update_last_seen(
+    db: State<DbState>,
+    peer_device_id: String,
+    last_seen_at: String,
+) -> Result<(), String> {
+    let mut conn = db.inner().0.lock().unwrap();
+    diesel::update(paired_devices::table.find(&peer_device_id))
+        .set(paired_devices::last_seen_at.eq(&last_seen_at))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }

@@ -1,6 +1,6 @@
 # QuestList
 
-Shared list UI used by [[MainView]] (active backlog section) and [[HistoryView]]. Rendering adapts per `quest.status`.
+Shared list UI used by [[FocusView]] (active backlog section) and [[HistoryView]]. Rendering adapts per `quest.status`.
 
 ## Props
 
