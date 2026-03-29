@@ -13,10 +13,15 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    generate_next_occurrence, resolve_active_quest,
+    models::{
+        CreateQuestInput, CreateReminderInput, CreateSpaceInput, Quest, Reminder, Space,
+        UpdateQuestInput,
+    },
     schema::{quests, reminders, spaces},
-    CreateQuestInput, CreateReminderInput, CreateSpaceInput, Quest, Reminder, Space,
-    UpdateQuestInput,
+    services::{
+        db::open_db_at_path,
+        quest::{generate_next_occurrence, resolve_active_quest},
+    },
 };
 
 // ── Server ─────────────────────────────────────────────────────────────────────
@@ -29,7 +34,7 @@ pub struct FiniServer {
 
 impl FiniServer {
     pub fn new(db_path: &std::path::Path) -> Self {
-        let conn = crate::open_db_at_path(db_path);
+        let conn = open_db_at_path(db_path);
         Self {
             db: Arc::new(Mutex::new(conn)),
             tool_router: Self::tool_router(),
@@ -169,8 +174,7 @@ fn period_key_for(quest: &Quest) -> Option<String> {
     if let Some(due) = quest.due.as_ref() {
         return Some(due.clone());
     }
-    parse_utc_timestamp(&quest.created_at)
-        .map(|ts| ts.date_naive().format("%Y-%m-%d").to_string())
+    parse_utc_timestamp(&quest.created_at).map(|ts| ts.date_naive().format("%Y-%m-%d").to_string())
 }
 
 fn repeat_rule_active(rule: Option<&str>) -> bool {
@@ -330,7 +334,7 @@ impl FiniServer {
         Parameters(p): Parameters<UpdateQuestParams>,
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
-        let now = crate::utc_now();
+        let now = crate::services::db::utc_now();
         let mut input = UpdateQuestInput {
             space_id: p.space_id,
             title: p.title,
@@ -389,7 +393,7 @@ impl FiniServer {
         Parameters(p): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
-        let now = crate::utc_now();
+        let now = crate::services::db::utc_now();
         diesel::update(quests::table.find(&p.id))
             .set((
                 quests::status.eq("completed"),
@@ -417,7 +421,7 @@ impl FiniServer {
         Parameters(p): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
-        let now = crate::utc_now();
+        let now = crate::services::db::utc_now();
         diesel::update(quests::table.find(&p.id))
             .set((quests::status.eq("abandoned"), quests::updated_at.eq(&now)))
             .execute(&mut *conn)
@@ -558,7 +562,9 @@ impl FiniServer {
         ))
     }
 
-    #[tool(description = "Create a reminder for a quest. Type 'relative' uses mm_offset (minutes before due). Type 'absolute' uses due_at_utc (ISO datetime).")]
+    #[tool(
+        description = "Create a reminder for a quest. Type 'relative' uses mm_offset (minutes before due). Type 'absolute' uses due_at_utc (ISO datetime)."
+    )]
     async fn create_reminder(
         &self,
         Parameters(p): Parameters<CreateReminderParams>,
@@ -760,9 +766,7 @@ mod tests {
             .await
             .expect("list quests");
 
-        let payload = result
-            .structured_content
-            .expect("structured content");
+        let payload = result.structured_content.expect("structured content");
         let items = payload
             .get("quests")
             .and_then(Value::as_array)
@@ -772,13 +776,12 @@ mod tests {
         let item = &items[0];
         let id = json_id(item);
         assert_eq!(item["title"], "Daily quest");
-        assert_eq!(
-            item["series_id"].as_str().expect("series_id string"),
-            id
-        );
+        assert_eq!(item["series_id"].as_str().expect("series_id string"), id);
         assert_eq!(item["period_key"], "2026-03-20");
         assert_eq!(
-            item["occurrence_id"].as_str().expect("occurrence_id string"),
+            item["occurrence_id"]
+                .as_str()
+                .expect("occurrence_id string"),
             format!("{}:2026-03-20", id)
         );
         assert_eq!(item["due_at_utc"], "2026-03-20T09:00:00Z");
@@ -815,9 +818,7 @@ mod tests {
             }))
             .await
             .expect("get quest");
-        let fetched_value = fetched
-            .structured_content
-            .expect("get structured content");
+        let fetched_value = fetched.structured_content.expect("get structured content");
         assert_eq!(json_id(&fetched_value), created_id);
 
         let updated = server
@@ -905,10 +906,7 @@ mod tests {
             .expect("delete structured content");
         assert_eq!(deleted_value["deleted"], true);
 
-        let history = server
-            .list_history()
-            .await
-            .expect("list history");
+        let history = server.list_history().await.expect("list history");
         let history_value = history
             .structured_content
             .expect("history structured content");
@@ -917,7 +915,9 @@ mod tests {
             .and_then(Value::as_array)
             .expect("history quests array");
         assert!(
-            history_items.iter().any(|item| item["status"] == "completed"),
+            history_items
+                .iter()
+                .any(|item| item["status"] == "completed"),
             "history should include completed quest"
         );
 
@@ -955,10 +955,7 @@ mod tests {
             .await
             .expect("set main on active quest");
 
-        let active_result = server
-            .get_active_quest()
-            .await
-            .expect("get active quest");
+        let active_result = server.get_active_quest().await.expect("get active quest");
         let active_value = active_result
             .structured_content
             .expect("active structured content");
@@ -1041,7 +1038,7 @@ impl ServerHandler for FiniServer {
 // ── Entry point ────────────────────────────────────────────────────────────────
 
 pub async fn run() -> Result<()> {
-    let db_path = crate::db_default_path();
+    let db_path = crate::services::db::db_default_path();
     std::fs::create_dir_all(db_path.parent().unwrap())?;
     let service = FiniServer::new(&db_path).serve(stdio()).await?;
     service.waiting().await?;

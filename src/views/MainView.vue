@@ -17,9 +17,16 @@ const filteredQuests = computed(() => {
   return store.quests.filter((q) => q.space_id === sid);
 });
 
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 const backlog = computed(() => {
   const mainId = store.activeQuest?.id;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr(new Date());
   return filteredQuests.value
     .filter((q) => q.status === "active" && q.id !== mainId)
     .sort((a, b) => {

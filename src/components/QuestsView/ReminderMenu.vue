@@ -50,15 +50,17 @@ onUnmounted(() => {
 // ── Date helpers ───────────────────────────────────────────────────────────────
 
 function toDateStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function todayDate() { return toDateStr(new Date()); }
 function tomorrowDate() { const d = new Date(); d.setDate(d.getDate() + 1); return toDateStr(d); }
 function nextWeekDate() {
   const d = new Date();
-  const diff = d.getDay() === 0 ? 1 : 8 - d.getDay();
-  d.setDate(d.getDate() + diff);
+  d.setDate(d.getDate() + 7);
   return toDateStr(d);
 }
 
