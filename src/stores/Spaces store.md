@@ -19,4 +19,4 @@ Frontend state for [[Space]]. Single source of truth for space data in the UI.
 
 - For the domain model see [[Space]].
 - Space ids are string-based (`"1"`, `"2"`, `"3"`, or UUID).
-- `selectedSpaceId` is persisted to `localStorage` and restored on mount.
+- `selectedSpaceId` resets to `null` (All spaces) on each app restart.

@@ -33,7 +33,7 @@ function cancelEdit() {
 </script>
 
 <template>
-  <div class="flex flex-col gap-4 px-4 pt-4">
+  <div class="flex flex-col gap-4">
     <h2 class="text-xl font-semibold">Spaces</h2>
 
     <div v-if="store.error" class="text-error text-sm">{{ store.error }}</div>

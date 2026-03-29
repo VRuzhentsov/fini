@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useQuestStore, type Quest } from "../../stores/quest";
+import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
+import { useContextMenu } from "../../composables/useContextMenu";
 import {
   PaperClipIcon,
   TagIcon,
@@ -9,11 +12,48 @@ import {
   EllipsisVerticalIcon,
   ChevronUpIcon,
   ExclamationCircleIcon,
+  ArrowPathIcon,
 } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
 
 defineProps<{ quests: Quest[] }>();
 const store = useQuestStore();
+const { t } = useI18n();
+const spaceStore = useSpaceStore();
+const contextMenu = useContextMenu();
+
+function spaceName(quest: Quest): string {
+  return spaceStore.spaces.find((s) => s.id === quest.space_id)?.name ?? "";
+}
+
+function spaceCss(quest: Quest): string {
+  return SPACE_COLOR_CLASS[quest.space_id] ?? "";
+}
+
+function onContextMenu(e: MouseEvent, quest: Quest) {
+  const moveItems = spaceStore.spaces
+    .filter((s) => s.id !== quest.space_id)
+    .map((s) => ({
+      label: s.name,
+      action: () => store.updateQuest(quest.id, { space_id: s.id }),
+    }));
+  const items = [];
+  if (quest.status === "active") {
+    items.push({ label: "Complete", action: () => store.updateQuest(quest.id, { status: "completed" }) });
+    items.push({ separator: true });
+    items.push({ label: "Set Main", action: () => store.setMainQuest(quest.id) });
+  }
+  if (quest.status !== "active") {
+    items.push({ label: "Make active", action: () => store.updateQuest(quest.id, { status: "active" }) });
+  }
+  items.push({ label: "Move to space", children: moveItems });
+  items.push({ separator: true });
+  if (quest.status === "active") {
+    items.push({ label: "Abandon", action: () => store.updateQuest(quest.id, { status: "abandoned" }) });
+  }
+  items.push({ label: "Delete", action: () => store.deleteQuest(quest.id) });
+  contextMenu.open(e, items);
+}
 
 // ── Expand / collapse ─────────────────────────────────────────────────────────
 
@@ -113,12 +153,40 @@ async function menuDelete() {
 
 function isOverdue(quest: Quest): boolean {
   if (!quest.due || quest.status !== "active") return false;
-  return quest.due < new Date().toISOString().slice(0, 10);
+  return quest.due < localDateStr(new Date());
 }
 
 function formatDue(due: string): string {
   const date = new Date(due + "T00:00:00");
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function smartDueLabel(quest: Quest): string {
+  if (!quest.due) return "";
+  const now = new Date();
+  const todayStr = localDateStr(now);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = localDateStr(tomorrow);
+  const time = quest.due_time ? `, ${formatTime(quest.due_time)}` : "";
+  if (quest.due === todayStr) return t("quest.today") + time;
+  if (quest.due === tomorrowStr) return t("quest.tomorrow") + time;
+  return formatDue(quest.due) + time;
+}
+
+function dueBadgeClass(quest: Quest): string {
+  if (!quest.due) return "";
+  const todayStr = localDateStr(new Date());
+  if (quest.due < todayStr) return "badge-error";
+  if (quest.due === todayStr) return "badge-success";
+  return "badge-ghost";
 }
 
 function formatRepeat(repeatRule: string): string {
@@ -181,15 +249,16 @@ function formatTimestamp(quest: Quest): string {
       <!-- Collapsed row -->
       <div
         v-if="expandedId !== quest.id"
-        class="quest-row-surface flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer hover:bg-base-200 transition-colors select-none"
+        class="quest-row-surface flex items-center gap-2 px-3 py-1.5 rounded-sm cursor-pointer hover:bg-base-200 transition-colors select-none"
         @click="toggle(quest.id)"
+        @contextmenu="onContextMenu($event, quest)"
       >
         <!-- History: checked checkbox restores; Active: unchecked completes -->
         <input
           v-if="quest.status !== 'active'"
           type="checkbox"
           class="checkbox checkbox-sm shrink-0 cursor-pointer"
-          :class="quest.status === 'completed' ? 'checkbox-success' : 'checkbox-warning'"
+          :class="quest.status === 'completed' ? 'checkbox-success' : 'abandoned-checkbox'"
           checked
           @click.prevent.stop="restore(quest.id)"
         />
@@ -198,15 +267,19 @@ function formatTimestamp(quest: Quest): string {
         <span
           v-if="quest.status !== 'active'"
           class="badge badge-sm shrink-0 font-mono"
-          :class="quest.status === 'completed' ? 'badge-success' : 'badge-warning'"
+          :class="quest.status === 'completed' ? 'badge-success' : 'badge-outline opacity-40'"
         >{{ formatTimestamp(quest) }}</span>
 
-        <span v-if="isOverdue(quest)" class="badge badge-error badge-xs shrink-0">overdue</span>
+        <span v-if="quest.due && quest.status === 'active'" class="badge badge-sm shrink-0 gap-0.5 rounded-sm" :class="dueBadgeClass(quest)">
+          {{ smartDueLabel(quest) }}
+          <ArrowPathIcon v-if="quest.repeat_rule" class="size-3.5" />
+        </span>
         <span class="flex-1 text-sm" :class="{ 'line-through opacity-50': quest.status !== 'active' }">{{ quest.title }}</span>
+        <span class="badge badge-xs shrink-0 rounded-sm" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
       </div>
 
       <!-- Expanded card -->
-      <div v-else class="card card-bordered bg-base-200 shadow-sm">
+      <div v-else class="card card-bordered bg-base-200 shadow-sm" @contextmenu="onContextMenu($event, quest)">
         <div class="card-body px-4 py-4 gap-4">
 
           <!-- Header -->
@@ -215,7 +288,7 @@ function formatTimestamp(quest: Quest): string {
               v-if="quest.status !== 'active'"
               type="checkbox"
               class="checkbox checkbox-sm shrink-0 cursor-pointer"
-              :class="quest.status === 'completed' ? 'checkbox-success' : 'checkbox-warning'"
+              :class="quest.status === 'completed' ? 'checkbox-success' : 'abandoned-checkbox'"
               checked
               @click.prevent.stop="restore(quest.id)"
             />
@@ -233,10 +306,12 @@ function formatTimestamp(quest: Quest): string {
               @keydown="onTitleKeydown"
             >{{ quest.title }}</span>
 
+            <span class="badge badge-xs shrink-0 rounded-sm" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
+
             <span
               v-if="quest.status !== 'active'"
               class="badge badge-sm font-mono"
-              :class="quest.status === 'completed' ? 'badge-success' : 'badge-warning'"
+              :class="quest.status === 'completed' ? 'badge-success' : 'badge-outline opacity-40'"
             >{{ formatTimestamp(quest) }}</span>
             <button
               v-else
@@ -332,5 +407,11 @@ function formatTimestamp(quest: Quest): string {
 <style scoped>
 .quest-row {
   list-style: none;
+}
+.abandoned-checkbox {
+  background-color: transparent !important;
+  border-color: rgba(128, 128, 128, 0.3) !important;
+  background-image: none !important;
+  color: transparent !important;
 }
 </style>

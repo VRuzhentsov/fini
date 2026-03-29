@@ -100,7 +100,7 @@ function rejectRequest(requestId: string) {
 </script>
 
 <template>
-  <div class="flex flex-col gap-4 px-4 pt-4 pb-24">
+  <div class="flex flex-col gap-4 pb-24">
     <header class="flex items-center justify-between rounded-xl bg-base-200 px-3 py-2">
       <router-link to="/settings" class="text-sm font-medium opacity-70">‹ Settings</router-link>
       <span class="text-sm font-semibold">Add Device</span>

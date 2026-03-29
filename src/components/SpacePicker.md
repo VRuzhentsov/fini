@@ -13,8 +13,7 @@ DaisyUI `dropdown` with a `menu` listing "All spaces" + every space from [[space
 ## State
 
 - `selectedSpaceId`: `string | null` — `null` means "All spaces"
-- Persisted to `localStorage.selectedSpaceId`
-- On mount: restore from localStorage; fall back to `null`
+- Resets to `null` on each app restart (not persisted)
 
 ## Behaviour
 

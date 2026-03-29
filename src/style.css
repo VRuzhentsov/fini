@@ -1,2 +1,17 @@
 @import "tailwindcss";
 @plugin "daisyui";
+
+/* Built-in space colors — keep in sync with SPACE_COLOR_CLASS in space.ts */
+:root {
+  --space-color-personal: #0057B7;
+  --space-color-family:   #FFDD00;
+  --space-color-work:     #8B0000;
+}
+.space-color-personal { color: var(--space-color-personal); }
+.space-color-family   { color: var(--space-color-family); }
+.space-color-work     { color: var(--space-color-work); }
+
+/* Filled variant for badges */
+.badge.space-color-personal { background-color: var(--space-color-personal); border-color: var(--space-color-personal); color: #fff; }
+.badge.space-color-family   { background-color: var(--space-color-family); border-color: var(--space-color-family); color: #1a1a1a; }
+.badge.space-color-work     { background-color: var(--space-color-work); border-color: var(--space-color-work); color: #fff; }

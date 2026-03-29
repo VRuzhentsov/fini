@@ -54,7 +54,7 @@ function cancelEdit() {
 </script>
 
 <template>
-  <div class="flex flex-col gap-3 px-4 pt-4 pb-24">
+  <div class="flex flex-col gap-3 pb-24">
 
     <section class="rounded-xl bg-base-200 p-3">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Spaces</h2>

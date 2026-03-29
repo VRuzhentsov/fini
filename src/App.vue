@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import ToastStack from "./components/ToastStack.vue";
+import ContextMenu from "./components/ContextMenu.vue";
+import SpacePicker from "./components/SpacePicker.vue";
 </script>
 
 <template>
   <div class="app-shell">
     <nav class="nav">
-      <router-link to="/main">Main</router-link>
-      <router-link to="/history">History</router-link>
-      <router-link to="/settings">Settings</router-link>
+      <div class="nav-links">
+        <router-link to="/main">Main</router-link>
+        <router-link to="/history">History</router-link>
+        <router-link to="/settings">Settings</router-link>
+      </div>
+      <SpacePicker />
     </nav>
     <main class="content">
       <router-view />
     </main>
     <ToastStack />
+    <ContextMenu />
   </div>
 </template>
 
@@ -52,19 +58,25 @@ import ToastStack from "./components/ToastStack.vue";
 
 .nav {
   display: flex;
-  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
   padding: 0.75rem 1.5rem;
   border-bottom: 1px solid rgba(128, 128, 128, 0.2);
 }
 
-.nav a {
+.nav-links {
+  display: flex;
+  gap: 1rem;
+}
+
+.nav-links a {
   text-decoration: none;
   color: inherit;
   opacity: 0.6;
   font-weight: 500;
 }
 
-.nav a.router-link-active {
+.nav-links a.router-link-active {
   opacity: 1;
 }
 

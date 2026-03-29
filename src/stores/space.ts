@@ -9,10 +9,21 @@ export interface Space {
   created_at: string;
 }
 
+export const SPACE_COLOR_CLASS: Record<string, string> = {
+  "1": "space-color-personal",
+  "2": "space-color-family",
+  "3": "space-color-work",
+};
+
 export const useSpaceStore = defineStore("space", () => {
   const spaces = ref<Space[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  const selectedSpaceId = ref<string | null>(null);
+
+  function selectSpace(id: string | null) {
+    selectedSpaceId.value = id;
+  }
 
   async function fetchSpaces() {
     loading.value = true;
@@ -47,5 +58,5 @@ export const useSpaceStore = defineStore("space", () => {
     spaces.value = spaces.value.filter((s) => s.id !== id);
   }
 
-  return { spaces, loading, error, fetchSpaces, createSpace, updateSpace, deleteSpace };
+  return { spaces, loading, error, selectedSpaceId, selectSpace, fetchSpaces, createSpace, updateSpace, deleteSpace };
 });

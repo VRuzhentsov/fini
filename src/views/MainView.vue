@@ -1,18 +1,26 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { useQuestStore } from "../stores/quest";
+import { useSpaceStore } from "../stores/space";
 import ActiveQuestPanel from "../components/MainView/ActiveQuestPanel.vue";
 import NewQuestForm from "../components/MainView/NewQuestForm.vue";
 import QuestList from "../components/QuestsView/QuestList.vue";
 
 const store = useQuestStore();
+const spaceStore = useSpaceStore();
 
 onMounted(() => store.fetchQuests());
+
+const filteredQuests = computed(() => {
+  const sid = spaceStore.selectedSpaceId;
+  if (!sid) return store.quests;
+  return store.quests.filter((q) => q.space_id === sid);
+});
 
 const backlog = computed(() => {
   const mainId = store.activeQuest?.id;
   const today = new Date().toISOString().slice(0, 10);
-  return store.quests
+  return filteredQuests.value
     .filter((q) => q.status === "active" && q.id !== mainId)
     .sort((a, b) => {
       const aOverdue = a.due && a.due < today ? 1 : 0;
@@ -23,14 +31,20 @@ const backlog = computed(() => {
       return a.created_at.localeCompare(b.created_at);
     });
 });
+
+const activeQuest = computed(() => {
+  const sid = spaceStore.selectedSpaceId;
+  if (!sid || !store.activeQuest) return store.activeQuest;
+  return store.activeQuest.space_id === sid ? store.activeQuest : null;
+});
 </script>
 
 <template>
-  <div class="flex flex-col gap-8 px-4 pt-4">
+  <div class="flex flex-col gap-1">
     <div v-if="store.error" class="text-error text-sm">{{ store.error }}</div>
 
     <section>
-      <ActiveQuestPanel v-if="store.activeQuest" :quest="store.activeQuest" />
+      <ActiveQuestPanel v-if="activeQuest" :quest="activeQuest" />
       <p v-else class="text-sm opacity-40">No active quest.</p>
     </section>
 
