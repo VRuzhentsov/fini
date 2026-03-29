@@ -1,5 +1,4 @@
 mod services;
-pub mod mcp;
 mod schema;
 // mod voice;       // postponed
 // mod model_download; // postponed
@@ -234,32 +233,72 @@ fn is_series_end_reached(rule: &RepeatRule, next_due: &NaiveDate, completed_coun
     }
 }
 
+/// Ensures a quest is linked to a series. If it has a repeat_rule but no series_id
+/// (pre-migration data), creates the series on-the-fly and links the quest.
+fn ensure_series(
+    conn: &mut SqliteConnection,
+    quest: &Quest,
+) -> Result<Option<(String, RepeatRule)>, diesel::result::Error> {
+    let repeat_rule_str = match quest.repeat_rule.as_deref() {
+        Some(r) if !r.is_empty() => r,
+        _ => return Ok(None),
+    };
+
+    let rule: RepeatRule = match serde_json::from_str(repeat_rule_str) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    if let Some(ref sid) = quest.series_id {
+        let active: bool = quest_series::table
+            .find(sid)
+            .select(quest_series::active)
+            .first(conn)
+            .unwrap_or(true);
+        if !active {
+            return Ok(None);
+        }
+        return Ok(Some((sid.clone(), rule)));
+    }
+
+    // Quest has repeat_rule but no series — backfill series on-the-fly
+    let series_input = CreateSeriesInput {
+        space_id: quest.space_id.clone(),
+        title: quest.title.clone(),
+        description: quest.description.clone(),
+        repeat_rule: repeat_rule_str.to_string(),
+        priority: quest.priority,
+        energy: quest.energy.clone(),
+    };
+
+    let series = diesel::insert_into(quest_series::table)
+        .values(&series_input)
+        .returning(QuestSeries::as_returning())
+        .get_result::<QuestSeries>(conn)?;
+
+    let period_key = quest
+        .due
+        .as_deref()
+        .unwrap_or(&quest.created_at[..10])
+        .to_string();
+
+    diesel::update(quests::table.find(&quest.id))
+        .set((
+            quests::series_id.eq(&series.id),
+            quests::period_key.eq(&period_key),
+        ))
+        .execute(conn)?;
+
+    Ok(Some((series.id, rule)))
+}
+
 fn generate_next_occurrence(
     conn: &mut SqliteConnection,
     quest: &Quest,
 ) -> Result<Option<Quest>, diesel::result::Error> {
-    let series_id = match quest.series_id.as_ref() {
-        Some(id) => id.clone(),
+    let (series_id, rule) = match ensure_series(conn, quest)? {
+        Some(pair) => pair,
         None => return Ok(None),
-    };
-
-    let series: QuestSeries = match quest_series::table
-        .find(&series_id)
-        .select(QuestSeries::as_select())
-        .first(conn)
-    {
-        Ok(s) => s,
-        Err(diesel::NotFound) => return Ok(None),
-        Err(e) => return Err(e),
-    };
-
-    if !series.active {
-        return Ok(None);
-    }
-
-    let rule: RepeatRule = match serde_json::from_str(&series.repeat_rule) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
     };
 
     let current_due = quest
@@ -308,15 +347,15 @@ fn generate_next_occurrence(
 
     diesel::insert_into(quests::table)
         .values((
-            quests::space_id.eq(&series.space_id),
-            quests::title.eq(&series.title),
-            quests::description.eq(&series.description),
+            quests::space_id.eq(&quest.space_id),
+            quests::title.eq(&quest.title),
+            quests::description.eq(&quest.description.as_deref()),
             quests::status.eq("active"),
-            quests::energy.eq(&series.energy),
-            quests::priority.eq(series.priority),
+            quests::energy.eq(&quest.energy),
+            quests::priority.eq(quest.priority),
             quests::due.eq(&period_key),
             quests::due_time.eq(quest.due_time.as_deref()),
-            quests::repeat_rule.eq(&series.repeat_rule),
+            quests::repeat_rule.eq(quest.repeat_rule.as_deref()),
             quests::order_rank.eq(max_rank + 1.0),
             quests::series_id.eq(&series_id),
             quests::period_key.eq(&period_key),
@@ -754,9 +793,9 @@ fn update_quest(
         .first(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    // Auto-generate next occurrence when a series quest is completed or abandoned
+    // Auto-generate next occurrence when a repeating quest is completed or abandoned
     if matches!(status.as_deref(), Some("completed") | Some("abandoned")) {
-        if updated_quest.series_id.is_some() {
+        if updated_quest.repeat_rule.is_some() || updated_quest.series_id.is_some() {
             let _ = generate_next_occurrence(&mut conn, &updated_quest);
         }
     }
@@ -811,7 +850,7 @@ pub fn run_mcp() {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(mcp::run())
+        .block_on(services::mcp::run())
         .unwrap();
 }
 

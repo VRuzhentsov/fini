@@ -403,7 +403,7 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
-        if quest.series_id.is_some() {
+        if quest.repeat_rule.is_some() || quest.series_id.is_some() {
             let _ = generate_next_occurrence(&mut conn, &quest);
         }
         Ok(CallToolResult::structured(
@@ -427,7 +427,7 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
-        if quest.series_id.is_some() {
+        if quest.repeat_rule.is_some() || quest.series_id.is_some() {
             let _ = generate_next_occurrence(&mut conn, &quest);
         }
         Ok(CallToolResult::structured(
