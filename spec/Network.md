@@ -2,15 +2,18 @@
 
 Fini is local-first and accountless. LAN sync is introduced in **MVP.1**.
 
-Detailed product UX and pairing interaction behavior live in [[DeviceSync]].
+## Authority split
+
+- [[DeviceConnection]] owns discovery/presence/pairing control-plane behavior.
+- [[SpaceSync]] owns mapping and data replication behavior.
+- `spec/Network.md` owns transport-level contracts shared by both.
 
 ## Goals
 
-- Zero-cloud architecture: no central account service required
-- Nearby device discovery on LAN
-- Explicit pairing before any data sharing
-- Per-space sync selection
-- Near-real-time propagation with offline queue/replay
+- Zero-cloud architecture (no central account service)
+- Explicit pairing before data sharing
+- Per-space synchronization selection
+- Automatic convergence after offline reconnect
 
 ## Entry points
 
@@ -20,50 +23,80 @@ Detailed product UX and pairing interaction behavior live in [[DeviceSync]].
 
 All entry points operate on the same local dataset.
 
-## Pairing
+## Transport split
 
-- Discovery is passive; data exchange starts only after pairing
-- Pairing requires a 6-digit passcode
-- Pairing survives restarts until unpaired
-- Presence heartbeat is always emitted while app is running (every 60s)
-- `last_seen_at` is derived from latest heartbeat/discovery receipt
+- Control-plane: UDP
+  - discovery
+  - presence heartbeat
+  - pairing handshake
+- Data-plane: websocket
+  - space synchronization events
+  - ACK/replay traffic
 
-## Space selection
+Discovery beacons advertise fixed websocket port for `space_sync`.
 
-- User selects which spaces replicate to each paired device
-- Space identity is id-based, not name-based
-  - Built-ins use reserved ids: `"1"`, `"2"`, `"3"`
-  - Custom spaces use UUID ids
+## Pairing baseline
 
-## Sync model
+- Pairing requires a 6-digit passcode.
+- Pairing survives restarts until unpair.
+- Presence heartbeat interval: 60s.
+- `last_seen_at` is derived from latest heartbeat/discovery receipt.
 
-- Push on change + reconnect catch-up
-- Offline edits queue locally and replay on reconnect
-- Offline queue must survive restarts/crashes (durable storage)
-- Conflict resolution: last-write-wins by `updated_at` UTC
-- Deletes replicate globally (tombstone semantics; no resurrection)
+## Session model
+
+- One canonical websocket session per paired device pair.
+- Deterministic initiator rule selects the dialer (lower `device_id` dials).
+- Websocket session requires pair-auth handshake before data exchange.
+
+## Replication model
+
+- Push-on-change + reconnect catch-up.
+- Durable local outbox and ACK replay.
+- Queue survives restart/crash.
+- Event dedupe by `event_id`.
+- Fan-out relay between connected peers is allowed.
+
+## Conflict and convergence policy
+
+Required outcome: automatic eventual convergence.
+
+Conflict order:
+
+1. newer `updated_at` wins
+2. tie-break: lexicographically lower `origin_device_id` wins
+3. final tie-break: lexicographically lower `event_id` wins
+
+## Delete semantics
+
+- Deletes are replicated as tombstones.
+- No resurrection after reconnect.
+- Tombstones are retained for 30 days, then cleaned up.
+
+## Space identity policy
+
+- Space identity is id-based, not name-based.
+- Built-ins use reserved ids: `"1"`, `"2"`, `"3"`.
+- Custom spaces use UUID ids.
+- Missing mapped spaces are auto-created on peers with the same `space_id`.
 
 ## Shared repeating behavior
 
-- Repeating quests use series + occurrences
-- One occurrence completion resolves for all paired devices
-- Deterministic occurrence identity uses `series_id + period_key`
-- `period_key` uses UTC period boundaries
-- Completion of shared occurrence cancels pending reminders for that occurrence on all peers
+- Repeating quests use series + occurrences.
+- Deterministic occurrence identity: `series_id + period_key`.
+- `period_key` uses UTC period boundaries.
+- Completion of shared occurrence cancels pending reminders for that occurrence on all mapped peers.
 
-## Focus sync
+## Focus synchronization
 
-- Manual and reminder focus override metadata replicate across paired devices
-- Main quest is computed from synced data/events, not from a device-local singleton state
-
-## Collaboration metadata
-
-- Completion actor is stored as device hostname (no account identity)
-- Teammate completion updates are subtle in-app updates
+- Product term is `Focus`.
+- Focus events are owner-scoped in [[FocusHistory]], not in shared quest rows.
+- Focus history sync is allowed only for owner-cluster peers (implicit via mapped `Personal` space `"1"`).
+- Focus events replicate only when target quest belongs to a mapped space.
 
 ## Security
 
-- LAN sharing is off by default
-- Pairing passcode is mandatory for pairing attempts
-- Transport encryption is deferred beyond MVP.1 and becomes mandatory later
-- At-rest encryption is post-MVP work
+- LAN sharing is off by default.
+- Pairing passcode is mandatory.
+- Pair-auth is mandatory for websocket sync sessions.
+- Data-plane transport encryption is deferred to follow-up phase.
+- At-rest encryption is post-MVP work.

@@ -6,7 +6,7 @@ Root component. Renders the tab bar and the current route view.
 
 | Label | Route | View | Status |
 |---|---|---|---|
-| Main | `/main` | [[MainView]] | active |
+| Focus | `/main` | [[MainView]] | active |
 | History | `/history` | [[HistoryView]] | active |
 | Settings | `/settings` | [[SettingsView]] | active |
 
@@ -16,5 +16,5 @@ Root component. Renders the tab bar and the current route view.
 - `<router-view>` fills the remaining space below
 - [[ContextMenu]] is rendered globally once, opened by any component via `useContextMenu()`
 - [[ToastStack]] is rendered globally outside the route view
-- Active backlog browsing/editing lives in [[MainView]]
+- Focus quest + active backlog browsing/editing lives in [[MainView]]
 - Space management lives in the Spaces section of [[SettingsView]]

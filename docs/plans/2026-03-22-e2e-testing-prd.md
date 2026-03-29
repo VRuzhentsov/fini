@@ -5,6 +5,8 @@ Status: Draft
 Priority: Low
 Owner: TBD
 
+> Terminology note: newer specs use `Focus` instead of `Main`, and MCP focus tool naming is expected to move from `get_active_quest` to `get_active_focus`.
+
 ## Background
 
 Fini now has a stable backend foundation for quest identity and Main resolver behavior, and MCP is explicitly MVP-critical. Current automated checks cover Rust unit/integration coverage, but there is no dedicated end-to-end harness for:

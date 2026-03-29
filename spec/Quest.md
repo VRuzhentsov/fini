@@ -18,8 +18,6 @@ Actionable unit shown to the user right now. In repeating flows, this is an occu
 | `due_time` | time \| null | null | Optional user-facing time |
 | `due_at_utc` | datetime \| null | null | Canonical UTC deadline used by reminders/overdue logic |
 | `repeat_rule` | RepeatRule \| null | null | Recurrence settings; see [[RepeatRule]] |
-| `set_main_at` | datetime \| null | null | Last manual "Set Main" timestamp |
-| `reminder_triggered_at` | datetime \| null | null | Last reminder-triggered focus timestamp |
 | `order_rank` | float | `0` | Ordering rank in signed range `-100..100` (lower first) |
 | `completed_at` | datetime \| null | null | Set on completion |
 | `created_at` | datetime | — | Creation timestamp |
@@ -29,18 +27,18 @@ Actionable unit shown to the user right now. In repeating flows, this is an occu
 
 | Value | Kind | Meaning |
 |---|---|---|
-| `active` | state | In backlog and eligible to become Main |
+| `active` | state | In backlog and eligible to become Focus |
 | `completed` | terminal status | Done, shown in [[HistoryView]] |
 | `abandoned` | terminal status | Intentionally dropped, shown in [[HistoryView]] |
 
-## Main quest selection
+## Focus quest selection
 
-Main quest is computed by getter from quest data/events, not from a separate mutable "current main" state.
+Focus quest is computed by getter from quest data/events, not from a separate mutable singleton state.
 
 ### Override signals
 
-- Manual override: `set_main_at`
-- Reminder override: `reminder_triggered_at`
+- Manual and reminder override events are written to [[FocusHistory]].
+- Focus metadata is owner-scoped and does not live in quest rows.
 
 For active quests, latest override timestamp wins. Reminder overrides are temporary preemption; when reminder-driven quest resolves, next most recent valid override is used.
 
@@ -66,7 +64,7 @@ If no active override exists:
 
 ## Restore
 
-Restoring from history sets `status = active` and sets `set_main_at = now` (restored quest becomes Main immediately).
+Restoring from history sets `status = active` and appends a `restore` event in [[FocusHistory]] (restored quest becomes Focus immediately).
 
 ## Priority
 

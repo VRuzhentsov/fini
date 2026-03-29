@@ -25,7 +25,7 @@ src/
 
 View-specific components live in a subfolder named after their view. Shared components sit at the `components/` root.
 
-Current primary tabs are `Main`, `History`, and `Settings`. Active backlog management is part of `Main`.
+Current primary tabs are `Focus`, `History`, and `Settings`. Active backlog management is part of `Focus` (route remains `/main` during transition).
 
 Each view, component, and store has a companion `.md` spec file.
 

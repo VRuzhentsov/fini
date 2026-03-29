@@ -25,13 +25,13 @@ Notes:
 
 ### Devices
 
-Device sync settings entry point. See [[spec/DeviceSync]].
+Device connection + synchronization entry point. See [[DeviceConnection]] and [[SpaceSync]].
 
 - `DeviceList` is visible inline on `/settings`
 - Device rows navigate to [[DeviceView]]
 - `Add device` row is always last and navigates to [[AddDeviceView]]
 - Device status uses green/gray presence indicator
-- Mapping behavior in device details is currently `TBD` (read-only placeholder)
+- Device detail view exposes mapped-space configuration per paired device
 
 ### Voice Model
 Manages the on-device ASR model (`sherpa-onnx-streaming-zipformer-small-en`, ~60 MB).
@@ -50,7 +50,8 @@ Progress label format: `Downloading <filename> (<file_index+1>/<file_count>) <pc
 |---|---|
 | [[useModelDownload]] | Download state, progress, error, start/check |
 | [[space.ts]] | `fetchSpaces`, `createSpace`, `updateSpace`, `deleteSpace` |
-| Device sync runtime adapter (`TBD`) | Paired devices list, presence state, and pairing actions |
+| `device_connection` runtime adapter | Paired devices list, presence state, and pairing actions |
+| `space_sync` runtime adapter | Mapping state, bootstrap sync, and sync status |
 
 ## Future sections
 

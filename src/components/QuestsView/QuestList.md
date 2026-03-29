@@ -20,7 +20,7 @@ Checkbox + title.
 
 ### Expanded
 
-- Header: checkbox, editable title, Main-focus indicator/action, collapse
+- Header: checkbox, editable title, Focus indicator/action, collapse
 - Body: editable description
 - Footer:
   - Left: due/time/repeat summary (opens [[ReminderMenu]])
@@ -31,7 +31,7 @@ Checkbox + title.
 | Action | Behavior |
 |---|---|
 | Complete | Sets `status = completed` |
-| Set Main | Writes manual focus timestamp (`set_main_at`) |
+| Set Focus | Appends manual focus event in [[FocusHistory]] |
 | Abandon | Sets `status = abandoned` |
 | Delete | Permanent delete with confirmation |
 

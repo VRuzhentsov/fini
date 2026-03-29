@@ -8,7 +8,7 @@ Transitional active-quest browser kept during migration. Final MVP navigation re
 
 ## Responsibilities
 
-- Keep parity while Main backlog UI is being consolidated
+- Keep parity while Focus backlog UI is being consolidated
 - Reuse [[QuestList]] behavior for active quest editing
 
 

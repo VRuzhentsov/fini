@@ -13,4 +13,4 @@ Frontend state for [[Quest]]. Single source of truth for quest data in the UI.
 
 - Components never call the backend directly — always go through this store.
 - For the domain model see [[Quest]].
-- Main quest selection uses persisted timestamps (`set_main_at`, reminder-trigger metadata) plus fallback rules.
+- Focus quest selection uses [[FocusHistory]] events plus fallback rules.
