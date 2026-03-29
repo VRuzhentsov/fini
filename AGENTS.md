@@ -21,4 +21,4 @@
 - Release pipeline should be triggered by tag push only (`v*`); main pushes should not start release workflows.
 - Release tags must be annotated and GPG-signed with the configured release key.
 - Create and push release tags only after the target commit is already on `origin/main`.
-- Release workflow syncs project versions from the tag (`package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`), so do not pre-bump those files for normal releases.
+- Release tag is the GitOps source of truth for release versioning; workflows sync dependent project versions from that tag, so do not pre-bump version files for normal releases.
