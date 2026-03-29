@@ -151,11 +151,6 @@ async function menuDelete() {
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
 
-function isOverdue(quest: Quest): boolean {
-  if (!quest.due || quest.status !== "active") return false;
-  return quest.due < localDateStr(new Date());
-}
-
 function formatDue(due: string): string {
   const date = new Date(due + "T00:00:00");
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });

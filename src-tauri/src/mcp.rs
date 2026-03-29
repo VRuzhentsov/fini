@@ -297,9 +297,7 @@ impl FiniServer {
         }
     }
 
-    #[tool(
-        description = "Create a new quest. IMPORTANT: before calling this tool, you MUST call list_spaces first to get available spaces and their IDs, then assign the quest to the most relevant space by passing its space_id. If the user does not specify a space, choose the best match based on the quest topic and space names."
-    )]
+    #[tool(description = "Create a new quest.")]
     async fn create_quest(
         &self,
         Parameters(p): Parameters<CreateQuestParams>,
