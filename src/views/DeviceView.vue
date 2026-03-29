@@ -1,20 +1,86 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useDeviceStore } from "../stores/device";
+import { useSpaceStore } from "../stores/space";
 
 const route = useRoute();
 const router = useRouter();
 const deviceStore = useDeviceStore();
+const spaceStore = useSpaceStore();
 const unpairDialog = ref<HTMLDialogElement | null>(null);
+const mappedSelection = ref<string[]>([]);
+const mappingsLoaded = ref(false);
+const savingMappings = ref(false);
+const mappingError = ref<string | null>(null);
 
 const deviceId = computed(() => String(route.params.id ?? ""));
 const device = computed(() => deviceStore.findPairedDevice(deviceId.value));
 const online = computed(() => (device.value ? deviceStore.isDeviceOnline(device.value) : false));
+const syncStatus = computed(() => {
+  if (!deviceId.value) return null;
+  return deviceStore.getSpaceSyncStatus(deviceId.value);
+});
+
+const hasMappingChanges = computed(() => {
+  if (!deviceId.value) return false;
+  const saved = [...deviceStore.getMappedSpaceIds(deviceId.value)].sort();
+  const current = [...mappedSelection.value].sort();
+  return saved.join(",") !== current.join(",");
+});
 
 onMounted(() => {
   void deviceStore.hydrate();
+  void spaceStore.fetchSpaces();
+  void loadMappings();
 });
+
+watch(deviceId, () => {
+  void loadMappings();
+});
+
+function toggleMappedSpace(spaceId: string) {
+  if (mappedSelection.value.includes(spaceId)) {
+    mappedSelection.value = mappedSelection.value.filter((id) => id !== spaceId);
+    return;
+  }
+  mappedSelection.value = [...mappedSelection.value, spaceId];
+}
+
+async function loadMappings() {
+  mappingError.value = null;
+  mappingsLoaded.value = false;
+
+  if (!deviceId.value) {
+    mappedSelection.value = [];
+    mappingsLoaded.value = true;
+    return;
+  }
+
+  try {
+    mappedSelection.value = await deviceStore.loadMappedSpaces(deviceId.value);
+    await deviceStore.refreshSpaceSyncStatus(deviceId.value);
+  } catch (error) {
+    mappingError.value = String(error);
+  } finally {
+    mappingsLoaded.value = true;
+  }
+}
+
+async function saveMappings() {
+  if (!deviceId.value) return;
+  savingMappings.value = true;
+  mappingError.value = null;
+
+  try {
+    const unique = [...new Set(mappedSelection.value)];
+    mappedSelection.value = await deviceStore.saveMappedSpaces(deviceId.value, unique);
+  } catch (error) {
+    mappingError.value = String(error);
+  } finally {
+    savingMappings.value = false;
+  }
+}
 
 function openUnpairDialog() {
   unpairDialog.value?.showModal();
@@ -24,7 +90,7 @@ async function confirmUnpair() {
   if (!device.value) return;
 
   unpairDialog.value?.close();
-  deviceStore.unpairDevice(device.value.id);
+  await deviceStore.unpairDevice(device.value.peer_device_id);
   await router.push("/settings");
 }
 </script>
@@ -34,7 +100,7 @@ async function confirmUnpair() {
     <header class="flex items-center justify-between rounded-xl bg-base-200 px-3 py-2">
       <router-link to="/settings" class="text-sm font-medium opacity-70">‹ Settings</router-link>
       <span class="text-sm font-semibold">Device</span>
-      <span class="text-xs opacity-60" v-if="device">{{ deviceStore.shortDeviceId(device.id) }}</span>
+      <span class="text-xs opacity-60" v-if="device">{{ deviceStore.shortDeviceId(device.peer_device_id) }}</span>
       <span class="text-xs opacity-60" v-else>Unknown</span>
     </header>
 
@@ -54,7 +120,55 @@ async function confirmUnpair() {
 
     <section v-if="device" class="rounded-xl bg-base-200 p-3">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Mapped spaces</h2>
-      <div class="rounded-lg bg-base-100 px-3 py-2 text-sm opacity-70">TBD</div>
+      <div class="flex flex-col gap-2">
+        <p class="text-xs opacity-60">
+          Select spaces to sync with this device. Changes apply symmetrically for this pair.
+        </p>
+        <div v-if="mappingError" class="text-error text-xs">{{ mappingError }}</div>
+        <ul class="flex flex-col gap-1">
+          <li
+            v-for="space in spaceStore.spaces"
+            :key="space.id"
+            class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2"
+          >
+            <input
+              type="checkbox"
+              class="checkbox checkbox-sm"
+              :checked="mappedSelection.includes(space.id)"
+              :disabled="!mappingsLoaded || savingMappings"
+              @change="toggleMappedSpace(space.id)"
+            />
+            <span class="flex-1 text-sm">{{ space.name }}</span>
+            <span class="text-xs opacity-60">{{ space.id }}</span>
+          </li>
+          <li
+            v-if="spaceStore.spaces.length === 0"
+            class="rounded-lg bg-base-100 px-3 py-2 text-sm opacity-70"
+          >
+            No spaces available.
+          </li>
+        </ul>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn btn-sm btn-primary"
+            :disabled="!mappingsLoaded || savingMappings || !hasMappingChanges"
+            @click="void saveMappings()"
+          >
+            {{ savingMappings ? "Saving..." : "Save mappings" }}
+          </button>
+          <button
+            class="btn btn-sm btn-ghost"
+            :disabled="savingMappings"
+            @click="void loadMappings()"
+          >
+            Reload
+          </button>
+        </div>
+        <div v-if="syncStatus" class="rounded-lg bg-base-100 px-3 py-2 text-xs opacity-70">
+          pending {{ syncStatus.pending_event_count }} · outbox {{ syncStatus.outbox_event_count }}
+          · acked {{ syncStatus.acked_event_count }}
+        </div>
+      </div>
     </section>
 
     <section v-if="device" class="rounded-xl bg-base-200 p-3">

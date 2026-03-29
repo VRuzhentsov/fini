@@ -36,7 +36,7 @@ diesel::table! {
         due_time    -> Nullable<Text>,
         repeat_rule -> Nullable<Text>,
         completed_at -> Nullable<Text>,
-        set_main_at -> Nullable<Text>,
+        set_focus_at -> Nullable<Text>,
         reminder_triggered_at -> Nullable<Text>,
         order_rank -> Double,
         created_at  -> Text,
@@ -58,8 +58,91 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    paired_devices (peer_device_id) {
+        peer_device_id -> Text,
+        display_name   -> Text,
+        paired_at      -> Text,
+        last_seen_at   -> Nullable<Text>,
+        pair_state     -> Text,
+    }
+}
+
+diesel::table! {
+    pair_space_mappings (peer_device_id, space_id) {
+        peer_device_id -> Text,
+        space_id       -> Text,
+        enabled_at     -> Text,
+    }
+}
+
+diesel::table! {
+    focus_history (id) {
+        id         -> Text,
+        device_id  -> Text,
+        quest_id   -> Text,
+        space_id   -> Text,
+        trigger    -> Text,
+        created_at -> Text,
+    }
+}
+
+diesel::table! {
+    sync_outbox (event_id) {
+        event_id         -> Text,
+        correlation_id   -> Text,
+        origin_device_id -> Text,
+        entity_type      -> Text,
+        entity_id        -> Text,
+        space_id         -> Text,
+        op_type          -> Text,
+        payload          -> Nullable<Text>,
+        updated_at       -> Text,
+        created_at       -> Text,
+    }
+}
+
+diesel::table! {
+    sync_acks (peer_device_id, event_id) {
+        peer_device_id -> Text,
+        event_id       -> Text,
+        acked_at       -> Text,
+    }
+}
+
+diesel::table! {
+    sync_seen (event_id) {
+        event_id    -> Text,
+        received_at -> Text,
+    }
+}
+
+diesel::table! {
+    tombstones (entity_type, entity_id) {
+        entity_type -> Text,
+        entity_id   -> Text,
+        space_id    -> Text,
+        deleted_at  -> Text,
+    }
+}
+
 diesel::joinable!(quests -> spaces (space_id));
 diesel::joinable!(quests -> quest_series (series_id));
 diesel::joinable!(quest_series -> spaces (space_id));
 diesel::joinable!(reminders -> quests (quest_id));
-diesel::allow_tables_to_appear_in_same_query!(spaces, quests, quest_series, reminders);
+diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
+diesel::joinable!(pair_space_mappings -> spaces (space_id));
+diesel::joinable!(focus_history -> quests (quest_id));
+diesel::allow_tables_to_appear_in_same_query!(
+    spaces,
+    quests,
+    quest_series,
+    reminders,
+    paired_devices,
+    pair_space_mappings,
+    focus_history,
+    sync_outbox,
+    sync_acks,
+    sync_seen,
+    tombstones
+);

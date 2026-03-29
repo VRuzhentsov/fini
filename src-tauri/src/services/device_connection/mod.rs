@@ -7,10 +7,15 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub use commands::{
-    device_discovery_snapshot, device_enter_add_mode, device_get_identity, device_leave_add_mode,
-    device_pair_accept_request, device_pair_acknowledge_request, device_pair_complete_request,
-    device_pair_incoming_requests, device_pair_outgoing_completions, device_pair_outgoing_updates,
-    device_presence_snapshot, device_send_pair_request, device_sync_debug_status,
+    device_connection_debug_status, device_connection_discovery_snapshot,
+    device_connection_enter_add_mode, device_connection_get_identity,
+    device_connection_get_paired_devices, device_connection_leave_add_mode,
+    device_connection_pair_accept_request, device_connection_pair_acknowledge_request,
+    device_connection_pair_complete_request, device_connection_pair_incoming_requests,
+    device_connection_pair_outgoing_completions, device_connection_pair_outgoing_updates,
+    device_connection_presence_snapshot, device_connection_save_paired_device,
+    device_connection_send_pair_request, device_connection_unpair,
+    device_connection_update_last_seen,
 };
 use runtime::{load_or_create_identity, spawn_discovery_worker};
 pub use types::DeviceIdentity;
@@ -24,13 +29,14 @@ pub(super) const DISCOVERY_PORT: u16 = 45_454;
 pub(super) const DISCOVERY_TTL_SECS: u64 = 15;
 pub(super) const PAIR_REQUEST_TTL_SECS: i64 = 60;
 pub(super) const MULTICAST_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 42, 99);
+pub(super) const SPACE_SYNC_WS_PORT: u16 = 45_455;
 
-pub struct DeviceSyncState {
+pub struct DeviceConnectionState {
     pub identity: DeviceIdentity,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
 }
 
-impl DeviceSyncState {
+impl DeviceConnectionState {
     pub fn new(app_data_dir: &Path) -> Self {
         let identity = load_or_create_identity(app_data_dir);
         let runtime = Arc::new(Mutex::new(DiscoveryRuntime::default()));

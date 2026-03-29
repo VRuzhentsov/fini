@@ -8,7 +8,7 @@ import SpacePicker from "./components/SpacePicker.vue";
   <div class="app-shell">
     <nav class="nav">
       <div class="nav-links">
-        <router-link to="/main">Main</router-link>
+        <router-link to="/main">Focus</router-link>
         <router-link to="/history">History</router-link>
         <router-link to="/settings">Settings</router-link>
       </div>

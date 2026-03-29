@@ -41,7 +41,7 @@ function onContextMenu(e: MouseEvent, quest: Quest) {
   if (quest.status === "active") {
     items.push({ label: "Complete", action: () => store.updateQuest(quest.id, { status: "completed" }) });
     items.push({ separator: true });
-    items.push({ label: "Set Main", action: () => store.setMainQuest(quest.id) });
+    items.push({ label: "Set Focus", action: () => store.setFocusQuest(quest.id) });
   }
   if (quest.status !== "active") {
     items.push({ label: "Make active", action: () => store.updateQuest(quest.id, { status: "active" }) });
@@ -69,8 +69,8 @@ async function completeQuest(id: string) {
   await store.updateQuest(id, { status: "completed" });
 }
 
-async function setMain(quest: Quest) {
-  await store.setMainQuest(quest.id);
+async function setFocus(quest: Quest) {
+  await store.setFocusQuest(quest.id);
 }
 
 async function onTitleBlur(quest: Quest, e: Event) {
@@ -313,8 +313,8 @@ function formatTimestamp(quest: Quest): string {
               class="btn btn-ghost btn-xs btn-square"
               :class="store.activeQuest?.id === quest.id ? '' : 'opacity-30'"
               style="color: oklch(0.85 0.15 85)"
-              @click.stop="setMain(quest)"
-              title="Set Main"
+              @click.stop="setFocus(quest)"
+              title="Set Focus"
             >
               <ExclamationCircleIcon class="size-5" />
             </button>

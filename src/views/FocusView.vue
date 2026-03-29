@@ -2,8 +2,8 @@
 import { computed, onMounted } from "vue";
 import { useQuestStore } from "../stores/quest";
 import { useSpaceStore } from "../stores/space";
-import ActiveQuestPanel from "../components/MainView/ActiveQuestPanel.vue";
-import NewQuestForm from "../components/MainView/NewQuestForm.vue";
+import ActiveQuestPanel from "../components/FocusView/ActiveQuestPanel.vue";
+import NewQuestForm from "../components/FocusView/NewQuestForm.vue";
 import QuestList from "../components/QuestsView/QuestList.vue";
 
 const store = useQuestStore();

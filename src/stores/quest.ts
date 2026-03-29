@@ -17,7 +17,7 @@ export interface Quest {
   due_time: string | null;
   repeat_rule: string | null;
   completed_at: string | null;
-  set_main_at: string | null;
+  set_focus_at: string | null;
   reminder_triggered_at: string | null;
   order_rank: number;
   created_at: string;
@@ -59,7 +59,7 @@ export const useQuestStore = defineStore("quest", () => {
   const error = ref<string | null>(null);
 
   async function fetchActiveQuest() {
-    activeQuest.value = await invoke<Quest | null>("get_active_quest");
+    activeQuest.value = await invoke<Quest | null>("get_active_focus");
   }
 
   async function fetchQuests() {
@@ -97,8 +97,8 @@ export const useQuestStore = defineStore("quest", () => {
     return quest;
   }
 
-  async function setMainQuest(id: string) {
-    const quest = await invoke<Quest>("set_main_quest", { id });
+  async function setFocusQuest(id: string) {
+    const quest = await invoke<Quest>("set_focus", { id });
     await fetchQuests();
     activeQuest.value = quest;
     return quest;
@@ -118,7 +118,7 @@ export const useQuestStore = defineStore("quest", () => {
     fetchActiveQuest,
     createQuest,
     updateQuest,
-    setMainQuest,
+    setFocusQuest,
     deleteQuest,
   };
 });

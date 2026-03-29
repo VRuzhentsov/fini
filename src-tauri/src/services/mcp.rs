@@ -82,8 +82,8 @@ pub struct UpdateQuestParams {
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
     pub order_rank: Option<f64>,
-    #[schemars(description = "Set this quest as Main now")]
-    pub set_main: Option<bool>,
+    #[schemars(description = "Set this quest as Focus now")]
+    pub set_focus: Option<bool>,
     #[schemars(description = "Mark reminder-triggered focus now")]
     pub trigger_reminder_focus: Option<bool>,
 }
@@ -115,7 +115,7 @@ pub struct QuestRecord {
     pub due_time: Option<String>,
     pub due_at_utc: Option<String>,
     pub repeat_rule: Option<String>,
-    pub set_main_at: Option<String>,
+    pub set_focus_at: Option<String>,
     pub reminder_triggered_at: Option<String>,
     pub order_rank: f64,
     pub completed_at: Option<String>,
@@ -227,7 +227,7 @@ fn quest_to_record(quest: &Quest) -> QuestRecord {
         due_time: quest.due_time.clone(),
         due_at_utc: due_at_utc_string(quest),
         repeat_rule: quest.repeat_rule.clone(),
-        set_main_at: quest.set_main_at.clone(),
+        set_focus_at: quest.set_focus_at.clone(),
         reminder_triggered_at: quest.reminder_triggered_at.clone(),
         order_rank: quest.order_rank,
         completed_at: quest.completed_at.clone(),
@@ -289,8 +289,8 @@ impl FiniServer {
         ))
     }
 
-    #[tool(description = "Get the current Main quest from focus events + fallback rules.")]
-    async fn get_active_quest(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Get the current Focus quest from focus events + fallback rules.")]
+    async fn get_active_focus(&self) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let quest = resolve_active_quest(&mut conn).map_err(db_err)?;
         match quest {
@@ -347,12 +347,12 @@ impl FiniServer {
             due_time: p.due_time,
             repeat_rule: p.repeat_rule,
             order_rank: p.order_rank,
-            set_main_at: None,
+            set_focus_at: None,
             reminder_triggered_at: None,
         };
 
-        if p.set_main == Some(true) || input.status.as_deref() == Some("active") {
-            input.set_main_at = Some(now.clone());
+        if p.set_focus == Some(true) || input.status.as_deref() == Some("active") {
+            input.set_focus_at = Some(now.clone());
         }
         if p.trigger_reminder_focus == Some(true) {
             input.reminder_triggered_at = Some(now.clone());
@@ -659,7 +659,7 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             completed_at: None,
-            set_main_at: None,
+            set_focus_at: None,
             reminder_triggered_at: None,
             order_rank: 0.0,
             created_at: "2026-03-27T10:30:00Z".to_string(),
@@ -833,7 +833,7 @@ mod tests {
                 due_time: None,
                 repeat_rule: None,
                 order_rank: None,
-                set_main: Some(true),
+                set_focus: Some(true),
                 trigger_reminder_focus: None,
             }))
             .await
@@ -949,13 +949,13 @@ mod tests {
                 due_time: None,
                 repeat_rule: None,
                 order_rank: None,
-                set_main: Some(true),
+                set_focus: Some(true),
                 trigger_reminder_focus: None,
             }))
             .await
             .expect("set main on active quest");
 
-        let active_result = server.get_active_quest().await.expect("get active quest");
+        let active_result = server.get_active_focus().await.expect("get active quest");
         let active_value = active_result
             .structured_content
             .expect("active structured content");

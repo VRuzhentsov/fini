@@ -3,17 +3,18 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 
 export interface PairedDevice {
-  id: string;
+  peer_device_id: string;
   display_name: string;
   paired_at: string;
   last_seen_at: string | null;
-  pair_state: "paired";
+  pair_state: string;
 }
 
 export interface DiscoveredDevice {
   device_id: string;
   hostname: string;
   addr: string;
+  ws_port: number | null;
   last_seen_at: string;
 }
 
@@ -37,7 +38,7 @@ export interface OutgoingPairRequest {
   sender_code: string | null;
 }
 
-export interface DeviceSyncDebugStatus {
+export interface DeviceConnectionDebugStatus {
   add_mode_enabled: boolean;
   worker_started: boolean;
   tx_count: number;
@@ -63,6 +64,16 @@ export interface PairCompletionUpdate {
   paired_at: string;
 }
 
+export interface SpaceSyncStatus {
+  peer_device_id: string | null;
+  mapped_space_ids: string[];
+  pending_event_count: number;
+  outbox_event_count: number;
+  acked_event_count: number;
+  seen_event_count: number;
+  tombstone_count: number;
+}
+
 interface DevicePairRequestInput {
   request_id: string;
   to_device_id: string;
@@ -73,31 +84,17 @@ interface DevicePairRequestAckInput {
   request_id: string;
 }
 
-interface StoredDeviceRuntime {
-  paired_devices: PairedDevice[];
-}
-
 interface LocalDeviceIdentity {
   device_id: string;
   hostname: string;
 }
 
-const RUNTIME_KEY = "fini.device_sync.runtime";
 export const ADD_MODE_DISCOVERY_INTERVAL_MS = 5_000;
 const ADD_MODE_POLL_INTERVAL_MS = 1_000;
 const PRESENCE_POLL_INTERVAL_MS = 15_000;
 const NORMAL_HEARTBEAT_MS = 60_000;
 const OFFLINE_AFTER_MISSED_HEARTBEATS_MS = NORMAL_HEARTBEAT_MS * 2;
 const REQUEST_TTL_MS = 60_000;
-
-function parseJson<T>(raw: string | null): T | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -108,43 +105,6 @@ function randomId(): string {
     return crypto.randomUUID();
   }
   return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
-}
-
-function toRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null) return null;
-  return value as Record<string, unknown>;
-}
-
-function loadRuntime(): StoredDeviceRuntime {
-  if (typeof window === "undefined") {
-    return { paired_devices: [] };
-  }
-
-  const parsed = parseJson<StoredDeviceRuntime>(window.localStorage.getItem(RUNTIME_KEY));
-  if (!parsed || !Array.isArray(parsed.paired_devices)) {
-    return { paired_devices: [] };
-  }
-
-  const paired_devices: PairedDevice[] = parsed.paired_devices
-    .map((raw) => {
-      const record = toRecord(raw);
-      if (!record) return null;
-      if (typeof record.id !== "string") return null;
-      if (typeof record.display_name !== "string") return null;
-      if (typeof record.paired_at !== "string") return null;
-      const last_seen_at = typeof record.last_seen_at === "string" ? record.last_seen_at : null;
-
-      return {
-        id: record.id,
-        display_name: record.display_name,
-        paired_at: record.paired_at,
-        last_seen_at,
-        pair_state: "paired",
-      } satisfies PairedDevice;
-    })
-    .filter((device): device is PairedDevice => device !== null);
-
-  return { paired_devices };
 }
 
 export const useDeviceStore = defineStore("device", () => {
@@ -158,8 +118,10 @@ export const useDeviceStore = defineStore("device", () => {
   const outgoingRequest = ref<OutgoingPairRequest | null>(null);
   const addModeEnabled = ref(false);
   const addModeLastRefreshAt = ref<string | null>(null);
-  const debugStatus = ref<DeviceSyncDebugStatus | null>(null);
+  const debugStatus = ref<DeviceConnectionDebugStatus | null>(null);
   const pairCompletedAt = ref<string | null>(null);
+  const mappedSpaceIdsByPeer = ref<Record<string, string[]>>({});
+  const syncStatusByPeer = ref<Record<string, SpaceSyncStatus | null>>({});
   const incomingExpectedCode = ref<Record<string, string>>({});
   const incomingAttemptCount = ref<Record<string, number>>({});
   const incomingCooldownUntil = ref<Record<string, string | null>>({});
@@ -174,14 +136,80 @@ export const useDeviceStore = defineStore("device", () => {
     return diff > 0 ? Math.ceil(diff / 1000) : 0;
   });
 
-  const pairedDeviceIds = computed(() => new Set(pairedDevices.value.map((device) => device.id)));
+  const pairedDeviceIds = computed(() => new Set(pairedDevices.value.map((d) => d.peer_device_id)));
 
-  function persistRuntime() {
-    if (typeof window === "undefined") return;
-    const payload: StoredDeviceRuntime = {
-      paired_devices: pairedDevices.value,
-    };
-    window.localStorage.setItem(RUNTIME_KEY, JSON.stringify(payload));
+  async function loadPairedDevices() {
+    try {
+      pairedDevices.value = await invoke<PairedDevice[]>("device_connection_get_paired_devices");
+    } catch (error) {
+      console.warn("[device-connection] failed to load paired devices", error);
+    }
+  }
+
+  async function savePairedDevice(deviceId: string, displayName: string) {
+    try {
+      await invoke<PairedDevice>("device_connection_save_paired_device", {
+        peerDeviceId: deviceId,
+        displayName,
+      });
+      await loadPairedDevices();
+    } catch (error) {
+      console.warn("[device-connection] failed to save paired device", error);
+    }
+  }
+
+  function getMappedSpaceIds(peerDeviceId: string): string[] {
+    return mappedSpaceIdsByPeer.value[peerDeviceId] ?? [];
+  }
+
+  function getSpaceSyncStatus(peerDeviceId: string): SpaceSyncStatus | null {
+    return syncStatusByPeer.value[peerDeviceId] ?? null;
+  }
+
+  async function loadMappedSpaces(peerDeviceId: string): Promise<string[]> {
+    try {
+      const mapped = await invoke<string[]>("space_sync_list_mappings", {
+        peerDeviceId,
+      });
+      mappedSpaceIdsByPeer.value[peerDeviceId] = mapped;
+      return mapped;
+    } catch (error) {
+      console.warn("[space-sync] failed to load mappings", error);
+      mappedSpaceIdsByPeer.value[peerDeviceId] = [];
+      return [];
+    }
+  }
+
+  async function saveMappedSpaces(
+    peerDeviceId: string,
+    mappedSpaceIds: string[],
+  ): Promise<string[]> {
+    try {
+      const mapped = await invoke<string[]>("space_sync_update_mappings", {
+        peerDeviceId,
+        mappedSpaceIds,
+      });
+      mappedSpaceIdsByPeer.value[peerDeviceId] = mapped;
+      void refreshSpaceSyncStatus(peerDeviceId);
+      return mapped;
+    } catch (error) {
+      console.warn("[space-sync] failed to save mappings", error);
+      throw error;
+    }
+  }
+
+  async function refreshSpaceSyncStatus(peerDeviceId: string): Promise<SpaceSyncStatus | null> {
+    try {
+      const status = await invoke<SpaceSyncStatus>("space_sync_status", {
+        peerDeviceId,
+      });
+      syncStatusByPeer.value[peerDeviceId] = status;
+      return status;
+    } catch (error) {
+      console.warn("[space-sync] failed to load status", error);
+      syncStatusByPeer.value[peerDeviceId] = null;
+      return null;
+    }
   }
 
   function setDiscovered(items: DiscoveredDevice[]) {
@@ -233,7 +261,7 @@ export const useDeviceStore = defineStore("device", () => {
 
   async function refreshIdentity() {
     try {
-      const resolved = await invoke<LocalDeviceIdentity>("device_get_identity");
+      const resolved = await invoke<LocalDeviceIdentity>("device_connection_get_identity");
       if (resolved?.device_id && resolved?.hostname) {
         identity.value = {
           device_id: resolved.device_id,
@@ -241,52 +269,47 @@ export const useDeviceStore = defineStore("device", () => {
         };
       }
     } catch (error) {
-      console.warn("[device-sync] failed to load identity", error);
+      console.warn("[device-connection] failed to load identity", error);
     }
   }
 
   async function refreshDebugStatus() {
     try {
-      debugStatus.value = await invoke<DeviceSyncDebugStatus>("device_sync_debug_status");
+      debugStatus.value = await invoke<DeviceConnectionDebugStatus>("device_connection_debug_status");
     } catch {
       debugStatus.value = null;
     }
   }
 
-  function applyPresence(items: DiscoveredDevice[]) {
+  async function applyPresence(items: DiscoveredDevice[]) {
     const byId = new Map(items.map((item) => [item.device_id, item]));
-    let changed = false;
 
-    pairedDevices.value = pairedDevices.value.map((device) => {
-      const seen = byId.get(device.id);
-      if (!seen) return device;
+    for (const device of pairedDevices.value) {
+      const seen = byId.get(device.peer_device_id);
+      if (!seen) continue;
 
-      const nextDisplayName = seen.hostname || device.display_name;
       const nextLastSeenAt = seen.last_seen_at || device.last_seen_at;
-
-      if (nextDisplayName === device.display_name && nextLastSeenAt === device.last_seen_at) {
-        return device;
+      if (nextLastSeenAt && nextLastSeenAt !== device.last_seen_at) {
+        try {
+          await invoke("device_connection_update_last_seen", {
+            peerDeviceId: device.peer_device_id,
+            lastSeenAt: nextLastSeenAt,
+          });
+        } catch (error) {
+          console.warn("[device-connection] failed to update last_seen", error);
+        }
       }
-
-      changed = true;
-      return {
-        ...device,
-        display_name: nextDisplayName,
-        last_seen_at: nextLastSeenAt,
-      };
-    });
-
-    if (changed) {
-      persistRuntime();
     }
+
+    await loadPairedDevices();
   }
 
   async function refreshPresence() {
     try {
-      const items = await invoke<DiscoveredDevice[]>("device_presence_snapshot");
-      applyPresence(items);
+      const items = await invoke<DiscoveredDevice[]>("device_connection_presence_snapshot");
+      await applyPresence(items);
     } catch (error) {
-      console.warn("[device-sync] presence refresh failed", error);
+      console.warn("[device-connection] presence refresh failed", error);
     }
   }
 
@@ -294,15 +317,17 @@ export const useDeviceStore = defineStore("device", () => {
     addModeLastRefreshAt.value = nowIso();
 
     try {
-      const items = await invoke<DiscoveredDevice[]>("device_discovery_snapshot");
-      applyPresence(items);
+      const items = await invoke<DiscoveredDevice[]>("device_connection_discovery_snapshot");
+      await applyPresence(items);
       setDiscovered(items);
     } catch (error) {
-      console.warn("[device-sync] discovery snapshot refresh failed", error);
+      console.warn("[device-connection] discovery snapshot refresh failed", error);
     }
 
     try {
-      const incoming = await invoke<IncomingPairRequest[]>("device_pair_incoming_requests");
+      const incoming = await invoke<IncomingPairRequest[]>(
+        "device_connection_pair_incoming_requests",
+      );
       incomingRequests.value = incoming.map((request) => {
         const attempts = incomingAttemptCount.value[request.request_id] ?? request.attempts;
         const cooldown_until = incomingCooldownUntil.value[request.request_id] ?? request.cooldown_until;
@@ -313,11 +338,13 @@ export const useDeviceStore = defineStore("device", () => {
         };
       });
     } catch (error) {
-      console.warn("[device-sync] incoming requests refresh failed", error);
+      console.warn("[device-connection] incoming requests refresh failed", error);
     }
 
     try {
-      const outgoingUpdates = await invoke<PairCodeUpdate[]>("device_pair_outgoing_updates");
+      const outgoingUpdates = await invoke<PairCodeUpdate[]>(
+        "device_connection_pair_outgoing_updates",
+      );
 
       if (outgoingRequest.value) {
         const update = outgoingUpdates.find(
@@ -332,11 +359,13 @@ export const useDeviceStore = defineStore("device", () => {
         }
       }
     } catch (error) {
-      console.warn("[device-sync] outgoing updates refresh failed", error);
+      console.warn("[device-connection] outgoing updates refresh failed", error);
     }
 
     try {
-      const completions = await invoke<PairCompletionUpdate[]>("device_pair_outgoing_completions");
+      const completions = await invoke<PairCompletionUpdate[]>(
+        "device_connection_pair_outgoing_completions",
+      );
 
       if (outgoingRequest.value) {
         const completion = completions.find(
@@ -344,14 +373,13 @@ export const useDeviceStore = defineStore("device", () => {
         );
 
         if (completion) {
-          upsertPairedDevice(outgoingRequest.value.to_device_id, outgoingRequest.value.to_hostname);
-          persistRuntime();
+          await savePairedDevice(outgoingRequest.value.to_device_id, outgoingRequest.value.to_hostname);
           outgoingRequest.value = null;
           pairCompletedAt.value = nowIso();
         }
       }
     } catch (error) {
-      console.warn("[device-sync] outgoing completions refresh failed", error);
+      console.warn("[device-connection] outgoing completions refresh failed", error);
     }
 
     pruneRequests();
@@ -381,7 +409,7 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   async function hydrate() {
-    pairedDevices.value = loadRuntime().paired_devices;
+    await loadPairedDevices();
     await refreshIdentity();
     setDiscovered([]);
     startPresenceLoop();
@@ -395,9 +423,9 @@ export const useDeviceStore = defineStore("device", () => {
     await refreshIdentity();
 
     try {
-      await invoke("device_enter_add_mode");
+      await invoke("device_connection_enter_add_mode");
     } catch (error) {
-      console.warn("[device-sync] enter add mode failed", error);
+      console.warn("[device-connection] enter add mode failed", error);
     }
 
     startDiscoveryLoop();
@@ -409,9 +437,9 @@ export const useDeviceStore = defineStore("device", () => {
     stopDiscoveryLoop();
 
     try {
-      await invoke("device_leave_add_mode");
+      await invoke("device_connection_leave_add_mode");
     } catch (error) {
-      console.warn("[device-sync] leave add mode failed", error);
+      console.warn("[device-connection] leave add mode failed", error);
     }
 
     incomingRequests.value = [];
@@ -448,10 +476,10 @@ export const useDeviceStore = defineStore("device", () => {
     };
 
     try {
-      await invoke("device_send_pair_request", { input: payload });
+      await invoke("device_connection_send_pair_request", { input: payload });
       void refreshDiscovery();
     } catch (error) {
-      console.warn("[device-sync] pair request send failed", error);
+      console.warn("[device-connection] pair request send failed", error);
       if (outgoingRequest.value) {
         outgoingRequest.value = {
           ...outgoingRequest.value,
@@ -468,14 +496,17 @@ export const useDeviceStore = defineStore("device", () => {
   async function acceptIncomingRequest(requestId: string) {
     const payload: DevicePairRequestAckInput = { request_id: requestId };
     try {
-      const update = await invoke<PairCodeUpdate>("device_pair_accept_request", { input: payload });
+      const update = await invoke<PairCodeUpdate>(
+        "device_connection_pair_accept_request",
+        { input: payload },
+      );
       incomingExpectedCode.value[requestId] = update.code;
       incomingAttemptCount.value[requestId] = 0;
       incomingCooldownUntil.value[requestId] = null;
       void refreshDiscovery();
       return true;
     } catch (error) {
-      console.warn("[device-sync] accept request failed", error);
+      console.warn("[device-connection] accept request failed", error);
       return false;
     }
   }
@@ -483,33 +514,15 @@ export const useDeviceStore = defineStore("device", () => {
   async function rejectIncomingRequest(requestId: string) {
     const payload: DevicePairRequestAckInput = { request_id: requestId };
     try {
-      await invoke("device_pair_acknowledge_request", { input: payload });
+      await invoke("device_connection_pair_acknowledge_request", { input: payload });
     } catch (error) {
-      console.warn("[device-sync] reject request ack failed", error);
+      console.warn("[device-connection] reject request ack failed", error);
     }
     delete incomingExpectedCode.value[requestId];
     delete incomingAttemptCount.value[requestId];
     delete incomingCooldownUntil.value[requestId];
     incomingRequests.value = incomingRequests.value.filter((item) => item.request_id !== requestId);
     void refreshDiscovery();
-  }
-
-  function upsertPairedDevice(deviceId: string, displayName: string) {
-    const pairedAt = nowIso();
-    const existing = pairedDevices.value.find((item) => item.id === deviceId);
-    if (existing) {
-      existing.display_name = displayName;
-      existing.last_seen_at = pairedAt;
-      return;
-    }
-
-    pairedDevices.value.unshift({
-      id: deviceId,
-      display_name: displayName,
-      paired_at: pairedAt,
-      last_seen_at: pairedAt,
-      pair_state: "paired",
-    });
   }
 
   async function submitPairCode(requestId: string, code: string): Promise<boolean> {
@@ -549,15 +562,14 @@ export const useDeviceStore = defineStore("device", () => {
       return false;
     }
 
-    upsertPairedDevice(request.from_device_id, request.from_hostname);
-    persistRuntime();
+    await savePairedDevice(request.from_device_id, request.from_hostname);
 
     try {
-      await invoke("device_pair_complete_request", {
+      await invoke("device_connection_pair_complete_request", {
         input: { request_id: requestId } satisfies DevicePairRequestAckInput,
       });
     } catch (error) {
-      console.warn("[device-sync] submit code completion failed", error);
+      console.warn("[device-connection] submit code completion failed", error);
     }
 
     delete incomingExpectedCode.value[requestId];
@@ -569,9 +581,15 @@ export const useDeviceStore = defineStore("device", () => {
     return true;
   }
 
-  function unpairDevice(deviceId: string) {
-    pairedDevices.value = pairedDevices.value.filter((item) => item.id !== deviceId);
-    persistRuntime();
+  async function unpairDevice(deviceId: string) {
+    try {
+      await invoke("device_connection_unpair", { peerDeviceId: deviceId });
+    } catch (error) {
+      console.warn("[device-connection] unpair failed", error);
+    }
+    delete mappedSpaceIdsByPeer.value[deviceId];
+    delete syncStatusByPeer.value[deviceId];
+    await loadPairedDevices();
   }
 
   function isDeviceOnline(device: PairedDevice): boolean {
@@ -587,7 +605,7 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   function findPairedDevice(deviceId: string): PairedDevice | null {
-    return pairedDevices.value.find((device) => device.id === deviceId) ?? null;
+    return pairedDevices.value.find((device) => device.peer_device_id === deviceId) ?? null;
   }
 
   return {
@@ -601,9 +619,16 @@ export const useDeviceStore = defineStore("device", () => {
     addModeLastRefreshAt,
     debugStatus,
     pairCompletedAt,
+    mappedSpaceIdsByPeer,
+    syncStatusByPeer,
     hydrate,
     refreshDiscovery,
     refreshDebugStatus,
+    loadMappedSpaces,
+    saveMappedSpaces,
+    getMappedSpaceIds,
+    refreshSpaceSyncStatus,
+    getSpaceSyncStatus,
     enterAddMode,
     leaveAddMode,
     requestPair,

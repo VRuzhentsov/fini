@@ -5,17 +5,25 @@ mod services;
 // mod model_download; // postponed
 
 use services::db::{open_db, DbState};
-use services::device_sync::{
-    device_discovery_snapshot, device_enter_add_mode, device_get_identity, device_leave_add_mode,
-    device_pair_accept_request, device_pair_acknowledge_request, device_pair_complete_request,
-    device_pair_incoming_requests, device_pair_outgoing_completions, device_pair_outgoing_updates,
-    device_presence_snapshot, device_send_pair_request, device_sync_debug_status, DeviceSyncState,
+use services::device_connection::{
+    device_connection_debug_status, device_connection_discovery_snapshot,
+    device_connection_enter_add_mode, device_connection_get_identity,
+    device_connection_get_paired_devices, device_connection_leave_add_mode,
+    device_connection_pair_accept_request, device_connection_pair_acknowledge_request,
+    device_connection_pair_complete_request, device_connection_pair_incoming_requests,
+    device_connection_pair_outgoing_completions, device_connection_pair_outgoing_updates,
+    device_connection_presence_snapshot, device_connection_save_paired_device,
+    device_connection_send_pair_request, device_connection_unpair,
+    device_connection_update_last_seen, DeviceConnectionState,
 };
 use services::quest::{
-    create_quest, delete_quest, get_active_quest, get_quests, set_main_quest, update_quest,
+    create_quest, delete_quest, get_active_focus, get_quests, set_focus, update_quest,
 };
 use services::reminder::{create_reminder, delete_reminder, get_reminders};
 use services::space::{create_space, delete_space, get_spaces, update_space};
+use services::space_sync::{
+    space_sync_list_mappings, space_sync_status, space_sync_update_mappings,
+};
 use tauri::Manager;
 
 pub fn run_mcp() {
@@ -46,7 +54,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
-            app.manage(DeviceSyncState::new(&data_dir));
+            app.manage(DeviceConnectionState::new(&data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -55,27 +63,34 @@ pub fn run() {
             update_space,
             delete_space,
             get_quests,
-            get_active_quest,
+            get_active_focus,
             create_quest,
-            set_main_quest,
+            set_focus,
             update_quest,
             delete_quest,
             get_reminders,
             create_reminder,
             delete_reminder,
-            device_get_identity,
-            device_enter_add_mode,
-            device_leave_add_mode,
-            device_discovery_snapshot,
-            device_presence_snapshot,
-            device_send_pair_request,
-            device_pair_incoming_requests,
-            device_pair_outgoing_updates,
-            device_pair_outgoing_completions,
-            device_pair_accept_request,
-            device_pair_complete_request,
-            device_pair_acknowledge_request,
-            device_sync_debug_status,
+            device_connection_get_identity,
+            device_connection_enter_add_mode,
+            device_connection_leave_add_mode,
+            device_connection_discovery_snapshot,
+            device_connection_presence_snapshot,
+            device_connection_send_pair_request,
+            device_connection_pair_incoming_requests,
+            device_connection_pair_outgoing_updates,
+            device_connection_pair_outgoing_completions,
+            device_connection_pair_accept_request,
+            device_connection_pair_complete_request,
+            device_connection_pair_acknowledge_request,
+            device_connection_debug_status,
+            device_connection_get_paired_devices,
+            device_connection_save_paired_device,
+            device_connection_unpair,
+            device_connection_update_last_seen,
+            space_sync_list_mappings,
+            space_sync_update_mappings,
+            space_sync_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

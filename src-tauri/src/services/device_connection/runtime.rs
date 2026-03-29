@@ -9,9 +9,9 @@ use uuid::Uuid;
 
 use super::{
     DISCOVERY_INTERVAL_MS, DISCOVERY_PORT, DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS,
-    HEARTBEAT_INTERVAL_MS, MULTICAST_GROUP, PAIR_REQUEST_TTL_SECS,
+    HEARTBEAT_INTERVAL_MS, MULTICAST_GROUP, PAIR_REQUEST_TTL_SECS, SPACE_SYNC_WS_PORT,
 };
-use crate::services::device_sync::types::{
+use crate::services::device_connection::types::{
     DeviceIdentity, DiscoveryBeacon, DiscoveryRuntime, IncomingPairRequest, PairAcceptPayload,
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload, SeenPeer,
     StoredIncomingPairRequest,
@@ -117,6 +117,7 @@ pub(super) fn upsert_seen_peer(
         SeenPeer {
             hostname: beacon.hostname.clone(),
             addr: addr.to_string(),
+            ws_port: beacon.ws_port,
             last_seen_at: utc_now(),
             last_seen_mono: Instant::now(),
         },
@@ -135,6 +136,7 @@ fn broadcast_beacon(
         device_id: identity.device_id.clone(),
         hostname: identity.hostname.clone(),
         sent_at: utc_now(),
+        ws_port: Some(SPACE_SYNC_WS_PORT),
     };
 
     let payload = serde_json::to_vec(&beacon);
@@ -423,6 +425,7 @@ mod tests {
             device_id: device_id.to_string(),
             hostname: hostname.to_string(),
             sent_at: utc_now(),
+            ws_port: Some(SPACE_SYNC_WS_PORT),
         }
     }
 
