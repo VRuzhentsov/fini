@@ -18,6 +18,10 @@ env:
   NODE_VERSION: "20"
 
 jobs:
+  security-scan:
+    uses: ./.github/workflows/security.yml
+    secrets: inherit
+
   validate-tag:
     name: Validate Release Tag
     runs-on: ubuntu-latest
@@ -143,7 +147,7 @@ jobs:
   quality-gates:
     name: Quality Gates
     runs-on: ubuntu-latest
-    needs: signing-readiness
+    needs: [signing-readiness, security-scan]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
