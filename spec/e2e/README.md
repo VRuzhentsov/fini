@@ -13,6 +13,7 @@ This folder contains ideal end-to-end QA specs for Fini features.
 - `spec/e2e/device-connection/pairing-happy-path.md`
 - `spec/e2e/space-sync/foo-create-via-dialog.md`
 - `spec/e2e/space-sync/foo-bar-cross-map-via-dialog.md`
+- `spec/e2e/space-sync/quest-sync-between-spaces.md`
 - `spec/e2e/skill/README.md`
 - `spec/e2e/cli/README.md`
 - `spec/e2e/interface/README.md`

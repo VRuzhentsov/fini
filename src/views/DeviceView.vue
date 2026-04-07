@@ -38,9 +38,17 @@ const syncStatus = computed(() => {
   return deviceStore.getSpaceSyncStatus(deviceId.value);
 });
 const hasPendingSync = computed(() => (syncStatus.value?.pending_event_count ?? 0) > 0);
-const lastSyncedAt = computed(() => {
-  if (!deviceId.value) return null;
-  return deviceStore.getLastSyncedAt(deviceId.value);
+const lastSyncedAtBySpace = computed<Record<string, string | null>>(() => {
+  if (!deviceId.value) return {};
+  return deviceStore.getLastSyncedAtBySpace(deviceId.value);
+});
+const lastSyncedLabelBySpace = computed<Record<string, string>>(() => {
+  const labels: Record<string, string> = {};
+  for (const [spaceId, syncedAt] of Object.entries(lastSyncedAtBySpace.value)) {
+    if (!syncedAt) continue;
+    labels[spaceId] = new Date(syncedAt).toLocaleTimeString();
+  }
+  return labels;
 });
 
 const savedMappedSelection = computed(() => {
@@ -353,10 +361,10 @@ async function confirmUnpair() {
               title="Syncing"
             />
             <span
-              v-else-if="mappedSelection.includes(space.id) && !hasPendingSync && lastSyncedAt"
+              v-else-if="mappedSelection.includes(space.id) && !hasPendingSync && lastSyncedLabelBySpace[space.id]"
               class="text-[11px] opacity-60"
             >
-              last synced: {{ new Date(lastSyncedAt).toLocaleTimeString() }}
+              last synced: {{ lastSyncedLabelBySpace[space.id] }}
             </span>
             <span v-if="!isEmbeddedSpaceId(space.id)" class="text-xs opacity-60" :title="space.id">{{ shortUuid(space.id) }}</span>
           </li>

@@ -6,6 +6,7 @@ mod services;
 
 use services::db::{open_db, DbState};
 use services::device_connection::{
+    device_connection_consume_space_mapping_updates,
     device_connection_debug_status, device_connection_discovery_snapshot,
     device_connection_enter_add_mode, device_connection_get_identity,
     device_connection_get_paired_devices, device_connection_leave_add_mode,
@@ -22,7 +23,9 @@ use services::quest::{
 use services::reminder::{create_reminder, delete_reminder, get_reminders};
 use services::space::{create_space, delete_space, get_spaces, update_space};
 use services::space_sync::{
-    space_sync_list_mappings, space_sync_status, space_sync_update_mappings,
+    space_sync_apply_remote_mappings, space_sync_list_mappings,
+    space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
+    space_sync_update_mappings,
 };
 use tauri::Manager;
 
@@ -92,8 +95,12 @@ pub fn run() {
             device_connection_save_paired_device,
             device_connection_unpair,
             device_connection_update_last_seen,
+            device_connection_consume_space_mapping_updates,
             space_sync_list_mappings,
             space_sync_update_mappings,
+            space_sync_apply_remote_mappings,
+            space_sync_resolve_custom_space_mapping,
+            space_sync_tick,
             space_sync_status,
         ])
         .run(tauri::generate_context!())

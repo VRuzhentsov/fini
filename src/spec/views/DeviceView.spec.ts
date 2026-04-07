@@ -45,6 +45,11 @@ describe("DeviceView mapped spaces sync labels", () => {
         tombstone_count: 0,
       }),
       getLastSyncedAt: jest.fn().mockReturnValue("2026-04-07T12:34:56.000Z"),
+      getLastSyncedAtBySpace: jest.fn().mockReturnValue({
+        "1": "2026-04-07T12:34:56.000Z",
+        "2": "2026-04-07T12:35:56.000Z",
+        "foo-space-1": "2026-04-07T12:36:56.000Z",
+      }),
       getMappedSpaceIds: jest.fn().mockReturnValue(["1", "2", "foo-space-1"]),
       getUnresolvedCustomSpaces: jest.fn().mockReturnValue([]),
       shortDeviceId: jest.fn().mockReturnValue("ce-123"),

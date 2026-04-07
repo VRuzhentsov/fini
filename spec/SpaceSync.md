@@ -64,6 +64,32 @@ Minimum event envelope fields:
 - `updated_at` (UTC)
 - `created_at` (UTC)
 
+## Quest synchronization between spaces
+
+### Event scope
+
+- Quest sync scope is always the quest `space_id` at mutation time.
+- A peer receives a quest event only when that event `space_id` is currently mapped for the pair.
+
+### Cross-space moves
+
+- Moving a quest between spaces is a first-class sync transition and must converge on both peers.
+- Expected behavior by move type:
+  - mapped -> mapped: quest stays as one logical record (`id` unchanged) and updates `space_id` on peer.
+  - mapped -> unmapped: peer removes quest copy from mapped dataset (no stale copy remains visible).
+  - unmapped -> mapped: peer receives quest and shows it in the newly mapped space.
+
+### Mapping toggles
+
+- Enabling mapping for a space runs bootstrap and includes existing quests from that space.
+- Disabling mapping for a space stops future replication for that space.
+- Disabling mapping does not require immediate destructive cleanup of already-synced historical rows in this phase.
+
+### Quest lifecycle operations
+
+- Create, update, complete/abandon/restore, and delete must replicate for mapped spaces.
+- Deletes replicate via tombstones and must not resurrect after reconnect.
+
 ## Convergence and conflict policy
 
 - Required outcome: automatic eventual convergence after reconnect.

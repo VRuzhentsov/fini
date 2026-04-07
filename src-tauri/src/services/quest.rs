@@ -12,7 +12,7 @@ use crate::models::{
 use crate::schema::{focus_history, quest_series, quests};
 use crate::services::db::{utc_now, DbState};
 use crate::services::device_connection::DeviceConnectionState;
-use crate::services::space_sync::outbox::emit_sync_event;
+use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 
@@ -358,6 +358,56 @@ fn append_focus_history(
         .values(&input)
         .execute(conn)
         .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn emit_quest_sync_events(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    previous_space_id: &str,
+    quest: &Quest,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
+
+    if previous_space_id == quest.space_id {
+        return emit_sync_event(
+            conn,
+            origin_device_id,
+            "quest",
+            &quest.id,
+            &quest.space_id,
+            "upsert",
+            Some(payload),
+        );
+    }
+
+    let delete_updated_at = utc_now();
+    let upsert_updated_at = (Utc::now() + chrono::Duration::seconds(1))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
+    emit_sync_event_at(
+        conn,
+        origin_device_id,
+        "quest",
+        &quest.id,
+        previous_space_id,
+        "delete",
+        None,
+        delete_updated_at,
+    )?;
+
+    emit_sync_event_at(
+        conn,
+        origin_device_id,
+        "quest",
+        &quest.id,
+        &quest.space_id,
+        "upsert",
+        Some(payload),
+        upsert_updated_at,
+    )?;
 
     Ok(())
 }
@@ -751,11 +801,13 @@ pub fn update_quest(
     input: UpdateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let previous_status: String = quests::table
+    let previous: Quest = quests::table
         .find(&id)
-        .select(quests::status)
+        .select(Quest::as_select())
         .first(&mut *conn)
         .map_err(|e| e.to_string())?;
+    let previous_status = previous.status.clone();
+    let previous_space_id = previous.space_id.clone();
 
     let status_input = input.status.clone();
     let reminder_triggered = input.reminder_triggered_at.is_some();
@@ -769,15 +821,11 @@ pub fn update_quest(
             &quest.space_id,
             "reminder",
         )?;
-        let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
-        emit_sync_event(
+        emit_quest_sync_events(
             &mut conn,
             &device_connection.identity.device_id,
-            "quest",
-            &quest.id,
-            &quest.space_id,
-            "upsert",
-            Some(payload),
+            &previous_space_id,
+            &quest,
         )?;
         return Ok(quest);
     }
@@ -796,15 +844,11 @@ pub fn update_quest(
         )?;
     }
 
-    let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
-    emit_sync_event(
+    emit_quest_sync_events(
         &mut conn,
         &device_connection.identity.device_id,
-        "quest",
-        &quest.id,
-        &quest.space_id,
-        "upsert",
-        Some(payload),
+        &previous_space_id,
+        &quest,
     )?;
 
     Ok(quest)
@@ -845,6 +889,7 @@ pub fn delete_quest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::sync_outbox;
     use crate::services::db::open_db_at_path;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -923,6 +968,24 @@ mod tests {
             priority: None,
             pinned: None,
             due: Some(due.to_string()),
+            due_time: None,
+            repeat_rule: None,
+            set_focus_at: None,
+            reminder_triggered_at: None,
+            order_rank: None,
+        }
+    }
+
+    fn space_patch(space_id: &str) -> UpdateQuestInput {
+        UpdateQuestInput {
+            space_id: Some(space_id.to_string()),
+            title: None,
+            description: None,
+            status: None,
+            energy: None,
+            priority: None,
+            pinned: None,
+            due: None,
             due_time: None,
             repeat_rule: None,
             set_focus_at: None,
@@ -1558,6 +1621,61 @@ mod tests {
             updated.period_key.as_deref(),
             Some("2026-03-29"),
             "period_key must follow due when editing recurring occurrence date"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn moving_quest_between_spaces_emits_delete_then_upsert_events() {
+        let db_path = temp_db_path("moving-quest-between-spaces-emits-delete-then-upsert");
+        let mut conn = open_db_at_path(&db_path);
+
+        diesel::insert_into(quests::table)
+            .values((
+                quests::space_id.eq("1"),
+                quests::title.eq("space-move-events"),
+                quests::status.eq("active"),
+                quests::created_at.eq("2026-04-01T00:00:00Z"),
+                quests::updated_at.eq("2026-04-01T00:00:00Z"),
+            ))
+            .execute(&mut conn)
+            .expect("insert quest");
+
+        let id: String = quests::table
+            .filter(quests::title.eq("space-move-events"))
+            .select(quests::id)
+            .first(&mut conn)
+            .expect("load quest id");
+
+        let updated =
+            update_quest_in_db(&mut conn, &id, space_patch("2")).expect("move quest to space 2");
+        emit_quest_sync_events(&mut conn, "device-local", "1", &updated)
+            .expect("emit sync events for space move");
+
+        let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest"))
+            .filter(sync_outbox::entity_id.eq(&id))
+            .order(sync_outbox::created_at.asc())
+            .select((
+                sync_outbox::op_type,
+                sync_outbox::space_id,
+                sync_outbox::updated_at,
+                sync_outbox::payload,
+            ))
+            .load(&mut conn)
+            .expect("load emitted outbox rows");
+
+        assert_eq!(rows.len(), 2, "space move must emit delete + upsert");
+        assert_eq!(rows[0].0, "delete");
+        assert_eq!(rows[0].1, "1");
+        assert!(rows[0].3.is_none(), "delete event payload must be empty");
+        assert_eq!(rows[1].0, "upsert");
+        assert_eq!(rows[1].1, "2");
+        assert!(rows[1].3.is_some(), "upsert event payload must be present");
+        assert!(
+            rows[1].2 > rows[0].2,
+            "upsert event must be newer than delete event"
         );
 
         let _ = std::fs::remove_file(db_path);

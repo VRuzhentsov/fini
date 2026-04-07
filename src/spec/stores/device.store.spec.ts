@@ -17,6 +17,10 @@ describe("device store sync status", () => {
       peer_device_id: "peer-1",
       mapped_space_ids: ["1", "2"],
       last_synced_at: "2026-04-07T13:20:00Z",
+      last_synced_at_by_space: {
+        "1": "2026-04-07T13:15:00Z",
+        "2": "2026-04-07T13:20:00Z",
+      },
       pending_event_count: 0,
       outbox_event_count: 10,
       acked_event_count: 10,
@@ -28,5 +32,7 @@ describe("device store sync status", () => {
     await store.refreshSpaceSyncStatus("peer-1");
 
     expect(store.getLastSyncedAt("peer-1")).toBe("2026-04-07T13:20:00Z");
+    expect(store.getLastSyncedAtForSpace("peer-1", "1")).toBe("2026-04-07T13:15:00Z");
+    expect(store.getLastSyncedAtForSpace("peer-1", "2")).toBe("2026-04-07T13:20:00Z");
   });
 });

@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use tauri::State;
 
@@ -29,6 +29,7 @@ pub struct SpaceSyncStatus {
     pub peer_device_id: Option<String>,
     pub mapped_space_ids: Vec<String>,
     pub last_synced_at: Option<String>,
+    pub last_synced_at_by_space: BTreeMap<String, Option<String>>,
     pub pending_event_count: usize,
     pub outbox_event_count: i64,
     pub acked_event_count: i64,
@@ -267,6 +268,7 @@ fn apply_mappings_in_db(
                 peer_device_id: peer_device_id.to_string(),
                 space_id: space_id.clone(),
                 enabled_at: now.clone(),
+                last_synced_at: None,
             })
             .collect();
 
@@ -1178,6 +1180,40 @@ pub fn space_sync_tick_impl(
             if !inserted {
                 continue;
             }
+
+            let event_meta = sync_outbox::table
+                .find(&ack.event_id)
+                .select((sync_outbox::space_id, sync_outbox::updated_at))
+                .first::<(String, String)>(&mut *conn)
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            if let Some((space_id, event_updated_at)) = event_meta {
+                let current_last_synced = pair_space_mappings::table
+                    .filter(pair_space_mappings::peer_device_id.eq(&ack.from_device_id))
+                    .filter(pair_space_mappings::space_id.eq(&space_id))
+                    .select(pair_space_mappings::last_synced_at)
+                    .first::<Option<String>>(&mut *conn)
+                    .optional()
+                    .map_err(|e| e.to_string())?
+                    .flatten();
+
+                if current_last_synced
+                    .as_deref()
+                    .map(|value| value < event_updated_at.as_str())
+                    .unwrap_or(true)
+                {
+                    diesel::update(
+                        pair_space_mappings::table
+                            .filter(pair_space_mappings::peer_device_id.eq(&ack.from_device_id))
+                            .filter(pair_space_mappings::space_id.eq(&space_id)),
+                    )
+                    .set(pair_space_mappings::last_synced_at.eq(Some(event_updated_at)))
+                    .execute(&mut *conn)
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+
             received_acks += 1;
             let entry = transferred_by_peer
                 .entry(ack.from_device_id.clone())
@@ -1242,31 +1278,46 @@ pub fn space_sync_status_impl(
         .get_result(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    let (mapped_space_ids, last_synced_at, pending_event_count, acked_event_count) =
-        if let Some(peer_id) = peer_device_id.as_deref() {
-            let mapped = list_mappings_for_peer(&mut conn, peer_id)?;
-            let last_synced = sync_acks::table
-                .filter(sync_acks::peer_device_id.eq(peer_id))
-                .select(sync_acks::acked_at)
-                .order(sync_acks::acked_at.desc())
-                .first::<String>(&mut *conn)
-                .optional()
-                .map_err(|e| e.to_string())?;
-            let pending = load_unacked_events_for_peer(&mut conn, peer_id, &mapped)?.len();
-            let acked: i64 = sync_acks::table
-                .filter(sync_acks::peer_device_id.eq(peer_id))
-                .count()
-                .get_result(&mut *conn)
-                .map_err(|e| e.to_string())?;
-            (mapped, last_synced, pending, acked)
-        } else {
-            (Vec::new(), None, 0, 0)
-        };
+    let (
+        mapped_space_ids,
+        last_synced_at,
+        last_synced_at_by_space,
+        pending_event_count,
+        acked_event_count,
+    ) = if let Some(peer_id) = peer_device_id.as_deref() {
+        let mapping_rows: Vec<(String, Option<String>)> = pair_space_mappings::table
+            .filter(pair_space_mappings::peer_device_id.eq(peer_id))
+            .order(pair_space_mappings::space_id.asc())
+            .select((
+                pair_space_mappings::space_id,
+                pair_space_mappings::last_synced_at,
+            ))
+            .load(&mut *conn)
+            .map_err(|e| e.to_string())?;
+
+        let mapped: Vec<String> = mapping_rows
+            .iter()
+            .map(|(space_id, _)| space_id.clone())
+            .collect();
+        let by_space: BTreeMap<String, Option<String>> = mapping_rows.into_iter().collect();
+        let last_synced = by_space.values().flatten().max().cloned();
+
+        let pending = load_unacked_events_for_peer(&mut conn, peer_id, &mapped)?.len();
+        let acked: i64 = sync_acks::table
+            .filter(sync_acks::peer_device_id.eq(peer_id))
+            .count()
+            .get_result(&mut *conn)
+            .map_err(|e| e.to_string())?;
+        (mapped, last_synced, by_space, pending, acked)
+    } else {
+        (Vec::new(), None, BTreeMap::new(), 0, 0)
+    };
 
     Ok(SpaceSyncStatus {
         peer_device_id,
         mapped_space_ids,
         last_synced_at,
+        last_synced_at_by_space,
         pending_event_count,
         outbox_event_count,
         acked_event_count,
@@ -1346,21 +1397,23 @@ mod tests {
         serde_json::to_string(quest).unwrap()
     }
 
-    fn insert_outbox_entry(
+    fn insert_outbox_entry_for_space(
         conn: &mut SqliteConnection,
         origin_device_id: &str,
         entity_type: &str,
         entity_id: &str,
+        space_id: &str,
         updated_at: &str,
         payload: Option<String>,
-    ) {
+    ) -> String {
+        let event_id = Uuid::new_v4().to_string();
         let entry = CreateSyncOutboxEntry {
-            event_id: Uuid::new_v4().to_string(),
+            event_id: event_id.clone(),
             correlation_id: Uuid::new_v4().to_string(),
             origin_device_id: origin_device_id.to_string(),
             entity_type: entity_type.to_string(),
             entity_id: entity_id.to_string(),
-            space_id: "1".to_string(),
+            space_id: space_id.to_string(),
             op_type: "upsert".to_string(),
             payload,
             updated_at: updated_at.to_string(),
@@ -1369,6 +1422,26 @@ mod tests {
             .values(&entry)
             .execute(conn)
             .unwrap();
+        event_id
+    }
+
+    fn insert_outbox_entry(
+        conn: &mut SqliteConnection,
+        origin_device_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        updated_at: &str,
+        payload: Option<String>,
+    ) {
+        let _ = insert_outbox_entry_for_space(
+            conn,
+            origin_device_id,
+            entity_type,
+            entity_id,
+            "1",
+            updated_at,
+            payload,
+        );
     }
 
     #[test]
@@ -1554,6 +1627,60 @@ mod tests {
         assert!(types.contains(&"space"));
         assert!(types.contains(&"quest"));
 
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn space_sync_status_reports_last_synced_per_space() {
+        let db_path = temp_db_path("status-last-synced-by-space");
+        let mut conn = open_db_at_path(&db_path);
+
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        diesel::insert_into(pair_space_mappings::table)
+            .values(vec![
+                (
+                    pair_space_mappings::peer_device_id.eq("peer-a"),
+                    pair_space_mappings::space_id.eq("1"),
+                    pair_space_mappings::enabled_at.eq("2026-04-07T00:00:00Z"),
+                    pair_space_mappings::last_synced_at.eq(Some("2026-04-07T10:01:00Z")),
+                ),
+                (
+                    pair_space_mappings::peer_device_id.eq("peer-a"),
+                    pair_space_mappings::space_id.eq("2"),
+                    pair_space_mappings::enabled_at.eq("2026-04-07T00:00:00Z"),
+                    pair_space_mappings::last_synced_at.eq(Some("2026-04-07T10:06:00Z")),
+                ),
+            ])
+            .execute(&mut conn)
+            .unwrap();
+
+        let db = DbState(std::sync::Mutex::new(conn));
+        let status = space_sync_status_impl(&db, Some("peer-a".to_string())).unwrap();
+
+        assert_eq!(
+            status.last_synced_at,
+            Some("2026-04-07T10:06:00Z".to_string())
+        );
+        assert_eq!(
+            status.last_synced_at_by_space.get("1"),
+            Some(&Some("2026-04-07T10:01:00Z".to_string()))
+        );
+        assert_eq!(
+            status.last_synced_at_by_space.get("2"),
+            Some(&Some("2026-04-07T10:06:00Z".to_string()))
+        );
+
+        drop(db);
         let _ = std::fs::remove_file(db_path);
     }
 }

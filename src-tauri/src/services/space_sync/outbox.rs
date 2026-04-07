@@ -8,7 +8,7 @@ use crate::services::db::utc_now;
 
 use super::types::SyncEventEnvelope;
 
-pub fn emit_sync_event(
+pub fn emit_sync_event_at(
     conn: &mut SqliteConnection,
     origin_device_id: &str,
     entity_type: &str,
@@ -16,8 +16,8 @@ pub fn emit_sync_event(
     space_id: &str,
     op_type: &str,
     payload: Option<String>,
+    updated_at: String,
 ) -> Result<(), String> {
-    let now = utc_now();
     let entry = CreateSyncOutboxEntry {
         event_id: Uuid::new_v4().to_string(),
         correlation_id: Uuid::new_v4().to_string(),
@@ -27,7 +27,7 @@ pub fn emit_sync_event(
         space_id: space_id.to_string(),
         op_type: op_type.to_string(),
         payload,
-        updated_at: now,
+        updated_at,
     };
 
     diesel::insert_into(sync_outbox::table)
@@ -36,6 +36,27 @@ pub fn emit_sync_event(
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+pub fn emit_sync_event(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    entity_type: &str,
+    entity_id: &str,
+    space_id: &str,
+    op_type: &str,
+    payload: Option<String>,
+) -> Result<(), String> {
+    emit_sync_event_at(
+        conn,
+        origin_device_id,
+        entity_type,
+        entity_id,
+        space_id,
+        op_type,
+        payload,
+        utc_now(),
+    )
 }
 
 pub fn load_unacked_events_for_peer(

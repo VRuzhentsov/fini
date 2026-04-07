@@ -73,6 +73,7 @@ diesel::table! {
         peer_device_id -> Text,
         space_id       -> Text,
         enabled_at     -> Text,
+        last_synced_at -> Nullable<Text>,
     }
 }
 

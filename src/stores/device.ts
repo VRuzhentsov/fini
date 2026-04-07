@@ -69,6 +69,7 @@ export interface SpaceSyncStatus {
   peer_device_id: string | null;
   mapped_space_ids: string[];
   last_synced_at?: string | null;
+  last_synced_at_by_space?: Record<string, string | null>;
   pending_event_count: number;
   outbox_event_count: number;
   acked_event_count: number;
@@ -166,6 +167,7 @@ export const useDeviceStore = defineStore("device", () => {
   const unresolvedCustomSpacesByPeer = ref<Record<string, UnresolvedCustomSpace[]>>({});
   const syncStatusByPeer = ref<Record<string, SpaceSyncStatus | null>>({});
   const lastSyncedAtByPeer = ref<Record<string, string | null>>({});
+  const lastSyncedAtByPeerSpace = ref<Record<string, Record<string, string | null>>>({});
   const syncingByPeer = ref<Record<string, boolean>>({});
   const lastAppliedSyncAt = ref<string | null>(null);
   const incomingExpectedCode = ref<Record<string, string>>({});
@@ -219,6 +221,21 @@ export const useDeviceStore = defineStore("device", () => {
 
   function getLastSyncedAt(peerDeviceId: string): string | null {
     return lastSyncedAtByPeer.value[peerDeviceId] ?? null;
+  }
+
+  function getLastSyncedAtBySpace(peerDeviceId: string): Record<string, string | null> {
+    const bySpace = lastSyncedAtByPeerSpace.value[peerDeviceId];
+    if (bySpace) return bySpace;
+
+    const fallback = lastSyncedAtByPeer.value[peerDeviceId];
+    if (!fallback) return {};
+
+    const mapped = mappedSpaceIdsByPeer.value[peerDeviceId] ?? [];
+    return Object.fromEntries(mapped.map((spaceId) => [spaceId, fallback]));
+  }
+
+  function getLastSyncedAtForSpace(peerDeviceId: string, spaceId: string): string | null {
+    return getLastSyncedAtBySpace(peerDeviceId)[spaceId] ?? null;
   }
 
   function isSyncingPeer(peerDeviceId: string): boolean {
@@ -301,6 +318,16 @@ export const useDeviceStore = defineStore("device", () => {
         peerDeviceId,
       });
       syncStatusByPeer.value[peerDeviceId] = status;
+
+      if (status.last_synced_at_by_space) {
+        const normalizedBySpace: Record<string, string | null> = {};
+        for (const [spaceId, syncedAt] of Object.entries(status.last_synced_at_by_space)) {
+          normalizedBySpace[spaceId] = syncedAt;
+        }
+        lastSyncedAtByPeerSpace.value[peerDeviceId] = normalizedBySpace;
+      } else {
+        delete lastSyncedAtByPeerSpace.value[peerDeviceId];
+      }
 
       if (status.last_synced_at) {
         const current = lastSyncedAtByPeer.value[peerDeviceId];
@@ -770,6 +797,7 @@ export const useDeviceStore = defineStore("device", () => {
     delete unresolvedCustomSpacesByPeer.value[deviceId];
     delete syncStatusByPeer.value[deviceId];
     delete lastSyncedAtByPeer.value[deviceId];
+    delete lastSyncedAtByPeerSpace.value[deviceId];
     delete syncingByPeer.value[deviceId];
     await loadPairedDevices();
   }
@@ -804,6 +832,7 @@ export const useDeviceStore = defineStore("device", () => {
     unresolvedCustomSpacesByPeer,
     syncStatusByPeer,
     lastSyncedAtByPeer,
+    lastSyncedAtByPeerSpace,
     syncingByPeer,
     lastAppliedSyncAt,
     hydrate,
@@ -817,6 +846,8 @@ export const useDeviceStore = defineStore("device", () => {
     refreshSpaceSyncStatus,
     getSpaceSyncStatus,
     getLastSyncedAt,
+    getLastSyncedAtBySpace,
+    getLastSyncedAtForSpace,
     isSyncingPeer,
     runSpaceSyncTick,
     enterAddMode,
