@@ -13,20 +13,25 @@ use crate::services::device_connection::runtime::{
 };
 use crate::services::device_connection::types::{
     DeviceConnectionDebugStatus, DeviceIdentity, DevicePairRequestAckInput, DevicePairRequestInput,
-    DiscoveredDevice, IncomingPairRequest, PairAcceptPayload, PairCodeUpdate, PairCompletePayload,
-    PairCompletionUpdate, PairRequestPayload,
+    DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairAcceptPayload,
+    PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::device_connection::DeviceConnectionState;
 
-#[tauri::command]
-pub fn device_connection_get_identity(
-    state: State<DeviceConnectionState>,
+pub fn device_connection_get_identity_impl(
+    state: &DeviceConnectionState,
 ) -> Result<DeviceIdentity, String> {
     Ok(state.identity.clone())
 }
 
 #[tauri::command]
-pub fn device_connection_enter_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
+pub fn device_connection_get_identity(
+    state: State<DeviceConnectionState>,
+) -> Result<DeviceIdentity, String> {
+    device_connection_get_identity_impl(&state)
+}
+
+pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> Result<(), String> {
     let mut guard = state
         .runtime
         .lock()
@@ -41,7 +46,11 @@ pub fn device_connection_enter_add_mode(state: State<DeviceConnectionState>) -> 
 }
 
 #[tauri::command]
-pub fn device_connection_leave_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
+pub fn device_connection_enter_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
+    device_connection_enter_add_mode_impl(&state)
+}
+
+pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> Result<(), String> {
     let mut guard = state
         .runtime
         .lock()
@@ -59,8 +68,12 @@ pub fn device_connection_leave_add_mode(state: State<DeviceConnectionState>) -> 
 }
 
 #[tauri::command]
-pub fn device_connection_send_pair_request(
-    state: State<DeviceConnectionState>,
+pub fn device_connection_leave_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
+    device_connection_leave_add_mode_impl(&state)
+}
+
+pub fn device_connection_send_pair_request_impl(
+    state: &DeviceConnectionState,
     input: DevicePairRequestInput,
 ) -> Result<(), String> {
     let target_ip: IpAddr = input
@@ -108,8 +121,15 @@ pub fn device_connection_send_pair_request(
 }
 
 #[tauri::command]
-pub fn device_connection_pair_incoming_requests(
+pub fn device_connection_send_pair_request(
     state: State<DeviceConnectionState>,
+    input: DevicePairRequestInput,
+) -> Result<(), String> {
+    device_connection_send_pair_request_impl(&state, input)
+}
+
+pub fn device_connection_pair_incoming_requests_impl(
+    state: &DeviceConnectionState,
 ) -> Result<Vec<IncomingPairRequest>, String> {
     let mut guard = state
         .runtime
@@ -133,8 +153,14 @@ pub fn device_connection_pair_incoming_requests(
 }
 
 #[tauri::command]
-pub fn device_connection_pair_outgoing_updates(
+pub fn device_connection_pair_incoming_requests(
     state: State<DeviceConnectionState>,
+) -> Result<Vec<IncomingPairRequest>, String> {
+    device_connection_pair_incoming_requests_impl(&state)
+}
+
+pub fn device_connection_pair_outgoing_updates_impl(
+    state: &DeviceConnectionState,
 ) -> Result<Vec<PairCodeUpdate>, String> {
     let guard = state
         .runtime
@@ -152,8 +178,14 @@ pub fn device_connection_pair_outgoing_updates(
 }
 
 #[tauri::command]
-pub fn device_connection_pair_outgoing_completions(
+pub fn device_connection_pair_outgoing_updates(
     state: State<DeviceConnectionState>,
+) -> Result<Vec<PairCodeUpdate>, String> {
+    device_connection_pair_outgoing_updates_impl(&state)
+}
+
+pub fn device_connection_pair_outgoing_completions_impl(
+    state: &DeviceConnectionState,
 ) -> Result<Vec<PairCompletionUpdate>, String> {
     let guard = state
         .runtime
@@ -172,8 +204,14 @@ pub fn device_connection_pair_outgoing_completions(
 }
 
 #[tauri::command]
-pub fn device_connection_pair_accept_request(
+pub fn device_connection_pair_outgoing_completions(
     state: State<DeviceConnectionState>,
+) -> Result<Vec<PairCompletionUpdate>, String> {
+    device_connection_pair_outgoing_completions_impl(&state)
+}
+
+pub fn device_connection_pair_accept_request_impl(
+    state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
     let (to_device_id, to_addr) = {
@@ -251,8 +289,15 @@ pub fn device_connection_pair_accept_request(
 }
 
 #[tauri::command]
-pub fn device_connection_pair_complete_request(
+pub fn device_connection_pair_accept_request(
     state: State<DeviceConnectionState>,
+    input: DevicePairRequestAckInput,
+) -> Result<PairCodeUpdate, String> {
+    device_connection_pair_accept_request_impl(&state, input)
+}
+
+pub fn device_connection_pair_complete_request_impl(
+    state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
     let (to_device_id, to_addr) = {
@@ -327,8 +372,15 @@ pub fn device_connection_pair_complete_request(
 }
 
 #[tauri::command]
-pub fn device_connection_pair_acknowledge_request(
+pub fn device_connection_pair_complete_request(
     state: State<DeviceConnectionState>,
+    input: DevicePairRequestAckInput,
+) -> Result<(), String> {
+    device_connection_pair_complete_request_impl(&state, input)
+}
+
+pub fn device_connection_pair_acknowledge_request_impl(
+    state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
     let mut guard = state
@@ -341,8 +393,15 @@ pub fn device_connection_pair_acknowledge_request(
 }
 
 #[tauri::command]
-pub fn device_connection_discovery_snapshot(
+pub fn device_connection_pair_acknowledge_request(
     state: State<DeviceConnectionState>,
+    input: DevicePairRequestAckInput,
+) -> Result<(), String> {
+    device_connection_pair_acknowledge_request_impl(&state, input)
+}
+
+pub fn device_connection_discovery_snapshot_impl(
+    state: &DeviceConnectionState,
 ) -> Result<Vec<DiscoveredDevice>, String> {
     let ttl = Duration::from_secs(DISCOVERY_TTL_SECS);
     let mut guard = state
@@ -376,8 +435,14 @@ pub fn device_connection_discovery_snapshot(
 }
 
 #[tauri::command]
-pub fn device_connection_presence_snapshot(
+pub fn device_connection_discovery_snapshot(
     state: State<DeviceConnectionState>,
+) -> Result<Vec<DiscoveredDevice>, String> {
+    device_connection_discovery_snapshot_impl(&state)
+}
+
+pub fn device_connection_presence_snapshot_impl(
+    state: &DeviceConnectionState,
 ) -> Result<Vec<DiscoveredDevice>, String> {
     let guard = state
         .runtime
@@ -406,8 +471,14 @@ pub fn device_connection_presence_snapshot(
 }
 
 #[tauri::command]
-pub fn device_connection_debug_status(
+pub fn device_connection_presence_snapshot(
     state: State<DeviceConnectionState>,
+) -> Result<Vec<DiscoveredDevice>, String> {
+    device_connection_presence_snapshot_impl(&state)
+}
+
+pub fn device_connection_debug_status_impl(
+    state: &DeviceConnectionState,
 ) -> Result<DeviceConnectionDebugStatus, String> {
     let guard = state
         .runtime
@@ -428,13 +499,47 @@ pub fn device_connection_debug_status(
     })
 }
 
-// ── Paired device CRUD (SQLite) ──────────────────────────────────────────────
+#[tauri::command]
+pub fn device_connection_debug_status(
+    state: State<DeviceConnectionState>,
+) -> Result<DeviceConnectionDebugStatus, String> {
+    device_connection_debug_status_impl(&state)
+}
+
+pub fn device_connection_consume_space_mapping_updates_impl(
+    state: &DeviceConnectionState,
+) -> Result<Vec<IncomingSpaceMappingUpdate>, String> {
+    let mut guard = state
+        .runtime
+        .lock()
+        .map_err(|_| "device sync runtime lock poisoned".to_string())?;
+
+    let mut updates: Vec<IncomingSpaceMappingUpdate> = guard
+        .incoming_space_mapping_updates
+        .drain()
+        .map(|(_, v)| v)
+        .collect();
+    updates.sort_by(|a, b| {
+        b.sent_at
+            .cmp(&a.sent_at)
+            .then_with(|| a.from_device_id.cmp(&b.from_device_id))
+    });
+    Ok(updates)
+}
 
 #[tauri::command]
-pub fn device_connection_get_paired_devices(
-    db: State<DbState>,
+pub fn device_connection_consume_space_mapping_updates(
+    state: State<DeviceConnectionState>,
+) -> Result<Vec<IncomingSpaceMappingUpdate>, String> {
+    device_connection_consume_space_mapping_updates_impl(&state)
+}
+
+// ── Paired device CRUD (SQLite) ──────────────────────────────────────────────
+
+pub fn device_connection_get_paired_devices_impl(
+    db: &DbState,
 ) -> Result<Vec<PairedDevice>, String> {
-    let mut conn = db.inner().0.lock().unwrap();
+    let mut conn = db.0.lock().unwrap();
     paired_devices::table
         .select(PairedDevice::as_select())
         .order(paired_devices::paired_at.desc())
@@ -443,12 +548,18 @@ pub fn device_connection_get_paired_devices(
 }
 
 #[tauri::command]
-pub fn device_connection_save_paired_device(
+pub fn device_connection_get_paired_devices(
     db: State<DbState>,
+) -> Result<Vec<PairedDevice>, String> {
+    device_connection_get_paired_devices_impl(&db)
+}
+
+pub fn device_connection_save_paired_device_impl(
+    db: &DbState,
     peer_device_id: String,
     display_name: String,
 ) -> Result<PairedDevice, String> {
-    let mut conn = db.inner().0.lock().unwrap();
+    let mut conn = db.0.lock().unwrap();
     let now = utc_now();
 
     let existing: Option<PairedDevice> = paired_devices::table
@@ -486,9 +597,35 @@ pub fn device_connection_save_paired_device(
 }
 
 #[tauri::command]
-pub fn device_connection_unpair(db: State<DbState>, peer_device_id: String) -> Result<(), String> {
-    let mut conn = db.inner().0.lock().unwrap();
+pub fn device_connection_save_paired_device(
+    db: State<DbState>,
+    peer_device_id: String,
+    display_name: String,
+) -> Result<PairedDevice, String> {
+    device_connection_save_paired_device_impl(&db, peer_device_id, display_name)
+}
+
+pub fn device_connection_unpair_impl(db: &DbState, peer_device_id: String) -> Result<(), String> {
+    let mut conn = db.0.lock().unwrap();
     diesel::delete(paired_devices::table.find(&peer_device_id))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn device_connection_unpair(db: State<DbState>, peer_device_id: String) -> Result<(), String> {
+    device_connection_unpair_impl(&db, peer_device_id)
+}
+
+pub fn device_connection_update_last_seen_impl(
+    db: &DbState,
+    peer_device_id: String,
+    last_seen_at: String,
+) -> Result<(), String> {
+    let mut conn = db.0.lock().unwrap();
+    diesel::update(paired_devices::table.find(&peer_device_id))
+        .set(paired_devices::last_seen_at.eq(&last_seen_at))
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -500,10 +637,5 @@ pub fn device_connection_update_last_seen(
     peer_device_id: String,
     last_seen_at: String,
 ) -> Result<(), String> {
-    let mut conn = db.inner().0.lock().unwrap();
-    diesel::update(paired_devices::table.find(&peer_device_id))
-        .set(paired_devices::last_seen_at.eq(&last_seen_at))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    device_connection_update_last_seen_impl(&db, peer_device_id, last_seen_at)
 }

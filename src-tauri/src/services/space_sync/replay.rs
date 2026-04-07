@@ -9,19 +9,19 @@ pub fn record_ack(
     conn: &mut SqliteConnection,
     peer_device_id: &str,
     event_id: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let ack = CreateSyncAck {
         peer_device_id: peer_device_id.to_string(),
         event_id: event_id.to_string(),
         acked_at: utc_now(),
     };
 
-    diesel::insert_or_ignore_into(sync_acks::table)
+    let inserted = diesel::insert_or_ignore_into(sync_acks::table)
         .values(&ack)
         .execute(conn)
         .map_err(|e| e.to_string())?;
 
-    Ok(())
+    Ok(inserted > 0)
 }
 
 pub fn is_event_seen(conn: &mut SqliteConnection, event_id: &str) -> Result<bool, String> {

@@ -1,7 +1,15 @@
 <script setup lang="ts">
+import { onMounted } from "vue";
 import ToastStack from "./components/ToastStack.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import SpacePicker from "./components/SpacePicker.vue";
+import { useDeviceStore } from "./stores/device";
+
+const deviceStore = useDeviceStore();
+
+onMounted(() => {
+  void deviceStore.hydrate();
+});
 </script>
 
 <template>

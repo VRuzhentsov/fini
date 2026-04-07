@@ -86,6 +86,34 @@ pub fn load_unacked_events_for_peer(
         .collect())
 }
 
+pub fn load_latest_event_for_entity(
+    conn: &mut SqliteConnection,
+    entity_type: &str,
+    entity_id: &str,
+) -> Result<Option<SyncEventEnvelope>, String> {
+    let row: Option<crate::models::SyncOutboxEntry> = sync_outbox::table
+        .filter(sync_outbox::entity_type.eq(entity_type))
+        .filter(sync_outbox::entity_id.eq(entity_id))
+        .order(sync_outbox::updated_at.desc())
+        .select(crate::models::SyncOutboxEntry::as_select())
+        .first(conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    Ok(row.map(|r| SyncEventEnvelope {
+        event_id: r.event_id,
+        correlation_id: r.correlation_id,
+        origin_device_id: r.origin_device_id,
+        entity_type: r.entity_type,
+        entity_id: r.entity_id,
+        space_id: r.space_id,
+        op_type: r.op_type,
+        payload: r.payload,
+        updated_at: r.updated_at,
+        created_at: r.created_at,
+    }))
+}
+
 pub fn load_events_for_space(
     conn: &mut SqliteConnection,
     space_id: &str,

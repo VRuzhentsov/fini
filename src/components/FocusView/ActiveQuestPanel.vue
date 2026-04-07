@@ -15,9 +15,15 @@ function onContextMenu(e: MouseEvent) {
       label: s.name,
       action: () => store.updateQuest(props.quest.id, { space_id: s.id }),
     }));
+
+  const moveItem =
+    moveItems.length > 0
+      ? { label: "Move to space", children: moveItems }
+      : { label: "Move to space", disabled: true };
+
   contextMenu.open(e, [
     { label: "Complete", action: () => store.updateQuest(props.quest.id, { status: "completed" }) },
-    { label: "Move to space", children: moveItems },
+    moveItem,
     { separator: true },
     { label: "Delete", action: () => store.deleteQuest(props.quest.id) },
   ]);

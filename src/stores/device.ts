@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
+import { shortUuid } from "../utils/shortUuid";
 
 export interface PairedDevice {
   peer_device_id: string;
@@ -67,11 +68,51 @@ export interface PairCompletionUpdate {
 export interface SpaceSyncStatus {
   peer_device_id: string | null;
   mapped_space_ids: string[];
+  last_synced_at?: string | null;
   pending_event_count: number;
   outbox_event_count: number;
   acked_event_count: number;
   seen_event_count: number;
   tombstone_count: number;
+}
+
+export interface SpaceSyncTickPeer {
+  peer_device_id: string;
+  sent_events: number;
+  received_events: number;
+  acked_events: number;
+  transferred_objects: number;
+  last_transfer_at: string;
+}
+
+export interface SpaceSyncTickResult {
+  sent_events: number;
+  applied_events: number;
+  received_acks: number;
+  peers: SpaceSyncTickPeer[];
+  ticked_at: string;
+}
+
+export interface IncomingSpaceMappingUpdate {
+  from_device_id: string;
+  mapped_space_ids: string[];
+  custom_spaces: CustomSpaceDescriptor[];
+  sent_at: string;
+}
+
+export interface CustomSpaceDescriptor {
+  space_id: string;
+  name: string;
+}
+
+export interface UnresolvedCustomSpace {
+  space_id: string;
+  name: string;
+}
+
+export interface SpaceMappingApplyResult {
+  mapped_space_ids: string[];
+  unresolved_custom_spaces: UnresolvedCustomSpace[];
 }
 
 interface DevicePairRequestInput {
@@ -92,6 +133,7 @@ interface LocalDeviceIdentity {
 export const ADD_MODE_DISCOVERY_INTERVAL_MS = 5_000;
 const ADD_MODE_POLL_INTERVAL_MS = 1_000;
 const PRESENCE_POLL_INTERVAL_MS = 15_000;
+const MAPPING_UPDATE_POLL_INTERVAL_MS = 3_000;
 const NORMAL_HEARTBEAT_MS = 60_000;
 const OFFLINE_AFTER_MISSED_HEARTBEATS_MS = NORMAL_HEARTBEAT_MS * 2;
 const REQUEST_TTL_MS = 60_000;
@@ -121,13 +163,18 @@ export const useDeviceStore = defineStore("device", () => {
   const debugStatus = ref<DeviceConnectionDebugStatus | null>(null);
   const pairCompletedAt = ref<string | null>(null);
   const mappedSpaceIdsByPeer = ref<Record<string, string[]>>({});
+  const unresolvedCustomSpacesByPeer = ref<Record<string, UnresolvedCustomSpace[]>>({});
   const syncStatusByPeer = ref<Record<string, SpaceSyncStatus | null>>({});
+  const lastSyncedAtByPeer = ref<Record<string, string | null>>({});
+  const syncingByPeer = ref<Record<string, boolean>>({});
+  const lastAppliedSyncAt = ref<string | null>(null);
   const incomingExpectedCode = ref<Record<string, string>>({});
   const incomingAttemptCount = ref<Record<string, number>>({});
   const incomingCooldownUntil = ref<Record<string, string | null>>({});
 
   let discoveryTimer: ReturnType<typeof setInterval> | null = null;
   let presenceTimer: ReturnType<typeof setInterval> | null = null;
+  let mappingUpdateTimer: ReturnType<typeof setInterval> | null = null;
 
   const outgoingRequestSecondsLeft = computed(() => {
     if (!outgoingRequest.value) return 0;
@@ -162,11 +209,25 @@ export const useDeviceStore = defineStore("device", () => {
     return mappedSpaceIdsByPeer.value[peerDeviceId] ?? [];
   }
 
+  function getUnresolvedCustomSpaces(peerDeviceId: string): UnresolvedCustomSpace[] {
+    return unresolvedCustomSpacesByPeer.value[peerDeviceId] ?? [];
+  }
+
   function getSpaceSyncStatus(peerDeviceId: string): SpaceSyncStatus | null {
     return syncStatusByPeer.value[peerDeviceId] ?? null;
   }
 
+  function getLastSyncedAt(peerDeviceId: string): string | null {
+    return lastSyncedAtByPeer.value[peerDeviceId] ?? null;
+  }
+
+  function isSyncingPeer(peerDeviceId: string): boolean {
+    return syncingByPeer.value[peerDeviceId] ?? false;
+  }
+
   async function loadMappedSpaces(peerDeviceId: string): Promise<string[]> {
+    await consumeSpaceMappingUpdates();
+
     try {
       const mapped = await invoke<string[]>("space_sync_list_mappings", {
         peerDeviceId,
@@ -191,11 +252,47 @@ export const useDeviceStore = defineStore("device", () => {
       });
       mappedSpaceIdsByPeer.value[peerDeviceId] = mapped;
       void refreshSpaceSyncStatus(peerDeviceId);
+      void runSpaceSyncTick();
       return mapped;
     } catch (error) {
       console.warn("[space-sync] failed to save mappings", error);
       throw error;
     }
+  }
+
+  async function resolveCustomSpaceMapping(
+    peerDeviceId: string,
+    remoteSpaceId: string,
+    resolutionMode: "create_new" | "use_existing",
+    existingSpaceId?: string,
+    remoteSpaceName?: string,
+  ) {
+    const unresolvedBefore = unresolvedCustomSpacesByPeer.value[peerDeviceId] ?? [];
+
+    const result = await invoke<SpaceMappingApplyResult>(
+      "space_sync_resolve_custom_space_mapping",
+      {
+        peerDeviceId,
+        remoteSpaceId,
+        remoteSpaceName,
+        resolutionMode,
+        existingSpaceId,
+      },
+    );
+
+    mappedSpaceIdsByPeer.value[peerDeviceId] = result.mapped_space_ids;
+
+    const fallbackRemaining = unresolvedBefore.filter((space) => space.space_id !== remoteSpaceId);
+    const unresolvedFromBackend = result.unresolved_custom_spaces.filter(
+      (space) => space.space_id !== remoteSpaceId,
+    );
+
+    unresolvedCustomSpacesByPeer.value[peerDeviceId] =
+      unresolvedFromBackend.length > 0 ? unresolvedFromBackend : fallbackRemaining;
+
+    void refreshSpaceSyncStatus(peerDeviceId);
+    void runSpaceSyncTick();
+    return result;
   }
 
   async function refreshSpaceSyncStatus(peerDeviceId: string): Promise<SpaceSyncStatus | null> {
@@ -204,11 +301,82 @@ export const useDeviceStore = defineStore("device", () => {
         peerDeviceId,
       });
       syncStatusByPeer.value[peerDeviceId] = status;
+
+      if (status.last_synced_at) {
+        const current = lastSyncedAtByPeer.value[peerDeviceId];
+        if (!current) {
+          lastSyncedAtByPeer.value[peerDeviceId] = status.last_synced_at;
+        } else {
+          const currentTs = Date.parse(current);
+          const nextTs = Date.parse(status.last_synced_at);
+          if (Number.isNaN(currentTs) || (!Number.isNaN(nextTs) && nextTs >= currentTs)) {
+            lastSyncedAtByPeer.value[peerDeviceId] = status.last_synced_at;
+          }
+        }
+      }
+
       return status;
     } catch (error) {
       console.warn("[space-sync] failed to load status", error);
       syncStatusByPeer.value[peerDeviceId] = null;
       return null;
+    }
+  }
+
+  async function runSpaceSyncTick() {
+    const peerIds = pairedDevices.value.map((p) => p.peer_device_id);
+    for (const peerId of peerIds) {
+      syncingByPeer.value[peerId] = true;
+    }
+
+    try {
+      const tick = await invoke<SpaceSyncTickResult>("space_sync_tick");
+
+      for (const peer of tick.peers) {
+        if (peer.transferred_objects > 0) {
+          lastSyncedAtByPeer.value[peer.peer_device_id] = peer.last_transfer_at;
+        }
+      }
+
+      if (tick.applied_events > 0) {
+        lastAppliedSyncAt.value = tick.ticked_at;
+      }
+
+      for (const peerId of peerIds) {
+        void refreshSpaceSyncStatus(peerId);
+      }
+    } catch (error) {
+      console.warn("[space-sync] tick failed", error);
+    } finally {
+      for (const peerId of peerIds) {
+        syncingByPeer.value[peerId] = false;
+      }
+    }
+  }
+
+  async function consumeSpaceMappingUpdates() {
+    try {
+      const updates = await invoke<IncomingSpaceMappingUpdate[]>(
+        "device_connection_consume_space_mapping_updates",
+      );
+
+      for (const update of updates) {
+        try {
+          const result = await invoke<SpaceMappingApplyResult>("space_sync_apply_remote_mappings", {
+            peerDeviceId: update.from_device_id,
+            mappedSpaceIds: update.mapped_space_ids,
+            customSpaces: update.custom_spaces,
+          });
+          mappedSpaceIdsByPeer.value[update.from_device_id] = result.mapped_space_ids;
+          unresolvedCustomSpacesByPeer.value[update.from_device_id] =
+            result.unresolved_custom_spaces;
+          void refreshSpaceSyncStatus(update.from_device_id);
+        } catch (error) {
+          console.warn("[space-sync] failed to apply remote mappings", error);
+        }
+      }
+    } catch (error) {
+      console.warn("[space-sync] failed to consume incoming mapping updates", error);
     }
   }
 
@@ -408,11 +576,22 @@ export const useDeviceStore = defineStore("device", () => {
     }, PRESENCE_POLL_INTERVAL_MS);
   }
 
+  function startMappingUpdateLoop() {
+    if (mappingUpdateTimer) return;
+    void consumeSpaceMappingUpdates();
+    void runSpaceSyncTick();
+    mappingUpdateTimer = setInterval(() => {
+      void consumeSpaceMappingUpdates();
+      void runSpaceSyncTick();
+    }, MAPPING_UPDATE_POLL_INTERVAL_MS);
+  }
+
   async function hydrate() {
     await loadPairedDevices();
     await refreshIdentity();
     setDiscovered([]);
     startPresenceLoop();
+    startMappingUpdateLoop();
     void refreshPresence();
     void refreshDebugStatus();
   }
@@ -588,7 +767,10 @@ export const useDeviceStore = defineStore("device", () => {
       console.warn("[device-connection] unpair failed", error);
     }
     delete mappedSpaceIdsByPeer.value[deviceId];
+    delete unresolvedCustomSpacesByPeer.value[deviceId];
     delete syncStatusByPeer.value[deviceId];
+    delete lastSyncedAtByPeer.value[deviceId];
+    delete syncingByPeer.value[deviceId];
     await loadPairedDevices();
   }
 
@@ -600,8 +782,7 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   function shortDeviceId(deviceId: string): string {
-    if (deviceId.length <= 6) return deviceId;
-    return deviceId.slice(-6);
+    return shortUuid(deviceId, 6, "end");
   }
 
   function findPairedDevice(deviceId: string): PairedDevice | null {
@@ -620,15 +801,24 @@ export const useDeviceStore = defineStore("device", () => {
     debugStatus,
     pairCompletedAt,
     mappedSpaceIdsByPeer,
+    unresolvedCustomSpacesByPeer,
     syncStatusByPeer,
+    lastSyncedAtByPeer,
+    syncingByPeer,
+    lastAppliedSyncAt,
     hydrate,
     refreshDiscovery,
     refreshDebugStatus,
     loadMappedSpaces,
     saveMappedSpaces,
+    resolveCustomSpaceMapping,
     getMappedSpaceIds,
+    getUnresolvedCustomSpaces,
     refreshSpaceSyncStatus,
     getSpaceSyncStatus,
+    getLastSyncedAt,
+    isSyncingPeer,
+    runSpaceSyncTick,
     enterAddMode,
     leaveAddMode,
     requestPair,

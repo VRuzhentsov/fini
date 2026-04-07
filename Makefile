@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help dev build mcp android-dev android-build android-sign-debug android-install-debug android-launch android-devices
+.PHONY: help dev build mcp android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
 
 help:
 	@echo ""
@@ -11,14 +11,13 @@ help:
 	@echo "  make mcp              Run MCP server (debug binary)"
 	@echo ""
 	@echo "Android"
-	@echo "  make android-dev      Hot-reload on device via Wi-Fi (uses DEVICE_ADDRESS)"
+	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
+	@echo "  make android-dev      Hot-reload on device via Wi-Fi (auto-connects)"
 	@echo "  make android-build    Build Android APK"
 	@echo "  make android-sign-debug   Sign APK to bin/fini.apk using debug keystore"
 	@echo "  make android-install-debug  Install bin/fini.apk on connected device"
 	@echo "  make android-launch   Launch app on connected device"
 	@echo "  make android-devices  List connected ADB devices"
-	@echo ""
-	@echo "Set DEVICE_ADDRESS in .env, e.g.: DEVICE_ADDRESS=192.168.x.x:xxxxx"
 	@echo ""
 
 # ── Linux ─────────────────────────────────────────────────────────────────────
@@ -34,17 +33,18 @@ mcp:
 
 # ── Android ───────────────────────────────────────────────────────────────────
 
-DEVICE_IP   = $(firstword $(subst :, ,$(DEVICE_ADDRESS)))
-HOST_IP     = $(shell ip route get $(DEVICE_IP) 2>/dev/null | grep -oP 'src \K\S+' | head -1)
+DEVICE_ADDRESS = $(shell adb mdns services 2>/dev/null | grep '_adb-tls-connect' | head -1 | awk '{print $$NF}')
+DEVICE_IP      = $(firstword $(subst :, ,$(DEVICE_ADDRESS)))
+HOST_IP        = $(shell ip route get $(DEVICE_IP) 2>/dev/null | grep -oP 'src \K\S+' | head -1)
 ANDROID_UNSIGNED_APK = src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
 ANDROID_SIGNED_APK = bin/fini.apk
 APKSIGNER = $(lastword $(sort $(wildcard $(ANDROID_HOME)/build-tools/*/apksigner)))
 
-android-dev:
-ifndef DEVICE_ADDRESS
-	$(error DEVICE_ADDRESS not set — add it to .env)
-endif
+android-connect:
+	@test -n "$(DEVICE_ADDRESS)" || (echo "No device found via adb mdns. Enable wireless debugging on the phone." && exit 1)
 	adb connect $(DEVICE_ADDRESS)
+
+android-dev: android-connect
 	npm run tauri android dev -- --host $(HOST_IP)
 
 android-build:

@@ -1,15 +1,29 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useQuestStore } from "../stores/quest";
 import { useSpaceStore } from "../stores/space";
+import { useDeviceStore } from "../stores/device";
 import ActiveQuestPanel from "../components/FocusView/ActiveQuestPanel.vue";
 import NewQuestForm from "../components/FocusView/NewQuestForm.vue";
 import QuestList from "../components/QuestsView/QuestList.vue";
 
 const store = useQuestStore();
 const spaceStore = useSpaceStore();
+const deviceStore = useDeviceStore();
 
-onMounted(() => store.fetchQuests());
+onMounted(() => {
+  void store.fetchQuests();
+  void deviceStore.hydrate();
+});
+
+watch(
+  () => deviceStore.lastAppliedSyncAt,
+  (next, prev) => {
+    if (!next || next === prev) return;
+    void store.fetchQuests();
+    void spaceStore.fetchSpaces();
+  },
+);
 
 const filteredQuests = computed(() => {
   const sid = spaceStore.selectedSpaceId;

@@ -15,6 +15,8 @@
 
 - Prefer `Makefile` targets over raw `npm`/`tauri` commands when possible.
 - See `Makefile` for available targets.
+- Use `/var/tmp` for temporary files and logs; do not use `/tmp`.
+- When stopping known dev processes, prefer `pkill -f "<specific-pattern>"` over PID-based `kill`.
 
 ## Release tags
 

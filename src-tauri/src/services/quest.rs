@@ -12,6 +12,7 @@ use crate::models::{
 use crate::schema::{focus_history, quest_series, quests};
 use crate::services::db::{utc_now, DbState};
 use crate::services::device_connection::DeviceConnectionState;
+use crate::services::space_sync::outbox::emit_sync_event;
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 
@@ -581,7 +582,11 @@ pub fn get_quests(state: State<DbState>) -> Result<Vec<Quest>, String> {
 }
 
 #[tauri::command]
-pub fn create_quest(state: State<DbState>, input: CreateQuestInput) -> Result<Quest, String> {
+pub fn create_quest(
+    state: State<DbState>,
+    device_connection: State<DeviceConnectionState>,
+    input: CreateQuestInput,
+) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
 
     let max_rank = quests::table
@@ -640,12 +645,36 @@ pub fn create_quest(state: State<DbState>, input: CreateQuestInput) -> Result<Qu
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
 
-        return quests::table
+        let created = quests::table
             .filter(quests::series_id.eq(&series.id))
             .filter(quests::period_key.eq(&period_key))
             .select(Quest::as_select())
             .first(&mut *conn)
-            .map_err(|e| e.to_string());
+            .map_err(|e| e.to_string())?;
+
+        let series_payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
+        emit_sync_event(
+            &mut conn,
+            &device_connection.identity.device_id,
+            "quest_series",
+            &series.id,
+            &series.space_id,
+            "upsert",
+            Some(series_payload),
+        )?;
+
+        let payload = serde_json::to_string(&created).map_err(|e| e.to_string())?;
+        emit_sync_event(
+            &mut conn,
+            &device_connection.identity.device_id,
+            "quest",
+            &created.id,
+            &created.space_id,
+            "upsert",
+            Some(payload),
+        )?;
+
+        return Ok(created);
     }
 
     let payload = CreateQuestInput {
@@ -653,11 +682,24 @@ pub fn create_quest(state: State<DbState>, input: CreateQuestInput) -> Result<Qu
         ..input
     };
 
-    diesel::insert_into(quests::table)
+    let created: Quest = diesel::insert_into(quests::table)
         .values(&payload)
         .returning(Quest::as_returning())
         .get_result(&mut *conn)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    let payload = serde_json::to_string(&created).map_err(|e| e.to_string())?;
+    emit_sync_event(
+        &mut conn,
+        &device_connection.identity.device_id,
+        "quest",
+        &created.id,
+        &created.space_id,
+        "upsert",
+        Some(payload),
+    )?;
+
+    Ok(created)
 }
 
 #[tauri::command]
@@ -727,6 +769,16 @@ pub fn update_quest(
             &quest.space_id,
             "reminder",
         )?;
+        let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
+        emit_sync_event(
+            &mut conn,
+            &device_connection.identity.device_id,
+            "quest",
+            &quest.id,
+            &quest.space_id,
+            "upsert",
+            Some(payload),
+        )?;
         return Ok(quest);
     }
 
@@ -744,12 +796,44 @@ pub fn update_quest(
         )?;
     }
 
+    let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
+    emit_sync_event(
+        &mut conn,
+        &device_connection.identity.device_id,
+        "quest",
+        &quest.id,
+        &quest.space_id,
+        "upsert",
+        Some(payload),
+    )?;
+
     Ok(quest)
 }
 
 #[tauri::command]
-pub fn delete_quest(state: State<DbState>, id: String) -> Result<(), String> {
+pub fn delete_quest(
+    state: State<DbState>,
+    device_connection: State<DeviceConnectionState>,
+    id: String,
+) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
+
+    let space_id: String = quests::table
+        .find(&id)
+        .select(quests::space_id)
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    emit_sync_event(
+        &mut conn,
+        &device_connection.identity.device_id,
+        "quest",
+        &id,
+        &space_id,
+        "delete",
+        None,
+    )?;
+
     diesel::delete(quests::table.find(&id))
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;

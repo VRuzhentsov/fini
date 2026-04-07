@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test:unit": "jest --runInBand",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -20,10 +21,20 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/preset-env": "^7.28.0",
     "@tailwindcss/vite": "^4.2.1",
     "@tauri-apps/cli": "^2",
+    "@types/jest": "^29.5.14",
+    "@vue/test-utils": "^2.4.6",
+    "@vue/vue3-jest": "^29.2.6",
     "@vitejs/plugin-vue": "^5.2.1",
+    "babel-jest": "^29.7.0",
+    "identity-obj-proxy": "^3.0.0",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
     "tailwindcss": "^4.2.1",
+    "ts-jest": "^29.4.1",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vue-tsc": "^2.1.10"

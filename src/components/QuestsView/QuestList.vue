@@ -46,7 +46,11 @@ function onContextMenu(e: MouseEvent, quest: Quest) {
   if (quest.status !== "active") {
     items.push({ label: "Make active", action: () => store.updateQuest(quest.id, { status: "active" }) });
   }
-  items.push({ label: "Move to space", children: moveItems });
+  if (moveItems.length > 0) {
+    items.push({ label: "Move to space", children: moveItems });
+  } else {
+    items.push({ label: "Move to space", disabled: true });
+  }
   items.push({ separator: true });
   if (quest.status === "active") {
     items.push({ label: "Abandon", action: () => store.updateQuest(quest.id, { status: "abandoned" }) });

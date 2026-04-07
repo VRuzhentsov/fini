@@ -9,12 +9,14 @@ use uuid::Uuid;
 
 use super::{
     DISCOVERY_INTERVAL_MS, DISCOVERY_PORT, DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS,
-    HEARTBEAT_INTERVAL_MS, MULTICAST_GROUP, PAIR_REQUEST_TTL_SECS, SPACE_SYNC_WS_PORT,
+    HEARTBEAT_INTERVAL_MS, MULTICAST_GROUP, PAIR_REQUEST_TTL_SECS, SPACE_MAPPING_UPDATE_KIND,
+    SPACE_SYNC_WS_PORT, SYNC_ACK_KIND, SYNC_EVENT_KIND,
 };
 use crate::services::device_connection::types::{
-    DeviceIdentity, DiscoveryBeacon, DiscoveryRuntime, IncomingPairRequest, PairAcceptPayload,
-    PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload, SeenPeer,
-    StoredIncomingPairRequest,
+    DeviceIdentity, DiscoveryBeacon, DiscoveryRuntime, IncomingPairRequest,
+    IncomingSpaceMappingUpdate, IncomingSyncAck, PairAcceptPayload, PairCodeUpdate,
+    PairCompletePayload, PairCompletionUpdate, PairRequestPayload, SeenPeer,
+    SpaceMappingUpdatePayload, StoredIncomingPairRequest, SyncAckPayload, SyncEventPayload,
 };
 
 pub(super) fn utc_now() -> String {
@@ -120,6 +122,107 @@ pub(super) fn upsert_seen_peer(
             ws_port: beacon.ws_port,
             last_seen_at: utc_now(),
             last_seen_mono: Instant::now(),
+        },
+    );
+}
+
+fn handle_space_mapping_update(
+    runtime: &Arc<Mutex<DiscoveryRuntime>>,
+    identity: &DeviceIdentity,
+    mapping_update: SpaceMappingUpdatePayload,
+) {
+    if mapping_update.protocol != DISCOVERY_PROTOCOL {
+        return;
+    }
+    if mapping_update.kind != SPACE_MAPPING_UPDATE_KIND {
+        return;
+    }
+    if mapping_update.to_device_id != identity.device_id {
+        return;
+    }
+
+    let Ok(mut guard) = runtime.lock() else {
+        return;
+    };
+
+    guard.rx_count += 1;
+
+    let should_replace = guard
+        .incoming_space_mapping_updates
+        .get(mapping_update.from_device_id.as_str())
+        .map(|current| current.sent_at < mapping_update.sent_at)
+        .unwrap_or(true);
+    if !should_replace {
+        return;
+    }
+
+    guard.incoming_space_mapping_updates.insert(
+        mapping_update.from_device_id.clone(),
+        IncomingSpaceMappingUpdate {
+            from_device_id: mapping_update.from_device_id.clone(),
+            mapped_space_ids: mapping_update.mapped_space_ids,
+            custom_spaces: mapping_update.custom_spaces,
+            sent_at: mapping_update.sent_at,
+        },
+    );
+
+    eprintln!(
+        "[device-sync] received mapping update from {}",
+        mapping_update.from_device_id
+    );
+}
+
+fn handle_sync_event(
+    runtime: &Arc<Mutex<DiscoveryRuntime>>,
+    identity: &DeviceIdentity,
+    payload: SyncEventPayload,
+) {
+    if payload.protocol != DISCOVERY_PROTOCOL {
+        return;
+    }
+    if payload.kind != SYNC_EVENT_KIND {
+        return;
+    }
+    if payload.to_device_id != identity.device_id {
+        return;
+    }
+
+    let Ok(mut guard) = runtime.lock() else {
+        return;
+    };
+    guard.rx_count += 1;
+    guard
+        .incoming_sync_events
+        .insert(payload.event.event_id.clone(), payload.event);
+}
+
+fn handle_sync_ack(
+    runtime: &Arc<Mutex<DiscoveryRuntime>>,
+    identity: &DeviceIdentity,
+    payload: SyncAckPayload,
+) {
+    if payload.protocol != DISCOVERY_PROTOCOL {
+        return;
+    }
+    if payload.kind != SYNC_ACK_KIND {
+        return;
+    }
+    if payload.to_device_id != identity.device_id {
+        return;
+    }
+
+    let Ok(mut guard) = runtime.lock() else {
+        return;
+    };
+    guard.rx_count += 1;
+
+    let key = format!("{}:{}", payload.from_device_id, payload.event_id);
+    guard.incoming_sync_acks.insert(
+        key,
+        IncomingSyncAck {
+            from_device_id: payload.from_device_id,
+            event_id: payload.event_id,
+            acked_at: payload.acked_at,
         },
     );
 }
@@ -343,6 +446,26 @@ pub(super) fn spawn_discovery_worker(
                                 );
                             }
                         }
+                        continue;
+                    }
+
+                    if let Ok(mapping_update) =
+                        serde_json::from_slice::<SpaceMappingUpdatePayload>(&buffer[..size])
+                    {
+                        handle_space_mapping_update(&runtime, &identity, mapping_update);
+                        continue;
+                    }
+
+                    if let Ok(sync_event) =
+                        serde_json::from_slice::<SyncEventPayload>(&buffer[..size])
+                    {
+                        handle_sync_event(&runtime, &identity, sync_event);
+                        continue;
+                    }
+
+                    if let Ok(sync_ack) = serde_json::from_slice::<SyncAckPayload>(&buffer[..size])
+                    {
+                        handle_sync_ack(&runtime, &identity, sync_ack);
                         continue;
                     }
                 }

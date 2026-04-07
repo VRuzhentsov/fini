@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::services::space_sync::types::SyncEventEnvelope;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceIdentity {
     pub device_id: String,
@@ -55,6 +57,27 @@ pub struct PairCompletionUpdate {
     pub from_device_id: String,
     pub from_hostname: String,
     pub paired_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingSpaceMappingUpdate {
+    pub from_device_id: String,
+    pub mapped_space_ids: Vec<String>,
+    pub custom_spaces: Vec<CustomSpaceDescriptor>,
+    pub sent_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomSpaceDescriptor {
+    pub space_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingSyncAck {
+    pub from_device_id: String,
+    pub event_id: String,
+    pub acked_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,6 +137,36 @@ pub(super) struct PairCompletePayload {
     pub paired_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct SpaceMappingUpdatePayload {
+    pub protocol: String,
+    pub kind: String,
+    pub from_device_id: String,
+    pub to_device_id: String,
+    pub mapped_space_ids: Vec<String>,
+    #[serde(default)]
+    pub custom_spaces: Vec<CustomSpaceDescriptor>,
+    pub sent_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct SyncEventPayload {
+    pub protocol: String,
+    pub kind: String,
+    pub to_device_id: String,
+    pub event: SyncEventEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct SyncAckPayload {
+    pub protocol: String,
+    pub kind: String,
+    pub from_device_id: String,
+    pub to_device_id: String,
+    pub event_id: String,
+    pub acked_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct StoredIncomingPairRequest {
     pub request: IncomingPairRequest,
@@ -142,4 +195,7 @@ pub(super) struct DiscoveryRuntime {
     pub incoming_requests: HashMap<String, StoredIncomingPairRequest>,
     pub outgoing_code_updates: HashMap<String, PairCodeUpdate>,
     pub outgoing_pair_completions: HashMap<String, PairCompletionUpdate>,
+    pub incoming_space_mapping_updates: HashMap<String, IncomingSpaceMappingUpdate>,
+    pub incoming_sync_events: HashMap<String, SyncEventEnvelope>,
+    pub incoming_sync_acks: HashMap<String, IncomingSyncAck>,
 }
