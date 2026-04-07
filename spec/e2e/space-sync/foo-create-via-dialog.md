@@ -48,7 +48,15 @@ Validate that a custom space created on one device (`Foo`) is offered to the pai
 
 ## Evidence Artifacts
 
-- Device A screenshots: `Foo` creation and `Save mappings` success state.
-- Device B screenshots: incoming dialog for `Foo`, `Create` confirmation, spaces list with `Foo`.
-- Post-reload screenshots from both devices showing `Foo` still present.
-- Optional logs around `space_sync_update_mappings`, incoming update consumption, and resolution command.
+- Device A DOM evidence: `Foo` creation and `Save mappings` enabled/success state.
+- Device B DOM evidence: incoming `Foo` dialog, `Create` confirmation, spaces list containing `Foo`.
+- Post-reload DOM evidence from both devices showing `Foo` remains present.
+- Structured command outputs/logs around mapping update, incoming update consumption, and resolution command.
+- Screenshot evidence only as rare fallback when DOM data is unavailable for a required assertion.
+
+## Cleanup
+
+1. Remove `Foo` from mapped spaces on both devices.
+2. Delete test-created `Foo` spaces from both devices.
+3. Reload spaces and device detail on both sides to verify baseline restoration.
+4. Record cleanup evidence; if cleanup fails, mark the test as failed.

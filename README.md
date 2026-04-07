@@ -62,6 +62,7 @@ Every significant source file has a companion `.md` file with the same name (e.g
 
 Convention:
 - **Domain model specs** live in `spec/` — shared between frontend and backend
+- **E2E QA specs** live in `spec/e2e/` — execution guide in `spec/e2e/README.md`
 - **UI specs** live next to the source file they describe (e.g. `App.vue` → `App.md`)
 - A spec file for a view describes its concept and sections
 - A spec file for a component describes its props, events, and behaviour

@@ -9,7 +9,7 @@ status: draft
 
 ## Goal
 
-Validate that two unpaired devices can discover each other, complete passcode pairing, and appear as paired peers in Settings.
+Validate that two unpaired devices discover each other, complete passcode pairing, and appear as paired peers in Settings.
 
 ## Preconditions
 
@@ -48,7 +48,15 @@ Validate that two unpaired devices can discover each other, complete passcode pa
 
 ## Evidence Artifacts
 
-- Before screenshots from both devices in add mode.
-- Pair code screen screenshot on sender + code entry screenshot on receiver.
-- After screenshots of `Settings -> Devices` on both devices.
-- Optional logs around `device_connection_pair_*` command flow.
+- Baseline DOM snapshot output from both devices in add mode.
+- DOM evidence for sender code-visible state and receiver code-entry state.
+- Post-pair DOM evidence from `Settings -> Devices` on both devices.
+- Structured command outputs/logs around `device_connection_pair_*` flow.
+- Screenshot evidence only as rare fallback when DOM data is unavailable for a required assertion.
+
+## Cleanup
+
+1. Unpair devices from both sides.
+2. Exit `Add device` mode on both devices.
+3. Verify both devices no longer list each other under paired devices.
+4. Record cleanup evidence; if cleanup fails, mark the test as failed.
