@@ -6,6 +6,12 @@ This feature defines ideal end-to-end QA coverage for CLI-first operation in Fin
 
 Validate that CLI commands are the primary synchronous control surface for product operations and produce deterministic, testable outcomes.
 
+## Entry Behavior
+
+- `fini` returns current Focus quest.
+- `fini --help` shows command groups and usage.
+- `fini app` launches GUI explicitly.
+
 ## Ideal CLI Contract
 
 - Commands are explicit, synchronous, and idempotent where applicable.
@@ -34,6 +40,15 @@ Validate that CLI commands are the primary synchronous control surface for produ
 - Exit code policy is consistent.
 - Data state is correct after reload/reopen checks.
 - No unrelated records change.
+
+## Binary Accessibility Preflight
+
+Run before any CLI test case:
+
+1. `command -v fini`
+2. `fini --help`
+
+If either check fails, stop the test and mark it blocked by environment setup.
 
 ## Evidence
 

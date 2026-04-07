@@ -1,30 +1,38 @@
 ---
 name: fini
-description: "TRIGGER when user asks to create, update, list, or manage quests or spaces. Guides correct use of Fini MCP tools (quest lifecycle, space assignment, reminders)."
+description: "TRIGGER when user asks to create, update, list, or manage quests or spaces. Use the Fini CLI (`fini`) with a mandatory binary-access preflight before any action."
 ---
 
-# Fini — Quest & Space MCP Workflow
+# Fini — Quest & Space CLI Workflow
 
-You manage quests and spaces in the Fini app via MCP tools. Follow the rules below for every quest/space operation.
+You manage quests and spaces in the Fini app through the `fini` binary. Follow the rules below for every operation.
 
-## Available MCP Tools
+## Mandatory Preflight (Required Before Any Action)
 
-- `list_spaces` — list all spaces (id, name, order)
-- `create_space` / `update_space` / `delete_space` — manage spaces
-- `list_quests` — list quests by status and optional space filter
-- `get_quest` / `get_active_quest` — fetch single quest or current Main
-- `create_quest` — create a new quest
-- `update_quest` — update quest fields
-- `complete_quest` / `abandon_quest` / `delete_quest` — lifecycle transitions
-- `list_reminders` / `create_reminder` / `delete_reminder` — reminder management
+Run these checks first:
+
+1. `command -v fini`
+2. `fini --help`
+
+If either fails, stop immediately and return concrete remediation steps.
+Do not perform read or write actions until preflight passes.
+
+## Available CLI Commands
+
+- `fini` or `fini focus get` — current Focus quest
+- `fini quest ...` — quest list/get/create/update/complete/abandon/delete/history
+- `fini space ...` — space list/create/update/delete
+- `fini reminder ...` — reminder list/create/delete
+
+Use human-readable output by default. Use `--json` when deterministic machine parsing is required.
 
 ## Rules
 
 ### Before Creating a Quest
 
-1. **Always call `list_spaces` first** to get available spaces and their IDs.
+1. **Always run `fini space list --json` first** to get available spaces and their IDs.
 2. Determine which space fits the quest best based on its topic and space names.
-3. Pass the matching `space_id` to `create_quest`. If no space clearly fits, default to Personal (`"1"`).
+3. Pass the matching `space_id` to `fini quest create`. If no space clearly fits, default to Personal (`"1"`).
 4. If the user explicitly names a space, use that space's ID.
 
 ### Built-in Spaces
@@ -35,7 +43,7 @@ You manage quests and spaces in the Fini app via MCP tools. Follow the rules bel
 | `2` | Family      |
 | `3` | Work        |
 
-Users may rename built-ins or create custom spaces — always fetch fresh data via `list_spaces`.
+Users may rename built-ins or create custom spaces. Always fetch fresh data via `fini space list`.
 
 ### Quest Defaults
 
@@ -54,3 +62,13 @@ Users may rename built-ins or create custom spaces — always fetch fresh data v
 
 - Set `repeat_rule` for recurring quests (e.g. `daily`, `weekly`, `monthly`)
 - Repeating quests track `series_id` and `period_key` automatically
+
+## Focus and App Entry Behavior
+
+- `fini` with no args returns current Focus quest.
+- `fini app` launches GUI explicitly.
+
+## Failure Handling
+
+- Prefer fail-fast behavior for invalid IDs, invalid state transitions, or missing required arguments.
+- Surface a short human explanation and the exact command the user can run next.

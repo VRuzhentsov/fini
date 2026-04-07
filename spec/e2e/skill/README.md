@@ -29,6 +29,15 @@ Validate that user intent expressed in natural language is translated into corre
 - Errors are explicit and actionable.
 - No unrelated data changes occur.
 
+## Mandatory Skill Preflight
+
+Before any skill action, verify CLI accessibility:
+
+1. `command -v fini`
+2. `fini --help`
+
+If either check fails, skill must fail fast with fix steps and perform no side effects.
+
 ## Evidence
 
 - Action transcript from the test harness.
