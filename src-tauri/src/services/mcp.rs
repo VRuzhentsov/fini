@@ -40,6 +40,188 @@ impl FiniServer {
             tool_router: Self::tool_router(),
         }
     }
+
+    fn cli_structured(result: CallToolResult) -> serde_json::Value {
+        result.structured_content.unwrap_or(serde_json::Value::Null)
+    }
+
+    pub async fn cli_list_quests(
+        &self,
+        space_id: Option<String>,
+        status: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        self.list_quests(Parameters(ListQuestsParams { space_id, status }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_get_quest(&self, id: String) -> Result<serde_json::Value, String> {
+        self.get_quest(Parameters(IdParam { id }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_get_active_focus(&self) -> Result<serde_json::Value, String> {
+        self.get_active_focus()
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_set_focus(
+        &self,
+        id: String,
+        trigger: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        let trigger_reminder_focus = match trigger.as_deref() {
+            Some("reminder") => Some(true),
+            _ => None,
+        };
+
+        self.update_quest(Parameters(UpdateQuestParams {
+            id,
+            title: None,
+            description: None,
+            status: None,
+            space_id: None,
+            pinned: None,
+            due: None,
+            due_time: None,
+            repeat_rule: None,
+            order_rank: None,
+            set_focus: Some(true),
+            trigger_reminder_focus,
+        }))
+        .await
+        .map(Self::cli_structured)
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_create_quest(
+        &self,
+        title: String,
+        space_id: Option<String>,
+        description: Option<String>,
+        due: Option<String>,
+        due_time: Option<String>,
+        repeat_rule: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        self.create_quest(Parameters(CreateQuestParams {
+            title,
+            space_id,
+            description,
+            due,
+            due_time,
+            repeat_rule,
+        }))
+        .await
+        .map(Self::cli_structured)
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_update_quest(
+        &self,
+        params: UpdateQuestParams,
+    ) -> Result<serde_json::Value, String> {
+        self.update_quest(Parameters(params))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_complete_quest(&self, id: String) -> Result<serde_json::Value, String> {
+        self.complete_quest(Parameters(IdParam { id }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_abandon_quest(&self, id: String) -> Result<serde_json::Value, String> {
+        self.abandon_quest(Parameters(IdParam { id }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_delete_quest(&self, id: String) -> Result<serde_json::Value, String> {
+        self.delete_quest(Parameters(IdParam { id }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_list_history(&self) -> Result<serde_json::Value, String> {
+        self.list_history()
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_list_spaces(&self) -> Result<serde_json::Value, String> {
+        self.list_spaces()
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_create_space(&self, name: String) -> Result<serde_json::Value, String> {
+        self.create_space(Parameters(CreateSpaceParams { name }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_update_space(
+        &self,
+        id: String,
+        name: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        self.update_space(Parameters(UpdateSpaceParams { id, name }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_delete_space(&self, id: String) -> Result<serde_json::Value, String> {
+        self.delete_space(Parameters(IdParam { id }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_list_reminders(&self, quest_id: String) -> Result<serde_json::Value, String> {
+        self.list_reminders(Parameters(QuestIdParam { quest_id }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_create_reminder(
+        &self,
+        quest_id: String,
+        kind: String,
+        mm_offset: Option<i64>,
+        due_at_utc: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        self.create_reminder(Parameters(CreateReminderParams {
+            quest_id,
+            kind,
+            mm_offset,
+            due_at_utc,
+        }))
+        .await
+        .map(Self::cli_structured)
+        .map_err(|e| e.to_string())
+    }
+
+    pub async fn cli_delete_reminder(&self, id: String) -> Result<serde_json::Value, String> {
+        self.delete_reminder(Parameters(IdParam { id }))
+            .await
+            .map(Self::cli_structured)
+            .map_err(|e| e.to_string())
+    }
 }
 
 // ── Parameter types ────────────────────────────────────────────────────────────

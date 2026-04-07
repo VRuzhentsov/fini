@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod db;
 pub mod device_connection;
 pub mod mcp;

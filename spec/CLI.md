@@ -123,12 +123,15 @@ MCP behavior remains implemented. CLI must provide an equivalent command for eac
 | `create_reminder` | `fini reminder create --quest-id` |
 | `delete_reminder` | `fini reminder delete --id` |
 
-## Service Architecture Requirement
+## Unified Action Service
 
-- CLI, GUI/Tauri commands, and MCP tools must call shared domain services.
-- Business rules must be implemented once in the shared layer.
-- Adapters (CLI/MCP/Tauri invoke handlers) map arguments and format output only.
-- No adapter-specific behavior divergence.
+Define a single shared service/module as the execution core for all interfaces.
+
+- CLI and MCP both call the same action service methods.
+- GUI/Tauri commands call the same action service methods.
+- Business rules and persistence logic are implemented once in that shared module.
+- Interface adapters (CLI/MCP/GUI) only handle argument parsing, transport, and output formatting.
+- No interface-specific divergence in mutation or validation logic.
 
 ## Skill Integration Contract
 

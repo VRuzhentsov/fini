@@ -89,7 +89,8 @@ Fini exposes a **Model Context Protocol (MCP) server** so external AI clients â€
 
 | Invocation | Mode |
 |---|---|
-| `fini` | Launch GUI (Tauri) |
+| `fini` | Return current Focus quest (CLI default) |
+| `fini app` | Launch GUI (Tauri) |
 | `fini mcp` | Start MCP server over stdio, no GUI |
 
 Claude Desktop launches `fini mcp` as a subprocess. Both modes share the same SQLite database at `$DATA_DIR/fini/fini.db`.
@@ -164,7 +165,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "fini": {
       "command": "/path/to/fini",
-      "args": []
+      "args": ["mcp"]
     }
   }
 }

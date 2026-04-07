@@ -35,6 +35,10 @@ pub fn run_mcp() {
         .unwrap();
 }
 
+pub fn run_cli() -> i32 {
+    services::cli::run(std::env::args().collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
