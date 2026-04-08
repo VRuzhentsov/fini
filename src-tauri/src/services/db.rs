@@ -1,9 +1,14 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
+#[cfg(target_os = "android")]
+pub const APP_DATA_DIR_NAME: &str = "com.fini.app";
+#[cfg(not(target_os = "android"))]
+pub const APP_DATA_DIR_NAME: &str = "fini";
 
 pub struct DbState(pub Mutex<SqliteConnection>);
 
@@ -11,14 +16,21 @@ pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-pub fn db_default_path() -> std::path::PathBuf {
+pub fn db_default_path() -> PathBuf {
     dirs::data_dir()
         .expect("failed to get data dir")
-        .join("com.fini.app")
+        .join(APP_DATA_DIR_NAME)
         .join("fini.db")
 }
 
-pub fn open_db_at_path(path: &std::path::Path) -> SqliteConnection {
+pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
+    use tauri::Manager;
+    app.path()
+        .app_data_dir()
+        .expect("failed to resolve app data dir")
+}
+
+pub fn open_db_at_path(path: &Path) -> SqliteConnection {
     let mut conn =
         SqliteConnection::establish(path.to_str().unwrap()).expect("failed to open database");
     diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
@@ -30,11 +42,7 @@ pub fn open_db_at_path(path: &std::path::Path) -> SqliteConnection {
 }
 
 pub fn open_db(app: &tauri::AppHandle) -> SqliteConnection {
-    use tauri::Manager;
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .expect("failed to resolve app data dir");
+    let data_dir = app_data_dir(app);
     std::fs::create_dir_all(&data_dir).expect("failed to create app data dir");
     let db_path = data_dir.join("fini.db");
     open_db_at_path(&db_path)

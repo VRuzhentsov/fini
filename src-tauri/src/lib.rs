@@ -4,7 +4,7 @@ mod services;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
-use services::db::{open_db, DbState};
+use services::db::{app_data_dir, open_db, DbState};
 use services::device_connection::{
     device_connection_consume_space_mapping_updates,
     device_connection_debug_status, device_connection_discovery_snapshot,
@@ -54,13 +54,12 @@ pub fn run() {
     }
     builder
         .setup(|app| {
-            let conn = open_db(&app.handle());
+            let app_handle = app.handle();
+
+            let conn = open_db(&app_handle);
             app.manage(DbState(std::sync::Mutex::new(conn)));
 
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("failed to resolve app data dir");
+            let data_dir = app_data_dir(&app_handle);
             app.manage(DeviceConnectionState::new(&data_dir));
             Ok(())
         })
