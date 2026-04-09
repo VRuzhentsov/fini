@@ -335,8 +335,8 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build Android APK (arm64)
-        run: npm run tauri android build -- --ci --apk --target aarch64
+      - name: Build Android APK and AAB (arm64)
+        run: npm run tauri android build -- --ci --apk --aab --target aarch64
 
       - name: Prepare Android keystore
         env:
@@ -346,7 +346,7 @@ jobs:
           mkdir -p "$HOME/tmp"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$HOME/tmp/release.keystore"
 
-      - name: Sign Android APK
+      - name: Sign Android artifacts
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -358,9 +358,18 @@ jobs:
             echo "Unsigned APK not found" >&2
             exit 1
           fi
+          unsigned_aab="$(find src-tauri/gen/android/app/build/outputs/bundle -name '*.aab' | head -n 1)"
+          if [ -z "$unsigned_aab" ]; then
+            echo "Unsigned AAB not found" >&2
+            exit 1
+          fi
           apksigner_path="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort | tail -n 1)"
           if [ -z "$apksigner_path" ]; then
             echo "apksigner not found in Android build-tools" >&2
+            exit 1
+          fi
+          if ! command -v jarsigner >/dev/null 2>&1; then
+            echo "jarsigner not found" >&2
             exit 1
           fi
           short_sha="${GITHUB_SHA::7}"
@@ -374,11 +383,23 @@ jobs:
             "$unsigned_apk"
           "$apksigner_path" verify "$signed_apk"
 
+          signed_aab="fini-prep-${short_sha}-android.aab"
+          jarsigner \
+            -keystore "$HOME/tmp/release.keystore" \
+            -storepass "${ANDROID_KEYSTORE_PASSWORD}" \
+            -keypass "${ANDROID_KEY_PASSWORD}" \
+            -signedjar "$signed_aab" \
+            "$unsigned_aab" \
+            "${ANDROID_KEY_ALIAS}"
+          jarsigner -verify "$signed_aab"
+
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
           name: prep-android
-          path: fini-prep-*-android.apk
+          path: |
+            fini-prep-*-android.apk
+            fini-prep-*-android.aab
           if-no-files-found: error
           retention-days: 7
 

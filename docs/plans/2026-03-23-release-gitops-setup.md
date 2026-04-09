@@ -5,16 +5,16 @@ This document describes the GitHub Actions release flow configured in this repos
 ## Workflows
 
 - `.github/workflows/release-dry-run.yml`
-  - Runs on every push to `main` and on manual dispatch.
+  - Runs on manual dispatch.
   - Enforces signing-readiness checks.
   - Validates keyless cosign signing through GitHub OIDC.
   - Runs quality gates:
     - `cargo test --manifest-path src-tauri/Cargo.toml`
     - `cargo check --manifest-path src-tauri/Cargo.toml`
     - `npm run build`
-  - Push mode (`main`): runs fast checks (quality gates + Docker cache build).
-  - Manual mode (`workflow_dispatch`, `full_matrix=true`): also builds Linux, Windows, and Android artifacts.
-  - Android prep build is optimized to a single `aarch64` APK target.
+  - Base run (`workflow_dispatch`): executes quality gates and Docker cache build.
+  - Full matrix mode (`workflow_dispatch`, `full_matrix=true`): also builds Linux, Windows, and Android artifacts.
+  - Android prep build is optimized to a single `aarch64` target and produces signed APK and AAB artifacts.
   - Builds Docker image cache for `ghcr.io/<owner>/fini`.
 
 - `.github/workflows/release-tag.yml`
@@ -24,9 +24,8 @@ This document describes the GitHub Actions release flow configured in this repos
     - tag actor has maintain/admin permissions
     - tag points to current `origin/main` HEAD
     - tag is signed and annotated
-    - matching manual release prep check (`workflow_dispatch`) succeeded on same commit within 24h
   - Re-runs full gates and platform builds.
-  - Android release build is optimized to a single `aarch64` APK target.
+  - Android release build is optimized to a single `aarch64` target and produces signed APK and AAB artifacts.
   - Automatically propagates tag version (`vX.Y.Z` / `vX.Y.Z-rc.N`) into:
     - `package.json`
     - `package-lock.json`
@@ -82,6 +81,7 @@ This document describes the GitHub Actions release flow configured in this repos
    - Linux bundle archive
    - Windows bundle archive
    - Signed Android APK
+   - Signed Android AAB
    - SBOM
    - cosign signatures and certificates
    - SHA256 checksums
