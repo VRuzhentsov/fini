@@ -395,6 +395,20 @@ fn send_sync_ack_to_peer(
     Ok(())
 }
 
+fn peer_has_mapping_for_space(
+    conn: &mut SqliteConnection,
+    peer_device_id: &str,
+    space_id: &str,
+) -> Result<bool, String> {
+    let count: i64 = pair_space_mappings::table
+        .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
+        .filter(pair_space_mappings::space_id.eq(space_id))
+        .count()
+        .get_result(conn)
+        .map_err(|e| e.to_string())?;
+    Ok(count > 0)
+}
+
 fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String> {
     diesel::insert_into(spaces::table)
         .values((
@@ -1148,7 +1162,16 @@ pub fn space_sync_tick_impl(
 
     let incoming_events = device_connection.take_incoming_sync_events();
     let mut applied_events = 0usize;
+    let mut deferred_events = Vec::new();
     for event in incoming_events {
+        match peer_has_mapping_for_space(&mut conn, &event.origin_device_id, &event.space_id) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                deferred_events.push(event);
+                continue;
+            }
+        }
+
         match apply_sync_event(&mut conn, &event) {
             Ok(applied) => {
                 if applied {
@@ -1171,6 +1194,9 @@ pub fn space_sync_tick_impl(
                 );
             }
         }
+    }
+    if !deferred_events.is_empty() {
+        device_connection.restore_incoming_sync_events(deferred_events);
     }
 
     let incoming_acks = device_connection.take_incoming_sync_acks();
@@ -1339,11 +1365,18 @@ mod tests {
     use super::*;
     use crate::models::{CreateSyncOutboxEntry, SyncOutboxEntry};
     use crate::services::db::open_db_at_path;
+    use crate::services::device_connection::DeviceConnectionState;
     use std::path::PathBuf;
     use uuid::Uuid;
 
     fn temp_db_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("fini-test-cmd-{label}-{}.db", Uuid::new_v4()))
+    }
+
+    fn temp_app_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("fini-test-app-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
     }
 
     fn test_quest(id: &str, title: &str, updated_at: &str) -> Quest {
@@ -1682,5 +1715,79 @@ mod tests {
 
         drop(db);
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn space_sync_tick_defers_incoming_events_until_mapping_is_approved() {
+        let db_path = temp_db_path("tick-gated-incoming");
+        let app_dir = temp_app_dir("tick-gated-incoming");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        let db = DbState(std::sync::Mutex::new(conn));
+        let device_connection = DeviceConnectionState::new(&app_dir);
+        let quest = test_quest("q-gated", "Blocked Until Approval", "2026-04-11T20:00:00Z");
+        let event = test_envelope(
+            "evt-gated",
+            "peer-a",
+            "quest",
+            "q-gated",
+            "upsert",
+            Some(quest_payload(&quest)),
+            "2026-04-11T20:00:00Z",
+        );
+
+        device_connection.restore_incoming_sync_events(vec![event]);
+
+        let first_tick = space_sync_tick_impl(&db, &device_connection).unwrap();
+        assert_eq!(first_tick.applied_events, 0);
+
+        {
+            let mut conn = db.0.lock().unwrap();
+            let count: i64 = quests::table
+                .filter(quests::id.eq("q-gated"))
+                .count()
+                .get_result(&mut *conn)
+                .unwrap();
+            assert_eq!(count, 0);
+
+            diesel::insert_into(pair_space_mappings::table)
+                .values((
+                    pair_space_mappings::peer_device_id.eq("peer-a"),
+                    pair_space_mappings::space_id.eq("1"),
+                    pair_space_mappings::enabled_at.eq("2026-04-11T20:01:00Z"),
+                    pair_space_mappings::last_synced_at.eq(Option::<String>::None),
+                ))
+                .execute(&mut *conn)
+                .unwrap();
+        }
+
+        let second_tick = space_sync_tick_impl(&db, &device_connection).unwrap();
+        assert_eq!(second_tick.applied_events, 1);
+
+        {
+            let mut conn = db.0.lock().unwrap();
+            let count: i64 = quests::table
+                .filter(quests::id.eq("q-gated"))
+                .count()
+                .get_result(&mut *conn)
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(app_dir);
     }
 }

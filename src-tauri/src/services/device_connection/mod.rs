@@ -85,6 +85,18 @@ impl DeviceConnectionState {
         events
     }
 
+    pub fn restore_incoming_sync_events(&self, events: Vec<SyncEventEnvelope>) {
+        let Ok(mut guard) = self.runtime.lock() else {
+            return;
+        };
+
+        for event in events {
+            guard
+                .incoming_sync_events
+                .insert(event.event_id.clone(), event);
+        }
+    }
+
     pub fn take_incoming_sync_acks(&self) -> Vec<IncomingSyncAck> {
         let Ok(mut guard) = self.runtime.lock() else {
             return Vec::new();

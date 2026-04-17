@@ -101,6 +101,13 @@ export interface IncomingSpaceMappingUpdate {
   sent_at: string;
 }
 
+export interface PendingSpaceSyncRequest {
+  peer_device_id: string;
+  mapped_space_ids: string[];
+  custom_spaces: CustomSpaceDescriptor[];
+  sent_at: string;
+}
+
 export interface CustomSpaceDescriptor {
   space_id: string;
   name: string;
@@ -165,6 +172,7 @@ export const useDeviceStore = defineStore("device", () => {
   const pairCompletedAt = ref<string | null>(null);
   const mappedSpaceIdsByPeer = ref<Record<string, string[]>>({});
   const unresolvedCustomSpacesByPeer = ref<Record<string, UnresolvedCustomSpace[]>>({});
+  const pendingSpaceSyncRequestsByPeer = ref<Record<string, PendingSpaceSyncRequest>>({});
   const syncStatusByPeer = ref<Record<string, SpaceSyncStatus | null>>({});
   const lastSyncedAtByPeer = ref<Record<string, string | null>>({});
   const lastSyncedAtByPeerSpace = ref<Record<string, Record<string, string | null>>>({});
@@ -213,6 +221,16 @@ export const useDeviceStore = defineStore("device", () => {
 
   function getUnresolvedCustomSpaces(peerDeviceId: string): UnresolvedCustomSpace[] {
     return unresolvedCustomSpacesByPeer.value[peerDeviceId] ?? [];
+  }
+
+  function getPendingSpaceSyncRequest(peerDeviceId: string): PendingSpaceSyncRequest | null {
+    return pendingSpaceSyncRequestsByPeer.value[peerDeviceId] ?? null;
+  }
+
+  function listPendingSpaceSyncRequests(): PendingSpaceSyncRequest[] {
+    return Object.values(pendingSpaceSyncRequestsByPeer.value).sort((a, b) => {
+      return b.sent_at.localeCompare(a.sent_at) || a.peer_device_id.localeCompare(b.peer_device_id);
+    });
   }
 
   function getSpaceSyncStatus(peerDeviceId: string): SpaceSyncStatus | null {
@@ -312,6 +330,29 @@ export const useDeviceStore = defineStore("device", () => {
     return result;
   }
 
+  async function approvePendingSpaceSyncRequest(
+    peerDeviceId: string,
+  ): Promise<SpaceMappingApplyResult> {
+    const pendingRequest = pendingSpaceSyncRequestsByPeer.value[peerDeviceId];
+    if (!pendingRequest) {
+      throw new Error(`No pending space sync request for ${peerDeviceId}`);
+    }
+
+    const result = await invoke<SpaceMappingApplyResult>("space_sync_apply_remote_mappings", {
+      peerDeviceId,
+      mappedSpaceIds: pendingRequest.mapped_space_ids,
+      customSpaces: pendingRequest.custom_spaces,
+    });
+
+    mappedSpaceIdsByPeer.value[peerDeviceId] = result.mapped_space_ids;
+    unresolvedCustomSpacesByPeer.value[peerDeviceId] = result.unresolved_custom_spaces;
+    delete pendingSpaceSyncRequestsByPeer.value[peerDeviceId];
+
+    void refreshSpaceSyncStatus(peerDeviceId);
+    void runSpaceSyncTick();
+    return result;
+  }
+
   async function refreshSpaceSyncStatus(peerDeviceId: string): Promise<SpaceSyncStatus | null> {
     try {
       const status = await invoke<SpaceSyncStatus>("space_sync_status", {
@@ -388,19 +429,12 @@ export const useDeviceStore = defineStore("device", () => {
       );
 
       for (const update of updates) {
-        try {
-          const result = await invoke<SpaceMappingApplyResult>("space_sync_apply_remote_mappings", {
-            peerDeviceId: update.from_device_id,
-            mappedSpaceIds: update.mapped_space_ids,
-            customSpaces: update.custom_spaces,
-          });
-          mappedSpaceIdsByPeer.value[update.from_device_id] = result.mapped_space_ids;
-          unresolvedCustomSpacesByPeer.value[update.from_device_id] =
-            result.unresolved_custom_spaces;
-          void refreshSpaceSyncStatus(update.from_device_id);
-        } catch (error) {
-          console.warn("[space-sync] failed to apply remote mappings", error);
-        }
+        pendingSpaceSyncRequestsByPeer.value[update.from_device_id] = {
+          peer_device_id: update.from_device_id,
+          mapped_space_ids: [...update.mapped_space_ids],
+          custom_spaces: [...update.custom_spaces],
+          sent_at: update.sent_at,
+        };
       }
     } catch (error) {
       console.warn("[space-sync] failed to consume incoming mapping updates", error);
@@ -795,6 +829,7 @@ export const useDeviceStore = defineStore("device", () => {
     }
     delete mappedSpaceIdsByPeer.value[deviceId];
     delete unresolvedCustomSpacesByPeer.value[deviceId];
+    delete pendingSpaceSyncRequestsByPeer.value[deviceId];
     delete syncStatusByPeer.value[deviceId];
     delete lastSyncedAtByPeer.value[deviceId];
     delete lastSyncedAtByPeerSpace.value[deviceId];
@@ -841,8 +876,11 @@ export const useDeviceStore = defineStore("device", () => {
     loadMappedSpaces,
     saveMappedSpaces,
     resolveCustomSpaceMapping,
+    approvePendingSpaceSyncRequest,
     getMappedSpaceIds,
     getUnresolvedCustomSpaces,
+    getPendingSpaceSyncRequest,
+    listPendingSpaceSyncRequests,
     refreshSpaceSyncStatus,
     getSpaceSyncStatus,
     getLastSyncedAt,

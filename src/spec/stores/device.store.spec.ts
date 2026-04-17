@@ -35,4 +35,78 @@ describe("device store sync status", () => {
     expect(store.getLastSyncedAtForSpace("peer-1", "1")).toBe("2026-04-07T13:15:00Z");
     expect(store.getLastSyncedAtForSpace("peer-1", "2")).toBe("2026-04-07T13:20:00Z");
   });
+
+  it("stores incoming sync requests until explicitly approved", async () => {
+    (invoke as unknown as jest.Mock)
+      .mockResolvedValueOnce([
+        {
+          from_device_id: "peer-1",
+          mapped_space_ids: ["1", "2"],
+          custom_spaces: [{ space_id: "space-9", name: "Shared" }],
+          sent_at: "2026-04-11T20:00:00Z",
+        },
+      ])
+      .mockResolvedValueOnce(["1"]);
+
+    const store = useDeviceStore();
+    await store.loadMappedSpaces("peer-1");
+
+    expect(store.getPendingSpaceSyncRequest("peer-1")).toEqual({
+      peer_device_id: "peer-1",
+      mapped_space_ids: ["1", "2"],
+      custom_spaces: [{ space_id: "space-9", name: "Shared" }],
+      sent_at: "2026-04-11T20:00:00Z",
+    });
+
+    const invokedCommands = (invoke as unknown as jest.Mock).mock.calls.map(([command]) => command);
+    expect(invokedCommands).not.toContain("space_sync_apply_remote_mappings");
+  });
+
+  it("applies a pending sync request only after approval", async () => {
+    (invoke as unknown as jest.Mock)
+      .mockResolvedValueOnce([
+        {
+          from_device_id: "peer-1",
+          mapped_space_ids: ["1"],
+          custom_spaces: [],
+          sent_at: "2026-04-11T20:00:00Z",
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({
+        mapped_space_ids: ["1"],
+        unresolved_custom_spaces: [],
+      })
+      .mockResolvedValueOnce({
+        peer_device_id: "peer-1",
+        mapped_space_ids: ["1"],
+        pending_event_count: 1,
+        outbox_event_count: 1,
+        acked_event_count: 0,
+        seen_event_count: 0,
+        tombstone_count: 0,
+      })
+      .mockResolvedValueOnce({
+        sent_events: 0,
+        applied_events: 0,
+        received_acks: 0,
+        peers: [],
+        ticked_at: "2026-04-11T20:00:10Z",
+      });
+
+    const store = useDeviceStore();
+    await store.loadMappedSpaces("peer-1");
+    await store.approvePendingSpaceSyncRequest("peer-1");
+
+    expect((invoke as unknown as jest.Mock).mock.calls).toContainEqual([
+      "space_sync_apply_remote_mappings",
+      {
+        peerDeviceId: "peer-1",
+        mappedSpaceIds: ["1"],
+        customSpaces: [],
+      },
+    ]);
+    expect(store.getPendingSpaceSyncRequest("peer-1")).toBeNull();
+    expect(store.getMappedSpaceIds("peer-1")).toEqual(["1"]);
+  });
 });
