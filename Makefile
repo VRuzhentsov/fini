@@ -23,7 +23,7 @@ help:
 # ── Linux ─────────────────────────────────────────────────────────────────────
 
 dev:
-	npm run tauri dev
+	npm run tauri dev -- app
 
 build:
 	npm run tauri build

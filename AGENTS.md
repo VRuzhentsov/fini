@@ -6,6 +6,20 @@
 - Backend (Rust + Tauri): `src-tauri/` — see `src-tauri/README.md`
 - Domain model specs: `spec/`
 
+## Knowledge base
+
+Business knowledge lives in the `fini-wiki` wiki at `~/projects/fini-wiki/`. When a task needs business context (team info, priorities, metrics, strategic decisions), follow this retrieval protocol:
+
+**Wiki path:** `~/projects/fini-wiki/`
+
+1. **Hot cache first.** Read `_hot.md` first. It contains active threads and key numbers and should resolve most queries.
+2. **Master index.** Read `_index.md` if the hot cache is not enough. Check the "Recently Active" section.
+3. **Domain sub-index.** Open 1-2 relevant `_index-{domain}.md` files. Never open all sub-indexes at once.
+4. **Grep fallback.** Search `wiki/**/*.md` by keyword if the page is not indexed.
+5. **Page limit.** Never read more than 5 wiki pages for one query.
+
+When working inside that directory, load its `AGENTS.md` as the authoritative schema; it extends and overrides the global instructions on conflict.
+
 ## Workflow
 
 - Do not commit implementation changes until the user has verified they work.
