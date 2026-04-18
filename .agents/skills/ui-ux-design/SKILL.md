@@ -1,6 +1,6 @@
 ---
 name: ui-ux-design
-description: Design and refine interfaces in Figma with a Figma-first workflow. Use this whenever the user wants UI or UX design work, component cleanup, variant/property architecture, design-system refinement, visual polish, interaction-state design, or design QA in Figma. Prefer TalkToFigma for native design edits and use chrome-devtools only as an optional companion when browser-side Figma controls or features are needed that the MCP cannot reach directly.
+description: Design and refine interfaces in Figma with a Figma-first workflow. Use this whenever the user wants UI or UX design work, component cleanup, variant/property architecture, design-system refinement, visual polish, interaction-state design, or design QA in Figma. Use TalkToFigma for native design edits and ask the user to perform any Figma UI actions that are not available through the MCP.
 ---
 
 # UI/UX Design
@@ -31,22 +31,21 @@ Prefer TalkToFigma for:
 
 The Figma MCP is the source of truth for native design structure.
 
-### Optional Companion: Chrome DevTools
+### Fallback: User-Performed Figma Actions
 
-Use `chrome-devtools_*` only when browser-side interaction is needed in the live Figma tab and the same action is not available or is unreliable through TalkToFigma.
+Some Figma actions are not available through TalkToFigma and must be performed manually by the user in the Figma UI.
 
-Typical reasons to use chrome-devtools:
-- the user explicitly asks to open or use DevTools MCP
-- a Figma property or panel control is only reachable through the browser UI
-- multi-select, panel navigation, or variant/property manipulation is easier in the web app
-- verifying what is visibly selected or shown in the live tab
-- recovering context when the browser tab or Figma UI state matters
+Typical examples:
+- variant property management
+- component property panel actions not exposed through TalkToFigma
+- browser-only selection or panel state changes that affect what Figma exposes
+- any UI control that cannot be read or changed reliably through the MCP
 
-When using chrome-devtools with Figma:
-- open or select the correct Figma tab first
-- avoid refreshing the file unless the user explicitly accepts that risk
-- treat the browser as a companion plane, not the design source of truth
-- return to TalkToFigma for structural reads and edits whenever possible
+When blocked by one of these actions:
+- describe the exact manual step the user needs to take in Figma
+- keep the instruction narrow and concrete
+- wait for the user to confirm the change
+- re-read the relevant nodes with TalkToFigma to verify the resulting state
 
 ## Required Workflow
 
@@ -54,12 +53,10 @@ When using chrome-devtools with Figma:
 
 Before changing anything:
 1. Join the active Figma channel with `TalkToFigma_join_channel`.
-2. If the user asked for browser assistance, open or select the live Figma tab with `chrome-devtools_*`.
-3. Confirm the active design context by reading the relevant node, selection, or document info.
+2. Confirm the active design context by reading the relevant node, selection, or document info.
 
 If TalkToFigma is disconnected:
 - report that state clearly
-- restore the browser tab if needed
 - ask the user to reconnect the Figma plugin/socket only when blocked
 
 ### 2. Inspect Before Editing
@@ -101,7 +98,7 @@ Prefer:
 - fixing the shared source instead of touching every variant individually
 - aligning all affected variants only after the source definition is correct
 
-If a desired operation is not directly supported by TalkToFigma, use chrome-devtools to manipulate the browser UI, then re-read the resulting nodes with TalkToFigma to verify the change.
+If a desired operation is not directly supported by TalkToFigma, describe the exact manual Figma step needed from the user, then re-read the resulting nodes with TalkToFigma to verify the change.
 
 ### 5. Verify Before Claiming Success
 
@@ -234,7 +231,7 @@ While working:
 - keep updates short and factual
 - report live state, not assumptions
 - mention blockers immediately when connection state prevents verification
-- if using chrome-devtools as a fallback, say what browser-only action it is covering
+- if a manual Figma step is needed from the user, say exactly what action is required and what will be verified afterward
 
 ## Boundaries
 
