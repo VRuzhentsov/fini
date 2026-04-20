@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help dev build mcp android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
+.PHONY: help dev build mcp release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
 
 help:
 	@echo ""
@@ -9,6 +9,7 @@ help:
 	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
 	@echo "  make build            Release build"
 	@echo "  make mcp              Run MCP server (debug binary)"
+	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
@@ -30,6 +31,27 @@ build:
 
 mcp:
 	./src-tauri/target/debug/fini mcp
+
+release-tag:
+	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release-tag VERSION=x.y.z" && exit 1)
+	@tag="v$(VERSION)"; \
+	git fetch origin main --tags --force; \
+	main_commit="$$(git rev-parse origin/main)"; \
+	current_commit="$$(git rev-parse HEAD)"; \
+	if [ "$$current_commit" != "$$main_commit" ]; then \
+	  echo "HEAD must match origin/main before creating a release tag"; \
+	  echo "HEAD=$$current_commit"; \
+	  echo "origin/main=$$main_commit"; \
+	  exit 1; \
+	fi; \
+	if git rev-parse -q --verify "refs/tags/$$tag" >/dev/null; then \
+	  echo "Tag already exists: $$tag"; \
+	  exit 1; \
+	fi; \
+	git -c user.email="v.ruzhentsov@gmail.com" -c user.signingkey="199DFE796EA43C00" tag -s -a "$$tag" -m "$$tag"; \
+	git tag -v "$$tag"; \
+	echo "Created signed annotated tag $$tag"; \
+	echo "Push with: git push origin $$tag"
 
 # ── Android ───────────────────────────────────────────────────────────────────
 
