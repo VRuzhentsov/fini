@@ -639,6 +639,44 @@ jobs:
           subject-digest: ${{ steps.docker_build.outputs.digest }}
           push-to-registry: true
 
+  publish-android-internal:
+    name: Publish Android to Play Internal
+    runs-on: ubuntu-latest
+    needs:
+      - validate-tag
+      - build-android
+    steps:
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-android
+          path: release-assets
+
+      - name: Validate Play publishing secret
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:-}" ]; then
+            echo "Missing required secret: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" >&2
+            exit 1
+          fi
+
+      - name: Validate Android bundle exists
+        run: |
+          set -euo pipefail
+          test -f "release-assets/fini-${GITHUB_REF_NAME}-android.aab"
+
+      - name: Upload Android bundle to Google Play Internal
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.fini.app
+          releaseFiles: release-assets/fini-${{ github.ref_name }}-android.aab
+          tracks: internal
+          releaseName: ${{ github.ref_name }}
+          status: completed
+
   publish-stable:
     name: Publish Stable Release
     if: needs.validate-tag.outputs.is_prerelease == 'false'
