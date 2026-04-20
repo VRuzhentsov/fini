@@ -24,7 +24,7 @@ pub fn ensure_peer_sessions(state: &DeviceConnectionState, db_path: PathBuf) {
         let state = state.clone();
         let db_path = db_path.clone();
         let peer_id_clone = peer_id.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             dial_with_backoff(state, db_path, peer_id_clone, addr).await;
         });
     }
