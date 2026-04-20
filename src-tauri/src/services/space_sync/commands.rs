@@ -2,13 +2,13 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{IpAddr, SocketAddr, UdpSocket};
 use tauri::State;
 
 use super::merge::incoming_wins;
-use super::outbox::{emit_sync_event, load_latest_event_for_entity, load_unacked_events_for_peer};
+use super::outbox::{load_latest_event_for_entity, load_unacked_events_for_peer};
 use super::replay::{is_event_seen, mark_event_seen, record_ack};
-use super::types::SyncEventEnvelope;
+use super::types::{SyncEventEnvelope, WsMessage};
+use super::ws_client::ensure_peer_sessions;
 use crate::models::{
     CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Reminder, Space,
 };
@@ -17,10 +17,7 @@ use crate::schema::{
     sync_acks, sync_outbox, sync_seen, tombstones,
 };
 use crate::services::db::{utc_now, DbState};
-use crate::services::device_connection::{
-    DeviceConnectionState, DISCOVERY_PORT, DISCOVERY_PROTOCOL, SPACE_MAPPING_UPDATE_KIND,
-    SYNC_ACK_KIND, SYNC_EVENT_KIND,
-};
+use crate::services::device_connection::{CustomSpaceDescriptor, DeviceConnectionState};
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 
@@ -56,11 +53,6 @@ pub struct SpaceSyncTickResult {
     pub ticked_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CustomSpaceDescriptor {
-    pub space_id: String,
-    pub name: String,
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UnresolvedCustomSpace {
@@ -229,7 +221,6 @@ fn peer_is_paired(conn: &mut SqliteConnection, peer_device_id: &str) -> Result<b
 
 fn apply_mappings_in_db(
     conn: &mut SqliteConnection,
-    origin_device_id: &str,
     peer_device_id: &str,
     mapped_space_ids: Vec<String>,
 ) -> Result<Vec<String>, String> {
@@ -276,10 +267,6 @@ fn apply_mappings_in_db(
             .values(&rows)
             .execute(conn)
             .map_err(|e| e.to_string())?;
-
-        for space_id in &to_add {
-            bootstrap_space_into_outbox(conn, origin_device_id, space_id)?;
-        }
     }
 
     list_mappings_for_peer(conn, peer_device_id)
@@ -291,44 +278,14 @@ fn send_mapping_update_to_peer(
     mapped_space_ids: &[String],
     custom_spaces: &[CustomSpaceDescriptor],
 ) -> Result<(), String> {
-    let Some(peer_addr) = device_connection.resolve_peer_addr(peer_device_id) else {
-        return Ok(());
-    };
-
-    let target_ip: IpAddr = peer_addr
-        .parse()
-        .map_err(|err| format!("invalid peer addr '{peer_addr}': {err}"))?;
-
-    let payload = serde_json::json!({
-        "protocol": DISCOVERY_PROTOCOL,
-        "kind": SPACE_MAPPING_UPDATE_KIND,
-        "from_device_id": device_connection.identity.device_id,
-        "to_device_id": peer_device_id,
-        "mapped_space_ids": mapped_space_ids,
-        "custom_spaces": custom_spaces,
-        "sent_at": utc_now(),
-    });
-
-    let bytes =
-        serde_json::to_vec(&payload).map_err(|err| format!("serialize mapping update: {err}"))?;
-    let socket = UdpSocket::bind(("0.0.0.0", 0))
-        .map_err(|err| format!("bind mapping update socket failed: {err}"))?;
-    let target = SocketAddr::new(target_ip, DISCOVERY_PORT);
-
-    let mut sent_count = 0;
-    let mut last_send_error: Option<String> = None;
-    for _ in 0..3 {
-        match socket.send_to(&bytes, target) {
-            Ok(_) => sent_count += 1,
-            Err(err) => last_send_error = Some(err.to_string()),
-        }
-    }
-
-    if sent_count == 0 {
-        let message = last_send_error.unwrap_or_else(|| "unknown send error".to_string());
-        return Err(format!("send mapping update failed: {message}"));
-    }
-
+    device_connection.push_to_peer(
+        peer_device_id,
+        WsMessage::SpaceMappingUpdate {
+            mapped_space_ids: mapped_space_ids.to_vec(),
+            custom_spaces: custom_spaces.to_vec(),
+            sent_at: utc_now(),
+        },
+    );
     Ok(())
 }
 
@@ -337,29 +294,7 @@ fn send_sync_event_to_peer(
     peer_device_id: &str,
     event: &SyncEventEnvelope,
 ) -> Result<(), String> {
-    let Some(peer_addr) = device_connection.resolve_peer_addr(peer_device_id) else {
-        return Ok(());
-    };
-
-    let target_ip: IpAddr = peer_addr
-        .parse()
-        .map_err(|err| format!("invalid peer addr '{peer_addr}': {err}"))?;
-
-    let payload = serde_json::json!({
-        "protocol": DISCOVERY_PROTOCOL,
-        "kind": SYNC_EVENT_KIND,
-        "to_device_id": peer_device_id,
-        "event": event,
-    });
-
-    let bytes =
-        serde_json::to_vec(&payload).map_err(|err| format!("serialize sync event: {err}"))?;
-    let socket =
-        UdpSocket::bind(("0.0.0.0", 0)).map_err(|err| format!("bind sync socket failed: {err}"))?;
-    let target = SocketAddr::new(target_ip, DISCOVERY_PORT);
-    socket
-        .send_to(&bytes, target)
-        .map_err(|err| format!("send sync event failed: {err}"))?;
+    device_connection.push_to_peer(peer_device_id, WsMessage::SyncEvent(event.clone()));
     Ok(())
 }
 
@@ -368,30 +303,12 @@ fn send_sync_ack_to_peer(
     peer_device_id: &str,
     event_id: &str,
 ) -> Result<(), String> {
-    let Some(peer_addr) = device_connection.resolve_peer_addr(peer_device_id) else {
-        return Ok(());
-    };
-
-    let target_ip: IpAddr = peer_addr
-        .parse()
-        .map_err(|err| format!("invalid peer addr '{peer_addr}': {err}"))?;
-
-    let payload = serde_json::json!({
-        "protocol": DISCOVERY_PROTOCOL,
-        "kind": SYNC_ACK_KIND,
-        "from_device_id": device_connection.identity.device_id,
-        "to_device_id": peer_device_id,
-        "event_id": event_id,
-        "acked_at": utc_now(),
-    });
-
-    let bytes = serde_json::to_vec(&payload).map_err(|err| format!("serialize sync ack: {err}"))?;
-    let socket =
-        UdpSocket::bind(("0.0.0.0", 0)).map_err(|err| format!("bind ack socket failed: {err}"))?;
-    let target = SocketAddr::new(target_ip, DISCOVERY_PORT);
-    socket
-        .send_to(&bytes, target)
-        .map_err(|err| format!("send sync ack failed: {err}"))?;
+    device_connection.push_to_peer(
+        peer_device_id,
+        WsMessage::Ack {
+            event_id: event_id.to_string(),
+        },
+    );
     Ok(())
 }
 
@@ -686,113 +603,6 @@ fn apply_sync_event(
     Ok(true)
 }
 
-fn enqueue_upsert<T: Serialize>(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-    entity_type: &str,
-    entity_id: &str,
-    space_id: &str,
-    value: &T,
-) -> Result<(), String> {
-    let payload = serde_json::to_string(value).map_err(|e| e.to_string())?;
-    emit_sync_event(
-        conn,
-        origin_device_id,
-        entity_type,
-        entity_id,
-        space_id,
-        "upsert",
-        Some(payload),
-    )
-}
-
-fn bootstrap_space_into_outbox(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-    space_id: &str,
-) -> Result<(), String> {
-    let space: Space = spaces::table
-        .find(space_id)
-        .select(Space::as_select())
-        .first(conn)
-        .map_err(|e| e.to_string())?;
-    enqueue_upsert(
-        conn,
-        origin_device_id,
-        "space",
-        &space.id,
-        &space.id,
-        &space,
-    )?;
-
-    let quest_rows: Vec<Quest> = quests::table
-        .filter(quests::space_id.eq(space_id))
-        .select(Quest::as_select())
-        .load(conn)
-        .map_err(|e| e.to_string())?;
-    for quest in quest_rows {
-        enqueue_upsert(
-            conn,
-            origin_device_id,
-            "quest",
-            &quest.id,
-            &quest.space_id,
-            &quest,
-        )?;
-    }
-
-    let series_rows: Vec<QuestSeries> = quest_series::table
-        .filter(quest_series::space_id.eq(space_id))
-        .select(QuestSeries::as_select())
-        .load(conn)
-        .map_err(|e| e.to_string())?;
-    for series in series_rows {
-        enqueue_upsert(
-            conn,
-            origin_device_id,
-            "quest_series",
-            &series.id,
-            &series.space_id,
-            &series,
-        )?;
-    }
-
-    let reminder_rows: Vec<Reminder> = reminders::table
-        .inner_join(quests::table.on(reminders::quest_id.eq(quests::id)))
-        .filter(quests::space_id.eq(space_id))
-        .select(Reminder::as_select())
-        .load(conn)
-        .map_err(|e| e.to_string())?;
-    for reminder in reminder_rows {
-        enqueue_upsert(
-            conn,
-            origin_device_id,
-            "reminder",
-            &reminder.id,
-            space_id,
-            &reminder,
-        )?;
-    }
-
-    let focus_rows: Vec<FocusHistoryEntry> = focus_history::table
-        .filter(focus_history::space_id.eq(space_id))
-        .select(FocusHistoryEntry::as_select())
-        .load(conn)
-        .map_err(|e| e.to_string())?;
-    for focus in focus_rows {
-        enqueue_upsert(
-            conn,
-            origin_device_id,
-            "focus_history",
-            &focus.id,
-            &focus.space_id,
-            &focus,
-        )?;
-    }
-
-    Ok(())
-}
-
 fn next_space_item_order(conn: &mut SqliteConnection) -> Result<i64, String> {
     let value = spaces::table
         .select(diesel::dsl::max(spaces::item_order))
@@ -969,11 +779,9 @@ pub fn space_sync_update_mappings_impl(
     mapped_space_ids: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let mut conn = db.0.lock().unwrap();
-    let origin_device_id = device_connection.identity.device_id.clone();
 
     let mapped = apply_mappings_in_db(
         &mut conn,
-        &origin_device_id,
         &peer_device_id,
         mapped_space_ids,
     )?;
@@ -1001,19 +809,18 @@ pub fn space_sync_update_mappings(
 
 pub fn space_sync_apply_remote_mappings_impl(
     db: &DbState,
-    device_connection: &DeviceConnectionState,
+    _device_connection: &DeviceConnectionState,
     peer_device_id: String,
     mapped_space_ids: Vec<String>,
     custom_spaces: Vec<CustomSpaceDescriptor>,
 ) -> Result<SpaceMappingApplyResult, String> {
     let mut conn = db.0.lock().unwrap();
-    let origin_device_id = device_connection.identity.device_id.clone();
 
     let (resolved_ids, unresolved_custom_spaces) =
         partition_remote_mapped_spaces(&mut conn, mapped_space_ids, custom_spaces)?;
 
     let mapped_space_ids =
-        apply_mappings_in_db(&mut conn, &origin_device_id, &peer_device_id, resolved_ids)?;
+        apply_mappings_in_db(&mut conn, &peer_device_id, resolved_ids)?;
 
     Ok(SpaceMappingApplyResult {
         mapped_space_ids,
@@ -1048,7 +855,6 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
     existing_space_id: Option<String>,
 ) -> Result<SpaceMappingApplyResult, String> {
     let mut conn = db.0.lock().unwrap();
-    let origin_device_id = device_connection.identity.device_id.clone();
 
     if is_builtin_space_id(&remote_space_id) {
         return Err("remote custom-space resolution expects non built-in space id".to_string());
@@ -1082,7 +888,7 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
     }
 
     let mapped_space_ids =
-        apply_mappings_in_db(&mut conn, &origin_device_id, &peer_device_id, mapped)?;
+        apply_mappings_in_db(&mut conn, &peer_device_id, mapped)?;
 
     let custom_spaces = load_custom_space_descriptors(&mut conn, &mapped_space_ids)?;
     if let Err(err) = send_mapping_update_to_peer(
@@ -1125,6 +931,9 @@ pub fn space_sync_tick_impl(
     db: &DbState,
     device_connection: &DeviceConnectionState,
 ) -> Result<SpaceSyncTickResult, String> {
+    // Ensure WS sessions are open for peers where we are the dialer
+    ensure_peer_sessions(device_connection, device_connection.db_path.clone());
+
     let mut conn = db.0.lock().unwrap();
     let ticked_at = utc_now();
     let mut transferred_by_peer: std::collections::HashMap<String, (usize, usize, usize)> =
@@ -1137,7 +946,7 @@ pub fn space_sync_tick_impl(
 
     let mut sent_events_total = 0usize;
 
-    for peer_device_id in peer_ids {
+    for peer_device_id in &peer_ids {
         let mapped = list_mappings_for_peer(&mut conn, &peer_device_id)?;
         let pending = load_unacked_events_for_peer(&mut conn, &peer_device_id, &mapped)?;
         if pending.is_empty() {
@@ -1154,9 +963,24 @@ pub fn space_sync_tick_impl(
         sent_events_total += sent_events;
         if sent_events > 0 {
             let entry = transferred_by_peer
-                .entry(peer_device_id)
+                .entry(peer_device_id.clone())
                 .or_insert((0, 0, 0));
             entry.0 += sent_events;
+        }
+    }
+
+    for peer_device_id in &peer_ids {
+        if !device_connection.has_session(peer_device_id) {
+            continue;
+        }
+        let unsynced: Vec<String> = pair_space_mappings::table
+            .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
+            .filter(pair_space_mappings::last_synced_at.is_null())
+            .select(pair_space_mappings::space_id)
+            .load(&mut *conn)
+            .map_err(|e| e.to_string())?;
+        for space_id in unsynced {
+            device_connection.push_to_peer(peer_device_id, WsMessage::BootstrapStart { space_id });
         }
     }
 
@@ -1363,7 +1187,7 @@ pub fn space_sync_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{CreateSyncOutboxEntry, SyncOutboxEntry};
+    use crate::models::CreateSyncOutboxEntry;
     use crate::services::db::open_db_at_path;
     use crate::services::device_connection::DeviceConnectionState;
     use std::path::PathBuf;
@@ -1636,29 +1460,6 @@ mod tests {
 
         let remaining: i64 = tombstones::table.count().get_result(&mut conn).unwrap();
         assert_eq!(remaining, 1);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn bootstrap_space_emits_all_entity_types() {
-        let db_path = temp_db_path("bootstrap");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let quest = test_quest("q-boot", "Boot", "2026-01-01T00:00:00Z");
-        upsert_quest(&mut conn, &quest).unwrap();
-
-        bootstrap_space_into_outbox(&mut conn, "dev-local", "1").unwrap();
-
-        let events: Vec<SyncOutboxEntry> = sync_outbox::table
-            .select(SyncOutboxEntry::as_select())
-            .load(&mut conn)
-            .unwrap();
-
-        let types: Vec<&str> = events.iter().map(|e| e.entity_type.as_str()).collect();
-        assert!(types.contains(&"space"));
-        assert!(types.contains(&"quest"));
 
         let _ = std::fs::remove_file(db_path);
     }

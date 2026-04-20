@@ -23,7 +23,7 @@ use services::quest::{
 use services::reminder::{create_reminder, delete_reminder, get_reminders};
 use services::space::{create_space, delete_space, get_spaces, update_space};
 use services::space_sync::{
-    space_sync_apply_remote_mappings, space_sync_list_mappings,
+    run_ws_server, space_sync_apply_remote_mappings, space_sync_list_mappings,
     space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
     space_sync_update_mappings,
 };
@@ -60,7 +60,9 @@ pub fn run() {
             app.manage(DbState(std::sync::Mutex::new(conn)));
 
             let data_dir = app_data_dir(&app_handle);
-            app.manage(DeviceConnectionState::new(&data_dir));
+            let dc_state = DeviceConnectionState::new(&data_dir);
+            tauri::async_runtime::spawn(run_ws_server(dc_state.clone(), dc_state.db_path.clone()));
+            app.manage(dc_state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

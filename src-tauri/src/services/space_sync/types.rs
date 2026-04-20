@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+use crate::services::device_connection::CustomSpaceDescriptor;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncEventEnvelope {
@@ -13,6 +16,8 @@ pub struct SyncEventEnvelope {
     pub updated_at: String,
     pub created_at: String,
 }
+
+pub type SessionSender = mpsc::Sender<WsMessage>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -34,4 +39,10 @@ pub enum WsMessage {
     BootstrapStart { space_id: String },
     #[serde(rename = "bootstrap_end")]
     BootstrapEnd { space_id: String },
+    #[serde(rename = "space_mapping_update")]
+    SpaceMappingUpdate {
+        mapped_space_ids: Vec<String>,
+        custom_spaces: Vec<CustomSpaceDescriptor>,
+        sent_at: String,
+    },
 }
