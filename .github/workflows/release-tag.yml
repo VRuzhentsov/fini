@@ -675,7 +675,7 @@ jobs:
           releaseFiles: release-assets/fini-${{ github.ref_name }}-android.aab
           tracks: internal
           releaseName: ${{ github.ref_name }}
-          status: completed
+          status: draft
 
   publish-stable:
     name: Publish Stable Release
