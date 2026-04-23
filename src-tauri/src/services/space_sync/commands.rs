@@ -363,8 +363,6 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::due_time.eq(&quest.due_time),
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
-            quests::set_focus_at.eq(&quest.set_focus_at),
-            quests::reminder_triggered_at.eq(&quest.reminder_triggered_at),
             quests::order_rank.eq(quest.order_rank),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
@@ -385,8 +383,6 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::due_time.eq(&quest.due_time),
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
-            quests::set_focus_at.eq(&quest.set_focus_at),
-            quests::reminder_triggered_at.eq(&quest.reminder_triggered_at),
             quests::order_rank.eq(quest.order_rank),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
@@ -465,7 +461,6 @@ fn upsert_focus_history(
     diesel::insert_into(focus_history::table)
         .values((
             focus_history::id.eq(&focus.id),
-            focus_history::device_id.eq(&focus.device_id),
             focus_history::quest_id.eq(&focus.quest_id),
             focus_history::space_id.eq(&focus.space_id),
             focus_history::trigger.eq(&focus.trigger),
@@ -474,7 +469,6 @@ fn upsert_focus_history(
         .on_conflict(focus_history::id)
         .do_update()
         .set((
-            focus_history::device_id.eq(&focus.device_id),
             focus_history::quest_id.eq(&focus.quest_id),
             focus_history::space_id.eq(&focus.space_id),
             focus_history::trigger.eq(&focus.trigger),
@@ -1217,8 +1211,6 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             completed_at: None,
-            set_focus_at: None,
-            reminder_triggered_at: None,
             order_rank: 1000.0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: updated_at.to_string(),

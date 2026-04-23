@@ -17,8 +17,6 @@ export interface Quest {
   due_time: string | null;
   repeat_rule: string | null;
   completed_at: string | null;
-  set_focus_at: string | null;
-  reminder_triggered_at: string | null;
   order_rank: number;
   created_at: string;
   updated_at: string;
