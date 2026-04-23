@@ -160,24 +160,42 @@ function clearRepeat() {
 
 // ── Time ───────────────────────────────────────────────────────────────────────
 
+function clampTimePart(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
 const timeHour = computed({
-  get: () => localDueTime.value ? parseInt(localDueTime.value.slice(0, 2)) : 9,
-  set: (h: number) => {
-    const m = localDueTime.value ? localDueTime.value.slice(3, 5) : "00";
-    localDueTime.value = `${String(h).padStart(2, "0")}:${m}`;
+  get: () => localDueTime.value ? parseInt(localDueTime.value.split(":")[0] ?? "09", 10) : 9,
+  set: (h: number | string) => {
+    const m = localDueTime.value ? (localDueTime.value.split(":")[1] ?? "00") : "00";
+    const hour = clampTimePart(Number(h), 0, 23);
+    localDueTime.value = `${String(hour).padStart(2, "0")}:${m}`;
   },
 });
 
 const timeMinute = computed({
-  get: () => localDueTime.value ? parseInt(localDueTime.value.slice(3, 5)) : 0,
-  set: (m: number) => {
-    const h = localDueTime.value ? localDueTime.value.slice(0, 2) : "09";
-    localDueTime.value = `${h}:${String(m).padStart(2, "0")}`;
+  get: () => localDueTime.value ? parseInt(localDueTime.value.split(":")[1] ?? "00", 10) : 0,
+  set: (m: number | string) => {
+    const h = localDueTime.value ? (localDueTime.value.split(":")[0] ?? "09") : "09";
+    const minute = clampTimePart(Number(m), 0, 59);
+    localDueTime.value = `${h}:${String(minute).padStart(2, "0")}`;
   },
 });
 
-const HOURS = Array.from({ length: 24 }, (_, i) => i);
-const MINUTES = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+function normalizeHourInput(event: Event) {
+  timeHour.value = (event.target as HTMLInputElement).value;
+}
+
+function normalizeMinuteInput(event: Event) {
+  timeMinute.value = (event.target as HTMLInputElement).value;
+}
+
+function defaultDueTime(): string {
+  const now = new Date();
+  now.setHours(now.getHours() + 1);
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
 
 function toggleTime() {
   if (showTime.value) {
@@ -185,7 +203,7 @@ function toggleTime() {
     localDueTime.value = null;
   } else {
     showTime.value = true;
-    if (!localDueTime.value) localDueTime.value = "09:00";
+    if (!localDueTime.value) localDueTime.value = defaultDueTime();
   }
 }
 
@@ -349,17 +367,23 @@ function onDone() {
             </button>
           </div>
           <div v-if="showTime" class="flex items-center gap-2 px-4 pb-3">
-            <select class="select select-bordered select-sm flex-1" v-model="timeHour">
-              <option v-for="h in HOURS" :key="h" :value="h">
-                {{ String(h).padStart(2, "0") }}
-              </option>
-            </select>
+            <input
+              class="input input-bordered input-sm flex-1"
+              type="number"
+              min="0"
+              max="23"
+              :value="timeHour"
+              @input="normalizeHourInput"
+            />
             <span class="font-semibold opacity-50">:</span>
-            <select class="select select-bordered select-sm flex-1" v-model="timeMinute">
-              <option v-for="m in MINUTES" :key="m" :value="m">
-                {{ String(m).padStart(2, "0") }}
-              </option>
-            </select>
+            <input
+              class="input input-bordered input-sm flex-1"
+              type="number"
+              min="0"
+              max="59"
+              :value="timeMinute"
+              @input="normalizeMinuteInput"
+            />
           </div>
         </div>
 
