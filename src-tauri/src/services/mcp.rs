@@ -20,7 +20,7 @@ use crate::{
     schema::{quests, reminders, spaces},
     services::{
         db::open_db_at_path,
-        quest::{generate_next_occurrence, resolve_active_quest},
+        quest::{append_focus_history, generate_next_occurrence, resolve_active_quest},
     },
 };
 
@@ -297,8 +297,6 @@ pub struct QuestRecord {
     pub due_time: Option<String>,
     pub due_at_utc: Option<String>,
     pub repeat_rule: Option<String>,
-    pub set_focus_at: Option<String>,
-    pub reminder_triggered_at: Option<String>,
     pub order_rank: f64,
     pub completed_at: Option<String>,
     pub created_at: String,
@@ -409,8 +407,6 @@ fn quest_to_record(quest: &Quest) -> QuestRecord {
         due_time: quest.due_time.clone(),
         due_at_utc: due_at_utc_string(quest),
         repeat_rule: quest.repeat_rule.clone(),
-        set_focus_at: quest.set_focus_at.clone(),
-        reminder_triggered_at: quest.reminder_triggered_at.clone(),
         order_rank: quest.order_rank,
         completed_at: quest.completed_at.clone(),
         created_at: quest.created_at.clone(),
@@ -517,7 +513,7 @@ impl FiniServer {
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
         let now = crate::services::db::utc_now();
-        let mut input = UpdateQuestInput {
+        let input = UpdateQuestInput {
             space_id: p.space_id,
             title: p.title,
             description: p.description,
@@ -529,16 +525,7 @@ impl FiniServer {
             due_time: p.due_time,
             repeat_rule: p.repeat_rule,
             order_rank: p.order_rank,
-            set_focus_at: None,
-            reminder_triggered_at: None,
         };
-
-        if p.set_focus == Some(true) || input.status.as_deref() == Some("active") {
-            input.set_focus_at = Some(now.clone());
-        }
-        if p.trigger_reminder_focus == Some(true) {
-            input.reminder_triggered_at = Some(now.clone());
-        }
 
         let status = input.status.clone();
 
@@ -559,11 +546,21 @@ impl FiniServer {
                 .execute(&mut *conn)
                 .map_err(db_err)?;
         }
+
         let quest: Quest = quests::table
             .find(&p.id)
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
+
+        if p.trigger_reminder_focus == Some(true) {
+            append_focus_history(&mut *conn, &quest.id, &quest.space_id, "reminder")
+                .map_err(|e| McpError::internal_error("focus_history", Some(serde_json::json!({ "error": e }))))?;
+        } else if p.set_focus == Some(true) || status.as_deref() == Some("active") {
+            append_focus_history(&mut *conn, &quest.id, &quest.space_id, "manual")
+                .map_err(|e| McpError::internal_error("focus_history", Some(serde_json::json!({ "error": e }))))?;
+        }
+
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
         ))
@@ -841,8 +838,6 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             completed_at: None,
-            set_focus_at: None,
-            reminder_triggered_at: None,
             order_rank: 0.0,
             created_at: "2026-03-27T10:30:00Z".to_string(),
             updated_at: "2026-03-27T10:30:00Z".to_string(),

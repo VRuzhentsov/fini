@@ -36,8 +36,6 @@ diesel::table! {
         due_time    -> Nullable<Text>,
         repeat_rule -> Nullable<Text>,
         completed_at -> Nullable<Text>,
-        set_focus_at -> Nullable<Text>,
-        reminder_triggered_at -> Nullable<Text>,
         order_rank -> Double,
         created_at  -> Text,
         updated_at  -> Text,
@@ -80,7 +78,6 @@ diesel::table! {
 diesel::table! {
     focus_history (id) {
         id         -> Text,
-        device_id  -> Text,
         quest_id   -> Text,
         space_id   -> Text,
         trigger    -> Text,
@@ -134,6 +131,7 @@ diesel::joinable!(reminders -> quests (quest_id));
 diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
 diesel::joinable!(pair_space_mappings -> spaces (space_id));
 diesel::joinable!(focus_history -> quests (quest_id));
+
 diesel::allow_tables_to_appear_in_same_query!(
     spaces,
     quests,

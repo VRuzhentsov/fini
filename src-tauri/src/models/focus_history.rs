@@ -8,7 +8,6 @@ use crate::schema::focus_history;
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct FocusHistoryEntry {
     pub id: String,
-    pub device_id: String,
     pub quest_id: String,
     pub space_id: String,
     pub trigger: String,
@@ -18,7 +17,6 @@ pub struct FocusHistoryEntry {
 #[derive(Deserialize, Insertable)]
 #[diesel(table_name = focus_history)]
 pub struct CreateFocusHistoryInput {
-    pub device_id: String,
     pub quest_id: String,
     pub space_id: String,
     pub trigger: String,
