@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help dev build mcp release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
+.PHONY: help dev build mcp e2e e2e-build release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
 
 help:
 	@echo ""
@@ -9,6 +9,8 @@ help:
 	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
 	@echo "  make build            Release build"
 	@echo "  make mcp              Run MCP server (debug binary)"
+	@echo "  make e2e              Run e2e tests locally (uses debug binary)"
+	@echo "  make e2e-build        Build Podman image and run e2e tests inside it"
 	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
@@ -31,6 +33,15 @@ build:
 
 mcp:
 	./src-tauri/target/debug/fini mcp
+
+# Run e2e tests locally against the debug binary (no container)
+e2e:
+	npm run test:e2e
+
+# Build and run e2e tests inside a Podman container
+e2e-build:
+	podman build --target test -t fini-e2e .
+	podman run --rm fini-e2e
 
 release-tag:
 	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release-tag VERSION=x.y.z" && exit 1)

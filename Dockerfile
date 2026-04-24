@@ -48,3 +48,29 @@ VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/local/bin/fini"]
 CMD ["mcp"]
+
+# ── E2E test stage ─────────────────────────────────────────────────────────────
+FROM node:24-slim AS test
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgtk-3-0 \
+    libwebkit2gtk-4.1-0 \
+    libayatana-appindicator3-1 \
+    librsvg2-2 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/src-tauri/target/release/fini /usr/local/bin/fini
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm install
+
+COPY tsconfig*.json ./
+COPY specs/e2e ./specs/e2e
+
+ENV FINI_BINARY=/usr/local/bin/fini \
+    TZ=UTC
+
+CMD ["npm", "run", "test:e2e"]

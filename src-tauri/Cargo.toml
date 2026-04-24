@@ -42,3 +42,6 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-mcp-bridge = "0.10"
 clap = { version = "4", features = ["derive"] }
+tauri-plugin-notification = "2.3.3"
+tauri-plugin-autostart = "2.5.1"
+time = { version = "0.3.47", features = ["parsing", "formatting"] }

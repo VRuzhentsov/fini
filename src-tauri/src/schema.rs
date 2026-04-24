@@ -46,12 +46,23 @@ diesel::table! {
 
 diesel::table! {
     reminders (id) {
-        id         -> Text,
-        quest_id   -> Text,
+        id                       -> Text,
+        quest_id                 -> Text,
         #[sql_name = "type"]
+        kind                     -> Text,
+        mm_offset                -> Nullable<BigInt>,
+        due_at_utc               -> Nullable<Text>,
+        created_at               -> Text,
+        scheduled_notification_id -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    series_reminder_templates (id) {
+        id         -> Text,
+        series_id  -> Text,
         kind       -> Text,
         mm_offset  -> Nullable<BigInt>,
-        due_at_utc -> Nullable<Text>,
         created_at -> Text,
     }
 }
@@ -128,6 +139,7 @@ diesel::joinable!(quests -> spaces (space_id));
 diesel::joinable!(quests -> quest_series (series_id));
 diesel::joinable!(quest_series -> spaces (space_id));
 diesel::joinable!(reminders -> quests (quest_id));
+diesel::joinable!(series_reminder_templates -> quest_series (series_id));
 diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
 diesel::joinable!(pair_space_mappings -> spaces (space_id));
 diesel::joinable!(focus_history -> quests (quest_id));
@@ -137,6 +149,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     quests,
     quest_series,
     reminders,
+    series_reminder_templates,
     paired_devices,
     pair_space_mappings,
     focus_history,

@@ -16,6 +16,10 @@ dist-ssr
 src-tauri/target/
 src-tauri/*.db
 
+# Playwright e2e output
+test-results/
+playwright-report/
+
 # Local Android build/sign artifacts
 bin/*.apk
 bin/*.idsig

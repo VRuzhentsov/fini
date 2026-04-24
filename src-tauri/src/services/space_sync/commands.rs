@@ -10,10 +10,10 @@ use super::replay::{is_event_seen, mark_event_seen, record_ack};
 use super::types::{SyncEventEnvelope, WsMessage};
 use super::ws_client::ensure_peer_sessions;
 use crate::models::{
-    CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Reminder, Space,
+    CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space,
 };
 use crate::schema::{
-    focus_history, pair_space_mappings, paired_devices, quest_series, quests, reminders, spaces,
+    focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces,
     sync_acks, sync_outbox, sync_seen, tombstones,
 };
 use crate::services::db::{utc_now, DbState};
@@ -428,29 +428,6 @@ fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Res
     Ok(())
 }
 
-fn upsert_reminder(conn: &mut SqliteConnection, reminder: &Reminder) -> Result<(), String> {
-    diesel::insert_into(reminders::table)
-        .values((
-            reminders::id.eq(&reminder.id),
-            reminders::quest_id.eq(&reminder.quest_id),
-            reminders::kind.eq(&reminder.kind),
-            reminders::mm_offset.eq(reminder.mm_offset),
-            reminders::due_at_utc.eq(&reminder.due_at_utc),
-            reminders::created_at.eq(&reminder.created_at),
-        ))
-        .on_conflict(reminders::id)
-        .do_update()
-        .set((
-            reminders::quest_id.eq(&reminder.quest_id),
-            reminders::kind.eq(&reminder.kind),
-            reminders::mm_offset.eq(reminder.mm_offset),
-            reminders::due_at_utc.eq(&reminder.due_at_utc),
-            reminders::created_at.eq(&reminder.created_at),
-        ))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
 fn upsert_focus_history(
     conn: &mut SqliteConnection,
@@ -503,11 +480,6 @@ fn delete_entity(conn: &mut SqliteConnection, event: &SyncEventEnvelope) -> Resu
         }
         "quest_series" => {
             diesel::delete(quest_series::table.find(&event.entity_id))
-                .execute(conn)
-                .map_err(|e| e.to_string())?;
-        }
-        "reminder" => {
-            diesel::delete(reminders::table.find(&event.entity_id))
                 .execute(conn)
                 .map_err(|e| e.to_string())?;
         }
@@ -576,11 +548,6 @@ fn apply_sync_event(
                     let series: QuestSeries =
                         serde_json::from_str(payload).map_err(|e| e.to_string())?;
                     upsert_quest_series(conn, &series)?;
-                }
-                "reminder" => {
-                    let reminder: Reminder =
-                        serde_json::from_str(payload).map_err(|e| e.to_string())?;
-                    upsert_reminder(conn, &reminder)?;
                 }
                 "focus_history" => {
                     let focus: FocusHistoryEntry =

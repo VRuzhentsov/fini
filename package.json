@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "test:unit": "jest --runInBand",
+    "test:e2e": "playwright test --config specs/e2e/playwright.config.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -21,6 +22,7 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.51.0",
     "@babel/core": "^7.28.0",
     "@babel/preset-env": "^7.28.0",
     "@tailwindcss/vite": "^4.2.1",

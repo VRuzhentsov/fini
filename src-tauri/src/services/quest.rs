@@ -12,6 +12,7 @@ use crate::models::{
 use crate::schema::{focus_history, quest_series, quests};
 use crate::services::db::{utc_now, DbState};
 use crate::services::device_connection::DeviceConnectionState;
+use crate::services::reminder;
 use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
@@ -409,7 +410,7 @@ fn update_quest_in_db(
     conn: &mut SqliteConnection,
     id: &str,
     input: UpdateQuestInput,
-) -> Result<(Quest, bool), String> {
+) -> Result<(Quest, bool, Option<Quest>), String> {
     let now = utc_now();
     let now_dt = Utc::now();
 
@@ -485,13 +486,17 @@ fn update_quest_in_db(
         .map_err(|e| e.to_string())?;
 
     // Auto-generate next occurrence when a repeating quest is completed or abandoned
-    if matches!(status.as_deref(), Some("completed") | Some("abandoned")) {
+    let next_occurrence = if matches!(status.as_deref(), Some("completed") | Some("abandoned")) {
         if updated_quest.repeat_rule.is_some() || updated_quest.series_id.is_some() {
-            let _ = generate_next_occurrence(conn, &updated_quest);
+            generate_next_occurrence(conn, &updated_quest).unwrap_or(None)
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
-    Ok((updated_quest, restore_should_focus))
+    Ok((updated_quest, restore_should_focus, next_occurrence))
 }
 
 fn compare_series_occurrence_order(a: &Quest, b: &Quest) -> std::cmp::Ordering {
@@ -612,6 +617,7 @@ pub fn get_quests(state: State<DbState>) -> Result<Vec<Quest>, String> {
 
 #[tauri::command]
 pub fn create_quest(
+    app: tauri::AppHandle,
     state: State<DbState>,
     device_connection: State<DeviceConnectionState>,
     input: CreateQuestInput,
@@ -703,6 +709,12 @@ pub fn create_quest(
             Some(payload),
         )?;
 
+        if created.status == "active" && created.due.is_some() {
+            if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, &created) {
+                eprintln!("[bridge] upsert_reminder on create failed for {}: {e}", created.id);
+            }
+        }
+
         return Ok(created);
     }
 
@@ -727,6 +739,12 @@ pub fn create_quest(
         "upsert",
         Some(payload),
     )?;
+
+    if created.status == "active" && created.due.is_some() {
+        if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, &created) {
+            eprintln!("[bridge] upsert_reminder on create failed for {}: {e}", created.id);
+        }
+    }
 
     Ok(created)
 }
@@ -771,6 +789,7 @@ pub fn set_focus(
 
 #[tauri::command]
 pub fn update_quest(
+    app: tauri::AppHandle,
     state: State<DbState>,
     device_connection: State<DeviceConnectionState>,
     id: String,
@@ -785,7 +804,7 @@ pub fn update_quest(
     let previous_status = previous.status.clone();
     let previous_space_id = previous.space_id.clone();
 
-    let (quest, restore_should_focus) = update_quest_in_db(&mut conn, &id, input)?;
+    let (quest, restore_should_focus, next_occurrence) = update_quest_in_db(&mut conn, &id, input)?;
 
     if previous_status != "active" && quest.status == "active" && restore_should_focus {
         append_focus_history(
@@ -794,6 +813,25 @@ pub fn update_quest(
             &quest.space_id,
             "restore",
         )?;
+    }
+
+    // Bridge: manage Reminder row based on resulting quest state
+    let should_have_reminder = quest.status == "active" && quest.due.is_some();
+    if should_have_reminder {
+        if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, &quest) {
+            eprintln!("[bridge] upsert_reminder failed for {}: {e}", quest.id);
+        }
+    } else if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, &app, &quest.id) {
+        eprintln!("[bridge] delete_reminder failed for {}: {e}", quest.id);
+    }
+
+    // If a new occurrence was generated, create its reminder too
+    if let Some(ref occ) = next_occurrence {
+        if occ.due.is_some() {
+            if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, occ) {
+                eprintln!("[bridge] upsert_reminder for occurrence failed: {e}");
+            }
+        }
     }
 
     emit_quest_sync_events(
@@ -808,6 +846,7 @@ pub fn update_quest(
 
 #[tauri::command]
 pub fn delete_quest(
+    app: tauri::AppHandle,
     state: State<DbState>,
     device_connection: State<DeviceConnectionState>,
     id: String,
@@ -819,6 +858,11 @@ pub fn delete_quest(
         .select(quests::space_id)
         .first(&mut *conn)
         .map_err(|e| e.to_string())?;
+
+    // Cancel notifications before cascade delete removes the reminder rows
+    if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, &app, &id) {
+        eprintln!("[bridge] delete_reminder on quest delete failed for {id}: {e}");
+    }
 
     emit_sync_event(
         &mut conn,
@@ -1385,7 +1429,7 @@ mod tests {
             .first(&mut conn)
             .expect("load inserted quest id");
 
-        let (restored, restore_should_focus) =
+        let (restored, restore_should_focus, _) =
             update_quest_in_db(&mut conn, &id, status_patch("active"))
                 .expect("restore future-due quest");
 
@@ -1431,7 +1475,7 @@ mod tests {
             .first(&mut conn)
             .expect("load inserted quest id");
 
-        let (restored, restore_should_focus) =
+        let (restored, restore_should_focus, _) =
             update_quest_in_db(&mut conn, &id, status_patch("active"))
                 .expect("restore past-due quest");
 
@@ -1591,7 +1635,7 @@ mod tests {
             .first(&mut conn)
             .expect("load inserted occurrence id");
 
-        let (updated, _) = update_quest_in_db(&mut conn, &id, due_patch("2026-03-29"))
+        let (updated, _, _) = update_quest_in_db(&mut conn, &id, due_patch("2026-03-29"))
             .expect("update due on recurring occurrence");
 
         assert_eq!(updated.due.as_deref(), Some("2026-03-29"));
@@ -1626,7 +1670,7 @@ mod tests {
             .first(&mut conn)
             .expect("load quest id");
 
-        let (updated, _) =
+        let (updated, _, _) =
             update_quest_in_db(&mut conn, &id, space_patch("2")).expect("move quest to space 2");
         emit_quest_sync_events(&mut conn, "device-local", "1", &updated)
             .expect("emit sync events for space move");

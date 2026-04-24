@@ -21,6 +21,7 @@ use crate::{
     services::{
         db::open_db_at_path,
         quest::{append_focus_history, generate_next_occurrence, resolve_active_quest},
+        reminder::{delete_reminder_db, upsert_reminder_db},
     },
 };
 
@@ -501,6 +502,12 @@ impl FiniServer {
             .returning(Quest::as_returning())
             .get_result(&mut *conn)
             .map_err(db_err)?;
+
+        // Bridge: auto-create Reminder row when quest is created with a due date
+        if quest.status == "active" && quest.due.is_some() {
+            let _ = upsert_reminder_db(&mut conn, &quest);
+        }
+
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
         ))
@@ -561,6 +568,13 @@ impl FiniServer {
                 .map_err(|e| McpError::internal_error("focus_history", Some(serde_json::json!({ "error": e }))))?;
         }
 
+        // Bridge: keep Reminder row in sync with quest due/status
+        if quest.status == "active" && quest.due.is_some() {
+            let _ = upsert_reminder_db(&mut conn, &quest);
+        } else {
+            let _ = delete_reminder_db(&mut conn, &quest.id);
+        }
+
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
         ))
@@ -586,8 +600,13 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
+        let _ = delete_reminder_db(&mut conn, &quest.id);
         if quest.repeat_rule.is_some() || quest.series_id.is_some() {
-            let _ = generate_next_occurrence(&mut conn, &quest);
+            if let Ok(Some(occ)) = generate_next_occurrence(&mut conn, &quest) {
+                if occ.due.is_some() {
+                    let _ = upsert_reminder_db(&mut conn, &occ);
+                }
+            }
         }
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
@@ -610,8 +629,13 @@ impl FiniServer {
             .select(Quest::as_select())
             .first(&mut *conn)
             .map_err(db_err)?;
+        let _ = delete_reminder_db(&mut conn, &quest.id);
         if quest.repeat_rule.is_some() || quest.series_id.is_some() {
-            let _ = generate_next_occurrence(&mut conn, &quest);
+            if let Ok(Some(occ)) = generate_next_occurrence(&mut conn, &quest) {
+                if occ.due.is_some() {
+                    let _ = upsert_reminder_db(&mut conn, &occ);
+                }
+            }
         }
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),

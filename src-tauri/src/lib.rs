@@ -20,7 +20,11 @@ use services::device_connection::{
 use services::quest::{
     create_quest, delete_quest, get_active_focus, get_quests, set_focus, update_quest,
 };
-use services::reminder::{create_reminder, delete_reminder, get_reminders};
+use services::notification::{setup_notification_channel, SchedulerState};
+use services::reconciler;
+use services::reminder::{
+    cancel_quest_notifications, create_reminder, delete_reminder, get_reminders, update_reminder,
+};
 use services::space::{create_space, delete_space, get_spaces, update_space};
 use services::space_sync::{
     run_ws_server, space_sync_apply_remote_mappings, space_sync_list_mappings,
@@ -28,6 +32,7 @@ use services::space_sync::{
     space_sync_update_mappings,
 };
 use tauri::Manager;
+use tauri_plugin_autostart::ManagerExt;
 
 pub fn run_mcp() {
     tokio::runtime::Builder::new_multi_thread()
@@ -47,7 +52,13 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
 
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
     #[cfg(debug_assertions)]
     {
         builder = builder.plugin(tauri_plugin_mcp_bridge::init());
@@ -58,6 +69,16 @@ pub fn run() {
 
             let conn = open_db(&app_handle);
             app.manage(DbState(std::sync::Mutex::new(conn)));
+            app.manage(SchedulerState::new());
+
+            setup_notification_channel(&app_handle);
+
+            if let Err(e) = app_handle.autolaunch().enable() {
+                eprintln!("[autostart] enable failed: {e}");
+            }
+
+            let db_state = app.state::<DbState>();
+            reconciler::run(&app_handle, &db_state);
 
             let data_dir = app_data_dir(&app_handle);
             let dc_state = DeviceConnectionState::new(&data_dir);
@@ -78,7 +99,9 @@ pub fn run() {
             delete_quest,
             get_reminders,
             create_reminder,
+            update_reminder,
             delete_reminder,
+            cancel_quest_notifications,
             device_connection_get_identity,
             device_connection_enter_add_mode,
             device_connection_leave_add_mode,

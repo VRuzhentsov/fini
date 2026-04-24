@@ -17,6 +17,9 @@ pub fn utc_now() -> String {
 }
 
 pub fn db_default_path() -> PathBuf {
+    if let Ok(p) = std::env::var("FINI_DB_PATH") {
+        return PathBuf::from(p);
+    }
     dirs::data_dir()
         .expect("failed to get data dir")
         .join(APP_DATA_DIR_NAME)
