@@ -12,11 +12,11 @@ Business and product knowledge lives in the `fini-wiki` wiki at `~/projects/fini
 
 **Wiki path:** `~/projects/fini-wiki/`
 
-1. **Hot cache first.** Read `_hot.md` first. It contains active threads and key numbers and should resolve most queries.
-2. **Master index.** Read `_index.md` if the hot cache is not enough. Check the "Recently Active" section.
-3. **Domain sub-index.** Open 1-2 relevant `_index-{domain}.md` files. Never open all sub-indexes at once.
-4. **Grep fallback.** Search `wiki/**/*.md` by keyword if the page is not indexed.
-5. **Page limit.** Never read more than 5 wiki pages for one query.
+1. **Hot cache first.** Read `_hot.md` first. It contains active threads, current architecture facts, recently changed semantics, and other high-signal context.
+2. **Index second.** Read `_index.md` if the hot cache is not enough. `_index.md` is the canonical wiki navigation file.
+3. **Targeted page reads.** Open only 1-2 relevant files under `pages/` based on `_hot.md`, `_index.md`, or a targeted search.
+4. **Search fallback.** Search `pages/**/*.md` by keyword if the right page is not obvious from `_hot.md` or `_index.md`.
+5. **Page limit.** Never read more than 5 wiki pages for one query unless the user explicitly asks for deeper research.
 
 When working inside that directory, load its `AGENTS.md` as the authoritative schema; it extends and overrides the global instructions on conflict.
 
