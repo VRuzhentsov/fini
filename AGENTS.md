@@ -8,7 +8,7 @@
 
 ## Knowledge base
 
-Business knowledge lives in the `fini-wiki` wiki at `~/projects/fini-wiki/`. When a task needs business context (team info, priorities, metrics, strategic decisions), follow this retrieval protocol:
+Business and product knowledge lives in the `fini-wiki` wiki at `~/projects/fini-wiki/`. When a task needs business or product context (team info, priorities, metrics, strategic decisions, domain semantics, terminology, or historical intent behind Fini concepts), follow this retrieval protocol:
 
 **Wiki path:** `~/projects/fini-wiki/`
 
