@@ -135,6 +135,10 @@ When working on text and icon systems:
 - normalize alignment after size changes
 - verify every affected variant, especially those with optional content
 
+When building component examples:
+- keep primary semantic content as an editable input field when the component supports it
+- show state changes through styling and supporting UI, not by replacing the main title concept with variant-specific copy
+
 When working on interaction states:
 - separate persistent business state from transient UI state
 - keep hover, expanded, selected, and disabled as explicit UI axes only when needed
