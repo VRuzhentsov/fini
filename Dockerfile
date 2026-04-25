@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24-slim AS node-deps
+FROM node:24.15.0-trixie-slim AS node-deps
 
 WORKDIR /app
 
@@ -75,7 +75,7 @@ ENTRYPOINT ["/usr/local/bin/fini"]
 CMD ["mcp"]
 
 # ── E2E test stage ─────────────────────────────────────────────────────────────
-FROM node:24-slim AS test
+FROM node:24.15.0-trixie-slim AS test
 
 # Fini binary runtime libs + Playwright Chromium system deps (fonts, nss/nspr,
 # dbus, X11 bits). The browser binary comes from the cached Playwright stage;
