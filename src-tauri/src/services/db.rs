@@ -30,6 +30,16 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(p) = std::env::var("FINI_APP_DATA_DIR") {
         return PathBuf::from(p);
     }
+
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join(APP_DATA_DIR_NAME);
+        }
+    }
+
     use tauri::Manager;
     app.path()
         .app_data_dir()

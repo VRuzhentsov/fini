@@ -38,6 +38,42 @@ use tauri::Manager;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt;
 
+#[cfg(target_os = "linux")]
+fn linux_prefers_dark() -> bool {
+    std::process::Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.portal.Desktop",
+            "--object-path",
+            "/org/freedesktop/portal/desktop",
+            "--method",
+            "org.freedesktop.portal.Settings.Read",
+            "org.freedesktop.appearance",
+            "color-scheme",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|stdout| stdout.contains("uint32 1"))
+}
+
+#[tauri::command]
+fn theme_hint() -> String {
+    if std::env::var_os("FLATPAK_ID").is_some() {
+        return "dark".to_string();
+    }
+
+    #[cfg(target_os = "linux")]
+    if linux_prefers_dark() {
+        return "dark".to_string();
+    }
+
+    "system".to_string()
+}
+
 pub fn run_mcp() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -140,6 +176,7 @@ pub fn run() {
             space_sync_resolve_custom_space_mapping,
             space_sync_tick,
             space_sync_status,
+            theme_hint,
             #[cfg(feature = "e2e-testing")]
             e2e_list_notification_events,
             #[cfg(feature = "e2e-testing")]

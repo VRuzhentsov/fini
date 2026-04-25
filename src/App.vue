@@ -38,19 +38,18 @@ onMounted(() => {
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
-  color: #0f0f0f;
-  background-color: #f6f6f6;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+html, body, #app {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  color: var(--color-base-content);
+  background-color: var(--color-base-100);
 }
 
 *, *::before, *::after {
@@ -63,6 +62,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  color: var(--color-base-content);
+  background-color: var(--color-base-100);
   padding-top: env(safe-area-inset-top);
 }
 
