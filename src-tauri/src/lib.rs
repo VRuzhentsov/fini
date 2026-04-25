@@ -6,24 +6,23 @@ mod services;
 
 use services::db::{app_data_dir, open_db, DbState};
 use services::device_connection::{
-    device_connection_consume_space_mapping_updates,
-    device_connection_debug_status, device_connection_discovery_snapshot,
-    device_connection_enter_add_mode, device_connection_get_identity,
-    device_connection_get_paired_devices, device_connection_leave_add_mode,
-    device_connection_pair_accept_request, device_connection_pair_acknowledge_request,
-    device_connection_pair_complete_request, device_connection_pair_incoming_requests,
-    device_connection_pair_outgoing_completions, device_connection_pair_outgoing_updates,
-    device_connection_presence_snapshot, device_connection_save_paired_device,
-    device_connection_send_pair_request, device_connection_unpair,
-    device_connection_update_last_seen, DeviceConnectionState,
+    device_connection_consume_space_mapping_updates, device_connection_debug_status,
+    device_connection_discovery_snapshot, device_connection_enter_add_mode,
+    device_connection_get_identity, device_connection_get_paired_devices,
+    device_connection_leave_add_mode, device_connection_pair_accept_request,
+    device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
+    device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
+    device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
+    device_connection_save_paired_device, device_connection_send_pair_request,
+    device_connection_unpair, device_connection_update_last_seen, DeviceConnectionState,
 };
-use services::quest::{
-    create_quest, delete_quest, get_active_focus, get_quests, set_focus, update_quest,
-};
-use services::notification::{setup_notification_channel, SchedulerState};
 #[cfg(feature = "e2e-testing")]
 use services::notification::{
     e2e_clear_notification_events, e2e_list_notification_events, NotificationObserverState,
+};
+use services::notification::{setup_notification_channel, SchedulerState};
+use services::quest::{
+    create_quest, delete_quest, get_active_focus, get_quests, set_focus, update_quest,
 };
 use services::reconciler;
 use services::reminder::{
@@ -36,6 +35,7 @@ use services::space_sync::{
     space_sync_update_mappings,
 };
 use tauri::Manager;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt;
 
 pub fn run_mcp() {
@@ -58,22 +58,21 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ));
+        .plugin(tauri_plugin_notification::init());
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None,
+    ));
     #[cfg(debug_assertions)]
     let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
     #[cfg(feature = "e2e-testing")]
     let builder = {
         let socket_path = std::env::var("TAURI_PLAYWRIGHT_SOCKET")
             .unwrap_or_else(|_| "/tmp/tauri-playwright.sock".to_string());
-        builder.plugin(
-            tauri_plugin_playwright::init_with_config(
-                tauri_plugin_playwright::PluginConfig::new().socket_path(&socket_path),
-            ),
-        )
+        builder.plugin(tauri_plugin_playwright::init_with_config(
+            tauri_plugin_playwright::PluginConfig::new().socket_path(&socket_path),
+        ))
     };
     builder
         .setup(|app| {
@@ -87,6 +86,7 @@ pub fn run() {
 
             setup_notification_channel(&app_handle);
 
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             if let Err(e) = app_handle.autolaunch().enable() {
                 eprintln!("[autostart] enable failed: {e}");
             }
@@ -132,19 +132,19 @@ pub fn run() {
             device_connection_get_paired_devices,
             device_connection_save_paired_device,
             device_connection_unpair,
-             device_connection_update_last_seen,
-             device_connection_consume_space_mapping_updates,
-             space_sync_list_mappings,
-             space_sync_update_mappings,
-             space_sync_apply_remote_mappings,
-             space_sync_resolve_custom_space_mapping,
-             space_sync_tick,
-             space_sync_status,
-             #[cfg(feature = "e2e-testing")]
-             e2e_list_notification_events,
-             #[cfg(feature = "e2e-testing")]
-             e2e_clear_notification_events,
-         ])
+            device_connection_update_last_seen,
+            device_connection_consume_space_mapping_updates,
+            space_sync_list_mappings,
+            space_sync_update_mappings,
+            space_sync_apply_remote_mappings,
+            space_sync_resolve_custom_space_mapping,
+            space_sync_tick,
+            space_sync_status,
+            #[cfg(feature = "e2e-testing")]
+            e2e_list_notification_events,
+            #[cfg(feature = "e2e-testing")]
+            e2e_clear_notification_events,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
