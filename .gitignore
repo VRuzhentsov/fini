@@ -28,6 +28,9 @@ bin/*.idsig
 flatpak-build/
 .flatpak-builder/
 
+# Local review scratch (Claude Design bundles, etc.)
+tmp/
+
 # Obsidian
 .obsidian/*
 !.obsidian/app.json

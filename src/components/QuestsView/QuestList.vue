@@ -1,20 +1,12 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useQuestStore, type Quest } from "../../stores/quest";
+import { useQuestStore, type Quest, type UpdateQuestInput } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
-import {
-  PaperClipIcon,
-  TagIcon,
-  FlagIcon,
-  ClockIcon,
-  EllipsisVerticalIcon,
-  ChevronUpIcon,
-  ExclamationCircleIcon,
-  ArrowPathIcon,
-} from "@heroicons/vue/24/outline";
+import { ArrowPathIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
+import QuestEditor from "../QuestEditor.vue";
 
 defineProps<{ quests: Quest[] }>();
 const store = useQuestStore();
@@ -28,6 +20,10 @@ function spaceName(quest: Quest): string {
 
 function spaceCss(quest: Quest): string {
   return SPACE_COLOR_CLASS[quest.space_id] ?? "";
+}
+
+function statusLabel(quest: Quest): string {
+  return quest.status === "completed" ? "Completed" : "Abandoned";
 }
 
 function onContextMenu(e: MouseEvent, quest: Quest) {
@@ -77,19 +73,8 @@ async function setFocus(quest: Quest) {
   await store.setFocusQuest(quest.id);
 }
 
-async function onTitleBlur(quest: Quest, e: Event) {
-  const val = (e.target as HTMLElement).innerText.trim();
-  if (val && val !== quest.title) await store.updateQuest(quest.id, { title: val });
-  else if (!val) (e.target as HTMLElement).innerText = quest.title;
-}
-
-function onTitleKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLElement).blur(); }
-}
-
-async function onDescBlur(quest: Quest, e: Event) {
-  const val = (e.target as HTMLTextAreaElement).value.trim() || null;
-  if (val !== quest.description) await store.updateQuest(quest.id, { description: val });
+async function updateQuest(quest: Quest, patch: UpdateQuestInput) {
+  await store.updateQuest(quest.id, patch);
 }
 
 // ── History actions ───────────────────────────────────────────────────────────
@@ -122,35 +107,8 @@ async function onReminderSave(
   reminderQuestId.value = null;
 }
 
-// ── More menu ─────────────────────────────────────────────────────────────────
-
-const moreMenu = ref<{ right: number; y: number; quest: Quest } | null>(null);
-
 function openMore(e: MouseEvent, quest: Quest) {
-  e.stopPropagation();
-  moreMenu.value = { right: window.innerWidth - e.clientX, y: e.clientY, quest };
-  window.addEventListener("click", closeMore, { once: true });
-}
-
-function closeMore() { moreMenu.value = null; }
-
-async function menuAction1() {
-  if (!moreMenu.value) return;
-  const quest = moreMenu.value.quest;
-  if (quest.status !== "active") {
-    await restore(quest.id);
-  } else {
-    await store.updateQuest(quest.id, { status: "abandoned" });
-    expandedId.value = null;
-  }
-  closeMore();
-}
-
-async function menuDelete() {
-  if (!moreMenu.value) return;
-  await store.deleteQuest(moreMenu.value.quest.id);
-  expandedId.value = null;
-  closeMore();
+  onContextMenu(e, quest);
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
@@ -248,136 +206,58 @@ function formatTimestamp(quest: Quest): string {
       <!-- Collapsed row -->
       <div
         v-if="expandedId !== quest.id"
-        class="quest-row-surface flex items-center gap-2 px-3 py-1.5 rounded-sm cursor-pointer hover:bg-base-200 transition-colors select-none"
+        class="quest-row-surface"
         @click="toggle(quest.id)"
         @contextmenu="onContextMenu($event, quest)"
       >
-        <!-- History: checked checkbox restores; Active: unchecked completes -->
-        <input
+        <!-- History: status glyph restores; Active: empty square completes -->
+        <button
           v-if="quest.status !== 'active'"
-          type="checkbox"
-          class="checkbox checkbox-sm shrink-0 cursor-pointer"
-          :class="quest.status === 'completed' ? 'checkbox-success' : 'abandoned-checkbox'"
-          checked
+          class="quest-check"
+          :class="quest.status"
+          :aria-label="`Make ${quest.title} active`"
           @click.prevent.stop="restore(quest.id)"
         />
-        <input v-else type="checkbox" class="checkbox checkbox-sm" :checked="false" @change.stop="completeQuest(quest.id)" @click.stop />
+        <button v-else class="quest-check" :aria-label="`Complete ${quest.title}`" @click.stop="completeQuest(quest.id)" />
 
         <span
           v-if="quest.status !== 'active'"
-          class="badge badge-sm shrink-0 font-mono"
-          :class="quest.status === 'completed' ? 'badge-success' : 'badge-outline opacity-40'"
-        >{{ formatTimestamp(quest) }}</span>
+          class="quest-status-badge"
+          :class="quest.status"
+        >{{ statusLabel(quest) }} · {{ formatTimestamp(quest) }}</span>
 
-        <span v-if="quest.due && quest.status === 'active'" class="badge badge-sm shrink-0 gap-0.5 rounded-sm" :class="dueBadgeClass(quest)">
+        <span v-if="quest.due && quest.status === 'active'" class="quest-due-badge" :class="dueBadgeClass(quest)">
           {{ smartDueLabel(quest) }}
           <ArrowPathIcon v-if="quest.repeat_rule" class="size-3.5" />
         </span>
-        <span class="flex-1 text-sm" :class="{ 'line-through opacity-50': quest.status !== 'active' }">{{ quest.title }}</span>
-        <span class="badge badge-xs shrink-0 rounded-sm" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
+        <span v-else-if="quest.repeat_rule && quest.status === 'active'" class="quest-repeat-badge">
+          <ArrowPathIcon class="size-3.5" />
+          {{ formatRepeat(quest.repeat_rule) }}
+        </span>
+        <span class="quest-title" :class="quest.status !== 'active' ? quest.status : ''">{{ quest.title }}</span>
+        <span class="quest-space-badge badge badge-xs" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
       </div>
 
-      <!-- Expanded card -->
-      <div v-else class="card card-bordered bg-base-200 shadow-sm" @contextmenu="onContextMenu($event, quest)">
-        <div class="card-body px-4 py-4 gap-4">
-
-          <!-- Header -->
-          <div class="flex items-center gap-2">
-            <input
-              v-if="quest.status !== 'active'"
-              type="checkbox"
-              class="checkbox checkbox-sm shrink-0 cursor-pointer"
-              :class="quest.status === 'completed' ? 'checkbox-success' : 'abandoned-checkbox'"
-              checked
-              @click.prevent.stop="restore(quest.id)"
-            />
-            <input v-else type="checkbox" class="checkbox checkbox-sm" :checked="false" @change.stop="completeQuest(quest.id)" @click.stop />
-
-            <span
-              v-if="quest.status !== 'active'"
-              class="flex-1 font-semibold text-base line-through opacity-60"
-            >{{ quest.title }}</span>
-            <span
-              v-else
-              class="flex-1 font-semibold text-base outline-none cursor-text"
-              contenteditable="true"
-              @blur="onTitleBlur(quest, $event)"
-              @keydown="onTitleKeydown"
-            >{{ quest.title }}</span>
-
-            <span class="badge badge-xs shrink-0 rounded-sm" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
-
-            <span
-              v-if="quest.status !== 'active'"
-              class="badge badge-sm font-mono"
-              :class="quest.status === 'completed' ? 'badge-success' : 'badge-outline opacity-40'"
-            >{{ formatTimestamp(quest) }}</span>
-            <button
-              v-else
-              class="btn btn-ghost btn-xs btn-square"
-              :class="store.activeQuest?.id === quest.id ? '' : 'opacity-30'"
-              style="color: oklch(0.85 0.15 85)"
-              @click.stop="setFocus(quest)"
-              title="Set Focus"
-            >
-              <ExclamationCircleIcon class="size-5" />
-            </button>
-
-            <button class="btn btn-ghost btn-xs btn-square" @click.stop="toggle(quest.id)" title="Collapse">
-              <ChevronUpIcon class="size-4" />
-            </button>
-          </div>
-
-          <!-- Description -->
-          <textarea
-            v-if="quest.status === 'active'"
-            class="textarea textarea-ghost w-full text-sm opacity-60 resize-none p-0 min-h-16"
-            :value="quest.description ?? ''"
-            placeholder="Description"
-            rows="3"
-            @blur="onDescBlur(quest, $event)"
-          />
-          <p v-else-if="quest.description" class="text-sm opacity-60">{{ quest.description }}</p>
-
-          <!-- Footer -->
-          <div class="flex items-center justify-between mt-1">
-            <button
-              v-if="quest.status === 'active'"
-              data-testid="quest-reminder"
-              class="flex items-center gap-1 text-xs opacity-50 hover:opacity-80 transition-opacity"
-              @click.stop="reminderQuestId = quest.id"
-              title="Reminder"
-            >
-              <ClockIcon class="size-4" />
-              <span v-if="pillText(quest)">{{ pillText(quest) }}</span>
-            </button>
-            <div v-else />
-
-            <div class="flex items-center">
-              <template v-if="quest.status === 'active'">
-                <button class="btn btn-ghost btn-xs btn-square opacity-25" disabled title="Attachment">
-                  <PaperClipIcon class="size-4" />
-                </button>
-                <button class="btn btn-ghost btn-xs btn-square opacity-25" disabled title="Label">
-                  <TagIcon class="size-4" />
-                </button>
-                <button
-                  class="btn btn-ghost btn-xs btn-square"
-                  :style="{ color: PRIORITY_COLORS[quest.priority] }"
-                  @click.stop="cyclePriority(quest)"
-                  :title="PRIORITY_LABELS[quest.priority]"
-                >
-                  <FlagIcon class="size-4" />
-                </button>
-              </template>
-              <button class="btn btn-ghost btn-xs btn-square" @click.stop="openMore($event, quest)" title="More">
-                <EllipsisVerticalIcon class="size-4" />
-              </button>
-            </div>
-          </div>
-
-        </div>
-      </div>
+      <!-- Expanded list item: same editor used by the active-card expanded state. -->
+      <QuestEditor
+        v-else
+        :quest="quest"
+        :space-name="spaceName(quest)"
+        :is-focus="store.activeQuest?.id === quest.id"
+        :priority-color="PRIORITY_COLORS[quest.priority]"
+        :priority-label="PRIORITY_LABELS[quest.priority]"
+        :reminder-text="pillText(quest)"
+        :timestamp-text="quest.status !== 'active' ? formatTimestamp(quest) : ''"
+        @contextmenu="onContextMenu($event, quest)"
+        @update="updateQuest(quest, $event)"
+        @complete="completeQuest(quest.id)"
+        @restore="restore(quest.id)"
+        @set-focus="setFocus(quest)"
+        @collapse="toggle(quest.id)"
+        @open-reminder="reminderQuestId = quest.id"
+        @cycle-priority="cyclePriority(quest)"
+        @more="openMore($event, quest)"
+      />
 
     </li>
   </ul>
@@ -389,29 +269,125 @@ function formatTimestamp(quest: Quest): string {
     @close="reminderQuestId = null"
     @save="onReminderSave(quests.find(q => q.id === reminderQuestId)!, $event)"
   />
-
-  <!-- More menu -->
-  <Teleport to="body">
-    <ul
-      v-if="moreMenu"
-      class="menu bg-base-200 rounded-box shadow-lg w-36 fixed z-50"
-      :style="{ top: `${moreMenu.y}px`, right: `${moreMenu.right}px` }"
-      @click.stop
-    >
-      <li><a @click="menuAction1">{{ moreMenu?.quest.status !== 'active' ? 'Make active' : 'Abandon' }}</a></li>
-      <li><a class="text-error" @click="menuDelete">Delete</a></li>
-    </ul>
-  </Teleport>
 </template>
 
 <style scoped>
 .quest-row {
   list-style: none;
 }
-.abandoned-checkbox {
-  background-color: transparent !important;
-  border-color: rgba(128, 128, 128, 0.3) !important;
-  background-image: none !important;
-  color: transparent !important;
+
+.quest-row-surface {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4375rem 0.75rem;
+  color: var(--fg-1);
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px;
+  transition: background-color var(--dur-normal), color var(--dur-normal);
 }
+
+.quest-row-surface:hover { background: var(--color-base-200); }
+
+.quest-check {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  border: 1.5px solid var(--fg-5);
+  border-radius: 4px;
+}
+
+.quest-check:hover { border-color: var(--fg-3); }
+.quest-check.completed { background: var(--color-success); border-color: var(--color-success); }
+.quest-check.completed::before,
+.quest-check.completed::after {
+  content: "";
+  position: absolute;
+  background: #fff;
+  border-radius: 2px;
+  transform-origin: left center;
+}
+.quest-check.completed::before { left: 3px; top: 9px; width: 4px; height: 2px; transform: rotate(45deg); }
+.quest-check.completed::after { left: 5.5px; top: 10.5px; width: 9px; height: 2px; transform: rotate(-45deg); }
+.quest-check.abandoned { border-color: var(--fg-5); }
+.quest-check.abandoned::before,
+.quest-check.abandoned::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 11px;
+  height: 1.8px;
+  background: var(--fg-4);
+  border-radius: 2px;
+}
+.quest-check.abandoned::before { transform: translate(-50%, -50%) rotate(45deg); }
+.quest-check.abandoned::after { transform: translate(-50%, -50%) rotate(-45deg); }
+
+.quest-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-1);
+  font-size: 0.875rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quest-title.completed {
+  color: var(--fg-4);
+  text-decoration: line-through;
+}
+
+.quest-title.abandoned { color: var(--fg-4); }
+
+.quest-status-badge,
+.quest-due-badge,
+.quest-repeat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  border-radius: 6px;
+}
+
+.quest-status-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.quest-status-badge.completed {
+  color: #fff;
+  background: var(--color-success);
+}
+
+.quest-status-badge.abandoned {
+  color: var(--fg-4);
+  background: transparent;
+  border: 1px solid var(--color-border-soft);
+}
+
+.quest-due-badge.badge-success { color: #fff; background: var(--color-success); }
+.quest-due-badge.badge-error { color: #fff; background: var(--color-error); }
+.quest-due-badge.badge-ghost { color: var(--fg-2); background: var(--color-base-200); }
+
+.quest-repeat-badge {
+  color: var(--fg-2);
+  background: var(--color-base-200);
+}
+
+.quest-space-badge { flex-shrink: 0; border-radius: 5px; }
+
 </style>

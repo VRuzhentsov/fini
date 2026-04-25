@@ -8,7 +8,6 @@ import {
   ClockIcon,
   PlusIcon,
   XMarkIcon,
-  ChevronRightIcon,
   ChevronLeftIcon,
   ChevronDoubleLeftIcon,
   ChevronDoubleRightIcon,
@@ -28,7 +27,6 @@ const localRepeatRule = ref<string | null>(props.quest.repeat_rule ?? null);
 
 const showTime = ref(!!props.quest.due_time);
 const showRepeat = ref(false);
-const showCalendar = ref(false);
 const sheetRef = ref<HTMLElement | null>(null);
 
 // ── Close on outside click ─────────────────────────────────────────────────────
@@ -113,7 +111,6 @@ function nextMonth() {
 
 function pickDay(day: number) {
   localDue.value = calDateStr(day);
-  showCalendar.value = false;
 }
 
 // ── Repeat ─────────────────────────────────────────────────────────────────────
@@ -225,12 +222,12 @@ function onDone() {
 <template>
   <Teleport to="body">
     <!-- Visual backdrop -->
-    <div class="fixed inset-0 z-[199] bg-black/40 pointer-events-none" />
+    <div class="fixed inset-0 z-[199] bg-black/30 pointer-events-none" />
 
     <!-- Sheet -->
     <div
       ref="sheetRef"
-      class="fixed bottom-0 left-0 right-0 z-[200] bg-base-200 rounded-t-2xl shadow-xl flex flex-col"
+      class="reminder-panel fixed z-[200] bg-base-100 shadow-xl flex flex-col"
       style="padding-bottom: env(safe-area-inset-bottom)"
     >
       <!-- ── Repeat sub-sheet ── -->
@@ -256,54 +253,15 @@ function onDone() {
         </ul>
       </template>
 
-      <!-- ── Calendar sub-view ── -->
-      <template v-else-if="showCalendar">
-        <div class="flex items-center gap-2 px-4 py-3 border-b border-base-content/10">
-          <button class="btn btn-ghost btn-xs btn-square" @click="showCalendar = false">
-            <ChevronLeftIcon class="size-4" />
-          </button>
-          <span class="font-semibold flex-1">Choose a date</span>
-        </div>
-
-        <!-- Month nav -->
-        <div class="flex items-center justify-between px-4 py-2">
-          <button class="btn btn-ghost btn-xs btn-square" @click="prevMonth">
-            <ChevronDoubleLeftIcon class="size-4" />
-          </button>
-          <span class="text-sm font-medium">{{ MONTH_NAMES[calMonth] }} {{ calYear }}</span>
-          <button class="btn btn-ghost btn-xs btn-square" @click="nextMonth">
-            <ChevronDoubleRightIcon class="size-4" />
-          </button>
-        </div>
-
-        <!-- Day labels -->
-        <div class="grid grid-cols-7 px-4 pb-1">
-          <span
-            v-for="label in DAY_LABELS" :key="label"
-            class="text-center text-xs opacity-40 py-1"
-          >{{ label }}</span>
-        </div>
-
-        <!-- Day cells -->
-        <div class="grid grid-cols-7 px-4 pb-4 gap-y-1">
-          <button
-            v-for="(day, i) in calDays" :key="i"
-            :disabled="!day"
-            class="h-9 w-full rounded-lg text-sm flex items-center justify-center disabled:opacity-0 transition-colors"
-            :class="day ? [
-              localDue === calDateStr(day) ? 'bg-primary text-primary-content font-semibold' :
-              isToday(day) ? 'font-semibold ring-1 ring-primary/40 hover:bg-base-300' :
-              'hover:bg-base-300'
-            ] : []"
-            @click="day && pickDay(day)"
-          >{{ day }}</button>
-        </div>
-      </template>
-
       <!-- ── Main sheet ── -->
       <template v-else>
+        <label class="reminder-search">
+          <CalendarDaysIcon class="size-4 opacity-50" />
+          <input type="text" placeholder="Type a date…" />
+        </label>
+
         <!-- Quick picks -->
-        <div class="flex gap-2 px-4 py-3 border-b border-base-content/10 flex-wrap">
+        <div class="flex gap-2 px-3 py-3 border-b border-base-content/10 flex-wrap">
           <button
             data-testid="reminder-today"
             class="btn btn-sm rounded-full gap-1"
@@ -330,7 +288,33 @@ function onDone() {
           </button>
         </div>
 
-        <!-- Choose a date -->
+        <div class="px-3 py-3 border-b border-base-content/10">
+          <div class="mb-2 flex items-center justify-between">
+            <button class="reminder-month-button" @click="prevMonth"><ChevronDoubleLeftIcon class="size-4" /></button>
+            <span class="text-sm font-medium">{{ MONTH_NAMES[calMonth] }} {{ calYear }}</span>
+            <button class="reminder-month-button" @click="nextMonth"><ChevronDoubleRightIcon class="size-4" /></button>
+          </div>
+          <div class="grid grid-cols-7 pb-2">
+            <span
+              v-for="label in DAY_LABELS" :key="label"
+              class="text-center text-xs opacity-40 py-1"
+            >{{ label }}</span>
+          </div>
+          <div class="grid grid-cols-7 gap-y-1">
+            <button
+              v-for="(day, i) in calDays" :key="i"
+              :disabled="!day"
+              class="h-9 w-full rounded-lg text-sm flex items-center justify-center disabled:opacity-0 transition-colors"
+              :class="day ? [
+                localDue === calDateStr(day) ? 'bg-primary text-primary-content font-semibold' :
+                isToday(day) ? 'text-success font-semibold hover:bg-base-200' :
+                'hover:bg-base-200'
+              ] : []"
+              @click="day && pickDay(day)"
+            >{{ day }}</button>
+          </div>
+        </div>
+
         <div class="border-b border-base-content/10 flex items-center gap-2 px-4 py-2">
           <CalendarDaysIcon class="size-4 opacity-60 shrink-0" />
           <button
@@ -341,10 +325,7 @@ function onDone() {
             {{ formatDue(localDue) }}
             <XMarkIcon class="size-3" />
           </button>
-          <button class="flex-1 flex items-center justify-between py-1 text-sm opacity-60 hover:opacity-100 transition-opacity" @click="showCalendar = true">
-            <span>{{ localDue ? "Change" : "Choose a date" }}</span>
-            <ChevronRightIcon class="size-4" />
-          </button>
+          <span class="flex-1 py-1 text-sm opacity-60">{{ localDue ? "Selected date" : "Choose a date above" }}</span>
         </div>
 
         <!-- Repeat -->
@@ -402,3 +383,62 @@ function onDone() {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.reminder-panel {
+  left: max(0.75rem, env(safe-area-inset-left));
+  right: max(0.75rem, env(safe-area-inset-right));
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+  max-width: 320px;
+  max-height: min(88vh, 680px);
+  margin: 0 auto;
+  overflow: auto;
+  color: var(--fg-1);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 14px;
+}
+
+.reminder-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0.75rem 0;
+  padding: 0.625rem 0.75rem;
+  color: var(--fg-1);
+  border: 1.5px solid var(--color-primary);
+  border-radius: 10px;
+}
+
+.reminder-search input {
+  min-width: 0;
+  flex: 1;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.reminder-search input::placeholder {
+  color: var(--fg-4);
+  opacity: 1;
+}
+
+.reminder-month-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  color: var(--fg-3);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+
+.reminder-month-button:hover {
+  color: var(--fg-1);
+  background: var(--color-base-200);
+}
+</style>
