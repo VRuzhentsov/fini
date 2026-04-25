@@ -45,3 +45,10 @@ clap = { version = "4", features = ["derive"] }
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-autostart = "2.5.1"
 time = { version = "0.3.47", features = ["parsing", "formatting"] }
+tauri-plugin-playwright = { version = "0.2" }
+
+[features]
+# Enable the Playwright control-server plugin for UI e2e tests. Off by default;
+# the production build must not ship this — it exposes an in-process socket
+# bridge that accepts webview.eval() from a test runner.
+e2e-testing = []

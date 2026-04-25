@@ -343,6 +343,7 @@ function formatTimestamp(quest: Quest): string {
           <div class="flex items-center justify-between mt-1">
             <button
               v-if="quest.status === 'active'"
+              data-testid="quest-reminder"
               class="flex items-center gap-1 text-xs opacity-50 hover:opacity-80 transition-opacity"
               @click.stop="reminderQuestId = quest.id"
               title="Reminder"

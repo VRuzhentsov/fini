@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+#[cfg(feature = "e2e-testing")]
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 #[cfg(not(target_os = "linux"))]
 use tauri_plugin_notification::NotificationExt;
@@ -30,10 +32,59 @@ pub fn compute_fire_utc(due: &str, due_time: Option<&str>) -> Option<chrono::Dat
 /// In-process timer handles keyed by reminder ID (desktop only).
 pub struct SchedulerState(pub Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>);
 
+#[cfg(feature = "e2e-testing")]
+#[derive(Clone, Serialize)]
+pub struct NotificationEvent {
+    pub phase: String,
+    pub delivery_path: String,
+    pub reminder_id: String,
+    pub quest_id: String,
+    pub body: String,
+    pub due_at_utc: Option<String>,
+    pub scheduled_notification_id: Option<String>,
+}
+
+#[cfg(feature = "e2e-testing")]
+pub struct NotificationObserverState(pub Mutex<Vec<NotificationEvent>>);
+
 impl SchedulerState {
     pub fn new() -> Self {
         Self(Mutex::new(HashMap::new()))
     }
+}
+
+#[cfg(feature = "e2e-testing")]
+impl NotificationObserverState {
+    pub fn new() -> Self {
+        Self(Mutex::new(Vec::new()))
+    }
+}
+
+#[cfg(feature = "e2e-testing")]
+fn record_notification_event(app: &AppHandle, event: NotificationEvent) {
+    if let Some(state) = app.try_state::<NotificationObserverState>() {
+        state.0.lock().unwrap().push(event);
+    }
+}
+
+#[cfg(feature = "e2e-testing")]
+#[tauri::command]
+pub fn e2e_list_notification_events(app: AppHandle) -> Result<Vec<NotificationEvent>, String> {
+    let state = app
+        .try_state::<NotificationObserverState>()
+        .ok_or_else(|| "notification observer is not available".to_string())?;
+    let events = state.0.lock().unwrap().clone();
+    Ok(events)
+}
+
+#[cfg(feature = "e2e-testing")]
+#[tauri::command]
+pub fn e2e_clear_notification_events(app: AppHandle) -> Result<(), String> {
+    let state = app
+        .try_state::<NotificationObserverState>()
+        .ok_or_else(|| "notification observer is not available".to_string())?;
+    state.0.lock().unwrap().clear();
+    Ok(())
 }
 
 /// Register the notification channel on Android (no-op on other platforms).
@@ -96,7 +147,22 @@ pub fn schedule_reminder(
             .show();
 
         match result {
-            Ok(()) => Some(notif_id.to_string()),
+            Ok(()) => {
+                #[cfg(feature = "e2e-testing")]
+                record_notification_event(
+                    app,
+                    NotificationEvent {
+                        phase: "scheduled".to_string(),
+                        delivery_path: "mobile_plugin".to_string(),
+                        reminder_id: reminder.id.clone(),
+                        quest_id: quest.id.clone(),
+                        body: body.clone(),
+                        due_at_utc: Some(due_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+                        scheduled_notification_id: Some(notif_id.to_string()),
+                    },
+                );
+                Some(notif_id.to_string())
+            }
             Err(e) => {
                 eprintln!("[notification] schedule failed for {}: {e}", reminder.id);
                 None
@@ -118,14 +184,29 @@ pub fn schedule_reminder(
         let reminder_id = reminder.id.clone();
         let reminder_id_key = reminder_id.clone();
 
+        let body_for_timer = body.clone();
         let handle = tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
-            show_now(&app_clone, &reminder_id, &body);
+            show_now(&app_clone, &reminder_id, &body_for_timer);
         });
 
         if let Some(state) = app.try_state::<SchedulerState>() {
             state.0.lock().unwrap().insert(reminder_id_key, handle);
         }
+
+        #[cfg(feature = "e2e-testing")]
+        record_notification_event(
+            app,
+            NotificationEvent {
+                phase: "scheduled".to_string(),
+                delivery_path: "desktop_in_process".to_string(),
+                reminder_id: reminder.id.clone(),
+                quest_id: quest.id.clone(),
+                body,
+                due_at_utc: Some(due_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+                scheduled_notification_id: None,
+            },
+        );
 
         None
     }
@@ -146,25 +227,55 @@ fn show_now(app: &AppHandle, reminder_id: &str, body: &str) {
     #[cfg(target_os = "linux")]
     {
         let _ = app;
-        if let Err(e) = std::process::Command::new("notify-send")
+        let result = std::process::Command::new("notify-send")
             .args(["-a", "Fini", "Fini", body])
-            .spawn()
-        {
+            .spawn();
+        #[cfg(feature = "e2e-testing")]
+        if result.is_ok() {
+            record_notification_event(
+                app,
+                NotificationEvent {
+                    phase: "delivered".to_string(),
+                    delivery_path: "linux_notify_send".to_string(),
+                    reminder_id: reminder_id.to_string(),
+                    quest_id: String::new(),
+                    body: body.to_string(),
+                    due_at_utc: None,
+                    scheduled_notification_id: None,
+                },
+            );
+        }
+        if let Err(e) = result {
             eprintln!("[notification] notify-send failed for {reminder_id}: {e}");
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
         let notif_id = notification_id_from_reminder(reminder_id);
-        if let Err(e) = app
+        let result = app
             .notification()
             .builder()
             .id(notif_id)
             .channel_id(CHANNEL_ID)
             .title("Fini")
             .body(body.to_string())
-            .show()
-        {
+            .show();
+        #[cfg(feature = "e2e-testing")]
+        if result.is_ok() {
+            record_notification_event(
+                app,
+                NotificationEvent {
+                    phase: "delivered".to_string(),
+                    delivery_path: "desktop_plugin_show".to_string(),
+                    reminder_id: reminder_id.to_string(),
+                    quest_id: String::new(),
+                    body: body.to_string(),
+                    due_at_utc: None,
+                    scheduled_notification_id: Some(notif_id.to_string()),
+                },
+            );
+        }
+        if let Err(e) = result {
             eprintln!("[notification] fire_immediate failed for {reminder_id}: {e}");
         }
     }

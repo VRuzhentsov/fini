@@ -1,5 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
+FROM node:24-slim AS node-deps
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+FROM node-deps AS playwright-browsers
+
+RUN npx playwright install chromium
+
 FROM rust:1.88-bookworm AS builder
 
 WORKDIR /workspace
@@ -23,8 +34,22 @@ COPY src-tauri/src ./src-tauri/src
 COPY src-tauri/capabilities ./src-tauri/capabilities
 COPY src-tauri/icons ./src-tauri/icons
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
-
 RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini
+
+FROM builder AS tauri-builder-e2e
+
+COPY --from=node-deps /usr/local/ /usr/local/
+
+WORKDIR /workspace
+
+COPY package.json package-lock.json* ./
+COPY --from=node-deps /app/node_modules ./node_modules
+COPY tsconfig*.json ./
+COPY src ./src
+COPY vite.config.ts ./
+COPY index.html ./
+
+RUN node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle
 
 FROM ubuntu:24.04 AS runtime
 
@@ -40,7 +65,7 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY --from=builder /workspace/src-tauri/target/release/fini /usr/local/bin/fini
+COPY --from=tauri-builder-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
 
 ENV XDG_DATA_HOME=/data
 
@@ -52,25 +77,52 @@ CMD ["mcp"]
 # ── E2E test stage ─────────────────────────────────────────────────────────────
 FROM node:24-slim AS test
 
+# Fini binary runtime libs + Playwright Chromium system deps (fonts, nss/nspr,
+# dbus, X11 bits). The browser binary comes from the cached Playwright stage;
+# this apt layer provides the runtime libraries it expects.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-0 \
     libwebkit2gtk-4.1-0 \
     libayatana-appindicator3-1 \
     librsvg2-2 \
     libglib2.0-0 \
+    libnss3 \
+    libnspr4 \
+    libdbus-1-3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libxkbcommon0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libasound2 \
+    fonts-liberation \
+    ca-certificates \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /workspace/src-tauri/target/release/fini /usr/local/bin/fini
+COPY --from=tauri-builder-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
 
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm install
+COPY --from=node-deps /app/node_modules ./node_modules
+COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 COPY tsconfig*.json ./
+COPY src ./src
+COPY vite.config.ts ./
+COPY index.html ./
 COPY specs/e2e ./specs/e2e
 
 ENV FINI_BINARY=/usr/local/bin/fini \
-    TZ=UTC
+    TZ=UTC \
+    CI=1
 
-CMD ["npm", "run", "test:e2e"]
+CMD ["npm", "run", "test:e2e:ci"]

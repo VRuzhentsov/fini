@@ -1312,6 +1312,7 @@ dependencies = [
  "tauri-plugin-mcp-bridge",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
+ "tauri-plugin-playwright",
  "time",
  "tokio",
  "tokio-tungstenite 0.26.2",
@@ -4840,6 +4841,20 @@ dependencies = [
  "url",
  "windows 0.61.3",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-playwright"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2de803dd4ac54e9457e45f5e3f1f654eab2581d8cd60a14defc18d66725fcea5"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "tokio",
 ]
 
 [[package]]

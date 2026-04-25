@@ -8,6 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "test:unit": "jest --runInBand",
     "test:e2e": "playwright test --config specs/e2e/playwright.config.ts",
+    "test:e2e:ci": "CI=1 Xvfb :99 -screen 0 1280x720x24 >/var/tmp/fini-e2e-xvfb.log 2>&1 & XVFB_PID=$!; trap 'kill $XVFB_PID' EXIT; DISPLAY=:99 playwright test --config specs/e2e/playwright.config.ts",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -22,15 +23,16 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@playwright/test": "^1.51.0",
     "@babel/core": "^7.28.0",
     "@babel/preset-env": "^7.28.0",
+    "@playwright/test": "^1.51.0",
+    "@srsholmes/tauri-playwright": "^0.2.2",
     "@tailwindcss/vite": "^4.2.1",
     "@tauri-apps/cli": "^2",
     "@types/jest": "^29.5.14",
+    "@vitejs/plugin-vue": "^5.2.1",
     "@vue/test-utils": "^2.4.6",
     "@vue/vue3-jest": "^29.2.6",
-    "@vitejs/plugin-vue": "^5.2.1",
     "babel-jest": "^29.7.0",
     "identity-obj-proxy": "^3.0.0",
     "jest": "^29.7.0",

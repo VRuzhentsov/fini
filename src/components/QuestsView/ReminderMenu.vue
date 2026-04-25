@@ -305,6 +305,7 @@ function onDone() {
         <!-- Quick picks -->
         <div class="flex gap-2 px-4 py-3 border-b border-base-content/10 flex-wrap">
           <button
+            data-testid="reminder-today"
             class="btn btn-sm rounded-full gap-1"
             :class="localDue === todayDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
             @click="localDue = todayDate()"
@@ -312,6 +313,7 @@ function onDone() {
             <StarIcon class="size-3" /> Today
           </button>
           <button
+            data-testid="reminder-tomorrow"
             class="btn btn-sm rounded-full gap-1"
             :class="localDue === tomorrowDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
             @click="localDue = tomorrowDate()"
@@ -319,6 +321,7 @@ function onDone() {
             <CalendarDaysIcon class="size-3" /> Tomorrow
           </button>
           <button
+            data-testid="reminder-next-week"
             class="btn btn-sm rounded-full gap-1"
             :class="localDue === nextWeekDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
             @click="localDue = nextWeekDate()"
@@ -361,7 +364,8 @@ function onDone() {
           <div class="flex items-center gap-3 px-4 py-3">
             <ClockIcon class="size-4 opacity-60" />
             <span class="flex-1 text-sm">Time</span>
-            <button class="btn btn-ghost btn-xs btn-square" @click="toggleTime">
+            <button data-testid="reminder-toggle-time" class="btn btn-ghost btn-xs btn-square" @click="toggleTime">
+              <span class="sr-only">Toggle time</span>
               <XMarkIcon v-if="showTime" class="size-4" />
               <PlusIcon v-else class="size-4" />
             </button>
@@ -369,6 +373,7 @@ function onDone() {
           <div v-if="showTime" class="flex items-center gap-2 px-4 pb-3">
             <input
               class="input input-bordered input-sm flex-1"
+              data-testid="reminder-hour"
               type="number"
               min="0"
               max="23"
@@ -378,6 +383,7 @@ function onDone() {
             <span class="font-semibold opacity-50">:</span>
             <input
               class="input input-bordered input-sm flex-1"
+              data-testid="reminder-minute"
               type="number"
               min="0"
               max="59"
@@ -389,9 +395,9 @@ function onDone() {
 
         <!-- Actions -->
         <div class="flex gap-3 px-4 py-4">
-          <button class="btn flex-1 btn-error btn-outline" @click="onClear">Clear</button>
-          <button class="btn flex-1 btn-primary" @click="onDone">Done</button>
-        </div>
+            <button data-testid="reminder-clear" class="btn flex-1 btn-error btn-outline" @click="onClear">Clear</button>
+            <button data-testid="reminder-done" class="btn flex-1 btn-primary" @click="onDone">Done</button>
+          </div>
       </template>
     </div>
   </Teleport>

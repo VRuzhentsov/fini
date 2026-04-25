@@ -71,6 +71,7 @@ function onKeydown(e: KeyboardEvent) {
       <textarea
         ref="textarea"
         v-model="text"
+        data-testid="chat-input"
         class="textarea textarea-ghost flex-1 resize-none overflow-y-auto text-base leading-normal py-2 min-h-0"
         placeholder="Write a message…"
         rows="1"
@@ -80,6 +81,7 @@ function onKeydown(e: KeyboardEvent) {
       />
       <button
         type="submit"
+        data-testid="chat-submit"
         class="btn btn-ghost btn-circle btn-sm shrink-0"
         :disabled="!text.trim()"
         aria-label="Send"

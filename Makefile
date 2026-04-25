@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help dev build mcp e2e e2e-build release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
+.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
 
 help:
 	@echo ""
@@ -9,8 +9,10 @@ help:
 	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
 	@echo "  make build            Release build"
 	@echo "  make mcp              Run MCP server (debug binary)"
-	@echo "  make e2e              Run e2e tests locally (uses debug binary)"
-	@echo "  make e2e-build        Build Podman image and run e2e tests inside it"
+	@echo "  make e2e              Run real-app e2e tests locally"
+	@echo "  make e2e-ci           Run real-app e2e tests in CI mode"
+	@echo "  make e2e-image        Build/update the Podman e2e image"
+	@echo "  make e2e-build        Build Podman image and run e2e-ci inside it"
 	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
@@ -34,13 +36,21 @@ build:
 mcp:
 	./src-tauri/target/debug/fini mcp
 
-# Run e2e tests locally against the debug binary (no container)
+# Run the real-app e2e lane locally.
 e2e:
 	npm run test:e2e
 
-# Build and run e2e tests inside a Podman container
-e2e-build:
+# Run the same lane under CI settings.
+e2e-ci:
+	npm run test:e2e:ci
+
+# Build/update the container image used for CI-style local e2e runs.
+e2e-image:
 	podman build --target test -t fini-e2e .
+
+# Run the headless e2e tier inside the cached Podman image.
+e2e-build:
+	podman image exists fini-e2e || podman build --target test -t fini-e2e .
 	podman run --rm fini-e2e
 
 release-tag:

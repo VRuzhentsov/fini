@@ -205,6 +205,12 @@ jobs:
       - name: Run frontend build
         run: npm run build
 
+      - name: Build desktop e2e container
+        run: docker build --target test -t fini-e2e-ci .
+
+      - name: Run desktop e2e flow
+        run: docker run --rm fini-e2e-ci
+
   build-linux:
     name: Build Linux Artifact (${{ matrix.arch }})
     strategy:
@@ -608,6 +614,9 @@ jobs:
             type=raw,value=${{ steps.image_version.outputs.version }}
             type=raw,value=latest,enable=${{ needs.validate-tag.outputs.is_prerelease == 'false' }}
           labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=Fini
+            org.opencontainers.image.description=A quest-based productivity system for ADHD brains that helps people finish things.
             org.opencontainers.image.version=${{ steps.image_version.outputs.version }}
             org.opencontainers.image.ref.name=${{ github.ref_name }}
 
