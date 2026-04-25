@@ -205,6 +205,12 @@ jobs:
       - name: Run frontend build
         run: npm run build
 
+      - name: Build runtime container
+        run: docker build --target runtime -t fini-runtime-ci .
+
+      - name: Run runtime smoke check
+        run: docker run --rm fini-runtime-ci --help
+
       - name: Build desktop e2e container
         run: docker build --target test -t fini-e2e-ci .
 
@@ -626,6 +632,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          target: runtime
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

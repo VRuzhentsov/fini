@@ -79,97 +79,14 @@ Fini is local-first with optional LAN sharing. MVP.1 networking is split into:
 
 See [[Network]] for transport-level contracts.
 
-## MCP Server
+## CLI
 
-Fini exposes a **Model Context Protocol (MCP) server** so external AI clients — primarily Claude Desktop — can read and manage quests directly.
-
-### Entry point
-
-`fini` — the single app binary. Its behaviour depends on how it is invoked:
+`fini` is the single app binary. Its behaviour depends on how it is invoked:
 
 | Invocation | Mode |
 |---|---|
 | `fini` | Return current Focus quest (CLI default in terminal) |
 | `fini app` | Launch GUI (Tauri) from terminal |
-| `fini mcp` | Start MCP server over stdio, no GUI |
-
-Desktop launchers and bundled app entrypoints open the GUI directly. Claude Desktop launches `fini mcp` as a subprocess. All modes share the same SQLite database at `$DATA_DIR/fini/fini.db`.
-
-### Transport
-
-`stdio` — launched as a subprocess by the MCP client via `fini mcp`.
-
-### Tools
-
-| Tool | Description |
-|---|---|
-| `list_quests` | Return actionable quests (including nearest open occurrence per series), optionally filtered by space |
-| `get_quest` | Return a single quest by id |
-| `create_quest` | Create a quest with title, due date, repeat rule, and optional explicit space (defaults to Personal `"1"`) |
-| `update_quest` | Update any quest field (title, description, status, due, repeat, focus timestamps, etc.) |
-| `delete_quest` | Delete a quest |
-| `complete_quest` | Mark a quest completed |
-| `abandon_quest` | Mark a quest abandoned |
-| `list_history` | Return completed and abandoned quests |
-| `get_active_focus` | Return the current Focus quest computed from focus history + fallback rules |
-| `list_spaces` | Return all spaces |
-| `create_space` | Create a space |
-| `update_space` | Rename or reorder a space |
-| `delete_space` | Delete a space |
-
-### Tool outputs
-
-MCP tools return structured JSON in `structured_content` (preferred) instead of human-formatted text.
-
-`QuestRecord` fields: `id`, `series_id`, `occurrence_id`, `period_key`, `space_id`, `title`, `description`, `status`, `priority`, `energy`, `due`, `due_time`, `due_at_utc`, `repeat_rule`, `order_rank`, `completed_at`, `created_at`, `updated_at`.
-
-`FocusHistoryRecord` fields: `id`, `device_id`, `quest_id`, `space_id`, `trigger`, `created_at`.
-
-`SpaceRecord` fields: `id`, `name`, `item_order`, `created_at`.
-
-Example `list_quests` output:
-
-```json
-{
-  "quests": [
-    {
-      "id": "b0d3c9c6-1e6a-4bd2-9c77-5ef6b01b9e45",
-      "series_id": "b0d3c9c6-1e6a-4bd2-9c77-5ef6b01b9e45",
-      "occurrence_id": "b0d3c9c6-1e6a-4bd2-9c77-5ef6b01b9e45:2026-03-20",
-      "period_key": "2026-03-20",
-      "space_id": "1",
-      "title": "Morning walk",
-      "description": null,
-      "status": "active",
-      "priority": 1,
-      "energy": "medium",
-      "due": "2026-03-20",
-      "due_time": "09:00",
-      "due_at_utc": "2026-03-20T09:00:00Z",
-      "repeat_rule": "daily",
-      "order_rank": 0,
-      "completed_at": null,
-      "created_at": "2026-03-19T18:00:00Z",
-      "updated_at": "2026-03-19T18:00:00Z"
-    }
-  ]
-}
-```
-
-### Usage (Claude Desktop)
-
-Add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "fini": {
-      "command": "/path/to/fini",
-      "args": ["mcp"]
-    }
-  }
-}
-```
 
 The `fini` binary is produced by the normal Tauri build:
 
@@ -189,7 +106,6 @@ npm run tauri build
 | State     | Pinia                       |
 | Database  | SQLite via Diesel ORM       |
 | Backend   | Rust                        |
-| MCP       | rmcp (Rust MCP SDK), stdio  |
 
 ## Target Platforms
 
@@ -252,13 +168,30 @@ flatpak run org.flatpak.Builder --force-clean --user --install flatpak-build com
 flatpak run com.fini.app
 ```
 
+### Build (Docker runtime)
+
+Use the official headless runtime target when you want to run the CLI inside a container:
+
+```bash
+make runtime-image
+
+# default CLI behavior
+podman run --rm fini-runtime
+
+# explicit CLI commands
+podman run --rm fini-runtime --help
+podman run --rm -v fini-data:/data fini-runtime app
+```
+
+The published container image is CLI-first and uses the release binary. The e2e image is built from a separate `test` target and is not published as the runtime artifact.
+
 ## Status
 
 🚧 Early development. Building the MVP.
 
 ## Delivery Plan
 
-- **MVP**: Local-first core loop on Linux/Windows/Android with functional parity (`Focus` / `History` / `Settings`, reminders, repeating series+occurrences, MCP for daily use)
+- **MVP**: Local-first core loop on Linux/Windows/Android with functional parity (`Focus` / `History` / `Settings`, reminders, repeating series+occurrences)
 - **MVP.1**: LAN pairing + sync (mutual confirmation, websocket data-plane, near-real-time replication, offline queue/replay, shared series occurrence behavior)
 - Planning baseline and spec deltas are tracked in `docs/plans/2026-03-21-mvp-baseline.md`
 

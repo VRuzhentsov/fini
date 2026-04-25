@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
+.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
 
 help:
 	@echo ""
@@ -13,6 +13,8 @@ help:
 	@echo "  make e2e-ci           Run real-app e2e tests in CI mode"
 	@echo "  make e2e-image        Build/update the Podman e2e image"
 	@echo "  make e2e-build        Build Podman image and run e2e-ci inside it"
+	@echo "  make runtime-image    Build/update the Podman runtime image"
+	@echo "  make runtime-smoke    Run a runtime container smoke check"
 	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
@@ -52,6 +54,15 @@ e2e-image:
 e2e-build:
 	podman image exists fini-e2e || podman build --target test -t fini-e2e .
 	podman run --rm fini-e2e
+
+# Build/update the published headless runtime image locally.
+runtime-image:
+	podman build --target runtime -t fini-runtime .
+
+# Verify the runtime container executes the CLI surface.
+runtime-smoke:
+	podman image exists fini-runtime || podman build --target runtime -t fini-runtime .
+	podman run --rm fini-runtime --help
 
 release-tag:
 	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release-tag VERSION=x.y.z" && exit 1)

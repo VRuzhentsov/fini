@@ -11,7 +11,7 @@ FROM node-deps AS playwright-browsers
 
 RUN npx playwright install chromium
 
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.88-bookworm AS rust-builder-base
 
 WORKDIR /workspace
 
@@ -34,9 +34,12 @@ COPY src-tauri/src ./src-tauri/src
 COPY src-tauri/capabilities ./src-tauri/capabilities
 COPY src-tauri/icons ./src-tauri/icons
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
+
+FROM rust-builder-base AS app-build-release
+
 RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini
 
-FROM builder AS tauri-builder-e2e
+FROM rust-builder-base AS app-build-e2e
 
 COPY --from=node-deps /usr/local/ /usr/local/
 
@@ -65,14 +68,13 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY --from=tauri-builder-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
+COPY --from=app-build-release /workspace/src-tauri/target/release/fini /usr/local/bin/fini
 
 ENV XDG_DATA_HOME=/data
 
 VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/local/bin/fini"]
-CMD ["mcp"]
 
 # ── E2E test stage ─────────────────────────────────────────────────────────────
 FROM node:24.15.0-trixie-slim AS test
@@ -107,7 +109,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=tauri-builder-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
+COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
 
 WORKDIR /app
 
