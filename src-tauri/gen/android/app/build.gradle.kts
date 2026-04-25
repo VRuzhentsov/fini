@@ -13,6 +13,9 @@ val tauriProperties = Properties().apply {
     }
 }
 
+val envVersionCode = System.getenv("FINI_ANDROID_VERSION_CODE")
+val envVersionName = System.getenv("FINI_ANDROID_VERSION_NAME")
+
 android {
     compileSdk = 36
     namespace = "com.fini.app"
@@ -21,8 +24,8 @@ android {
         applicationId = "com.fini.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        versionCode = (envVersionCode ?: tauriProperties.getProperty("tauri.android.versionCode", "1")).toInt()
+        versionName = envVersionName ?: tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
     buildTypes {
         getByName("debug") {

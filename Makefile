@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-install-debug android-launch android-devices
+.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
 
 help:
 	@echo ""
@@ -22,8 +22,12 @@ help:
 	@echo "  make android-dev      Hot-reload on device via Wi-Fi (auto-connects)"
 	@echo "  make android-build    Build Android APK"
 	@echo "  make android-sign-debug   Sign APK to bin/fini.apk using debug keystore"
+	@echo "  make android-sign-release-local  Sign APK with local release keystore env vars"
 	@echo "  make android-install-debug  Install bin/fini.apk on connected device"
+	@echo "  make android-install-release-local  Install bin/fini-release.apk on device"
 	@echo "  make android-launch   Launch app on connected device"
+	@echo "  make android-debug-deploy  Build with git-derived version, sign, install, and launch"
+	@echo "  make android-release-deploy-local  Local release-signed deploy preserving app identity"
 	@echo "  make android-devices  List connected ADB devices"
 	@echo ""
 
@@ -90,8 +94,13 @@ release-tag:
 DEVICE_ADDRESS = $(shell adb mdns services 2>/dev/null | grep '_adb-tls-connect' | head -1 | awk '{print $$NF}')
 DEVICE_IP      = $(firstword $(subst :, ,$(DEVICE_ADDRESS)))
 HOST_IP        = $(shell ip route get $(DEVICE_IP) 2>/dev/null | grep -oP 'src \K\S+' | head -1)
+LATEST_TAG = $(shell git describe --tags --abbrev=0 2>/dev/null || printf 'v0.0.0')
+GIT_SHA = $(shell git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
+ANDROID_DEBUG_VERSION_NAME = $(patsubst v%,%,$(LATEST_TAG))+dev.$(GIT_SHA)
+ANDROID_DEBUG_VERSION_CODE = $(shell date +%s)
 ANDROID_UNSIGNED_APK = src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
 ANDROID_SIGNED_APK = bin/fini.apk
+ANDROID_RELEASE_SIGNED_APK = bin/fini-release.apk
 APKSIGNER = $(lastword $(sort $(wildcard $(ANDROID_HOME)/build-tools/*/apksigner)))
 
 android-connect:
@@ -112,12 +121,51 @@ android-sign-debug:
 	"$(APKSIGNER)" sign --ks "$$HOME/.android/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$(ANDROID_SIGNED_APK)" "$(ANDROID_UNSIGNED_APK)"
 	"$(APKSIGNER)" verify "$(ANDROID_SIGNED_APK)"
 
+android-sign-release-local:
+	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)
+	@test -n "$(APKSIGNER)" || (echo "apksigner not found under $$ANDROID_HOME/build-tools" && exit 1)
+	@test -f "$(ANDROID_UNSIGNED_APK)" || (echo "Unsigned APK not found: $(ANDROID_UNSIGNED_APK)" && exit 1)
+	@test -n "$$ANDROID_KEYSTORE_PASSWORD" || (echo "ANDROID_KEYSTORE_PASSWORD is not set" && exit 1)
+	@test -n "$$ANDROID_KEY_ALIAS" || (echo "ANDROID_KEY_ALIAS is not set" && exit 1)
+	@test -n "$$ANDROID_KEY_PASSWORD" || (echo "ANDROID_KEY_PASSWORD is not set" && exit 1)
+	@keystore_path="$$ANDROID_KEYSTORE_PATH"; \
+	if [ -z "$$keystore_path" ]; then \
+	  if [ -z "$$ANDROID_KEYSTORE_BASE64" ]; then \
+	    echo "Set ANDROID_KEYSTORE_PATH or ANDROID_KEYSTORE_BASE64 for local release signing"; \
+	    exit 1; \
+	  fi; \
+	  keystore_path="/var/tmp/fini-release.keystore"; \
+	  printf '%s' "$$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$$keystore_path"; \
+	fi; \
+	test -f "$$keystore_path" || (echo "Release keystore not found: $$keystore_path" && exit 1); \
+	mkdir -p bin; \
+	"$(APKSIGNER)" sign --ks "$$keystore_path" --ks-key-alias "$$ANDROID_KEY_ALIAS" --ks-pass "pass:$$ANDROID_KEYSTORE_PASSWORD" --key-pass "pass:$$ANDROID_KEY_PASSWORD" --out "$(ANDROID_RELEASE_SIGNED_APK)" "$(ANDROID_UNSIGNED_APK)"; \
+	"$(APKSIGNER)" verify "$(ANDROID_RELEASE_SIGNED_APK)"
+
 android-install-debug:
 	@test -f "$(ANDROID_SIGNED_APK)" || (echo "Signed APK not found: $(ANDROID_SIGNED_APK). Run make android-sign-debug first." && exit 1)
 	adb install -r "$(ANDROID_SIGNED_APK)"
 
+android-install-release-local:
+	@test -f "$(ANDROID_RELEASE_SIGNED_APK)" || (echo "Signed APK not found: $(ANDROID_RELEASE_SIGNED_APK). Run make android-sign-release-local first." && exit 1)
+	adb install -r "$(ANDROID_RELEASE_SIGNED_APK)"
+
 android-launch:
 	adb shell am start -n com.fini.app/.MainActivity
+
+android-debug-deploy:
+	@printf 'Android debug version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build
+	$(MAKE) android-sign-debug
+	$(MAKE) android-install-debug
+	$(MAKE) android-launch
+
+android-release-deploy-local:
+	@printf 'Android local release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build
+	$(MAKE) android-sign-release-local
+	$(MAKE) android-install-release-local
+	$(MAKE) android-launch
 
 android-devices:
 	adb devices

@@ -84,7 +84,10 @@ General notes:
 ## Platform notes
 
 - **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
-- **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`; convenience signing output is `bin/fini.apk` via `make android-sign-debug`
+- **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
+  - `make android-debug-deploy` builds, signs, installs, and launches a local debug-keystore APK using git-derived `versionName` and `versionCode`
+  - `make android-release-deploy-local` performs the same local build/install flow but signs with release-lineage credentials from `ANDROID_KEYSTORE_PATH` or `ANDROID_KEYSTORE_BASE64` plus the matching password and alias env vars
+  - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
 ## Postponed

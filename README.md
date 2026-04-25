@@ -153,13 +153,39 @@ The `make release-tag` flow creates a GPG-signed annotated tag with the repo's c
 ```bash
 npm run tauri android build
 
-# optional convenience flow
+# git-derived local debug deploy
+make android-debug-deploy
+```
+
+`make android-debug-deploy` builds a local Android release APK with git-derived version metadata:
+
+- `versionName`: latest reachable git tag plus short SHA, for example `0.1.18+dev.65be60e`
+- `versionCode`: current epoch seconds, so repeated local installs always upgrade cleanly
+
+The debug deploy flow signs with the local Android debug keystore and installs with `adb install -r`:
+
+```bash
 make android-sign-debug
 make android-install-debug
 make android-launch
 ```
 
-Signed debug APK path from convenience flow: `bin/fini.apk`
+Signed debug APK path: `bin/fini.apk`
+
+If you need a purely local install that can replace a Play-installed `com.fini.app` build without uninstalling, use the local release-signing path instead:
+
+```bash
+make android-release-deploy-local
+```
+
+That flow stays local and requires release-signing inputs in the environment:
+
+- `ANDROID_KEYSTORE_PATH` or `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+
+Output APK path for the local release-signing flow: `bin/fini-release.apk`
 
 ### Build (Flatpak)
 
