@@ -139,14 +139,25 @@ npm run tauri build
 
 ### Release Tag
 
-Release workflow is triggered only by pushing a signed annotated `v*` tag that points to the current `origin/main` commit.
+Release workflow is triggered only by pushing a signed annotated `v*` tag that points to the current `origin/main` commit. Merged PRs to `main` create the next patch tag automatically via GitHub Actions; the tag remains the source of truth for release versioning.
+
+The automatic merge release requires these repository variables and secrets:
+
+- `FINI_RELEASE_APP_ID` repository variable
+- `FINI_RELEASE_APP_SLUG` repository variable, without the `[bot]` suffix
+- `FINI_RELEASE_APP_PRIVATE_KEY` repository secret
+- `RELEASE_TAG_GPG_PRIVATE_KEY` repository secret
+- `RELEASE_TAG_GPG_PASSPHRASE` repository secret
+- `RELEASE_TAG_GPG_PUBLIC_KEY` repository secret
+
+Manual release tags are still supported:
 
 ```bash
 make release-tag VERSION=0.1.12
 git push origin v0.1.12
 ```
 
-The `make release-tag` flow creates a GPG-signed annotated tag with the repo's configured personal signing identity and verifies the signature locally before you push.
+The `make release-tag` flow creates a GPG-signed annotated tag with the repo's configured personal signing identity and verifies the signature locally before you push. Version files are not pre-bumped on `main`; release workflows sync package, Cargo, and Tauri versions from the tag while building artifacts.
 
 ### Build (Android)
 
