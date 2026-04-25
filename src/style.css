@@ -6,6 +6,42 @@
   --space-color-personal: #0057B7;
   --space-color-family:   #FFDD00;
   --space-color-work:     #8B0000;
+
+  --color-page-bg: #f6f6f6;
+  --color-border-soft: rgba(31, 41, 55, 0.1);
+  --color-border-softer: rgba(128, 128, 128, 0.2);
+
+  --fg-1: rgba(31, 41, 55, 1);
+  --fg-2: rgba(31, 41, 55, 0.7);
+  --fg-3: rgba(31, 41, 55, 0.6);
+  --fg-4: rgba(31, 41, 55, 0.5);
+  --fg-5: rgba(31, 41, 55, 0.4);
+  --fg-6: rgba(31, 41, 55, 0.25);
+
+  --radius-sm: 2px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 24px rgba(0, 0, 0, 0.12);
+  --dur-normal: 150ms;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-page-bg: #2f2f2f;
+    --color-border-soft: rgba(246, 246, 246, 0.1);
+    --color-border-softer: rgba(246, 246, 246, 0.12);
+    --fg-1: rgba(246, 246, 246, 1);
+    --fg-2: rgba(246, 246, 246, 0.7);
+    --fg-3: rgba(246, 246, 246, 0.6);
+    --fg-4: rgba(246, 246, 246, 0.5);
+    --fg-5: rgba(246, 246, 246, 0.4);
+    --fg-6: rgba(246, 246, 246, 0.25);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 10px 24px rgba(0, 0, 0, 0.5);
+  }
 }
 .space-color-personal { color: var(--space-color-personal); }
 .space-color-family   { color: var(--space-color-family); }

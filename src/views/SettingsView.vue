@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { useModelDownload } from "../composables/useModelDownload";
 import { useSpaceStore } from "../stores/space";
 import { useDeviceStore } from "../stores/device";
 
-const model = useModelDownload();
 const spaceStore = useSpaceStore();
 const deviceStore = useDeviceStore();
 
@@ -13,22 +11,9 @@ const editingId = ref<string | null>(null);
 const editingName = ref("");
 
 onMounted(() => {
-  model.checkDownloaded();
   spaceStore.fetchSpaces();
   void deviceStore.hydrate();
 });
-
-function progressLabel(): string {
-  const p = model.progress.value;
-  if (!p) return "";
-  const pct = p.percent >= 0 ? `${p.percent}%` : "…";
-  return `Downloading ${p.file} (${p.file_index + 1}/${p.file_count}) ${pct}`;
-}
-
-function progressValue(): number | undefined {
-  const percent = model.progress.value?.percent;
-  return typeof percent === "number" && percent >= 0 ? percent : undefined;
-}
 
 async function addSpace() {
   const name = newSpaceName.value.trim();
@@ -128,33 +113,22 @@ function cancelEdit() {
     </section>
 
     <section class="rounded-xl bg-base-200 p-3">
-      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Voice Model</h2>
-      <div class="flex flex-col gap-3">
-        <p class="text-sm opacity-70 leading-relaxed">
-          On-device speech recognition via sherpa-onnx.<br />
-          Model: <code class="font-mono text-xs">sherpa-onnx-streaming-zipformer-small-en</code> (~60 MB)
-        </p>
-        <div>
-          <span v-if="model.downloaded.value" class="badge badge-success badge-sm font-semibold">Ready</span>
-          <span v-else class="badge badge-warning badge-sm font-semibold">Not downloaded</span>
-        </div>
-        <div v-if="model.downloading.value" class="flex flex-col gap-1">
-          <progress
-            class="progress progress-primary w-full"
-            :value="progressValue()"
-            max="100"
-          />
-          <span class="text-xs opacity-60">{{ progressLabel() }}</span>
-        </div>
-        <p v-if="model.error.value" class="text-error text-sm">{{ model.error.value }}</p>
-        <button
-          class="btn btn-primary btn-sm self-start"
-          :disabled="model.downloading.value || model.downloaded.value"
-          @click="model.startDownload()"
-        >
-          {{ model.downloaded.value ? "Downloaded" : model.downloading.value ? "Downloading…" : "Download Model" }}
-        </button>
-      </div>
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Sync</h2>
+      <ul class="flex flex-col gap-1">
+        <li class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
+          <span class="flex-1 text-sm font-medium">Last sync</span>
+          <span class="font-mono text-xs opacity-60">{{ deviceStore.lastAppliedSyncAt ? new Date(deviceStore.lastAppliedSyncAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never' }}</span>
+        </li>
+        <li v-for="device in deviceStore.pairedDevices" :key="`sync-${device.peer_device_id}`" class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
+          <span class="flex-1 text-sm font-medium">Last sync · {{ device.display_name }}</span>
+          <span class="font-mono text-xs opacity-60">Local time</span>
+        </li>
+        <li class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
+          <span class="flex-1 text-sm font-medium">Sync on change</span>
+          <span class="font-mono text-xs opacity-70">On</span>
+          <span class="text-sm opacity-50">›</span>
+        </li>
+      </ul>
     </section>
 
   </div>

@@ -47,6 +47,13 @@ const backlog = computed(() => {
       const aOverdue = a.due && a.due < today ? 1 : 0;
       const bOverdue = b.due && b.due < today ? 1 : 0;
       if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+      const aScheduled = a.due || a.repeat_rule ? 1 : 0;
+      const bScheduled = b.due || b.repeat_rule ? 1 : 0;
+      if (aScheduled !== bScheduled) return bScheduled - aScheduled;
+      const aHasDue = a.due ? 1 : 0;
+      const bHasDue = b.due ? 1 : 0;
+      if (aHasDue !== bHasDue) return bHasDue - aHasDue;
+      if (a.due && b.due && a.due !== b.due) return a.due.localeCompare(b.due);
       if (a.order_rank !== b.order_rank) return a.order_rank - b.order_rank;
       if (a.priority !== b.priority) return b.priority - a.priority;
       return a.created_at.localeCompare(b.created_at);
@@ -78,3 +85,9 @@ const activeQuest = computed(() => {
     </section>
   </div>
 </template>
+
+<style scoped>
+.focus-section {
+  min-width: 0;
+}
+</style>

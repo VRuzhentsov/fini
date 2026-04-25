@@ -12,8 +12,8 @@ onMounted(() => store.fetchQuests());
 </script>
 
 <template>
-  <div class="flex flex-col gap-4">
-<div v-if="store.error" class="text-error text-sm">{{ store.error }}</div>
+  <div class="flex flex-col gap-3">
+    <div v-if="store.error" class="text-error text-sm">{{ store.error }}</div>
 
     <p v-if="!history.length" class="text-sm opacity-40">No completed or abandoned quests yet.</p>
     <QuestList v-else :quests="history" />
