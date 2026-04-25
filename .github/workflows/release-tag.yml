@@ -53,18 +53,10 @@ jobs:
 
       - name: Verify tag actor has maintain/admin access
         uses: actions/github-script@v8
-        env:
-          FINI_RELEASE_APP_SLUG: ${{ vars.FINI_RELEASE_APP_SLUG }}
         with:
           script: |
             const actor = context.actor;
             const { owner, repo } = context.repo;
-            const releaseAppSlug = process.env.FINI_RELEASE_APP_SLUG;
-            if (releaseAppSlug && actor === `${releaseAppSlug}[bot]`) {
-              core.info(`Tag actor ${actor} is the configured release app.`);
-              return;
-            }
-
             const result = await github.rest.repos.getCollaboratorPermissionLevel({
               owner,
               repo,
