@@ -561,11 +561,23 @@ impl FiniServer {
             .map_err(db_err)?;
 
         if p.trigger_reminder_focus == Some(true) {
-            append_focus_history(&mut *conn, &quest.id, &quest.space_id, "reminder")
-                .map_err(|e| McpError::internal_error("focus_history", Some(serde_json::json!({ "error": e }))))?;
+            append_focus_history(&mut *conn, &quest.id, &quest.space_id, "reminder").map_err(
+                |e| {
+                    McpError::internal_error(
+                        "focus_history",
+                        Some(serde_json::json!({ "error": e })),
+                    )
+                },
+            )?;
         } else if p.set_focus == Some(true) || status.as_deref() == Some("active") {
-            append_focus_history(&mut *conn, &quest.id, &quest.space_id, "manual")
-                .map_err(|e| McpError::internal_error("focus_history", Some(serde_json::json!({ "error": e }))))?;
+            append_focus_history(&mut *conn, &quest.id, &quest.space_id, "manual").map_err(
+                |e| {
+                    McpError::internal_error(
+                        "focus_history",
+                        Some(serde_json::json!({ "error": e })),
+                    )
+                },
+            )?;
         }
 
         // Bridge: keep Reminder row in sync with quest due/status

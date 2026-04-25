@@ -61,7 +61,9 @@ async fn dial_with_backoff(
                     device_id: state.identity.device_id.clone(),
                     peer_device_id: peer_id.clone(),
                 };
-                let Ok(text) = serde_json::to_string(&auth) else { return };
+                let Ok(text) = serde_json::to_string(&auth) else {
+                    return;
+                };
                 if sink.send(Message::Text(text.into())).await.is_err() {
                     tokio::time::sleep(delay).await;
                     delay = (delay * 2).min(max_delay);
@@ -82,7 +84,14 @@ async fn dial_with_backoff(
                     Ok(WsMessage::AuthOk) => {
                         eprintln!("[WS][CLIENT] Auth OK with {}", peer_id);
                         // session loop blocks until disconnect
-                        ws_session::run_session(sink, source, state.clone(), db_path.clone(), peer_id.clone()).await;
+                        ws_session::run_session(
+                            sink,
+                            source,
+                            state.clone(),
+                            db_path.clone(),
+                            peer_id.clone(),
+                        )
+                        .await;
                         eprintln!("[WS][CLIENT] Session with {} ended", peer_id);
                         // After disconnect, pause then retry
                         delay = Duration::from_secs(1);

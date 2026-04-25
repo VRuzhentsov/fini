@@ -321,7 +321,9 @@ pub fn resolve_active_quest(
     }
 
     // No focus_history entry matches an active quest — use fallback ordering
-    Ok(resolve_active_fallback(active_by_id.values().copied().collect()))
+    Ok(resolve_active_fallback(
+        active_by_id.values().copied().collect(),
+    ))
 }
 
 fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -711,7 +713,10 @@ pub fn create_quest(
 
         if created.status == "active" && created.due.is_some() {
             if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, &created) {
-                eprintln!("[bridge] upsert_reminder on create failed for {}: {e}", created.id);
+                eprintln!(
+                    "[bridge] upsert_reminder on create failed for {}: {e}",
+                    created.id
+                );
             }
         }
 
@@ -742,7 +747,10 @@ pub fn create_quest(
 
     if created.status == "active" && created.due.is_some() {
         if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, &created) {
-            eprintln!("[bridge] upsert_reminder on create failed for {}: {e}", created.id);
+            eprintln!(
+                "[bridge] upsert_reminder on create failed for {}: {e}",
+                created.id
+            );
         }
     }
 
@@ -756,10 +764,7 @@ pub fn get_active_focus(state: State<DbState>) -> Result<Option<Quest>, String> 
 }
 
 #[tauri::command]
-pub fn set_focus(
-    state: State<DbState>,
-    id: String,
-) -> Result<Quest, String> {
+pub fn set_focus(state: State<DbState>, id: String) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
     let now = utc_now();
 
@@ -777,12 +782,7 @@ pub fn set_focus(
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    append_focus_history(
-        &mut conn,
-        &quest.id,
-        &quest.space_id,
-        "manual",
-    )?;
+    append_focus_history(&mut conn, &quest.id, &quest.space_id, "manual")?;
 
     Ok(quest)
 }
@@ -807,12 +807,7 @@ pub fn update_quest(
     let (quest, restore_should_focus, next_occurrence) = update_quest_in_db(&mut conn, &id, input)?;
 
     if previous_status != "active" && quest.status == "active" && restore_should_focus {
-        append_focus_history(
-            &mut conn,
-            &quest.id,
-            &quest.space_id,
-            "restore",
-        )?;
+        append_focus_history(&mut conn, &quest.id, &quest.space_id, "restore")?;
     }
 
     // Bridge: manage Reminder row based on resulting quest state

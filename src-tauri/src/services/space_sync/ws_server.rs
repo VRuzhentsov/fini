@@ -172,16 +172,15 @@ mod tests {
             Self { port, state }
         }
 
-        async fn connect_and_recv_first(
-            &self,
-            auth_msg: WsMessage,
-        ) -> WsMessage {
+        async fn connect_and_recv_first(&self, auth_msg: WsMessage) -> WsMessage {
             let url = format!("ws://127.0.0.1:{}", self.port);
             let (mut ws, _) = connect_async(&url).await.expect("connect");
             let text = serde_json::to_string(&auth_msg).unwrap();
             ws.send(Message::Text(text.into())).await.unwrap();
             let raw = ws.next().await.unwrap().unwrap();
-            let Message::Text(t) = raw else { panic!("not text") };
+            let Message::Text(t) = raw else {
+                panic!("not text")
+            };
             serde_json::from_str(&t).unwrap()
         }
     }
@@ -271,13 +270,14 @@ mod tests {
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         };
-        let event_text =
-            serde_json::to_string(&WsMessage::SyncEvent(envelope)).unwrap();
+        let event_text = serde_json::to_string(&WsMessage::SyncEvent(envelope)).unwrap();
         ws.send(Message::Text(event_text.into())).await.unwrap();
 
         // Expect Ack
         let raw = ws.next().await.unwrap().unwrap();
-        let Message::Text(t) = raw else { panic!("not text") };
+        let Message::Text(t) = raw else {
+            panic!("not text")
+        };
         let reply: WsMessage = serde_json::from_str(&t).unwrap();
         assert!(
             matches!(reply, WsMessage::Ack { ref event_id } if event_id == "evt-1"),
@@ -301,36 +301,9 @@ mod tests {
         // Seed outbox with 2 events for space "1" and 1 for space "2"
         {
             let mut conn = open_db_at_path(&db_path);
-            emit_sync_event(
-                &mut conn,
-                "origin",
-                "quest",
-                "q1",
-                "1",
-                "upsert",
-                None,
-            )
-            .unwrap();
-            emit_sync_event(
-                &mut conn,
-                "origin",
-                "quest",
-                "q2",
-                "1",
-                "upsert",
-                None,
-            )
-            .unwrap();
-            emit_sync_event(
-                &mut conn,
-                "origin",
-                "quest",
-                "q3",
-                "2",
-                "upsert",
-                None,
-            )
-            .unwrap();
+            emit_sync_event(&mut conn, "origin", "quest", "q1", "1", "upsert", None).unwrap();
+            emit_sync_event(&mut conn, "origin", "quest", "q2", "1", "upsert", None).unwrap();
+            emit_sync_event(&mut conn, "origin", "quest", "q3", "2", "upsert", None).unwrap();
         }
 
         let srv = TestServer::start(db_path).await;
@@ -345,9 +318,10 @@ mod tests {
         ws.send(Message::Text(auth.into())).await.unwrap();
         ws.next().await.unwrap().unwrap(); // AuthOk
 
-        let bs_start =
-            serde_json::to_string(&WsMessage::BootstrapStart { space_id: "1".to_string() })
-                .unwrap();
+        let bs_start = serde_json::to_string(&WsMessage::BootstrapStart {
+            space_id: "1".to_string(),
+        })
+        .unwrap();
         ws.send(Message::Text(bs_start.into())).await.unwrap();
 
         let mut sync_events = 0usize;

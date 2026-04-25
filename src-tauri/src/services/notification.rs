@@ -4,10 +4,10 @@ use std::sync::Mutex;
 #[cfg(feature = "e2e-testing")]
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-#[cfg(not(target_os = "linux"))]
-use tauri_plugin_notification::NotificationExt;
 #[cfg(target_os = "android")]
 use tauri_plugin_notification::Channel;
+#[cfg(not(target_os = "linux"))]
+use tauri_plugin_notification::NotificationExt;
 
 use crate::models::{Quest, Reminder, Space};
 
@@ -16,7 +16,10 @@ const CHANNEL_ID: &str = "fini.reminders";
 
 /// Compute the UTC fire time from quest due fields using the local wall-clock timezone.
 /// If `due_time` is None, defaults to 09:00 local.
-pub fn compute_fire_utc(due: &str, due_time: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+pub fn compute_fire_utc(
+    due: &str,
+    due_time: Option<&str>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
     use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
     let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
     let time = match due_time {
@@ -26,7 +29,10 @@ pub fn compute_fire_utc(due: &str, due_time: Option<&str>) -> Option<chrono::Dat
         None => NaiveTime::from_hms_opt(9, 0, 0)?,
     };
     let naive = NaiveDateTime::new(date, time);
-    Local.from_local_datetime(&naive).single().map(|dt| dt.with_timezone(&chrono::Utc))
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 /// In-process timer handles keyed by reminder ID (desktop only).

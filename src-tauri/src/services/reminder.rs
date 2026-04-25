@@ -267,11 +267,7 @@ pub fn cancel_quest_notifications(
 }
 
 #[tauri::command]
-pub fn delete_reminder(
-    app: AppHandle,
-    state: State<DbState>,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_reminder(app: AppHandle, state: State<DbState>, id: String) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
 
     // Cancel scheduled notification if any

@@ -126,4 +126,3 @@ async fn handle_inbound<Sk>(
         WsMessage::Auth { .. } | WsMessage::AuthOk | WsMessage::AuthFail { .. } => {}
     }
 }
-

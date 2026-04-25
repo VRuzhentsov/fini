@@ -45,13 +45,13 @@ pub fn run(app: &AppHandle, db: &DbState) {
             trigger: "reminder".to_string(),
         };
         if let Err(e) = diesel::insert_into(focus_history::table)
-            .values((
-                &input,
-                focus_history::created_at.eq(&fire_time_str),
-            ))
+            .values((&input, focus_history::created_at.eq(&fire_time_str)))
             .execute(&mut *conn)
         {
-            eprintln!("[reconciler] failed to insert focus_history for {}: {e}", quest.id);
+            eprintln!(
+                "[reconciler] failed to insert focus_history for {}: {e}",
+                quest.id
+            );
             continue;
         }
 
@@ -116,9 +116,7 @@ fn focus_history_exists(conn: &mut SqliteConnection, quest_id: &str, reminder: &
         .unwrap_or(false)
 }
 
-fn active_quests_without_reminder(
-    conn: &mut SqliteConnection,
-) -> Result<Vec<Quest>, String> {
+fn active_quests_without_reminder(conn: &mut SqliteConnection) -> Result<Vec<Quest>, String> {
     let ids_with_reminders: Vec<String> = reminders::table
         .select(reminders::quest_id)
         .load(conn)

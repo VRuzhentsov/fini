@@ -9,12 +9,10 @@ use super::outbox::{load_latest_event_for_entity, load_unacked_events_for_peer};
 use super::replay::{is_event_seen, mark_event_seen, record_ack};
 use super::types::{SyncEventEnvelope, WsMessage};
 use super::ws_client::ensure_peer_sessions;
-use crate::models::{
-    CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space,
-};
+use crate::models::{CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space};
 use crate::schema::{
-    focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces,
-    sync_acks, sync_outbox, sync_seen, tombstones,
+    focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces, sync_acks,
+    sync_outbox, sync_seen, tombstones,
 };
 use crate::services::db::{utc_now, DbState};
 use crate::services::device_connection::{CustomSpaceDescriptor, DeviceConnectionState};
@@ -52,7 +50,6 @@ pub struct SpaceSyncTickResult {
     pub peers: Vec<SpaceSyncTickPeer>,
     pub ticked_at: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UnresolvedCustomSpace {
@@ -278,15 +275,18 @@ fn send_mapping_update_to_peer(
     mapped_space_ids: &[String],
     custom_spaces: &[CustomSpaceDescriptor],
 ) -> Result<(), String> {
-    device_connection.push_to_peer(
+    if device_connection.push_to_peer(
         peer_device_id,
         WsMessage::SpaceMappingUpdate {
             mapped_space_ids: mapped_space_ids.to_vec(),
             custom_spaces: custom_spaces.to_vec(),
             sent_at: utc_now(),
         },
-    );
-    Ok(())
+    ) {
+        Ok(())
+    } else {
+        Err(format!("no active session for peer {peer_device_id}"))
+    }
 }
 
 fn send_sync_event_to_peer(
@@ -294,8 +294,11 @@ fn send_sync_event_to_peer(
     peer_device_id: &str,
     event: &SyncEventEnvelope,
 ) -> Result<(), String> {
-    device_connection.push_to_peer(peer_device_id, WsMessage::SyncEvent(event.clone()));
-    Ok(())
+    if device_connection.push_to_peer(peer_device_id, WsMessage::SyncEvent(event.clone())) {
+        Ok(())
+    } else {
+        Err(format!("no active session for peer {peer_device_id}"))
+    }
 }
 
 fn send_sync_ack_to_peer(
@@ -303,13 +306,16 @@ fn send_sync_ack_to_peer(
     peer_device_id: &str,
     event_id: &str,
 ) -> Result<(), String> {
-    device_connection.push_to_peer(
+    if device_connection.push_to_peer(
         peer_device_id,
         WsMessage::Ack {
             event_id: event_id.to_string(),
         },
-    );
-    Ok(())
+    ) {
+        Ok(())
+    } else {
+        Err(format!("no active session for peer {peer_device_id}"))
+    }
 }
 
 fn peer_has_mapping_for_space(
@@ -427,7 +433,6 @@ fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Res
         .map_err(|e| e.to_string())?;
     Ok(())
 }
-
 
 fn upsert_focus_history(
     conn: &mut SqliteConnection,
@@ -741,11 +746,7 @@ pub fn space_sync_update_mappings_impl(
 ) -> Result<Vec<String>, String> {
     let mut conn = db.0.lock().unwrap();
 
-    let mapped = apply_mappings_in_db(
-        &mut conn,
-        &peer_device_id,
-        mapped_space_ids,
-    )?;
+    let mapped = apply_mappings_in_db(&mut conn, &peer_device_id, mapped_space_ids)?;
 
     let custom_spaces = load_custom_space_descriptors(&mut conn, &mapped)?;
 
@@ -780,8 +781,7 @@ pub fn space_sync_apply_remote_mappings_impl(
     let (resolved_ids, unresolved_custom_spaces) =
         partition_remote_mapped_spaces(&mut conn, mapped_space_ids, custom_spaces)?;
 
-    let mapped_space_ids =
-        apply_mappings_in_db(&mut conn, &peer_device_id, resolved_ids)?;
+    let mapped_space_ids = apply_mappings_in_db(&mut conn, &peer_device_id, resolved_ids)?;
 
     Ok(SpaceMappingApplyResult {
         mapped_space_ids,
@@ -848,8 +848,7 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
         mapped.push(remote_space_id.clone());
     }
 
-    let mapped_space_ids =
-        apply_mappings_in_db(&mut conn, &peer_device_id, mapped)?;
+    let mapped_space_ids = apply_mappings_in_db(&mut conn, &peer_device_id, mapped)?;
 
     let custom_spaces = load_custom_space_descriptors(&mut conn, &mapped_space_ids)?;
     if let Err(err) = send_mapping_update_to_peer(
@@ -906,6 +905,27 @@ pub fn space_sync_tick_impl(
         .map_err(|e| e.to_string())?;
 
     let mut sent_events_total = 0usize;
+
+    for peer_device_id in &peer_ids {
+        if !device_connection.has_session(peer_device_id) {
+            continue;
+        }
+
+        let mapped = list_mappings_for_peer(&mut conn, peer_device_id)?;
+        let custom_spaces = load_custom_space_descriptors(&mut conn, &mapped)?;
+        let signature = serde_json::to_string(&(mapped.clone(), custom_spaces.clone()))
+            .map_err(|e| e.to_string())?;
+
+        if !device_connection.should_send_mapping_snapshot(peer_device_id, &signature) {
+            continue;
+        }
+
+        if let Err(err) =
+            send_mapping_update_to_peer(device_connection, peer_device_id, &mapped, &custom_spaces)
+        {
+            eprintln!("[space-sync] failed to push mapping snapshot to {peer_device_id}: {err}");
+        }
+    }
 
     for peer_device_id in &peer_ids {
         let mapped = list_mappings_for_peer(&mut conn, &peer_device_id)?;
@@ -1152,6 +1172,7 @@ mod tests {
     use crate::services::db::open_db_at_path;
     use crate::services::device_connection::DeviceConnectionState;
     use std::path::PathBuf;
+    use tokio::sync::mpsc;
     use uuid::Uuid;
 
     fn temp_db_path(label: &str) -> PathBuf {
@@ -1544,6 +1565,59 @@ mod tests {
                 .get_result(&mut *conn)
                 .unwrap();
             assert_eq!(count, 1);
+        }
+
+        drop(db);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(app_dir);
+    }
+
+    #[test]
+    fn space_sync_tick_replays_mapping_snapshot_when_session_appears() {
+        let db_path = temp_db_path("tick-replays-mapping-snapshot");
+        let app_dir = temp_app_dir("tick-replays-mapping-snapshot");
+        let mut conn = open_db_at_path(&db_path);
+
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        diesel::insert_into(pair_space_mappings::table)
+            .values((
+                pair_space_mappings::peer_device_id.eq("peer-a"),
+                pair_space_mappings::space_id.eq("1"),
+                pair_space_mappings::enabled_at.eq("2026-04-07T00:00:00Z"),
+                pair_space_mappings::last_synced_at.eq(Option::<String>::None),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        let db = DbState(std::sync::Mutex::new(conn));
+        let device_connection = DeviceConnectionState::new(&app_dir);
+        let (tx, mut rx) = mpsc::channel(4);
+        device_connection.register_session("peer-a".to_string(), tx);
+
+        let tick = space_sync_tick_impl(&db, &device_connection).unwrap();
+        assert_eq!(tick.sent_events, 0);
+
+        let sent = rx.try_recv().expect("mapping snapshot should be sent");
+        match sent {
+            WsMessage::SpaceMappingUpdate {
+                mapped_space_ids,
+                custom_spaces,
+                ..
+            } => {
+                assert_eq!(mapped_space_ids, vec!["1".to_string()]);
+                assert!(custom_spaces.is_empty());
+            }
+            other => panic!("expected space mapping update, got {other:?}"),
         }
 
         drop(db);

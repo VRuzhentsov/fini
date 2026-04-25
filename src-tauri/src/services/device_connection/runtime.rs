@@ -124,7 +124,6 @@ pub(super) fn upsert_seen_peer(
     );
 }
 
-
 fn broadcast_beacon(
     socket: &UdpSocket,
     runtime: &Arc<Mutex<DiscoveryRuntime>>,
@@ -346,7 +345,6 @@ pub(super) fn spawn_discovery_worker(
                         }
                         continue;
                     }
-
                 }
                 Err(err)
                     if err.kind() == std::io::ErrorKind::WouldBlock

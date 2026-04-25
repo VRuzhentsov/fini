@@ -21,7 +21,9 @@ pub use commands::{
 };
 use runtime::{load_or_create_identity, spawn_discovery_worker};
 use types::DiscoveryRuntime;
-pub use types::{CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSyncAck};
+pub use types::{
+    CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSyncAck,
+};
 
 pub const DISCOVERY_INTERVAL_MS: u64 = 5_000;
 pub const HEARTBEAT_INTERVAL_MS: u64 = 60_000;
@@ -105,9 +107,7 @@ impl DeviceConnectionState {
 
     pub fn push_incoming_sync_ack(&self, ack: IncomingSyncAck) {
         if let Ok(mut guard) = self.runtime.lock() {
-            guard
-                .incoming_sync_acks
-                .insert(ack.event_id.clone(), ack);
+            guard.incoming_sync_acks.insert(ack.event_id.clone(), ack);
         }
     }
 
@@ -128,6 +128,7 @@ impl DeviceConnectionState {
     pub fn unregister_session(&self, peer_device_id: &str) {
         if let Ok(mut guard) = self.runtime.lock() {
             guard.peer_sessions.remove(peer_device_id);
+            guard.last_sent_mapping_signature.remove(peer_device_id);
         }
     }
 
@@ -148,6 +149,22 @@ impl DeviceConnectionState {
             return false;
         };
         guard.peer_sessions.contains_key(peer_device_id)
+    }
+
+    pub fn should_send_mapping_snapshot(&self, peer_device_id: &str, signature: &str) -> bool {
+        let Ok(mut guard) = self.runtime.lock() else {
+            return false;
+        };
+
+        match guard.last_sent_mapping_signature.get(peer_device_id) {
+            Some(existing) if existing == signature => false,
+            _ => {
+                guard
+                    .last_sent_mapping_signature
+                    .insert(peer_device_id.to_string(), signature.to_string());
+                true
+            }
+        }
     }
 
     /// Returns (device_id, addr) for every presenced peer (seen within TTL).

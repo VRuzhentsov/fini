@@ -169,4 +169,5 @@ pub(super) struct DiscoveryRuntime {
     pub incoming_sync_events: HashMap<String, SyncEventEnvelope>,
     pub incoming_sync_acks: HashMap<String, IncomingSyncAck>,
     pub peer_sessions: HashMap<String, SessionSender>,
+    pub last_sent_mapping_signature: HashMap<String, String>,
 }
