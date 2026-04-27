@@ -59,9 +59,35 @@ jobs:
   e2e-ci:
     name: E2E Tests
     runs-on: ubuntu-latest
+    env:
+      CONTAINER: docker
+      FINI_E2E_CI_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Run E2E tests
-        run: CONTAINER=docker make pr-gate-e2e
+      - name: Build E2E actor image
+        run: make pr-gate-e2e-build-actor
+
+      - name: Build E2E runner image
+        run: make pr-gate-e2e-build-runner
+
+      - name: Create E2E network
+        run: make pr-gate-e2e-network
+
+      - name: Start E2E actors
+        run: make pr-gate-e2e-start-actors
+
+      - name: Wait for E2E actors
+        run: make pr-gate-e2e-wait-actors
+
+      - name: Run Playwright E2E suite
+        run: make pr-gate-e2e-run
+
+      - name: Print actor logs on failure
+        if: failure()
+        run: make pr-gate-e2e-logs
+
+      - name: Cleanup E2E containers
+        if: always()
+        run: make pr-gate-e2e-cleanup

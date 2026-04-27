@@ -2,8 +2,16 @@
 export
 
 CONTAINER ?= podman
+FINI_E2E_CI_RUN_ID ?= pr-gate
+FINI_E2E_CI_RUN_DIR ?= /var/tmp/fini-e2e-$(FINI_E2E_CI_RUN_ID)
+FINI_E2E_CI_SOCKET_DIR ?= $(FINI_E2E_CI_RUN_DIR)/sockets
+FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
+FINI_E2E_CI_NETWORK ?= fini-e2e-$(FINI_E2E_CI_RUN_ID)
+FINI_E2E_CI_ACTORS ?= actor-a,actor-b
+FINI_E2E_ACTOR_IMAGE ?= fini-e2e-actor-ci
+FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
 
-.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-unit pr-gate-e2e e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
+.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-unit pr-gate-e2e pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
 
 help:
 	@echo ""
@@ -14,6 +22,7 @@ help:
 	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-be-unit  Run backend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-e2e      Run npm run test:e2e:ci with Dockerfile stages"
+	@echo "  make pr-gate-e2e-*    Run one named CI E2E phase for easier failure diagnosis"
 	@echo "  make e2e              Run visible local two-app E2E"
 	@echo "  make e2e-ci           Run containerized headless E2E in CI mode"
 	@echo "  make e2e-image        Build/update the container e2e image"
@@ -58,7 +67,98 @@ pr-gate-be-unit:
 	$(CONTAINER) build --target be-unit-test -t fini-be-unit-test .
 
 pr-gate-e2e:
-	FINI_E2E_ACTOR_IMAGE=fini-e2e-actor-ci FINI_E2E_RUNNER_IMAGE=fini-e2e-runner-ci $(MAKE) e2e-actors
+	@set -eu; \
+	cleanup() { $(MAKE) pr-gate-e2e-cleanup >/dev/null 2>&1 || true; }; \
+	trap cleanup EXIT INT TERM; \
+	$(MAKE) pr-gate-e2e-build-actor; \
+	$(MAKE) pr-gate-e2e-build-runner; \
+	$(MAKE) pr-gate-e2e-network; \
+	$(MAKE) pr-gate-e2e-start-actors; \
+	$(MAKE) pr-gate-e2e-wait-actors; \
+	$(MAKE) pr-gate-e2e-run
+
+pr-gate-e2e-build-actor:
+	$(CONTAINER) build --target e2e-actor -t $(FINI_E2E_ACTOR_IMAGE) .
+
+pr-gate-e2e-build-runner:
+	$(CONTAINER) build --target e2e-runner -t $(FINI_E2E_RUNNER_IMAGE) .
+
+pr-gate-e2e-network:
+	@set -eu; \
+	mkdir -p "$(FINI_E2E_CI_SOCKET_DIR)" "$(FINI_E2E_CI_RESULTS_DIR)"; \
+	$(CONTAINER) network rm "$(FINI_E2E_CI_NETWORK)" >/dev/null 2>&1 || true; \
+	$(CONTAINER) network create "$(FINI_E2E_CI_NETWORK)" >/dev/null
+
+pr-gate-e2e-start-actors:
+	@set -eu; \
+	actor_list="$(FINI_E2E_CI_ACTORS)"; \
+	IFS=','; set -- $$actor_list; \
+	if [ "$$#" -lt 2 ]; then \
+	  printf 'Need at least two actors, got: %s\n' "$(FINI_E2E_CI_ACTORS)" >&2; \
+	  exit 1; \
+	fi; \
+	for actor in "$$@"; do \
+	  actor_data_dir="$(FINI_E2E_CI_RUN_DIR)/$$actor-data"; \
+	  mkdir -p "$$actor_data_dir"; \
+	  $(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >/dev/null 2>&1 || true; \
+	  $(CONTAINER) run -d --rm \
+	    --name "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" \
+	    --hostname "$$actor" \
+	    --network "$(FINI_E2E_CI_NETWORK)" \
+	    -e FINI_ACTOR_SLUG="$$actor" \
+	    -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
+	    -e FINI_APP_DATA_DIR=/data \
+	    -v "$(FINI_E2E_CI_SOCKET_DIR):/var/run/fini-e2e:z" \
+	    -v "$$actor_data_dir:/data:Z" \
+	    "$(FINI_E2E_ACTOR_IMAGE)" >/dev/null; \
+	done
+
+pr-gate-e2e-wait-actors:
+	@set -eu; \
+	actor_list="$(FINI_E2E_CI_ACTORS)"; \
+	IFS=','; set -- $$actor_list; \
+	for actor in "$$@"; do \
+	  socket_path="$(FINI_E2E_CI_SOCKET_DIR)/$$actor.sock"; \
+	  deadline=$$(($$(date +%s) + 60)); \
+	  while [ ! -S "$$socket_path" ]; do \
+	    if [ "$$(date +%s)" -ge "$$deadline" ]; then \
+	      printf 'Actor socket did not appear: %s\n' "$$socket_path" >&2; \
+	      $(CONTAINER) logs "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" 2>/dev/null || true; \
+	      exit 1; \
+	    fi; \
+	    sleep 1; \
+	  done; \
+	done
+
+pr-gate-e2e-run:
+	$(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true
+	$(CONTAINER) run --rm \
+	  --name "fini-$(FINI_E2E_CI_RUN_ID)-runner" \
+	  --network "$(FINI_E2E_CI_NETWORK)" \
+	  -e FINI_E2E_ACTORS="$(FINI_E2E_CI_ACTORS)" \
+	  -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
+	  -v "$(FINI_E2E_CI_SOCKET_DIR):/var/run/fini-e2e:z" \
+	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
+	  "$(FINI_E2E_RUNNER_IMAGE)"
+
+pr-gate-e2e-logs:
+	@set -eu; \
+	actor_list="$(FINI_E2E_CI_ACTORS)"; \
+	IFS=','; set -- $$actor_list; \
+	for actor in "$$@"; do \
+	  printf '\n===== logs: %s =====\n' "$$actor"; \
+	  $(CONTAINER) logs "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" 2>/dev/null || true; \
+	done
+
+pr-gate-e2e-cleanup:
+	@set -eu; \
+	$(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true; \
+	actor_list="$(FINI_E2E_CI_ACTORS)"; \
+	IFS=','; set -- $$actor_list; \
+	for actor in "$$@"; do \
+	  $(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >/dev/null 2>&1 || true; \
+	done; \
+	$(CONTAINER) network rm "$(FINI_E2E_CI_NETWORK)" >/dev/null 2>&1 || true
 
 # Run the real-app e2e lane locally.
 e2e:
