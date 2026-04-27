@@ -2,6 +2,10 @@
 export
 
 CONTAINER ?= podman
+FINI_BE_COMPILE_IMAGE ?= fini-be-compile-ci
+FINI_BE_UNIT_IMAGE ?= fini-be-unit-test
+FINI_BE_CACHE_IMAGE_PREFIX ?=
+FINI_BE_CACHE_PUSH ?= 0
 FINI_E2E_CI_RUN_ID ?= pr-gate
 FINI_E2E_CI_RUN_DIR ?= /var/tmp/fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_SOCKET_DIR ?= $(FINI_E2E_CI_RUN_DIR)/sockets
@@ -13,7 +17,7 @@ FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 
-.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
+.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
 
 help:
 	@echo ""
@@ -22,6 +26,7 @@ help:
 	@echo "  make build            Release build"
 	@echo "  make mcp              Run MCP server (debug binary)"
 	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
+	@echo "  make pr-gate-be-compile  Compile backend tests in Dockerfile stage"
 	@echo "  make pr-gate-be-unit  Run backend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-e2e      Run npm run test:e2e:ci with Dockerfile stages"
 	@echo "  make pr-gate-e2e-cache-key  Print the E2E image input cache key"
@@ -66,8 +71,60 @@ mcp:
 pr-gate-fe-unit:
 	$(CONTAINER) build --target fe-unit-test -t fini-fe-unit-test .
 
+pr-gate-be-cache-key:
+	@set -eu; \
+	cache_inputs() { \
+	  { \
+	    git ls-files -z -- \
+	      Dockerfile \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json; \
+	    git ls-files --others --exclude-standard -z -- \
+	      Dockerfile \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json; \
+	  } | sort -zu; \
+	}; \
+	cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1
+
+pr-gate-be-compile:
+	@set -eu; \
+	cache_key="$$(make --no-print-directory pr-gate-be-cache-key)"; \
+	cache_prefix="$(FINI_BE_CACHE_IMAGE_PREFIX)"; \
+	cache_image=""; \
+	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-be-compile-cache:$$cache_key"; fi; \
+	if [ -n "$$cache_image" ] && $(CONTAINER) pull "$$cache_image"; then \
+	  printf 'Using cached backend compile image: %s\n' "$$cache_image"; \
+	  $(CONTAINER) tag "$$cache_image" "$(FINI_BE_COMPILE_IMAGE)"; \
+	  exit 0; \
+	fi; \
+	printf 'Building backend compile image for cache key: %s\n' "$$cache_key"; \
+	if [ -n "$$cache_image" ]; then \
+	  $(CONTAINER) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" -t "$$cache_image" .; \
+	else \
+	  $(CONTAINER) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" .; \
+	fi; \
+	if [ -n "$$cache_image" ] && [ "$(FINI_BE_CACHE_PUSH)" = "1" ]; then \
+	  $(CONTAINER) push "$$cache_image"; \
+	fi
+
 pr-gate-be-unit:
-	$(CONTAINER) build --target be-unit-test -t fini-be-unit-test .
+	$(MAKE) pr-gate-be-compile
+	$(CONTAINER) build --target be-unit-test --cache-from "$(FINI_BE_COMPILE_IMAGE)" -t "$(FINI_BE_UNIT_IMAGE)" .
 
 pr-gate-e2e:
 	@set -eu; \

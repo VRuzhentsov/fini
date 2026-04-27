@@ -49,12 +49,76 @@ jobs:
   be-unit-tests:
     name: BE Unit Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CONTAINER: docker
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Resolve backend image cache settings
+        shell: bash
+        env:
+          CAN_PUSH_CACHE: "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "FINI_BE_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
+          if [ "$CAN_PUSH_CACHE" = "true" ]; then
+            echo "FINI_BE_CACHE_PUSH=1" >> "$GITHUB_ENV"
+          else
+            echo "FINI_BE_CACHE_PUSH=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Run backend unit tests
-        run: CONTAINER=docker make pr-gate-be-unit
+        run: make pr-gate-be-unit
+
+  be-compile:
+    name: BE Compile
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CONTAINER: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve backend image cache settings
+        shell: bash
+        env:
+          CAN_PUSH_CACHE: "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "FINI_BE_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
+          if [ "$CAN_PUSH_CACHE" = "true" ]; then
+            echo "FINI_BE_CACHE_PUSH=1" >> "$GITHUB_ENV"
+          else
+            echo "FINI_BE_CACHE_PUSH=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Compile backend tests
+        run: make pr-gate-be-compile
 
   e2e-ci:
     name: E2E Tests

@@ -153,17 +153,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            xdg-utils \
-            patchelf
-
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
@@ -184,16 +173,6 @@ jobs:
           grep -q "^version = \"$version\"" src-tauri/Cargo.lock
           grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            src-tauri -> target
-          shared-key: release-rust
-
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -209,6 +188,8 @@ jobs:
         run: |
           set -euo pipefail
           owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "FINI_BE_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
+          echo "FINI_BE_CACHE_PUSH=1" >> "$GITHUB_ENV"
           echo "FINI_E2E_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
           echo "FINI_E2E_CACHE_PUSH=1" >> "$GITHUB_ENV"
           echo "CONTAINER=docker" >> "$GITHUB_ENV"
@@ -217,11 +198,11 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Run backend tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Compile backend tests
+        run: make pr-gate-be-compile
 
-      - name: Run backend compile checks
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Run backend tests
+        run: make pr-gate-be-unit
 
       - name: Run frontend build
         run: npm run build

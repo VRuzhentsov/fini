@@ -45,7 +45,11 @@ COPY src-tauri/capabilities ./src-tauri/capabilities
 COPY src-tauri/icons ./src-tauri/icons
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 
-FROM rust-builder-base AS be-unit-test
+FROM rust-builder-base AS be-test-compile
+
+RUN cargo test --manifest-path src-tauri/Cargo.toml --no-run
+
+FROM be-test-compile AS be-unit-test
 
 RUN cargo test --manifest-path src-tauri/Cargo.toml
 
