@@ -323,6 +323,7 @@ e2e-headed:
 	actor_list="$${FINI_E2E_ACTORS:-actor-a,actor-b}"; \
 	keep="$${FINI_E2E_KEEP:-0}"; \
 	run_root="$${FINI_E2E_ROOT:-/var/tmp/fini-e2e-headed}"; \
+	base_discovery_port="$${FINI_E2E_BASE_DISCOVERY_PORT:-$$((46000 + ($$RANDOM % 1000) * 10))}"; \
 	run_id="$$(date +%Y%m%d-%H%M%S)-$$$$"; \
 	run_dir="$$run_root/$$run_id"; \
 	socket_dir="$$run_dir/sockets"; \
@@ -338,7 +339,7 @@ e2e-headed:
 	peer_ports=""; \
 	idx=0; \
 	for actor in "$$@"; do \
-	  port=$$((45454 + idx * 2)); \
+	  port=$$((base_discovery_port + idx * 2)); \
 	  if [ -z "$$peer_ports" ]; then peer_ports="$$port"; else peer_ports="$$peer_ports,$$port"; fi; \
 	  idx=$$((idx + 1)); \
 	done; \
@@ -364,8 +365,8 @@ e2e-headed:
 	  actor_data_dir="$$run_dir/$$actor-data"; \
 	  actor_socket="$$socket_dir/$$actor.sock"; \
 	  actor_log="$$run_dir/$$actor.log"; \
-	  discovery_port=$$((45454 + idx * 2)); \
-	  ws_port=$$((45455 + idx * 2)); \
+	  discovery_port=$$((base_discovery_port + idx * 2)); \
+	  ws_port=$$((base_discovery_port + idx * 2 + 1)); \
 	  mkdir -p "$$actor_data_dir"; \
 	  rm -f "$$actor_socket"; \
 	  printf 'Launching visible app window: %s (discovery=%s ws=%s)\n' "$$actor" "$$discovery_port" "$$ws_port"; \

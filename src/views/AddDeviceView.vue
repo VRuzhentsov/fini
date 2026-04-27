@@ -124,7 +124,9 @@ function rejectRequest(requestId: string) {
       <p class="text-xs opacity-70">
         tx {{ deviceStore.debugStatus.tx_count }} · rx {{ deviceStore.debugStatus.rx_count }} ·
         seen {{ deviceStore.debugStatus.discovered_count }} ·
+        sessions {{ deviceStore.debugStatus.peer_session_count }} ·
         incoming {{ deviceStore.debugStatus.incoming_request_count }} ·
+        mapping {{ deviceStore.debugStatus.incoming_space_mapping_update_count }} ·
         outgoing {{ deviceStore.debugStatus.outgoing_code_count }}
       </p>
       <p class="text-xs text-error" v-if="deviceStore.debugStatus.last_error">

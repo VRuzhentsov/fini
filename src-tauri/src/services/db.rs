@@ -1,5 +1,6 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use diesel::sql_types::Text;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -11,6 +12,12 @@ pub const APP_DATA_DIR_NAME: &str = "com.fini.app";
 pub const APP_DATA_DIR_NAME: &str = "fini";
 
 pub struct DbState(pub Mutex<SqliteConnection>);
+
+#[derive(QueryableByName)]
+struct MigrationTableRow {
+    #[diesel(sql_type = Text)]
+    _name: String,
+}
 
 pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -49,12 +56,23 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
 pub fn open_db_at_path(path: &Path) -> SqliteConnection {
     let mut conn =
         SqliteConnection::establish(path.to_str().unwrap()).expect("failed to open database");
-    diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+    diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
         .execute(&mut conn)
         .expect("failed to set PRAGMAs");
-    conn.run_pending_migrations(MIGRATIONS)
-        .expect("failed to run migrations");
+    if should_run_migrations(&mut conn) {
+        conn.run_pending_migrations(MIGRATIONS)
+            .expect("failed to run migrations");
+    }
     conn
+}
+
+fn should_run_migrations(conn: &mut SqliteConnection) -> bool {
+    diesel::sql_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__diesel_schema_migrations' LIMIT 1;",
+    )
+    .load::<MigrationTableRow>(conn)
+    .map(|rows| rows.is_empty())
+    .unwrap_or(true)
 }
 
 pub fn open_db(app: &tauri::AppHandle) -> SqliteConnection {

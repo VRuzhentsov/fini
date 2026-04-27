@@ -23,6 +23,12 @@ interface SyncTickResult {
   received_acks: number;
 }
 
+interface PairCodeUpdate {
+  request_id: string;
+  code: string;
+  accepted_at: string;
+}
+
 export interface SyncedActor {
   actor: E2EActor;
   identity: DeviceIdentity;
@@ -107,13 +113,28 @@ export async function pairActorsViaUi(
   await accepterPage.waitForSelector(incomingSelector, timeoutMs);
   await accepterPage.click(incomingSelector);
 
-  await requesterPage.waitForSelector('[data-testid="pair-code"]', timeoutMs);
-  const code = (await requesterPage.textContent('[data-testid="pair-code"]'))?.trim() ?? '';
+  const code = await pollUntil(`${requester.actor.slug} outgoing pair code`, async () => {
+    const updates = await requester.actor.invoke<PairCodeUpdate[]>('device_connection_pair_outgoing_updates');
+    const latest = updates[0];
+    if (!latest?.code) {
+      return false;
+    }
+    return latest.code.trim();
+  }, timeoutMs);
   expect(code, `pair code for ${requester.actor.slug} -> ${accepter.actor.slug}`).toMatch(/^\d{6}$/);
 
   await accepterPage.fill('[data-testid="pair-code-input"]', code);
   await accepterPage.click('[data-testid="pair-code-submit"]');
 
+  await pollUntil(`${requester.actor.slug} paired with ${accepter.actor.slug}`, async () => {
+    return (await areActorsPaired(requester.actor, accepter.identity.device_id)) || false;
+  }, timeoutMs);
+  await pollUntil(`${accepter.actor.slug} paired with ${requester.actor.slug}`, async () => {
+    return (await areActorsPaired(accepter.actor, requester.identity.device_id)) || false;
+  }, timeoutMs);
+
+  await requesterPage.click('nav.nav a[href="#/settings"]');
+  await accepterPage.click('nav.nav a[href="#/settings"]');
   await requesterPage.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
   await accepterPage.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
 }

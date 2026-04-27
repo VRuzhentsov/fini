@@ -351,7 +351,10 @@ mod tests {
             let msg: WsMessage = serde_json::from_str(&t).unwrap();
             match msg {
                 WsMessage::SyncEvent(_) => sync_events += 1,
-                WsMessage::BootstrapEnd { space_id } => {
+                WsMessage::BootstrapEnd {
+                    space_id,
+                    completed_at: _,
+                } => {
                     assert_eq!(space_id, "1");
                     got_end = true;
                     break;

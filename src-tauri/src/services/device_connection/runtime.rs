@@ -152,7 +152,7 @@ fn upsert_mdns_peer(
     let hostname = service_txt(info, "name")
         .unwrap_or_else(|| info.get_fullname())
         .to_string();
-    let addr = info.get_addresses().iter().next()?.to_string();
+    let addr = preferred_mdns_addr(info)?;
     let add_mode = parse_bool_txt(service_txt(info, "add"));
 
     peers.insert(
@@ -168,6 +168,19 @@ fn upsert_mdns_peer(
     );
 
     Some((device_id, add_mode))
+}
+
+fn preferred_mdns_addr(info: &ServiceInfo) -> Option<String> {
+    info.get_addresses()
+        .iter()
+        .find(|addr| matches!(addr, IpAddr::V4(_)))
+        .or_else(|| {
+            info.get_addresses()
+                .iter()
+                .find(|addr| matches!(addr, IpAddr::V6(v6) if !v6.is_unicast_link_local()))
+        })
+        .or_else(|| info.get_addresses().iter().next())
+        .map(ToString::to_string)
 }
 
 fn register_mdns_service(

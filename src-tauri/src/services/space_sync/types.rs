@@ -47,7 +47,10 @@ pub enum WsMessage {
     #[serde(rename = "bootstrap_start")]
     BootstrapStart { space_id: String },
     #[serde(rename = "bootstrap_end")]
-    BootstrapEnd { space_id: String },
+    BootstrapEnd {
+        space_id: String,
+        completed_at: String,
+    },
     #[serde(rename = "space_mapping_update")]
     SpaceMappingUpdate {
         mapped_space_ids: Vec<String>,

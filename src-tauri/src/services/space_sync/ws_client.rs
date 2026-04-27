@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
+use std::net::IpAddr;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -54,7 +55,7 @@ async fn dial_with_backoff(
             return;
         }
 
-        let url = format!("ws://{}:{}", addr, ws_port);
+        let url = ws_url(&addr, ws_port);
         match connect_async(&url).await {
             Ok((ws, _)) => {
                 let (mut sink, mut source) = ws.split();
@@ -111,5 +112,12 @@ async fn dial_with_backoff(
 
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(max_delay);
+    }
+}
+
+fn ws_url(addr: &str, port: u16) -> String {
+    match addr.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) => format!("ws://[{addr}]:{port}"),
+        _ => format!("ws://{addr}:{port}"),
     }
 }

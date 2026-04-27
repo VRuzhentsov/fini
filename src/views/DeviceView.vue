@@ -170,10 +170,13 @@ async function confirmUnpair() {
             v-for="space in spaceStore.spaces"
             :key="space.id"
             class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2"
+            data-testid="mapped-space-row"
+            :data-space-id="space.id"
           >
             <input
               type="checkbox"
               class="checkbox checkbox-sm"
+              data-testid="mapped-space-checkbox"
               :checked="mappedSelection.includes(space.id)"
               :disabled="!mappingsLoaded || savingMappings"
               @change="toggleMappedSpace(space.id)"
@@ -187,6 +190,7 @@ async function confirmUnpair() {
             <span
               v-else-if="mappedSelection.includes(space.id) && !hasPendingSync && lastSyncedLabelBySpace[space.id]"
               class="text-[11px] opacity-60"
+              data-testid="mapped-space-last-synced"
             >
               last synced: {{ lastSyncedLabelBySpace[space.id] }}
             </span>
@@ -212,6 +216,7 @@ async function confirmUnpair() {
         <div class="flex items-center gap-2">
           <button
             class="btn btn-sm btn-primary"
+            data-testid="save-space-mappings"
             :disabled="!mappingsLoaded || savingMappings || !hasMappingChanges"
             @click="void saveMappings()"
           >

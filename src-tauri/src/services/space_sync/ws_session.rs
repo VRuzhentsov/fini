@@ -102,15 +102,20 @@ async fn handle_inbound<Sk>(
                     return;
                 }
             }
-            let Ok(end) = serde_json::to_string(&WsMessage::BootstrapEnd { space_id }) else {
+            let Ok(end) = serde_json::to_string(&WsMessage::BootstrapEnd {
+                space_id,
+                completed_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            }) else {
                 return;
             };
             let _ = sink.send(Message::Text(end.into())).await;
         }
-        WsMessage::BootstrapEnd { space_id } => {
+        WsMessage::BootstrapEnd {
+            space_id,
+            completed_at,
+        } => {
             let db = db_path.clone();
             let peer = peer_device_id.to_string();
-            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
                 let _ = diesel::update(
@@ -118,7 +123,7 @@ async fn handle_inbound<Sk>(
                         .filter(pair_space_mappings::peer_device_id.eq(&peer))
                         .filter(pair_space_mappings::space_id.eq(&space_id)),
                 )
-                .set(pair_space_mappings::last_synced_at.eq(Some(now)))
+                .set(pair_space_mappings::last_synced_at.eq(Some(completed_at)))
                 .execute(&mut conn);
             });
         }

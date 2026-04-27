@@ -46,7 +46,9 @@ export interface DeviceConnectionDebugStatus {
   tx_count: number;
   rx_count: number;
   discovered_count: number;
+  peer_session_count: number;
   incoming_request_count: number;
+  incoming_space_mapping_update_count: number;
   outgoing_code_count: number;
   last_broadcast_at: string | null;
   last_error: string | null;

@@ -76,6 +76,12 @@ const activeIncomingSpace = computed(() => {
   return activeDialog.value?.kind === "resolve" ? activeDialog.value.incomingSpace : null;
 });
 
+const activeApproveSpaceCount = computed(() => {
+  const dialog = activeDialog.value;
+  if (!dialog || dialog.kind !== "approve") return 0;
+  return deviceStore.getPendingSpaceSyncRequest(dialog.peerDeviceId)?.mapped_space_ids.length ?? 0;
+});
+
 const activeResolutionMode = computed<ResolutionMode>(() => {
   const incomingSpace = activeIncomingSpace.value;
   if (!incomingSpace) return "create_new";
@@ -227,6 +233,10 @@ async function confirmDialog() {
     <div
       v-if="activeDialog"
       class="fixed inset-0 z-[1200] flex items-end justify-center p-3 sm:items-center sm:p-4"
+      data-testid="incoming-space-sync-dialog"
+      :data-dialog-kind="activeDialog.kind"
+      :data-peer-device-id="activeDialog.peerDeviceId"
+      :data-space-count="activeApproveSpaceCount"
     >
       <button
         type="button"
@@ -282,7 +292,12 @@ async function confirmDialog() {
 
         <div class="mt-4 flex justify-end gap-2">
           <button class="btn btn-ghost btn-sm" @click="dismissDialog">Not now</button>
-          <button class="btn btn-primary btn-sm" :disabled="!canConfirm || saving" @click="void confirmDialog()">
+          <button
+            class="btn btn-primary btn-sm"
+            data-testid="approve-space-sync"
+            :disabled="!canConfirm || saving"
+            @click="void confirmDialog()"
+          >
             <template v-if="saving">Saving...</template>
             <template v-else-if="activeDialog.kind === 'approve'">Approve sync</template>
             <template v-else-if="activeResolutionMode === 'create_new'">Create</template>
