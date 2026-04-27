@@ -11,6 +11,16 @@ FROM node-deps AS playwright-browsers
 
 RUN npx playwright install chromium
 
+FROM node-deps AS fe-unit-test
+
+WORKDIR /app
+
+COPY tsconfig*.json ./
+COPY jest.config.cjs ./
+COPY src ./src
+
+RUN npm run test:unit
+
 FROM rust:1.88-bookworm AS rust-builder-base
 
 WORKDIR /workspace
@@ -34,6 +44,10 @@ COPY src-tauri/src ./src-tauri/src
 COPY src-tauri/capabilities ./src-tauri/capabilities
 COPY src-tauri/icons ./src-tauri/icons
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
+
+FROM rust-builder-base AS be-unit-test
+
+RUN cargo test --manifest-path src-tauri/Cargo.toml
 
 FROM rust-builder-base AS app-build-release
 
@@ -139,6 +153,7 @@ COPY specs/e2e ./specs/e2e
 ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
     FINI_E2E_ACTORS=actor-a,actor-b \
     FINI_BINARY=/usr/local/bin/fini \
+    FINI_E2E_CONTAINER_RUNNER=1 \
     TZ=UTC \
     CI=1
 
@@ -192,6 +207,7 @@ COPY index.html ./
 COPY specs/e2e ./specs/e2e
 
 ENV FINI_BINARY=/usr/local/bin/fini \
+    FINI_E2E_CONTAINER_RUNNER=1 \
     TZ=UTC \
     CI=1
 

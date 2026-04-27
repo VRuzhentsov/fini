@@ -1,7 +1,9 @@
 -include .env
 export
 
-.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
+CONTAINER ?= podman
+
+.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-unit pr-gate-e2e e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
 
 help:
 	@echo ""
@@ -9,15 +11,18 @@ help:
 	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
 	@echo "  make build            Release build"
 	@echo "  make mcp              Run MCP server (debug binary)"
+	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
+	@echo "  make pr-gate-be-unit  Run backend unit tests in Dockerfile stage"
+	@echo "  make pr-gate-e2e      Run npm run test:e2e:ci with Dockerfile stages"
 	@echo "  make e2e              Run visible local two-app E2E"
 	@echo "  make e2e-ci           Run containerized headless E2E in CI mode"
-	@echo "  make e2e-image        Build/update the Podman e2e image"
-	@echo "  make e2e-build        Build Podman image and run e2e-ci inside it"
+	@echo "  make e2e-image        Build/update the container e2e image"
+	@echo "  make e2e-build        Build container image and run e2e-ci inside it"
 	@echo "  make e2e-headed       Run visible local two-app E2E"
 	@echo "  make e2e-actors-image Force rebuild actor and runner images"
 	@echo "  make e2e-actors       Run containerized full E2E suite, reusing fresh images"
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
-	@echo "  make runtime-image    Build/update the Podman runtime image"
+	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
 	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
 	@echo ""
@@ -46,6 +51,15 @@ build:
 mcp:
 	./src-tauri/target/debug/fini mcp
 
+pr-gate-fe-unit:
+	$(CONTAINER) build --target fe-unit-test -t fini-fe-unit-test .
+
+pr-gate-be-unit:
+	$(CONTAINER) build --target be-unit-test -t fini-be-unit-test .
+
+pr-gate-e2e:
+	FINI_E2E_ACTOR_IMAGE=fini-e2e-actor-ci FINI_E2E_RUNNER_IMAGE=fini-e2e-runner-ci $(MAKE) e2e-actors
+
 # Run the real-app e2e lane locally.
 e2e:
 	$(MAKE) e2e-headed
@@ -56,12 +70,12 @@ e2e-ci:
 
 # Build/update the container image used for CI-style local e2e runs.
 e2e-image:
-	podman build --target test -t fini-e2e .
+	$(CONTAINER) build --target test -t fini-e2e .
 
 # Run the headless e2e tier inside the cached Podman image.
 e2e-build:
-	podman image exists fini-e2e || podman build --target test -t fini-e2e .
-	podman run --rm fini-e2e
+	$(CONTAINER) image inspect fini-e2e >/dev/null 2>&1 || $(CONTAINER) build --target test -t fini-e2e .
+	$(CONTAINER) run --rm fini-e2e
 
 # Run the visible local two-app E2E suite against the host desktop display.
 e2e-headed:
@@ -178,8 +192,8 @@ e2e-actors-image:
 	  } | sort -zu; \
 	}; \
 	cache_key="$$(cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"; \
-	podman build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-actor .; \
-	podman build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-runner .
+	$(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-actor .; \
+	$(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-runner .
 
 # Run the multi-actor desktop e2e smoke lane.
 e2e-actors:
@@ -236,7 +250,7 @@ e2e-actors:
 	  } | sort -zu; \
 	}; \
 	image_cache_key() { \
-	  podman image inspect "$$1" --format '{{ index .Config.Labels "fini.e2e.cache-key" }}' 2>/dev/null || true; \
+	  $(CONTAINER) image inspect "$$1" --format '{{ index .Config.Labels "fini.e2e.cache-key" }}' 2>/dev/null || true; \
 	}; \
 	cache_key="$$(cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"; \
 	actor_current_key="$$(image_cache_key "$$actor_image")"; \
@@ -251,35 +265,35 @@ e2e-actors:
 	cleanup() { \
 	  status="$$?"; \
 	  if [ "$$status" -ne 0 ]; then \
-	    for actor in "$$@"; do podman logs "fini-$$run_id-$$actor" 2>/dev/null || true; done; \
+	    for actor in "$$@"; do $(CONTAINER) logs "fini-$$run_id-$$actor" 2>/dev/null || true; done; \
 	  fi; \
 	  if [ "$$keep" = "1" ]; then \
 	    printf 'Keeping containers and network for debugging: %s\n' "$$run_id"; \
 	    exit "$$status"; \
 	  fi; \
-	  podman rm -f "fini-$$run_id-runner" >/dev/null 2>&1 || true; \
-	  for actor in "$$@"; do podman rm -f "fini-$$run_id-$$actor" >/dev/null 2>&1 || true; done; \
-	  podman network rm "$$network_name" >/dev/null 2>&1 || true; \
+	  $(CONTAINER) rm -f "fini-$$run_id-runner" >/dev/null 2>&1 || true; \
+	  for actor in "$$@"; do $(CONTAINER) rm -f "fini-$$run_id-$$actor" >/dev/null 2>&1 || true; done; \
+	  $(CONTAINER) network rm "$$network_name" >/dev/null 2>&1 || true; \
 	  exit "$$status"; \
 	}; \
 	trap 'cleanup "$$@"' EXIT INT TERM; \
 	if [ "$$force_rebuild" = "1" ] || [ "$$actor_current_key" != "$$cache_key" ]; then \
 	  printf 'Building actor image: %s\n' "$$actor_image"; \
-	  podman build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$$actor_image" .; \
+	  $(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$$actor_image" .; \
 	else \
 	  printf 'Using cached actor image: %s\n' "$$actor_image"; \
 	fi; \
 	if [ "$$force_rebuild" = "1" ] || [ "$$runner_current_key" != "$$cache_key" ]; then \
 	  printf 'Building runner image: %s\n' "$$runner_image"; \
-	  podman build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$$runner_image" .; \
+	  $(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$$runner_image" .; \
 	else \
 	  printf 'Using cached runner image: %s\n' "$$runner_image"; \
 	fi; \
-	podman network create "$$network_name" >/dev/null; \
+	$(CONTAINER) network create "$$network_name" >/dev/null; \
 	for actor in "$$@"; do \
 	  actor_data_dir="$$run_dir/$$actor-data"; \
 	  mkdir -p "$$actor_data_dir"; \
-	  podman run -d --rm \
+	  $(CONTAINER) run -d --rm \
 	    --name "fini-$$run_id-$$actor" \
 	    --hostname "$$actor" \
 	    --network "$$network_name" \
@@ -301,7 +315,7 @@ e2e-actors:
 	    sleep 1; \
 	  done; \
 	done; \
-	podman run --rm \
+	$(CONTAINER) run --rm \
 	  --name "fini-$$run_id-runner" \
 	  --network "$$network_name" \
 	  -e FINI_E2E_ACTORS="$$actor_list" \
@@ -312,12 +326,12 @@ e2e-actors:
 
 # Build/update the published headless runtime image locally.
 runtime-image:
-	podman build --target runtime -t fini-runtime .
+	$(CONTAINER) build --target runtime -t fini-runtime .
 
 # Verify the runtime container executes the CLI surface.
 runtime-smoke:
-	podman image exists fini-runtime || podman build --target runtime -t fini-runtime .
-	podman run --rm fini-runtime --help
+	$(CONTAINER) image inspect fini-runtime >/dev/null 2>&1 || $(CONTAINER) build --target runtime -t fini-runtime .
+	$(CONTAINER) run --rm fini-runtime --help
 
 release-tag:
 	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release-tag VERSION=x.y.z" && exit 1)
