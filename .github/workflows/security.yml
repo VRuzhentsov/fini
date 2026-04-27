@@ -1,13 +1,6 @@
 name: Security Check
 
 on:
-  push:
-    branches:
-      - main
-      - master
-      - dev
-      - prod
-  pull_request:
   workflow_call:
 
 jobs:
