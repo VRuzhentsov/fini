@@ -1,39 +1,33 @@
 ---
 name: fini
-description: "TRIGGER when user asks to create, update, list, or manage quests or spaces. Use the Fini CLI (`fini`) with a mandatory binary-access preflight before any action."
+description: "TRIGGER when user asks to create, update, list, or manage quests, spaces, reminders, or Focus state in Fini. Use the `fini-cli` foundation skill for binary preflight, CLI/app mode selection, JSON output decisions, and safe command sequencing before any action."
 ---
 
 # Fini — Quest & Space CLI Workflow
 
-You manage quests and spaces in the Fini app through the `fini` binary. Follow the rules below for every operation.
+You manage quests, spaces, reminders, and Focus state in the Fini app through the `fini` binary.
 
-## Mandatory Preflight (Required Before Any Action)
+## Shared CLI Foundation
 
-Run these checks first:
+Use `fini-cli` for shared mechanics before any operation:
 
-1. `command -v fini`
-2. `fini --help`
+- mandatory binary preflight
+- CLI mode vs app launch mode
+- human-readable output vs `--json`
+- safe command sequencing
+- generic failure handling
 
-If either fails, stop immediately and return concrete remediation steps.
-Do not perform read or write actions until preflight passes.
-
-## Available CLI Commands
-
-- `fini` or `fini focus get` — current Focus quest
-- `fini quest ...` — quest list/get/create/update/complete/abandon/delete/history
-- `fini space ...` — space list/create/update/delete
-- `fini reminder ...` — reminder list/create/delete
-
-Use human-readable output by default. Use `--json` when deterministic machine parsing is required.
+Do not duplicate those checks here. This skill defines Fini domain behavior on top of `fini-cli`.
 
 ## Rules
 
 ### Before Creating a Quest
 
-1. **Always run `fini space list --json` first** to get available spaces and their IDs.
-2. Determine which space fits the quest best based on its topic and space names.
-3. Pass the matching `space_id` to `fini quest create`. If no space clearly fits, default to Personal (`"1"`).
-4. If the user explicitly names a space, use that space's ID.
+1. Use `fini-cli` preflight first.
+2. Run `fini space list --json` to get available spaces and their IDs.
+3. Determine which space fits the quest best based on its topic and space names.
+4. Pass the matching `space_id` to `fini quest create`. If no space clearly fits, default to Personal (`"1"`).
+5. If the user explicitly names a space, use that space's ID.
 
 ### Built-in Spaces
 
@@ -67,6 +61,7 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 
 - `fini` with no args returns current Focus quest.
 - `fini app` launches GUI explicitly.
+- Use `fini-cli` when the task is mainly about launching the app or validating the binary rather than managing quest domain state.
 
 ## Failure Handling
 

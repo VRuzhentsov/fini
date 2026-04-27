@@ -29,13 +29,39 @@ Before implementation, debugging, QA, Android, design-to-code, release, or docum
 
 If the user explicitly asks to think, plan, brainstorm, or review without implementation, do that mode first and do not edit files until execution is requested.
 
+## Planning Capture
+
+At the end of any major planning session, load `save-to-wiki` and write the result to the project wiki raw folder for future ingestion.
+
+Treat a planning session as major when it produces durable context, such as:
+
+- architecture or implementation plans spanning multiple files or systems
+- roadmap, scope, or product decisions
+- design, UX, or workflow plans
+- release, deploy, or QA strategy
+- debugging or investigation conclusions that explain root cause and next steps
+
+Do not save trivial one-step plans, routine command plans, or temporary scratch reasoning.
+
+When saving, include:
+
+- original user goal
+- final plan
+- decisions made
+- evidence reviewed, including key files, commands, logs, or docs
+- open questions
+- explicitly deferred work
+
+Use `save-to-wiki` as raw durable capture only. Do not update `_hot.md`, `_index.md`, `log.md`, or `pages/**` unless the user explicitly asks for ingestion.
+
 ## Skill Routing
 
 Load the specialized skill when its condition applies:
 
 | Condition | Skill |
 |---|---|
-| Create, update, list, or manage quests/spaces through the Fini CLI | `fini` |
+| Create, update, list, or manage quests, spaces, reminders, or Focus state through the Fini CLI | `fini`, which uses `fini-cli` |
+| Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `android-testing` |
 | Design or refine native Figma components, variants, screens, or visual systems | `ui-ux-design` |
 | Save plans, decisions, research, or conversation context to wiki raw material | `save-to-wiki` |
@@ -81,7 +107,6 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 |---|---|
 | Desktop dev app | `make dev` |
 | Release desktop build | `make build` |
-| Run debug MCP server | `make mcp` |
 | Visible local two-app E2E | `make e2e` or `make e2e-headed` |
 | Containerized CI-style E2E | `make e2e-ci` |
 | Build/update E2E images | `make e2e-image` or `make e2e-actors-image` |
@@ -122,7 +147,8 @@ Choose verification based on touched area:
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
 - Android behavior: load `android-testing`; use `make android-devices`, `make android-connect`, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
-- Runtime/container behavior: use `make runtime-smoke` or the relevant image target.
+- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation.
+- Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
 - Release work: follow release tag rules in `AGENTS.md`; do not create or push tags unless explicitly requested.
 
 If a command cannot be run, say why, what evidence is missing, and the exact command the user can run.

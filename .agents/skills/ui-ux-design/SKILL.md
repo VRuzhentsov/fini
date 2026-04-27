@@ -1,6 +1,6 @@
 ---
 name: ui-ux-design
-description: Design and refine interfaces in Figma with a Figma-first workflow. Use this whenever the user wants UI or UX design work, component cleanup, variant/property architecture, design-system refinement, visual polish, interaction-state design, or design QA in Figma. Use TalkToFigma for native design edits and ask the user to perform any Figma UI actions that are not available through the MCP.
+description: Design and refine interfaces in Figma with a Figma-first workflow. Use this whenever the user wants UI or UX design work, component cleanup, variant/property architecture, design-system refinement, visual polish, interaction-state design, or design QA in Figma. Use TalkToFigma for native design edits and ask the user to perform any Figma UI actions that are not available through automation tools.
 ---
 
 # UI/UX Design
@@ -29,7 +29,7 @@ Prefer TalkToFigma for:
 - creating frames, text nodes, rectangles, component instances, and connections
 - checking local components and instance overrides
 
-The Figma MCP is the source of truth for native design structure.
+The Figma file state exposed through TalkToFigma is the source of truth for native design structure.
 
 ### Fallback: User-Performed Figma Actions
 
@@ -39,7 +39,7 @@ Typical examples:
 - variant property management
 - component property panel actions not exposed through TalkToFigma
 - browser-only selection or panel state changes that affect what Figma exposes
-- any UI control that cannot be read or changed reliably through the MCP
+- any UI control that cannot be read or changed reliably through automation tools
 
 When blocked by one of these actions:
 - describe the exact manual step the user needs to take in Figma

@@ -1,18 +1,18 @@
 ---
 name: android-testing
-description: Validate the Fini Android app on a real device or emulator through a MCP-first workflow. Use this when users ask to verify Android behavior, prove navigation and state changes, debug mobile-only issues, or execute Tauri MCP commands against `com.fini.app`.
+description: Validate the Fini Android app on a real device or emulator through a device-automation workflow. Use this when users ask to verify Android behavior, prove navigation and state changes, debug mobile-only issues, or execute app automation against `com.fini.app`.
 ---
 
-# Android Testing (MCP-first)
+# Android Testing
 
-Use this skill to test Android through Tauri MCP as the primary interaction layer.
+Use this skill to test Android through the available device automation tools as the primary interaction layer.
 
 ## Goal
 
 Prove Android behavior with a complete evidence chain:
 
 1. session target identity confirms Android runtime
-2. MCP actions demonstrate control
+2. automation actions demonstrate control
 3. screenshots and state snapshots confirm visible result
 
 ## Repo specifics
@@ -22,24 +22,24 @@ Prove Android behavior with a complete evidence chain:
   - `make android-devices`
   - `make android-connect`
   - `make android-dev`
-- Bridge plugin in this repo runs in debug/dev runtime, so Android MCP validation uses the dev flow.
+- App automation in this repo runs in debug/dev runtime, so Android validation uses the dev flow.
 
 ## Validated findings (2026-04-03)
 
-1. Tauri MCP Bridge works with Android in the normal development flow.
-2. Debug/dev runtime exposes bridge control and session tooling.
+1. Android app automation works in the normal development flow.
+2. Debug/dev runtime exposes session tooling.
 3. Session routing benefits from explicit transport mapping in multi-target environments.
 4. Identity verification via backend state is the authoritative proof of Android target.
-5. MCP webview tools (`webview_interact`, `webview_wait_for`, `webview_execute_js`) drive Android navigation successfully.
+5. Webview automation tools (`webview_interact`, `webview_wait_for`, `webview_execute_js`) drive Android navigation successfully.
 
-## MCP-first workflow
+## Device automation workflow
 
 ### 1. Start Android runtime
 
 - Run `make android-dev` and keep it active.
 - Use `make android-devices` and `make android-connect` when device discovery/connectivity setup is needed.
 
-### 2. Establish MCP session
+### 2. Establish automation session
 
 - Start session with `driver_session` (`action: start`) using explicit host/port.
 - In multi-target environments, use explicit transport mapping and a dedicated host port for deterministic routing.
@@ -61,9 +61,9 @@ Optional corroboration:
 
 - `webview_execute_js` returns Android WebView user agent and active route.
 
-### 4. Execute scenario through MCP tools
+### 4. Execute scenario through automation tools
 
-Use MCP tools as the scenario control surface:
+Use webview and app automation tools as the scenario control surface:
 
 - `webview_dom_snapshot` to locate interactive refs
 - `webview_interact` to click/focus/scroll
@@ -94,7 +94,7 @@ Classify evidence according to current verified target identity.
 For every claim, present:
 
 1. **Target proof** - session status + backend state identity
-2. **Action proof** - exact MCP calls used
+2. **Action proof** - exact automation calls used
 3. **Result proof** - visible state change and route/state payload
 4. **Artifacts** - screenshot paths and relevant snapshot lines
 
@@ -102,7 +102,7 @@ For every claim, present:
 
 ### Result
 
-- One sentence on what was proven on Android via MCP.
+- One sentence on what was proven on Android through device automation.
 
 ### Session target proof
 
@@ -110,9 +110,9 @@ For every claim, present:
 - `ipc_get_backend_state` result
 - optional user-agent and route probe result
 
-### MCP actions
+### Automation actions
 
-- ordered list of MCP interactions
+- ordered list of automation interactions
 - checkpoints used to validate each transition
 
 ### Evidence
