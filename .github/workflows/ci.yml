@@ -37,7 +37,7 @@ jobs:
           args: --file=package.json --severity-threshold=high
 
   fe-unit-tests:
-    name: fe unit tests
+    name: FE Unit Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,7 +47,7 @@ jobs:
         run: CONTAINER=docker make pr-gate-fe-unit
 
   be-unit-tests:
-    name: be unit tests
+    name: BE Unit Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -57,7 +57,7 @@ jobs:
         run: CONTAINER=docker make pr-gate-be-unit
 
   e2e-ci:
-    name: npm run test:e2e:ci
+    name: E2E Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
