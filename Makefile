@@ -10,8 +10,10 @@ FINI_E2E_CI_NETWORK ?= fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_ACTORS ?= actor-a,actor-b
 FINI_E2E_ACTOR_IMAGE ?= fini-e2e-actor-ci
 FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
+FINI_E2E_CACHE_IMAGE_PREFIX ?=
+FINI_E2E_CACHE_PUSH ?= 0
 
-.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-unit pr-gate-e2e pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
+.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
 
 help:
 	@echo ""
@@ -22,6 +24,7 @@ help:
 	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-be-unit  Run backend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-e2e      Run npm run test:e2e:ci with Dockerfile stages"
+	@echo "  make pr-gate-e2e-cache-key  Print the E2E image input cache key"
 	@echo "  make pr-gate-e2e-*    Run one named CI E2E phase for easier failure diagnosis"
 	@echo "  make e2e              Run visible local two-app E2E"
 	@echo "  make e2e-ci           Run containerized headless E2E in CI mode"
@@ -77,11 +80,91 @@ pr-gate-e2e:
 	$(MAKE) pr-gate-e2e-wait-actors; \
 	$(MAKE) pr-gate-e2e-run
 
+pr-gate-e2e-cache-key:
+	@set -eu; \
+	cache_inputs() { \
+	  { \
+	    git ls-files -z -- \
+	      Dockerfile \
+	      package.json \
+	      package-lock.json \
+	      tsconfig\*.json \
+	      index.html \
+	      vite.config.ts \
+	      src \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json \
+	      specs/e2e; \
+	    git ls-files --others --exclude-standard -z -- \
+	      Dockerfile \
+	      package.json \
+	      package-lock.json \
+	      tsconfig\*.json \
+	      index.html \
+	      vite.config.ts \
+	      src \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json \
+	      specs/e2e; \
+	  } | sort -zu; \
+	}; \
+	cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1
+
 pr-gate-e2e-build-actor:
-	$(CONTAINER) build --target e2e-actor -t $(FINI_E2E_ACTOR_IMAGE) .
+	@set -eu; \
+	cache_key="$$(make --no-print-directory pr-gate-e2e-cache-key)"; \
+	cache_prefix="$(FINI_E2E_CACHE_IMAGE_PREFIX)"; \
+	cache_image=""; \
+	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-e2e-actor-cache:$$cache_key"; fi; \
+	if [ -n "$$cache_image" ] && $(CONTAINER) pull "$$cache_image"; then \
+	  printf 'Using cached actor image: %s\n' "$$cache_image"; \
+	  $(CONTAINER) tag "$$cache_image" "$(FINI_E2E_ACTOR_IMAGE)"; \
+	  exit 0; \
+	fi; \
+	printf 'Building actor image for E2E cache key: %s\n' "$$cache_key"; \
+	if [ -n "$$cache_image" ]; then \
+	  $(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_ACTOR_IMAGE)" -t "$$cache_image" .; \
+	else \
+	  $(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_ACTOR_IMAGE)" .; \
+	fi; \
+	if [ -n "$$cache_image" ] && [ "$(FINI_E2E_CACHE_PUSH)" = "1" ]; then \
+	  $(CONTAINER) push "$$cache_image"; \
+	fi
 
 pr-gate-e2e-build-runner:
-	$(CONTAINER) build --target e2e-runner -t $(FINI_E2E_RUNNER_IMAGE) .
+	@set -eu; \
+	cache_key="$$(make --no-print-directory pr-gate-e2e-cache-key)"; \
+	cache_prefix="$(FINI_E2E_CACHE_IMAGE_PREFIX)"; \
+	cache_image=""; \
+	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-e2e-runner-cache:$$cache_key"; fi; \
+	if [ -n "$$cache_image" ] && $(CONTAINER) pull "$$cache_image"; then \
+	  printf 'Using cached runner image: %s\n' "$$cache_image"; \
+	  $(CONTAINER) tag "$$cache_image" "$(FINI_E2E_RUNNER_IMAGE)"; \
+	  exit 0; \
+	fi; \
+	printf 'Building runner image for E2E cache key: %s\n' "$$cache_key"; \
+	if [ -n "$$cache_image" ]; then \
+	  $(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_RUNNER_IMAGE)" -t "$$cache_image" .; \
+	else \
+	  $(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_RUNNER_IMAGE)" .; \
+	fi; \
+	if [ -n "$$cache_image" ] && [ "$(FINI_E2E_CACHE_PUSH)" = "1" ]; then \
+	  $(CONTAINER) push "$$cache_image"; \
+	fi
 
 pr-gate-e2e-network:
 	@set -eu; \
