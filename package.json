@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "test:unit": "jest --runInBand",
-    "test:e2e": "playwright test --config specs/e2e/playwright.config.ts",
-    "test:e2e:ci": "CI=1 Xvfb :99 -screen 0 1280x720x24 >/var/tmp/fini-e2e-xvfb.log 2>&1 & XVFB_PID=$!; trap 'kill $XVFB_PID' EXIT; DISPLAY=:99 playwright test --config specs/e2e/playwright.config.ts",
+    "test:e2e": "make e2e-headed",
+    "test:e2e:ci": "CI=1 make e2e-actors",
+    "test:e2e:containers": "make e2e-actors",
     "preview": "vite preview",
     "tauri": "tauri"
   },

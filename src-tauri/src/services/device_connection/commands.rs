@@ -1,10 +1,12 @@
 use chrono::Utc;
 use diesel::prelude::*;
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use futures_util::SinkExt;
+use std::net::IpAddr;
 use std::time::Duration;
 use tauri::State;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use super::{DISCOVERY_PORT, DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
+use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;
 use crate::services::db::DbState;
@@ -17,6 +19,30 @@ use crate::services::device_connection::types::{
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::device_connection::DeviceConnectionState;
+use crate::services::space_sync::types::WsMessage;
+
+fn ws_url(addr: IpAddr, port: u16) -> String {
+    match addr {
+        IpAddr::V4(_) => format!("ws://{addr}:{port}"),
+        IpAddr::V6(_) => format!("ws://[{addr}]:{port}"),
+    }
+}
+
+fn send_pair_ws(addr: IpAddr, port: u16, msg: WsMessage) -> Result<(), String> {
+    tauri::async_runtime::block_on(async move {
+        let url = ws_url(addr, port);
+        let (mut ws, _) = connect_async(&url)
+            .await
+            .map_err(|err| format!("connect pair websocket {url} failed: {err}"))?;
+        let text = serde_json::to_string(&msg)
+            .map_err(|err| format!("serialize pair websocket message failed: {err}"))?;
+        ws.send(Message::Text(text.into()))
+            .await
+            .map_err(|err| format!("send pair websocket message failed: {err}"))?;
+        let _ = ws.close(None).await;
+        Ok(())
+    })
+}
 
 pub fn device_connection_get_identity_impl(
     state: &DeviceConnectionState,
@@ -92,29 +118,23 @@ pub fn device_connection_send_pair_request_impl(
         request_id: input.request_id,
         from_device_id: state.identity.device_id.clone(),
         from_hostname: state.identity.hostname.clone(),
+        from_discovery_port: Some(state.discovery_port),
+        from_ws_port: Some(state.space_sync_ws_port),
         to_device_id: input.to_device_id,
         created_at,
         expires_at,
     };
 
-    let bytes =
-        serde_json::to_vec(&payload).map_err(|err| format!("serialize pair request: {err}"))?;
-
-    let socket = UdpSocket::bind(("0.0.0.0", 0))
-        .map_err(|err| format!("bind ephemeral send socket failed: {err}"))?;
-
-    let target = SocketAddr::new(target_ip, DISCOVERY_PORT);
-    socket
-        .send_to(&bytes, target)
-        .map_err(|err| format!("send pair request failed: {err}"))?;
+    let target_port = input.to_ws_port.unwrap_or(state.space_sync_ws_port);
+    send_pair_ws(target_ip, target_port, WsMessage::PairRequest(payload.clone()))?;
 
     if let Ok(mut guard) = state.runtime.lock() {
         guard.tx_count += 1;
     }
 
     eprintln!(
-        "[device-sync] pair request {} sent to {} ({})",
-        payload.request_id, payload.to_device_id, target
+        "[device-sync] pair request {} sent to {} ({}:{})",
+        payload.request_id, payload.to_device_id, target_ip, target_port
     );
 
     Ok(())
@@ -214,7 +234,7 @@ pub fn device_connection_pair_accept_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
-    let (to_device_id, to_addr) = {
+    let (to_device_id, to_addr, to_ws_port) = {
         let mut guard = state
             .runtime
             .lock()
@@ -229,6 +249,7 @@ pub fn device_connection_pair_accept_request_impl(
         (
             stored.request.from_device_id.clone(),
             stored.from_addr.clone(),
+            stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
         )
     };
 
@@ -252,37 +273,15 @@ pub fn device_connection_pair_accept_request_impl(
         accepted_at: update.accepted_at.clone(),
     };
 
-    let bytes =
-        serde_json::to_vec(&payload).map_err(|err| format!("serialize pair accept: {err}"))?;
-    let socket = UdpSocket::bind(("0.0.0.0", 0))
-        .map_err(|err| format!("bind pair accept socket failed: {err}"))?;
-    let target = SocketAddr::new(target_ip, DISCOVERY_PORT);
-    let mut sent_count: u64 = 0;
-    let mut last_send_error: Option<String> = None;
-
-    for _ in 0..3 {
-        match socket.send_to(&bytes, target) {
-            Ok(_) => {
-                sent_count += 1;
-            }
-            Err(err) => {
-                last_send_error = Some(err.to_string());
-            }
-        }
-    }
-
-    if sent_count == 0 {
-        let message = last_send_error.unwrap_or_else(|| "unknown send error".to_string());
-        return Err(format!("send pair accept failed: {message}"));
-    }
+    send_pair_ws(target_ip, to_ws_port, WsMessage::PairAccept(payload))?;
 
     if let Ok(mut guard) = state.runtime.lock() {
-        guard.tx_count += sent_count;
+        guard.tx_count += 1;
     }
 
     eprintln!(
-        "[device-sync] accepted request {} for {} with code {} (sent {}x)",
-        update.request_id, to_device_id, update.code, sent_count
+        "[device-sync] accepted request {} for {} with code {}",
+        update.request_id, to_device_id, update.code
     );
 
     Ok(update)
@@ -300,7 +299,7 @@ pub fn device_connection_pair_complete_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    let (to_device_id, to_addr) = {
+    let (to_device_id, to_addr, to_ws_port) = {
         let mut guard = state
             .runtime
             .lock()
@@ -315,6 +314,7 @@ pub fn device_connection_pair_complete_request_impl(
         (
             stored.request.from_device_id.clone(),
             stored.from_addr.clone(),
+            stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
         )
     };
 
@@ -332,40 +332,18 @@ pub fn device_connection_pair_complete_request_impl(
         paired_at: utc_now(),
     };
 
-    let bytes =
-        serde_json::to_vec(&payload).map_err(|err| format!("serialize pair complete: {err}"))?;
-    let socket = UdpSocket::bind(("0.0.0.0", 0))
-        .map_err(|err| format!("bind pair complete socket failed: {err}"))?;
-    let target = SocketAddr::new(target_ip, DISCOVERY_PORT);
-
-    let mut sent_count: u64 = 0;
-    let mut last_send_error: Option<String> = None;
-    for _ in 0..3 {
-        match socket.send_to(&bytes, target) {
-            Ok(_) => {
-                sent_count += 1;
-            }
-            Err(err) => {
-                last_send_error = Some(err.to_string());
-            }
-        }
-    }
-
-    if sent_count == 0 {
-        let message = last_send_error.unwrap_or_else(|| "unknown send error".to_string());
-        return Err(format!("send pair complete failed: {message}"));
-    }
+    send_pair_ws(target_ip, to_ws_port, WsMessage::PairComplete(payload))?;
 
     let mut guard = state
         .runtime
         .lock()
         .map_err(|_| "device sync runtime lock poisoned".to_string())?;
-    guard.tx_count += sent_count;
+    guard.tx_count += 1;
     guard.incoming_requests.remove(&input.request_id);
 
     eprintln!(
-        "[device-sync] completed request {} for {} (sent {}x)",
-        input.request_id, to_device_id, sent_count
+        "[device-sync] completed request {} for {}",
+        input.request_id, to_device_id
     );
 
     Ok(())
@@ -420,6 +398,7 @@ pub fn device_connection_discovery_snapshot_impl(
             device_id: device_id.clone(),
             hostname: peer.hostname.clone(),
             addr: peer.addr.clone(),
+            discovery_port: peer.discovery_port,
             ws_port: peer.ws_port,
             last_seen_at: peer.last_seen_at.clone(),
         })
@@ -456,6 +435,7 @@ pub fn device_connection_presence_snapshot_impl(
             device_id: device_id.clone(),
             hostname: peer.hostname.clone(),
             addr: peer.addr.clone(),
+            discovery_port: peer.discovery_port,
             ws_port: peer.ws_port,
             last_seen_at: peer.last_seen_at.clone(),
         })
@@ -495,7 +475,8 @@ pub fn device_connection_debug_status_impl(
         outgoing_code_count: guard.outgoing_code_updates.len(),
         last_broadcast_at: guard.last_broadcast_at.clone(),
         last_error: guard.last_error.clone(),
-        discovery_port: DISCOVERY_PORT,
+        discovery_port: state.discovery_port,
+        discovery_provider: "mdns-sd".to_string(),
     })
 }
 

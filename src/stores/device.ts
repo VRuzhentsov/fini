@@ -15,6 +15,7 @@ export interface DiscoveredDevice {
   device_id: string;
   hostname: string;
   addr: string;
+  discovery_port: number;
   ws_port: number | null;
   last_seen_at: string;
 }
@@ -50,6 +51,7 @@ export interface DeviceConnectionDebugStatus {
   last_broadcast_at: string | null;
   last_error: string | null;
   discovery_port: number;
+  discovery_provider: string;
 }
 
 export interface PairCodeUpdate {
@@ -127,6 +129,7 @@ interface DevicePairRequestInput {
   request_id: string;
   to_device_id: string;
   to_addr: string;
+  to_ws_port?: number | null;
 }
 
 interface DevicePairRequestAckInput {
@@ -703,6 +706,7 @@ export const useDeviceStore = defineStore("device", () => {
       request_id: requestId,
       to_device_id: device.device_id,
       to_addr: device.addr,
+      to_ws_port: device.ws_port,
     };
 
     outgoingRequest.value = {

@@ -15,6 +15,7 @@ pub struct DiscoveredDevice {
     pub device_id: String,
     pub hostname: String,
     pub addr: String,
+    pub discovery_port: u16,
     pub ws_port: Option<u16>,
     pub last_seen_at: String,
 }
@@ -31,6 +32,7 @@ pub struct DeviceConnectionDebugStatus {
     pub last_broadcast_at: Option<String>,
     pub last_error: Option<String>,
     pub discovery_port: u16,
+    pub discovery_provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +87,7 @@ pub struct DevicePairRequestInput {
     pub request_id: String,
     pub to_device_id: String,
     pub to_addr: String,
+    pub to_ws_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -100,23 +103,29 @@ pub(super) struct DiscoveryBeacon {
     pub hostname: String,
     pub sent_at: String,
     #[serde(default)]
+    pub discovery_port: Option<u16>,
+    #[serde(default)]
     pub ws_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PairRequestPayload {
+pub(crate) struct PairRequestPayload {
     pub protocol: String,
     pub kind: String,
     pub request_id: String,
     pub from_device_id: String,
     pub from_hostname: String,
+    #[serde(default)]
+    pub from_discovery_port: Option<u16>,
+    #[serde(default)]
+    pub from_ws_port: Option<u16>,
     pub to_device_id: String,
     pub created_at: String,
     pub expires_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PairAcceptPayload {
+pub(crate) struct PairAcceptPayload {
     pub protocol: String,
     pub kind: String,
     pub request_id: String,
@@ -127,7 +136,7 @@ pub(super) struct PairAcceptPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PairCompletePayload {
+pub(crate) struct PairCompletePayload {
     pub protocol: String,
     pub kind: String,
     pub request_id: String,
@@ -141,12 +150,14 @@ pub(super) struct PairCompletePayload {
 pub(super) struct StoredIncomingPairRequest {
     pub request: IncomingPairRequest,
     pub from_addr: String,
+    pub from_ws_port: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct SeenPeer {
     pub hostname: String,
     pub addr: String,
+    pub discovery_port: u16,
     pub ws_port: Option<u16>,
     pub last_seen_at: String,
     pub last_seen_mono: Instant,

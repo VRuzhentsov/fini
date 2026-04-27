@@ -1,4 +1,6 @@
 use chrono::Utc;
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::Path;
@@ -8,8 +10,8 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::{
-    DISCOVERY_INTERVAL_MS, DISCOVERY_PORT, DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS,
-    HEARTBEAT_INTERVAL_MS, MULTICAST_GROUP, PAIR_REQUEST_TTL_SECS, SPACE_SYNC_WS_PORT,
+    DISCOVERY_INTERVAL_MS, DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, HEARTBEAT_INTERVAL_MS,
+    MDNS_SERVICE_TYPE, MULTICAST_GROUP, PAIR_REQUEST_TTL_SECS,
 };
 use crate::services::device_connection::types::{
     DeviceIdentity, DiscoveryBeacon, DiscoveryRuntime, IncomingPairRequest, PairAcceptPayload,
@@ -104,6 +106,7 @@ pub(super) fn build_incoming_pair_request(
             cooldown_until: None,
         },
         from_addr,
+        from_ws_port: payload.from_ws_port,
     }
 }
 
@@ -111,12 +114,14 @@ pub(super) fn upsert_seen_peer(
     peers: &mut HashMap<String, SeenPeer>,
     beacon: &DiscoveryBeacon,
     addr: IpAddr,
+    fallback_discovery_port: u16,
 ) {
     peers.insert(
         beacon.device_id.clone(),
         SeenPeer {
             hostname: beacon.hostname.clone(),
             addr: addr.to_string(),
+            discovery_port: beacon.discovery_port.unwrap_or(fallback_discovery_port),
             ws_port: beacon.ws_port,
             last_seen_at: utc_now(),
             last_seen_mono: Instant::now(),
@@ -124,11 +129,204 @@ pub(super) fn upsert_seen_peer(
     );
 }
 
+fn parse_bool_txt(value: Option<&str>) -> bool {
+    matches!(value, Some("1") | Some("true") | Some("yes"))
+}
+
+fn service_txt<'a>(info: &'a ServiceInfo, key: &str) -> Option<&'a str> {
+    info.get_property_val_str(key).filter(|value| !value.is_empty())
+}
+
+fn upsert_mdns_peer(
+    peers: &mut HashMap<String, SeenPeer>,
+    info: &ServiceInfo,
+    fallback_discovery_port: u16,
+) -> Option<(String, bool)> {
+    let txtvers = service_txt(info, "txtvers")?;
+    let proto = service_txt(info, "proto")?;
+    if txtvers != "1" || proto != "1" {
+        return None;
+    }
+
+    let device_id = service_txt(info, "devid")?.to_string();
+    let hostname = service_txt(info, "name")
+        .unwrap_or_else(|| info.get_fullname())
+        .to_string();
+    let addr = info.get_addresses().iter().next()?.to_string();
+    let add_mode = parse_bool_txt(service_txt(info, "add"));
+
+    peers.insert(
+        device_id.clone(),
+        SeenPeer {
+            hostname,
+            addr,
+            discovery_port: fallback_discovery_port,
+            ws_port: Some(info.get_port()),
+            last_seen_at: utc_now(),
+            last_seen_mono: Instant::now(),
+        },
+    );
+
+    Some((device_id, add_mode))
+}
+
+fn register_mdns_service(
+    daemon: &ServiceDaemon,
+    identity: &DeviceIdentity,
+    space_sync_ws_port: u16,
+    add_mode_enabled: bool,
+) -> Result<String, String> {
+    let instance_name = format!("{}-{}", identity.hostname, &identity.device_id[..8]);
+    let host_name = format!("fini-{}.local.", &identity.device_id[..8]);
+    let add_value = if add_mode_enabled { "1" } else { "0" };
+    let properties = [
+        ("txtvers", "1"),
+        ("devid", identity.device_id.as_str()),
+        ("name", identity.hostname.as_str()),
+        ("add", add_value),
+        ("proto", "1"),
+    ];
+    let service = ServiceInfo::new(
+        MDNS_SERVICE_TYPE,
+        &instance_name,
+        &host_name,
+        "",
+        space_sync_ws_port,
+        &properties[..],
+    )
+    .map_err(|err| format!("create mdns service failed: {err}"))?
+    .enable_addr_auto();
+    let fullname = service.get_fullname().to_string();
+    daemon
+        .register(service)
+        .map_err(|err| format!("register mdns service failed: {err}"))?;
+    Ok(fullname)
+}
+
+fn spawn_mdns_worker(
+    identity: DeviceIdentity,
+    runtime: Arc<Mutex<DiscoveryRuntime>>,
+    discovery_port: u16,
+    space_sync_ws_port: u16,
+) {
+    if std::env::var("FINI_MDNS_DISABLED").ok().as_deref() == Some("1") {
+        return;
+    }
+
+    let builder = thread::Builder::new().name("fini-mdns-discovery".to_string());
+    let runtime_worker = runtime.clone();
+    let spawn_result = builder.spawn(move || {
+        let daemon = match ServiceDaemon::new() {
+            Ok(daemon) => daemon,
+            Err(err) => {
+                set_last_error(&runtime_worker, format!("start mdns daemon failed: {err}"));
+                return;
+            }
+        };
+
+        let browser = match daemon.browse(MDNS_SERVICE_TYPE) {
+            Ok(browser) => browser,
+            Err(err) => {
+                set_last_error(&runtime_worker, format!("start mdns browse failed: {err}"));
+                return;
+            }
+        };
+
+        let mut last_add_mode = runtime_worker
+            .lock()
+            .map(|guard| guard.add_mode_enabled)
+            .unwrap_or(false);
+        let mut registered_fullname = match register_mdns_service(
+            &daemon,
+            &identity,
+            space_sync_ws_port,
+            last_add_mode,
+        ) {
+            Ok(fullname) => Some(fullname),
+            Err(err) => {
+                set_last_error(&runtime_worker, err);
+                None
+            }
+        };
+
+        if let Ok(mut guard) = runtime_worker.lock() {
+            guard.worker_started = true;
+        }
+
+        loop {
+            let add_mode = runtime_worker
+                .lock()
+                .map(|guard| guard.add_mode_enabled)
+                .unwrap_or(false);
+            if add_mode != last_add_mode {
+                if let Some(fullname) = registered_fullname.take() {
+                    let _ = daemon.unregister(&fullname);
+                }
+                registered_fullname = match register_mdns_service(
+                    &daemon,
+                    &identity,
+                    space_sync_ws_port,
+                    add_mode,
+                ) {
+                    Ok(fullname) => Some(fullname),
+                    Err(err) => {
+                        set_last_error(&runtime_worker, err);
+                        None
+                    }
+                };
+                last_add_mode = add_mode;
+            }
+
+            match browser.recv_timeout(Duration::from_millis(500)) {
+                Ok(ServiceEvent::ServiceResolved(info)) => {
+                    if service_txt(&info, "devid") == Some(identity.device_id.as_str()) {
+                        continue;
+                    }
+
+                    if let Ok(mut guard) = runtime_worker.lock() {
+                        guard.rx_count += 1;
+                        let presence = upsert_mdns_peer(&mut guard.presence, &info, discovery_port);
+                        if let Some((device_id, add_mode)) = presence {
+                            if add_mode {
+                                let is_new = !guard.discovered.contains_key(device_id.as_str());
+                                let _ = upsert_mdns_peer(&mut guard.discovered, &info, discovery_port);
+                                if is_new {
+                                    eprintln!(
+                                        "[device-sync] mdns discovered peer {} ({})",
+                                        info.get_fullname(), device_id
+                                    );
+                                }
+                            } else {
+                                guard.discovered.remove(&device_id);
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    if err.to_string().contains("timed out") {
+                        continue;
+                    }
+                    set_last_error(&runtime_worker, format!("mdns browse recv failed: {err}"));
+                    break;
+                }
+            }
+        }
+    });
+
+    if let Err(err) = spawn_result {
+        set_last_error(&runtime, format!("spawn mdns worker failed: {err}"));
+    }
+}
+
 fn broadcast_beacon(
     socket: &UdpSocket,
     runtime: &Arc<Mutex<DiscoveryRuntime>>,
     identity: &DeviceIdentity,
     mode: &str,
+    discovery_port: u16,
+    broadcast_ports: &[u16],
+    space_sync_ws_port: u16,
 ) {
     let beacon = DiscoveryBeacon {
         protocol: DISCOVERY_PROTOCOL.to_string(),
@@ -136,19 +334,30 @@ fn broadcast_beacon(
         device_id: identity.device_id.clone(),
         hostname: identity.hostname.clone(),
         sent_at: utc_now(),
-        ws_port: Some(SPACE_SYNC_WS_PORT),
+        discovery_port: Some(discovery_port),
+        ws_port: Some(space_sync_ws_port),
     };
 
     let payload = serde_json::to_vec(&beacon);
     match payload {
         Ok(body) => {
-            let multicast_target = SocketAddr::from((MULTICAST_GROUP, DISCOVERY_PORT));
-            let broadcast_target =
-                SocketAddr::from((Ipv4Addr::new(255, 255, 255, 255), DISCOVERY_PORT));
+            let mut sent = false;
+            let mut last_error: Option<String> = None;
 
-            let send_multicast = socket.send_to(&body, multicast_target);
-            let send_broadcast = socket.send_to(&body, broadcast_target);
-            let sent = send_multicast.is_ok() || send_broadcast.is_ok();
+            for port in broadcast_ports {
+                let multicast_target = SocketAddr::from((MULTICAST_GROUP, *port));
+                let broadcast_target = SocketAddr::from((Ipv4Addr::new(255, 255, 255, 255), *port));
+
+                match socket.send_to(&body, multicast_target) {
+                    Ok(_) => sent = true,
+                    Err(err) => last_error = Some(format!("multicast send error: {err}")),
+                }
+
+                match socket.send_to(&body, broadcast_target) {
+                    Ok(_) => sent = true,
+                    Err(err) => last_error = Some(format!("broadcast send error: {err}")),
+                }
+            }
 
             if let Ok(mut guard) = runtime.lock() {
                 guard.last_broadcast_at = Some(beacon.sent_at);
@@ -156,11 +365,8 @@ fn broadcast_beacon(
                     guard.tx_count += 1;
                 }
 
-                if let Err(err) = send_multicast {
-                    guard.last_error = Some(format!("multicast send error: {err}"));
-                }
-                if let Err(err) = send_broadcast {
-                    guard.last_error = Some(format!("broadcast send error: {err}"));
+                if let Some(err) = last_error {
+                    guard.last_error = Some(err);
                 }
             }
         }
@@ -171,16 +377,35 @@ fn broadcast_beacon(
     }
 }
 
+fn bind_discovery_socket(discovery_port: u16) -> std::io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+    socket.set_reuse_port(true)?;
+    socket.bind(&SocketAddr::from(([0, 0, 0, 0], discovery_port)).into())?;
+    Ok(socket.into())
+}
+
 pub(super) fn spawn_discovery_worker(
     identity: DeviceIdentity,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
+    discovery_port: u16,
+    broadcast_ports: Vec<u16>,
+    space_sync_ws_port: u16,
 ) {
+    spawn_mdns_worker(
+        identity.clone(),
+        runtime.clone(),
+        discovery_port,
+        space_sync_ws_port,
+    );
+
     let builder = thread::Builder::new().name("fini-device-discovery".to_string());
     let runtime_worker = runtime.clone();
 
     let spawn_result = builder.spawn(move || {
         let runtime = runtime_worker;
-        let socket = match UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)) {
+        let socket = match bind_discovery_socket(discovery_port) {
             Ok(sock) => sock,
             Err(err) => {
                 let message = format!("bind discovery socket failed: {err}");
@@ -213,13 +438,29 @@ pub(super) fn spawn_discovery_worker(
             let now = Instant::now();
 
             if now >= next_heartbeat_at {
-                broadcast_beacon(&socket, &runtime, &identity, "heartbeat");
+                broadcast_beacon(
+                    &socket,
+                    &runtime,
+                    &identity,
+                    "heartbeat",
+                    discovery_port,
+                    &broadcast_ports,
+                    space_sync_ws_port,
+                );
                 next_heartbeat_at = now + heartbeat_interval;
             }
 
             if add_mode_enabled {
                 if now >= next_add_broadcast_at {
-                    broadcast_beacon(&socket, &runtime, &identity, "add");
+                    broadcast_beacon(
+                        &socket,
+                        &runtime,
+                        &identity,
+                        "add",
+                        discovery_port,
+                        &broadcast_ports,
+                        space_sync_ws_port,
+                    );
                     next_add_broadcast_at = now + discovery_interval;
                 }
             } else {
@@ -235,13 +476,13 @@ pub(super) fn spawn_discovery_worker(
                             if let Ok(mut guard) = runtime.lock() {
                                 guard.rx_count += 1;
 
-                                upsert_seen_peer(&mut guard.presence, &beacon, addr.ip());
+                                upsert_seen_peer(&mut guard.presence, &beacon, addr.ip(), discovery_port);
 
                                 if guard.add_mode_enabled && beacon.mode == "add" {
                                     let is_new =
                                         !guard.discovered.contains_key(beacon.device_id.as_str());
 
-                                    upsert_seen_peer(&mut guard.discovered, &beacon, addr.ip());
+                                    upsert_seen_peer(&mut guard.discovered, &beacon, addr.ip(), discovery_port);
 
                                     if is_new {
                                         eprintln!(
@@ -381,6 +622,7 @@ pub(super) fn spawn_discovery_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::device_connection::{DISCOVERY_PORT, SPACE_SYNC_WS_PORT};
     use chrono::Duration as ChronoDuration;
     use std::path::PathBuf;
 
@@ -397,6 +639,8 @@ mod tests {
             request_id: "req-1".to_string(),
             from_device_id: "device-a".to_string(),
             from_hostname: "alpha".to_string(),
+            from_discovery_port: Some(DISCOVERY_PORT),
+            from_ws_port: Some(SPACE_SYNC_WS_PORT),
             to_device_id: "device-b".to_string(),
             created_at: "2000-01-01T00:00:00Z".to_string(),
             expires_at: expires_at.to_string(),
@@ -415,6 +659,7 @@ mod tests {
                 cooldown_until: None,
             },
             from_addr: "127.0.0.1".to_string(),
+            from_ws_port: Some(SPACE_SYNC_WS_PORT),
         }
     }
 
@@ -425,6 +670,7 @@ mod tests {
             device_id: device_id.to_string(),
             hostname: hostname.to_string(),
             sent_at: utc_now(),
+            discovery_port: Some(DISCOVERY_PORT),
             ws_port: Some(SPACE_SYNC_WS_PORT),
         }
     }
@@ -471,11 +717,13 @@ mod tests {
             &mut peers,
             &first,
             "192.168.1.10".parse().expect("parse ip"),
+            DISCOVERY_PORT,
         );
         upsert_seen_peer(
             &mut peers,
             &second,
             "192.168.1.11".parse().expect("parse ip"),
+            DISCOVERY_PORT,
         );
 
         let peer = peers.get("device-a").expect("peer should exist");
@@ -519,7 +767,10 @@ mod tests {
     fn incoming_pair_request_uses_receiver_local_ttl() {
         let payload = sample_pair_request_payload("1999-01-01T00:00:00Z");
         let before = Utc::now();
-        let stored = build_incoming_pair_request(&payload, "192.168.1.50".to_string());
+        let stored = build_incoming_pair_request(
+            &payload,
+            "192.168.1.50".to_string(),
+        );
         let after = Utc::now();
 
         assert_eq!(stored.request.request_id, payload.request_id);

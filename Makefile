@@ -1,7 +1,7 @@
 -include .env
 export
 
-.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
+.PHONY: help dev build mcp e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
 
 help:
 	@echo ""
@@ -9,10 +9,14 @@ help:
 	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
 	@echo "  make build            Release build"
 	@echo "  make mcp              Run MCP server (debug binary)"
-	@echo "  make e2e              Run real-app e2e tests locally"
-	@echo "  make e2e-ci           Run real-app e2e tests in CI mode"
+	@echo "  make e2e              Run visible local two-app E2E"
+	@echo "  make e2e-ci           Run containerized headless E2E in CI mode"
 	@echo "  make e2e-image        Build/update the Podman e2e image"
 	@echo "  make e2e-build        Build Podman image and run e2e-ci inside it"
+	@echo "  make e2e-headed       Run visible local two-app E2E"
+	@echo "  make e2e-actors-image Force rebuild actor and runner images"
+	@echo "  make e2e-actors       Run containerized full E2E suite, reusing fresh images"
+	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
 	@echo "  make runtime-image    Build/update the Podman runtime image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
 	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
@@ -44,11 +48,11 @@ mcp:
 
 # Run the real-app e2e lane locally.
 e2e:
-	npm run test:e2e
+	$(MAKE) e2e-headed
 
 # Run the same lane under CI settings.
 e2e-ci:
-	npm run test:e2e:ci
+	CI=1 $(MAKE) e2e-actors
 
 # Build/update the container image used for CI-style local e2e runs.
 e2e-image:
@@ -58,6 +62,253 @@ e2e-image:
 e2e-build:
 	podman image exists fini-e2e || podman build --target test -t fini-e2e .
 	podman run --rm fini-e2e
+
+# Run the visible local two-app E2E suite against the host desktop display.
+e2e-headed:
+	@set -eu; \
+	actor_list="$${FINI_E2E_ACTORS:-actor-a,actor-b}"; \
+	keep="$${FINI_E2E_KEEP:-0}"; \
+	run_root="$${FINI_E2E_ROOT:-/var/tmp/fini-e2e-headed}"; \
+	run_id="$$(date +%Y%m%d-%H%M%S)-$$$$"; \
+	run_dir="$$run_root/$$run_id"; \
+	socket_dir="$$run_dir/sockets"; \
+	test_results_dir="$$run_dir/test-results"; \
+	bin_path="./src-tauri/target/debug/fini"; \
+	printf 'FINI_E2E_RUN_DIR=%s\n' "$$run_dir"; \
+	mkdir -p "$$socket_dir" "$$test_results_dir"; \
+	IFS=','; set -- $$actor_list; \
+	if [ "$$#" -lt 2 ]; then \
+	  printf 'Need at least two actors, got: %s\n' "$$actor_list" >&2; \
+	  exit 1; \
+	fi; \
+	peer_ports=""; \
+	idx=0; \
+	for actor in "$$@"; do \
+	  port=$$((45454 + idx * 2)); \
+	  if [ -z "$$peer_ports" ]; then peer_ports="$$port"; else peer_ports="$$peer_ports,$$port"; fi; \
+	  idx=$$((idx + 1)); \
+	done; \
+	cleanup() { \
+	  status="$$?"; \
+	  if [ "$$keep" = "1" ]; then \
+	    printf 'Keeping local app processes for debugging: %s\n' "$$run_id"; \
+	    printf 'Stop them manually if needed. Run dir: %s\n' "$$run_dir"; \
+	    exit "$$status"; \
+	  fi; \
+	  for pid_file in "$$run_dir"/*.pid; do \
+	    [ -f "$$pid_file" ] || continue; \
+	    pid="$$(cat "$$pid_file")"; \
+	    kill "$$pid" >/dev/null 2>&1 || true; \
+	  done; \
+	  wait >/dev/null 2>&1 || true; \
+	  exit "$$status"; \
+	}; \
+	trap cleanup EXIT INT TERM; \
+	node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle; \
+	idx=0; \
+	for actor in "$$@"; do \
+	  actor_data_dir="$$run_dir/$$actor-data"; \
+	  actor_socket="$$socket_dir/$$actor.sock"; \
+	  actor_log="$$run_dir/$$actor.log"; \
+	  discovery_port=$$((45454 + idx * 2)); \
+	  ws_port=$$((45455 + idx * 2)); \
+	  mkdir -p "$$actor_data_dir"; \
+	  rm -f "$$actor_socket"; \
+	  printf 'Launching visible app window: %s (discovery=%s ws=%s)\n' "$$actor" "$$discovery_port" "$$ws_port"; \
+	  HOSTNAME="$$actor" FINI_APP_DATA_DIR="$$actor_data_dir" TAURI_PLAYWRIGHT_SOCKET="$$actor_socket" FINI_DISCOVERY_PORT="$$discovery_port" FINI_DISCOVERY_PEER_PORTS="$$peer_ports" FINI_SPACE_SYNC_WS_PORT="$$ws_port" TZ=UTC "$$bin_path" app >"$$actor_log" 2>&1 & \
+	  printf '%s' "$$!" > "$$run_dir/$$actor.pid"; \
+	  idx=$$((idx + 1)); \
+	done; \
+	for actor in "$$@"; do \
+	  socket_path="$$socket_dir/$$actor.sock"; \
+	  deadline=$$(($$(date +%s) + 60)); \
+	  while [ ! -S "$$socket_path" ]; do \
+	    if [ "$$(date +%s)" -ge "$$deadline" ]; then \
+	      printf 'Actor socket did not appear: %s\n' "$$socket_path" >&2; \
+	      log_path="$$run_dir/$$actor.log"; \
+	      [ -f "$$log_path" ] && printf 'Actor log: %s\n' "$$log_path" >&2; \
+	      exit 1; \
+	    fi; \
+	    sleep 1; \
+	  done; \
+	done; \
+	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors --output "$$test_results_dir"
+
+# Build/update the actor and runner images for multi-actor desktop e2e.
+e2e-actors-image:
+	@set -eu; \
+	cache_inputs() { \
+	  { \
+	    git ls-files -z -- \
+	      Dockerfile \
+	      package.json \
+	      package-lock.json \
+	      tsconfig\*.json \
+	      index.html \
+	      vite.config.ts \
+	      src \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json \
+	      specs/e2e; \
+	    git ls-files --others --exclude-standard -z -- \
+	      Dockerfile \
+	      package.json \
+	      package-lock.json \
+	      tsconfig\*.json \
+	      index.html \
+	      vite.config.ts \
+	      src \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json \
+	      specs/e2e; \
+	  } | sort -zu; \
+	}; \
+	cache_key="$$(cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"; \
+	podman build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-actor .; \
+	podman build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-runner .
+
+# Run the multi-actor desktop e2e smoke lane.
+e2e-actors:
+	@set -eu; \
+	actor_image="$${FINI_E2E_ACTOR_IMAGE:-fini-e2e-actor}"; \
+	runner_image="$${FINI_E2E_RUNNER_IMAGE:-fini-e2e-runner}"; \
+	force_rebuild="$${FINI_E2E_REBUILD:-0}"; \
+	actor_list="$${FINI_E2E_ACTORS:-actor-a,actor-b}"; \
+	keep="$${FINI_E2E_KEEP:-0}"; \
+	run_root="$${FINI_E2E_ROOT:-/var/tmp/fini-e2e-actors}"; \
+	run_id="$$(date +%Y%m%d-%H%M%S)-$$$$"; \
+	run_dir="$$run_root/$$run_id"; \
+	socket_dir="$$run_dir/sockets"; \
+	test_results_dir="$$run_dir/test-results"; \
+	network_name="fini-e2e-$$run_id"; \
+	cache_inputs() { \
+	  { \
+	    git ls-files -z -- \
+	      Dockerfile \
+	      package.json \
+	      package-lock.json \
+	      tsconfig\*.json \
+	      index.html \
+	      vite.config.ts \
+	      src \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json \
+	      specs/e2e; \
+	    git ls-files --others --exclude-standard -z -- \
+	      Dockerfile \
+	      package.json \
+	      package-lock.json \
+	      tsconfig\*.json \
+	      index.html \
+	      vite.config.ts \
+	      src \
+	      src-tauri/Cargo.toml \
+	      src-tauri/Cargo.lock \
+	      src-tauri/build.rs \
+	      src-tauri/src \
+	      src-tauri/migrations \
+	      src-tauri/patches \
+	      src-tauri/capabilities \
+	      src-tauri/icons \
+	      src-tauri/tauri.conf.json \
+	      specs/e2e; \
+	  } | sort -zu; \
+	}; \
+	image_cache_key() { \
+	  podman image inspect "$$1" --format '{{ index .Config.Labels "fini.e2e.cache-key" }}' 2>/dev/null || true; \
+	}; \
+	cache_key="$$(cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"; \
+	actor_current_key="$$(image_cache_key "$$actor_image")"; \
+	runner_current_key="$$(image_cache_key "$$runner_image")"; \
+	printf 'FINI_E2E_RUN_DIR=%s\n' "$$run_dir"; \
+	mkdir -p "$$socket_dir" "$$test_results_dir"; \
+	IFS=','; set -- $$actor_list; \
+	if [ "$$#" -lt 2 ]; then \
+	  printf 'Need at least two actors, got: %s\n' "$$actor_list" >&2; \
+	  exit 1; \
+	fi; \
+	cleanup() { \
+	  status="$$?"; \
+	  if [ "$$status" -ne 0 ]; then \
+	    for actor in "$$@"; do podman logs "fini-$$run_id-$$actor" 2>/dev/null || true; done; \
+	  fi; \
+	  if [ "$$keep" = "1" ]; then \
+	    printf 'Keeping containers and network for debugging: %s\n' "$$run_id"; \
+	    exit "$$status"; \
+	  fi; \
+	  podman rm -f "fini-$$run_id-runner" >/dev/null 2>&1 || true; \
+	  for actor in "$$@"; do podman rm -f "fini-$$run_id-$$actor" >/dev/null 2>&1 || true; done; \
+	  podman network rm "$$network_name" >/dev/null 2>&1 || true; \
+	  exit "$$status"; \
+	}; \
+	trap 'cleanup "$$@"' EXIT INT TERM; \
+	if [ "$$force_rebuild" = "1" ] || [ "$$actor_current_key" != "$$cache_key" ]; then \
+	  printf 'Building actor image: %s\n' "$$actor_image"; \
+	  podman build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$$actor_image" .; \
+	else \
+	  printf 'Using cached actor image: %s\n' "$$actor_image"; \
+	fi; \
+	if [ "$$force_rebuild" = "1" ] || [ "$$runner_current_key" != "$$cache_key" ]; then \
+	  printf 'Building runner image: %s\n' "$$runner_image"; \
+	  podman build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$$runner_image" .; \
+	else \
+	  printf 'Using cached runner image: %s\n' "$$runner_image"; \
+	fi; \
+	podman network create "$$network_name" >/dev/null; \
+	for actor in "$$@"; do \
+	  actor_data_dir="$$run_dir/$$actor-data"; \
+	  mkdir -p "$$actor_data_dir"; \
+	  podman run -d --rm \
+	    --name "fini-$$run_id-$$actor" \
+	    --hostname "$$actor" \
+	    --network "$$network_name" \
+	    -e FINI_ACTOR_SLUG="$$actor" \
+	    -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
+	    -e FINI_APP_DATA_DIR=/data \
+	    -v "$$socket_dir:/var/run/fini-e2e:z" \
+	    -v "$$actor_data_dir:/data:Z" \
+	    "$$actor_image" >/dev/null; \
+	done; \
+	for actor in "$$@"; do \
+	  socket_path="$$socket_dir/$$actor.sock"; \
+	  deadline=$$(($$(date +%s) + 60)); \
+	  while [ ! -S "$$socket_path" ]; do \
+	    if [ "$$(date +%s)" -ge "$$deadline" ]; then \
+	      printf 'Actor socket did not appear: %s\n' "$$socket_path" >&2; \
+	      exit 1; \
+	    fi; \
+	    sleep 1; \
+	  done; \
+	done; \
+	podman run --rm \
+	  --name "fini-$$run_id-runner" \
+	  --network "$$network_name" \
+	  -e FINI_E2E_ACTORS="$$actor_list" \
+	  -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
+	  -v "$$socket_dir:/var/run/fini-e2e:z" \
+	  -v "$$test_results_dir:/app/test-results:Z" \
+	  "$$runner_image"
 
 # Build/update the published headless runtime image locally.
 runtime-image:

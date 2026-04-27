@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::services::device_connection::CustomSpaceDescriptor;
+use crate::services::device_connection::types::{
+    PairAcceptPayload, PairCompletePayload, PairRequestPayload,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncEventEnvelope {
@@ -31,6 +34,12 @@ pub enum WsMessage {
     AuthOk,
     #[serde(rename = "auth_fail")]
     AuthFail { reason: String },
+    #[serde(rename = "pair_request")]
+    PairRequest(PairRequestPayload),
+    #[serde(rename = "pair_accept")]
+    PairAccept(PairAcceptPayload),
+    #[serde(rename = "pair_complete")]
+    PairComplete(PairCompletePayload),
     #[serde(rename = "sync_event")]
     SyncEvent(SyncEventEnvelope),
     #[serde(rename = "ack")]

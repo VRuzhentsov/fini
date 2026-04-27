@@ -54,13 +54,14 @@ COPY index.html ./
 
 RUN node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle
 
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:24.04 AS runtime-base
 
 RUN set -eux; \
     apt-get update -o Acquire::Retries=5; \
     apt-get install -y --no-install-recommends --fix-missing \
       ca-certificates \
       libasound2t64 \
+      libayatana-appindicator3-1 \
       libgtk-3-0 \
       libwebkit2gtk-4.1-0 \
       librsvg2-2; \
@@ -68,13 +69,80 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY --from=app-build-release /workspace/src-tauri/target/release/fini /usr/local/bin/fini
-
 ENV XDG_DATA_HOME=/data
 
 VOLUME ["/data"]
 
+FROM runtime-base AS runtime
+
+COPY --from=app-build-release /workspace/src-tauri/target/release/fini /usr/local/bin/fini
+
 ENTRYPOINT ["/usr/local/bin/fini"]
+
+FROM runtime-base AS e2e-actor
+
+RUN set -eux; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y --no-install-recommends --fix-missing \
+      xvfb \
+      xauth; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
+COPY specs/e2e/actors/start-actor.sh /usr/local/bin/fini-e2e-actor
+
+ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
+    FINI_APP_DATA_DIR=/data \
+    TZ=UTC
+
+ENTRYPOINT ["/usr/local/bin/fini-e2e-actor"]
+
+FROM node-deps AS e2e-runner
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libasound2 \
+    libayatana-appindicator3-1 \
+    libglib2.0-0 \
+    libnss3 \
+    libnspr4 \
+    libdbus-1-3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libxkbcommon0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    fonts-liberation \
+    libgtk-3-0 \
+    libwebkit2gtk-4.1-0 \
+    librsvg2-2 \
+    xvfb \
+    xauth \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+COPY --from=node-deps /app/node_modules ./node_modules
+COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
+COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
+COPY tsconfig*.json ./
+COPY specs/e2e ./specs/e2e
+
+ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
+    FINI_E2E_ACTORS=actor-a,actor-b \
+    FINI_BINARY=/usr/local/bin/fini \
+    TZ=UTC \
+    CI=1
+
+CMD ["npx", "playwright", "test", "--config", "specs/e2e/playwright.config.ts"]
 
 # ── E2E test stage ─────────────────────────────────────────────────────────────
 FROM node:24.15.0-trixie-slim AS test

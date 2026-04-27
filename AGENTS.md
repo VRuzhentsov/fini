@@ -22,6 +22,9 @@ When working inside that directory, load its `AGENTS.md` as the authoritative sc
 
 ## Workflow
 
+- Always load the `fini-dev` skill at the start of development work in this repo.
+- Use `fini-dev` to choose which repo-local or gstack skill applies, which Makefile target to run, and what evidence is required before reporting success.
+- `fini-dev` orchestrates workflow only; use the specialized skill for the actual domain work when it applies.
 - Do not commit implementation changes until the user has verified they work.
 - Docs and spec changes can be committed freely.
 
