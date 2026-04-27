@@ -123,6 +123,11 @@ async fn handle_inbound<Sk>(
             });
         }
         // Sent by this side, not expected inbound
-        WsMessage::Auth { .. } | WsMessage::AuthOk | WsMessage::AuthFail { .. } => {}
+        WsMessage::Auth { .. }
+        | WsMessage::AuthOk
+        | WsMessage::AuthFail { .. }
+        | WsMessage::PairRequest(_)
+        | WsMessage::PairAccept(_)
+        | WsMessage::PairComplete(_) => {}
     }
 }

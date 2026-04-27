@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   actions: read
+  packages: write
   id-token: write
 
 concurrency:
@@ -193,6 +194,26 @@ jobs:
             src-tauri -> target
           shared-key: release-rust
 
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Resolve E2E image cache settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "FINI_E2E_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
+          echo "FINI_E2E_CACHE_PUSH=1" >> "$GITHUB_ENV"
+          echo "CONTAINER=docker" >> "$GITHUB_ENV"
+          echo "FINI_E2E_CI_RUN_ID=release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
       - name: Install npm dependencies
         run: npm ci
 
@@ -206,16 +227,43 @@ jobs:
         run: npm run build
 
       - name: Build runtime container
-        run: docker build --target runtime -t fini-runtime-ci .
+        run: |
+          docker buildx build \
+            --target runtime \
+            --load \
+            --cache-from type=gha,scope=fini-runtime \
+            --cache-to type=gha,mode=max,scope=fini-runtime \
+            -t fini-runtime-ci \
+            .
 
       - name: Run runtime smoke check
         run: docker run --rm fini-runtime-ci --help
 
-      - name: Build desktop e2e container
-        run: docker build --target test -t fini-e2e-ci .
+      - name: Build E2E actor image
+        run: make pr-gate-e2e-build-actor
+
+      - name: Build E2E runner image
+        run: make pr-gate-e2e-build-runner
+
+      - name: Create E2E network
+        run: make pr-gate-e2e-network
+
+      - name: Start E2E actors
+        run: make pr-gate-e2e-start-actors
+
+      - name: Wait for E2E actors
+        run: make pr-gate-e2e-wait-actors
 
       - name: Run desktop e2e flow
-        run: docker run --rm fini-e2e-ci
+        run: make pr-gate-e2e-run
+
+      - name: Print actor logs on failure
+        if: failure()
+        run: make pr-gate-e2e-logs
+
+      - name: Cleanup E2E containers
+        if: always()
+        run: make pr-gate-e2e-cleanup
 
   build-linux:
     name: Build Linux Artifact (${{ matrix.arch }})

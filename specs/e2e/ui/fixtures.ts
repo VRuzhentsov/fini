@@ -8,7 +8,7 @@
 import { createTauriTest } from '@srsholmes/tauri-playwright';
 
 const tauriCommand = process.env.FINI_BINARY
-  ? `env FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui TZ=UTC ${process.env.FINI_BINARY} app`
+  ? `xvfb-run -a env FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui TZ=UTC ${process.env.FINI_BINARY} app`
   : 'env FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui TZ=UTC npx tauri dev --features e2e-testing -- -- app';
 
 export const { test, expect } = createTauriTest({

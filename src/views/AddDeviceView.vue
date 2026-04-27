@@ -132,12 +132,14 @@ function rejectRequest(requestId: string) {
       </p>
     </section>
 
-    <section v-if="deviceStore.incomingRequests.length" class="rounded-xl bg-base-200 p-3">
+    <section v-if="deviceStore.incomingRequests.length" class="rounded-xl bg-base-200 p-3" data-testid="incoming-requests">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Incoming requests</h2>
       <ul class="flex flex-col gap-2">
         <li
           v-for="request in deviceStore.incomingRequests"
           :key="request.request_id"
+          data-testid="incoming-request-row"
+          :data-from-hostname="request.from_hostname"
           class="rounded-lg bg-base-100 p-3"
         >
           <p class="text-sm font-medium">{{ request.from_hostname }}</p>
@@ -148,7 +150,7 @@ function rejectRequest(requestId: string) {
             v-if="!acceptedIncomingByRequest[request.request_id]"
             class="mt-2 flex flex-wrap gap-2"
           >
-            <button class="btn btn-sm btn-primary" @click="void acceptRequest(request.request_id)">Accept</button>
+            <button class="btn btn-sm btn-primary" data-testid="accept-incoming-request" @click="void acceptRequest(request.request_id)">Accept</button>
             <button class="btn btn-sm btn-ghost" @click="rejectRequest(request.request_id)">Reject</button>
           </div>
           <div v-else class="mt-2 flex gap-2">
@@ -159,9 +161,10 @@ function rejectRequest(requestId: string) {
               inputmode="numeric"
               pattern="[0-9]*"
               class="input input-bordered input-sm w-28"
+              data-testid="pair-code-input"
               placeholder="6-digit"
             />
-            <button class="btn btn-sm" @click="void submitCode(request.request_id)">Submit code</button>
+            <button class="btn btn-sm" data-testid="pair-code-submit" @click="void submitCode(request.request_id)">Submit code</button>
           </div>
           <p v-if="request.cooldown_until && incomingSecondsLeft(request.cooldown_until) > 0" class="mt-2 text-xs text-warning">
             Too many wrong codes. Try again in {{ incomingSecondsLeft(request.cooldown_until) }}s.
@@ -170,16 +173,17 @@ function rejectRequest(requestId: string) {
       </ul>
     </section>
 
-    <section class="rounded-xl bg-base-200 p-3">
+    <section class="rounded-xl bg-base-200 p-3" data-testid="nearby-devices">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Nearby devices</h2>
       <ul class="flex flex-col gap-1">
-        <li v-for="device in deviceStore.discoveredDevices" :key="device.device_id">
+        <li v-for="device in deviceStore.discoveredDevices" :key="device.device_id" data-testid="nearby-device-row" :data-device-hostname="device.hostname" :data-device-id="device.device_id">
           <div class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
             <span class="h-2.5 w-2.5 rounded-full bg-green-500" />
             <span class="flex-1 text-sm font-medium">{{ device.hostname }}</span>
             <span class="text-xs opacity-60">{{ deviceStore.shortDeviceId(device.device_id) }} · {{ device.addr }}</span>
             <button
               class="btn btn-sm btn-primary"
+              data-testid="request-pair"
               :disabled="outgoingPending"
               @click="void requestPair(device.device_id)"
             >
@@ -196,7 +200,7 @@ function rejectRequest(requestId: string) {
       </p>
     </section>
 
-    <section v-if="deviceStore.outgoingRequest" class="rounded-xl bg-base-200 p-3">
+    <section v-if="deviceStore.outgoingRequest" class="rounded-xl bg-base-200 p-3" data-testid="outgoing-pair-request">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Pair request</h2>
       <p class="text-sm font-medium">{{ deviceStore.outgoingRequest.to_hostname }}</p>
       <p class="text-xs opacity-60">
@@ -207,7 +211,7 @@ function rejectRequest(requestId: string) {
       </p>
       <div v-if="deviceStore.outgoingRequest.sender_code" class="mt-2 rounded-lg bg-base-100 px-3 py-2">
         <p class="text-xs opacity-60">Share this code with the receiving device</p>
-        <p class="font-mono text-lg tracking-wider">{{ deviceStore.outgoingRequest.sender_code }}</p>
+        <p class="font-mono text-lg tracking-wider" data-testid="pair-code">{{ deviceStore.outgoingRequest.sender_code }}</p>
       </div>
       <button class="btn btn-sm btn-ghost mt-2" @click="deviceStore.cancelOutgoingRequest()">Cancel request</button>
     </section>

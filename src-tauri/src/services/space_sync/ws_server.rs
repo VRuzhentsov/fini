@@ -7,12 +7,13 @@ use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::services::db::open_db_at_path;
-use crate::services::device_connection::{DeviceConnectionState, SPACE_SYNC_WS_PORT};
+use crate::services::device_connection::DeviceConnectionState;
 use crate::services::space_sync::types::WsMessage;
 use crate::services::space_sync::ws_session;
 
 pub async fn run_ws_server(state: DeviceConnectionState, db_path: PathBuf) {
-    run_ws_server_on_port(state, db_path, SPACE_SYNC_WS_PORT).await;
+    let port = state.space_sync_ws_port;
+    run_ws_server_on_port(state, db_path, port).await;
 }
 
 pub(crate) async fn run_ws_server_on_port(
@@ -53,6 +54,10 @@ async fn handle_connection(
     state: DeviceConnectionState,
     db_path: PathBuf,
 ) -> Result<(), String> {
+    let peer_ip = stream
+        .peer_addr()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_default();
     let ws = accept_async(stream)
         .await
         .map_err(|e| format!("WS handshake: {}", e))?;
@@ -68,19 +73,33 @@ async fn handle_connection(
         return Ok(());
     };
 
-    let WsMessage::Auth {
-        device_id,
-        peer_device_id,
-    } = msg
-    else {
-        send_msg(
-            &mut sink,
-            &WsMessage::AuthFail {
-                reason: "expected auth first".into(),
-            },
-        )
-        .await;
-        return Ok(());
+    let (device_id, peer_device_id) = match msg {
+        WsMessage::PairRequest(payload) => {
+            state.receive_ws_pair_request(payload, peer_ip)?;
+            return Ok(());
+        }
+        WsMessage::PairAccept(payload) => {
+            state.receive_ws_pair_accept(payload)?;
+            return Ok(());
+        }
+        WsMessage::PairComplete(payload) => {
+            state.receive_ws_pair_complete(payload)?;
+            return Ok(());
+        }
+        WsMessage::Auth {
+            device_id,
+            peer_device_id,
+        } => (device_id, peer_device_id),
+        _ => {
+            send_msg(
+                &mut sink,
+                &WsMessage::AuthFail {
+                    reason: "expected auth first".into(),
+                },
+            )
+            .await;
+            return Ok(());
+        }
     };
 
     if peer_device_id != state.identity.device_id {

@@ -4,7 +4,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::services::device_connection::{DeviceConnectionState, SPACE_SYNC_WS_PORT};
+use crate::services::device_connection::DeviceConnectionState;
 use crate::services::space_sync::types::WsMessage;
 use crate::services::space_sync::ws_session;
 
@@ -14,7 +14,7 @@ pub fn ensure_peer_sessions(state: &DeviceConnectionState, db_path: PathBuf) {
     let my_id = state.identity.device_id.clone();
     let peers = state.list_presenced_peers();
 
-    for (peer_id, addr) in peers {
+    for (peer_id, addr, ws_port) in peers {
         if my_id >= peer_id {
             continue; // The peer is the dialer for this pair
         }
@@ -25,7 +25,7 @@ pub fn ensure_peer_sessions(state: &DeviceConnectionState, db_path: PathBuf) {
         let db_path = db_path.clone();
         let peer_id_clone = peer_id.clone();
         tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id_clone, addr).await;
+            dial_with_backoff(state, db_path, peer_id_clone, addr, ws_port).await;
         });
     }
 }
@@ -35,6 +35,7 @@ async fn dial_with_backoff(
     db_path: PathBuf,
     peer_id: String,
     addr: String,
+    ws_port: u16,
 ) {
     let mut delay = Duration::from_secs(1);
     let max_delay = Duration::from_secs(30);
@@ -48,12 +49,12 @@ async fn dial_with_backoff(
         let still_present = state
             .list_presenced_peers()
             .into_iter()
-            .any(|(id, _)| id == peer_id);
+            .any(|(id, _, _)| id == peer_id);
         if !still_present {
             return;
         }
 
-        let url = format!("ws://{}:{}", addr, SPACE_SYNC_WS_PORT);
+        let url = format!("ws://{}:{}", addr, ws_port);
         match connect_async(&url).await {
             Ok((ws, _)) => {
                 let (mut sink, mut source) = ws.split();
