@@ -2,6 +2,16 @@
 
 **A quest-based productivity system for ADHD brains that helps people finish things.**
 
+**Sign up for the Android beta:**
+
+<a href="https://play.google.com/store/apps/details?id=com.fini.app">
+  <img
+    src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png"
+    alt="Get it on Google Play"
+    height="80"
+  />
+</a>
+
 ## The Problem
 
 Traditional todo apps fail people with ADHD. They accumulate unfinished tasks, create guilt, and get abandoned within weeks. The more tasks pile up, the harder it becomes to open the app at all.
