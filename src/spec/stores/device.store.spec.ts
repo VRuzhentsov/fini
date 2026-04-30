@@ -179,4 +179,28 @@ describe("device store sync status", () => {
     await approvalPromise;
     expect(store.getMappedSpaceIds("peer-1")).toEqual(["1"]);
   });
+
+  it("does not reopen the approval dialog for a confirmation snapshot", async () => {
+    (invoke as unknown as jest.Mock)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(["1"])
+      .mockResolvedValueOnce([
+        {
+          from_device_id: "peer-1",
+          mapped_space_ids: ["1"],
+          custom_spaces: [],
+          sent_at: "2026-04-11T20:00:10Z",
+        },
+      ])
+      .mockResolvedValueOnce(["1"]);
+
+    const store = useDeviceStore();
+
+    await store.loadMappedSpaces("peer-1");
+    await store.loadMappedSpaces("peer-1");
+
+    expect(store.getMappedSpaceIds("peer-1")).toEqual(["1"]);
+    expect(store.getPendingSpaceSyncRequest("peer-1")).toBeNull();
+    expect(store.listPendingSpaceSyncRequests()).toEqual([]);
+  });
 });

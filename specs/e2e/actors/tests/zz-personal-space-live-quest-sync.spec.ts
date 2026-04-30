@@ -1,12 +1,12 @@
-import { test, expect } from '../fixtures.js';
-import type { E2EActor } from '../fixtures.js';
-import { ensureSyncedActors } from '../helpers/device-sync.js';
+import { test, expect } from '../fixtures.ts';
+import type { E2EActor } from '../fixtures.ts';
+import { ensureSyncedActors } from '../helpers/device-sync.ts';
 import {
   ensurePersonalSpaceSync,
   waitForPersonalLastSyncedLabel,
   waitForPersonalLastSyncedLabelChange,
-} from '../helpers/personal-sync.js';
-import { pollUntil } from '../helpers/dom.js';
+} from '../helpers/personal-sync.ts';
+import { pollUntil } from '../helpers/dom.ts';
 
 const TIMEOUT_MS = 60_000;
 

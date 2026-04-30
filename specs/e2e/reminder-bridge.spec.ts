@@ -8,7 +8,7 @@
  * due_at_utc exactly equal to the local due date+time — stable for assertions.
  */
 import { test, expect } from '@playwright/test';
-import { CliClient, createCliClient } from './fixtures/cli.js';
+import { CliClient, createCliClient } from './fixtures/cli.ts';
 
 interface Quest {
   id: string;

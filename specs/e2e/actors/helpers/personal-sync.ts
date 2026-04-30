@@ -1,6 +1,6 @@
-import type { E2EActor } from '../fixtures.js';
-import { expect } from '../fixtures.js';
-import { pollUntil } from './dom.js';
+import type { E2EActor } from '../fixtures.ts';
+import { expect } from '../fixtures.ts';
+import { pollUntil } from './dom.ts';
 
 const PERSONAL_SPACE_ID = '1';
 const TIMEOUT_MS = 60_000;

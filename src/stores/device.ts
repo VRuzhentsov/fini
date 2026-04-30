@@ -440,7 +440,21 @@ export const useDeviceStore = defineStore("device", () => {
       );
 
       for (const update of updates) {
-        if (update.mapped_space_ids.length === 0 && update.custom_spaces.length === 0) {
+        const currentMapped = mappedSpaceIdsByPeer.value[update.from_device_id] ?? [];
+        const currentCustom = pendingSpaceSyncRequestsByPeer.value[update.from_device_id]?.custom_spaces ?? [];
+        const isEmptySnapshot = update.mapped_space_ids.length === 0 && update.custom_spaces.length === 0;
+        const isConfirmationSnapshot =
+          sameStringList(currentMapped, update.mapped_space_ids) &&
+          sameCustomSpaceList(currentCustom, update.custom_spaces);
+
+        if (isEmptySnapshot) {
+          delete pendingSpaceSyncRequestsByPeer.value[update.from_device_id];
+          continue;
+        }
+
+        // A matching snapshot is the peer confirming the request, not a new prompt.
+        if (isConfirmationSnapshot) {
+          mappedSpaceIdsByPeer.value[update.from_device_id] = [...update.mapped_space_ids];
           delete pendingSpaceSyncRequestsByPeer.value[update.from_device_id];
           continue;
         }
@@ -455,6 +469,23 @@ export const useDeviceStore = defineStore("device", () => {
     } catch (error) {
       console.warn("[space-sync] failed to consume incoming mapping updates", error);
     }
+  }
+
+  function sameStringList(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+
+  function sameCustomSpaceList(
+    left: CustomSpaceDescriptor[],
+    right: CustomSpaceDescriptor[],
+  ): boolean {
+    return (
+      left.length === right.length &&
+      left.every((value, index) => {
+        const next = right[index];
+        return value.space_id === next.space_id && value.name === next.name;
+      })
+    );
   }
 
   function setDiscovered(items: DiscoveredDevice[]) {

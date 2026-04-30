@@ -1,9 +1,9 @@
-import { test, expect } from '../fixtures.js';
-import { ensureSyncedActors } from '../helpers/device-sync.js';
+import { test, expect } from '../fixtures.ts';
+import { ensureSyncedActors } from '../helpers/device-sync.ts';
 import {
   ensurePersonalSpaceSync,
   waitForPersonalLastSyncedLabel,
-} from '../helpers/personal-sync.js';
+} from '../helpers/personal-sync.ts';
 
 test('device can request Personal space sync and peer confirms it', async ({ actorA, actorB }) => {
   const [syncedA, syncedB] = await ensureSyncedActors([actorA, actorB], { pairViaUi: true });

@@ -2,6 +2,7 @@ import { expect, test as base } from '@playwright/test';
 import { PluginClient, TauriPage } from '@srsholmes/tauri-playwright';
 import { existsSync } from 'fs';
 import path from 'path';
+import { resetActorsUi } from './helpers/teardown.ts';
 
 export interface E2EActor {
   slug: string;
@@ -85,6 +86,8 @@ export const test = base.extend<ActorFixtures>({
 
       await use(Object.fromEntries(actorEntries));
     } finally {
+      await resetActorsUi(actorEntries.map(([, actor]) => actor));
+
       for (const client of clients.reverse()) {
         client.disconnect();
       }

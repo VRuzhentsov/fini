@@ -1,6 +1,6 @@
-import { expect } from '../fixtures.js';
-import type { E2EActor } from '../fixtures.js';
-import { allTextContents, pollUntil, waitForText } from './dom.js';
+import { expect } from '../fixtures.ts';
+import type { E2EActor } from '../fixtures.ts';
+import { allTextContents, pollUntil, waitForText } from './dom.ts';
 
 interface DeviceIdentity {
   device_id: string;
