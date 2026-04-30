@@ -6,10 +6,12 @@ command: fini
 
 finish-args:
   - --share=ipc
+  - --share=network
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
   - --filesystem=home
+  - --talk-name=org.freedesktop.Flatpak
   - --talk-name=org.freedesktop.Notifications
 
 modules:

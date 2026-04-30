@@ -17,7 +17,7 @@ FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 
-.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local
+.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
@@ -41,6 +41,7 @@ help:
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
 	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
+	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
 	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
@@ -64,6 +65,10 @@ dev:
 
 build:
 	npm run tauri build
+
+flatpak-install-local:
+	-$(MAKE) build
+	flatpak run org.flatpak.Builder --force-clean --user --install flatpak-build com.fini.app.yml
 
 mcp:
 	./src-tauri/target/debug/fini mcp

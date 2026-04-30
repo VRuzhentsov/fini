@@ -43,7 +43,15 @@ use tauri_plugin_autostart::ManagerExt;
 
 #[cfg(target_os = "linux")]
 fn linux_prefers_dark() -> bool {
-    std::process::Command::new("gdbus")
+    let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
+        let mut cmd = std::process::Command::new("flatpak-spawn");
+        cmd.args(["--host", "gdbus"]);
+        cmd
+    } else {
+        std::process::Command::new("gdbus")
+    };
+
+    command
         .args([
             "call",
             "--session",
@@ -65,10 +73,6 @@ fn linux_prefers_dark() -> bool {
 
 #[tauri::command]
 fn theme_hint() -> String {
-    if std::env::var_os("FLATPAK_ID").is_some() {
-        return "dark".to_string();
-    }
-
     #[cfg(target_os = "linux")]
     if linux_prefers_dark() {
         return "dark".to_string();
@@ -132,8 +136,10 @@ pub fn run() {
                 any(target_os = "linux", target_os = "macos", target_os = "windows"),
                 not(debug_assertions)
             ))]
-            if let Err(e) = app_handle.autolaunch().enable() {
-                eprintln!("[autostart] enable failed: {e}");
+            if std::env::var_os("FLATPAK_ID").is_none() {
+                if let Err(e) = app_handle.autolaunch().enable() {
+                    eprintln!("[autostart] enable failed: {e}");
+                }
             }
 
             let db_state = app.state::<DbState>();
