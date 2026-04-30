@@ -35,7 +35,10 @@ use services::space_sync::{
     space_sync_update_mappings,
 };
 use tauri::Manager;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos", target_os = "windows"),
+    not(debug_assertions)
+))]
 use tauri_plugin_autostart::ManagerExt;
 
 #[cfg(target_os = "linux")]
@@ -95,7 +98,10 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init());
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(all(
+        any(target_os = "linux", target_os = "macos", target_os = "windows"),
+        not(debug_assertions)
+    ))]
     let builder = builder.plugin(tauri_plugin_autostart::init(
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
@@ -122,7 +128,10 @@ pub fn run() {
 
             setup_notification_channel(&app_handle);
 
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            #[cfg(all(
+                any(target_os = "linux", target_os = "macos", target_os = "windows"),
+                not(debug_assertions)
+            ))]
             if let Err(e) = app_handle.autolaunch().enable() {
                 eprintln!("[autostart] enable failed: {e}");
             }
