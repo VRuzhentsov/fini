@@ -8,7 +8,7 @@ Dedicated pairing mode view for discovering and pairing local devices.
 
 Only devices currently in add-device mode are shown as pairing candidates.
 
-This view belongs to [[DeviceConnection]] scope only.
+This view belongs to `specs/device-connect/README.md` scope only.
 
 ## Behavior
 
@@ -35,5 +35,5 @@ This view belongs to [[DeviceConnection]] scope only.
 ## Notes
 
 - Code expiry is tied to view lifecycle (no separate timer while view is open)
-- UDP remains control-plane for discovery/pairing; sync payloads are handled by [[SpaceSync]] websocket channel
+- Discovery remains control-plane for discovery/pairing; sync payloads are handled by `specs/space-sync/README.md` websocket channel
 - Data-plane transport encryption is deferred to follow-up phase

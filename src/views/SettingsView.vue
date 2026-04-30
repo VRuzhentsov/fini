@@ -112,25 +112,5 @@ function cancelEdit() {
         </li>
       </ul>
     </section>
-
-    <section class="rounded-xl bg-base-200 p-3">
-      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Sync</h2>
-      <ul class="flex flex-col gap-1">
-        <li class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
-          <span class="flex-1 text-sm font-medium">Last sync</span>
-          <span class="font-mono text-xs opacity-60">{{ deviceStore.lastAppliedSyncAt ? new Date(deviceStore.lastAppliedSyncAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never' }}</span>
-        </li>
-        <li v-for="device in deviceStore.pairedDevices" :key="`sync-${device.peer_device_id}`" class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
-          <span class="flex-1 text-sm font-medium">Last sync · {{ device.display_name }}</span>
-          <span class="font-mono text-xs opacity-60">Local time</span>
-        </li>
-        <li class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
-          <span class="flex-1 text-sm font-medium">Sync on change</span>
-          <span class="font-mono text-xs opacity-70">On</span>
-          <span class="text-sm opacity-50">›</span>
-        </li>
-      </ul>
-    </section>
-
   </div>
 </template>

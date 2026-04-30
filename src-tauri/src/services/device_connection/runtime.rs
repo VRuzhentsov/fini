@@ -129,6 +129,13 @@ pub(super) fn upsert_seen_peer(
     );
 }
 
+fn preferred_runtime_addr(addr: IpAddr) -> Option<IpAddr> {
+    match addr {
+        IpAddr::V6(v6) if v6.is_unicast_link_local() => None,
+        _ => Some(addr),
+    }
+}
+
 fn parse_bool_txt(value: Option<&str>) -> bool {
     matches!(value, Some("1") | Some("true") | Some("yes"))
 }
@@ -489,13 +496,17 @@ pub(super) fn spawn_discovery_worker(
                             if let Ok(mut guard) = runtime.lock() {
                                 guard.rx_count += 1;
 
-                                upsert_seen_peer(&mut guard.presence, &beacon, addr.ip(), discovery_port);
+                                if let Some(peer_addr) = preferred_runtime_addr(addr.ip()) {
+                                    upsert_seen_peer(&mut guard.presence, &beacon, peer_addr, discovery_port);
+                                }
 
                                 if guard.add_mode_enabled && beacon.mode == "add" {
                                     let is_new =
                                         !guard.discovered.contains_key(beacon.device_id.as_str());
 
-                                    upsert_seen_peer(&mut guard.discovered, &beacon, addr.ip(), discovery_port);
+                                    if let Some(peer_addr) = preferred_runtime_addr(addr.ip()) {
+                                        upsert_seen_peer(&mut guard.discovered, &beacon, peer_addr, discovery_port);
+                                    }
 
                                     if is_new {
                                         eprintln!(
@@ -746,6 +757,15 @@ mod tests {
             parse_utc_timestamp(&peer.last_seen_at).is_some(),
             "last_seen_at should remain valid UTC"
         );
+    }
+
+    #[test]
+    fn preferred_runtime_addr_ignores_link_local_ipv6() {
+        let addr: IpAddr = "fe80::1".parse().expect("parse link-local ipv6");
+        assert_eq!(preferred_runtime_addr(addr), None);
+
+        let ipv4: IpAddr = "192.168.1.10".parse().expect("parse ipv4");
+        assert_eq!(preferred_runtime_addr(ipv4), Some(ipv4));
     }
 
     #[test]

@@ -109,4 +109,74 @@ describe("device store sync status", () => {
     expect(store.getPendingSpaceSyncRequest("peer-1")).toBeNull();
     expect(store.getMappedSpaceIds("peer-1")).toEqual(["1"]);
   });
+
+  it("ignores empty incoming sync requests", async () => {
+    (invoke as unknown as jest.Mock)
+      .mockResolvedValueOnce([
+        {
+          from_device_id: "peer-1",
+          mapped_space_ids: [],
+          custom_spaces: [],
+          sent_at: "2026-04-11T20:00:00Z",
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const store = useDeviceStore();
+    await store.loadMappedSpaces("peer-1");
+
+    expect(store.getPendingSpaceSyncRequest("peer-1")).toBeNull();
+    expect(store.listPendingSpaceSyncRequests()).toEqual([]);
+  });
+
+  it("removes a pending sync request before approval completes", async () => {
+    let resolveApply!: (value: { mapped_space_ids: string[]; unresolved_custom_spaces: [] }) => void;
+    const applyPromise = new Promise<{ mapped_space_ids: string[]; unresolved_custom_spaces: [] }>((resolve) => {
+      resolveApply = resolve;
+    });
+
+    (invoke as unknown as jest.Mock)
+      .mockResolvedValueOnce([
+        {
+          from_device_id: "peer-1",
+          mapped_space_ids: ["1"],
+          custom_spaces: [],
+          sent_at: "2026-04-11T20:00:00Z",
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(() => applyPromise)
+      .mockResolvedValueOnce({
+        peer_device_id: "peer-1",
+        mapped_space_ids: ["1"],
+        pending_event_count: 1,
+        outbox_event_count: 1,
+        acked_event_count: 0,
+        seen_event_count: 0,
+        tombstone_count: 0,
+      })
+      .mockResolvedValueOnce({
+        sent_events: 0,
+        applied_events: 0,
+        received_acks: 0,
+        peers: [],
+        ticked_at: "2026-04-11T20:00:10Z",
+      });
+
+    const store = useDeviceStore();
+    await store.loadMappedSpaces("peer-1");
+
+    const approvalPromise = store.approvePendingSpaceSyncRequest("peer-1");
+
+    expect(store.getPendingSpaceSyncRequest("peer-1")).toBeNull();
+    expect(store.listPendingSpaceSyncRequests()).toEqual([]);
+
+    resolveApply({
+      mapped_space_ids: ["1"],
+      unresolved_custom_spaces: [],
+    });
+
+    await approvalPromise;
+    expect(store.getMappedSpaceIds("peer-1")).toEqual(["1"]);
+  });
 });

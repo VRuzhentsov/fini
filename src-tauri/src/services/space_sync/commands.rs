@@ -566,6 +566,31 @@ fn apply_sync_event(
     }
 
     mark_event_seen(conn, &event.event_id)?;
+
+    let current_last_synced = pair_space_mappings::table
+        .filter(pair_space_mappings::peer_device_id.eq(&event.origin_device_id))
+        .filter(pair_space_mappings::space_id.eq(&event.space_id))
+        .select(pair_space_mappings::last_synced_at)
+        .first::<Option<String>>(conn)
+        .optional()
+        .map_err(|e| e.to_string())?
+        .flatten();
+
+    if current_last_synced
+        .as_deref()
+        .map(|value| value < event.updated_at.as_str())
+        .unwrap_or(true)
+    {
+        diesel::update(
+            pair_space_mappings::table
+                .filter(pair_space_mappings::peer_device_id.eq(&event.origin_device_id))
+                .filter(pair_space_mappings::space_id.eq(&event.space_id)),
+        )
+        .set(pair_space_mappings::last_synced_at.eq(Some(event.updated_at.clone())))
+        .execute(conn)
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(true)
 }
 
@@ -1351,6 +1376,45 @@ mod tests {
             apply_sync_event(&mut conn, &new_event).unwrap(),
             "newer incoming event should be applied"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_updates_last_synced_for_origin_peer_space() {
+        let db_path = temp_db_path("apply-sync-event-updates-last-synced");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        diesel::insert_into(pair_space_mappings::table)
+            .values((
+                pair_space_mappings::peer_device_id.eq("dev-remote"),
+                pair_space_mappings::space_id.eq("1"),
+                pair_space_mappings::last_synced_at.eq(Option::<String>::None),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        let quest = test_quest("q-sync", "Remote Quest", "2026-03-03T00:00:00Z");
+        let event = test_envelope(
+            "evt-sync",
+            "dev-remote",
+            "quest",
+            "q-sync",
+            "upsert",
+            Some(quest_payload(&quest)),
+            "2026-03-03T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let last_synced: Option<String> = pair_space_mappings::table
+            .filter(pair_space_mappings::peer_device_id.eq("dev-remote"))
+            .filter(pair_space_mappings::space_id.eq("1"))
+            .select(pair_space_mappings::last_synced_at)
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(last_synced.as_deref(), Some("2026-03-03T00:00:00Z"));
 
         let _ = std::fs::remove_file(db_path);
     }

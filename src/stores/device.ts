@@ -343,19 +343,25 @@ export const useDeviceStore = defineStore("device", () => {
       throw new Error(`No pending space sync request for ${peerDeviceId}`);
     }
 
-    const result = await invoke<SpaceMappingApplyResult>("space_sync_apply_remote_mappings", {
-      peerDeviceId,
-      mappedSpaceIds: pendingRequest.mapped_space_ids,
-      customSpaces: pendingRequest.custom_spaces,
-    });
-
-    mappedSpaceIdsByPeer.value[peerDeviceId] = result.mapped_space_ids;
-    unresolvedCustomSpacesByPeer.value[peerDeviceId] = result.unresolved_custom_spaces;
     delete pendingSpaceSyncRequestsByPeer.value[peerDeviceId];
 
-    void refreshSpaceSyncStatus(peerDeviceId);
-    void runSpaceSyncTick();
-    return result;
+    try {
+      const result = await invoke<SpaceMappingApplyResult>("space_sync_apply_remote_mappings", {
+        peerDeviceId,
+        mappedSpaceIds: pendingRequest.mapped_space_ids,
+        customSpaces: pendingRequest.custom_spaces,
+      });
+
+      mappedSpaceIdsByPeer.value[peerDeviceId] = result.mapped_space_ids;
+      unresolvedCustomSpacesByPeer.value[peerDeviceId] = result.unresolved_custom_spaces;
+
+      void refreshSpaceSyncStatus(peerDeviceId);
+      void runSpaceSyncTick();
+      return result;
+    } catch (error) {
+      pendingSpaceSyncRequestsByPeer.value[peerDeviceId] = pendingRequest;
+      throw error;
+    }
   }
 
   async function refreshSpaceSyncStatus(peerDeviceId: string): Promise<SpaceSyncStatus | null> {
@@ -434,6 +440,11 @@ export const useDeviceStore = defineStore("device", () => {
       );
 
       for (const update of updates) {
+        if (update.mapped_space_ids.length === 0 && update.custom_spaces.length === 0) {
+          delete pendingSpaceSyncRequestsByPeer.value[update.from_device_id];
+          continue;
+        }
+
         pendingSpaceSyncRequestsByPeer.value[update.from_device_id] = {
           peer_device_id: update.from_device_id,
           mapped_space_ids: [...update.mapped_space_ids],

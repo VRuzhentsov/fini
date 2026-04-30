@@ -6,6 +6,8 @@ Route: `/settings/device/:id`. Parent: [[SettingsView]].
 
 Detail view for a paired device.
 
+Feature: `specs/space-sync/README.md`.
+
 ## Current scope
 
 - Show paired device identity (`display_name`, UUID suffix)

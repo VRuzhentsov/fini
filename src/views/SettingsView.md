@@ -14,7 +14,7 @@ Device routes:
 ## Sections
 
 ### Spaces
-Manage named contexts that quests can belong to. See [[spec/Space]].
+Manage named contexts that quests can belong to. See `specs/space/README.md`.
 
 - List all spaces with inline edit and delete (built-ins `1/2/3` cannot be deleted)
 - Add new space by name
@@ -25,13 +25,13 @@ Notes:
 
 ### Devices
 
-Device connection + synchronization entry point. See [[DeviceConnection]] and [[SpaceSync]].
+Device connection entry point. See `specs/device-connect/README.md` and `specs/space-sync/README.md`.
 
 - `DeviceList` is visible inline on `/settings`
 - Device rows navigate to [[DeviceView]]
 - `Add device` row is always last and navigates to [[AddDeviceView]]
 - Device status uses green/gray presence indicator
-- Device detail view exposes mapped-space configuration per paired device
+- Device detail view owns mapped-space configuration and visible sync status per paired device
 
 ### Voice Model
 Manages the on-device ASR model (`sherpa-onnx-streaming-zipformer-small-en`, ~60 MB).
