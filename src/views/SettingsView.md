@@ -33,6 +33,14 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 - Device status uses green/gray presence indicator
 - Device detail view owns mapped-space configuration and visible sync status per paired device
 
+### About
+
+App metadata and project link.
+
+- Rendered by [[AboutCard]]
+- Show the current app version
+- Link to the project source code
+
 ### Voice Model
 Manages the on-device ASR model (`sherpa-onnx-streaming-zipformer-small-en`, ~60 MB).
 

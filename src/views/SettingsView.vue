@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import packageJson from "../../package.json";
+import AboutCard from "../components/SettingsView/AboutCard.vue";
 import { useSpaceStore } from "../stores/space";
 import { useDeviceStore } from "../stores/device";
 
@@ -9,6 +11,8 @@ const deviceStore = useDeviceStore();
 const newSpaceName = ref("");
 const editingId = ref<string | null>(null);
 const editingName = ref("");
+const appVersion = packageJson.version;
+const sourceUrl = "https://github.com/VRuzhentsov/fini";
 
 onMounted(() => {
   spaceStore.fetchSpaces();
@@ -112,5 +116,7 @@ function cancelEdit() {
         </li>
       </ul>
     </section>
+
+    <AboutCard :version="appVersion" :source-url="sourceUrl" />
   </div>
 </template>
