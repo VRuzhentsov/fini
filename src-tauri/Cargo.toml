@@ -1,6 +1,6 @@
 [package]
 name = "fini"
-version = "0.1.7"
+version = "0.1.22"
 description = "Fini"
 authors = []
 edition = "2021"
