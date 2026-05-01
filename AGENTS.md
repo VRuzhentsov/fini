@@ -5,6 +5,7 @@
 - Frontend (Vue 3): `src/` — see `src/README.md`
 - Backend (Rust + Tauri): `src-tauri/` — see `src-tauri/README.md`
 - Domain and feature specs: `specs/`
+- Repo automation: `Makefile` + `npm run` + `xtask/` — see `fini-scripting` skill
 
 ## Knowledge base
 
@@ -32,6 +33,9 @@ When working inside that directory, load its `AGENTS.md` as the authoritative sc
 
 - Prefer `Makefile` targets over raw `npm`/`tauri` commands when possible.
 - See `Makefile` for available targets.
+- Load `fini-scripting` before adding or changing repo automation scripts, package scripts, release tooling, packaging tooling, CI command orchestration, or build orchestration.
+- Treat `Makefile` as the primary human execution entrypoint; use `npm run` for JS/TS package tasks and `xtask/` for non-trivial repo automation logic.
+- Load `fini-versioning` before changing package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync.
 - Use `/var/tmp` for temporary files and logs; do not use `/tmp`.
 - When stopping known dev processes, prefer `pkill -f "<specific-pattern>"` over PID-based `kill`.
 
@@ -39,5 +43,5 @@ When working inside that directory, load its `AGENTS.md` as the authoritative sc
 
 - Release pipeline should be triggered by tag push only (`v*`); main pushes should not start release workflows.
 - Release tags must be annotated and GPG-signed with the configured release key.
-- Create and push release tags only after the target commit is already on `origin/main`.
-- Release tag is the GitOps source of truth for release versioning; workflows sync dependent project versions from that tag, so do not pre-bump version files for normal releases.
+- Release flow should first push the version-bump commit to `origin/main`, then create and push the release tag that points to that exact commit.
+- Release tag is the deployment trigger; the tagged commit is the source of truth for package metadata and must already contain the release version files.

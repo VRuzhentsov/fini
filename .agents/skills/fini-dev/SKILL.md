@@ -64,6 +64,8 @@ Load the specialized skill when its condition applies:
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `android-testing` |
 | Design or refine native Figma components, variants, screens, or visual systems | `ui-ux-design` |
+| Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
+| Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
 | Save plans, decisions, research, or conversation context to wiki raw material | `save-to-wiki` |
 | Debug errors, regressions, stack traces, crashes, or unexpected behavior | `investigate` |
 | QA a web/app flow and fix bugs found | `qa` |
@@ -87,6 +89,7 @@ Use the repo structure as the default map:
 - Frontend: `src/`, Vue 3, TypeScript, Vite, Tailwind CSS, DaisyUI, Pinia.
 - Backend: `src-tauri/`, Rust, Tauri 2, Diesel, SQLite.
 - Domain specs and companion specs: `spec/`, folder `README.md` files, and sidecar `.md` files next to source files.
+- Repo automation: `Makefile` is the primary human execution entrypoint, `npm run` owns JS/TS package tasks, and `xtask/` owns non-trivial automation logic. See `fini-scripting`.
 
 Before changing a significant source file, read its companion `.md` spec when present. Write code to match the spec, or update docs/specs deliberately when the behavior changes.
 
@@ -119,9 +122,11 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 | Android build | `make android-build` |
 | Android debug deploy | `make android-debug-deploy` |
 | Android local release deploy | `make android-release-deploy-local` |
-| Signed release tag | `make release-tag VERSION=x.y.z` |
+| Release commit + signed tag | `make release VERSION=x.y.z` |
 
 Use package scripts directly only when no Makefile target exists or when a narrower check is clearly better, such as `npm run build` for frontend type/build validation.
+
+Use `fini-scripting` for command architecture details. Default to Makefile for human entrypoints, `npm run` for JS/TS package scripts, and `xtask/` for non-trivial repo automation logic.
 
 Do not invent generic targets such as `make test`, `make lint`, or `make check` unless they exist in the current `Makefile`. If a desired target is missing, name the closest existing target from the table or state that no Makefile target exists for that check.
 

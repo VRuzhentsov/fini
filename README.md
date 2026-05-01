@@ -147,16 +147,15 @@ npm run tauri dev -- app
 npm run tauri build
 ```
 
-### Release Tag
+### Release
 
-Release workflow is triggered only by pushing a signed annotated `v*` tag that points to the current `origin/main` commit.
+Release workflow is triggered only by pushing a signed annotated `v*` tag. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit.
 
 ```bash
-make release-tag VERSION=0.1.12
-git push origin v0.1.12
+make release VERSION=0.1.12
 ```
 
-The `make release-tag` flow creates a GPG-signed annotated tag with the repo's configured personal signing identity and verifies the signature locally before you push.
+The `make release` flow requires a clean `main` branch that matches `origin/main`, updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`, runs `make build`, creates a `chore: release vX.Y.Z` commit, pushes `main`, then creates and verifies a GPG-signed annotated tag before pushing it.
 
 ### Build (Android)
 

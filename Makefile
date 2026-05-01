@@ -17,7 +17,7 @@ FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 
-.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release-tag android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
+.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
@@ -42,7 +42,7 @@ help:
 	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
 	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
-	@echo "  make release-tag VERSION=x.y.z  Create signed annotated release tag vX.Y.Z"
+	@echo "  make release VERSION=x.y.z  Bump versions, verify build, push main, and push signed tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
@@ -579,26 +579,41 @@ runtime-smoke:
 	$(CONTAINER) image inspect fini-runtime >/dev/null 2>&1 || $(CONTAINER) build --target runtime -t fini-runtime .
 	$(CONTAINER) run --rm fini-runtime --help
 
-release-tag:
-	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release-tag VERSION=x.y.z" && exit 1)
-	@tag="v$(VERSION)"; \
+release:
+	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release VERSION=x.y.z" && exit 1)
+	@printf '%s\n' "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || (echo "VERSION must match x.y.z" && exit 1)
+	@branch="$$(git branch --show-current)"; \
+	if [ "$$branch" != "main" ]; then \
+	  echo "Release must run from main"; \
+	  echo "current branch=$$branch"; \
+	  exit 1; \
+	fi; \
+	git diff --quiet || (echo "Working tree has unstaged changes" && exit 1); \
+	git diff --cached --quiet || (echo "Working tree has staged changes" && exit 1); \
+	test -z "$$(git ls-files --others --exclude-standard)" || (echo "Working tree has untracked files" && exit 1); \
 	git fetch origin main --tags --force; \
 	main_commit="$$(git rev-parse origin/main)"; \
 	current_commit="$$(git rev-parse HEAD)"; \
 	if [ "$$current_commit" != "$$main_commit" ]; then \
-	  echo "HEAD must match origin/main before creating a release tag"; \
+	  echo "HEAD must match origin/main before release"; \
 	  echo "HEAD=$$current_commit"; \
 	  echo "origin/main=$$main_commit"; \
 	  exit 1; \
 	fi; \
+	tag="v$(VERSION)"; \
 	if git rev-parse -q --verify "refs/tags/$$tag" >/dev/null; then \
 	  echo "Tag already exists: $$tag"; \
 	  exit 1; \
 	fi; \
-	git -c user.email="v.ruzhentsov@gmail.com" -c user.signingkey="199DFE796EA43C00" tag -s -a "$$tag" -m "$$tag"; \
-	git tag -v "$$tag"; \
-	echo "Created signed annotated tag $$tag"; \
-	echo "Push with: git push origin $$tag"
+	cargo run --manifest-path xtask/Cargo.toml -- release-version "$(VERSION)"
+	$(MAKE) build
+	git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+	git commit -m "chore: release v$(VERSION)"
+	git push origin main
+	git -c user.email="v.ruzhentsov@gmail.com" -c user.signingkey="199DFE796EA43C00" tag -s -a "v$(VERSION)" -m "v$(VERSION)"
+	git tag -v "v$(VERSION)"
+	git push origin "v$(VERSION)"
+	@echo "Released v$(VERSION)"
 
 # ── Android ───────────────────────────────────────────────────────────────────
 
