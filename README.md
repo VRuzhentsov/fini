@@ -155,7 +155,7 @@ Release workflow is triggered only by pushing a signed annotated `v*` tag. The r
 make release VERSION=0.1.12
 ```
 
-The `make release` flow requires a clean `main` branch that matches `origin/main`, updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`, runs `make build`, creates a `chore: release vX.Y.Z` commit, pushes `main`, then creates and verifies a GPG-signed annotated tag before pushing it.
+The `make release` flow requires a clean `main` branch that matches `origin/main`, updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`, runs a release bundle check (`RELEASE_BUNDLES=deb,rpm` by default), creates a `chore: release vX.Y.Z` commit, pushes `main`, then creates and verifies a GPG-signed annotated tag before pushing it.
 
 ### Build (Android)
 

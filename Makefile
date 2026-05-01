@@ -16,6 +16,7 @@ FINI_E2E_ACTOR_IMAGE ?= fini-e2e-actor-ci
 FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
+RELEASE_BUNDLES ?= deb,rpm
 
 .PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
@@ -606,7 +607,7 @@ release:
 	  exit 1; \
 	fi; \
 	cargo run --manifest-path xtask/Cargo.toml -- release-version "$(VERSION)"
-	$(MAKE) build
+	npm run tauri build -- --bundles "$(RELEASE_BUNDLES)"
 	git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
 	git commit -m "chore: release v$(VERSION)"
 	git push origin main
