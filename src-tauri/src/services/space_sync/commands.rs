@@ -1385,11 +1385,22 @@ mod tests {
         let db_path = temp_db_path("apply-sync-event-updates-last-synced");
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("dev-remote"),
+                paired_devices::display_name.eq("Remote"),
+                paired_devices::paired_at.eq("2026-03-03T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
 
         diesel::insert_into(pair_space_mappings::table)
             .values((
                 pair_space_mappings::peer_device_id.eq("dev-remote"),
                 pair_space_mappings::space_id.eq("1"),
+                pair_space_mappings::enabled_at.eq("2026-03-03T00:00:00Z"),
                 pair_space_mappings::last_synced_at.eq(Option::<String>::None),
             ))
             .execute(&mut conn)

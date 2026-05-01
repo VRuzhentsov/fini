@@ -8,6 +8,13 @@ diesel::table! {
 }
 
 diesel::table! {
+    settings (key) {
+        key   -> Text,
+        value -> Text,
+    }
+}
+
+diesel::table! {
     quest_series (id) {
         id          -> Text,
         space_id    -> Text,
@@ -146,6 +153,7 @@ diesel::joinable!(focus_history -> quests (quest_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     spaces,
+    settings,
     quests,
     quest_series,
     reminders,

@@ -28,57 +28,48 @@ use services::reconciler;
 use services::reminder::{
     cancel_quest_notifications, create_reminder, delete_reminder, get_reminders, update_reminder,
 };
+use services::settings::{self, ThemeMode};
 use services::space::{create_space, delete_space, get_spaces, update_space};
 use services::space_sync::{
     run_ws_server, space_sync_apply_remote_mappings, space_sync_list_mappings,
     space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
     space_sync_update_mappings,
 };
-use tauri::Manager;
+use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", target_os = "windows"),
     not(debug_assertions)
 ))]
 use tauri_plugin_autostart::ManagerExt;
 
-#[cfg(target_os = "linux")]
-fn linux_prefers_dark() -> bool {
-    let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
-        let mut cmd = std::process::Command::new("flatpak-spawn");
-        cmd.args(["--host", "gdbus"]);
-        cmd
-    } else {
-        std::process::Command::new("gdbus")
-    };
+const THEME_EVENT: &str = "theme://changed";
 
-    command
-        .args([
-            "call",
-            "--session",
-            "--dest",
-            "org.freedesktop.portal.Desktop",
-            "--object-path",
-            "/org/freedesktop/portal/desktop",
-            "--method",
-            "org.freedesktop.portal.Settings.Read",
-            "org.freedesktop.appearance",
-            "color-scheme",
-        ])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .is_some_and(|stdout| stdout.contains("uint32 1"))
+#[tauri::command]
+fn get_theme_mode(db: tauri::State<DbState>) -> Result<String, String> {
+    let mut conn = db.0.lock().unwrap();
+    settings::theme_mode(&mut conn).map(|mode| mode.as_str().to_string())
 }
 
 #[tauri::command]
-fn theme_hint() -> String {
-    #[cfg(target_os = "linux")]
-    if linux_prefers_dark() {
-        return "dark".to_string();
-    }
+fn set_theme_mode(app: AppHandle, db: tauri::State<DbState>, mode: String) -> Result<String, String> {
+    let mode = ThemeMode::parse(&mode).ok_or_else(|| "invalid theme mode".to_string())?;
+    let mut conn = db.0.lock().unwrap();
+    let mode = settings::set_theme_mode(&mut conn, mode)?;
+    let effective = settings::theme_hint(&mut conn);
+    settings::apply_native_theme(&app, &effective);
+    let _ = app.emit(THEME_EVENT, effective.clone());
+    Ok(mode.as_str().to_string())
+}
 
-    "system".to_string()
+#[tauri::command]
+fn theme_hint(db: tauri::State<DbState>) -> String {
+    let mut conn = db.0.lock().unwrap();
+    settings::theme_hint(&mut conn)
+}
+
+#[tauri::command]
+fn sync_native_theme(app: AppHandle, theme: String) {
+    settings::apply_native_theme(&app, &theme);
 }
 
 pub fn run_mcp() {
@@ -131,6 +122,14 @@ pub fn run() {
             app.manage(NotificationObserverState::new());
 
             setup_notification_channel(&app_handle);
+
+            let initial_theme = {
+                let db = app.state::<DbState>();
+                let mut conn = db.0.lock().unwrap();
+                settings::theme_hint(&mut conn)
+            };
+            settings::apply_native_theme(&app_handle, &initial_theme);
+            settings::spawn_theme_watcher(&app_handle);
 
             #[cfg(all(
                 any(target_os = "linux", target_os = "macos", target_os = "windows"),
@@ -192,6 +191,9 @@ pub fn run() {
             space_sync_tick,
             space_sync_status,
             theme_hint,
+            get_theme_mode,
+            set_theme_mode,
+            sync_native_theme,
             #[cfg(feature = "e2e-testing")]
             e2e_list_notification_events,
             #[cfg(feature = "e2e-testing")]

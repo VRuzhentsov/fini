@@ -1299,6 +1299,7 @@ dependencies = [
  "diesel_migrations",
  "dirs 5.0.1",
  "futures-util",
+ "gtk",
  "libsqlite3-sys",
  "mdns-sd",
  "reqwest 0.12.28",
@@ -1319,6 +1320,8 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "uuid",
+ "zbus",
+ "zvariant",
 ]
 
 [[package]]

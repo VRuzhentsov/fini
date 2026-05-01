@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import packageJson from "../../package.json";
 import AboutCard from "../components/SettingsView/AboutCard.vue";
+import ThemeSelector from "../components/SettingsView/ThemeSelector.vue";
 import { useSpaceStore } from "../stores/space";
 import { useDeviceStore } from "../stores/device";
 
@@ -116,6 +117,8 @@ function cancelEdit() {
         </li>
       </ul>
     </section>
+
+    <ThemeSelector />
 
     <AboutCard :version="appVersion" :source-url="sourceUrl" />
   </div>

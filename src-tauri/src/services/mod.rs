@@ -6,5 +6,6 @@ pub mod notification;
 pub mod quest;
 pub mod reconciler;
 pub mod reminder;
+pub mod settings;
 pub mod space;
 pub mod space_sync;
