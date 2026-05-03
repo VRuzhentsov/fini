@@ -1,13 +1,15 @@
 ---
-name: save-to-wiki
-description: "Use this when the user asks to save discussed information, plans, decisions, research, summaries, or context to the project wiki raw folder for future ingestion. Trigger on phrases like 'save this to wiki', 'write this plan to raw', 'save this discussion for later ingestion', 'put this in the wiki raw folder', or when the user wants durable wiki source material without immediate ingestion."
+name: fini-wiki
+description: "Use this when the user asks to save, document, capture, or write discussed information, plans, decisions, research, summaries, or context into the project wiki for future ingestion. Trigger on phrases like 'document that into the wiki', 'save this to wiki', 'put that in fini-wiki', 'capture this in the wiki', 'save this context for the wiki', 'write this down in the project wiki', 'write this plan to raw', 'save this discussion for later ingestion', 'put this in the wiki raw folder', or when the user wants durable wiki source material without immediate ingestion."
 ---
 
-# Save To Wiki Raw
+# Fini Wiki Raw Capture
 
 Save the current discussion, plan, decision, research summary, or other user-approved context as a new raw source document in the sibling project wiki.
 
 This skill is for durable capture only. It creates raw source material for future postponed ingestion; it does not synthesize wiki pages under `pages/`.
+
+Full wiki ingestion into `_hot.md`, `_index.md`, `log.md`, or `pages/**` is intentionally out of scope. That belongs to a future ingestion skill inside the `fini-wiki` repo.
 
 ## Target Location
 

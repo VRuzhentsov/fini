@@ -31,7 +31,7 @@ If the user explicitly asks to think, plan, brainstorm, or review without implem
 
 ## Planning Capture
 
-At the end of any major planning session, load `save-to-wiki` and write the result to the project wiki raw folder for future ingestion.
+At the end of any major planning session, load `fini-wiki` and write the result to the project wiki raw folder for future ingestion.
 
 Treat a planning session as major when it produces durable context, such as:
 
@@ -52,7 +52,7 @@ When saving, include:
 - open questions
 - explicitly deferred work
 
-Use `save-to-wiki` as raw durable capture only. Do not update `_hot.md`, `_index.md`, `log.md`, or `pages/**` unless the user explicitly asks for ingestion.
+Use `fini-wiki` as raw durable capture only. Do not update `_hot.md`, `_index.md`, `log.md`, or `pages/**` unless the user explicitly asks for ingestion.
 
 ## Skill Routing
 
@@ -66,7 +66,7 @@ Load the specialized skill when its condition applies:
 | Design or refine native Figma components, variants, screens, or visual systems | `ui-ux-design` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
-| Save plans, decisions, research, or conversation context to wiki raw material | `save-to-wiki` |
+| Save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
 | Debug errors, regressions, stack traces, crashes, or unexpected behavior | `investigate` |
 | QA a web/app flow and fix bugs found | `qa` |
 | QA report only, without fixes | `qa-only` |
