@@ -13,6 +13,7 @@ Feature: `specs/space-sync/README.md`.
 - Show paired device identity (`display_name`, UUID suffix)
 - Show presence status (green/gray)
 - Show editable mapped spaces for this pair
+- Show last synced date and time for mapped spaces
 - Provide `Unpair` action
 
 ## Mapping behavior

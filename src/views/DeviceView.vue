@@ -38,7 +38,7 @@ const lastSyncedLabelBySpace = computed<Record<string, string>>(() => {
   const labels: Record<string, string> = {};
   for (const [spaceId, syncedAt] of Object.entries(lastSyncedAtBySpace.value)) {
     if (!syncedAt) continue;
-    labels[spaceId] = new Date(syncedAt).toLocaleTimeString();
+    labels[spaceId] = new Date(syncedAt).toLocaleString();
   }
   return labels;
 });

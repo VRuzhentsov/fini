@@ -75,7 +75,7 @@ describe("DeviceView mapped spaces sync labels", () => {
     (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreMock);
   });
 
-  it("shows last synced text for mapped Personal and Family rows", async () => {
+  it("shows last synced date and time for mapped rows", async () => {
     const wrapper = mount(DeviceView, {
       global: {
         stubs: {
@@ -96,8 +96,11 @@ describe("DeviceView mapped spaces sync labels", () => {
     expect(fooRow).toBeTruthy();
 
     expect(personalRow!.text()).toContain("last synced:");
+    expect(personalRow!.text()).toContain("2026");
     expect(familyRow!.text()).toContain("last synced:");
+    expect(familyRow!.text()).toContain("2026");
     expect(fooRow!.text()).toContain("last synced:");
+    expect(fooRow!.text()).toContain("2026");
 
     const syncLabelCount = (wrapper.text().match(/last synced:/g) ?? []).length;
     expect(syncLabelCount).toBeGreaterThanOrEqual(3);
