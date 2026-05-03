@@ -621,6 +621,7 @@ release:
 DEVICE_ADDRESS = $(shell adb mdns services 2>/dev/null | grep '_adb-tls-connect' | head -1 | awk '{print $$NF}')
 DEVICE_IP      = $(firstword $(subst :, ,$(DEVICE_ADDRESS)))
 HOST_IP        = $(shell ip route get $(DEVICE_IP) 2>/dev/null | grep -oP 'src \K\S+' | head -1)
+ANDROID_TARGET ?= aarch64
 LATEST_TAG = $(shell git describe --tags --abbrev=0 2>/dev/null || printf 'v0.0.0')
 GIT_SHA = $(shell git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
 ANDROID_DEBUG_VERSION_NAME = $(patsubst v%,%,$(LATEST_TAG))+dev.$(GIT_SHA)
@@ -638,7 +639,7 @@ android-dev: android-connect
 	npm run tauri android dev -- --host $(HOST_IP)
 
 android-build:
-	npm run tauri android build
+	npm run tauri android build -- --target "$(ANDROID_TARGET)"
 
 android-sign-debug:
 	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)
@@ -682,14 +683,14 @@ android-launch:
 
 android-debug-deploy:
 	@printf 'Android debug version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-debug
 	$(MAKE) android-install-debug
 	$(MAKE) android-launch
 
 android-release-deploy-local:
 	@printf 'Android local release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-release-local
 	$(MAKE) android-install-release-local
 	$(MAKE) android-launch

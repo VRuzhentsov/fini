@@ -28,7 +28,6 @@ fn main() {
 
     match &lib_dir {
         Some(path) => {
-            println!("cargo:warning=sherpa-onnx lib dir: {}", path);
             println!("cargo:rustc-link-search=native={}", path);
             if target_os == "linux" || target_os == "macos" {
                 println!("cargo:rustc-link-arg=-Wl,-rpath,{}", path);
