@@ -1,15 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
+import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
 import { useDeviceStore } from "../stores/device";
 import { useSpaceStore } from "../stores/space";
-import { shortUuid } from "../utils/shortUuid";
-
-const EMBEDDED_SPACE_IDS = new Set(["1", "2", "3"]);
-
-function isEmbeddedSpaceId(spaceId: string): boolean {
-  return EMBEDDED_SPACE_IDS.has(spaceId);
-}
 
 const route = useRoute();
 const router = useRouter();
@@ -30,6 +25,7 @@ const syncStatus = computed(() => {
   return deviceStore.getSpaceSyncStatus(deviceId.value);
 });
 const hasPendingSync = computed(() => (syncStatus.value?.pending_event_count ?? 0) > 0);
+const presenceLabel = computed(() => (online.value ? "Online" : "Offline"));
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() => {
   if (!deviceId.value) return {};
   return deviceStore.getLastSyncedAtBySpace(deviceId.value);
@@ -133,6 +129,13 @@ async function confirmUnpair() {
   await deviceStore.unpairDevice(device.value.peer_device_id);
   await router.push("/settings");
 }
+
+function mappedSpaceEndLabel(spaceId: string): string | null {
+  if (!mappedSelection.value.includes(spaceId)) return null;
+  if (hasPendingSync.value) return "Syncing";
+  const lastSynced = lastSyncedLabelBySpace.value[spaceId];
+  return lastSynced ? `last synced: ${lastSynced}` : "Mapped";
+}
 </script>
 
 <template>
@@ -140,22 +143,39 @@ async function confirmUnpair() {
     <header class="flex items-center justify-between rounded-xl bg-base-200 px-3 py-2">
       <router-link to="/settings" class="text-sm font-medium opacity-70">‹ Settings</router-link>
       <span class="text-sm font-semibold">Device</span>
-      <span class="text-xs opacity-60" v-if="device">{{ deviceStore.shortDeviceId(device.peer_device_id) }}</span>
-      <span class="text-xs opacity-60" v-else>Unknown</span>
+      <span class="text-xs opacity-60">{{ device ? presenceLabel : "Unknown" }}</span>
     </header>
 
     <section v-if="device" class="rounded-xl bg-base-200 p-3">
-      <div class="flex items-center gap-3">
-        <span class="h-2.5 w-2.5 rounded-full" :class="online ? 'bg-green-500' : 'bg-gray-400'" />
-        <h1 class="text-base font-semibold">{{ device.display_name }}</h1>
-      </div>
-      <p class="mt-2 text-xs opacity-60">paired at {{ new Date(device.paired_at).toLocaleString() }}</p>
-      <p class="text-xs opacity-60">
-        {{ online ? "online" : "offline" }}
-        <template v-if="device.last_seen_at">
-          · last seen {{ new Date(device.last_seen_at).toLocaleString() }}
-        </template>
-      </p>
+      <SettingsListGroup>
+        <SettingsListItem>
+          <template #leading>
+            <span class="h-2.5 w-2.5 rounded-full" :class="online ? 'bg-green-500' : 'bg-gray-400'" />
+          </template>
+          <template #start>
+            <span class="block truncate font-semibold">{{ device.display_name }}</span>
+          </template>
+          <template #end>
+            <span class="text-xs opacity-60">{{ presenceLabel }}</span>
+          </template>
+        </SettingsListItem>
+        <SettingsListItem>
+          <template #start>
+            <span class="font-medium">Paired</span>
+          </template>
+          <template #end>
+            <span class="text-xs opacity-60">{{ new Date(device.paired_at).toLocaleString() }}</span>
+          </template>
+        </SettingsListItem>
+        <SettingsListItem v-if="device.last_seen_at">
+          <template #start>
+            <span class="font-medium">Last seen</span>
+          </template>
+          <template #end>
+            <span class="text-xs opacity-60">{{ new Date(device.last_seen_at).toLocaleString() }}</span>
+          </template>
+        </SettingsListItem>
+      </SettingsListGroup>
     </section>
 
     <section v-if="device" class="rounded-xl bg-base-200 p-3">
@@ -165,44 +185,42 @@ async function confirmUnpair() {
           Select spaces to sync with this device. Changes apply symmetrically for this pair.
         </p>
         <div v-if="mappingError" class="text-error text-xs">{{ mappingError }}</div>
-        <ul class="flex flex-col gap-1">
-          <li
+        <SettingsListGroup>
+          <SettingsListItem
             v-for="space in spaceStore.spaces"
             :key="space.id"
-            class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2"
             data-testid="mapped-space-row"
             :data-space-id="space.id"
           >
-            <input
-              type="checkbox"
-              class="checkbox checkbox-sm"
-              data-testid="mapped-space-checkbox"
-              :checked="mappedSelection.includes(space.id)"
-              :disabled="!mappingsLoaded || savingMappings"
-              @change="toggleMappedSpace(space.id)"
-            />
-            <span class="flex-1 text-sm">{{ space.name }}</span>
-            <span
-              v-if="mappedSelection.includes(space.id) && hasPendingSync"
-              class="loading loading-spinner loading-xs text-primary"
-              title="Syncing"
-            />
-            <span
-              v-else-if="mappedSelection.includes(space.id) && !hasPendingSync && lastSyncedLabelBySpace[space.id]"
-              class="text-[11px] opacity-60"
-              data-testid="mapped-space-last-synced"
-            >
-              last synced: {{ lastSyncedLabelBySpace[space.id] }}
-            </span>
-            <span v-if="!isEmbeddedSpaceId(space.id)" class="text-xs opacity-60" :title="space.id">{{ shortUuid(space.id) }}</span>
-          </li>
-          <li
+            <template #leading>
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                data-testid="mapped-space-checkbox"
+                :checked="mappedSelection.includes(space.id)"
+                :disabled="!mappingsLoaded || savingMappings"
+                @change="toggleMappedSpace(space.id)"
+              />
+            </template>
+            <template #start>
+              <span class="block truncate">{{ space.name }}</span>
+            </template>
+            <template #end>
+              <span
+                v-if="mappedSpaceEndLabel(space.id)"
+                class="text-[11px] opacity-60"
+                data-testid="mapped-space-last-synced"
+              >
+                {{ mappedSpaceEndLabel(space.id) }}
+              </span>
+            </template>
+          </SettingsListItem>
+          <SettingsListItem
             v-if="spaceStore.spaces.length === 0"
-            class="rounded-lg bg-base-100 px-3 py-2 text-sm opacity-70"
           >
-            No spaces available.
-          </li>
-        </ul>
+            <span class="opacity-70">No spaces available.</span>
+          </SettingsListItem>
+        </SettingsListGroup>
         <div
           v-if="unresolvedCustomSpaces.length > 0"
           class="rounded-lg border border-warning/30 bg-base-100 p-3 text-xs"
@@ -230,10 +248,19 @@ async function confirmUnpair() {
             Reload
           </button>
         </div>
-        <div v-if="syncStatus" class="rounded-lg bg-base-100 px-3 py-2 text-xs opacity-70">
-          pending {{ syncStatus.pending_event_count }} · outbox {{ syncStatus.outbox_event_count }}
-          · acked {{ syncStatus.acked_event_count }}
-        </div>
+        <SettingsListGroup v-if="syncStatus">
+          <SettingsListItem>
+            <template #start>
+              <span class="font-medium">Sync status</span>
+            </template>
+            <template #end>
+              <span class="text-xs opacity-70">
+                pending {{ syncStatus.pending_event_count }} · outbox {{ syncStatus.outbox_event_count }}
+                · acked {{ syncStatus.acked_event_count }}
+              </span>
+            </template>
+          </SettingsListItem>
+        </SettingsListGroup>
       </div>
     </section>
 

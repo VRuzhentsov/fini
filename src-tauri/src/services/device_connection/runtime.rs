@@ -18,42 +18,58 @@ use crate::services::device_connection::types::{
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload, SeenPeer,
     StoredIncomingPairRequest,
 };
+use crate::services::{db, settings};
+
+const DEVICE_ID_KEY: &str = "device.id";
+const DEVICE_NAME_KEY: &str = "device.name";
 
 pub(super) fn utc_now() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 pub(super) fn load_or_create_identity(app_data_dir: &Path) -> DeviceIdentity {
-    let path = app_data_dir.join("device_identity.json");
+    let legacy_path = app_data_dir.join("device_identity.json");
+    let db_path = app_data_dir.join("fini.db");
+    let mut conn = db::open_db_at_path(&db_path);
 
-    if let Some(parsed) = std::fs::read_to_string(&path)
+    let settings_device_id = settings::load_setting(&mut conn, DEVICE_ID_KEY)
         .ok()
-        .and_then(|raw| serde_json::from_str::<DeviceIdentity>(&raw).ok())
-        .filter(|identity| {
-            !identity.device_id.trim().is_empty() && !identity.hostname.trim().is_empty()
-        })
-    {
-        return parsed;
-    }
+        .flatten()
+        .filter(|value| !value.trim().is_empty());
+    let legacy_device_id = || {
+        std::fs::read_to_string(&legacy_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<DeviceIdentity>(&raw).ok())
+            .map(|identity| identity.device_id)
+            .filter(|value| !value.trim().is_empty())
+    };
 
-    let device_id = Uuid::new_v4().to_string();
-    let fallback_host = format!("fini-{}", &device_id[..8]);
-    let hostname = std::env::var("HOSTNAME")
+    let device_id = settings_device_id
+        .or_else(legacy_device_id)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let existing_name = settings::load_setting(&mut conn, DEVICE_NAME_KEY)
+        .ok()
+        .flatten()
+        .filter(|value| !value.trim().is_empty());
+    let hostname = current_device_name(&device_id, existing_name.as_deref());
+
+    let _ = settings::upsert_setting(&mut conn, DEVICE_ID_KEY, &device_id);
+    let _ = settings::upsert_setting(&mut conn, DEVICE_NAME_KEY, &hostname);
+    let _ = std::fs::remove_file(legacy_path);
+
+    DeviceIdentity {
+        device_id,
+        hostname,
+    }
+}
+
+fn current_device_name(device_id: &str, existing_name: Option<&str>) -> String {
+    std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or(fallback_host);
-
-    let identity = DeviceIdentity {
-        device_id,
-        hostname,
-    };
-
-    if let Ok(serialized) = serde_json::to_string_pretty(&identity) {
-        let _ = std::fs::write(path, serialized);
-    }
-
-    identity
+        .or_else(|| existing_name.map(ToString::to_string))
+        .unwrap_or_else(|| format!("fini-{}", device_id.chars().take(8).collect::<String>()))
 }
 
 pub(super) fn set_last_error(runtime: &Arc<Mutex<DiscoveryRuntime>>, message: String) {
@@ -141,7 +157,8 @@ fn parse_bool_txt(value: Option<&str>) -> bool {
 }
 
 fn service_txt<'a>(info: &'a ServiceInfo, key: &str) -> Option<&'a str> {
-    info.get_property_val_str(key).filter(|value| !value.is_empty())
+    info.get_property_val_str(key)
+        .filter(|value| !value.is_empty())
 }
 
 fn upsert_mdns_peer(
@@ -256,18 +273,14 @@ fn spawn_mdns_worker(
             .lock()
             .map(|guard| guard.add_mode_enabled)
             .unwrap_or(false);
-        let mut registered_fullname = match register_mdns_service(
-            &daemon,
-            &identity,
-            space_sync_ws_port,
-            last_add_mode,
-        ) {
-            Ok(fullname) => Some(fullname),
-            Err(err) => {
-                set_last_error(&runtime_worker, err);
-                None
-            }
-        };
+        let mut registered_fullname =
+            match register_mdns_service(&daemon, &identity, space_sync_ws_port, last_add_mode) {
+                Ok(fullname) => Some(fullname),
+                Err(err) => {
+                    set_last_error(&runtime_worker, err);
+                    None
+                }
+            };
 
         if let Ok(mut guard) = runtime_worker.lock() {
             guard.worker_started = true;
@@ -282,18 +295,14 @@ fn spawn_mdns_worker(
                 if let Some(fullname) = registered_fullname.take() {
                     let _ = daemon.unregister(&fullname);
                 }
-                registered_fullname = match register_mdns_service(
-                    &daemon,
-                    &identity,
-                    space_sync_ws_port,
-                    add_mode,
-                ) {
-                    Ok(fullname) => Some(fullname),
-                    Err(err) => {
-                        set_last_error(&runtime_worker, err);
-                        None
-                    }
-                };
+                registered_fullname =
+                    match register_mdns_service(&daemon, &identity, space_sync_ws_port, add_mode) {
+                        Ok(fullname) => Some(fullname),
+                        Err(err) => {
+                            set_last_error(&runtime_worker, err);
+                            None
+                        }
+                    };
                 last_add_mode = add_mode;
             }
 
@@ -309,11 +318,13 @@ fn spawn_mdns_worker(
                         if let Some((device_id, add_mode)) = presence {
                             if add_mode {
                                 let is_new = !guard.discovered.contains_key(device_id.as_str());
-                                let _ = upsert_mdns_peer(&mut guard.discovered, &info, discovery_port);
+                                let _ =
+                                    upsert_mdns_peer(&mut guard.discovered, &info, discovery_port);
                                 if is_new {
                                     eprintln!(
                                         "[device-sync] mdns discovered peer {} ({})",
-                                        info.get_fullname(), device_id
+                                        info.get_fullname(),
+                                        device_id
                                     );
                                 }
                             } else {
@@ -497,7 +508,12 @@ pub(super) fn spawn_discovery_worker(
                                 guard.rx_count += 1;
 
                                 if let Some(peer_addr) = preferred_runtime_addr(addr.ip()) {
-                                    upsert_seen_peer(&mut guard.presence, &beacon, peer_addr, discovery_port);
+                                    upsert_seen_peer(
+                                        &mut guard.presence,
+                                        &beacon,
+                                        peer_addr,
+                                        discovery_port,
+                                    );
                                 }
 
                                 if guard.add_mode_enabled && beacon.mode == "add" {
@@ -505,7 +521,12 @@ pub(super) fn spawn_discovery_worker(
                                         !guard.discovered.contains_key(beacon.device_id.as_str());
 
                                     if let Some(peer_addr) = preferred_runtime_addr(addr.ip()) {
-                                        upsert_seen_peer(&mut guard.discovered, &beacon, peer_addr, discovery_port);
+                                        upsert_seen_peer(
+                                            &mut guard.discovered,
+                                            &beacon,
+                                            peer_addr,
+                                            discovery_port,
+                                        );
                                     }
 
                                     if is_new {
@@ -800,10 +821,7 @@ mod tests {
     fn incoming_pair_request_uses_receiver_local_ttl() {
         let payload = sample_pair_request_payload("1999-01-01T00:00:00Z");
         let before = Utc::now();
-        let stored = build_incoming_pair_request(
-            &payload,
-            "192.168.1.50".to_string(),
-        );
+        let stored = build_incoming_pair_request(&payload, "192.168.1.50".to_string());
         let after = Utc::now();
 
         assert_eq!(stored.request.request_id, payload.request_id);
@@ -831,56 +849,73 @@ mod tests {
     }
 
     #[test]
-    fn load_or_create_identity_creates_and_persists_new_identity() {
+    fn load_or_create_identity_creates_and_persists_settings_identity() {
         let dir = unique_temp_dir("identity-create");
         let identity = load_or_create_identity(&dir);
 
         assert!(!identity.device_id.trim().is_empty());
         assert!(!identity.hostname.trim().is_empty());
 
-        let saved_raw = std::fs::read_to_string(dir.join("device_identity.json"))
-            .expect("identity file should exist");
-        let saved: DeviceIdentity =
-            serde_json::from_str(&saved_raw).expect("saved identity should parse");
+        let mut conn = db::open_db_at_path(&dir.join("fini.db"));
+        let saved_id = settings::load_setting(&mut conn, DEVICE_ID_KEY)
+            .expect("load device id setting")
+            .expect("device id setting should exist");
+        let saved_name = settings::load_setting(&mut conn, DEVICE_NAME_KEY)
+            .expect("load device name setting")
+            .expect("device name setting should exist");
 
-        assert_eq!(saved.device_id, identity.device_id);
-        assert_eq!(saved.hostname, identity.hostname);
+        assert_eq!(saved_id, identity.device_id);
+        assert_eq!(saved_name, identity.hostname);
+        assert!(
+            !dir.join("device_identity.json").exists(),
+            "deprecated identity file should not be created"
+        );
     }
 
     #[test]
-    fn load_or_create_identity_reuses_existing_valid_identity() {
-        let dir = unique_temp_dir("identity-reuse");
-        let existing = DeviceIdentity {
+    fn load_or_create_identity_imports_legacy_id_and_deletes_file() {
+        let dir = unique_temp_dir("identity-import");
+        let legacy = DeviceIdentity {
             device_id: "existing-device-id".to_string(),
-            hostname: "existing-host".to_string(),
+            hostname: "legacy-host".to_string(),
         };
 
-        let payload = serde_json::to_string_pretty(&existing).expect("serialize fixture identity");
+        let payload = serde_json::to_string_pretty(&legacy).expect("serialize fixture identity");
         std::fs::write(dir.join("device_identity.json"), payload)
             .expect("failed to write fixture identity file");
 
         let loaded = load_or_create_identity(&dir);
-        assert_eq!(loaded.device_id, existing.device_id);
-        assert_eq!(loaded.hostname, existing.hostname);
+        assert_eq!(loaded.device_id, legacy.device_id);
+        assert!(!loaded.hostname.trim().is_empty());
+        assert!(
+            !dir.join("device_identity.json").exists(),
+            "deprecated identity file should be deleted after import"
+        );
     }
 
     #[test]
-    fn load_or_create_identity_replaces_invalid_identity_file() {
-        let dir = unique_temp_dir("identity-invalid");
-        std::fs::write(dir.join("device_identity.json"), "not-json")
-            .expect("failed to seed invalid identity file");
+    fn load_or_create_identity_prefers_settings_over_legacy_file() {
+        let dir = unique_temp_dir("identity-settings-win");
+        let mut conn = db::open_db_at_path(&dir.join("fini.db"));
+        settings::upsert_setting(&mut conn, DEVICE_ID_KEY, "settings-device-id")
+            .expect("seed device id setting");
+        settings::upsert_setting(&mut conn, DEVICE_NAME_KEY, "settings-device-name")
+            .expect("seed device name setting");
+        let legacy = DeviceIdentity {
+            device_id: "legacy-device-id".to_string(),
+            hostname: "legacy-host".to_string(),
+        };
+        let payload = serde_json::to_string_pretty(&legacy).expect("serialize fixture identity");
+        std::fs::write(dir.join("device_identity.json"), payload)
+            .expect("failed to write fixture identity file");
 
         let loaded = load_or_create_identity(&dir);
 
-        assert!(!loaded.device_id.trim().is_empty());
+        assert_eq!(loaded.device_id, "settings-device-id");
         assert!(!loaded.hostname.trim().is_empty());
-
-        let saved_raw = std::fs::read_to_string(dir.join("device_identity.json"))
-            .expect("identity file should be rewritten");
-        let saved: DeviceIdentity =
-            serde_json::from_str(&saved_raw).expect("rewritten identity should parse");
-
-        assert_eq!(saved.device_id, loaded.device_id);
-        assert_eq!(saved.hostname, loaded.hostname);
+        assert!(
+            !dir.join("device_identity.json").exists(),
+            "stale deprecated identity file should be deleted"
+        );
     }
 }

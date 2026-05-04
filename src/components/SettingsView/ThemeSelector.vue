@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import SettingsListGroup from "./SettingsListGroup.vue";
+import SettingsListItem from "./SettingsListItem.vue";
 
 const themeMode = ref<"system" | "light" | "dark">("system");
 
@@ -37,21 +39,34 @@ async function chooseTheme(mode: "system" | "light" | "dark") {
     // Keep the current UI selection if the backend write fails.
   }
 }
+
+function themeOptionClass(mode: "system" | "light" | "dark") {
+  return themeMode.value === mode ? "active" : "";
+}
 </script>
 
 <template>
   <section class="rounded-xl bg-base-200 p-3">
     <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Appearance</h2>
-    <div class="dropdown dropdown-right">
-      <button tabindex="0" class="btn btn-outline btn-sm min-w-32 justify-between">
-        <span>Theme</span>
-        <span class="opacity-70">{{ themeLabels[themeMode] }}</span>
-      </button>
-      <ul tabindex="0" class="dropdown-content menu rounded-box bg-base-100 z-10 mt-2 w-48 p-2 shadow">
-        <li><button :class="themeMode === 'system' ? 'active' : ''" @click="chooseTheme('system')">System</button></li>
-        <li><button :class="themeMode === 'light' ? 'active' : ''" @click="chooseTheme('light')">Light</button></li>
-        <li><button :class="themeMode === 'dark' ? 'active' : ''" @click="chooseTheme('dark')">Dark</button></li>
-      </ul>
-    </div>
+    <SettingsListGroup>
+      <SettingsListItem>
+        <template #start>
+          <span class="font-medium">Theme</span>
+        </template>
+        <template #end>
+          <div class="dropdown dropdown-end">
+            <button tabindex="0" class="inline-flex items-center gap-1 text-sm opacity-70">
+              <span>{{ themeLabels[themeMode] }}</span>
+              <span class="text-xs">⌄</span>
+            </button>
+            <ul tabindex="0" class="dropdown-content menu rounded-box bg-base-100 z-10 mt-2 w-48 p-2 shadow">
+              <li><button :class="themeOptionClass('system')" @click="chooseTheme('system')">System</button></li>
+              <li><button :class="themeOptionClass('light')" @click="chooseTheme('light')">Light</button></li>
+              <li><button :class="themeOptionClass('dark')" @click="chooseTheme('dark')">Dark</button></li>
+            </ul>
+          </div>
+        </template>
+      </SettingsListItem>
+    </SettingsListGroup>
   </section>
 </template>

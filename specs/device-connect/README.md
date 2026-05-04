@@ -21,6 +21,10 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 - Pairing completion persists both peers as paired devices
 - Presence is refreshed independently from pairing state
 - Discovery metadata is untrusted and only used to find candidate peers/endpoints
+- Local device identity is stored as scalar settings rows: `device.id` for immutable UUID and `device.name` for the current local broadcast name
+- Deprecated `device_identity.json` is migration input only; after settings identity is valid, stale JSON is deleted
+- Paired-device `display_name` is captured at pairing time and does not auto-update from later discovery name changes
+- Visible Settings rows do not combine display names with UUID hashes; UUIDs remain storage/route identity
 
 ## Primary UI Surfaces
 

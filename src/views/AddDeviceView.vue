@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
+import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
+import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
 import { ADD_MODE_DISCOVERY_INTERVAL_MS, useDeviceStore } from "../stores/device";
 
 const deviceStore = useDeviceStore();
@@ -104,7 +106,7 @@ function rejectRequest(requestId: string) {
     <header class="flex items-center justify-between rounded-xl bg-base-200 px-3 py-2">
       <router-link to="/settings" class="text-sm font-medium opacity-70">‹ Settings</router-link>
       <span class="text-sm font-semibold">Add Device</span>
-      <span class="text-xs opacity-60">{{ deviceStore.shortDeviceId(deviceStore.identity.device_id) }}</span>
+      <span class="text-xs opacity-60">{{ deviceStore.identity.hostname }}</span>
     </header>
 
     <section class="rounded-xl bg-base-200 p-3">
@@ -136,53 +138,58 @@ function rejectRequest(requestId: string) {
 
     <section v-if="deviceStore.incomingRequests.length" class="rounded-xl bg-base-200 p-3" data-testid="incoming-requests">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Incoming requests</h2>
-      <ul class="flex flex-col gap-2">
-        <li
+      <SettingsListGroup>
+        <SettingsListItem
           v-for="request in deviceStore.incomingRequests"
           :key="request.request_id"
           data-testid="incoming-request-row"
           :data-from-hostname="request.from_hostname"
-          class="rounded-lg bg-base-100 p-3"
         >
-          <p class="text-sm font-medium">{{ request.from_hostname }}</p>
-          <p class="text-xs opacity-60">
-            {{ deviceStore.shortDeviceId(request.from_device_id) }} · expires in {{ incomingSecondsLeft(request.expires_at) }}s
-          </p>
-          <div
-            v-if="!acceptedIncomingByRequest[request.request_id]"
-            class="mt-2 flex flex-wrap gap-2"
-          >
-            <button class="btn btn-sm btn-primary" data-testid="accept-incoming-request" @click="void acceptRequest(request.request_id)">Accept</button>
-            <button class="btn btn-sm btn-ghost" @click="rejectRequest(request.request_id)">Reject</button>
-          </div>
-          <div v-else class="mt-2 flex gap-2">
-            <input
-              v-model="codeInputByRequest[request.request_id]"
-              maxlength="6"
-              type="tel"
-              inputmode="numeric"
-              pattern="[0-9]*"
-              class="input input-bordered input-sm w-28"
-              data-testid="pair-code-input"
-              placeholder="6-digit"
-            />
-            <button class="btn btn-sm" data-testid="pair-code-submit" @click="void submitCode(request.request_id)">Submit code</button>
-          </div>
-          <p v-if="request.cooldown_until && incomingSecondsLeft(request.cooldown_until) > 0" class="mt-2 text-xs text-warning">
-            Too many wrong codes. Try again in {{ incomingSecondsLeft(request.cooldown_until) }}s.
-          </p>
-        </li>
-      </ul>
+          <template #start>
+            <div class="min-w-0">
+              <p class="truncate font-medium">{{ request.from_hostname }}</p>
+              <p v-if="request.cooldown_until && incomingSecondsLeft(request.cooldown_until) > 0" class="text-xs text-warning">
+                Try again in {{ incomingSecondsLeft(request.cooldown_until) }}s.
+              </p>
+            </div>
+          </template>
+          <template #end>
+            <div v-if="!acceptedIncomingByRequest[request.request_id]" class="flex items-center justify-end gap-2">
+              <span class="hidden text-xs opacity-60 sm:inline">expires in {{ incomingSecondsLeft(request.expires_at) }}s</span>
+              <button class="btn btn-sm btn-primary" data-testid="accept-incoming-request" @click="void acceptRequest(request.request_id)">Accept</button>
+              <button class="btn btn-sm btn-ghost" @click="rejectRequest(request.request_id)">Reject</button>
+            </div>
+            <div v-else class="flex items-center justify-end gap-2">
+              <input
+                v-model="codeInputByRequest[request.request_id]"
+                maxlength="6"
+                type="tel"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                class="input input-bordered input-sm w-28"
+                data-testid="pair-code-input"
+                placeholder="6-digit"
+              />
+              <button class="btn btn-sm" data-testid="pair-code-submit" @click="void submitCode(request.request_id)">Submit code</button>
+            </div>
+          </template>
+        </SettingsListItem>
+      </SettingsListGroup>
     </section>
 
     <section class="rounded-xl bg-base-200 p-3" data-testid="nearby-devices">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Nearby devices</h2>
-      <ul class="flex flex-col gap-1">
-        <li v-for="device in deviceStore.discoveredDevices" :key="device.device_id" data-testid="nearby-device-row" :data-device-hostname="device.hostname" :data-device-id="device.device_id">
-          <div class="flex items-center gap-3 rounded-lg bg-base-100 px-3 py-2">
+      <SettingsListGroup>
+        <SettingsListItem v-for="device in deviceStore.discoveredDevices" :key="device.device_id" data-testid="nearby-device-row" :data-device-hostname="device.hostname" :data-device-id="device.device_id">
+          <template #leading>
             <span class="h-2.5 w-2.5 rounded-full bg-green-500" />
-            <span class="flex-1 text-sm font-medium">{{ device.hostname }}</span>
-            <span class="text-xs opacity-60">{{ deviceStore.shortDeviceId(device.device_id) }} · {{ device.addr }}</span>
+          </template>
+          <template #start>
+            <span class="block truncate font-medium">{{ device.hostname }}</span>
+          </template>
+          <template #end>
+            <div class="flex items-center justify-end gap-2">
+            <span class="text-xs opacity-60">{{ device.addr }}</span>
             <button
               class="btn btn-sm btn-primary"
               data-testid="request-pair"
@@ -191,12 +198,13 @@ function rejectRequest(requestId: string) {
             >
               Pair
             </button>
-          </div>
-        </li>
-        <li v-if="!deviceStore.discoveredDevices.length" class="rounded-lg bg-base-100 px-3 py-2 text-sm opacity-70">
-          No devices discovered in Add Device mode yet.
-        </li>
-      </ul>
+            </div>
+          </template>
+        </SettingsListItem>
+        <SettingsListItem v-if="!deviceStore.discoveredDevices.length">
+          <span class="opacity-70">No devices discovered in Add Device mode yet.</span>
+        </SettingsListItem>
+      </SettingsListGroup>
       <p v-if="outgoingPending" class="mt-2 text-xs opacity-60">
         Pair request in progress. Complete or cancel it before sending another.
       </p>
@@ -204,13 +212,18 @@ function rejectRequest(requestId: string) {
 
     <section v-if="deviceStore.outgoingRequest" class="rounded-xl bg-base-200 p-3" data-testid="outgoing-pair-request">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Pair request</h2>
-      <p class="text-sm font-medium">{{ deviceStore.outgoingRequest.to_hostname }}</p>
-      <p class="text-xs opacity-60">
-        {{ deviceStore.shortDeviceId(deviceStore.outgoingRequest.to_device_id) }} · {{ deviceStore.outgoingRequest.status }}
-      </p>
-      <p class="text-xs opacity-60" v-if="deviceStore.outgoingRequest.status === 'pending'">
-        Expires in {{ outgoingSecondsLeft }}s
-      </p>
+      <SettingsListGroup>
+        <SettingsListItem>
+          <template #start>
+            <span class="font-medium">{{ deviceStore.outgoingRequest.to_hostname }}</span>
+          </template>
+          <template #end>
+            <span class="text-xs opacity-60">
+              {{ deviceStore.outgoingRequest.status }}<template v-if="deviceStore.outgoingRequest.status === 'pending'"> · {{ outgoingSecondsLeft }}s</template>
+            </span>
+          </template>
+        </SettingsListItem>
+      </SettingsListGroup>
       <div v-if="deviceStore.outgoingRequest.sender_code" class="mt-2 rounded-lg bg-base-100 px-3 py-2">
         <p class="text-xs opacity-60">Share this code with the receiving device</p>
         <p class="font-mono text-lg tracking-wider" data-testid="pair-code">{{ deviceStore.outgoingRequest.sender_code }}</p>

@@ -18,6 +18,7 @@ Manage named contexts that quests can belong to. See `specs/space/README.md`.
 
 - List all spaces with inline edit and delete (built-ins `1/2/3` cannot be deleted)
 - Add new space by name
+- Space rows use [[SettingsListItem]]: name/input in `start`, actions/add controls in `end`
 
 Notes:
 - Spaces management lives only in Settings (no dedicated Spaces tab)
@@ -31,6 +32,7 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 - Device rows navigate to [[DeviceView]]
 - `Add device` row is always last and navigates to [[AddDeviceView]]
 - Device status uses green/gray presence indicator
+- Device rows show display name plus `Online`/`Offline`; UUIDs stay out of visible Settings list rows
 - Device detail view owns mapped-space configuration and visible sync status per paired device
 
 ### About
@@ -40,6 +42,14 @@ App metadata and project link.
 - Rendered by [[AboutCard]]
 - Show the current app version
 - Link to the project source code
+
+## Settings Rows
+
+- Grouped rows use [[SettingsListGroup]] plus [[SettingsListItem]]
+- Row content is either one-column or `start`/`end` two-column
+- `end` is right-aligned and capped at `50%`; it is not a fixed 50/50 split
+- Fixed chrome such as status dots, plus signs, and chevrons lives outside the content columns
+- Theme styling uses DaisyUI/Tailwind tokens and the global `data-theme`; Settings templates should not branch on light/dark/system
 
 ### Voice Model
 Manages the on-device ASR model (`sherpa-onnx-streaming-zipformer-small-en`, ~60 MB).

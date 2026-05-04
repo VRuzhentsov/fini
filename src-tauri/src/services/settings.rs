@@ -41,7 +41,11 @@ impl ThemeMode {
     }
 }
 
-fn upsert_setting(conn: &mut SqliteConnection, key: &str, value: &str) -> Result<(), String> {
+pub(crate) fn upsert_setting(
+    conn: &mut SqliteConnection,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     diesel::insert_into(settings::table)
         .values(UpsertSettingInput {
             key: key.to_string(),
@@ -56,7 +60,10 @@ fn upsert_setting(conn: &mut SqliteConnection, key: &str, value: &str) -> Result
     Ok(())
 }
 
-fn load_setting(conn: &mut SqliteConnection, key: &str) -> Result<Option<String>, String> {
+pub(crate) fn load_setting(
+    conn: &mut SqliteConnection,
+    key: &str,
+) -> Result<Option<String>, String> {
     settings::table
         .filter(settings::key.eq(key))
         .select(settings::value)

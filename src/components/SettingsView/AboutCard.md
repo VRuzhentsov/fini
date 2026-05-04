@@ -21,6 +21,8 @@ About
   Source code ↗
 ```
 
+Rows use [[SettingsListItem]] inside [[SettingsListGroup]].
+
 ## Behaviour
 
 - Version text is read-only
