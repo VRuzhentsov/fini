@@ -27,7 +27,7 @@ WORKDIR /workspace
 
 RUN set -eux; \
     apt-get update -o Acquire::Retries=5; \
-    apt-get install -y --no-install-recommends \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
       libasound2-dev \
       libwebkit2gtk-4.1-dev \
       libappindicator3-dev \
@@ -76,7 +76,7 @@ FROM ubuntu:24.04 AS runtime-base
 
 RUN set -eux; \
     apt-get update -o Acquire::Retries=5; \
-    apt-get install -y --no-install-recommends --fix-missing \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends --fix-missing \
       ca-certificates \
       libasound2t64 \
       libayatana-appindicator3-1 \
@@ -101,7 +101,7 @@ FROM runtime-base AS e2e-actor
 
 RUN set -eux; \
     apt-get update -o Acquire::Retries=5; \
-    apt-get install -y --no-install-recommends --fix-missing \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends --fix-missing \
       xvfb \
       xauth; \
     rm -rf /var/lib/apt/lists/*
@@ -117,7 +117,7 @@ ENTRYPOINT ["/usr/local/bin/fini-e2e-actor"]
 
 FROM node-deps AS e2e-runner
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::Retries=5 && apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
     ca-certificates \
     libasound2 \
     libayatana-appindicator3-1 \
@@ -169,7 +169,7 @@ FROM node:24.15.0-trixie-slim AS test
 # Fini binary runtime libs + Playwright Chromium system deps (fonts, nss/nspr,
 # dbus, X11 bits). The browser binary comes from the cached Playwright stage;
 # this apt layer provides the runtime libraries it expects.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::Retries=5 && apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
     libgtk-3-0 \
     libwebkit2gtk-4.1-0 \
     libayatana-appindicator3-1 \
