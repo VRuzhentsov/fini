@@ -1,11 +1,36 @@
 ---
-name: ui-ux-design
-description: Design and refine interfaces in Figma with a Figma-first workflow. Use this whenever the user wants UI or UX design work, component cleanup, variant/property architecture, design-system refinement, visual polish, interaction-state design, or design QA in Figma. Use TalkToFigma for native design edits and ask the user to perform any Figma UI actions that are not available through automation tools.
+name: fini-design
+description: Design and refine Fini interfaces in Figma with a Figma-first workflow. Use this whenever the user wants UI or UX design work, component cleanup, variant/property architecture, design-system refinement, visual polish, interaction-state design, or design QA in Figma. Use TalkToFigma for native design edits and ask the user to perform any Figma UI actions that are not available through automation tools. If a sibling `../fini-design/` design repo exists, treat it as a source of durable design references and exported assets.
 ---
 
-# UI/UX Design
+# Fini Design
 
 Use this skill for design work that happens primarily in Figma: creating or refining components, restructuring component sets, cleaning up variant properties, improving layout and spacing, aligning visual states with product behavior, and validating UI consistency before implementation.
+
+## Sibling Design Repo
+
+A sibling `../fini-design/` repo may exist alongside this project. When present, it acts as the durable home for design source material, exported assets, references, mockups, and design notes that should outlive any single Figma session.
+
+Resolve the sibling path from the current repository name:
+
+```text
+current repo: <repo-name>
+design repo: ../<repo-name>-design/
+```
+
+Example:
+
+```text
+repo: fini
+design repo: ../fini-design/
+```
+
+Use the sibling design repo when:
+- looking up prior design references, mockups, or exported assets
+- locating canonical design documentation that the Figma file alone does not capture
+- saving exported flows or static design artifacts that should be version-controlled
+
+If `../fini-design/` does not exist, do not create it. Continue working from Figma alone and surface the missing path only if the user expects design material to live there.
 
 ## Outcome
 

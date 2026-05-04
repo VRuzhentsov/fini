@@ -63,7 +63,7 @@ Load the specialized skill when its condition applies:
 | Create, update, list, or manage quests, spaces, reminders, or Focus state through the Fini CLI | `fini`, which uses `fini-cli` |
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `android-testing` |
-| Design or refine native Figma components, variants, screens, or visual systems | `ui-ux-design` |
+| Design or refine native Figma components, variants, screens, or visual systems | `fini-design` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
 | Query product/domain/history/architecture context from the wiki, or save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
