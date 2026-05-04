@@ -33,6 +33,9 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 ## Focus quest computation contract
 
 - Computed by getter over persisted quest data/events
-- Manual focus and reminder triggers append events in [[FocusHistory]]
+- Manual focus and restore triggers append events in [[FocusHistory]]
+- Active reminder due timestamps are virtual Focus events: once `due + due_time` arrives, the reminder timestamp competes with manual Focus timestamps and the youngest valid timestamp wins
 - Reminder preemption is temporary and unwinds to previous valid target
 - If no active override exists, fallback is overdue > `order_rank` > priority > oldest `created_at`
+
+See `specs/e2e/focus-reminder-preemption.md` for the open-app e2e contract.

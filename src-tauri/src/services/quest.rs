@@ -12,7 +12,7 @@ use crate::models::{
 use crate::schema::{focus_history, quest_series, quests};
 use crate::services::db::{utc_now, DbState};
 use crate::services::device_connection::DeviceConnectionState;
-use crate::services::reminder;
+use crate::services::{notification, reminder};
 use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
@@ -249,6 +249,11 @@ fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
     Some(NaiveDateTime::new(date, time).and_utc())
 }
 
+fn parse_due_reminder_fire_utc(quest: &Quest) -> Option<DateTime<Utc>> {
+    let due = quest.due.as_deref()?;
+    notification::compute_fire_utc(due, quest.due_time.as_deref())
+}
+
 pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
     parse_due_deadline_utc(quest)
         .map(|deadline| deadline < *now)
@@ -294,8 +299,9 @@ fn resolve_active_fallback(active: Vec<&Quest>) -> Option<Quest> {
     Some((*fallback[0]).clone())
 }
 
-pub fn resolve_active_quest(
+fn resolve_active_quest_at(
     conn: &mut SqliteConnection,
+    now: DateTime<Utc>,
 ) -> Result<Option<Quest>, diesel::result::Error> {
     let all_quests: Vec<Quest> = quests::table.select(Quest::as_select()).load(conn)?;
     let active_by_id: std::collections::HashMap<&str, &Quest> = all_quests
@@ -308,7 +314,9 @@ pub fn resolve_active_quest(
         return Ok(None);
     }
 
-    // Walk focus_history newest-first; return first entry whose quest is still active
+    let mut winner: Option<(DateTime<Utc>, &Quest)> = None;
+
+    // Walk persisted focus events; active reminder due times below compete at the same priority.
     let history: Vec<crate::models::FocusHistoryEntry> = focus_history::table
         .order(focus_history::created_at.desc())
         .select(crate::models::FocusHistoryEntry::as_select())
@@ -316,14 +324,45 @@ pub fn resolve_active_quest(
 
     for entry in &history {
         if let Some(&quest) = active_by_id.get(entry.quest_id.as_str()) {
-            return Ok(Some(quest.clone()));
+            if let Some(created_at) = parse_utc_timestamp(&entry.created_at) {
+                if winner
+                    .as_ref()
+                    .map(|(winner_at, _)| created_at > *winner_at)
+                    .unwrap_or(true)
+                {
+                    winner = Some((created_at, quest));
+                }
+            }
         }
     }
 
-    // No focus_history entry matches an active quest — use fallback ordering
+    for quest in active_by_id.values().copied() {
+        if let Some(fire_at) = parse_due_reminder_fire_utc(quest) {
+            if fire_at <= now
+                && winner
+                    .as_ref()
+                    .map(|(winner_at, _)| fire_at > *winner_at)
+                    .unwrap_or(true)
+            {
+                winner = Some((fire_at, quest));
+            }
+        }
+    }
+
+    if let Some((_, quest)) = winner {
+        return Ok(Some(quest.clone()));
+    }
+
+    // No focus_history or due-reminder candidate matches an active quest — use fallback ordering
     Ok(resolve_active_fallback(
         active_by_id.values().copied().collect(),
     ))
+}
+
+pub fn resolve_active_quest(
+    conn: &mut SqliteConnection,
+) -> Result<Option<Quest>, diesel::result::Error> {
+    resolve_active_quest_at(conn, Utc::now())
 }
 
 fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -1168,6 +1207,114 @@ mod tests {
         assert_eq!(
             unwound.id, manual_id,
             "after reminder quest resolves, Focus should unwind to previous valid active entry"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn due_reminder_competes_with_manual_focus_by_timestamp() {
+        let db_path = temp_db_path("due-reminder-competes-with-manual-focus-by-timestamp");
+        let mut conn = open_db_at_path(&db_path);
+
+        let manual_id = insert_active_quest(
+            &mut conn,
+            "manual-focus-before-reminder",
+            2,
+            "2026-03-01T10:00:00Z",
+            None,
+            None,
+        );
+        let reminder_id = insert_active_quest(
+            &mut conn,
+            "future-reminder-focus",
+            2,
+            "2026-03-01T11:00:00Z",
+            Some("2026-03-05"),
+            Some("09:31"),
+        );
+
+        let reminder_quest: Quest = quests::table
+            .find(&reminder_id)
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("load reminder quest");
+        let fire_at = parse_due_reminder_fire_utc(&reminder_quest).expect("parse reminder fire");
+        let manual_at = fire_at - chrono::Duration::minutes(1);
+        let manual_at_str = manual_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        diesel::sql_query(format!(
+            "INSERT INTO focus_history (quest_id, space_id, trigger, created_at) \
+             VALUES ('{}', '1', 'manual', '{}')",
+            manual_id, manual_at_str
+        ))
+        .execute(&mut conn)
+        .expect("insert manual focus_history row");
+
+        let before_due = resolve_active_quest_at(&mut conn, fire_at - chrono::Duration::seconds(1))
+            .expect("resolve before due")
+            .expect("must return active quest");
+        assert_eq!(
+            before_due.id, manual_id,
+            "future reminder must not preempt manual Focus before its fire time"
+        );
+
+        let after_due = resolve_active_quest_at(&mut conn, fire_at)
+            .expect("resolve after due")
+            .expect("must return active quest");
+        assert_eq!(
+            after_due.id, reminder_id,
+            "due reminder timestamp must preempt older manual Focus"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn newer_manual_focus_beats_already_due_reminder() {
+        let db_path = temp_db_path("newer-manual-focus-beats-already-due-reminder");
+        let mut conn = open_db_at_path(&db_path);
+
+        let manual_id = insert_active_quest(
+            &mut conn,
+            "manual-focus-after-reminder",
+            2,
+            "2026-03-01T10:00:00Z",
+            None,
+            None,
+        );
+        let reminder_id = insert_active_quest(
+            &mut conn,
+            "already-due-reminder-focus",
+            2,
+            "2026-03-01T11:00:00Z",
+            Some("2026-03-05"),
+            Some("09:31"),
+        );
+
+        let reminder_quest: Quest = quests::table
+            .find(&reminder_id)
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("load reminder quest");
+        let fire_at = parse_due_reminder_fire_utc(&reminder_quest).expect("parse reminder fire");
+        let manual_at = fire_at + chrono::Duration::minutes(1);
+        let manual_at_str = manual_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+        diesel::sql_query(format!(
+            "INSERT INTO focus_history (quest_id, space_id, trigger, created_at) \
+             VALUES ('{}', '1', 'manual', '{}')",
+            manual_id, manual_at_str
+        ))
+        .execute(&mut conn)
+        .expect("insert manual focus_history row");
+
+        let winner = resolve_active_quest_at(&mut conn, manual_at + chrono::Duration::seconds(1))
+            .expect("resolve after manual")
+            .expect("must return active quest");
+        assert_eq!(
+            winner.id, manual_id,
+            "newer manual Focus timestamp must beat an older due reminder timestamp"
         );
 
         let _ = std::fs::remove_file(db_path);
