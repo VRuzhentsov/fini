@@ -2,23 +2,29 @@
 
 ## Scope
 
-Per-pair space mapping, sync session establishment, bootstrap transfer, sync event replay, and sync status reporting.
+Per-pair space mapping lifecycle, sync session establishment, bootstrap transfer, sync event replay, and sync status reporting.
 
 ## Responsibilities
 
-- Maintain symmetric mapped-space state for each paired peer
-- Send mapping updates to peers over the authenticated sync channel
+- Maintain symmetric mapped-space lifecycle state for each paired peer
+- Send one-space sync request, acceptance, and end-of-sync events over the authenticated sync channel
 - Establish websocket sync sessions for paired peers
 - Bootstrap newly mapped spaces
 - Replicate sync events and acknowledgements
 - Track `last_synced_at` per peer and per mapped space
+- Track `end_of_sync_at` when a previously mapped space stops syncing
 
 ## Behavior
 
 - Space mapping is pair-scoped and keyed by `space_id`
-- Enabling a mapping triggers bootstrap sync for that space
-- Built-in spaces resolve by stable IDs; custom spaces may need approval/resolution
-- Incoming mapping updates surface as an approval flow before applying on the receiving device
+- Enabling a mapping is a per-space lifecycle request from one device to one paired peer
+- Only the receiving device sees the incoming space sync request
+- The approval flow is one space at a time; batch snapshot approval is not product behavior
+- Already-synced spaces must not trigger approval on startup, reconnect, or normal sync ticks
+- Enabling or re-enabling a mapping triggers bootstrap/merge for all quest changes in that space
+- Built-in spaces resolve by stable IDs; custom spaces may need approval/resolution to create or map the one incoming space
+- Removing a mapping sends an end-of-sync event, writes `end_of_sync_at` on both devices, and stops future sync for that space
+- Quest create/update/delete events for active mapped spaces sync silently in the background without additional dialogs
 - Sync transport uses authenticated websocket sessions, not discovery metadata
 - Visible sync status should converge for both peers after successful bootstrap/event transfer
 

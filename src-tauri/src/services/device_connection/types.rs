@@ -72,6 +72,13 @@ pub struct IncomingSpaceMappingUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingSpaceSyncEnd {
+    pub from_device_id: String,
+    pub space_id: String,
+    pub ended_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomSpaceDescriptor {
     pub space_id: String,
     pub name: String,
@@ -179,8 +186,8 @@ pub(super) struct DiscoveryRuntime {
     pub outgoing_code_updates: HashMap<String, PairCodeUpdate>,
     pub outgoing_pair_completions: HashMap<String, PairCompletionUpdate>,
     pub incoming_space_mapping_updates: HashMap<String, IncomingSpaceMappingUpdate>,
+    pub incoming_space_sync_ends: HashMap<String, IncomingSpaceSyncEnd>,
     pub incoming_sync_events: HashMap<String, SyncEventEnvelope>,
     pub incoming_sync_acks: HashMap<String, IncomingSyncAck>,
     pub peer_sessions: HashMap<String, SessionSender>,
-    pub last_sent_mapping_signature: HashMap<String, String>,
 }

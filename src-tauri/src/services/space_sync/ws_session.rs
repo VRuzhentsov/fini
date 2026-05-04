@@ -9,7 +9,7 @@ use diesel::prelude::*;
 use crate::schema::pair_space_mappings;
 use crate::services::db::open_db_at_path;
 use crate::services::device_connection::{
-    DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSyncAck,
+    DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd, IncomingSyncAck,
 };
 use crate::services::space_sync::outbox::load_events_for_space;
 use crate::services::space_sync::types::WsMessage;
@@ -85,6 +85,13 @@ async fn handle_inbound<Sk>(
                 mapped_space_ids,
                 custom_spaces,
                 sent_at,
+            });
+        }
+        WsMessage::SpaceSyncEnd { space_id, ended_at } => {
+            state.push_incoming_space_sync_end(IncomingSpaceSyncEnd {
+                from_device_id: peer_device_id.to_string(),
+                space_id,
+                ended_at,
             });
         }
         WsMessage::BootstrapStart { space_id } => {

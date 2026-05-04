@@ -38,19 +38,19 @@ const activeDialog = computed(() => {
 
     const peer = deviceStore.findPairedDevice(request.peer_device_id);
     const peerName = peer?.display_name ?? shortUuid(request.peer_device_id);
-    const spaceCount = request.mapped_space_ids.length;
-    const customCount = request.custom_spaces.length;
-    const customMessage =
-      customCount > 0
-        ? ` This request includes ${customCount} custom ${customCount === 1 ? "space" : "spaces"} that you will map after approval.`
-        : "";
+    const requestedSpaceId = request.mapped_space_ids[0];
+    if (!requestedSpaceId) continue;
+    const customSpace = request.custom_spaces.find((space) => space.space_id === requestedSpaceId);
+    const requestedSpaceName = customSpace?.name ?? spaceStore.spaces.find((space) => space.id === requestedSpaceId)?.name ?? shortUuid(requestedSpaceId);
+    const customMessage = customSpace ? " You will choose how to map this custom space after approval." : "";
 
     return {
       kind: "approve" as const,
       key,
       peerDeviceId: request.peer_device_id,
+      spaceId: requestedSpaceId,
       title: "Incoming space sync request",
-      message: `${peerName} wants to sync ${spaceCount} ${spaceCount === 1 ? "space" : "spaces"} with this device.${customMessage}`,
+      message: `${peerName} wants to sync ${requestedSpaceName} with this device.${customMessage}`,
       incomingSpace: null,
     };
   }
@@ -63,6 +63,7 @@ const activeDialog = computed(() => {
       kind: "resolve" as const,
       key,
       peerDeviceId: entry.peerDeviceId,
+      spaceId: entry.space.space_id,
       title: "Resolve incoming space",
       message: `${entry.peerName} shared a custom space that needs a local mapping before sync can continue.`,
       incomingSpace: entry.space,
@@ -79,7 +80,7 @@ const activeIncomingSpace = computed(() => {
 const activeApproveSpaceCount = computed(() => {
   const dialog = activeDialog.value;
   if (!dialog || dialog.kind !== "approve") return 0;
-  return deviceStore.getPendingSpaceSyncRequest(dialog.peerDeviceId)?.mapped_space_ids.length ?? 0;
+  return 1;
 });
 
 const activeResolutionMode = computed<ResolutionMode>(() => {
@@ -198,7 +199,7 @@ async function confirmDialog() {
 
   try {
     if (dialog.kind === "approve") {
-      await deviceStore.approvePendingSpaceSyncRequest(dialog.peerDeviceId);
+      await deviceStore.approvePendingSpaceSyncRequest(dialog.peerDeviceId, dialog.spaceId);
       await spaceStore.fetchSpaces();
       deferredKey.value = null;
       return;
@@ -236,6 +237,7 @@ async function confirmDialog() {
       data-testid="incoming-space-sync-dialog"
       :data-dialog-kind="activeDialog.kind"
       :data-peer-device-id="activeDialog.peerDeviceId"
+      :data-space-id="activeDialog.spaceId"
       :data-space-count="activeApproveSpaceCount"
     >
       <button

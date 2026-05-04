@@ -74,6 +74,7 @@ export interface SpaceSyncStatus {
   mapped_space_ids: string[];
   last_synced_at?: string | null;
   last_synced_at_by_space?: Record<string, string | null>;
+  end_of_sync_at_by_space?: Record<string, string | null>;
   pending_event_count: number;
   outbox_event_count: number;
   acked_event_count: number;
@@ -229,7 +230,11 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   function getPendingSpaceSyncRequest(peerDeviceId: string): PendingSpaceSyncRequest | null {
-    return pendingSpaceSyncRequestsByPeer.value[peerDeviceId] ?? null;
+    return (
+      Object.values(pendingSpaceSyncRequestsByPeer.value).find(
+        (request) => request.peer_device_id === peerDeviceId,
+      ) ?? null
+    );
   }
 
   function listPendingSpaceSyncRequests(): PendingSpaceSyncRequest[] {
@@ -337,13 +342,20 @@ export const useDeviceStore = defineStore("device", () => {
 
   async function approvePendingSpaceSyncRequest(
     peerDeviceId: string,
+    spaceId?: string,
   ): Promise<SpaceMappingApplyResult> {
-    const pendingRequest = pendingSpaceSyncRequestsByPeer.value[peerDeviceId];
+    const pendingEntry = Object.entries(pendingSpaceSyncRequestsByPeer.value).find(([, request]) => {
+      return (
+        request.peer_device_id === peerDeviceId &&
+        (!spaceId || request.mapped_space_ids.includes(spaceId))
+      );
+    });
+    const pendingRequest = pendingEntry?.[1];
     if (!pendingRequest) {
       throw new Error(`No pending space sync request for ${peerDeviceId}`);
     }
 
-    delete pendingSpaceSyncRequestsByPeer.value[peerDeviceId];
+    delete pendingSpaceSyncRequestsByPeer.value[pendingEntry[0]];
 
     try {
       const result = await invoke<SpaceMappingApplyResult>("space_sync_apply_remote_mappings", {
@@ -359,7 +371,7 @@ export const useDeviceStore = defineStore("device", () => {
       void runSpaceSyncTick();
       return result;
     } catch (error) {
-      pendingSpaceSyncRequestsByPeer.value[peerDeviceId] = pendingRequest;
+      pendingSpaceSyncRequestsByPeer.value[pendingEntry[0]] = pendingRequest;
       throw error;
     }
   }
@@ -440,26 +452,35 @@ export const useDeviceStore = defineStore("device", () => {
       );
 
       for (const update of updates) {
-        const currentMapped = mappedSpaceIdsByPeer.value[update.from_device_id] ?? [];
-        const currentCustom = pendingSpaceSyncRequestsByPeer.value[update.from_device_id]?.custom_spaces ?? [];
+        let currentMapped = mappedSpaceIdsByPeer.value[update.from_device_id] ?? [];
         const isEmptySnapshot = update.mapped_space_ids.length === 0 && update.custom_spaces.length === 0;
-        const isConfirmationSnapshot =
-          sameStringList(currentMapped, update.mapped_space_ids) &&
-          sameCustomSpaceList(currentCustom, update.custom_spaces);
+        let isAlreadyMapped = update.mapped_space_ids.every((spaceId) => currentMapped.includes(spaceId));
+
+        if (isAlreadyMapped) {
+          try {
+            currentMapped = await invoke<string[]>("space_sync_list_mappings", {
+              peerDeviceId: update.from_device_id,
+            });
+            mappedSpaceIdsByPeer.value[update.from_device_id] = currentMapped;
+            isAlreadyMapped = update.mapped_space_ids.every((spaceId) => currentMapped.includes(spaceId));
+          } catch {
+            // Fall back to store memory; the request will be retried on the next poll.
+          }
+        }
 
         if (isEmptySnapshot) {
           delete pendingSpaceSyncRequestsByPeer.value[update.from_device_id];
           continue;
         }
 
-        // A matching snapshot is the peer confirming the request, not a new prompt.
-        if (isConfirmationSnapshot) {
-          mappedSpaceIdsByPeer.value[update.from_device_id] = [...update.mapped_space_ids];
-          delete pendingSpaceSyncRequestsByPeer.value[update.from_device_id];
+        if (isAlreadyMapped) {
           continue;
         }
 
-        pendingSpaceSyncRequestsByPeer.value[update.from_device_id] = {
+        const requestedSpaceId = update.mapped_space_ids[0];
+        if (!requestedSpaceId) continue;
+
+        pendingSpaceSyncRequestsByPeer.value[`${update.from_device_id}:${requestedSpaceId}`] = {
           peer_device_id: update.from_device_id,
           mapped_space_ids: [...update.mapped_space_ids],
           custom_spaces: [...update.custom_spaces],
@@ -469,23 +490,6 @@ export const useDeviceStore = defineStore("device", () => {
     } catch (error) {
       console.warn("[space-sync] failed to consume incoming mapping updates", error);
     }
-  }
-
-  function sameStringList(left: string[], right: string[]): boolean {
-    return left.length === right.length && left.every((value, index) => value === right[index]);
-  }
-
-  function sameCustomSpaceList(
-    left: CustomSpaceDescriptor[],
-    right: CustomSpaceDescriptor[],
-  ): boolean {
-    return (
-      left.length === right.length &&
-      left.every((value, index) => {
-        const next = right[index];
-        return value.space_id === next.space_id && value.name === next.name;
-      })
-    );
   }
 
   function setDiscovered(items: DiscoveredDevice[]) {

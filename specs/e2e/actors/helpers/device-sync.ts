@@ -141,9 +141,7 @@ export async function pairActorsViaUi(
 
 async function openAddDevice(actor: E2EActor, timeoutMs: number): Promise<void> {
   await actor.page.waitForSelector('nav.nav a[href="#/settings"]', timeoutMs);
-  await actor.page.click('nav.nav a[href="#/settings"]');
-  await actor.page.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
-  await actor.page.click('[data-testid="add-device-link"]');
+  await actor.page.evaluate(`(() => { window.location.hash = '#/settings/add-device'; })()`);
   await actor.page.waitForSelector('[data-testid="nearby-devices"]', timeoutMs);
 }
 

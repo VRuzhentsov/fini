@@ -90,6 +90,7 @@ diesel::table! {
         space_id       -> Text,
         enabled_at     -> Text,
         last_synced_at -> Nullable<Text>,
+        end_of_sync_at -> Nullable<Text>,
     }
 }
 

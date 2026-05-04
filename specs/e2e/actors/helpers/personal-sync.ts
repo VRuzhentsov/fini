@@ -49,6 +49,13 @@ export async function ensurePersonalSpaceSync(
   }
 }
 
+export async function expectNoIncomingSpaceSyncDialog(actor: E2EActor): Promise<void> {
+  const count = await actor.page.evaluate<number>(`(() => {
+    return document.querySelectorAll('[data-testid="incoming-space-sync-dialog"]').length;
+  })()`);
+  expect(count, `${actor.slug} should not show incoming space sync dialog`).toBe(0);
+}
+
 export async function openDeviceDetailsFromSettings(
   actor: E2EActor,
   peerDeviceId: string,

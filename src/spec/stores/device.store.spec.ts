@@ -192,6 +192,7 @@ describe("device store sync status", () => {
           sent_at: "2026-04-11T20:00:10Z",
         },
       ])
+      .mockResolvedValueOnce(["1"])
       .mockResolvedValueOnce(["1"]);
 
     const store = useDeviceStore();

@@ -22,7 +22,8 @@ pub use commands::{
 use runtime::{load_or_create_identity, spawn_discovery_worker};
 use types::DiscoveryRuntime;
 pub use types::{
-    CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSyncAck,
+    CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
+    IncomingSyncAck,
 };
 use types::{
     PairAcceptPayload, PairCodeUpdate, PairCompletePayload, PairCompletionUpdate,
@@ -158,10 +159,36 @@ impl DeviceConnectionState {
 
     pub fn push_incoming_space_mapping_update(&self, update: IncomingSpaceMappingUpdate) {
         if let Ok(mut guard) = self.runtime.lock() {
-            guard
-                .incoming_space_mapping_updates
-                .insert(update.from_device_id.clone(), update);
+            let first_space_id = update
+                .mapped_space_ids
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "none".to_string());
+            let key = format!(
+                "{}:{}:{}",
+                update.from_device_id, first_space_id, update.sent_at
+            );
+            guard.incoming_space_mapping_updates.insert(key, update);
         }
+    }
+
+    pub fn push_incoming_space_sync_end(&self, update: IncomingSpaceSyncEnd) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            let key = format!("{}:{}", update.from_device_id, update.space_id);
+            guard.incoming_space_sync_ends.insert(key, update);
+        }
+    }
+
+    pub fn take_incoming_space_sync_ends(&self) -> Vec<IncomingSpaceSyncEnd> {
+        let Ok(mut guard) = self.runtime.lock() else {
+            return Vec::new();
+        };
+
+        guard
+            .incoming_space_sync_ends
+            .drain()
+            .map(|(_, v)| v)
+            .collect()
     }
 
     pub fn register_session(&self, peer_device_id: String, sender: SessionSender) {
@@ -173,7 +200,6 @@ impl DeviceConnectionState {
     pub fn unregister_session(&self, peer_device_id: &str) {
         if let Ok(mut guard) = self.runtime.lock() {
             guard.peer_sessions.remove(peer_device_id);
-            guard.last_sent_mapping_signature.remove(peer_device_id);
         }
     }
 
@@ -194,22 +220,6 @@ impl DeviceConnectionState {
             return false;
         };
         guard.peer_sessions.contains_key(peer_device_id)
-    }
-
-    pub fn should_send_mapping_snapshot(&self, peer_device_id: &str, signature: &str) -> bool {
-        let Ok(mut guard) = self.runtime.lock() else {
-            return false;
-        };
-
-        match guard.last_sent_mapping_signature.get(peer_device_id) {
-            Some(existing) if existing == signature => false,
-            _ => {
-                guard
-                    .last_sent_mapping_signature
-                    .insert(peer_device_id.to_string(), signature.to_string());
-                true
-            }
-        }
     }
 
     pub fn receive_ws_pair_request(

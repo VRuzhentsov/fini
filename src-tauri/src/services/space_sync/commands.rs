@@ -25,6 +25,7 @@ pub struct SpaceSyncStatus {
     pub mapped_space_ids: Vec<String>,
     pub last_synced_at: Option<String>,
     pub last_synced_at_by_space: BTreeMap<String, Option<String>>,
+    pub end_of_sync_at_by_space: BTreeMap<String, Option<String>>,
     pub pending_event_count: usize,
     pub outbox_event_count: i64,
     pub acked_event_count: i64,
@@ -201,10 +202,40 @@ fn list_mappings_for_peer(
 ) -> Result<Vec<String>, String> {
     pair_space_mappings::table
         .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
+        .filter(pair_space_mappings::end_of_sync_at.is_null())
         .order(pair_space_mappings::space_id.asc())
         .select(pair_space_mappings::space_id)
         .load(conn)
         .map_err(|e| e.to_string())
+}
+
+fn list_all_mapping_ids_for_peer(
+    conn: &mut SqliteConnection,
+    peer_device_id: &str,
+) -> Result<Vec<String>, String> {
+    pair_space_mappings::table
+        .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
+        .order(pair_space_mappings::space_id.asc())
+        .select(pair_space_mappings::space_id)
+        .load(conn)
+        .map_err(|e| e.to_string())
+}
+
+fn mark_mapping_ended(
+    conn: &mut SqliteConnection,
+    peer_device_id: &str,
+    space_id: &str,
+    ended_at: &str,
+) -> Result<(), String> {
+    diesel::update(
+        pair_space_mappings::table
+            .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
+            .filter(pair_space_mappings::space_id.eq(space_id)),
+    )
+    .set(pair_space_mappings::end_of_sync_at.eq(Some(ended_at.to_string())))
+    .execute(conn)
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn peer_is_paired(conn: &mut SqliteConnection, peer_device_id: &str) -> Result<bool, String> {
@@ -232,31 +263,64 @@ fn apply_mappings_in_db(
     }
 
     let existing_ids = list_mappings_for_peer(conn, peer_device_id)?;
+    let all_existing_ids = list_all_mapping_ids_for_peer(conn, peer_device_id)?;
     let existing_set: BTreeSet<String> = existing_ids.into_iter().collect();
+    let all_existing_set: BTreeSet<String> = all_existing_ids.into_iter().collect();
     let desired_set: BTreeSet<String> = desired_ids.iter().cloned().collect();
 
     let to_add: Vec<String> = desired_set.difference(&existing_set).cloned().collect();
     let to_remove: Vec<String> = existing_set.difference(&desired_set).cloned().collect();
 
     if !to_remove.is_empty() {
-        diesel::delete(
+        let ended_at = utc_now();
+        diesel::update(
             pair_space_mappings::table
                 .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
                 .filter(pair_space_mappings::space_id.eq_any(&to_remove)),
         )
+        .set(pair_space_mappings::end_of_sync_at.eq(Some(ended_at)))
         .execute(conn)
         .map_err(|e| e.to_string())?;
     }
 
-    if !to_add.is_empty() {
+    let to_reenable: Vec<String> = to_add
+        .iter()
+        .filter(|space_id| all_existing_set.contains(*space_id))
+        .cloned()
+        .collect();
+    let to_insert: Vec<String> = to_add
+        .iter()
+        .filter(|space_id| !all_existing_set.contains(*space_id))
+        .cloned()
+        .collect();
+
+    if !to_reenable.is_empty() {
+        let now = utc_now();
+        diesel::update(
+            pair_space_mappings::table
+                .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
+                .filter(pair_space_mappings::space_id.eq_any(&to_reenable)),
+        )
+        .set((
+            pair_space_mappings::enabled_at.eq(now),
+            pair_space_mappings::last_synced_at.eq(Option::<String>::None),
+            pair_space_mappings::end_of_sync_at.eq(Option::<String>::None),
+        ))
+        .execute(conn)
+        .map_err(|e| e.to_string())?;
+    }
+
+    if !to_insert.is_empty() {
         let now = utc_now();
         let rows: Vec<CreatePairSpaceMappingInput> = to_add
             .iter()
+            .filter(|space_id| !all_existing_set.contains(*space_id))
             .map(|space_id| CreatePairSpaceMappingInput {
                 peer_device_id: peer_device_id.to_string(),
                 space_id: space_id.clone(),
                 enabled_at: now.clone(),
                 last_synced_at: None,
+                end_of_sync_at: None,
             })
             .collect();
 
@@ -281,6 +345,25 @@ fn send_mapping_update_to_peer(
             mapped_space_ids: mapped_space_ids.to_vec(),
             custom_spaces: custom_spaces.to_vec(),
             sent_at: utc_now(),
+        },
+    ) {
+        Ok(())
+    } else {
+        Err(format!("no active session for peer {peer_device_id}"))
+    }
+}
+
+fn send_space_sync_end_to_peer(
+    device_connection: &DeviceConnectionState,
+    peer_device_id: &str,
+    space_id: &str,
+    ended_at: &str,
+) -> Result<(), String> {
+    if device_connection.push_to_peer(
+        peer_device_id,
+        WsMessage::SpaceSyncEnd {
+            space_id: space_id.to_string(),
+            ended_at: ended_at.to_string(),
         },
     ) {
         Ok(())
@@ -326,6 +409,7 @@ fn peer_has_mapping_for_space(
     let count: i64 = pair_space_mappings::table
         .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
         .filter(pair_space_mappings::space_id.eq(space_id))
+        .filter(pair_space_mappings::end_of_sync_at.is_null())
         .count()
         .get_result(conn)
         .map_err(|e| e.to_string())?;
@@ -771,14 +855,37 @@ pub fn space_sync_update_mappings_impl(
 ) -> Result<Vec<String>, String> {
     let mut conn = db.0.lock().unwrap();
 
-    let mapped = apply_mappings_in_db(&mut conn, &peer_device_id, mapped_space_ids)?;
+    let before = list_mappings_for_peer(&mut conn, &peer_device_id)?;
+    let before_set: BTreeSet<String> = before.into_iter().collect();
+    let desired = normalized_space_ids(mapped_space_ids);
+    let desired_set: BTreeSet<String> = desired.iter().cloned().collect();
+    let requested: Vec<String> = desired_set.difference(&before_set).cloned().collect();
+    let ended: Vec<String> = before_set.difference(&desired_set).cloned().collect();
+    let ended_at = utc_now();
 
-    let custom_spaces = load_custom_space_descriptors(&mut conn, &mapped)?;
+    let mapped = apply_mappings_in_db(&mut conn, &peer_device_id, desired)?;
 
-    if let Err(err) =
-        send_mapping_update_to_peer(&device_connection, &peer_device_id, &mapped, &custom_spaces)
-    {
-        eprintln!("[space-sync] failed to notify peer mapping update: {err}");
+    let custom_spaces = load_custom_space_descriptors(&mut conn, &requested)?;
+
+    for space_id in requested {
+        let custom = custom_spaces
+            .iter()
+            .filter(|space| space.space_id == space_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Err(err) =
+            send_mapping_update_to_peer(&device_connection, &peer_device_id, &[space_id], &custom)
+        {
+            eprintln!("[space-sync] failed to notify peer mapping request: {err}");
+        }
+    }
+
+    for space_id in ended {
+        if let Err(err) =
+            send_space_sync_end_to_peer(&device_connection, &peer_device_id, &space_id, &ended_at)
+        {
+            eprintln!("[space-sync] failed to notify peer mapping end: {err}");
+        }
     }
 
     Ok(mapped)
@@ -806,7 +913,14 @@ pub fn space_sync_apply_remote_mappings_impl(
     let (resolved_ids, unresolved_custom_spaces) =
         partition_remote_mapped_spaces(&mut conn, mapped_space_ids, custom_spaces)?;
 
-    let mapped_space_ids = apply_mappings_in_db(&mut conn, &peer_device_id, resolved_ids)?;
+    let mut desired = list_mappings_for_peer(&mut conn, &peer_device_id)?;
+    for space_id in resolved_ids {
+        if !desired.contains(&space_id) {
+            desired.push(space_id);
+        }
+    }
+
+    let mapped_space_ids = apply_mappings_in_db(&mut conn, &peer_device_id, desired)?;
 
     Ok(SpaceMappingApplyResult {
         mapped_space_ids,
@@ -929,28 +1043,16 @@ pub fn space_sync_tick_impl(
         .load(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    let mut sent_events_total = 0usize;
-
-    for peer_device_id in &peer_ids {
-        if !device_connection.has_session(peer_device_id) {
-            continue;
-        }
-
-        let mapped = list_mappings_for_peer(&mut conn, peer_device_id)?;
-        let custom_spaces = load_custom_space_descriptors(&mut conn, &mapped)?;
-        let signature = serde_json::to_string(&(mapped.clone(), custom_spaces.clone()))
-            .map_err(|e| e.to_string())?;
-
-        if !device_connection.should_send_mapping_snapshot(peer_device_id, &signature) {
-            continue;
-        }
-
-        if let Err(err) =
-            send_mapping_update_to_peer(device_connection, peer_device_id, &mapped, &custom_spaces)
-        {
-            eprintln!("[space-sync] failed to push mapping snapshot to {peer_device_id}: {err}");
-        }
+    for ended in device_connection.take_incoming_space_sync_ends() {
+        mark_mapping_ended(
+            &mut conn,
+            &ended.from_device_id,
+            &ended.space_id,
+            &ended.ended_at,
+        )?;
     }
+
+    let mut sent_events_total = 0usize;
 
     for peer_device_id in &peer_ids {
         let mapped = list_mappings_for_peer(&mut conn, &peer_device_id)?;
@@ -982,6 +1084,7 @@ pub fn space_sync_tick_impl(
         let unsynced: Vec<String> = pair_space_mappings::table
             .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
             .filter(pair_space_mappings::last_synced_at.is_null())
+            .filter(pair_space_mappings::end_of_sync_at.is_null())
             .select(pair_space_mappings::space_id)
             .load(&mut *conn)
             .map_err(|e| e.to_string())?;
@@ -1138,24 +1241,37 @@ pub fn space_sync_status_impl(
         mapped_space_ids,
         last_synced_at,
         last_synced_at_by_space,
+        end_of_sync_at_by_space,
         pending_event_count,
         acked_event_count,
     ) = if let Some(peer_id) = peer_device_id.as_deref() {
-        let mapping_rows: Vec<(String, Option<String>)> = pair_space_mappings::table
-            .filter(pair_space_mappings::peer_device_id.eq(peer_id))
-            .order(pair_space_mappings::space_id.asc())
-            .select((
-                pair_space_mappings::space_id,
-                pair_space_mappings::last_synced_at,
-            ))
-            .load(&mut *conn)
-            .map_err(|e| e.to_string())?;
+        let mapping_rows: Vec<(String, Option<String>, Option<String>)> =
+            pair_space_mappings::table
+                .filter(pair_space_mappings::peer_device_id.eq(peer_id))
+                .order(pair_space_mappings::space_id.asc())
+                .select((
+                    pair_space_mappings::space_id,
+                    pair_space_mappings::last_synced_at,
+                    pair_space_mappings::end_of_sync_at,
+                ))
+                .load(&mut *conn)
+                .map_err(|e| e.to_string())?;
 
         let mapped: Vec<String> = mapping_rows
             .iter()
-            .map(|(space_id, _)| space_id.clone())
+            .filter(|(_, _, ended_at)| ended_at.is_none())
+            .map(|(space_id, _, _)| space_id.clone())
             .collect();
-        let by_space: BTreeMap<String, Option<String>> = mapping_rows.into_iter().collect();
+        let by_space: BTreeMap<String, Option<String>> = mapping_rows
+            .iter()
+            .filter(|(_, _, ended_at)| ended_at.is_none())
+            .map(|(space_id, synced_at, _)| (space_id.clone(), synced_at.clone()))
+            .collect();
+        let ended_by_space: BTreeMap<String, Option<String>> = mapping_rows
+            .into_iter()
+            .filter(|(_, _, ended_at)| ended_at.is_some())
+            .map(|(space_id, _, ended_at)| (space_id, ended_at))
+            .collect();
         let last_synced = by_space.values().flatten().max().cloned();
 
         let pending = load_unacked_events_for_peer(&mut conn, peer_id, &mapped)?.len();
@@ -1164,9 +1280,16 @@ pub fn space_sync_status_impl(
             .count()
             .get_result(&mut *conn)
             .map_err(|e| e.to_string())?;
-        (mapped, last_synced, by_space, pending, acked)
+        (
+            mapped,
+            last_synced,
+            by_space,
+            ended_by_space,
+            pending,
+            acked,
+        )
     } else {
-        (Vec::new(), None, BTreeMap::new(), 0, 0)
+        (Vec::new(), None, BTreeMap::new(), BTreeMap::new(), 0, 0)
     };
 
     Ok(SpaceSyncStatus {
@@ -1174,6 +1297,7 @@ pub fn space_sync_status_impl(
         mapped_space_ids,
         last_synced_at,
         last_synced_at_by_space,
+        end_of_sync_at_by_space,
         pending_event_count,
         outbox_event_count,
         acked_event_count,
@@ -1648,9 +1772,9 @@ mod tests {
     }
 
     #[test]
-    fn space_sync_tick_replays_mapping_snapshot_when_session_appears() {
-        let db_path = temp_db_path("tick-replays-mapping-snapshot");
-        let app_dir = temp_app_dir("tick-replays-mapping-snapshot");
+    fn space_sync_tick_does_not_replay_mapping_snapshot_when_session_appears() {
+        let db_path = temp_db_path("tick-does-not-replay-mapping-snapshot");
+        let app_dir = temp_app_dir("tick-does-not-replay-mapping-snapshot");
         let mut conn = open_db_at_path(&db_path);
 
         diesel::insert_into(paired_devices::table)
@@ -1682,17 +1806,10 @@ mod tests {
         let tick = space_sync_tick_impl(&db, &device_connection).unwrap();
         assert_eq!(tick.sent_events, 0);
 
-        let sent = rx.try_recv().expect("mapping snapshot should be sent");
-        match sent {
-            WsMessage::SpaceMappingUpdate {
-                mapped_space_ids,
-                custom_spaces,
-                ..
-            } => {
-                assert_eq!(mapped_space_ids, vec!["1".to_string()]);
-                assert!(custom_spaces.is_empty());
+        while let Ok(sent) = rx.try_recv() {
+            if matches!(sent, WsMessage::SpaceMappingUpdate { .. }) {
+                panic!("mapping snapshot should not be sent");
             }
-            other => panic!("expected space mapping update, got {other:?}"),
         }
 
         drop(db);

@@ -3,6 +3,7 @@ import type { E2EActor } from '../fixtures.ts';
 import { ensureSyncedActors } from '../helpers/device-sync.ts';
 import {
   ensurePersonalSpaceSync,
+  expectNoIncomingSpaceSyncDialog,
   waitForPersonalLastSyncedLabel,
   waitForPersonalLastSyncedLabelChange,
 } from '../helpers/personal-sync.ts';
@@ -29,6 +30,8 @@ test('live Personal quest sync updates Focus on the peer without confirmation', 
   );
 
   expect(lastSyncedAfter).toContain('last synced:');
+  await expectNoIncomingSpaceSyncDialog(actorA);
+  await expectNoIncomingSpaceSyncDialog(actorB);
 });
 
 test('second live Personal quest from peer appears in Focus backlog list', async ({ actorA, actorB }) => {
@@ -133,8 +136,9 @@ async function focusActiveQuestTitle(actor: E2EActor): Promise<string> {
 
 async function tryFocusActiveQuestTitle(actor: E2EActor): Promise<string | null> {
   await openFocus(actor);
-  const title = await actor.page.textContent('.active-quest-title');
-  const value = title?.trim() ?? '';
+  const value = await actor.page.evaluate<string>(`(() => {
+    return document.querySelector('.active-quest-title')?.textContent?.trim() ?? '';
+  })()`);
   return value || null;
 }
 

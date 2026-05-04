@@ -11,6 +11,7 @@ pub struct PairSpaceMapping {
     pub space_id: String,
     pub enabled_at: String,
     pub last_synced_at: Option<String>,
+    pub end_of_sync_at: Option<String>,
 }
 
 #[derive(Deserialize, Insertable)]
@@ -20,4 +21,5 @@ pub struct CreatePairSpaceMappingInput {
     pub space_id: String,
     pub enabled_at: String,
     pub last_synced_at: Option<String>,
+    pub end_of_sync_at: Option<String>,
 }

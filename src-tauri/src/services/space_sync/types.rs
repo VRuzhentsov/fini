@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::services::device_connection::CustomSpaceDescriptor;
 use crate::services::device_connection::types::{
     PairAcceptPayload, PairCompletePayload, PairRequestPayload,
 };
+use crate::services::device_connection::CustomSpaceDescriptor;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncEventEnvelope {
@@ -57,4 +57,6 @@ pub enum WsMessage {
         custom_spaces: Vec<CustomSpaceDescriptor>,
         sent_at: String,
     },
+    #[serde(rename = "space_sync_end")]
+    SpaceSyncEnd { space_id: String, ended_at: String },
 }
