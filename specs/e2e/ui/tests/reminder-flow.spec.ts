@@ -61,11 +61,23 @@ async function createQuestFromFocusInput(
   await tauriPage.press('[data-testid="chat-input"]', 'Enter');
 }
 
+async function waitForShortNextMinuteWindow(): Promise<void> {
+  const now = new Date();
+  const seconds = now.getSeconds();
+  const targetSeconds = 42;
+  const waitMs = seconds < targetSeconds
+    ? (targetSeconds - seconds) * 1000 - now.getMilliseconds()
+    : seconds >= 50
+      ? (60 - seconds + targetSeconds) * 1000 - now.getMilliseconds()
+      : 0;
+  if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
 function nearFutureReminderTarget(): { due: string; dueTime: string; quickPick: 'today' | 'tomorrow'; waitMs: number } {
   const now = new Date();
   const target = new Date(now);
   target.setSeconds(0, 0);
-  target.setMinutes(target.getMinutes() + (now.getSeconds() > 35 ? 2 : 1));
+  target.setMinutes(target.getMinutes() + 1);
 
   const due = `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}-${String(target.getDate()).padStart(2, '0')}`;
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -74,7 +86,7 @@ function nearFutureReminderTarget(): { due: string; dueTime: string; quickPick: 
     due,
     dueTime,
     quickPick: due === today ? 'today' : 'tomorrow',
-    waitMs: Math.max(0, target.getTime() - now.getTime()) + 15_000,
+    waitMs: Math.max(0, target.getTime() - now.getTime()) + 10_000,
   };
 }
 
@@ -146,6 +158,7 @@ test('creating a quest and setting due time schedules its reminder path', async 
 });
 
 test('near-future reminder becomes Focus only after its due time arrives', async ({ tauriPage }) => {
+  test.setTimeout(90_000);
   const manualTitle = `e2e focus current ${Date.now()}`;
   const reminderTitle = `e2e focus reminder ${Date.now()}`;
 
@@ -170,6 +183,7 @@ test('near-future reminder becomes Focus only after its due time arrives', async
   await createQuestFromFocusInput(tauriPage, reminderTitle);
   await tauriPage.waitForFunction(`(() => document.body.textContent?.includes(${JSON.stringify(reminderTitle)}))()`, 10_000);
 
+  await waitForShortNextMinuteWindow();
   const target = nearFutureReminderTarget();
 
   await tauriPage.evaluate(`(() => {
