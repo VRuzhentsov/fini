@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { useQuestStore, type Quest, type UpdateQuestInput } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
+import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { ArrowPathIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
 import QuestEditor from "../QuestEditor.vue";
@@ -13,6 +14,7 @@ const store = useQuestStore();
 const { t } = useI18n();
 const spaceStore = useSpaceStore();
 const contextMenu = useContextMenu();
+const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 
 function spaceName(quest: Quest): string {
   return spaceStore.spaces.find((s) => s.id === quest.space_id)?.name ?? "";
@@ -103,6 +105,9 @@ async function onReminderSave(
   quest: Quest,
   payload: { due: string | null; due_time: string | null; repeat_rule: string | null }
 ) {
+  if (!(await ensureReminderNotificationsAllowed(payload))) {
+    return;
+  }
   await store.updateQuest(quest.id, payload);
   reminderQuestId.value = null;
 }

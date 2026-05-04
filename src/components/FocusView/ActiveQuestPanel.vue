@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
+import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import QuestEditor from "../QuestEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 
@@ -10,6 +11,7 @@ const props = defineProps<{ quest: Quest }>();
 const store = useQuestStore();
 const spaceStore = useSpaceStore();
 const contextMenu = useContextMenu();
+const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
 const HOLD_MS = 900;
@@ -47,7 +49,7 @@ function spaceCss(): string {
   return SPACE_COLOR_CLASS[props.quest.space_id] ?? "";
 }
 
-function startHold(action: "complete" | "abandon", event: PointerEvent) {
+function startHold(event: PointerEvent) {
   const button = event.currentTarget as HTMLButtonElement;
   button.setPointerCapture(event.pointerId);
   button.classList.remove("released", "done");
@@ -56,7 +58,7 @@ function startHold(action: "complete" | "abandon", event: PointerEvent) {
     holdTimer = null;
     button.classList.remove("active");
     button.classList.add("done");
-    void (action === "complete" ? completeQuest() : abandonQuest());
+    void abandonQuest();
     window.setTimeout(() => button.classList.remove("done"), 700);
   }, HOLD_MS);
 }
@@ -101,6 +103,15 @@ async function completeQuest() {
 
 async function abandonQuest() {
   await store.updateQuest(props.quest.id, { status: "abandoned" });
+}
+
+async function onReminderSave(payload: { due: string | null; due_time: string | null; repeat_rule: string | null }) {
+  if (!(await ensureReminderNotificationsAllowed(payload))) {
+    return;
+  }
+
+  await store.updateQuest(props.quest.id, payload);
+  reminderOpen.value = false;
 }
 </script>
 
@@ -152,7 +163,7 @@ async function abandonQuest() {
       <button
         class="hold-action abandon"
         aria-label="Abandon (hold)"
-        @pointerdown.prevent="startHold('abandon', $event)"
+        @pointerdown.prevent="startHold"
         @pointerup="endHold"
         @pointerleave="endHold"
         @pointercancel="endHold"
@@ -162,13 +173,9 @@ async function abandonQuest() {
       </button>
       <button
         class="hold-action complete"
-        aria-label="Complete (hold)"
-        @pointerdown.prevent="startHold('complete', $event)"
-        @pointerup="endHold"
-        @pointerleave="endHold"
-        @pointercancel="endHold"
+        aria-label="Complete"
+        @click="completeQuest"
       >
-        <span class="hold-fill" />
         <span class="hold-glyph check" />
       </button>
     </div>
@@ -178,7 +185,7 @@ async function abandonQuest() {
     v-if="reminderOpen"
     :quest="quest"
     @close="reminderOpen = false"
-    @save="store.updateQuest(quest.id, $event).then(() => { reminderOpen = false; })"
+    @save="onReminderSave"
   />
 </template>
 

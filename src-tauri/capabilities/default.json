@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "notification:default",
     "mcp-bridge:default",
     "playwright:default"
   ]

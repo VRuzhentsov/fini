@@ -58,7 +58,7 @@ Reveals a time picker row (`<input type="time">`). Sets `due_time`. The `+` togg
 | Button | Behaviour |
 |---|---|
 | **Clear** | Clears `due`, `due_time`, and `repeat_rule`. Closes the menu. |
-| **Done** | Saves `due`, `due_time`, and `repeat_rule`. Closes the menu. |
+| **Done** | Saves `due`, `due_time`, and `repeat_rule`. On Android, the first reminder save that needs OS delivery requests notification permission before closing. |
 
 Tapping outside the sheet or pressing Escape closes without saving.
 
