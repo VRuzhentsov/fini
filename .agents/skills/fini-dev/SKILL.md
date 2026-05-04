@@ -23,7 +23,7 @@ Before implementation, debugging, QA, Android, design-to-code, release, or docum
 
 1. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
 2. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, and targeted source files.
-3. If the task needs product, business, terminology, strategic, or historical context, follow the wiki retrieval protocol in `AGENTS.md`.
+3. If the task needs product, business, terminology, strategic, architecture background, or historical context, load `fini-wiki` and follow the wiki query protocol.
 4. Choose any specialized skill from the routing table below before doing the domain-specific work.
 5. Pick the smallest useful verification command before editing so the success standard is clear.
 
@@ -66,7 +66,7 @@ Load the specialized skill when its condition applies:
 | Design or refine native Figma components, variants, screens, or visual systems | `ui-ux-design` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
-| Save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
+| Query product/domain/history/architecture context from the wiki, or save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
 | Debug errors, regressions, stack traces, crashes, or unexpected behavior | `investigate` |
 | QA a web/app flow and fix bugs found | `qa` |
 | QA report only, without fixes | `qa-only` |
