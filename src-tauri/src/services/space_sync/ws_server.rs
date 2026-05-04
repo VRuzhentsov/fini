@@ -177,7 +177,8 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             drop(listener);
 
-            let data_dir = db_path.parent().unwrap().to_path_buf();
+            let data_dir = db_path.with_extension("data");
+            std::fs::create_dir_all(&data_dir).unwrap();
             let state = DeviceConnectionState::new(&data_dir);
             let state_clone = state.clone();
             let db_clone = db_path.clone();
