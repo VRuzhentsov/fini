@@ -1,269 +1,96 @@
 ---
 name: fini-design
-description: Design and refine Fini interfaces in Figma with a Figma-first workflow. Use this whenever the user wants UI or UX design work, component cleanup, variant/property architecture, design-system refinement, visual polish, interaction-state design, or design QA in Figma. Use TalkToFigma for native design edits and ask the user to perform any Figma UI actions that are not available through automation tools. If a sibling `../fini-design/` design repo exists, treat it as a source of durable design references and exported assets.
+description: Consume the sibling `../fini-design/` HTML/CSS/JS handoff bundle as the canonical Fini design source, then plan implementation in the target codebase. Use whenever the user wants to design a new surface, refine an existing one, translate a prototype to Vue, audit visuals against the bundle, or clarify design intent. The bundle's own README enforces "read chat transcripts first, then primary file under `project/`, follow imports, do not screenshot, pixel-recreate not structurally copy" — this skill enforces the same protocol. Direct Figma editing via TalkToFigma is a secondary surface, used only when the user is actively in a Figma file or no bundle counterpart exists.
 ---
 
 # Fini Design
 
-Use this skill for design work that happens primarily in Figma: creating or refining components, restructuring component sets, cleaning up variant properties, improving layout and spacing, aligning visual states with product behavior, and validating UI consistency before implementation.
+Design source for Fini lives in the sibling `../fini-design/` repo as an HTML/CSS/JS handoff bundle exported from claude.ai/design. Treat that bundle as the source of truth. Figma is a secondary surface.
 
 ## Sibling Design Repo
 
-A sibling `../fini-design/` repo may exist alongside this project. When present, it acts as the durable home for design source material, exported assets, references, mockups, and design notes that should outlive any single Figma session.
-
-Resolve the sibling path from the current repository name:
+Resolve the path the same way `fini-wiki` does:
 
 ```text
-current repo: <repo-name>
-design repo: ../<repo-name>-design/
+current repo: <repo-name>      (e.g. fini)
+design repo:  ../<repo-name>-design/   (e.g. ~/projects/fini-design/)
 ```
 
-Example:
+If `../fini-design/` is missing, stop and tell the user — design work cannot proceed without it. Do not invent design intent.
 
-```text
-repo: fini
-design repo: ../fini-design/
-```
+### Bundle layout
 
-Use the sibling design repo when:
-- looking up prior design references, mockups, or exported assets
-- locating canonical design documentation that the Figma file alone does not capture
-- saving exported flows or static design artifacts that should be version-controlled
+| Path | Purpose |
+|---|---|
+| `README.md` | Authoritative handoff directives. Re-read on every session. |
+| `chats/*.md` | Design intent transcripts. Read FIRST. |
+| `project/README.md` | Design system reference: tone, vocabulary, principles, voice. |
+| `project/preview/*.html` | Per-surface prototypes (`quest-card`, `reminder`, `composer`, `nav`, `settings-section`, `device-list`, `device-view`, etc.). |
+| `project/preview/_*.{css,html,js}` | Shared partials imported by prototype pages. |
+| `project/colors_and_type.css` | Token definitions (color, type, scale). |
+| `project/ui_kits/app/` | Assembled kit (`Fini App.html`, `index.html`, `kit.css`, `Components.jsx`, `_theme.js`). |
+| `project/assets/` | Icons, app icon. |
+| `project/uploads/` | Supplemental references (pasted images, grilling notes). |
+| `project/tmp/` | Scratch screenshots. Ignore unless the chat cites them. |
 
-If `../fini-design/` does not exist, do not create it. Continue working from Figma alone and surface the missing path only if the user expects design material to live there.
+## Required intake order
 
-## Outcome
+Enforce this every time the bundle is consulted. The bundle's own README mandates it.
 
-Produce clean, maintainable design artifacts that are easy to evolve:
-- Components have clear property models.
-- Variants represent real behavioral axes rather than ad hoc examples.
-- Nested pieces are reused from shared definitions.
-- Typography, spacing, alignment, and color are internally consistent.
-- Design decisions are verified in the live file before claiming completion.
+1. Read every file in `chats/` end-to-end. The chat is where intent lives; the prototypes are the output.
+2. Read `project/README.md` for vocabulary, voice, and product principles.
+3. Identify the primary file from chat — the surface the user was last iterating on.
+4. Read the primary HTML top to bottom. Follow every `<link>`, `<script>`, and partial import (anything starting with `_`).
+5. Read `project/colors_and_type.css` for token semantics that any prototype consumes.
+6. Do not render prototypes in a browser and do not take screenshots unless the user explicitly asks. Read source directly — it spells out dimensions, colors, layout rules.
 
-## Tool Strategy
+If the bundle changes between sessions, re-run intake; do not rely on memory of an earlier import.
 
-### Primary: TalkToFigma
+## Implementation guidance
 
-Use `TalkToFigma_*` tools as the default path for design work inside the file.
+The prototypes are reference, not production code. Recreate the visual output in the target codebase's actual stack — for the Fini app that means Vue 3 + Tailwind 4 + DaisyUI 5 + Heroicons.
 
-Prefer TalkToFigma for:
-- reading document, selection, and node metadata
-- inspecting component sets, frames, text nodes, and instances
-- editing fills, strokes, text, layout, spacing, sizing, corner radius, and annotations
-- creating frames, text nodes, rectangles, component instances, and connections
-- checking local components and instance overrides
+- Match visual output pixel-for-pixel. Do not copy the prototype's HTML structure unless it happens to fit the target.
+- Map prototype tokens to the existing app tokens. Do not introduce a parallel token system. If a prototype token has no app equivalent, surface that as a question before adding one.
+- Reuse existing Vue components in `src/components/` first. Read before creating.
+- Match the exact vocabulary in `project/README.md` ("Quest", "Space", "Focus", "Abandon", etc.). Do not rename product concepts.
+- Sentence case for buttons and labels; uppercase tracked-out only for app-chrome section headers (`SPACES`, `DEVICES`, `VOICE MODEL`).
 
-The Figma file state exposed through TalkToFigma is the source of truth for native design structure.
+## Ambiguity protocol
 
-### Fallback: User-Performed Figma Actions
+If the chat does not pin intent, the prototype is incomplete, or two prototypes contradict, ask the user one targeted question via the `question` tool before implementing. Cheaper to clarify than to build the wrong thing — the bundle README says so explicitly.
 
-Some Figma actions are not available through TalkToFigma and must be performed manually by the user in the Figma UI.
+Common ambiguity sources:
+- Multiple prototypes for the same surface (which is canonical).
+- Tokens defined in `colors_and_type.css` but not used in any prototype.
+- Chat ends mid-iteration with no clear "we landed here".
 
-Typical examples:
-- variant property management
-- component property panel actions not exposed through TalkToFigma
-- browser-only selection or panel state changes that affect what Figma exposes
-- any UI control that cannot be read or changed reliably through automation tools
+## Figma fallback (TalkToFigma)
 
-When blocked by one of these actions:
-- describe the exact manual step the user needs to take in Figma
-- keep the instruction narrow and concrete
-- wait for the user to confirm the change
-- re-read the relevant nodes with TalkToFigma to verify the resulting state
+Use TalkToFigma only when one of these is true:
+- The user is actively editing a specific Figma file and asks for help in it.
+- The bundle has no counterpart for the surface and the user wants to mock first in Figma.
+- The user wants component-set cleanup, variant property work, or visual QA inside Figma.
 
-## Required Workflow
+When using TalkToFigma:
+1. `TalkToFigma_join_channel` to confirm connection. Report disconnect state if blocked.
+2. Inspect first — read component sets, frames, instances, properties before editing.
+3. Make the smallest structural change that fixes the problem. Prefer fixing the shared definition over per-variant patching.
+4. For actions TalkToFigma cannot perform (variant property panels, browser-only UI), describe the exact manual step for the user, wait for confirmation, then re-read nodes to verify.
+5. Verify by re-reading affected nodes. Never claim a fix from intent alone.
 
-### 1. Establish Connection
-
-Before changing anything:
-1. Join the active Figma channel with `TalkToFigma_join_channel`.
-2. Confirm the active design context by reading the relevant node, selection, or document info.
-
-If TalkToFigma is disconnected:
-- report that state clearly
-- ask the user to reconnect the Figma plugin/socket only when blocked
-
-### 2. Inspect Before Editing
-
-Build evidence from the file before proposing or applying changes:
-- identify the exact component set, frame, instance, or text nodes involved
-- inspect existing properties and variant axes
-- compare repeated elements for drift in size, color, position, or behavior
-- verify whether the problem is structural, not just visual
-
-Do not assume a component is well-structured because it looks correct in one variant.
-
-### 3. Model the Design Properly
-
-Prefer a clean component architecture over one-off visual patching.
-
-Use these defaults:
-- one property per real behavior axis
-- one shared nested component for reused sub-elements
-- one canonical text/icon treatment per semantic role
-- variant names that reflect product concepts, not temporary visual states
-
-Good examples:
-- `Status=active|completed|abandoned`
-- `Hover=True|False`
-- `With Reminder=True|False`
-
-Avoid:
-- duplicate axes that describe the same business concept
-- manual per-variant glyph or text drift
-- fake examples that should be nested instances
-
-### 4. Edit Minimally
-
-Make the smallest structural change that fixes the problem completely.
-
-Prefer:
-- reusing an existing nested component instead of duplicating layers
-- fixing the shared source instead of touching every variant individually
-- aligning all affected variants only after the source definition is correct
-
-If a desired operation is not directly supported by TalkToFigma, describe the exact manual Figma step needed from the user, then re-read the resulting nodes with TalkToFigma to verify the change.
-
-### 5. Verify Before Claiming Success
-
-Before stating something is fixed:
-- re-read the affected nodes or component set
-- verify sizes, colors, text, layout, and property usage from the live file
-- confirm the fix exists in the shared definition and not only in one example
-- call out anything that remains incomplete
-
-Never claim a visual or structural fix based only on intent.
-
-## Design Review Checklist
-
-Run through these when working on components or screens:
-- Does every variant differ because of a real property?
-- Are repeated sub-elements backed by a shared definition?
-- Do labels, icons, and chips use consistent typography and spacing?
-- Are states aligned with real product behavior?
-- Is the layout anchored correctly, not merely visually centered by accident?
-- Can a future editor change the design from one source rather than many copies?
-
-## Figma-Specific Guidance
-
-When cleaning up component sets:
-- inspect the parent component set first
-- verify which properties are actually wired versus merely declared
-- bind properties to the real layers or nested instances they control
-- prefer nested instances for reusable chips, badges, icons, or accordion content
-- resolve duplicate/conflicting variants by simplifying the axis model
-
-When working on text and icon systems:
-- decide the canonical sizes first
-- ensure fills match the intended semantic color role
-- normalize alignment after size changes
-- verify every affected variant, especially those with optional content
-
-When building component examples:
-- keep primary semantic content as an editable input field when the component supports it
-- show state changes through styling and supporting UI, not by replacing the main title concept with variant-specific copy
-
-When working on interaction states:
-- separate persistent business state from transient UI state
-- keep hover, expanded, selected, and disabled as explicit UI axes only when needed
-- do not encode the same concept in multiple properties
-
-## Variants Per Component
-
-When a component has variants, describe the variant model explicitly before editing or reporting completion.
-
-For each component, capture:
-- component name and node ID
-- parent property list
-- allowed values for each property
-- which layers or nested instances each property controls
-- default or canonical variant
-- any invalid, duplicate, or missing combinations
-
-Use this structure when summarizing a component set:
-
-`Component`: `<name>` (`<node-id>`)
-
-`Properties`:
-- `<Property A=value1|value2>`
-- `<Property B=True|False>`
-- `<Property C=<string>|undefined>`
-
-`Variant behavior`:
-- `<Property A>` changes `<behavior>`
-- `<Property B>` shows or hides `<layer or instance>`
-- `<Property C>` changes `<text, layout, or nested instance>`
-
-`Shared definitions`:
-- repeated sub-elements should come from one shared source
-- typography and spacing should stay consistent across all variants
-
-`Audit notes`:
-- flag unused parent properties
-- flag duplicate variants that represent the same state
-- flag manual overrides that should be replaced with bindings or nested instances
-
-If the component has many variants, reason from the property matrix rather than from screenshots alone.
-
-## Project Figma Shape
-
-Organize the design file so its structure stays predictable and scalable.
-
-Use two primary horizontal rows:
-- a component row
-- a page row
-
-### Component Row
-
-The component row is the foundation of the project.
-
-Place here:
-- atomic components
-- composed components
-- component sets with variants
-- reusable nested building blocks
-
-Expectations for the component row:
-- components are complete before they are relied on by pages
-- variants are cleaned up and property-driven
-- repeated pieces are shared definitions, not detached copies
-- naming is consistent and semantic
-- spacing, typography, and color rules are settled here first
-
-### Page Row
-
-The page row is for assembled screens, flows, and high-level layouts.
-
-Build pages only from prepared components in the component row.
-
-Do not design a page by inventing ad hoc UI that the component library does not yet support.
-If a page needs a missing element:
-- stop page work
-- design or refine the missing component first
-- then return to assemble the page from the prepared pieces
-
-Expectations for the page row:
-- pages are composed from reusable components
-- page-specific layout is allowed, but page-specific component invention is not the default
-- screens reflect the current component system accurately
-- page design serves as composition and validation, not as a substitute for component design
-
-Use the file structure to make progress visible:
-- components first
-- pages second
-- page work only after required components are ready
-
-## Communication
-
-While working:
-- keep updates short and factual
-- report live state, not assumptions
-- mention blockers immediately when connection state prevents verification
-- if a manual Figma step is needed from the user, say exactly what action is required and what will be verified afterward
+The Figma file follows the bundle, not the other way around. If Figma and the bundle disagree, the bundle wins unless the user explicitly says Figma is now ahead.
 
 ## Boundaries
 
-This skill is for design work in Figma and live design QA.
+This skill owns:
+- Reading the bundle and translating intent into an implementation plan.
+- Deciding token and component mapping between bundle and app.
+- Light Figma edits via TalkToFigma when the user is in a Figma file.
 
-If the user wants production frontend code, pair or transition to the `frontend-design` or `figma` implementation skills as appropriate.
+Hand off when:
+- Multi-file Vue implementation work begins → pair with `frontend-design` for code generation patterns.
+- Direct Figma-to-code generation against a Figma node → `figma:figma-implement-design`.
+- Production code review of the resulting Vue → standard repo review flow via `fini-dev`.
+
+Per `fini-dev` routing, design-to-code work loads this skill first.
