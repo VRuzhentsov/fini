@@ -61,6 +61,23 @@ async function createQuestFromFocusInput(
   await tauriPage.press('[data-testid="chat-input"]', 'Enter');
 }
 
+async function openReminderForQuest(
+  tauriPage: { waitForSelector: (selector: string, timeout?: number) => Promise<unknown>; click: (selector: string) => Promise<void>; evaluate: <R>(script: string) => Promise<R> },
+  title: string,
+): Promise<void> {
+  await tauriPage.waitForSelector('.quest-row-surface', 10_000);
+  await tauriPage.evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll('.quest-row-surface'));
+    const row = rows.find((candidate) => candidate.textContent?.includes(${JSON.stringify(title)}));
+    if (!(row instanceof HTMLElement)) {
+      throw new Error('quest row not found for title: ' + ${JSON.stringify(title)});
+    }
+    row.click();
+  })()`);
+  await tauriPage.click('[data-testid="quest-reminder"]');
+  await tauriPage.waitForSelector('[data-testid="reminder-done"]', 10_000);
+}
+
 async function waitForShortNextMinuteWindow(): Promise<void> {
   const now = new Date();
   const seconds = now.getSeconds();
@@ -155,6 +172,42 @@ test('creating a quest and setting due time schedules its reminder path', async 
     due_at_utc: `${tomorrow}T14:30:00Z`,
     reminder_id: reminders[0].id,
   });
+});
+
+test('reminder menu closes from backdrop and explicit close button', async ({ tauriPage }) => {
+  const title = `e2e reminder close ${Date.now()}`;
+
+  await tauriPage.waitForSelector('nav.nav a[href="#/main"]', 30_000);
+  await tauriPage.click('nav.nav a[href="#/main"]');
+  await createQuestFromFocusInput(tauriPage, title);
+  await openReminderForQuest(tauriPage, title);
+
+  await tauriPage.click('[data-testid="reminder-backdrop"]');
+  await tauriPage.waitForFunction(`(() => !document.querySelector('[data-testid="reminder-done"]'))()`, 10_000);
+
+  await tauriPage.click('[data-testid="quest-reminder"]');
+  await tauriPage.waitForSelector('[data-testid="reminder-close"]', 10_000);
+  await tauriPage.click('[data-testid="reminder-close"]');
+  await tauriPage.waitForFunction(`(() => !document.querySelector('[data-testid="reminder-done"]'))()`, 10_000);
+});
+
+test('reminder actions stay reachable after time controls expand', async ({ tauriPage }) => {
+  const title = `e2e reminder fit ${Date.now()}`;
+
+  await tauriPage.waitForSelector('nav.nav a[href="#/main"]', 30_000);
+  await tauriPage.click('nav.nav a[href="#/main"]');
+  await createQuestFromFocusInput(tauriPage, title);
+  await openReminderForQuest(tauriPage, title);
+
+  await tauriPage.click('[data-testid="reminder-toggle-time"]');
+
+  const doneVisible = await tauriPage.evaluate<boolean>(`(() => {
+    const button = document.querySelector('[data-testid="reminder-done"]');
+    if (!(button instanceof HTMLElement)) return false;
+    const rect = button.getBoundingClientRect();
+    return rect.top >= 0 && rect.bottom <= window.innerHeight && rect.width > 0 && rect.height > 0;
+  })()`);
+  expect(doneVisible).toBe(true);
 });
 
 test('near-future reminder becomes Focus only after its due time arrives', async ({ tauriPage }) => {

@@ -50,6 +50,8 @@ Internally writes to a shared reactive store read by the global `<ContextMenu>` 
 | Escape | Closes menu |
 | Scroll | Closes menu |
 
+On narrow screens, the bottom-sheet menu renders over a dimmed, blurred scrim so the menu reads as modal and the background recedes. Tapping the scrim closes the menu.
+
 ## Dependencies
 
 None — standalone. Consumers import `useContextMenu()` and provide their own items.

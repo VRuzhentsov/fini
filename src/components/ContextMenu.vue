@@ -312,28 +312,30 @@ function isItemHot(item: MenuItem): boolean {
   <Teleport to="body">
     <template v-if="state.visible">
       <!-- Mobile bottom sheet (preserved) -->
-      <ul v-if="isNarrow && !overlayActive" ref="menuEl" class="action-sheet mobile">
-        <template v-for="(item, i) in state.items" :key="i">
-          <li v-if="item.separator" class="sheet-separator" />
-          <li v-else-if="item.children" class="sheet-submenu-host">
-            <button
-              class="sheet-item parent"
-              :class="{ disabled: item.disabled }"
-              @click.stop="onItemClick(item)"
-            >
-              <span>{{ item.label }}</span>
-              <span class="sheet-chevron">›</span>
-            </button>
-          </li>
-          <li v-else>
-            <button
-              class="sheet-item"
-              :class="{ disabled: item.disabled, danger: item.label === 'Delete' }"
-              @click.stop="onItemClick(item)"
-            >{{ item.label }}</button>
-          </li>
-        </template>
-      </ul>
+      <div v-if="isNarrow && !overlayActive" class="ctx-scrim ctx-scrim-mobile" @click.self="close">
+        <ul ref="menuEl" class="action-sheet mobile" @click.stop>
+          <template v-for="(item, i) in state.items" :key="i">
+            <li v-if="item.separator" class="sheet-separator" />
+            <li v-else-if="item.children" class="sheet-submenu-host">
+              <button
+                class="sheet-item parent"
+                :class="{ disabled: item.disabled }"
+                @click.stop="onItemClick(item)"
+              >
+                <span>{{ item.label }}</span>
+                <span class="sheet-chevron">›</span>
+              </button>
+            </li>
+            <li v-else>
+              <button
+                class="sheet-item"
+                :class="{ disabled: item.disabled, danger: item.label === 'Delete' }"
+                @click.stop="onItemClick(item)"
+              >{{ item.label }}</button>
+            </li>
+          </template>
+        </ul>
+      </div>
 
       <!-- Narrow / no-room: in-place overlay submenu with back -->
       <div v-else-if="overlayActive" class="ctx-scrim" @click.self="backFromOverlay">
@@ -488,8 +490,14 @@ function isItemHot(item: MenuItem): boolean {
   background: rgba(0, 0, 0, 0.16);
 }
 
+.ctx-scrim-mobile {
+  background: rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(5px);
+}
+
 @media (prefers-color-scheme: dark) {
   .ctx-scrim { background: rgba(0, 0, 0, 0.45); }
+  .ctx-scrim-mobile { background: rgba(0, 0, 0, 0.5); }
 }
 
 .action-sheet.overlay {
