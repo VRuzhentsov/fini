@@ -62,10 +62,14 @@ async function createQuestFromFocusInput(
 }
 
 async function openReminderForQuest(
-  tauriPage: { waitForSelector: (selector: string, timeout?: number) => Promise<unknown>; click: (selector: string) => Promise<void>; evaluate: <R>(script: string) => Promise<R> },
+  tauriPage: { waitForSelector: (selector: string, timeout?: number) => Promise<unknown>; waitForFunction: (script: string, timeout?: number) => Promise<unknown>; click: (selector: string) => Promise<void>; evaluate: <R>(script: string) => Promise<R> },
   title: string,
 ): Promise<void> {
   await tauriPage.waitForSelector('.quest-row-surface', 10_000);
+  await tauriPage.waitForFunction(`(() => {
+    const rows = Array.from(document.querySelectorAll('.quest-row-surface'));
+    return rows.some((candidate) => candidate.textContent?.includes(${JSON.stringify(title)}));
+  })()`, 10_000);
   await tauriPage.evaluate(`(() => {
     const rows = Array.from(document.querySelectorAll('.quest-row-surface'));
     const row = rows.find((candidate) => candidate.textContent?.includes(${JSON.stringify(title)}));
