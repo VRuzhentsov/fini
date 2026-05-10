@@ -32,11 +32,11 @@ help:
 	@echo "  make pr-gate-e2e      Run npm run test:e2e:ci with Dockerfile stages"
 	@echo "  make pr-gate-e2e-cache-key  Print the E2E image input cache key"
 	@echo "  make pr-gate-e2e-*    Run one named CI E2E phase for easier failure diagnosis"
-	@echo "  make e2e              Run visible local two-app E2E"
+	@echo "  make e2e              Run visible local E2E (UI + multi-actor) alongside make dev"
 	@echo "  make e2e-ci           Run containerized headless E2E in CI mode"
 	@echo "  make e2e-image        Build/update the container e2e image"
 	@echo "  make e2e-build        Build container image and run e2e-ci inside it"
-	@echo "  make e2e-headed       Run visible local two-app E2E"
+	@echo "  make e2e-headed       Run visible local E2E (UI + multi-actor) alongside make dev"
 	@echo "  make e2e-actors-image Force rebuild actor and runner images"
 	@echo "  make e2e-actors       Run containerized full E2E suite, reusing fresh images"
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
@@ -323,7 +323,11 @@ e2e-build:
 	$(CONTAINER) image inspect fini-e2e >/dev/null 2>&1 || $(CONTAINER) build --target test -t fini-e2e .
 	$(CONTAINER) run --rm fini-e2e
 
-# Run the visible local two-app E2E suite against the host desktop display.
+# Run the visible local E2E suite (UI single-actor + multi-actor) against the host desktop display.
+# Designed to run alongside `make dev`: builds into a separate cargo target dir
+# (src-tauri/target/debug-e2e), spawns its own binary instead of starting Vite,
+# and uses non-default discovery / sync-WS ports so it does not collide with a
+# live `make dev` instance.
 e2e-headed:
 	@set -eu; \
 	actor_list="$${FINI_E2E_ACTORS:-actor-a,actor-b}"; \
@@ -334,7 +338,8 @@ e2e-headed:
 	run_dir="$$run_root/$$run_id"; \
 	socket_dir="$$run_dir/sockets"; \
 	test_results_dir="$$run_dir/test-results"; \
-	bin_path="./src-tauri/target/debug/fini"; \
+	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
+	bin_path="$$e2e_target_dir/debug/fini"; \
 	printf 'FINI_E2E_RUN_DIR=%s\n' "$$run_dir"; \
 	mkdir -p "$$socket_dir" "$$test_results_dir"; \
 	IFS=','; set -- $$actor_list; \
@@ -365,7 +370,7 @@ e2e-headed:
 	  exit "$$status"; \
 	}; \
 	trap cleanup EXIT INT TERM; \
-	node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle; \
 	idx=0; \
 	for actor in "$$@"; do \
 	  actor_data_dir="$$run_dir/$$actor-data"; \
@@ -393,7 +398,10 @@ e2e-headed:
 	    sleep 1; \
 	  done; \
 	done; \
-	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors --output "$$test_results_dir"
+	ui_discovery_port=$$((base_discovery_port + idx * 2 + 100)); \
+	ui_ws_port=$$((ui_discovery_port + 1)); \
+	printf 'UI fixture ports: discovery=%s ws=%s\n' "$$ui_discovery_port" "$$ui_ws_port"; \
+	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 FINI_BINARY="$$bin_path" FINI_DISCOVERY_PORT="$$ui_discovery_port" FINI_SPACE_SYNC_WS_PORT="$$ui_ws_port" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors --output "$$test_results_dir"
 
 # Build/update the actor and runner images for multi-actor desktop e2e.
 e2e-actors-image:

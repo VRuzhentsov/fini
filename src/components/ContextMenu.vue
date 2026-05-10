@@ -168,7 +168,27 @@ const overlayParent = ref<MenuItem | null>(null);
 
 const overlayActive = computed(() => overlayParent.value !== null);
 
+const HOVER_CLOSE_DELAY_MS = 300;
+let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelHoverClose() {
+  if (hoverCloseTimer !== null) {
+    clearTimeout(hoverCloseTimer);
+    hoverCloseTimer = null;
+  }
+}
+
+function scheduleHoverClose() {
+  if (!canFitSubmenuSideBySide.value) return;
+  cancelHoverClose();
+  hoverCloseTimer = setTimeout(() => {
+    hoveredParent.value = null;
+    hoverCloseTimer = null;
+  }, HOVER_CLOSE_DELAY_MS);
+}
+
 function clearSubmenuState() {
+  cancelHoverClose();
   hoveredParent.value = null;
   openedParent.value = null;
   overlayParent.value = null;
@@ -178,6 +198,7 @@ function onItemClick(item: MenuItem) {
   if (item.disabled) return;
   if (item.children) {
     if (canFitSubmenuSideBySide.value) {
+      cancelHoverClose();
       openedParent.value = openedParent.value === item.label ? null : item.label ?? null;
     } else {
       overlayParent.value = item;
@@ -197,12 +218,19 @@ function onChildClick(child: MenuItem) {
 function onParentHover(item: MenuItem) {
   if (!item.children || item.disabled) return;
   if (canFitSubmenuSideBySide.value) {
+    cancelHoverClose();
     hoveredParent.value = item.label ?? null;
   }
 }
 
 function clearHover() {
-  if (canFitSubmenuSideBySide.value) hoveredParent.value = null;
+  scheduleHoverClose();
+}
+
+function onSubmenuEnter() {
+  if (!visibleParent.value) return;
+  cancelHoverClose();
+  hoveredParent.value = visibleParent.value.label ?? null;
 }
 
 function backFromOverlay() {
@@ -258,6 +286,7 @@ watch(
 );
 
 onUnmounted(() => {
+  cancelHoverClose();
   window.removeEventListener("pointerdown", onPointerOutside, { capture: true });
   window.removeEventListener("touchstart", onPointerOutside, { capture: true });
   window.removeEventListener("contextmenu", onPointerOutside, { capture: true });
@@ -365,7 +394,8 @@ function isItemHot(item: MenuItem): boolean {
           class="action-sheet sub"
           :class="{ 'sub-left': zone?.side === 'left', 'sub-right': zone?.side === 'right' }"
           :style="subStyle"
-          @mouseenter="hoveredParent = visibleParent.label ?? null"
+          data-testid="context-menu-submenu"
+          @mouseenter="onSubmenuEnter"
           @mouseleave="clearHover"
         >
           <li class="sheet-sub-head">{{ visibleParent.label }}</li>
