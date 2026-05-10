@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
+import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import QuestEditor from "../QuestEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
@@ -19,26 +20,13 @@ let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
 
 function onContextMenu(e: MouseEvent) {
-  const moveItems = spaceStore.spaces
-    .filter((s) => s.id !== props.quest.space_id)
-    .map((s) => ({
-      label: s.name,
-      action: () => store.updateQuest(props.quest.id, { space_id: s.id }),
-    }));
-
-  const moveItem =
-    moveItems.length > 0
-      ? { label: "Move to space", children: moveItems }
-      : { label: "Move to space", disabled: true };
-
-  contextMenu.open(e, [
-    { label: "Complete", action: () => store.updateQuest(props.quest.id, { status: "completed" }) },
-    { label: "Set Focus", action: () => store.setFocusQuest(props.quest.id) },
-    moveItem,
-    { separator: true },
-    { label: "Abandon", action: () => store.updateQuest(props.quest.id, { status: "abandoned" }) },
-    { label: "Delete", action: () => store.deleteQuest(props.quest.id) },
-  ]);
+  const items = buildQuestMenu(props.quest, {
+    spaces: spaceStore.spaces,
+    updateQuest: (id, patch) => store.updateQuest(id, patch),
+    setFocusQuest: (id) => store.setFocusQuest(id),
+    deleteQuest: (id) => store.deleteQuest(id),
+  });
+  contextMenu.open(e, items);
 }
 
 function spaceName(): string {

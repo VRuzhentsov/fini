@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { useQuestStore, type Quest, type UpdateQuestInput } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
+import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { ArrowPathIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
@@ -29,31 +30,12 @@ function statusLabel(quest: Quest): string {
 }
 
 function onContextMenu(e: MouseEvent, quest: Quest) {
-  const moveItems = spaceStore.spaces
-    .filter((s) => s.id !== quest.space_id)
-    .map((s) => ({
-      label: s.name,
-      action: () => store.updateQuest(quest.id, { space_id: s.id }),
-    }));
-  const items = [];
-  if (quest.status === "active") {
-    items.push({ label: "Complete", action: () => store.updateQuest(quest.id, { status: "completed" }) });
-    items.push({ separator: true });
-    items.push({ label: "Set Focus", action: () => store.setFocusQuest(quest.id) });
-  }
-  if (quest.status !== "active") {
-    items.push({ label: "Make active", action: () => store.updateQuest(quest.id, { status: "active" }) });
-  }
-  if (moveItems.length > 0) {
-    items.push({ label: "Move to space", children: moveItems });
-  } else {
-    items.push({ label: "Move to space", disabled: true });
-  }
-  items.push({ separator: true });
-  if (quest.status === "active") {
-    items.push({ label: "Abandon", action: () => store.updateQuest(quest.id, { status: "abandoned" }) });
-  }
-  items.push({ label: "Delete", action: () => store.deleteQuest(quest.id) });
+  const items = buildQuestMenu(quest, {
+    spaces: spaceStore.spaces,
+    updateQuest: (id, patch) => store.updateQuest(id, patch),
+    setFocusQuest: (id) => store.setFocusQuest(id),
+    deleteQuest: (id) => store.deleteQuest(id),
+  });
   contextMenu.open(e, items);
 }
 

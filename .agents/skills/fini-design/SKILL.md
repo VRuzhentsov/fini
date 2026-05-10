@@ -1,6 +1,22 @@
 ---
 name: fini-design
-description: Consume the sibling `../fini-design/` HTML/CSS/JS handoff bundle as the canonical Fini design source, then plan implementation in the target codebase. Use whenever the user wants to design a new surface, refine an existing one, translate a prototype to Vue, audit visuals against the bundle, or clarify design intent. The bundle's own README enforces "read chat transcripts first, then primary file under `project/`, follow imports, do not screenshot, pixel-recreate not structurally copy" — this skill enforces the same protocol. Direct Figma editing via TalkToFigma is a secondary surface, used only when the user is actively in a Figma file or no bundle counterpart exists.
+description: |
+  Canonical Fini design source = sibling `../fini-design/` HTML/CSS/JS handoff bundle exported from claude.ai/design.
+  Load this skill on ANY of these triggers (auto-trigger first, ask second):
+    1. User pastes a `https://api.anthropic.com/v1/design/h/<hash>` URL (a Claude Design export link).
+    2. User asks to "fetch / read / sync / pull / refresh" a design or design bundle, with or without a URL.
+    3. User asks to "implement / build / translate / port / recreate / wire up" a Fini surface — including
+       Context menu, Quest card, Quest list, Composer / ChatInput, Top nav, Settings section, Device list,
+       Device view, Reminder, Focus view, Active quest panel, Spaces, Energy, Voice model, History, or any
+       prototype filename under `../fini-design/project/preview/`.
+    4. User says "design a new surface", "refine [surface]", "audit visuals", or "clarify design intent" for Fini.
+    5. User asks to update/close a Fini GitHub issue whose body cites a `../fini-design/` prototype or wiki
+       grilling note (e.g. `fini-wiki/raw/*-grilling.md`).
+  The bundle's own README enforces "read chats first, then primary file under `project/`, follow imports,
+  do not screenshot, pixel-recreate not structurally copy" — this skill enforces the same protocol and chains
+  to `sync-design-bundle` (in the bundle repo) when a fresh URL is supplied. Direct Figma editing via
+  TalkToFigma is a secondary surface, used only when the user is actively in a Figma file or no bundle
+  counterpart exists.
 ---
 
 # Fini Design

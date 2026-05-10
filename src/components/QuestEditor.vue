@@ -7,10 +7,10 @@ import {
   TagIcon,
   FlagIcon,
   ClockIcon,
-  EllipsisVerticalIcon,
   ChevronUpIcon,
   ExclamationCircleIcon,
 } from "@heroicons/vue/24/outline";
+import ActionsBtn from "./ActionsBtn.vue";
 
 const props = defineProps<{
   quest: Quest;
@@ -151,9 +151,7 @@ function spaceCss(): string {
             <FlagIcon />
           </button>
         </template>
-        <button class="quest-editor-icon" title="More" @click.stop="emit('more', $event)">
-          <EllipsisVerticalIcon />
-        </button>
+        <ActionsBtn title="More" @click.stop="emit('more', $event)" />
       </div>
     </div>
   </div>

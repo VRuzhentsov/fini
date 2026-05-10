@@ -5,11 +5,23 @@ import AboutCard from "../components/SettingsView/AboutCard.vue";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
 import ThemeSelector from "../components/SettingsView/ThemeSelector.vue";
-import { useSpaceStore } from "../stores/space";
+import { useSpaceStore, isBuiltinSpace } from "../stores/space";
 import { useDeviceStore, type PairedDevice } from "../stores/device";
+import { useContextMenu, type MenuItem } from "../composables/useContextMenu";
+import ActionsBtn from "../components/ActionsBtn.vue";
 
 const spaceStore = useSpaceStore();
 const deviceStore = useDeviceStore();
+const contextMenu = useContextMenu();
+
+function openSpaceMenu(e: MouseEvent, spaceId: string, spaceName: string) {
+  const items: MenuItem[] = [{ label: "Edit", action: () => startEdit(spaceId, spaceName) }];
+  if (!isBuiltinSpace(spaceId)) {
+    items.push({ separator: true });
+    items.push({ label: "Delete", action: () => spaceStore.deleteSpace(spaceId) });
+  }
+  contextMenu.open(e, items);
+}
 
 const newSpaceName = ref("");
 const editingId = ref<string | null>(null);
@@ -80,15 +92,10 @@ function devicePresenceLabel(device: PairedDevice) {
                 <span class="block truncate font-medium">{{ space.name }}</span>
               </template>
               <template #end>
-                <div class="dropdown dropdown-end">
-                  <button tabindex="0" class="btn btn-xs btn-ghost">Actions</button>
-                  <ul tabindex="0" class="dropdown-content menu rounded-box bg-base-100 z-10 mt-2 w-36 p-2 shadow">
-                    <li><button @click="startEdit(space.id, space.name)">Edit</button></li>
-                    <li v-if="!['1', '2', '3'].includes(space.id)">
-                      <button class="text-error" @click="spaceStore.deleteSpace(space.id)">Delete</button>
-                    </li>
-                  </ul>
-                </div>
+                <ActionsBtn
+                  :aria-label="`Actions for ${space.name}`"
+                  @click="openSpaceMenu($event, space.id, space.name)"
+                />
               </template>
             </SettingsListItem>
           </template>

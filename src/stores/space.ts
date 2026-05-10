@@ -15,6 +15,12 @@ export const SPACE_COLOR_CLASS: Record<string, string> = {
   "3": "space-color-work",
 };
 
+export const BUILTIN_SPACE_IDS = ["1", "2", "3"] as const;
+
+export function isBuiltinSpace(id: string): boolean {
+  return (BUILTIN_SPACE_IDS as readonly string[]).includes(id);
+}
+
 export const useSpaceStore = defineStore("space", () => {
   const spaces = ref<Space[]>([]);
   const loading = ref(false);
