@@ -62,7 +62,8 @@ Load the specialized skill when its condition applies:
 |---|---|
 | Create, update, list, or manage quests, spaces, reminders, or Focus state through the Fini CLI | `fini`, which uses `fini-cli` |
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
-| Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `android-testing` |
+| Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
+| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
 | Design or refine native Figma components, variants, screens, or visual systems | `fini-design` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
@@ -151,7 +152,8 @@ Choose verification based on touched area:
 - Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence.
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
-- Android behavior: load `android-testing`; use `make android-devices`, `make android-connect`, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
+- Android behavior: load `fini-android-testing`; use `make android-devices`, `make android-connect`, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
+- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/actors/cli): load `fini-test` for the canonical command + authoring guide.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
 - Release work: follow release tag rules in `AGENTS.md`; do not create or push tags unless explicitly requested.

@@ -1,5 +1,5 @@
 ---
-name: android-testing
+name: fini-android-testing
 description: Validate the Fini Android app on a real device or emulator through a device-automation workflow. Use this when users ask to verify Android behavior, prove navigation and state changes, debug mobile-only issues, or execute app automation against `com.fini.app`.
 ---
 
