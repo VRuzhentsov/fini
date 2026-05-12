@@ -1,0 +1,97 @@
+{
+  "market": "google-play",
+  "generated_by": "cargo xtask play-store-screenshots",
+  "listing": "docs/play-store/listing.md",
+  "screenshots": [
+    {
+      "device": "phone",
+      "file": "01-focus.png",
+      "path": "docs/play-store/screenshots/phone/01-focus.png",
+      "width": 780,
+      "height": 1387,
+      "surface": "Focus",
+      "caption": "One quest at a time",
+      "theme": "canonical"
+    },
+    {
+      "device": "phone",
+      "file": "02-history.png",
+      "path": "docs/play-store/screenshots/phone/02-history.png",
+      "width": 780,
+      "height": 1387,
+      "surface": "History",
+      "caption": "Finish or abandon without pile-up",
+      "theme": "canonical"
+    },
+    {
+      "device": "phone",
+      "file": "03-settings.png",
+      "path": "docs/play-store/screenshots/phone/03-settings.png",
+      "width": 780,
+      "height": 1387,
+      "surface": "Settings",
+      "caption": "Local-first and private",
+      "theme": "canonical"
+    },
+    {
+      "device": "tablet-7",
+      "file": "01-focus.png",
+      "path": "docs/play-store/screenshots/tablet-7/01-focus.png",
+      "width": 1200,
+      "height": 1920,
+      "surface": "Focus",
+      "caption": "One quest at a time",
+      "theme": "canonical"
+    },
+    {
+      "device": "tablet-7",
+      "file": "02-history.png",
+      "path": "docs/play-store/screenshots/tablet-7/02-history.png",
+      "width": 1200,
+      "height": 1920,
+      "surface": "History",
+      "caption": "Finish or abandon without pile-up",
+      "theme": "canonical"
+    },
+    {
+      "device": "tablet-7",
+      "file": "03-settings.png",
+      "path": "docs/play-store/screenshots/tablet-7/03-settings.png",
+      "width": 1200,
+      "height": 1920,
+      "surface": "Settings",
+      "caption": "Local-first and private",
+      "theme": "canonical"
+    },
+    {
+      "device": "tablet-10",
+      "file": "01-focus.png",
+      "path": "docs/play-store/screenshots/tablet-10/01-focus.png",
+      "width": 1600,
+      "height": 2560,
+      "surface": "Focus",
+      "caption": "One quest at a time",
+      "theme": "canonical"
+    },
+    {
+      "device": "tablet-10",
+      "file": "02-history.png",
+      "path": "docs/play-store/screenshots/tablet-10/02-history.png",
+      "width": 1600,
+      "height": 2560,
+      "surface": "History",
+      "caption": "Finish or abandon without pile-up",
+      "theme": "canonical"
+    },
+    {
+      "device": "tablet-10",
+      "file": "03-settings.png",
+      "path": "docs/play-store/screenshots/tablet-10/03-settings.png",
+      "width": 1600,
+      "height": 2560,
+      "surface": "Settings",
+      "caption": "Local-first and private",
+      "theme": "canonical"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item, Value};
 
@@ -23,12 +23,127 @@ fn run() -> Result<(), String> {
             }
             set_release_version(&version)
         }
+        "play-store-screenshots" => {
+            if args.next().is_some() {
+                return Err(usage());
+            }
+            prepare_play_store_screenshots()
+        }
         _ => Err(usage()),
     }
 }
 
 fn usage() -> String {
-    "Usage: cargo run --manifest-path xtask/Cargo.toml -- release-version x.y.z".to_string()
+    "Usage: cargo run --manifest-path xtask/Cargo.toml -- <release-version x.y.z|play-store-screenshots>".to_string()
+}
+
+struct ScreenshotSpec {
+    device: &'static str,
+    directory: &'static str,
+    width: u32,
+    height: u32,
+    files: &'static [(&'static str, &'static str, &'static str)],
+}
+
+const SCREENSHOT_FILES: &[(&str, &str, &str)] = &[
+    ("01-focus.png", "Focus", "One quest at a time"),
+    (
+        "02-history.png",
+        "History",
+        "Finish or abandon without pile-up",
+    ),
+    ("03-settings.png", "Settings", "Local-first and private"),
+];
+
+const SCREENSHOT_SPECS: &[ScreenshotSpec] = &[
+    ScreenshotSpec {
+        device: "phone",
+        directory: "docs/play-store/screenshots/phone",
+        width: 780,
+        height: 1387,
+        files: SCREENSHOT_FILES,
+    },
+    ScreenshotSpec {
+        device: "tablet-7",
+        directory: "docs/play-store/screenshots/tablet-7",
+        width: 1200,
+        height: 1920,
+        files: SCREENSHOT_FILES,
+    },
+    ScreenshotSpec {
+        device: "tablet-10",
+        directory: "docs/play-store/screenshots/tablet-10",
+        width: 1600,
+        height: 2560,
+        files: SCREENSHOT_FILES,
+    },
+];
+
+fn prepare_play_store_screenshots() -> Result<(), String> {
+    let mut screenshots = Vec::new();
+
+    for spec in SCREENSHOT_SPECS {
+        for (file_name, surface, caption) in spec.files {
+            let path = PathBuf::from(spec.directory).join(file_name);
+            validate_png_dimensions(&path, spec.width, spec.height)?;
+            screenshots.push(serde_json::json!({
+                "device": spec.device,
+                "file": file_name,
+                "path": path.to_string_lossy(),
+                "width": spec.width,
+                "height": spec.height,
+                "surface": surface,
+                "caption": caption,
+                "theme": "canonical"
+            }));
+        }
+    }
+
+    let manifest_path = Path::new("docs/play-store/screenshots/manifest.json");
+    let manifest = serde_json::json!({
+        "market": "google-play",
+        "generated_by": "cargo xtask play-store-screenshots",
+        "listing": "docs/play-store/listing.md",
+        "screenshots": screenshots
+    });
+    write_json(manifest_path, &manifest)?;
+    println!("validated {} Play Store screenshots", screenshots.len());
+    println!("wrote {}", manifest_path.display());
+    Ok(())
+}
+
+fn validate_png_dimensions(
+    path: &Path,
+    expected_width: u32,
+    expected_height: u32,
+) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let (width, height) = png_dimensions(&bytes)
+        .ok_or_else(|| format!("{} is not a PNG with a readable IHDR", path.display()))?;
+
+    if width == expected_width && height == expected_height {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} must be {}x{}, got {}x{}",
+            path.display(),
+            expected_width,
+            expected_height,
+            width,
+            height
+        ))
+    }
+}
+
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.len() < 24 || &bytes[0..8] != PNG_SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+
+    let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
+    let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
+    Some((width, height))
 }
 
 fn set_release_version(version: &str) -> Result<(), String> {
@@ -58,7 +173,8 @@ fn is_decimal_number(value: &str) -> bool {
 
 fn read_json(path: impl AsRef<Path>) -> Result<serde_json::Value, String> {
     let path = path.as_ref();
-    let raw = fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     serde_json::from_str(&raw).map_err(|error| format!("parse {}: {error}", path.display()))
 }
 
