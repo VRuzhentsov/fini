@@ -168,6 +168,20 @@ const overlayParent = ref<MenuItem | null>(null);
 
 const overlayActive = computed(() => overlayParent.value !== null);
 
+// Narrow fallback: the in-place submenu pins to the bottom inset (right above
+// the composer) and grows upward, scrolling internally only as a last resort.
+const overlayStyle = computed<Record<string, string>>(() => {
+  if (!overlayActive.value) return {};
+  const style: Record<string, string> = {
+    position: "fixed",
+    left: `${viewport.bodyLeft + EDGE_PAD}px`,
+    right: `${Math.max(0, viewport.width - viewport.bodyRight) + EDGE_PAD}px`,
+    bottom: `${viewport.bottomInset}px`,
+    maxHeight: `${availableHeight.value}px`,
+  };
+  return style;
+});
+
 const HOVER_CLOSE_DELAY_MS = 300;
 let hoverCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -339,7 +353,7 @@ function isItemHot(item: MenuItem): boolean {
 
       <!-- Narrow / no-room: in-place overlay submenu with back -->
       <div v-else-if="overlayActive" class="ctx-scrim" @click.self="backFromOverlay">
-        <ul ref="menuEl" class="action-sheet overlay">
+        <ul ref="menuEl" class="action-sheet overlay" :style="overlayStyle">
           <li class="sheet-overlay-head">
             <button class="sheet-back" @click.stop="backFromOverlay">
               <span class="sheet-back-chev">‹</span>
@@ -500,17 +514,22 @@ function isItemHot(item: MenuItem): boolean {
   .ctx-scrim-mobile { background: rgba(0, 0, 0, 0.5); }
 }
 
+/* Narrow fallback overlay submenu — width comes from the :style left/right
+   pins (bottom-anchored, grows upward). See overlayStyle in script. */
 .action-sheet.overlay {
-  width: min(20rem, calc(100vw - 1rem));
-  max-height: calc(100vh - 1rem);
+  width: auto;
 }
 
 .sheet-overlay-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding: 0.375rem 0.625rem 0.5rem;
   margin: -0.125rem -0.125rem 0.25rem;
+  background: var(--color-base-100);
   border-bottom: 1px solid var(--color-border-soft);
 }
 
