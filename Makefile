@@ -18,7 +18,7 @@ FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 RELEASE_BUNDLES ?= deb,rpm
 
-.PHONY: help dev build mcp pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
+.PHONY: help dev build mcp play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
@@ -42,6 +42,7 @@ help:
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
 	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
+	@echo "  make play-store-screenshots  Validate Play Store screenshots and write manifest"
 	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
 	@echo "  make release VERSION=x.y.z  Bump versions, verify build, push main, and push signed tag vX.Y.Z"
 	@echo ""
@@ -73,6 +74,9 @@ flatpak-install-local:
 
 mcp:
 	./src-tauri/target/debug/fini mcp
+
+play-store-screenshots:
+	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
 
 pr-gate-fe-unit:
 	$(CONTAINER) build --target fe-unit-test -t fini-fe-unit-test .
