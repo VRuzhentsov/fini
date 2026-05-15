@@ -152,7 +152,7 @@ function formatRepeat(repeatRule: string): string {
 
 function formatTime(time: string): string {
   const [h, m] = time.split(":").map(Number);
-  return `${h}:${String(m).padStart(2, "0")}`;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function pillText(quest: Quest): string {

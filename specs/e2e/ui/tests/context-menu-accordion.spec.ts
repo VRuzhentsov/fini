@@ -76,6 +76,12 @@ async function openContextMenuForQuest(
 }
 
 test.afterEach(async ({ tauriPage }) => {
+  // Close any open context menu so it doesn't leak into the next spec
+  try {
+    await tauriPage.press('body', 'Escape');
+  } catch {
+    // ignore
+  }
   try {
     await setWindowLogicalSize(tauriPage, 800, 600);
   } catch {
