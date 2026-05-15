@@ -1,4 +1,5 @@
 import { reactive } from "vue";
+import type { Component } from "vue";
 
 export interface MenuItem {
   label?: string;
@@ -6,6 +7,14 @@ export interface MenuItem {
   disabled?: boolean;
   children?: MenuItem[];
   separator?: boolean;
+  // visual slots
+  icon?: Component;
+  value?: string;
+  badge?: string | number;
+  selected?: boolean;
+  loading?: boolean;
+  danger?: boolean;
+  spaceColor?: string;
 }
 
 export type ContextMenuTrigger =
