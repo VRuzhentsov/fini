@@ -15,6 +15,7 @@ jest.mock("../../stores/device", () => ({
 
 jest.mock("../../stores/space", () => ({
   useSpaceStore: jest.fn(),
+  isBuiltinSpace: (id: string) => ["1", "2", "3"].includes(id),
 }));
 
 async function flushUi() {

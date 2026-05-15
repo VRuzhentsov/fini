@@ -9,16 +9,17 @@ import { useSpaceStore, isBuiltinSpace } from "../stores/space";
 import { useDeviceStore, type PairedDevice } from "../stores/device";
 import { useContextMenu, type MenuItem } from "../composables/useContextMenu";
 import ActionsBtn from "../components/ActionsBtn.vue";
+import { PencilIcon, TrashIcon } from "@heroicons/vue/24/outline";
 
 const spaceStore = useSpaceStore();
 const deviceStore = useDeviceStore();
 const contextMenu = useContextMenu();
 
 function openSpaceMenu(e: MouseEvent, spaceId: string, spaceName: string) {
-  const items: MenuItem[] = [{ label: "Edit", action: () => startEdit(spaceId, spaceName) }];
+  const items: MenuItem[] = [{ label: "Edit", icon: PencilIcon, action: () => startEdit(spaceId, spaceName) }];
   if (!isBuiltinSpace(spaceId)) {
     items.push({ separator: true });
-    items.push({ label: "Delete", action: () => spaceStore.deleteSpace(spaceId) });
+    items.push({ label: "Delete", icon: TrashIcon, danger: true, action: () => spaceStore.deleteSpace(spaceId) });
   }
   contextMenu.open(e, items);
 }
