@@ -4,7 +4,8 @@ import { useRoute, useRouter } from "vue-router";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
 import { useDeviceStore } from "../stores/device";
-import { useSpaceStore } from "../stores/space";
+import { useSpaceStore, isBuiltinSpace } from "../stores/space";
+import { shortUuid } from "../utils/shortUuid";
 
 const route = useRoute();
 const router = useRouter();
@@ -213,6 +214,11 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
               >
                 {{ mappedSpaceEndLabel(space.id) }}
               </span>
+              <span
+                v-if="!isBuiltinSpace(space.id)"
+                class="text-xs opacity-60"
+                :title="space.id"
+              >{{ shortUuid(space.id) }}</span>
             </template>
           </SettingsListItem>
           <SettingsListItem
