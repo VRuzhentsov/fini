@@ -54,7 +54,7 @@ async function fillTextarea(
 }
 
 async function createQuestWithTodayReminder(
-  tauriPage: { waitForSelector: (selector: string, t?: number) => Promise<unknown>; press: (selector: string, key: string) => Promise<void>; click: (selector: string) => Promise<void>; evaluate: <R>(script: string) => Promise<R> },
+  tauriPage: { waitForSelector: (selector: string, t?: number) => Promise<unknown>; waitForFunction: (script: string, t?: number) => Promise<unknown>; press: (selector: string, key: string) => Promise<void>; click: (selector: string) => Promise<void>; evaluate: <R>(script: string) => Promise<R> },
   title: string,
 ): Promise<{ quest: Quest; reminder: Reminder }> {
   await tauriPage.waitForSelector('[data-testid="chat-input"]', 30_000);
@@ -62,6 +62,10 @@ async function createQuestWithTodayReminder(
   await tauriPage.press('[data-testid="chat-input"]', 'Enter');
 
   await tauriPage.waitForSelector('.quest-row-surface', 10_000);
+  await tauriPage.waitForFunction(`(() => {
+    const rows = Array.from(document.querySelectorAll('.quest-row-surface'));
+    return rows.some((r) => r.textContent?.includes(${JSON.stringify(title)}));
+  })()`, 10_000);
   await tauriPage.evaluate(`(() => {
     const rows = Array.from(document.querySelectorAll('.quest-row-surface'));
     const row = rows.find((r) => r.textContent?.includes(${JSON.stringify(title)}));
