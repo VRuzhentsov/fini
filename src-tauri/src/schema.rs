@@ -143,6 +143,14 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    notification_snoozes (reminder_id) {
+        reminder_id -> Text,
+        fire_at_utc -> Text,
+        created_at  -> Text,
+    }
+}
+
 diesel::joinable!(quests -> spaces (space_id));
 diesel::joinable!(quests -> quest_series (series_id));
 diesel::joinable!(quest_series -> spaces (space_id));
@@ -165,5 +173,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     sync_outbox,
     sync_acks,
     sync_seen,
-    tombstones
+    tombstones,
+    notification_snoozes
 );

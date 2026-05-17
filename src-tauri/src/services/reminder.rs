@@ -140,6 +140,7 @@ pub fn delete_reminder_for_quest(
             notification::cancel_reminder(app, notif_id);
         }
         notification::cancel_in_process(app, &r.id);
+        notification::cancel_snooze(app, &r.id);
     }
 
     delete_reminder_db(conn, quest_id)

@@ -53,6 +53,7 @@ zvariant = "5.10.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"
+notify-rust = "4"
 
 [features]
 # Enable the Playwright control-server plugin for UI e2e tests. Off by default;
