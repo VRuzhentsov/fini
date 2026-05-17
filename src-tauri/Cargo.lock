@@ -1302,6 +1302,7 @@ dependencies = [
  "gtk",
  "libsqlite3-sys",
  "mdns-sd",
+ "notify-rust",
  "reqwest 0.12.28",
  "rmcp",
  "serde",

@@ -1,4 +1,5 @@
 pub mod focus_history;
+pub mod notification_snooze;
 pub mod pair_space_mapping;
 pub mod paired_device;
 pub mod quest;
@@ -9,6 +10,7 @@ pub mod settings;
 pub mod sync;
 
 pub use focus_history::*;
+pub use notification_snooze::*;
 pub use pair_space_mapping::*;
 pub use paired_device::*;
 pub use quest::*;

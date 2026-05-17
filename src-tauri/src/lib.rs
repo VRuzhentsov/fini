@@ -18,11 +18,16 @@ use services::device_connection::{
 };
 #[cfg(feature = "e2e-testing")]
 use services::notification::{
-    e2e_clear_notification_events, e2e_list_notification_events, NotificationObserverState,
+    e2e_clear_notification_events, e2e_dispatch_notification_action, e2e_list_notification_events,
+    NotificationObserverState,
 };
-use services::notification::{setup_notification_channel, SchedulerState};
+use services::notification::{
+    dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
+};
+mod resume_watcher;
 use services::quest::{
-    create_quest, delete_quest, get_active_focus, get_quests, set_focus, update_quest,
+    create_quest, delete_quest, delete_quest_series, get_active_focus, get_quests, set_focus,
+    update_quest,
 };
 use services::reconciler;
 use services::reminder::{
@@ -45,13 +50,31 @@ use tauri_plugin_autostart::ManagerExt;
 const THEME_EVENT: &str = "theme://changed";
 
 #[tauri::command]
+fn notification_action(app: AppHandle, action_id: String, reminder_id: String) {
+    dispatch_action(&app, &action_id, &reminder_id);
+}
+
+#[tauri::command]
+fn notification_tap(app: AppHandle, reminder_id: String) {
+    dispatch_action(&app, "tap", &reminder_id);
+}
+
+// Suppress unused-constant warnings; these are used by frontend listeners.
+const _: &str = FOREGROUND_FIRE_EVENT;
+const _: &str = TAP_EVENT;
+
+#[tauri::command]
 fn get_theme_mode(db: tauri::State<DbState>) -> Result<String, String> {
     let mut conn = db.0.lock().unwrap();
     settings::theme_mode(&mut conn).map(|mode| mode.as_str().to_string())
 }
 
 #[tauri::command]
-fn set_theme_mode(app: AppHandle, db: tauri::State<DbState>, mode: String) -> Result<String, String> {
+fn set_theme_mode(
+    app: AppHandle,
+    db: tauri::State<DbState>,
+    mode: String,
+) -> Result<String, String> {
     let mode = ThemeMode::parse(&mode).ok_or_else(|| "invalid theme mode".to_string())?;
     let mut conn = db.0.lock().unwrap();
     let mode = settings::set_theme_mode(&mut conn, mode)?;
@@ -125,7 +148,7 @@ pub fn run() {
             #[cfg(feature = "e2e-testing")]
             app.manage(NotificationObserverState::new());
 
-            setup_notification_channel(&app_handle);
+            setup_notifications(&app_handle);
 
             let initial_theme = {
                 let db = app.state::<DbState>();
@@ -148,6 +171,8 @@ pub fn run() {
             let db_state = app.state::<DbState>();
             reconciler::run(&app_handle, &db_state);
 
+            resume_watcher::spawn(&app_handle);
+
             let data_dir = app_data_dir(&app_handle);
             let dc_state = DeviceConnectionState::new(&data_dir);
             tauri::async_runtime::spawn(run_ws_server(dc_state.clone(), dc_state.db_path.clone()));
@@ -165,6 +190,7 @@ pub fn run() {
             set_focus,
             update_quest,
             delete_quest,
+            delete_quest_series,
             get_reminders,
             create_reminder,
             update_reminder,
@@ -198,10 +224,14 @@ pub fn run() {
             get_theme_mode,
             set_theme_mode,
             sync_native_theme,
+            notification_action,
+            notification_tap,
             #[cfg(feature = "e2e-testing")]
             e2e_list_notification_events,
             #[cfg(feature = "e2e-testing")]
             e2e_clear_notification_events,
+            #[cfg(feature = "e2e-testing")]
+            e2e_dispatch_notification_action,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

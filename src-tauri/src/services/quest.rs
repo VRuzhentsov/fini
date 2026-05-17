@@ -3,7 +3,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::models::{
     clamp_order_rank, CreateFocusHistoryInput, CreateQuestInput, CreateSeriesInput, Quest,
@@ -12,8 +12,8 @@ use crate::models::{
 use crate::schema::{focus_history, quest_series, quests};
 use crate::services::db::{utc_now, DbState};
 use crate::services::device_connection::DeviceConnectionState;
-use crate::services::{notification, reminder};
 use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
+use crate::services::{notification, reminder};
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 
@@ -796,6 +796,73 @@ pub fn create_quest(
     Ok(created)
 }
 
+/// Complete a quest from a notification action. Handles its own DB locking and sync emission.
+/// Logs errors rather than returning them — callers are notification action handlers.
+pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
+    let db = match app.try_state::<DbState>() {
+        Some(s) => s,
+        None => {
+            eprintln!("[notification] complete: DbState not available");
+            return;
+        }
+    };
+    let dc = match app.try_state::<DeviceConnectionState>() {
+        Some(s) => s,
+        None => {
+            eprintln!("[notification] complete: DeviceConnectionState not available");
+            return;
+        }
+    };
+
+    let mut conn = db.0.lock().unwrap();
+
+    let quest: Quest = match quests::table
+        .find(quest_id)
+        .select(Quest::as_select())
+        .first(&mut *conn)
+        .optional()
+    {
+        Ok(Some(q)) => q,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("[notification] complete: quest not found {quest_id}: {e}");
+            return;
+        }
+    };
+
+    let space_id = quest.space_id.clone();
+    let input = UpdateQuestInput {
+        status: Some("completed".to_string()),
+        space_id: None,
+        title: None,
+        description: None,
+        energy: None,
+        priority: None,
+        pinned: None,
+        due: None,
+        due_time: None,
+        repeat_rule: None,
+        order_rank: None,
+    };
+
+    match update_quest_in_db(&mut conn, quest_id, input) {
+        Ok((updated_quest, _, _)) => {
+            if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, app, quest_id) {
+                eprintln!("[notification] complete: delete_reminder failed: {e}");
+            }
+            if let Err(e) = emit_quest_sync_events(
+                &mut conn,
+                &dc.identity.device_id,
+                &space_id,
+                &updated_quest,
+            ) {
+                eprintln!("[notification] complete: sync emit failed: {e}");
+            }
+        }
+        Err(e) => eprintln!("[notification] complete: update failed for {quest_id}: {e}"),
+    }
+}
+
 #[tauri::command]
 pub fn get_active_focus(state: State<DbState>) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
@@ -912,6 +979,82 @@ pub fn delete_quest(
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn delete_quest_series_in_db(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    series_id: &str,
+) -> Result<(), diesel::result::Error> {
+    conn.transaction(|conn| {
+        let series_space_id: String = quest_series::table
+            .find(series_id)
+            .select(quest_series::space_id)
+            .first(conn)?;
+
+        let series_quests: Vec<Quest> = quests::table
+            .filter(quests::series_id.eq(series_id))
+            .select(Quest::as_select())
+            .load(conn)?;
+
+        for quest in &series_quests {
+            emit_sync_event(
+                conn,
+                device_id,
+                "quest",
+                &quest.id,
+                &quest.space_id,
+                "delete",
+                None,
+            )
+            .map_err(|_| diesel::result::Error::RollbackTransaction)?;
+
+            diesel::delete(quests::table.find(&quest.id)).execute(conn)?;
+        }
+
+        emit_sync_event(
+            conn,
+            device_id,
+            "quest_series",
+            series_id,
+            &series_space_id,
+            "delete",
+            None,
+        )
+        .map_err(|_| diesel::result::Error::RollbackTransaction)?;
+
+        diesel::delete(quest_series::table.find(series_id)).execute(conn)?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn delete_quest_series(
+    app: tauri::AppHandle,
+    state: State<DbState>,
+    device_connection: State<DeviceConnectionState>,
+    series_id: String,
+) -> Result<(), String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let origin_device_id = device_connection.identity.device_id.clone();
+
+    // Cancel OS notifications before the DB transaction. Reminder cancellation is
+    // best-effort: notification cancel is non-transactional and will not be undone
+    // if the DB transaction below rolls back.
+    let quest_ids: Vec<String> = quests::table
+        .filter(quests::series_id.eq(&series_id))
+        .select(quests::id)
+        .load(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    for quest_id in &quest_ids {
+        if let Err(e) = reminder::delete_reminder_for_quest(&mut *conn, &app, quest_id) {
+            eprintln!("[bridge] delete_reminder on series delete failed for {quest_id}: {e}");
+        }
+    }
+
+    delete_quest_series_in_db(&mut *conn, &origin_device_id, &series_id)
+        .map_err(|e| e.to_string())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1920,6 +2063,132 @@ mod tests {
             Some("2026-03-28"),
             "failed update must not mutate period_key"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn delete_quest_series_removes_all_children_and_series_row() {
+        let db_path = temp_db_path("delete-quest-series-removes-all");
+        let mut conn = open_db_at_path(&db_path);
+
+        let repeat_rule = r#"{"preset":"daily"}"#;
+        let series = diesel::insert_into(quest_series::table)
+            .values(&CreateSeriesInput {
+                space_id: "1".to_string(),
+                title: "Daily standup".to_string(),
+                description: None,
+                repeat_rule: repeat_rule.to_string(),
+                priority: 1,
+                energy: "medium".to_string(),
+            })
+            .returning(QuestSeries::as_returning())
+            .get_result::<QuestSeries>(&mut conn)
+            .expect("insert series");
+
+        for (status, period) in [
+            ("active", "2026-05-15"),
+            ("completed", "2026-05-14"),
+            ("abandoned", "2026-05-13"),
+        ] {
+            diesel::insert_into(quests::table)
+                .values((
+                    quests::space_id.eq("1"),
+                    quests::title.eq("Daily standup"),
+                    quests::status.eq(status),
+                    quests::series_id.eq(&series.id),
+                    quests::period_key.eq(period),
+                    quests::created_at.eq("2026-05-13T10:00:00Z"),
+                    quests::updated_at.eq("2026-05-13T10:00:00Z"),
+                ))
+                .execute(&mut conn)
+                .expect("insert occurrence");
+        }
+
+        let count_before: i64 = quests::table
+            .filter(quests::series_id.eq(&series.id))
+            .count()
+            .get_result(&mut conn)
+            .expect("count before");
+        assert_eq!(count_before, 3, "expected 3 occurrences before delete");
+
+        delete_quest_series_in_db(&mut conn, "device-test", &series.id)
+            .expect("delete series");
+
+        let count_after: i64 = quests::table
+            .filter(quests::series_id.eq(&series.id))
+            .count()
+            .get_result(&mut conn)
+            .expect("count after");
+        assert_eq!(count_after, 0, "all occurrence quests must be gone");
+
+        let series_count: i64 = quest_series::table
+            .filter(quest_series::id.eq(&series.id))
+            .count()
+            .get_result(&mut conn)
+            .expect("count series");
+        assert_eq!(series_count, 0, "quest_series row must be gone");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn delete_quest_series_emits_sync_events_for_each_quest_and_series() {
+        let db_path = temp_db_path("delete-quest-series-sync-events");
+        let mut conn = open_db_at_path(&db_path);
+
+        let repeat_rule = r#"{"preset":"daily"}"#;
+        let series = diesel::insert_into(quest_series::table)
+            .values(&CreateSeriesInput {
+                space_id: "1".to_string(),
+                title: "Daily sync".to_string(),
+                description: None,
+                repeat_rule: repeat_rule.to_string(),
+                priority: 1,
+                energy: "medium".to_string(),
+            })
+            .returning(QuestSeries::as_returning())
+            .get_result::<QuestSeries>(&mut conn)
+            .expect("insert series");
+
+        for (status, period) in [
+            ("active", "2026-05-15"),
+            ("completed", "2026-05-14"),
+            ("abandoned", "2026-05-13"),
+        ] {
+            diesel::insert_into(quests::table)
+                .values((
+                    quests::space_id.eq("1"),
+                    quests::title.eq("Daily sync"),
+                    quests::status.eq(status),
+                    quests::series_id.eq(&series.id),
+                    quests::period_key.eq(period),
+                    quests::created_at.eq("2026-05-13T10:00:00Z"),
+                    quests::updated_at.eq("2026-05-13T10:00:00Z"),
+                ))
+                .execute(&mut conn)
+                .expect("insert occurrence");
+        }
+
+        delete_quest_series_in_db(&mut conn, "device-test", &series.id)
+            .expect("delete series");
+
+        let events: Vec<(String, String)> = sync_outbox::table
+            .select((sync_outbox::entity_type, sync_outbox::op_type))
+            .load(&mut conn)
+            .expect("load outbox events");
+
+        let quest_deletes = events
+            .iter()
+            .filter(|(t, op)| t == "quest" && op == "delete")
+            .count();
+        let series_deletes = events
+            .iter()
+            .filter(|(t, op)| t == "quest_series" && op == "delete")
+            .count();
+
+        assert_eq!(quest_deletes, 3, "must emit one delete event per occurrence");
+        assert_eq!(series_deletes, 1, "must emit one delete event for quest_series");
 
         let _ = std::fs::remove_file(db_path);
     }

@@ -5,8 +5,11 @@ import ToastStack from "./components/ToastStack.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import SpacePicker from "./components/SpacePicker.vue";
 import { useDeviceStore } from "./stores/device";
+import { useNotificationActions } from "./composables/useNotificationActions";
 
 const deviceStore = useDeviceStore();
+
+useNotificationActions();
 
 onMounted(() => {
   void deviceStore.hydrate();
