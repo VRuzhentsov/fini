@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use tauri::State;
 
 use super::merge::incoming_wins;
@@ -1030,18 +1030,25 @@ pub fn space_sync_tick_impl(
     db: &DbState,
     device_connection: &DeviceConnectionState,
 ) -> Result<SpaceSyncTickResult, String> {
+    let mut conn = db.0.lock().unwrap();
+    let peer_ids: Vec<String> = paired_devices::table
+        .select(paired_devices::peer_device_id)
+        .load(&mut *conn)
+        .map_err(|e| e.to_string())?;
+    drop(conn);
+
     // Ensure WS sessions are open for peers where we are the dialer
-    ensure_peer_sessions(device_connection, device_connection.db_path.clone());
+    let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
+    ensure_peer_sessions(
+        device_connection,
+        device_connection.db_path.clone(),
+        &paired_peer_ids,
+    );
 
     let mut conn = db.0.lock().unwrap();
     let ticked_at = utc_now();
     let mut transferred_by_peer: std::collections::HashMap<String, (usize, usize, usize)> =
         std::collections::HashMap::new();
-
-    let peer_ids: Vec<String> = paired_devices::table
-        .select(paired_devices::peer_device_id)
-        .load(&mut *conn)
-        .map_err(|e| e.to_string())?;
 
     for ended in device_connection.take_incoming_space_sync_ends() {
         mark_mapping_ended(

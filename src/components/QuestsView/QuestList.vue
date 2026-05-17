@@ -6,11 +6,14 @@ import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { ArrowPathIcon } from "@heroicons/vue/24/outline";
+import { ArrowPathIcon, ChevronRightIcon, TrashIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
 import QuestEditor from "../QuestEditor.vue";
 
-defineProps<{ quests: Quest[] }>();
+const props = defineProps<{
+  quests: Quest[];
+  groupChildrenById?: Record<string, Quest[]>;
+}>();
 const store = useQuestStore();
 const { t } = useI18n();
 const spaceStore = useSpaceStore();
@@ -29,7 +32,42 @@ function statusLabel(quest: Quest): string {
   return quest.status === "completed" ? "Completed" : "Abandoned";
 }
 
+// ── Group helpers ─────────────────────────────────────────────────────────────
+
+function getGroupChildren(questId: string): Quest[] | null {
+  const children = props.groupChildrenById?.[questId];
+  return children?.length ? children : null;
+}
+
+function rowStatusClass(quest: Quest): string {
+  const children = getGroupChildren(quest.id);
+  if (!children) return quest.status;
+  const hasCompleted = children.some((c) => c.status === "completed");
+  const hasAbandoned = children.some((c) => c.status === "abandoned");
+  return hasCompleted && hasAbandoned ? "mixed" : children[0].status;
+}
+
+function rowStatusLabel(quest: Quest): string {
+  const children = getGroupChildren(quest.id);
+  if (!children) return statusLabel(quest);
+  const completed = children.filter((c) => c.status === "completed").length;
+  const abandoned = children.filter((c) => c.status === "abandoned").length;
+  if (completed > 0 && abandoned > 0) return `Mixed ${completed} / ${abandoned}`;
+  return completed > 0 ? "Completed" : "Abandoned";
+}
+
+// ── Context menu ──────────────────────────────────────────────────────────────
+
 function onContextMenu(e: MouseEvent, quest: Quest) {
+  const children = getGroupChildren(quest.id);
+  if (children) {
+    contextMenu.open(e, [
+      { label: "Make active latest", icon: ArrowPathIcon, action: () => { void store.updateQuest(children[0].id, { status: "active" }); } },
+      { separator: true },
+      { label: "Delete series", icon: TrashIcon, danger: true, action: () => { void deleteSeriesConfirm(quest); } },
+    ]);
+    return;
+  }
   const items = buildQuestMenu(quest, {
     spaces: spaceStore.spaces,
     updateQuest: (id, patch) => store.updateQuest(id, patch),
@@ -61,10 +99,27 @@ async function updateQuest(quest: Quest, patch: UpdateQuestInput) {
   await store.updateQuest(quest.id, patch);
 }
 
-// ── History actions ───────────────────────────────────────────────────────────
+// ── History / group actions ───────────────────────────────────────────────────
 
 async function restore(id: string) {
   await store.updateQuest(id, { status: "active" });
+}
+
+function onCheckClick(quest: Quest) {
+  const children = getGroupChildren(quest.id);
+  if (children?.length) {
+    void store.updateQuest(children[0].id, { status: "active" });
+  } else {
+    void restore(quest.id);
+  }
+}
+
+async function deleteSeriesConfirm(quest: Quest) {
+  const ok = window.confirm(
+    `Delete entire series "${quest.title}"? This removes every past and future occurrence and cannot be undone.`,
+  );
+  if (!ok) return;
+  await store.deleteQuestSeries(quest.series_id!);
 }
 
 // ── Priority ──────────────────────────────────────────────────────────────────
@@ -192,26 +247,28 @@ function formatTimestamp(quest: Quest): string {
 
       <!-- Collapsed row -->
       <div
-        v-if="expandedId !== quest.id"
+        v-if="expandedId !== quest.id || getGroupChildren(quest.id)"
         class="quest-row-surface"
+        :class="{ 'is-expanded-group': expandedId === quest.id && getGroupChildren(quest.id) }"
         @click="toggle(quest.id)"
         @contextmenu="onContextMenu($event, quest)"
+        :data-testid="getGroupChildren(quest.id) ? 'quest-row-group-header' : undefined"
       >
-        <!-- History: status glyph restores; Active: empty square completes -->
+        <!-- History/group: status glyph restores latest; Active: empty square completes -->
         <button
           v-if="quest.status !== 'active'"
           class="quest-check"
-          :class="quest.status"
+          :class="rowStatusClass(quest)"
           :aria-label="`Make ${quest.title} active`"
-          @click.prevent.stop="restore(quest.id)"
+          @click.prevent.stop="onCheckClick(quest)"
         />
         <button v-else class="quest-check" :aria-label="`Complete ${quest.title}`" @click.stop="completeQuest(quest.id)" />
 
         <span
           v-if="quest.status !== 'active'"
           class="quest-status-badge"
-          :class="quest.status"
-        >{{ statusLabel(quest) }} · {{ formatTimestamp(quest) }}</span>
+          :class="rowStatusClass(quest)"
+        >{{ rowStatusLabel(quest) }} · {{ formatTimestamp(quest) }}</span>
 
         <span v-if="quest.due && quest.status === 'active'" class="quest-due-badge" :class="dueBadgeClass(quest)">
           {{ smartDueLabel(quest) }}
@@ -223,11 +280,42 @@ function formatTimestamp(quest: Quest): string {
         </span>
         <span class="quest-title" :class="quest.status !== 'active' ? quest.status : ''">{{ quest.title }}</span>
         <span class="quest-space-badge badge badge-xs" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
+
+        <!-- Expand chevron for group rows only -->
+        <ChevronRightIcon
+          v-if="getGroupChildren(quest.id)"
+          class="quest-group-chevron size-3.5"
+          :class="{ 'rotate-90': expandedId === quest.id }"
+          data-testid="quest-row-group-expander"
+        />
       </div>
 
-      <!-- Expanded list item: same editor used by the active-card expanded state. -->
+      <!-- Expanded: group children list (lazy-rendered; collapsing fully unmounts them) -->
+      <ul
+        v-if="expandedId === quest.id && getGroupChildren(quest.id)"
+        class="group-children"
+        data-testid="quest-row-group-children"
+      >
+        <li
+          v-for="child in getGroupChildren(quest.id)!"
+          :key="child.id"
+          class="group-child-row"
+        >
+          <button
+            class="quest-check"
+            :class="child.status"
+            :aria-label="`Make ${child.title} active`"
+            @click.stop="restore(child.id)"
+          />
+          <span class="quest-status-badge" :class="child.status">{{ statusLabel(child) }} · {{ formatTimestamp(child) }}</span>
+          <span class="quest-title" :class="child.status">{{ child.title }}</span>
+          <span class="quest-space-badge badge badge-xs" :class="spaceCss(child)">{{ spaceName(child) }}</span>
+        </li>
+      </ul>
+
+      <!-- Expanded: full editor for standalone quests -->
       <QuestEditor
-        v-else
+        v-else-if="expandedId === quest.id"
         :quest="quest"
         :space-name="spaceName(quest)"
         :is-focus="store.activeQuest?.id === quest.id"
@@ -276,6 +364,7 @@ function formatTimestamp(quest: Quest): string {
 }
 
 .quest-row-surface:hover { background: var(--color-base-200); }
+.quest-row-surface.is-expanded-group { background: var(--color-base-200); }
 
 .quest-check {
   position: relative;
@@ -366,6 +455,11 @@ function formatTimestamp(quest: Quest): string {
   border: 1px solid var(--color-border-soft);
 }
 
+.quest-status-badge.mixed {
+  color: var(--fg-3);
+  background: var(--color-base-200);
+}
+
 .quest-due-badge.badge-success { color: #fff; background: var(--color-success); }
 .quest-due-badge.badge-error { color: #fff; background: var(--color-error); }
 .quest-due-badge.badge-ghost { color: var(--fg-2); background: var(--color-base-200); }
@@ -376,5 +470,30 @@ function formatTimestamp(quest: Quest): string {
 }
 
 .quest-space-badge { flex-shrink: 0; border-radius: 5px; }
+
+.quest-group-chevron {
+  flex-shrink: 0;
+  color: var(--fg-4);
+  transition: transform var(--dur-normal);
+}
+
+.group-children {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.25rem 0 0.25rem 1.625rem;
+  margin: 0;
+  list-style: none;
+}
+
+.group-child-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3125rem 0.75rem;
+  border-radius: 6px;
+}
+
+.group-child-row:hover { background: var(--color-base-200); }
 
 </style>
