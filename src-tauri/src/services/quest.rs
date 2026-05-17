@@ -914,6 +914,49 @@ pub fn delete_quest(
     Ok(())
 }
 
+/// Delete all quests in a series and mark the series inactive.
+#[tauri::command]
+pub fn delete_quest_series(
+    app: tauri::AppHandle,
+    state: State<DbState>,
+    device_connection: State<DeviceConnectionState>,
+    series_id: String,
+) -> Result<(), String> {
+    let mut conn = state.inner().0.lock().unwrap();
+
+    let quest_ids: Vec<(String, String)> = quests::table
+        .filter(quests::series_id.eq(&series_id))
+        .select((quests::id, quests::space_id))
+        .load(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    for (id, space_id) in &quest_ids {
+        if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, &app, id) {
+            eprintln!("[bridge] delete_reminder on series delete failed for {id}: {e}");
+        }
+        emit_sync_event(
+            &mut conn,
+            &device_connection.identity.device_id,
+            "quest",
+            id,
+            space_id,
+            "delete",
+            None,
+        )?;
+    }
+
+    diesel::delete(quests::table.filter(quests::series_id.eq(&series_id)))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    diesel::update(quest_series::table.find(&series_id))
+        .set(quest_series::active.eq(false))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
