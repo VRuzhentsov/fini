@@ -240,6 +240,7 @@ pub fn schedule_reminder(
             .icon("ic_stat_fini")
             .large_icon("ic_launcher")
             .icon_color("#0057B7")
+            .extra("reminder_id", &reminder.id)
             .action_type_id(ACTION_TYPE_REMINDER)
             .schedule(tauri_plugin_notification::Schedule::At {
                 date: due,
@@ -686,8 +687,15 @@ pub fn cancel_in_process(app: &AppHandle, reminder_id: &str) {
     }
 }
 
-/// Cancel any pending snooze for a reminder (DB + in-process timer).
-pub fn cancel_snooze(app: &AppHandle, reminder_id: &str) {
-    remove_snooze(app, reminder_id);
+/// Cancel the DB snooze record using a connection the caller already holds.
+/// Use this instead of `cancel_snooze` when the DbState mutex is already locked
+/// on the current thread to avoid a deadlock.
+pub fn cancel_snooze_with_conn(
+    conn: &mut diesel::sqlite::SqliteConnection,
+    app: &AppHandle,
+    reminder_id: &str,
+) {
+    use diesel::prelude::*;
+    let _ = diesel::delete(notification_snoozes::table.find(reminder_id)).execute(conn);
     cancel_in_process(app, reminder_id);
 }
