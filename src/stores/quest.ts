@@ -108,8 +108,11 @@ export const useQuestStore = defineStore("quest", () => {
   }
 
   async function deleteQuestSeries(seriesId: string) {
-    await invoke("delete_quest_series", { series_id: seriesId });
-    await fetchQuests();
+    try {
+      await invoke("delete_quest_series", { series_id: seriesId });
+    } finally {
+      await fetchQuests();
+    }
   }
 
   return {
