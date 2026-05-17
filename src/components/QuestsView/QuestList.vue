@@ -281,13 +281,17 @@ function formatTimestamp(quest: Quest): string {
         <span class="quest-title" :class="quest.status !== 'active' ? quest.status : ''">{{ quest.title }}</span>
         <span class="quest-space-badge badge badge-xs" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
 
-        <!-- Expand chevron for group rows only -->
-        <ChevronRightIcon
+        <!-- Expand chevron for group rows only; span ensures data-testid lands on a real HTML element -->
+        <span
           v-if="getGroupChildren(quest.id)"
-          class="quest-group-chevron size-3.5"
-          :class="{ 'rotate-90': expandedId === quest.id }"
           data-testid="quest-row-group-expander"
-        />
+          class="quest-group-chevron-wrap"
+        >
+          <ChevronRightIcon
+            class="size-3.5"
+            :class="{ 'rotate-90': expandedId === quest.id }"
+          />
+        </span>
       </div>
 
       <!-- Expanded: group children list (lazy-rendered; collapsing fully unmounts them) -->
@@ -471,9 +475,14 @@ function formatTimestamp(quest: Quest): string {
 
 .quest-space-badge { flex-shrink: 0; border-radius: 5px; }
 
-.quest-group-chevron {
+.quest-group-chevron-wrap {
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
   color: var(--fg-4);
+}
+
+.quest-group-chevron-wrap svg {
   transition: transform var(--dur-normal);
 }
 
