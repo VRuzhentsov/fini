@@ -79,6 +79,7 @@ Load the specialized skill when its condition applies:
 | Performance, page speed, bundle size, or regression checks | `benchmark` |
 | Security audit, threat model, OWASP, secrets, or supply-chain concerns | `cso` |
 | Create or improve skills | `skill-creator` |
+| Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
 | Create, start, or draft tickets | `create-ticket`, `start-ticket`, or `ticket-markdown` |
 
 When no specialized skill fits, continue with this skill's project workflow.
@@ -111,6 +112,22 @@ For product semantics, read wiki context using this order:
 4. Targeted search only if the right page is not obvious
 
 Stay within the five-page wiki limit unless the user asks for deeper research.
+
+## Dev Data Population And Feature Exercise
+
+The default path for seeding state or exercising a feature during development is the CLI. Load `fini-cli` for binary mechanics.
+
+Use the CLI for:
+
+- Seeding quests, spaces, or reminders to set up a scenario (e.g. build a quest history dataset, create a reminder to drive a notification flow).
+- Completing or abandoning quests to verify state transitions.
+- Listing current state as evidence after a change.
+
+Do not drive data population through the UI when the CLI covers it. The UI path is for visual verification of the result, not state setup.
+
+Do not use webview or IPC MCP tools (`mcp___hypothesi_tauri-mcp-server__*`) to populate data, run commands, or simulate user input. The CLI is the only supported automation surface against the app.
+
+Reach for `fini` (user-facing semantics) on top of `fini-cli` only when the dev task directly maps to an end-user action (e.g. "create a quest titled X due Friday in Family"). For dev-only patterns — seed N quests, exercise an edge case, verify a state transition — stay in `fini-cli`.
 
 ## Command Selection
 
@@ -163,7 +180,8 @@ Choose verification based on touched area:
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
 - Android behavior: load `fini-android-testing`; use `make android-devices`, `make android-connect`, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
 - Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/actors/cli): load `fini-test` for the canonical command + authoring guide.
-- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation.
+- Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
+- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use the CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
 - Release work: follow release tag rules in `AGENTS.md`; do not create or push tags unless explicitly requested.
 
