@@ -104,9 +104,18 @@ test('History groups same-series resolved occurrences and deletes the series', a
     row.click();
   })()`);
 
-  await tauriPage.waitForFunction(`(() => !document.querySelector('[data-testid="quest-row-group-header"]'))()`, 20_000);
-  quests = await invokeTauriRetry<Quest[]>(tauriPage, 'get_quests');
+  // Poll backend until the quests are gone; the delete can take several seconds
+  // under SQLite write-lock contention in CI.
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    quests = await invokeTauriRetry<Quest[]>(tauriPage, 'get_quests');
+    if (!quests.some((q: Quest) => q.series_id === first.series_id)) break;
+    if (Date.now() >= deadline) throw new Error('Series was not deleted within 30 s');
+    await new Promise<void>((r) => setTimeout(r, 1_000));
+  }
   expect(quests.some((quest) => quest.series_id === first.series_id)).toBe(false);
+  // Verify the DOM also updated reactively
+  await tauriPage.waitForFunction(`(() => !document.querySelector('[data-testid="quest-row-group-header"]'))()`, 10_000);
 });
 
 test('History header shows Mixed status when children disagree', async ({ tauriPage }) => {
