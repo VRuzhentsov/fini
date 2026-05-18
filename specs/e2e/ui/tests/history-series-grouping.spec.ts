@@ -85,7 +85,10 @@ test('History groups same-series resolved occurrences and deletes the series', a
   await tauriPage.waitForSelector('[data-testid="quest-row-group-header"]', 3_000);
 
   // Confirm-ok path: series must be removed
-  await tauriPage.installDialogHandler({ defaultConfirm: true });
+  // Patch window.confirm directly in JS (returns true without native dialog).
+  // installDialogHandler({ defaultConfirm: true }) proved unreliable in headless
+  // CI — WebKit's default dismiss behaviour overrides the accept signal.
+  await tauriPage.evaluate(`(() => { window.confirm = () => true; })()`);
   await tauriPage.evaluate(`(() => {
     const header = document.querySelector('[data-testid="quest-row-group-header"]');
     if (!(header instanceof HTMLElement)) throw new Error('Group header not found');
