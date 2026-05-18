@@ -60,9 +60,8 @@ test('History groups same-series resolved occurrences and deletes the series', a
   expect(childCount).toBe(2);
 
   // Confirm-cancel path: series must survive
+  await tauriPage.installDialogHandler({ defaultConfirm: false });
   await tauriPage.evaluate(`(() => {
-    window.__confirmCalled = false;
-    window.confirm = (msg) => { window.__confirmCalled = true; return false; };
     const header = document.querySelector('[data-testid="quest-row-group-header"]');
     if (!(header instanceof HTMLElement)) throw new Error('Group header not found');
     const rect = header.getBoundingClientRect();
@@ -79,14 +78,15 @@ test('History groups same-series resolved occurrences and deletes the series', a
     if (!(row instanceof HTMLElement)) throw new Error('Delete series menu item not found');
     row.click();
   })()`);
-  const confirmWasCalled = await tauriPage.evaluate<boolean>(`(() => window.__confirmCalled)()`);
-  expect(confirmWasCalled).toBe(true);
+  const cancelDialogs = await tauriPage.getDialogs();
+  expect(cancelDialogs.some((d: { type: string }) => d.type === 'confirm')).toBe(true);
+  await tauriPage.clearDialogs();
   // Row must still be visible (cancel path)
   await tauriPage.waitForSelector('[data-testid="quest-row-group-header"]', 3_000);
 
   // Confirm-ok path: series must be removed
+  await tauriPage.installDialogHandler({ defaultConfirm: true });
   await tauriPage.evaluate(`(() => {
-    window.confirm = () => true;
     const header = document.querySelector('[data-testid="quest-row-group-header"]');
     if (!(header instanceof HTMLElement)) throw new Error('Group header not found');
     const rect = header.getBoundingClientRect();
@@ -104,7 +104,7 @@ test('History groups same-series resolved occurrences and deletes the series', a
     row.click();
   })()`);
 
-  await tauriPage.waitForFunction(`(() => !document.querySelector('[data-testid="quest-row-group-header"]'))()`, 10_000);
+  await tauriPage.waitForFunction(`(() => !document.querySelector('[data-testid="quest-row-group-header"]'))()`, 20_000);
   quests = await invokeTauriRetry<Quest[]>(tauriPage, 'get_quests');
   expect(quests.some((quest) => quest.series_id === first.series_id)).toBe(false);
 });

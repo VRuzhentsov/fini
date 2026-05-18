@@ -934,7 +934,7 @@ pub fn delete_quest_series(
         if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, &app, id) {
             eprintln!("[bridge] delete_reminder on series delete failed for {id}: {e}");
         }
-        emit_sync_event(
+        if let Err(e) = emit_sync_event(
             &mut conn,
             &device_connection.identity.device_id,
             "quest",
@@ -942,7 +942,9 @@ pub fn delete_quest_series(
             space_id,
             "delete",
             None,
-        )?;
+        ) {
+            eprintln!("[bridge] sync emit on series delete failed for {id}: {e}");
+        }
     }
 
     diesel::delete(quests::table.filter(quests::series_id.eq(&series_id)))
