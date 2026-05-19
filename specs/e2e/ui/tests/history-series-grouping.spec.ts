@@ -84,11 +84,11 @@ test('History groups same-series resolved occurrences and deletes the series', a
   // Row must still be visible (cancel path)
   await tauriPage.waitForSelector('[data-testid="quest-row-group-header"]', 3_000);
 
-  // Confirm-ok path: series must be removed
-  // Patch window.confirm directly in JS (returns true without native dialog).
-  // installDialogHandler({ defaultConfirm: true }) proved unreliable in headless
-  // CI — WebKit's default dismiss behaviour overrides the accept signal.
-  await tauriPage.evaluate(`(() => { window.confirm = () => true; })()`);
+  // Confirm-ok path: series must be removed.
+  // Use tauriPage.click (plugin native click, not JS element.click()) so the GLib
+  // main-loop dialog signal is processed synchronously within the click command.
+  // installDialogHandler must be called before the click so the handler is ready.
+  await tauriPage.installDialogHandler({ defaultConfirm: true });
   await tauriPage.evaluate(`(() => {
     const header = document.querySelector('[data-testid="quest-row-group-header"]');
     if (!(header instanceof HTMLElement)) throw new Error('Group header not found');
@@ -99,13 +99,9 @@ test('History groups same-series resolved occurrences and deletes the series', a
       clientY: rect.top + rect.height / 2,
     }));
   })()`);
-  await tauriPage.waitForSelector('[data-testid="context-menu"], [data-testid="context-menu-sheet"]', 5_000);
-  await tauriPage.evaluate(`(() => {
-    const menu = document.querySelector('[data-testid="context-menu"]') ?? document.querySelector('[data-testid="context-menu-sheet"]');
-    const row = Array.from(menu?.querySelectorAll('.sheet-item') ?? []).find((candidate) => candidate.textContent?.includes('Delete series'));
-    if (!(row instanceof HTMLElement)) throw new Error('Delete series menu item not found');
-    row.click();
-  })()`);
+  // The "Delete series" item is the only .sheet-item[data-danger] in the menu.
+  await tauriPage.waitForSelector('.sheet-item[data-danger]', 5_000);
+  await tauriPage.click('.sheet-item[data-danger]');
 
   // Poll backend until the quests are gone; the delete can take several seconds
   // under SQLite write-lock contention in CI.
