@@ -22,8 +22,7 @@ use services::notification::{
 };
 use services::notification::{setup_notification_channel, SchedulerState};
 use services::quest::{
-    create_quest, delete_quest, delete_quest_series, get_active_focus, get_quests, set_focus,
-    update_quest,
+    create_quest, delete_quest, get_active_focus, get_quests, set_focus, update_quest,
 };
 use services::reconciler;
 use services::reminder::{
@@ -166,7 +165,6 @@ pub fn run() {
             set_focus,
             update_quest,
             delete_quest,
-            delete_quest_series,
             get_reminders,
             create_reminder,
             update_reminder,

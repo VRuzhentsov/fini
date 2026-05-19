@@ -914,26 +914,6 @@ pub fn delete_quest(
     Ok(())
 }
 
-/// Delete all quests in a series and mark the series inactive.
-#[tauri::command]
-pub fn delete_quest_series(
-    state: State<DbState>,
-    series_id: String,
-) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
-
-    diesel::delete(quests::table.filter(quests::series_id.eq(&series_id)))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
-
-    diesel::update(quest_series::table.find(&series_id))
-        .set(quest_series::active.eq(false))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
