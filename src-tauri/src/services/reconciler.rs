@@ -8,12 +8,14 @@ use crate::services::db::DbState;
 use crate::services::notification;
 use crate::services::reminder as reminder_svc;
 
-/// Run on every app launch.
+/// Run on every app launch and after system resume.
 ///
-/// 1. Past-due reminders: fire immediately + insert focus_history if not already recorded.
-/// 2. Retroactive bridge: active quests with a due date but no Reminder row get one created
+/// 1. Snoozed reminders: re-arm in-process timers; fire past-due ones immediately.
+/// 2. Past-due reminders: fire immediately + insert focus_history if not already recorded.
+/// 3. Retroactive bridge: active quests with a due date but no Reminder row get one created
 ///    and scheduled (handles imports, multi-device bootstrap, pre-bridge data).
 pub fn run(app: &AppHandle, db: &DbState) {
+    notification::rearm_snoozed_reminders(app);
     let mut conn = db.0.lock().unwrap();
     let now = Utc::now();
 

@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import { useReminderNotifications } from "../composables/useReminderNotifications";
 
 export interface Reminder {
   id: string;
@@ -25,15 +26,21 @@ export interface UpdateReminderInput {
 }
 
 export const useReminderStore = defineStore("reminder", () => {
+  const { ensureReminderNotificationsAllowed } = useReminderNotifications();
+
   async function getReminders(questId: string): Promise<Reminder[]> {
     return invoke<Reminder[]>("get_reminders", { questId });
   }
 
   async function createReminder(input: CreateReminderInput): Promise<Reminder> {
+    const due = input.due_at_utc ?? (input.mm_offset != null ? "relative" : null);
+    await ensureReminderNotificationsAllowed({ due });
     return invoke<Reminder>("create_reminder", { input });
   }
 
   async function updateReminder(id: string, input: UpdateReminderInput): Promise<Reminder> {
+    const due = input.due_at_utc ?? (input.mm_offset != null ? "relative" : null);
+    await ensureReminderNotificationsAllowed({ due });
     return invoke<Reminder>("update_reminder", { id, input });
   }
 

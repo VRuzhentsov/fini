@@ -11,23 +11,42 @@ Use this skill as the first step for development work in this repository. It is 
 
 Keep every development session consistent:
 
+- Run the first-checkout install bootstrap once before normal routing.
 - Pick the right specialized skill before doing domain work.
 - Use the repo's documented context path instead of guessing.
 - Prefer Makefile targets over raw commands.
 - Make the smallest correct change.
 - Verify with concrete evidence before reporting success.
 
+## First-Run Install
+
+Before implementation, debugging, QA, Android, design-to-code, release, documentation changes, or planning that depends on repo context:
+
+1. Check whether `.fini-dev-install.done` exists at the Fini repo root.
+2. If the marker is missing, load `fini-dev-install` and run its workflow before continuing.
+3. Continue with normal `fini-dev` routing only after `fini-dev-install` verifies `../fini-wiki/` and creates the marker.
+4. If install verification fails, stop and report the blocker instead of continuing with repo work that may rely on wiki context.
+
+The marker is local to the checkout. Do not commit it.
+
 ## Start Of Work
 
 Before implementation, debugging, QA, Android, design-to-code, release, or documentation changes:
 
-1. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
-2. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, and targeted source files.
-3. If the task needs product, business, terminology, strategic, architecture background, or historical context, load `fini-wiki` and follow the wiki query protocol.
-4. Choose any specialized skill from the routing table below before doing the domain-specific work.
-5. Pick the smallest useful verification command before editing so the success standard is clear.
+1. Run the first-run install check above.
+2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
+3. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, and targeted source files.
+4. If the task needs product, business, terminology, strategic, architecture background, or historical context, load `fini-wiki` and follow the wiki query protocol.
+5. Choose any specialized skill from the routing table below before doing the domain-specific work.
+6. Pick the smallest useful verification command before editing so the success standard is clear.
 
 If the user explicitly asks to think, plan, brainstorm, or review without implementation, do that mode first and do not edit files until execution is requested.
+
+## Planning Grill
+
+For any planning stage, load `grill-me` before finalizing the plan. Treat planning broadly: explicit think/plan/brainstorm requests, ticket scoping, architecture plans, design plans, release plans, QA strategy, and any pre-implementation decision work.
+
+Use `grill-me` as an overlay, not a replacement for domain skills. First gather evidence from the repo, wiki, specs, or source files when evidence can answer the question; ask the user only for decisions evidence cannot resolve. Ask one question at a time, include the recommended answer, and stop when remaining questions are non-blocking or explicitly deferred.
 
 ## Planning Capture
 
@@ -62,9 +81,11 @@ Load the specialized skill when its condition applies:
 |---|---|
 | Create, update, list, or manage quests, spaces, reminders, or Focus state through the Fini CLI | `fini`, which uses `fini-cli` |
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
+| Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
 | Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
 | Design or refine native Figma components, variants, screens, or visual systems | `fini-design` |
+| First-run setup, bootstrap, install, or verification of required sibling project context such as `../fini-wiki/` | `fini-dev-install` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
 | Query product/domain/history/architecture context from the wiki, or save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
@@ -79,8 +100,8 @@ Load the specialized skill when its condition applies:
 | Performance, page speed, bundle size, or regression checks | `benchmark` |
 | Security audit, threat model, OWASP, secrets, or supply-chain concerns | `cso` |
 | Create or improve skills | `skill-creator` |
-| Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
-| Create, start, or draft tickets | `create-ticket`, `start-ticket`, or `ticket-markdown` |
+| Planning, scoping, or decision-tree clarification before implementation | `grill-me`, plus the relevant domain skill |
+| Create, start, or draft tickets | `fini-create-ticket`, `start-ticket`, or `ticket-markdown` |
 
 When no specialized skill fits, continue with this skill's project workflow.
 
@@ -115,19 +136,13 @@ Stay within the five-page wiki limit unless the user asks for deeper research.
 
 ## Dev Data Population And Feature Exercise
 
-The default path for seeding state or exercising a feature during development is the CLI. Load `fini-cli` for binary mechanics.
+When setting up data for manual testing, QA, or feature exercise:
 
-Use the CLI for:
-
-- Seeding quests, spaces, or reminders to set up a scenario (e.g. build a quest history dataset, create a reminder to drive a notification flow).
-- Completing or abandoning quests to verify state transitions.
-- Listing current state as evidence after a change.
-
-Do not drive data population through the UI when the CLI covers it. The UI path is for visual verification of the result, not state setup.
-
-Do not use webview or IPC MCP tools (`mcp___hypothesi_tauri-mcp-server__*`) to populate data, run commands, or simulate user input. The CLI is the only supported automation surface against the app.
-
-Reach for `fini` (user-facing semantics) on top of `fini-cli` only when the dev task directly maps to an end-user action (e.g. "create a quest titled X due Friday in Family"). For dev-only patterns — seed N quests, exercise an edge case, verify a state transition — stay in `fini-cli`.
+- Load `fini-cli` for binary mechanics. Use `fini quest create`, `fini reminder create`, `fini space list`, etc. to seed and query state.
+- CLI is the only supported automation surface against the running app. Do not drive data population through the UI or through webview/IPC MCP tools (`mcp___hypothesi_tauri-mcp-server__*`). Those tools are not available in this repo's workflow.
+- Use CLI for: seeding a reminder due soon to trigger a notification, building a history dataset across multiple spaces, completing or abandoning quests to verify state transitions, listing state as evidence after a write.
+- Use the UI (via `make dev`) for visual confirmation of the result only — not for setup.
+- `fini` (user-facing skill) is appropriate when the dev task maps directly to an end-user action (e.g. "create a quest titled X due Friday in Family"). For dev-only data patterns, route directly to `fini-cli`.
 
 ## Command Selection
 
@@ -157,18 +172,32 @@ Use `fini-scripting` for command architecture details. Default to Makefile for h
 
 Do not invent generic targets such as `make test`, `make lint`, or `make check` unless they exist in the current `Makefile`. If a desired target is missing, name the closest existing target from the table or state that no Makefile target exists for that check.
 
+## Code Reuse
+
+Before adding a new constant, function, type, or utility, search for an existing one:
+
+- Check `src/stores/` for domain constants and helpers (e.g. `BUILTIN_SPACE_IDS`, `isBuiltinSpace` in `space.ts`).
+- Check `src/utils/` for general-purpose utilities.
+- Check `src/composables/` for shared Vue composables.
+- Use `grep -r` or the Explore agent when the location is not obvious.
+
+If an equivalent already exists, import and reuse it. Do not duplicate logic in a view, component, or test that belongs in a store or utility. If the existing name is slightly different but semantically identical, prefer renaming the call site over adding a wrapper.
+
+When writing tests that mock an entire module (`jest.mock`), re-export all named constants and functions the component under test imports from that module — omitting them silently produces `undefined` at runtime.
+
 ## Development Loop
 
 Use this loop for implementation and fixes:
 
 1. Establish evidence for the current behavior: code path, spec, failing output, test result, log, or reproducible step.
 2. Trace write path, persisted data, and read path when data behavior is involved.
-3. Make the smallest scoped change that addresses the root cause or requested behavior.
-4. Avoid broad refactors, compatibility layers, or new abstractions unless they prevent a concrete defect.
-5. Preserve user or other-agent changes in the worktree.
-6. Update companion docs/specs when behavior or structure changes.
-7. Verify with the smallest useful check, then escalate only as needed.
-8. Report the exact evidence collected and any remaining risk.
+3. Search for existing utilities and constants before writing new ones (see Code Reuse above).
+4. Make the smallest scoped change that addresses the root cause or requested behavior.
+5. Avoid broad refactors, compatibility layers, or new abstractions unless they prevent a concrete defect.
+6. Preserve user or other-agent changes in the worktree.
+7. Update companion docs/specs when behavior or structure changes.
+8. Verify with the smallest useful check, then escalate only as needed.
+9. Report the exact evidence collected and any remaining risk.
 
 ## Verification Defaults
 
@@ -181,7 +210,7 @@ Choose verification based on touched area:
 - Android behavior: load `fini-android-testing`; use `make android-devices`, `make android-connect`, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
 - Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/actors/cli): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
-- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use the CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
+- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
 - Release work: follow release tag rules in `AGENTS.md`; do not create or push tags unless explicitly requested.
 
