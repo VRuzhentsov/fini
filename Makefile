@@ -338,10 +338,11 @@ e2e-headed:
 	run_dir="$$run_root/$$run_id"; \
 	socket_dir="$$run_dir/sockets"; \
 	test_results_dir="$$run_dir/test-results"; \
+	ui_data_dir="$$run_dir/ui-data"; \
 	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
 	bin_path="$$e2e_target_dir/debug/fini"; \
 	printf 'FINI_E2E_RUN_DIR=%s\n' "$$run_dir"; \
-	mkdir -p "$$socket_dir" "$$test_results_dir"; \
+	mkdir -p "$$socket_dir" "$$test_results_dir" "$$ui_data_dir"; \
 	IFS=','; set -- $$actor_list; \
 	if [ "$$#" -lt 2 ]; then \
 	  printf 'Need at least two actors, got: %s\n' "$$actor_list" >&2; \
@@ -367,6 +368,8 @@ e2e-headed:
 	    kill "$$pid" >/dev/null 2>&1 || true; \
 	  done; \
 	  wait >/dev/null 2>&1 || true; \
+	  rm -f "$$run_dir"/*.pid; \
+	  rm -rf "$$socket_dir" "$$ui_data_dir" "$$run_dir"/*-data; \
 	  exit "$$status"; \
 	}; \
 	trap cleanup EXIT INT TERM; \
@@ -401,7 +404,7 @@ e2e-headed:
 	ui_discovery_port=$$((base_discovery_port + idx * 2 + 100)); \
 	ui_ws_port=$$((ui_discovery_port + 1)); \
 	printf 'UI fixture ports: discovery=%s ws=%s\n' "$$ui_discovery_port" "$$ui_ws_port"; \
-	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 FINI_BINARY="$$bin_path" FINI_DISCOVERY_PORT="$$ui_discovery_port" FINI_SPACE_SYNC_WS_PORT="$$ui_ws_port" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors --output "$$test_results_dir"
+	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 FINI_BINARY="$$bin_path" FINI_APP_DATA_DIR="$$ui_data_dir" FINI_DISCOVERY_PORT="$$ui_discovery_port" FINI_SPACE_SYNC_WS_PORT="$$ui_ws_port" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors --output "$$test_results_dir"
 
 # Build/update the actor and runner images for multi-actor desktop e2e.
 e2e-actors-image:
@@ -529,6 +532,7 @@ e2e-actors:
 	  $(CONTAINER) rm -f "fini-$$run_id-runner" >/dev/null 2>&1 || true; \
 	  for actor in "$$@"; do $(CONTAINER) rm -f "fini-$$run_id-$$actor" >/dev/null 2>&1 || true; done; \
 	  $(CONTAINER) network rm "$$network_name" >/dev/null 2>&1 || true; \
+	  rm -rf "$$socket_dir" "$$run_dir"/*-data; \
 	  exit "$$status"; \
 	}; \
 	trap 'cleanup "$$@"' EXIT INT TERM; \

@@ -61,4 +61,5 @@ Right-click a quest row to open [[ContextMenu]] via `useContextMenu()` with "Mov
 |---|---|
 | [[quest.ts]] | `updateQuest`, `deleteQuest` |
 | [[ReminderMenu]] | Due date / time / repeat controls |
-| [[ContextMenu]] | Right-click "Move to space" (via `useContextMenu()`) |
+| [[ContextMenu]] | Right-click menus (via `useContextMenu()`) |
+| [[buildQuestMenu]] | Standard context-menu items |

@@ -105,6 +105,15 @@ Load the specialized skill when its condition applies:
 
 When no specialized skill fits, continue with this skill's project workflow.
 
+## No User-Specific Paths
+
+Never write absolute paths containing a username, home directory, or machine-specific prefix into any source file, config, permission entry, or generated artifact. This includes paths like `/home/<user>/`, `/var/home/<user>/`, or `/Users/<user>/`.
+
+- Use paths relative to the project root for anything inside the repo (`src-tauri/target/debug/fini`, not `/home/<user>/projects/fini/src-tauri/...`).
+- Use `~` for paths relative to the user's home directory (`~/.local/share/fini/fini.db`, not `/home/<user>/.local/...`).
+- Use `/var/tmp` for temporary files, not `/tmp` or any user-specific temp path.
+- When adding permission entries to `.claude/settings.local.json`, use relative or `~`-anchored paths only. The local config is project-specific and minimal; do not accumulate machine-specific one-off entries there.
+
 ## Project Context Rules
 
 Use the repo structure as the default map:

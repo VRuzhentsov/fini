@@ -10,7 +10,9 @@ import { ArrowPathIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "./ReminderMenu.vue";
 import QuestEditor from "../QuestEditor.vue";
 
-defineProps<{ quests: Quest[] }>();
+defineProps<{
+  quests: Quest[];
+}>();
 const store = useQuestStore();
 const { t } = useI18n();
 const spaceStore = useSpaceStore();
@@ -28,6 +30,8 @@ function spaceCss(quest: Quest): string {
 function statusLabel(quest: Quest): string {
   return quest.status === "completed" ? "Completed" : "Abandoned";
 }
+
+// ── Context menu ──────────────────────────────────────────────────────────────
 
 function onContextMenu(e: MouseEvent, quest: Quest) {
   const items = buildQuestMenu(quest, {
@@ -197,7 +201,7 @@ function formatTimestamp(quest: Quest): string {
         @click="toggle(quest.id)"
         @contextmenu="onContextMenu($event, quest)"
       >
-        <!-- History: status glyph restores; Active: empty square completes -->
+        <!-- History: check glyph restores; Active: empty square completes -->
         <button
           v-if="quest.status !== 'active'"
           class="quest-check"
@@ -225,9 +229,9 @@ function formatTimestamp(quest: Quest): string {
         <span class="quest-space-badge badge badge-xs" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
       </div>
 
-      <!-- Expanded list item: same editor used by the active-card expanded state. -->
+      <!-- Expanded: full editor for standalone quests -->
       <QuestEditor
-        v-else
+        v-else-if="expandedId === quest.id"
         :quest="quest"
         :space-name="spaceName(quest)"
         :is-focus="store.activeQuest?.id === quest.id"
@@ -376,5 +380,4 @@ function formatTimestamp(quest: Quest): string {
 }
 
 .quest-space-badge { flex-shrink: 0; border-radius: 5px; }
-
 </style>

@@ -33,6 +33,9 @@ flatpak-build/
 # Local review scratch (Claude Design bundles, etc.)
 tmp/
 
+# Local agent bootstrap marker
+.fini-dev-install.done
+
 # Obsidian
 .obsidian/*
 !.obsidian/app.json

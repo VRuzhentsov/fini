@@ -1,6 +1,7 @@
+use std::collections::HashSet;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::net::IpAddr;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -10,17 +11,23 @@ use crate::services::space_sync::types::WsMessage;
 use crate::services::space_sync::ws_session;
 
 /// Call from `space_sync_tick`: ensure an outbound session exists for every
-/// presenced peer where `self.device_id < peer.device_id` (deterministic dialer rule).
-pub fn ensure_peer_sessions(state: &DeviceConnectionState, db_path: PathBuf) {
+/// paired, presenced peer where `self.device_id < peer.device_id` (deterministic dialer rule).
+pub fn ensure_peer_sessions(
+    state: &DeviceConnectionState,
+    db_path: PathBuf,
+    paired_peer_ids: &HashSet<String>,
+) {
     let my_id = state.identity.device_id.clone();
     let peers = state.list_presenced_peers();
 
     for (peer_id, addr, ws_port) in peers {
-        if my_id >= peer_id {
-            continue; // The peer is the dialer for this pair
-        }
-        if state.has_session(&peer_id) {
-            continue; // Already connected
+        if !should_dial_peer(
+            my_id.as_str(),
+            peer_id.as_str(),
+            paired_peer_ids,
+            state.has_session(&peer_id),
+        ) {
+            continue;
         }
         let state = state.clone();
         let db_path = db_path.clone();
@@ -29,6 +36,15 @@ pub fn ensure_peer_sessions(state: &DeviceConnectionState, db_path: PathBuf) {
             dial_with_backoff(state, db_path, peer_id_clone, addr, ws_port).await;
         });
     }
+}
+
+fn should_dial_peer(
+    my_id: &str,
+    peer_id: &str,
+    paired_peer_ids: &HashSet<String>,
+    has_session: bool,
+) -> bool {
+    paired_peer_ids.contains(peer_id) && my_id < peer_id && !has_session
 }
 
 async fn dial_with_backoff(
@@ -119,5 +135,20 @@ fn ws_url(addr: &str, port: u16) -> String {
     match addr.parse::<IpAddr>() {
         Ok(IpAddr::V6(_)) => format!("ws://[{addr}]:{port}"),
         _ => format!("ws://{addr}:{port}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_dial_only_paired_peers_where_local_id_wins_dialer_rule() {
+        let paired = HashSet::from(["peer-b".to_string()]);
+
+        assert!(should_dial_peer("local-a", "peer-b", &paired, false));
+        assert!(!should_dial_peer("local-a", "peer-c", &paired, false));
+        assert!(!should_dial_peer("peer-z", "peer-b", &paired, false));
+        assert!(!should_dial_peer("local-a", "peer-b", &paired, true));
     }
 }

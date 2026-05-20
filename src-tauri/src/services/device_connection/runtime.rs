@@ -152,6 +152,20 @@ fn preferred_runtime_addr(addr: IpAddr) -> Option<IpAddr> {
     }
 }
 
+fn preferred_ip_addr(addresses: impl IntoIterator<Item = IpAddr>) -> Option<IpAddr> {
+    let addresses: Vec<IpAddr> = addresses.into_iter().collect();
+    addresses
+        .iter()
+        .copied()
+        .find(|addr| matches!(addr, IpAddr::V4(_)))
+        .or_else(|| {
+            addresses
+                .iter()
+                .copied()
+                .find(|addr| matches!(addr, IpAddr::V6(v6) if !v6.is_unicast_link_local()))
+        })
+}
+
 fn parse_bool_txt(value: Option<&str>) -> bool {
     matches!(value, Some("1") | Some("true") | Some("yes"))
 }
@@ -195,16 +209,7 @@ fn upsert_mdns_peer(
 }
 
 fn preferred_mdns_addr(info: &ServiceInfo) -> Option<String> {
-    info.get_addresses()
-        .iter()
-        .find(|addr| matches!(addr, IpAddr::V4(_)))
-        .or_else(|| {
-            info.get_addresses()
-                .iter()
-                .find(|addr| matches!(addr, IpAddr::V6(v6) if !v6.is_unicast_link_local()))
-        })
-        .or_else(|| info.get_addresses().iter().next())
-        .map(ToString::to_string)
+    preferred_ip_addr(info.get_addresses().iter().copied()).map(|addr| addr.to_string())
 }
 
 fn register_mdns_service(
@@ -787,6 +792,18 @@ mod tests {
 
         let ipv4: IpAddr = "192.168.1.10".parse().expect("parse ipv4");
         assert_eq!(preferred_runtime_addr(ipv4), Some(ipv4));
+    }
+
+    #[test]
+    fn preferred_ip_addr_ignores_link_local_ipv6() {
+        let link_local: IpAddr = "fe80::1".parse().expect("parse link-local ipv6");
+        assert_eq!(preferred_ip_addr([link_local]), None);
+
+        let global_v6: IpAddr = "2001:db8::1".parse().expect("parse global ipv6");
+        assert_eq!(preferred_ip_addr([link_local, global_v6]), Some(global_v6));
+
+        let ipv4: IpAddr = "192.168.1.10".parse().expect("parse ipv4");
+        assert_eq!(preferred_ip_addr([global_v6, ipv4]), Some(ipv4));
     }
 
     #[test]
