@@ -152,20 +152,26 @@ test('schedule event is recorded when reminder is created', async ({ tauriPage }
   const title = `e2e notif schedule ${Date.now()}`;
 
   await tauriPage.waitForSelector('nav.nav a[href="#/main"]', 30_000);
-  await tauriPage.click('nav.nav a[href="#/main"]');
   await invokeTauri<void>(tauriPage, 'e2e_clear_notification_events');
 
-  const { quest, reminder } = await createQuestWithTodayReminder(tauriPage, title);
+  // Use IPC to create quest with an explicit future due date (tomorrow at 09:00 UTC).
+  // The "today" UI shortcut defaults to 09:00 UTC which is already past in most CI runs,
+  // causing schedule_reminder to early-return with delay_ms <= 0 and record no event.
+  const tomorrow = new Date();
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const dueDate = tomorrow.toISOString().slice(0, 10); // "YYYY-MM-DD"
+  const dueAtUtc = `${dueDate}T09:00:00Z`;
 
-  // The scheduler is async — poll from the test runner until the event lands (up to 3s).
-  let scheduled: NotificationEvent[] = [];
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
-    scheduled = events.filter((e) => e.phase === 'scheduled' && e.quest_id === quest.id);
-    if (scheduled.length > 0) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  const quest = await invokeTauri<Quest>(tauriPage, 'create_quest', {
+    input: { title, due: dueDate, due_time: '09:00' },
+  });
+  const reminder = await invokeTauri<Reminder>(tauriPage, 'create_reminder', {
+    input: { quest_id: quest.id, kind: 'absolute', due_at_utc: dueAtUtc },
+  });
+
+  // schedule_reminder is synchronous within create_reminder — event should be immediate.
+  const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
+  const scheduled = events.filter((e) => e.phase === 'scheduled' && e.quest_id === quest.id);
 
   expect(scheduled.length).toBeGreaterThan(0);
   expect(scheduled[scheduled.length - 1].reminder_id).toBe(reminder.id);
