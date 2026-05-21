@@ -9,13 +9,20 @@ const { toasts } = useToast();
       <div
         v-for="t in toasts"
         :key="t.id"
-        class="rounded-xl px-4 py-3 text-sm font-medium shadow-lg pointer-events-auto"
+        class="flex items-center gap-2 rounded-xl px-4 py-3 text-sm font-medium shadow-lg pointer-events-auto"
         :class="{
           'bg-red-600 text-white':   t.type === 'error',
           'bg-zinc-800 text-white':  t.type === 'info',
           'bg-green-600 text-white': t.type === 'success',
         }"
-      >{{ t.message }}</div>
+      >
+        <span class="flex-1">{{ t.message }}</span>
+        <button
+          v-if="t.action"
+          class="ml-2 rounded px-2 py-0.5 text-xs font-semibold opacity-90 ring-1 ring-white/40 hover:opacity-100"
+          @click="t.action!.onClick()"
+        >{{ t.action.label }}</button>
+      </div>
     </transition-group>
   </div>
 </template>

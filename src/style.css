@@ -1,5 +1,7 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @plugin "daisyui";
+@source "../index.html";
+@source "./**/*.{vue,ts}";
 
 /* Built-in space colors — keep in sync with SPACE_COLOR_CLASS in space.ts */
 :root {
