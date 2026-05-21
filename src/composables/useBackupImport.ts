@@ -118,7 +118,6 @@ export function useBackupImport(onSuccess?: () => void) {
       toast.error("Backup import failed");
     } finally {
       applying.value = false;
-      showConflicts.value = false;
     }
   }
 
