@@ -157,17 +157,16 @@ test('schedule event is recorded when reminder is created', async ({ tauriPage }
 
   const { quest, reminder } = await createQuestWithTodayReminder(tauriPage, title);
 
-  // The scheduler is async — poll until the event lands (up to 3s).
+  // The scheduler is async — poll from the test runner until the event lands (up to 3s).
   let scheduled: NotificationEvent[] = [];
-  await tauriPage.waitForFunction(`(async () => {
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (!invoke) return false;
-    const events = await invoke('e2e_list_notification_events', {});
-    return events.some((e) => e.phase === 'scheduled' && e.quest_id === ${JSON.stringify(quest.id)});
-  })()`, 3_000);
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
+    scheduled = events.filter((e) => e.phase === 'scheduled' && e.quest_id === quest.id);
+    if (scheduled.length > 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 
-  const events = await invokeTauri<NotificationEvent[]>(tauriPage, 'e2e_list_notification_events');
-  scheduled = events.filter((e) => e.phase === 'scheduled' && e.quest_id === quest.id);
   expect(scheduled.length).toBeGreaterThan(0);
   expect(scheduled[scheduled.length - 1].reminder_id).toBe(reminder.id);
 });
