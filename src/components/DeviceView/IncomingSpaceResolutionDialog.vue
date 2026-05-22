@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useDeviceStore } from "../../stores/device";
 import { useSpaceStore } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
+import MapToExistingDialog from "../MapToExistingDialog.vue";
 
 const EMBEDDED_SPACE_IDS = new Set(["1", "2", "3"]);
 
@@ -17,6 +18,7 @@ const spaceStore = useSpaceStore();
 const saving = ref(false);
 const error = ref<string | null>(null);
 const deferredKey = ref<string | null>(null);
+const showMapPicker = ref(false);
 const resolutionModeByRemoteId = ref<Record<string, ResolutionMode>>({});
 const resolutionExistingByRemoteId = ref<Record<string, string>>({});
 
@@ -183,11 +185,18 @@ function setResolutionMode(mode: ResolutionMode) {
   }
 }
 
-function onSelectExistingSpace(event: Event) {
+async function createAndConfirm() {
+  setResolutionMode("create_new");
+  await confirmDialog();
+}
+
+async function mapToExistingAndConfirm(spaceId: string) {
+  showMapPicker.value = false;
   const incomingSpace = activeIncomingSpace.value;
   if (!incomingSpace) return;
-  const target = event.target as HTMLSelectElement;
-  resolutionExistingByRemoteId.value[incomingSpace.space_id] = target.value;
+  resolutionModeByRemoteId.value[incomingSpace.space_id] = "use_existing";
+  resolutionExistingByRemoteId.value[incomingSpace.space_id] = spaceId;
+  await confirmDialog();
 }
 
 async function confirmDialog() {
@@ -258,55 +267,48 @@ async function confirmDialog() {
           <p class="font-mono text-xs opacity-60" :title="activeIncomingSpace.space_id">
             {{ shortUuid(activeIncomingSpace.space_id) }}
           </p>
-
-          <div class="mt-4 flex flex-wrap gap-2">
-            <button
-              class="btn btn-sm"
-              :class="activeResolutionMode === 'create_new' ? 'btn-primary' : 'btn-ghost'"
-              @click="setResolutionMode('create_new')"
-            >
-              Create
-            </button>
-            <button
-              class="btn btn-sm"
-              :class="activeResolutionMode === 'use_existing' ? 'btn-primary' : 'btn-ghost'"
-              @click="setResolutionMode('use_existing')"
-            >
-              Select space to map
-            </button>
-          </div>
-
-          <div v-if="activeResolutionMode === 'use_existing'" class="mt-3">
-            <select
-              class="select select-bordered w-full"
-              :value="activeExistingSpaceId"
-              @change="onSelectExistingSpace"
-            >
-              <option disabled value="">Select local space</option>
-              <option v-for="space in selectableSpaces" :key="space.id" :value="space.id">
-                {{ space.name }}<template v-if="!isEmbeddedSpaceId(space.id)"> ({{ shortUuid(space.id) }})</template>
-              </option>
-            </select>
-          </div>
         </template>
 
         <div v-if="error" class="mt-3 text-xs text-error">{{ error }}</div>
 
         <div class="mt-4 flex justify-end gap-2">
           <button class="btn btn-ghost btn-sm" @click="dismissDialog">Not now</button>
-          <button
-            class="btn btn-primary btn-sm"
-            data-testid="approve-space-sync"
-            :disabled="!canConfirm || saving"
-            @click="void confirmDialog()"
-          >
-            <template v-if="saving">Saving...</template>
-            <template v-else-if="activeDialog.kind === 'approve'">Approve sync</template>
-            <template v-else-if="activeResolutionMode === 'create_new'">Create</template>
-            <template v-else>Select space to map</template>
-          </button>
+          <template v-if="activeDialog.kind === 'approve'">
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="approve-space-sync"
+              :disabled="!canConfirm || saving"
+              @click="void confirmDialog()"
+            >
+              <template v-if="saving">Saving…</template>
+              <template v-else>Approve sync</template>
+            </button>
+          </template>
+          <template v-else-if="activeIncomingSpace">
+            <button
+              class="btn btn-sm"
+              @click="showMapPicker = true"
+            >Map to existing</button>
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="approve-space-sync"
+              :disabled="saving"
+              @click="void createAndConfirm()"
+            >
+              <template v-if="saving">Saving…</template>
+              <template v-else>Create</template>
+            </button>
+          </template>
         </div>
       </div>
     </div>
+
+    <MapToExistingDialog
+      v-if="showMapPicker && activeIncomingSpace"
+      :context="{ kind: 'peer-space', name: activeIncomingSpace.name }"
+      :spaces="selectableSpaces"
+      @cancel="showMapPicker = false"
+      @confirm="(id) => void mapToExistingAndConfirm(id)"
+    />
   </Teleport>
 </template>

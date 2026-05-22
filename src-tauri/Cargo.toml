@@ -50,6 +50,8 @@ socket2 = "0.6"
 mdns-sd = "0.13"
 zbus = { version = "5.14.0", features = ["blocking-api"] }
 zvariant = "5.10.0"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tauri-plugin-dialog = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18.2"

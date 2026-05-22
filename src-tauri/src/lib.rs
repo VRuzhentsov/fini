@@ -4,6 +4,7 @@ mod services;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
+use services::backup::{backup_apply_import, backup_export, backup_preflight_import};
 use services::db::{app_data_dir, open_db, DbState};
 use services::device_connection::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
@@ -16,13 +17,13 @@ use services::device_connection::{
     device_connection_save_paired_device, device_connection_send_pair_request,
     device_connection_unpair, device_connection_update_last_seen, DeviceConnectionState,
 };
+use services::notification::{
+    dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
+};
 #[cfg(feature = "e2e-testing")]
 use services::notification::{
     e2e_clear_notification_events, e2e_dispatch_notification_action, e2e_list_notification_events,
     NotificationObserverState,
-};
-use services::notification::{
-    dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
 };
 mod resume_watcher;
 use services::quest::{
@@ -119,6 +120,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init());
     #[cfg(all(
         any(target_os = "linux", target_os = "macos", target_os = "windows"),
@@ -181,6 +183,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_spaces,
+            backup_export,
+            backup_preflight_import,
+            backup_apply_import,
             create_space,
             update_space,
             delete_space,

@@ -1,7 +1,8 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use serde_json::Value;
 
-use crate::services::db::db_default_path;
+use crate::services::backup;
+use crate::services::db::{db_default_path, open_db_at_path};
 use crate::services::mcp::{FiniServer, UpdateQuestParams};
 
 const EXIT_SUCCESS: i32 = 0;
@@ -33,6 +34,10 @@ enum Command {
     Space {
         #[command(subcommand)]
         command: SpaceCommand,
+    },
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
     },
     Reminder {
         #[command(subcommand)]
@@ -132,6 +137,30 @@ enum SpaceCommand {
     Create(SpaceCreateArgs),
     Update(SpaceUpdateArgs),
     Delete(IdArg),
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    Export(BackupExportArgs),
+    Import(BackupImportArgs),
+}
+
+#[derive(Args)]
+struct BackupExportArgs {
+    #[arg(long)]
+    path: String,
+    #[arg(long = "space-id")]
+    space_id: Vec<String>,
+    #[arg(long, action = ArgAction::SetTrue)]
+    all_spaces: bool,
+}
+
+#[derive(Args)]
+struct BackupImportArgs {
+    #[arg(long)]
+    path: String,
+    #[arg(long, action = ArgAction::SetTrue)]
+    force: bool,
 }
 
 #[derive(Args)]
@@ -353,6 +382,7 @@ impl CliError {
 type CliResult<T> = Result<T, CliError>;
 
 struct CliContext {
+    db_path: std::path::PathBuf,
     server: FiniServer,
     runtime: tokio::runtime::Runtime,
 }
@@ -371,6 +401,7 @@ impl CliContext {
             .map_err(|err| CliError::runtime(format!("failed to create tokio runtime: {err}")))?;
 
         Ok(Self {
+            db_path: db_path.clone(),
             server: FiniServer::new(&db_path),
             runtime,
         })
@@ -417,6 +448,7 @@ fn execute(cli: Cli) -> CliResult<i32> {
         Some(Command::Focus { command }) => handle_focus(&ctx, command)?,
         Some(Command::Quest { command }) => handle_quest(&ctx, command)?,
         Some(Command::Space { command }) => handle_space(&ctx, command)?,
+        Some(Command::Backup { command }) => handle_backup(&ctx, command)?,
         Some(Command::Reminder { command }) => handle_reminder(&ctx, command)?,
         Some(Command::Device { command: _ }) => {
             return Err(CliError::runtime(
@@ -527,6 +559,44 @@ fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
             .runtime
             .block_on(ctx.server.cli_delete_space(args.id))
             .map_err(CliError::from_string)?,
+    };
+    Ok(value)
+}
+
+fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    let value = match command {
+        BackupCommand::Export(args) => {
+            if args.all_spaces && !args.space_id.is_empty() {
+                return Err(CliError::from_string(
+                    "cannot combine --all-spaces with --space-id".to_string(),
+                ));
+            }
+            let space_ids = if args.all_spaces {
+                use crate::schema::spaces;
+                use diesel::prelude::*;
+                spaces::table
+                    .select(spaces::id)
+                    .load::<String>(&mut conn)
+                    .map_err(|e| CliError::runtime(e.to_string()))?
+            } else if args.space_id.is_empty() {
+                return Err(CliError::from_string(
+                    "backup export requires --space-id or --all-spaces".to_string(),
+                ));
+            } else {
+                args.space_id
+            };
+            serde_json::to_value(
+                backup::export_backup(&mut conn, std::path::Path::new(&args.path), &space_ids)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?
+        }
+        BackupCommand::Import(args) => serde_json::to_value(
+            backup::import_cli(&mut conn, std::path::Path::new(&args.path), args.force)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
     };
     Ok(value)
 }

@@ -35,6 +35,16 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 - Device rows show display name plus `Online`/`Offline`; UUIDs stay out of visible Settings list rows
 - Device detail view owns mapped-space configuration and visible sync status per paired device
 
+### Backup
+
+Portable backup import/export. See `specs/backup/README.md`.
+
+- Rendered inline on `/settings` using [[SettingsListGroup]] and [[SettingsListItem]]
+- `Export backup` opens a selected-space checklist dialog with no spaces checked by default
+- `Import backup` opens a native `.zip` picker and validates before applying changes
+- Import uses one-space-at-a-time custom space mapping, then [[MergeConflictDialog]] for item conflicts
+- Backup files contain quest data; UI copy must say this before export
+
 ### About
 
 App metadata and project link.
@@ -68,6 +78,7 @@ Progress label format: `Downloading <filename> (<file_index+1>/<file_count>) <pc
 |---|---|
 | [[useModelDownload]] | Download state, progress, error, start/check |
 | [[space.ts]] | `fetchSpaces`, `createSpace`, `updateSpace`, `deleteSpace` |
+| [[backup.ts]] | backup export, import preflight, import apply |
 | `device_connection` runtime adapter | Paired devices list, presence state, and pairing actions |
 | `space_sync` runtime adapter | Mapping state, bootstrap sync, and sync status |
 

@@ -9,6 +9,7 @@ These specs are the implementation contract for the main `fini` repo.
 - `device-connect/` - device discovery, pairing, presence, and paired-device lifecycle
 - `space-sync/` - pair-scoped space mapping, bootstrap sync, sync sessions, and sync status
 - `space/` - local space model and space management behavior
+- `backup/` - portable zip import/export for quests and spaces
 
 ## Convention
 
@@ -43,3 +44,4 @@ If both are needed, keep the enforceable contract in `fini/specs` and link to th
 - `specs/device-connect/README.md`
 - `specs/space-sync/README.md`
 - `specs/space/README.md`
+- `specs/backup/README.md`
