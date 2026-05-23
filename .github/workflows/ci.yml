@@ -256,7 +256,7 @@ jobs:
           emulator-options: -no-window -no-audio -gpu swiftshader_indirect -no-snapshot -no-metrics
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
 
             adb install "$ANDROID_E2E_APK"
             adb shell pm grant com.fini.app android.permission.POST_NOTIFICATIONS
