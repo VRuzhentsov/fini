@@ -642,10 +642,11 @@ ANDROID_UNSIGNED_APK = src-tauri/gen/android/app/build/outputs/apk/universal/rel
 ANDROID_SIGNED_APK = bin/fini.apk
 ANDROID_RELEASE_SIGNED_APK = bin/fini-release.apk
 APKSIGNER = $(lastword $(sort $(wildcard $(ANDROID_HOME)/build-tools/*/apksigner)))
+ADB_CONNECT_TIMEOUT ?= 15
 
 android-connect:
 	@test -n "$(DEVICE_ADDRESS)" || (echo "No device found via adb mdns. Enable wireless debugging on the phone." && exit 1)
-	adb connect $(DEVICE_ADDRESS)
+	@timeout "$(ADB_CONNECT_TIMEOUT)s" adb connect $(DEVICE_ADDRESS) || (echo "ADB connect timed out for $(DEVICE_ADDRESS). Re-authorize wireless debugging, reconnect USB, or start an emulator." && exit 1)
 
 android-dev: android-connect
 	npm run tauri android dev -- --host $(HOST_IP)

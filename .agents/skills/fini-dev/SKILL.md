@@ -34,11 +34,14 @@ The marker is local to the checkout. Do not commit it.
 Before implementation, debugging, QA, Android, design-to-code, release, or documentation changes:
 
 1. Run the first-run install check above.
-2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
-3. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, and targeted source files.
-4. If the task needs product, business, terminology, strategic, architecture background, or historical context, load `fini-wiki` and follow the wiki query protocol.
-5. Choose any specialized skill from the routing table below before doing the domain-specific work.
-6. Pick the smallest useful verification command before editing so the success standard is clear.
+2. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`.
+3. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
+4. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, and targeted source files.
+5. If the task needs product, business, terminology, strategic, architecture background, or historical context, load `fini-wiki` and follow the wiki query protocol.
+6. Choose any specialized skill from the routing table below before doing the domain-specific work.
+7. Pick the smallest useful verification command before editing so the success standard is clear.
+
+For GitHub issue work, keep the branch rule lightweight: reuse an existing branch if it already contains the issue number, and pause before switching branches if the worktree has conflicting uncommitted changes.
 
 If the user explicitly asks to think, plan, brainstorm, or review without implementation, do that mode first and do not edit files until execution is requested.
 
@@ -161,7 +164,7 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 | Runtime container image | `make runtime-image` |
 | Runtime CLI smoke | `make runtime-smoke` |
 | Android device list | `make android-devices` |
-| Android Wi-Fi connect | `make android-connect` |
+| Android Wi-Fi connect | `make android-connect` once after `make android-devices`; if it times out, stop and ask the user to re-authorize wireless debugging or use USB/emulator |
 | Android hot reload | `make android-dev` |
 | Android build | `make android-build` |
 | Android debug deploy | `make android-debug-deploy` |
@@ -209,7 +212,7 @@ Choose verification based on touched area:
 - Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence.
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
-- Android behavior: load `fini-android-testing`; use `make android-devices`, `make android-connect`, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
+- Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
 - Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/actors/cli): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.

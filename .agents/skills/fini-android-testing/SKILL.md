@@ -23,6 +23,7 @@ Prove Android behavior with a complete evidence chain:
   - `make android-connect`
   - `make android-dev`
 - App automation in this repo runs in debug/dev runtime, so Android validation uses the dev flow.
+- `make android-connect` is bounded by `ADB_CONNECT_TIMEOUT` and must not be retried in a loop when it times out. If mDNS finds a device but `make android-devices` remains empty after one connect attempt, report the connection as blocked and ask the user to re-authorize wireless debugging or use USB/emulator.
 
 ## Validated findings (2026-04-03)
 
@@ -37,7 +38,8 @@ Prove Android behavior with a complete evidence chain:
 ### 1. Start Android runtime
 
 - Run `make android-dev` and keep it active.
-- Use `make android-devices` and `make android-connect` when device discovery/connectivity setup is needed.
+- Run `make android-devices` before attempting Wi-Fi connect.
+- Use `make android-connect` once when device discovery/connectivity setup is needed; if it times out or devices remain empty, stop instead of repeatedly running ADB connect.
 
 ### 2. Establish automation session
 
