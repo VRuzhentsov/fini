@@ -77,6 +77,8 @@ Use `fini-wiki` as raw durable capture only. Do not update `_hot.md`, `_index.md
 
 Load the specialized skill when its condition applies:
 
+For GitHub issue or ticket work, inspect the ticket labels before choosing the domain skill. When a Fini ticket has the `design` label, load `fini-design` before planning, updating, closing, or implementing the ticket, even if the title/body does not explicitly mention the design bundle.
+
 | Condition | Skill |
 |---|---|
 | Create, update, list, or manage quests, spaces, reminders, or Focus state through the Fini CLI | `fini`, which uses `fini-cli` |
@@ -84,7 +86,7 @@ Load the specialized skill when its condition applies:
 | Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
 | Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
-| Design or refine native Figma components, variants, screens, or visual systems | `fini-design` |
+| Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | First-run setup, bootstrap, install, or verification of required sibling project context such as `../fini-wiki/` | `fini-dev-install` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |

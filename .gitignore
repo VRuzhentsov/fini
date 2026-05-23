@@ -32,6 +32,7 @@ flatpak-build/
 
 # Local review scratch (Claude Design bundles, etc.)
 tmp/
+*design*.zip
 
 # Local agent bootstrap marker
 .fini-dev-install.done
