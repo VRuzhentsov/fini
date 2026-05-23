@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent-install
-description: "Use this to install, repair, or verify the Fini autonomous dev agent daily schedule. Trigger when asked to set up fini-dev-agent, local autonomous agent scheduling, daily 8 AM triage, Daily topic reports, OpenClaw cron for Fini, or rerunnable/idempotent install of the Fini dev agent. This skill ensures a stable daily 8 AM local-time job runs `fini-daily`, uses `triage`, and reports to the Fini Dev `Daily` Telegram topic."
+description: "Use this to install, repair, or verify the Fini autonomous dev agent schedules. Trigger when asked to set up fini-dev-agent, local autonomous agent scheduling, daily 8 AM triage, every-5-minutes branch fetch, Daily topic reports, OpenClaw cron for Fini, or rerunnable/idempotent install of the Fini dev agent. This skill ensures a stable daily 8 AM local-time job runs `fini-daily`, uses `triage`, reports to the Fini Dev `Daily` Telegram topic, and keeps all Git branches fetched every 5 minutes."
 metadata:
   openclaw:
     envVars:
@@ -20,11 +20,13 @@ metadata:
 
 # Fini Dev Agent Install
 
-Use this skill to install or repair the daily autonomous Fini dev-agent schedule. The workflow is intentionally idempotent: repeated runs should converge on the same cron job without duplicating schedules or changing unrelated jobs.
+Use this skill to install or repair autonomous Fini dev-agent schedules. The workflow is intentionally idempotent: repeated runs should converge on the same managed cron jobs without duplicating schedules or changing unrelated jobs.
 
 ## Outcome
 
-Ensure the local agent has one daily schedule:
+Ensure the local agent has these schedules:
+
+Daily triage report:
 
 - Job ID: `fini-daily-issue-report`
 - Schedule: `0 8 * * *`
@@ -32,6 +34,14 @@ Ensure the local agent has one daily schedule:
 - Session: isolated
 - Prompt: load `fini-daily`, run from `~/projects/fini`, use `triage`, query open `VRuzhentsov/fini` GitHub issues, and send the final report to `FINI_DAILY_TG_TARGET`
 - Delivery: Telegram `Daily` topic parsed from `FINI_DAILY_TG_TARGET`
+
+Branch fetch:
+
+- Job ID: `fini-fetch-all-branches`
+- Schedule: every `5m`
+- Session: isolated, light context
+- Prompt: run `git fetch --all --prune` from `~/projects/fini` and report only failures
+- Delivery: none
 
 ## Prerequisites
 
@@ -58,7 +68,7 @@ The helper:
 
 - Reads `~/.openclaw/cron/jobs.json` by default.
 - Preserves unrelated cron jobs.
-- Replaces only the job with ID `fini-daily-issue-report`.
+- Replaces only the managed jobs with IDs `fini-daily-issue-report` and `fini-fetch-all-branches`.
 - Defaults to dry-run and requires `--write` to modify the store.
 - Uses `FINI_DAILY_TG_TARGET` for Telegram delivery.
 - Uses `FINI_DAILY_TZ` or the local system timezone for the 8 AM schedule.
@@ -79,14 +89,16 @@ openclaw channels status --probe
 Expected evidence:
 
 - Exactly one enabled job with ID `fini-daily-issue-report`.
+- Exactly one enabled job with ID `fini-fetch-all-branches`.
 - The job schedule is `0 8 * * *` in the selected timezone.
+- The fetch job schedule is every `5m`.
 - Delivery points to the `Daily` topic thread from `FINI_DAILY_TG_TARGET`.
 - `fini-daily` and `triage` are available.
 - Telegram is configured and can send to the Daily topic, or the blocker is explicitly reported.
 
 If OpenClaw CLI cron commands are blocked by device-scope approval, verify by reading the cron list through any available read-only status path and report the approval blocker. Do not keep retrying approval loops.
 
-## Daily Prompt Contract
+## Prompt Contracts
 
 The scheduled prompt must preserve this intent:
 
@@ -96,9 +108,15 @@ Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and
 
 Keep this prompt focused on read-only triage and reporting. Do not edit issues, labels, code, docs, or branches from the daily job unless the user explicitly delegates implementation.
 
+The fetch prompt must preserve this intent:
+
+```text
+From ~/projects/fini, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.
+```
+
 ## Idempotency Rules
 
-- Treat `fini-daily-issue-report` as the only managed cron job.
+- Treat `fini-daily-issue-report` and `fini-fetch-all-branches` as the only managed cron jobs.
 - Do not create timestamped duplicate daily jobs.
 - Do not remove unrelated jobs.
 - Do not overwrite a different job unless it has the managed ID.
@@ -114,6 +132,9 @@ Status: <installed | already current | blocked>
 Job: fini-daily-issue-report
 Schedule: 0 8 * * * @ <timezone>
 Delivery: <group-id>:topic:<thread-id>
+Job: fini-fetch-all-branches
+Schedule: every 5m
+Delivery: none
 Evidence: <commands and outcomes>
 Blocker: <only if blocked>
 ```

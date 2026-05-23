@@ -3,11 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const JOB_ID = 'fini-daily-issue-report';
-const JOB_NAME = 'Fini daily issue report';
-const JOB_DESCRIPTION = 'Daily Fini issue report for Vitalii';
+const DAILY_JOB_ID = 'fini-daily-issue-report';
+const FETCH_JOB_ID = 'fini-fetch-all-branches';
+const DAILY_JOB_NAME = 'Fini daily issue report';
+const FETCH_JOB_NAME = 'Fini fetch all branches';
+const DAILY_JOB_DESCRIPTION = 'Daily Fini issue report for Vitalii';
+const FETCH_JOB_DESCRIPTION = 'Fetch all Fini remote branches every five minutes';
 const CRON_EXPR = '0 8 * * *';
-const MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and FINI_PROGRESS_TG_TARGET from the local agent environment. Query current open GitHub issues for VRuzhentsov/fini using configured GitHub access without printing secrets. Run or load triage before choosing the recommendation. Produce the daily report format addressed to Vitalii. Deliver the final report to FINI_DAILY_TG_TARGET.';
+const FETCH_EVERY_MS = 5 * 60 * 1000;
+const DAILY_MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and FINI_PROGRESS_TG_TARGET from the local agent environment. Query current open GitHub issues for VRuzhentsov/fini using configured GitHub access without printing secrets. Run or load triage before choosing the recommendation. Produce the daily report format addressed to Vitalii. Deliver the final report to FINI_DAILY_TG_TARGET.';
+const FETCH_MESSAGE = 'From ~/projects/fini, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.';
 
 function usage() {
   return `Usage: node upsert-fini-daily-cron.mjs [--dry-run|--write] [--store <path>]\n\nDefaults to --dry-run and ~/.openclaw/cron/jobs.json.`;
@@ -118,11 +123,11 @@ function readStore(storePath) {
   throw new Error(`Unsupported cron store shape at ${storePath}`);
 }
 
-function buildJob(target, timezone, nowMs) {
+function buildDailyJob(target, timezone, nowMs) {
   return {
-    id: JOB_ID,
-    name: JOB_NAME,
-    description: JOB_DESCRIPTION,
+    id: DAILY_JOB_ID,
+    name: DAILY_JOB_NAME,
+    description: DAILY_JOB_DESCRIPTION,
     enabled: true,
     createdAtMs: nowMs,
     schedule: {
@@ -135,7 +140,7 @@ function buildJob(target, timezone, nowMs) {
     wakeMode: 'now',
     payload: {
       kind: 'agentTurn',
-      message: MESSAGE,
+      message: DAILY_MESSAGE,
       timeoutSeconds: 900,
     },
     delivery: {
@@ -151,6 +156,36 @@ function buildJob(target, timezone, nowMs) {
   };
 }
 
+function buildFetchJob(nowMs) {
+  return {
+    id: FETCH_JOB_ID,
+    name: FETCH_JOB_NAME,
+    description: FETCH_JOB_DESCRIPTION,
+    enabled: true,
+    createdAtMs: nowMs,
+    schedule: {
+      kind: 'every',
+      everyMs: FETCH_EVERY_MS,
+    },
+    sessionTarget: 'isolated',
+    wakeMode: 'now',
+    payload: {
+      kind: 'agentTurn',
+      message: FETCH_MESSAGE,
+      timeoutSeconds: 120,
+      lightContext: true,
+      tools: ['exec'],
+    },
+    delivery: {
+      mode: 'none',
+    },
+    state: {
+      nextRunAtMs: nowMs + FETCH_EVERY_MS,
+    },
+    updatedAtMs: nowMs,
+  };
+}
+
 function comparable(job) {
   const copy = JSON.parse(JSON.stringify(job));
   delete copy.createdAtMs;
@@ -161,7 +196,7 @@ function comparable(job) {
 
 function upsert(store, desired) {
   const jobs = Array.isArray(store.jobs) ? store.jobs : [];
-  const index = jobs.findIndex((job) => job && job.id === JOB_ID);
+  const index = jobs.findIndex((job) => job && job.id === desired.id);
   const existing = index >= 0 ? jobs[index] : null;
   const finalJob = existing
     ? { ...desired, createdAtMs: existing.createdAtMs || desired.createdAtMs }
@@ -194,22 +229,34 @@ function main() {
   const timezone = localTimezone();
   const store = readStore(options.store);
   const nowMs = Date.now();
-  const desired = buildJob(target, timezone, nowMs);
-  const result = upsert(store, desired);
+  const dailyResult = upsert(store, buildDailyJob(target, timezone, nowMs));
+  const fetchResult = upsert(dailyResult.store, buildFetchJob(nowMs));
 
-  if (!options.dryRun && result.changed) {
-    writeStore(options.store, result.store);
+  if (!options.dryRun && (dailyResult.changed || fetchResult.changed)) {
+    writeStore(options.store, fetchResult.store);
   }
 
   console.log(JSON.stringify({
     dryRun: options.dryRun,
-    changed: result.changed,
-    existing: result.existing,
-    written: !options.dryRun && result.changed,
+    changed: dailyResult.changed || fetchResult.changed,
+    written: !options.dryRun && (dailyResult.changed || fetchResult.changed),
     store: options.store,
-    jobId: JOB_ID,
-    schedule: `${CRON_EXPR} @ ${timezone}`,
-    delivery: `${target.chatId}:topic:${target.threadId}`,
+    jobs: [
+      {
+        jobId: DAILY_JOB_ID,
+        changed: dailyResult.changed,
+        existing: dailyResult.existing,
+        schedule: `${CRON_EXPR} @ ${timezone}`,
+        delivery: `${target.chatId}:topic:${target.threadId}`,
+      },
+      {
+        jobId: FETCH_JOB_ID,
+        changed: fetchResult.changed,
+        existing: fetchResult.existing,
+        schedule: 'every 5m',
+        delivery: 'none',
+      },
+    ],
   }, null, 2));
 }
 
