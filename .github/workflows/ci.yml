@@ -235,7 +235,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' | head -n 1)
           if [ -z "$apk" ]; then
             echo "APK not found after build" >&2
             exit 1
