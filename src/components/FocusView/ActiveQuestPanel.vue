@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
@@ -15,6 +15,11 @@ const contextMenu = useContextMenu();
 const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
+const focusEntryLabel = computed(() => {
+  const count = props.quest.focus_entry_count ?? 0;
+  if (count < 2) return null;
+  return count === 2 ? "Focus 2 times" : `Focus ${count} times`;
+});
 const HOLD_MS = 900;
 let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
@@ -147,6 +152,12 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
       </div>
     </div>
 
+    <div v-if="focusEntryLabel" class="active-quest-attention" aria-label="Focus entry count">
+      <span class="attention-dot" />
+      <span>{{ focusEntryLabel }}</span>
+      <span v-if="quest.focus_entry_count >= 4" class="attention-copy">Keeps returning</span>
+    </div>
+
     <div class="active-quest-actions">
       <button
         class="hold-action abandon"
@@ -218,6 +229,34 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
 }
 
 .active-quest-space { border-radius: 5px; }
+
+.active-quest-attention {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 0.375rem;
+  margin-top: 0.625rem;
+  padding: 0.25rem 0.45rem;
+  color: color-mix(in oklch, var(--color-warning) 58%, var(--fg-2));
+  font-size: 0.75rem;
+  line-height: 1.2;
+  background: color-mix(in oklch, var(--color-warning) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--color-warning) 22%, transparent);
+  border-radius: 7px;
+}
+
+.attention-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  flex: 0 0 auto;
+  background: currentColor;
+  border-radius: 999px;
+  opacity: 0.7;
+}
+
+.attention-copy {
+  color: var(--fg-3);
+}
 
 .hold-ring-menu {
   --ring-color: var(--fg-2);

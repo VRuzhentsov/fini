@@ -399,6 +399,7 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             repeat_rule TEXT,
             completed_at TEXT,
             order_rank REAL NOT NULL DEFAULT 0,
+            focus_entry_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
@@ -423,6 +424,23 @@ fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             ));
         }
     }
+    ensure_backup_quest_columns(conn)?;
+    Ok(())
+}
+
+fn ensure_backup_quest_columns(conn: &mut SqliteConnection) -> Result<(), String> {
+    let rows = diesel::sql_query("PRAGMA table_info(quests)")
+        .load::<TableNameRow>(conn)
+        .map_err(|e| format!("failed to inspect backup quest columns: {e}"))?;
+    let columns: HashSet<String> = rows.into_iter().map(|row| row.name).collect();
+
+    if !columns.contains("focus_entry_count") {
+        conn.batch_execute(
+            "ALTER TABLE quests ADD COLUMN focus_entry_count INTEGER NOT NULL DEFAULT 0",
+        )
+        .map_err(|e| format!("failed to upgrade backup quest schema: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -701,6 +719,7 @@ fn insert_quest(
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
+            quests::focus_entry_count.eq(quest.focus_entry_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -772,6 +791,7 @@ fn upsert_quest_for_import(
                 quests::repeat_rule.eq(&quest.repeat_rule),
                 quests::completed_at.eq(&quest.completed_at),
                 quests::order_rank.eq(quest.order_rank),
+                quests::focus_entry_count.eq(quest.focus_entry_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
                 quests::series_id.eq(&quest.series_id),
@@ -852,6 +872,7 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         repeat_rule: quest.repeat_rule.clone(),
         completed_at: quest.completed_at.clone(),
         order_rank: quest.order_rank,
+        focus_entry_count: quest.focus_entry_count,
         created_at: quest.created_at.clone(),
         updated_at: quest.updated_at.clone(),
         series_id: quest.series_id.clone(),

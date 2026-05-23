@@ -20,7 +20,7 @@ use crate::{
     schema::{quests, reminders, spaces},
     services::{
         db::open_db_at_path,
-        quest::{append_focus_history, generate_next_occurrence, resolve_active_quest},
+        quest::{append_focus_history, generate_next_occurrence, resolve_and_record_active_quest},
         reminder::{delete_reminder_db, upsert_reminder_db},
     },
 };
@@ -302,6 +302,7 @@ pub struct QuestRecord {
     pub completed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub focus_entry_count: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -412,6 +413,7 @@ fn quest_to_record(quest: &Quest) -> QuestRecord {
         completed_at: quest.completed_at.clone(),
         created_at: quest.created_at.clone(),
         updated_at: quest.updated_at.clone(),
+        focus_entry_count: quest.focus_entry_count,
     }
 }
 
@@ -471,7 +473,7 @@ impl FiniServer {
     #[tool(description = "Get the current Focus quest from focus events + fallback rules.")]
     async fn get_active_focus(&self) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
-        let quest = resolve_active_quest(&mut conn).map_err(db_err)?;
+        let quest = resolve_and_record_active_quest(&mut conn).map_err(db_err)?;
         match quest {
             Some(q) => Ok(CallToolResult::structured(
                 serde_json::to_value(quest_to_record(&q)).unwrap(),
@@ -875,6 +877,7 @@ mod tests {
             repeat_rule: None,
             completed_at: None,
             order_rank: 0.0,
+            focus_entry_count: 0,
             created_at: "2026-03-27T10:30:00Z".to_string(),
             updated_at: "2026-03-27T10:30:00Z".to_string(),
             series_id: None,

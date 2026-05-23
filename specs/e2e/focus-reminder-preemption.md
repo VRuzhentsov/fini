@@ -37,6 +37,7 @@ After due time:
 - Write path: create quest and save `due` + `due_time` through the app UI.
 - Persistence path: backend stores the quest due fields and derived reminder row.
 - Read path: `get_active_focus` returns the newest valid candidate.
+- Count path: the transition observer increments `focus_entry_count` once when the reminder quest becomes resolved Focus, and repeated reads after the due boundary do not increment it again.
 - UI path: Focus active card changes after the due boundary.
 
 ## Non-Goals

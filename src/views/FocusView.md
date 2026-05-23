@@ -37,5 +37,6 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 - Active reminder due timestamps are virtual Focus events: once `due + due_time` arrives, the reminder timestamp competes with manual Focus timestamps and the youngest valid timestamp wins
 - Reminder preemption is temporary and unwinds to previous valid target
 - If no active override exists, fallback is overdue > `order_rank` > priority > oldest `created_at`
+- Focus entry count is a persisted transition metric. `get_active_focus` compares the resolved quest id with the last recorded Focus id and increments `quest.focus_entry_count` only when the id changes, so refreshes and polling do not inflate it.
 
 See `specs/e2e/focus-reminder-preemption.md` for the open-app e2e contract.
