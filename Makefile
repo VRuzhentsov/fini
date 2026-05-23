@@ -18,7 +18,7 @@ FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 RELEASE_BUNDLES ?= deb,rpm
 
-.PHONY: help dev build mcp play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
+.PHONY: help dev build mcp play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
@@ -50,6 +50,7 @@ help:
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
 	@echo "  make android-dev      Hot-reload on device via Wi-Fi (auto-connects)"
 	@echo "  make android-build    Build Android APK"
+	@echo "  make android-build-emulator-e2e  Build x86_64 debug APK for emulator E2E gate"
 	@echo "  make android-sign-debug   Sign APK to bin/fini.apk using debug keystore"
 	@echo "  make android-sign-release-local  Sign APK with local release keystore env vars"
 	@echo "  make android-install-debug  Install bin/fini.apk on connected device"
@@ -657,6 +658,9 @@ android-dev: android-connect
 
 android-build:
 	npm run tauri android build -- --target "$(ANDROID_TARGET)"
+
+android-build-emulator-e2e:
+	npm run tauri android build -- --ci --debug --apk --target x86_64
 
 android-sign-debug:
 	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)

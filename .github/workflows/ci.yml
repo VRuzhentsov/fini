@@ -180,3 +180,112 @@ jobs:
       - name: Cleanup E2E containers
         if: always()
         run: make pr-gate-e2e-cleanup
+
+  android-emulator-e2e:
+    name: Android Emulator E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add x86_64 Android Rust target
+        run: rustup target add x86_64-linux-android
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: android-emulator-e2e-rust
+
+      - name: Restore Android project cache
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/gen/android/.gradle
+          key: android-emulator-e2e-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/gradle.properties', 'src-tauri/gen/android/settings.gradle', 'src-tauri/gen/android/build.gradle.kts', 'src-tauri/gen/android/app/build.gradle.kts', 'src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties', 'src-tauri/Cargo.lock', 'package-lock.json') }}
+          restore-keys: |
+            android-emulator-e2e-${{ runner.os }}-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build x86_64 debug APK
+        run: make android-build-emulator-e2e
+
+      - name: Locate debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)
+          if [ -z "$apk" ]; then
+            echo "APK not found after build" >&2
+            exit 1
+          fi
+          echo "ANDROID_E2E_APK=$apk" >> "$GITHUB_ENV"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run smoke and notification channel assertions
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          emulator-options: -no-window -no-audio -gpu swiftshader_indirect -no-snapshot -no-metrics
+          disable-animations: true
+          script: |
+            set -euo pipefail
+
+            adb install "$ANDROID_E2E_APK"
+            adb shell pm grant com.fini.app android.permission.POST_NOTIFICATIONS
+            adb shell am start -n com.fini.app/.MainActivity
+
+            echo "Waiting for app process..."
+            for i in $(seq 1 30); do
+              pid=$(adb shell pidof com.fini.app 2>/dev/null || true)
+              if [ -n "$pid" ]; then echo "App process alive: $pid"; break; fi
+              if [ "$i" -eq 30 ]; then
+                echo "App process did not start" >&2
+                adb logcat -d -s AndroidRuntime:E >&2
+                exit 1
+              fi
+              sleep 1
+            done
+
+            echo "Waiting for notification channel fini.reminders..."
+            for i in $(seq 1 20); do
+              if adb shell dumpsys notification 2>/dev/null | grep -q "fini.reminders"; then
+                echo "Notification channel fini.reminders confirmed"
+                break
+              fi
+              if [ "$i" -eq 20 ]; then
+                echo "Notification channel fini.reminders not found" >&2
+                adb shell dumpsys notification | grep -A3 "com.fini.app" >&2 || true
+                exit 1
+              fi
+              sleep 1
+            done
+
+            echo "Android smoke + notification channel assertions passed"
