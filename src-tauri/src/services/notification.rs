@@ -7,8 +7,6 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(target_os = "android")]
 use tauri_plugin_notification::Channel;
-#[cfg(mobile)]
-use tauri_plugin_notification::{Action, ActionType};
 #[cfg(not(target_os = "linux"))]
 use tauri_plugin_notification::NotificationExt;
 
@@ -125,8 +123,6 @@ pub fn e2e_dispatch_notification_action(
 /// Register the notification channel and action types on app startup.
 pub fn setup_notifications(app: &AppHandle) {
     setup_notification_channel(app);
-    #[cfg(mobile)]
-    register_reminder_action_type(app);
 }
 
 /// Register the notification channel on Android (no-op on other platforms).
@@ -143,55 +139,6 @@ pub fn setup_notification_channel(app: &AppHandle) {
     }
     #[cfg(not(target_os = "android"))]
     let _ = app;
-}
-
-/// Register the "reminder" action type (Complete / Snooze 30m / Snooze 1d) on mobile.
-#[cfg(mobile)]
-fn register_reminder_action_type(app: &AppHandle) {
-    let action_type = ActionType {
-        id: ACTION_TYPE_REMINDER.to_string(),
-        actions: vec![
-            Action {
-                id: ACTION_COMPLETE.to_string(),
-                title: "Complete".to_string(),
-                requires_authentication: false,
-                foreground: false,
-                destructive: false,
-                input: false,
-                input_button_title: None,
-                input_placeholder: None,
-            },
-            Action {
-                id: ACTION_SNOOZE_30M.to_string(),
-                title: "Snooze 30m".to_string(),
-                requires_authentication: false,
-                foreground: false,
-                destructive: false,
-                input: false,
-                input_button_title: None,
-                input_placeholder: None,
-            },
-            Action {
-                id: ACTION_SNOOZE_1D.to_string(),
-                title: "Snooze 1d".to_string(),
-                requires_authentication: false,
-                foreground: false,
-                destructive: false,
-                input: false,
-                input_button_title: None,
-                input_placeholder: None,
-            },
-        ],
-        hidden_previews_body_placeholder: None,
-        custom_dismiss_action: false,
-        allow_in_car_play: false,
-        hidden_previews_show_title: false,
-        hidden_previews_show_subtitle: false,
-    };
-
-    if let Err(e) = app.notification().register_action_types(vec![action_type]) {
-        eprintln!("[notification] register_action_types failed: {e}");
-    }
 }
 
 /// Derive a stable i32 notification ID from a reminder UUID string.
@@ -433,7 +380,9 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
                     dispatch_action(&app_clone, action, &reminder_id_owned);
                 });
             }
-            Err(e) => eprintln!("[notification] Linux notify-rust failed for {reminder_id_owned}: {e}"),
+            Err(e) => {
+                eprintln!("[notification] Linux notify-rust failed for {reminder_id_owned}: {e}")
+            }
         }
     });
 }
@@ -566,7 +515,11 @@ pub fn snooze(app: &AppHandle, reminder_id: &str, minutes: i64) {
     });
 
     if let Some(state) = app.try_state::<SchedulerState>() {
-        state.0.lock().unwrap().insert(reminder_id.to_string(), handle);
+        state
+            .0
+            .lock()
+            .unwrap()
+            .insert(reminder_id.to_string(), handle);
     }
 }
 
@@ -596,10 +549,7 @@ fn remove_snooze(app: &AppHandle, reminder_id: &str) {
     use diesel::prelude::*;
     if let Some(db) = app.try_state::<DbState>() {
         let mut conn = db.0.lock().unwrap();
-        let _ = diesel::delete(
-            notification_snoozes::table.find(reminder_id),
-        )
-        .execute(&mut *conn);
+        let _ = diesel::delete(notification_snoozes::table.find(reminder_id)).execute(&mut *conn);
     }
 }
 
@@ -624,8 +574,12 @@ pub fn rearm_snoozed_reminders(app: &AppHandle) {
         }
     };
 
-    let past_due: Vec<&NotificationSnooze> = snoozed.iter().filter(|s| s.fire_at_utc <= now_str).collect();
-    let future: Vec<&NotificationSnooze> = snoozed.iter().filter(|s| s.fire_at_utc > now_str).collect();
+    let past_due: Vec<&NotificationSnooze> = snoozed
+        .iter()
+        .filter(|s| s.fire_at_utc <= now_str)
+        .collect();
+    let future: Vec<&NotificationSnooze> =
+        snoozed.iter().filter(|s| s.fire_at_utc > now_str).collect();
 
     // Fire past-due snoozed notifications immediately.
     let ids_to_fire: Vec<String> = past_due.iter().map(|s| s.reminder_id.clone()).collect();
