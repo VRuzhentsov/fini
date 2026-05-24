@@ -6,7 +6,7 @@ import path from 'node:path';
 
 const repo = process.env.FINI_REPO || 'VRuzhentsov/fini';
 const repoDir = expandPath(process.env.FINI_REPO_DIR || '~/projects/fini');
-const mapPath = expandPath(process.env.FINI_ISSUE_TG_TOPIC_MAP || path.join(repoDir, '.fini-dev', 'fini-issue-topics.json'));
+const mapPath = expandPath(process.env.FINI_ISSUE_TG_TOPIC_MAP || path.join(repoDir, 'fini-issue-topics.json'));
 const configPath = expandPath(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
 
 function expandPath(value) {

@@ -36,8 +36,6 @@ tmp/
 
 # Local agent bootstrap marker
 .fini-dev-install.done
-.fini-dev/fini-issue-topics.json
-.fini-dev/
 fini-issue-topics.json
 
 # Obsidian
