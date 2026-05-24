@@ -7,6 +7,9 @@ metadata:
       - name: FINI_DEV_TG_CHANNEL_ID
         required: false
         description: Telegram group chat ID for Fini Dev.
+      - name: FINI_ISSUE_TG_TOPIC_MAP
+        required: false
+        description: Optional JSON file mapping Fini GitHub issue numbers to Telegram topic targets.
       - name: FINI_DAILY_TG_TARGET
         required: false
         description: Preferred Telegram target for Daily topic reports, usually <group-id>:topic:<thread-id>.
@@ -21,6 +24,8 @@ metadata:
 # Fini Autonomous Dev Agent
 
 Use this skill as a behavior overlay for autonomous coding agents working on Fini. It does not replace `fini-dev`; it adds delegation, progress, and handoff discipline around it.
+
+When the work is happening in the Fini Dev Telegram group, also load `fini-dev-telegram` for group-topic routing, Fini Self Improvement handling, and issue-topic coordination.
 
 ## First Step
 
