@@ -50,6 +50,31 @@ If the task comes from a GitHub issue, follow `fini-dev` branch guidance before 
 
 Use Fini Dev Telegram topics as coordination surfaces when the channel is available. Do not let Telegram delivery failures block local implementation; continue the work and report the delivery blocker in the final handoff.
 
+### Dynamic Issue Topics
+
+Every GitHub issue that an autonomous Fini agent is actively working on should have its own Fini Dev Telegram forum topic.
+
+Before sending progress for issue work:
+
+1. Check the topic map at `FINI_ISSUE_TG_TOPIC_MAP` or, if unset, `~/.openclaw/workspace/fini-issue-topics.json`.
+2. If the issue already has an `issueTarget`, use that for all issue-specific progress, blockers, verification evidence, and PR-ready handoff.
+3. If no mapping exists and Telegram topic creation is available, create a topic named `#<issue> <short title>` in the Fini Dev group.
+4. Record the mapping immediately with the issue number, title, GitHub URL, topic id, and `<group-id>:topic:<thread-id>` target.
+5. Send a short starting message inside the new issue topic so future readers know the branch, PR, and current phase.
+
+Use the shared `In Progress` topic only for generic status, scheduler work, or work that is not tied to one GitHub issue. Do not put detailed implementation updates for a specific issue in `Daily` or the root Fini Dev topic once its dynamic issue topic exists.
+
+### Closing Issue Topics
+
+When a pull request for a mapped issue is merged, the issue-specific Telegram topic should be marked closed:
+
+1. Close the related GitHub issue if GitHub did not close it automatically.
+2. Rename the Telegram forum topic so the title begins `closed #<issue>`.
+3. Update the topic map entry with `status: "closed"`, `closedAt`, `closedByPullRequest`, and `topicTitle`.
+4. Send one short final note inside the issue topic with the merged PR URL and issue close status.
+
+The `fini-merged-pr-topic-reconcile` system cron performs this idempotently every five minutes. Agents may still do it immediately during handoff after a merge, but they should preserve the same map fields and title convention.
+
 Preferred targets:
 
 | Topic | Use For | Preferred Env Var |
@@ -57,6 +82,7 @@ Preferred targets:
 | `Daily` | Daily issue reports, triage summaries, next-delegation recommendations | `FINI_DAILY_TG_TARGET` |
 | `Create` | New ticket intake, issue drafting, scope capture, task creation status | `FINI_CREATE_TG_TARGET` |
 | `In Progress` | Implementation progress, blockers, verification updates, PR-ready notices | `FINI_PROGRESS_TG_TARGET` |
+| Dynamic issue topic `#<issue> <title>` | All progress for one active GitHub issue | `FINI_ISSUE_TG_TOPIC_MAP` |
 
 Fallback:
 
