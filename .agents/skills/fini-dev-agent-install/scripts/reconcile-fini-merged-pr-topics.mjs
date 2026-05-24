@@ -6,7 +6,7 @@ import path from 'node:path';
 
 const repo = process.env.FINI_REPO || 'VRuzhentsov/fini';
 const repoDir = expandPath(process.env.FINI_REPO_DIR || '~/projects/fini');
-const mapPath = expandPath(process.env.FINI_ISSUE_TG_TOPIC_MAP || '~/.openclaw/workspace/fini-issue-topics.json');
+const mapPath = expandPath(process.env.FINI_ISSUE_TG_TOPIC_MAP || path.join(repoDir, '.fini-dev', 'fini-issue-topics.json'));
 const configPath = expandPath(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
 
 function expandPath(value) {
@@ -27,6 +27,7 @@ function readJson(filePath) {
 
 function writeJson(filePath, value) {
   const tempPath = `${filePath}.${process.pid}.tmp`;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   fs.renameSync(tempPath, filePath);
 }
@@ -115,7 +116,7 @@ function topicAddress(map, entry) {
 }
 
 async function main() {
-  const map = readJson(mapPath);
+  const map = fs.existsSync(mapPath) ? readJson(mapPath) : { issues: {} };
   const changes = [];
   const errors = [];
 

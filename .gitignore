@@ -36,6 +36,7 @@ tmp/
 
 # Local agent bootstrap marker
 .fini-dev-install.done
+.fini-dev/
 
 # Obsidian
 .obsidian/*

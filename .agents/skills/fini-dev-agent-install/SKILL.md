@@ -48,7 +48,7 @@ Merged PR topic reconcile system cron:
 - Script: `~/.openclaw/workspace/skills/fini-dev-agent-install/scripts/reconcile-fini-merged-pr-topics.mjs`
 - Schedule: every `5m`
 - Runtime: host crontab, not OpenClaw isolated cron, because it must use local `gh`, filesystem, and Telegram Bot API access directly
-- Behavior: query merged `VRuzhentsov/fini` pull requests, close mapped related issues, rename each dynamic Telegram issue topic so its title begins `closed #<issue>`, send one final issue-topic note, and update `~/.openclaw/workspace/fini-issue-topics.json`
+- Behavior: query merged `VRuzhentsov/fini` pull requests, close mapped related issues, rename each dynamic Telegram issue topic so its title begins `closed #<issue>`, send one final issue-topic note, and update `.fini-dev/fini-issue-topics.json` in the local Fini checkout
 
 ## Prerequisites
 
@@ -59,6 +59,7 @@ Before writing schedule state, verify:
 3. `triage` is installed for the local agent.
 4. `FINI_DAILY_TG_TARGET` is set to the Daily topic target in `<group-id>:topic:<thread-id>` form.
 5. GitHub access for `VRuzhentsov/fini` works without printing tokens.
+6. The dynamic issue topic map is stored in the local Fini checkout at `.fini-dev/fini-issue-topics.json`, unless `FINI_ISSUE_TG_TOPIC_MAP` explicitly overrides it.
 
 If a prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that cannot deliver to `Daily`.
 
