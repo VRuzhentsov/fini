@@ -7,9 +7,12 @@ metadata:
       - name: FINI_DEV_TG_CHANNEL_ID
         required: false
         description: Telegram group chat ID for Fini Dev.
+      - name: FINI_ISSUE_TOPIC_SYNC_FILE
+        required: false
+        description: Optional JSON file syncing Fini GitHub issue numbers to messenger topic/thread targets.
       - name: FINI_ISSUE_TG_TOPIC_MAP
         required: false
-        description: Optional JSON file mapping Fini GitHub issue numbers to Telegram topic targets.
+        description: Legacy optional JSON file mapping Fini GitHub issue numbers to Telegram topic targets.
       - name: FINI_DAILY_TG_TARGET
         required: false
         description: Preferred Telegram target for Daily topic reports, usually <group-id>:topic:<thread-id>.
@@ -55,7 +58,7 @@ Every GitHub issue that an autonomous Fini agent is actively working on should h
 
 Before sending issue-specific progress:
 
-1. Check the topic map at `FINI_ISSUE_TG_TOPIC_MAP` or, if unset, `fini-issue-topics.json` at the local Fini checkout root.
+1. Check the issue/topic sync file at `FINI_ISSUE_TOPIC_SYNC_FILE`, then legacy `FINI_ISSUE_TG_TOPIC_MAP`, or, if both are unset, `issue-topic-sync.json` at the local Fini checkout root.
 2. If the issue already has an `issueTarget`, use it for all progress, blockers, verification evidence, and PR-ready handoff.
 3. If no mapping exists and Telegram topic creation is available, create a topic named `#<issue> <short title>`.
 4. Record the issue number, title, GitHub URL, topic id, and `<group-id>:topic:<thread-id>` target immediately.
