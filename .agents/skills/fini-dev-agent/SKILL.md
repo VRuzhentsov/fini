@@ -50,6 +50,18 @@ If the task comes from a GitHub issue, follow `fini-dev` branch guidance before 
 
 Use Fini Dev Telegram topics as coordination surfaces when the channel is available. Do not let Telegram delivery failures block local implementation; continue the work and report the delivery blocker in the final handoff.
 
+### Conversation Context
+
+In the Fini Dev Telegram group, treat messages in the same forum topic as shared task context even when the newest message does not explicitly mention the bot. The group is configured to ingest Fini Dev messages without requiring `@will_o_claw_bot`.
+
+When invoked from Fini Dev:
+
+1. Read the current message, reply chain, and recent same-topic context before deciding what the user wants.
+2. If the newest message is a follow-up, interpret it against the nearest replied-to message and the recent topic conversation.
+3. Continue the active task when the follow-up is consistent with the current thread, instead of asking for a fresh explicit command.
+4. Stay quiet when the message is ordinary human discussion and no useful action or correction is needed.
+5. Never expose private workspace, credential, or unrelated personal context into the group while using prior messages.
+
 ### Dynamic Issue Topics
 
 Every GitHub issue that an autonomous Fini agent is actively working on should have its own Fini Dev Telegram forum topic.
