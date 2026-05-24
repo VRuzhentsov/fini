@@ -71,90 +71,106 @@ async function telegram(method, payload) {
   return data.result;
 }
 
-function mergedPrs() {
+function mergedPr(number) {
   const raw = runGh([
     'pr',
-    'list',
+    'view',
+    String(number),
     '--repo',
     repo,
-    '--state',
-    'all',
-    '--limit',
-    '100',
     '--json',
     'number,title,state,mergedAt,url,closingIssuesReferences',
   ]);
-  return JSON.parse(raw).filter((pr) => pr.state === 'MERGED' || pr.mergedAt);
+  const pr = JSON.parse(raw);
+  return pr.state === 'MERGED' || pr.mergedAt ? pr : null;
 }
 
-function findCompletionPr(entry, prs) {
+function findCompletionPr(entry) {
   const mappedPrNumber = prNumberFromUrl(entry.pullRequest);
-  if (mappedPrNumber) {
-    const mapped = prs.find((pr) => pr.number === mappedPrNumber);
-    if (mapped) return mapped;
-  }
+  if (!mappedPrNumber) return null;
 
-  return prs.find((pr) => {
-    const refs = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : [];
-    return refs.some((ref) => Number(ref.number) === Number(entry.issue));
-  });
+  const pr = mergedPr(mappedPrNumber);
+  if (!pr) return null;
+
+  const refs = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : [];
+  const closesIssue = refs.some((ref) => Number(ref.number) === Number(entry.issue));
+  return closesIssue || entry.pullRequest === pr.url ? pr : null;
+}
+
+function parseTopicTarget(value) {
+  const match = String(value || '').match(/^(-?\d+):topic:(\d+)$/);
+  if (!match) return null;
+  return {
+    chatId: match[1],
+    topicId: Number.parseInt(match[2], 10),
+  };
+}
+
+function topicAddress(map, entry) {
+  const target = parseTopicTarget(entry.issueTarget || entry.target);
+  return {
+    chatId: target?.chatId || map.chatId,
+    topicId: Number(entry.topicId || target?.topicId),
+  };
 }
 
 async function main() {
   const map = readJson(mapPath);
-  const chatId = map.chatId;
-  if (!chatId) throw new Error(`Missing chatId in ${mapPath}`);
-
-  const prs = mergedPrs();
   const changes = [];
+  const errors = [];
 
   for (const [issueKey, entry] of Object.entries(map.issues || {})) {
-    const issue = Number(entry.issue || issueKey);
-    if (!issue || !entry.topicId) continue;
+    try {
+      const issue = Number(entry.issue || issueKey);
+      const address = topicAddress(map, entry);
+      if (!issue || !address.chatId || !address.topicId) continue;
 
-    const completionPr = findCompletionPr({ ...entry, issue }, prs);
-    if (!completionPr) continue;
+      const completionPr = findCompletionPr({ ...entry, issue });
+      if (!completionPr) continue;
 
-    const newTitle = topicTitle(issue, entry.title);
-    const alreadyClosed = entry.status === 'closed' && entry.topicTitle === newTitle && entry.closedByPullRequest === completionPr.url;
-    if (alreadyClosed) continue;
+      const newTitle = topicTitle(issue, entry.title);
+      const alreadyClosed = entry.status === 'closed' && entry.topicTitle === newTitle && entry.closedByPullRequest === completionPr.url;
+      if (alreadyClosed) continue;
 
-    let closeStatus = 'already closed';
-    if (issueState(issue) !== 'CLOSED') {
-      closeIssue(issue);
-      closeStatus = 'closed';
+      let closeStatus = 'already closed';
+      if (issueState(issue) !== 'CLOSED') {
+        closeIssue(issue);
+        closeStatus = 'closed';
+      }
+
+      await telegram('editForumTopic', {
+        chat_id: address.chatId,
+        message_thread_id: address.topicId,
+        name: newTitle,
+      });
+
+      await telegram('sendMessage', {
+        chat_id: address.chatId,
+        message_thread_id: address.topicId,
+        text: `Closed after merge: ${completionPr.url}\nIssue #${issue}: ${closeStatus}`,
+        disable_web_page_preview: true,
+      });
+
+      map.issues[issueKey] = {
+        ...entry,
+        issue,
+        topicId: address.topicId,
+        issueTarget: entry.issueTarget || `${address.chatId}:topic:${address.topicId}`,
+        status: 'closed',
+        closedAt: completionPr.mergedAt || new Date().toISOString(),
+        closedByPullRequest: completionPr.url,
+        topicTitle: newTitle,
+      };
+      map.updatedAt = new Date().toISOString();
+      writeJson(mapPath, map);
+      changes.push(`#${issue} via PR #${completionPr.number}`);
+    } catch (error) {
+      errors.push(`${issueKey}: ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    await telegram('editForumTopic', {
-      chat_id: chatId,
-      message_thread_id: Number(entry.topicId),
-      name: newTitle,
-    });
-
-    await telegram('sendMessage', {
-      chat_id: chatId,
-      message_thread_id: Number(entry.topicId),
-      text: `Closed after merge: ${completionPr.url}\nIssue #${issue}: ${closeStatus}`,
-      disable_web_page_preview: true,
-    });
-
-    map.issues[issueKey] = {
-      ...entry,
-      issue,
-      status: 'closed',
-      closedAt: completionPr.mergedAt || new Date().toISOString(),
-      closedByPullRequest: completionPr.url,
-      topicTitle: newTitle,
-    };
-    changes.push(`#${issue} via PR #${completionPr.number}`);
   }
 
-  if (changes.length > 0) {
-    map.updatedAt = new Date().toISOString();
-    writeJson(mapPath, map);
-  }
-
-  console.log(JSON.stringify({ changed: changes.length > 0, changes }, null, 2));
+  console.log(JSON.stringify({ changed: changes.length > 0, changes, errors }, null, 2));
+  if (errors.length > 0) process.exitCode = 1;
 }
 
 main().catch((error) => {

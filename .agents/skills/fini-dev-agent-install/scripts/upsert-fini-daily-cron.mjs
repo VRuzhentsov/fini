@@ -174,6 +174,8 @@ function buildFetchJob(nowMs) {
       message: FETCH_MESSAGE,
       timeoutSeconds: 120,
       lightContext: true,
+      tools: ['exec'],
+      toolsAllow: ['exec'],
     },
     delivery: {
       mode: 'none',
