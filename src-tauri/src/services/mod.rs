@@ -1,7 +1,9 @@
 pub mod backup;
+#[cfg(feature = "cli-plane")]
 pub mod cli;
 pub mod db;
 pub mod device_connection;
+#[cfg(feature = "cli-plane")]
 pub mod mcp;
 pub mod notification;
 pub mod quest;

@@ -4,8 +4,11 @@ mod services;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
+#[cfg(feature = "ui-plane")]
 use services::backup::{backup_apply_import, backup_export, backup_preflight_import};
+#[cfg(feature = "ui-plane")]
 use services::db::{app_data_dir, open_db, DbState};
+#[cfg(feature = "ui-plane")]
 use services::device_connection::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
     device_connection_discovery_snapshot, device_connection_enter_add_mode,
@@ -17,59 +20,76 @@ use services::device_connection::{
     device_connection_save_paired_device, device_connection_send_pair_request,
     device_connection_unpair, device_connection_update_last_seen, DeviceConnectionState,
 };
+#[cfg(feature = "ui-plane")]
 use services::notification::{
     dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
 };
-#[cfg(feature = "e2e-testing")]
+#[cfg(all(feature = "ui-plane", feature = "e2e-testing"))]
 use services::notification::{
     e2e_clear_notification_events, e2e_dispatch_notification_action, e2e_list_notification_events,
     NotificationObserverState,
 };
+#[cfg(feature = "ui-plane")]
 mod resume_watcher;
+#[cfg(feature = "ui-plane")]
 use services::quest::{
     create_quest, delete_quest, delete_quest_series, get_active_focus, get_quests, set_focus,
     update_quest,
 };
+#[cfg(feature = "ui-plane")]
 use services::reconciler;
+#[cfg(feature = "ui-plane")]
 use services::reminder::{
     cancel_quest_notifications, create_reminder, delete_reminder, get_reminders, update_reminder,
 };
+#[cfg(feature = "ui-plane")]
 use services::settings::{self, ThemeMode};
+#[cfg(feature = "ui-plane")]
 use services::space::{create_space, delete_space, get_spaces, update_space};
+#[cfg(feature = "ui-plane")]
 use services::space_sync::{
     run_ws_server, space_sync_apply_remote_mappings, space_sync_list_mappings,
     space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
     space_sync_update_mappings,
 };
+#[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
+    feature = "ui-plane",
     any(target_os = "linux", target_os = "macos", target_os = "windows"),
     not(debug_assertions)
 ))]
 use tauri_plugin_autostart::ManagerExt;
 
+#[cfg(feature = "ui-plane")]
 const THEME_EVENT: &str = "theme://changed";
 
+#[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn notification_action(app: AppHandle, action_id: String, reminder_id: String) {
     dispatch_action(&app, &action_id, &reminder_id);
 }
 
+#[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn notification_tap(app: AppHandle, reminder_id: String) {
     dispatch_action(&app, "tap", &reminder_id);
 }
 
 // Suppress unused-constant warnings; these are used by frontend listeners.
+#[cfg(feature = "ui-plane")]
 const _: &str = FOREGROUND_FIRE_EVENT;
+#[cfg(feature = "ui-plane")]
 const _: &str = TAP_EVENT;
 
+#[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn get_theme_mode(db: tauri::State<DbState>) -> Result<String, String> {
     let mut conn = db.0.lock().unwrap();
     settings::theme_mode(&mut conn).map(|mode| mode.as_str().to_string())
 }
 
+#[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn set_theme_mode(
     app: AppHandle,
@@ -85,17 +105,20 @@ fn set_theme_mode(
     Ok(mode.as_str().to_string())
 }
 
+#[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn theme_hint(db: tauri::State<DbState>) -> String {
     let mut conn = db.0.lock().unwrap();
     settings::theme_hint(&mut conn)
 }
 
+#[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn sync_native_theme(app: AppHandle, theme: String) {
     settings::apply_native_theme(&app, &theme);
 }
 
+#[cfg(feature = "cli-plane")]
 pub fn run_mcp() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -105,10 +128,12 @@ pub fn run_mcp() {
         .unwrap();
 }
 
+#[cfg(feature = "cli-plane")]
 pub fn run_cli() -> i32 {
     services::cli::run(std::env::args().collect())
 }
 
+#[cfg(feature = "ui-plane")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -130,7 +155,7 @@ pub fn run() {
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
     ));
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, feature = "cli-plane", not(mobile)))]
     let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
     #[cfg(feature = "e2e-testing")]
     let builder = {
@@ -161,6 +186,7 @@ pub fn run() {
             settings::spawn_theme_watcher(&app_handle);
 
             #[cfg(all(
+                feature = "ui-plane",
                 any(target_os = "linux", target_os = "macos", target_os = "windows"),
                 not(debug_assertions)
             ))]

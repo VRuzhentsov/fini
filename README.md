@@ -91,18 +91,25 @@ See [[Network]] for transport-level contracts.
 
 ## CLI
 
-`fini` is the single app binary. Its behaviour depends on how it is invoked:
+Fini has separate CLI and desktop GUI entrypoints that share the same Rust backend and SQLite data model:
 
 | Invocation | Mode |
 |---|---|
-| `fini` | Return current Focus quest (CLI default in terminal) |
-| `fini app` | Launch GUI (Tauri) from terminal |
+| `fini` | CLI-only binary; returns current Focus quest by default |
+| `fini --help` | Show CLI command groups and usage |
+| `fini-app` | Desktop GUI binary used by app launchers and bundles |
 
-The `fini` binary is produced by the normal Tauri build:
+Build planes are explicit:
+
+- Desktop GUI builds use `ui-plane,cli-plane`.
+- Mobile builds use `ui-plane` only; CLI code is not compiled into mobile bundles.
+- Docker/runtime builds use `cli-plane` only and expose `/usr/local/bin/fini`.
+
+The CLI binary is built separately from the desktop app binary:
 
 ```bash
-npm run tauri build
-# binary at: src-tauri/target/release/fini
+cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane
+npm run tauri build -- --features ui-plane,cli-plane
 ```
 
 ## Tech Stack
@@ -138,13 +145,13 @@ npm run tauri build
 
 ```bash
 npm ci
-npm run tauri dev -- app
+make dev
 ```
 
 ### Build (desktop)
 
 ```bash
-npm run tauri build
+make build
 ```
 
 ### Release
@@ -160,7 +167,7 @@ The `make release` flow requires a clean `main` branch that matches `origin/main
 ### Build (Android)
 
 ```bash
-npm run tauri android build
+make android-build
 
 # git-derived local debug deploy
 make android-debug-deploy

@@ -1,6 +1,6 @@
 use diesel::prelude::*;
-use diesel::sqlite::SqliteConnection;
 use diesel::sql_types::Text;
+use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -56,9 +56,11 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
 pub fn open_db_at_path(path: &Path) -> SqliteConnection {
     let mut conn =
         SqliteConnection::establish(path.to_str().unwrap()).expect("failed to open database");
-    diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
-        .execute(&mut conn)
-        .expect("failed to set PRAGMAs");
+    diesel::sql_query(
+        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
+    )
+    .execute(&mut conn)
+    .expect("failed to set PRAGMAs");
     if should_run_migrations(&mut conn) {
         conn.run_pending_migrations(MIGRATIONS)
             .expect("failed to run migrations");

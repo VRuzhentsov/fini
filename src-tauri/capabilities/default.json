@@ -8,8 +8,6 @@
     "core:window:allow-set-size",
     "dialog:default",
     "opener:default",
-    "notification:default",
-    "mcp-bridge:default",
-    "playwright:default"
+    "notification:default"
   ]
 }

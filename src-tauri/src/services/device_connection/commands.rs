@@ -126,7 +126,11 @@ pub fn device_connection_send_pair_request_impl(
     };
 
     let target_port = input.to_ws_port.unwrap_or(state.space_sync_ws_port);
-    send_pair_ws(target_ip, target_port, WsMessage::PairRequest(payload.clone()))?;
+    send_pair_ws(
+        target_ip,
+        target_port,
+        WsMessage::PairRequest(payload.clone()),
+    )?;
 
     if let Ok(mut guard) = state.runtime.lock() {
         guard.tx_count += 1;

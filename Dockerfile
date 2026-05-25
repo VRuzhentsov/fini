@@ -55,7 +55,7 @@ RUN cargo test --manifest-path src-tauri/Cargo.toml
 
 FROM rust-builder-base AS app-build-release
 
-RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini
+RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane
 
 FROM rust-builder-base AS app-build-e2e
 
@@ -70,7 +70,8 @@ COPY src ./src
 COPY vite.config.ts ./
 COPY index.html ./
 
-RUN node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle
+RUN node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features ui-plane,cli-plane,e2e-testing --no-bundle
+RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --bin fini --features cli-plane
 
 FROM ubuntu:24.04 AS runtime-base
 
@@ -106,7 +107,7 @@ RUN set -eux; \
       xauth; \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
+COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini-app /usr/local/bin/fini-app
 COPY specs/e2e/actors/start-actor.sh /usr/local/bin/fini-e2e-actor
 
 ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
@@ -150,13 +151,15 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY --from=node-deps /app/node_modules ./node_modules
 COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
+COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini-app /usr/local/bin/fini-app
 COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
 COPY tsconfig*.json ./
 COPY specs/e2e ./specs/e2e
 
 ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
     FINI_E2E_ACTORS=actor-a,actor-b \
-    FINI_BINARY=/usr/local/bin/fini \
+    FINI_APP_BINARY=/usr/local/bin/fini-app \
+    FINI_CLI_BINARY=/usr/local/bin/fini \
     FINI_E2E_CONTAINER_RUNNER=1 \
     TZ=UTC \
     CI=1
@@ -196,6 +199,7 @@ RUN apt-get update -o Acquire::Retries=5 && apt-get install -y -o Acquire::Retri
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini-app /usr/local/bin/fini-app
 COPY --from=app-build-e2e /workspace/src-tauri/target/debug/fini /usr/local/bin/fini
 
 WORKDIR /app
@@ -210,7 +214,8 @@ COPY vite.config.ts ./
 COPY index.html ./
 COPY specs/e2e ./specs/e2e
 
-ENV FINI_BINARY=/usr/local/bin/fini \
+ENV FINI_APP_BINARY=/usr/local/bin/fini-app \
+    FINI_CLI_BINARY=/usr/local/bin/fini \
     FINI_E2E_CONTAINER_RUNNER=1 \
     TZ=UTC \
     CI=1

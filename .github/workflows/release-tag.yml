@@ -311,7 +311,7 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
-        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm
+        run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm
 
       - name: Collect Linux release files
         run: |
@@ -416,7 +416,7 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
-        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles nsis
+        run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Collect Windows release files
         shell: bash
@@ -513,7 +513,7 @@ jobs:
         run: npm ci
 
       - name: Build Android APK and AAB (arm64)
-        run: npm run tauri android build -- --ci --apk --aab --target aarch64
+        run: npm run tauri android build -- --features ui-plane --ci --apk --aab --target aarch64
 
       - name: Prepare Android keystore
         env:

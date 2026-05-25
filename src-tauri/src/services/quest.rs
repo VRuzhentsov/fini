@@ -850,12 +850,9 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
             if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, app, quest_id) {
                 eprintln!("[notification] complete: delete_reminder failed: {e}");
             }
-            if let Err(e) = emit_quest_sync_events(
-                &mut conn,
-                &dc.identity.device_id,
-                &space_id,
-                &updated_quest,
-            ) {
+            if let Err(e) =
+                emit_quest_sync_events(&mut conn, &dc.identity.device_id, &space_id, &updated_quest)
+            {
                 eprintln!("[notification] complete: sync emit failed: {e}");
             }
         }
@@ -1053,8 +1050,7 @@ pub fn delete_quest_series(
         }
     }
 
-    delete_quest_series_in_db(&mut *conn, &origin_device_id, &series_id)
-        .map_err(|e| e.to_string())
+    delete_quest_series_in_db(&mut *conn, &origin_device_id, &series_id).map_err(|e| e.to_string())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -2112,8 +2108,7 @@ mod tests {
             .expect("count before");
         assert_eq!(count_before, 3, "expected 3 occurrences before delete");
 
-        delete_quest_series_in_db(&mut conn, "device-test", &series.id)
-            .expect("delete series");
+        delete_quest_series_in_db(&mut conn, "device-test", &series.id).expect("delete series");
 
         let count_after: i64 = quests::table
             .filter(quests::series_id.eq(&series.id))
@@ -2170,8 +2165,7 @@ mod tests {
                 .expect("insert occurrence");
         }
 
-        delete_quest_series_in_db(&mut conn, "device-test", &series.id)
-            .expect("delete series");
+        delete_quest_series_in_db(&mut conn, "device-test", &series.id).expect("delete series");
 
         let events: Vec<(String, String)> = sync_outbox::table
             .select((sync_outbox::entity_type, sync_outbox::op_type))
@@ -2187,8 +2181,14 @@ mod tests {
             .filter(|(t, op)| t == "quest_series" && op == "delete")
             .count();
 
-        assert_eq!(quest_deletes, 3, "must emit one delete event per occurrence");
-        assert_eq!(series_deletes, 1, "must emit one delete event for quest_series");
+        assert_eq!(
+            quest_deletes, 3,
+            "must emit one delete event per occurrence"
+        );
+        assert_eq!(
+            series_deletes, 1,
+            "must emit one delete event for quest_series"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

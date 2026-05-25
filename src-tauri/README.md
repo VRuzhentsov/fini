@@ -9,7 +9,8 @@ src-tauri/
 ├── src/
 │   ├── lib.rs         # App entry point — DB setup, models, command handlers
 │   ├── schema.rs      # Diesel table definitions
-│   └── main.rs        # Binary entry point (calls lib::run)
+│   ├── main.rs        # CLI-only binary entry point (`fini`)
+│   └── bin/fini-app.rs # Desktop GUI binary entry point (`fini-app`)
 ├── migrations/        # SQL migrations (Diesel format)
 ├── gen/
 │   └── android/       # Generated Android Studio project
@@ -84,7 +85,10 @@ General notes:
 ## Platform notes
 
 - **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
+- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,cli-plane`
+- **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
+  - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle
   - `make android-debug-deploy` builds, signs, installs, and launches a local debug-keystore APK using git-derived `versionName` and `versionCode`
   - `make android-release-deploy-local` performs the same local build/install flow but signs with release-lineage credentials from `ANDROID_KEYSTORE_PATH` or `ANDROID_KEYSTORE_BASE64` plus the matching password and alias env vars
   - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`

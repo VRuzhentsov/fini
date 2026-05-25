@@ -21,7 +21,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    App,
     Mcp,
     Focus {
         #[command(subcommand)]
@@ -433,11 +432,6 @@ fn execute(cli: Cli) -> CliResult<i32> {
         return Ok(EXIT_SUCCESS);
     }
 
-    if let Some(Command::App) = cli.command {
-        crate::run();
-        return Ok(EXIT_SUCCESS);
-    }
-
     let ctx = CliContext::new()?;
 
     let value = match cli.command {
@@ -460,7 +454,7 @@ fn execute(cli: Cli) -> CliResult<i32> {
                 "sync command group is not implemented yet in CLI runtime",
             ));
         }
-        Some(Command::App) | Some(Command::Mcp) => unreachable!(),
+        Some(Command::Mcp) => unreachable!(),
     };
 
     print_output(&value, cli.json).map_err(CliError::runtime)?;

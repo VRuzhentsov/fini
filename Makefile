@@ -64,17 +64,17 @@ help:
 # ── Linux ─────────────────────────────────────────────────────────────────────
 
 dev:
-	npm run tauri dev -- app
+	npm run tauri dev -- --features ui-plane,cli-plane
 
 build:
-	npm run tauri build
+	npm run tauri build -- --features ui-plane,cli-plane
 
 flatpak-install-local:
 	-$(MAKE) build
 	flatpak run org.flatpak.Builder --force-clean --user --install flatpak-build com.fini.app.yml
 
 mcp:
-	./src-tauri/target/debug/fini mcp
+	cargo run --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane -- mcp
 
 play-store-screenshots:
 	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
@@ -345,7 +345,8 @@ e2e-headed:
 	test_results_dir="$$run_dir/test-results"; \
 	ui_data_dir="$$run_dir/ui-data"; \
 	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
-	bin_path="$$e2e_target_dir/debug/fini"; \
+	app_bin_path="$$e2e_target_dir/debug/fini-app"; \
+	cli_bin_path="$$e2e_target_dir/debug/fini"; \
 	printf 'FINI_E2E_RUN_DIR=%s\n' "$$run_dir"; \
 	mkdir -p "$$socket_dir" "$$test_results_dir" "$$ui_data_dir"; \
 	IFS=','; set -- $$actor_list; \
@@ -378,7 +379,8 @@ e2e-headed:
 	  exit "$$status"; \
 	}; \
 	trap cleanup EXIT INT TERM; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features ui-plane,cli-plane,e2e-testing --no-bundle; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
 	idx=0; \
 	for actor in "$$@"; do \
 	  actor_data_dir="$$run_dir/$$actor-data"; \
@@ -389,7 +391,7 @@ e2e-headed:
 	  mkdir -p "$$actor_data_dir"; \
 	  rm -f "$$actor_socket"; \
 	  printf 'Launching visible app window: %s (discovery=%s ws=%s)\n' "$$actor" "$$discovery_port" "$$ws_port"; \
-	  HOSTNAME="$$actor" FINI_APP_DATA_DIR="$$actor_data_dir" TAURI_PLAYWRIGHT_SOCKET="$$actor_socket" FINI_DISCOVERY_PORT="$$discovery_port" FINI_DISCOVERY_PEER_PORTS="$$peer_ports" FINI_SPACE_SYNC_WS_PORT="$$ws_port" TZ=UTC "$$bin_path" app >"$$actor_log" 2>&1 & \
+	  HOSTNAME="$$actor" FINI_APP_DATA_DIR="$$actor_data_dir" TAURI_PLAYWRIGHT_SOCKET="$$actor_socket" FINI_DISCOVERY_PORT="$$discovery_port" FINI_DISCOVERY_PEER_PORTS="$$peer_ports" FINI_SPACE_SYNC_WS_PORT="$$ws_port" TZ=UTC "$$app_bin_path" >"$$actor_log" 2>&1 & \
 	  printf '%s' "$$!" > "$$run_dir/$$actor.pid"; \
 	  idx=$$((idx + 1)); \
 	done; \
@@ -409,7 +411,7 @@ e2e-headed:
 	ui_discovery_port=$$((base_discovery_port + idx * 2 + 100)); \
 	ui_ws_port=$$((ui_discovery_port + 1)); \
 	printf 'UI fixture ports: discovery=%s ws=%s\n' "$$ui_discovery_port" "$$ui_ws_port"; \
-	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 FINI_BINARY="$$bin_path" FINI_APP_DATA_DIR="$$ui_data_dir" FINI_DISCOVERY_PORT="$$ui_discovery_port" FINI_SPACE_SYNC_WS_PORT="$$ui_ws_port" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors --output "$$test_results_dir"
+	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_APP_DATA_DIR="$$ui_data_dir" FINI_DISCOVERY_PORT="$$ui_discovery_port" FINI_SPACE_SYNC_WS_PORT="$$ui_ws_port" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors --output "$$test_results_dir"
 
 # Build/update the actor and runner images for multi-actor desktop e2e.
 e2e-actors-image:
@@ -653,13 +655,13 @@ android-connect:
 	@timeout "$(ADB_CONNECT_TIMEOUT)s" adb connect $(DEVICE_ADDRESS) || (echo "ADB connect timed out for $(DEVICE_ADDRESS). Re-authorize wireless debugging, reconnect USB, or start an emulator." && exit 1)
 
 android-dev: android-connect
-	npm run tauri android dev -- --host $(HOST_IP)
+	npm run tauri android dev -- --features ui-plane --host $(HOST_IP)
 
 android-build:
-	npm run tauri android build -- --target "$(ANDROID_TARGET)"
+	npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 
 android-build-emulator-e2e:
-	npm run tauri android build -- --ci --debug --apk --target x86_64
+	npm run tauri android build -- --features ui-plane --ci --debug --apk --target x86_64
 
 android-sign-debug:
 	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)
@@ -703,14 +705,14 @@ android-launch:
 
 android-debug-deploy:
 	@printf 'Android debug version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --target "$(ANDROID_TARGET)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-debug
 	$(MAKE) android-install-debug
 	$(MAKE) android-launch
 
 android-release-deploy-local:
 	@printf 'Android local release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --target "$(ANDROID_TARGET)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-release-local
 	$(MAKE) android-install-release-local
 	$(MAKE) android-launch
