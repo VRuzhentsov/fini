@@ -12,11 +12,13 @@ FINI_E2E_CI_SOCKET_DIR ?= $(FINI_E2E_CI_RUN_DIR)/sockets
 FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
 FINI_E2E_CI_NETWORK ?= fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_ACTORS ?= actor-a,actor-b
+FINI_E2E_CI_ACTOR_WAIT_SECS ?= 180
 FINI_E2E_ACTOR_IMAGE ?= fini-e2e-actor-ci
 FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 RELEASE_BUNDLES ?= deb,rpm
+FINI_RELEASE_LOCAL_CI_PASSED ?= 0
 
 .PHONY: help dev build mcp play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
@@ -44,7 +46,7 @@ help:
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
 	@echo "  make play-store-screenshots  Validate Play Store screenshots and write manifest"
 	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
-	@echo "  make release VERSION=x.y.z  Bump versions, push main, and push signed tag vX.Y.Z"
+	@echo "  FINI_RELEASE_LOCAL_CI_PASSED=1 make release VERSION=x.y.z  Bump versions, push main, and push signed tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
@@ -270,10 +272,12 @@ pr-gate-e2e-wait-actors:
 	IFS=','; set -- $$actor_list; \
 	for actor in "$$@"; do \
 	  socket_path="$(FINI_E2E_CI_SOCKET_DIR)/$$actor.sock"; \
-	  deadline=$$(($$(date +%s) + 60)); \
+	  deadline=$$(($$(date +%s) + $(FINI_E2E_CI_ACTOR_WAIT_SECS))); \
 	  while [ ! -S "$$socket_path" ]; do \
 	    if [ "$$(date +%s)" -ge "$$deadline" ]; then \
 	      printf 'Actor socket did not appear: %s\n' "$$socket_path" >&2; \
+	      $(CONTAINER) ps -a --filter "name=fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >&2 || true; \
+	      $(CONTAINER) inspect "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >&2 || true; \
 	      $(CONTAINER) logs "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" 2>/dev/null || true; \
 	      exit 1; \
 	    fi; \
@@ -602,6 +606,7 @@ runtime-smoke:
 release:
 	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release VERSION=x.y.z" && exit 1)
 	@printf '%s\n' "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || (echo "VERSION must match x.y.z" && exit 1)
+	@test "$(FINI_RELEASE_LOCAL_CI_PASSED)" = "1" || (echo "Refusing release: run the local CI release gate first, then rerun with FINI_RELEASE_LOCAL_CI_PASSED=1" && exit 1)
 	@branch="$$(git branch --show-current)"; \
 	if [ "$$branch" != "main" ]; then \
 	  echo "Release must run from main"; \
