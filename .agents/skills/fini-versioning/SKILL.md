@@ -1,11 +1,13 @@
 ---
 name: fini-versioning
-description: "Shared foundation for Fini app versioning and release metadata. Use when changing package versions, release commands, signed tags, About version display, CLI version output, Android version naming, Tauri/Cargo/npm metadata, or CI release version sync. Depends on fini-scripting when implementation touches Makefile, npm scripts, cargo xtask, or CI command architecture."
+description: "Shared foundation for Fini app version metadata and version invariants. Use when changing package versions, About version display, CLI version output, Android version naming, Tauri/Cargo/npm metadata, or CI release version sync. For operational releases, release tags, and release workflow runbooks, use fini-release and load this skill only for metadata semantics. Depends on fini-scripting when implementation touches Makefile, npm scripts, cargo xtask, or CI command architecture."
 ---
 
 # Fini Versioning Foundation
 
-Use this skill when work touches app version metadata, release version flow, package manifests, visible app version labels, CLI version output, Android versioning, signed release tags, or CI release version sync.
+Use this skill when work touches app version metadata, package manifests, visible app version labels, CLI version output, Android versioning, or CI release version sync.
+
+Use `fini-release` for operational release commands, signed release tags, release workflow runbooks, and release CI verification.
 
 If the implementation changes Makefile targets, npm scripts, `cargo xtask`, or CI command architecture, also follow `fini-scripting`.
 
@@ -37,29 +39,11 @@ Treat these as app version surfaces:
 
 When changing versioning, trace the write path, persisted metadata, and read path before claiming the version is fixed.
 
-## Release Flow
+## Release Boundary
 
-The human release entrypoint is:
+Operational releases are owned by `fini-release`. Versioning guidance here only defines which metadata must be aligned and how it is updated.
 
-```bash
-make release VERSION=x.y.z
-```
-
-The release flow should:
-
-1. Require `VERSION` in `x.y.z` form.
-2. Require the current branch to be `main`.
-3. Require a clean worktree.
-4. Require local `HEAD` to match `origin/main` before version mutation.
-5. Reject an already-existing `vX.Y.Z` tag.
-6. Update all committed version metadata.
-7. Verify the release build.
-8. Commit version files as `chore: release vX.Y.Z`.
-9. Push `main`.
-10. Create and verify a GPG-signed annotated `vX.Y.Z` tag on that pushed commit.
-11. Push the tag.
-
-Do not keep parallel human release commands. There should be one `make release VERSION=x.y.z` entrypoint.
+The release commit should already contain the release version metadata before the signed tag is pushed. CI may still sync metadata from the tag as a defensive build step, but the committed source should not intentionally lag the release tag.
 
 ## Automation Boundary
 
@@ -82,6 +66,6 @@ For versioning changes, collect evidence for:
 - Write path: command or code that updates version metadata.
 - Persisted data: exact files and fields changed.
 - Read path: About UI, CLI version, Tauri metadata, or Android metadata as applicable.
-- Release safety: branch, clean tree, tag existence, and signed tag behavior when release flow changes.
+- Release safety: defer operational branch, tag, push, and CI workflow evidence to `fini-release`.
 
 Use safe checks first. Do not create commits, push branches, or push tags unless the user explicitly requested a real release.

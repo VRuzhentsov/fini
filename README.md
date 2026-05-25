@@ -149,13 +149,13 @@ npm run tauri build
 
 ### Release
 
-Release workflow is triggered only by pushing a signed annotated `v*` tag. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit.
+Release workflow is GitOps: pushing a signed annotated `v*` tag starts CI. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit. CI owns tests, builds, signing checks, packaging, and artifacts.
 
 ```bash
 make release VERSION=0.1.12
 ```
 
-The `make release` flow requires a clean `main` branch that matches `origin/main`, updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`, runs a release bundle check (`RELEASE_BUNDLES=deb,rpm` by default), creates a `chore: release vX.Y.Z` commit, pushes `main`, then creates and verifies a GPG-signed annotated tag before pushing it.
+The `make release` flow requires a clean `main` branch that matches `origin/main`, updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`, creates a `chore: release vX.Y.Z` commit, pushes `main`, then creates and verifies a GPG-signed annotated tag before pushing it. It does not build local release bundles; the tag-triggered CI workflow builds release artifacts.
 
 ### Build (Android)
 

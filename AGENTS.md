@@ -35,7 +35,7 @@ When working inside that directory, load its `AGENTS.md` as the authoritative sc
 - See `Makefile` for available targets.
 - Load `fini-scripting` before adding or changing repo automation scripts, package scripts, release tooling, packaging tooling, CI command orchestration, or build orchestration.
 - Treat `Makefile` as the primary human execution entrypoint; use `npm run` for JS/TS package tasks and `xtask/` for non-trivial repo automation logic.
-- Load `fini-versioning` before changing package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync.
+- Load `fini-release` before running or changing release commands, signed tags, or release CI verification. Load `fini-versioning` before changing package metadata, app version display, CLI version output, Android versioning, or CI release version sync.
 - Use `/var/tmp` for temporary files and logs; do not use `/tmp`.
 - When stopping known dev processes, prefer `pkill -f "<specific-pattern>"` over PID-based `kill`.
 

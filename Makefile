@@ -44,7 +44,7 @@ help:
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
 	@echo "  make play-store-screenshots  Validate Play Store screenshots and write manifest"
 	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
-	@echo "  make release VERSION=x.y.z  Bump versions, verify build, push main, and push signed tag vX.Y.Z"
+	@echo "  make release VERSION=x.y.z  Bump versions, push main, and push signed tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
@@ -624,14 +624,13 @@ release:
 	  exit 1; \
 	fi; \
 	cargo run --manifest-path xtask/Cargo.toml -- release-version "$(VERSION)"
-	npm run tauri build -- --bundles "$(RELEASE_BUNDLES)"
 	git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
 	git commit -m "chore: release v$(VERSION)"
 	git push origin main
 	git -c user.email="v.ruzhentsov@gmail.com" -c user.signingkey="199DFE796EA43C00" tag -s -a "v$(VERSION)" -m "v$(VERSION)"
 	git tag -v "v$(VERSION)"
 	git push origin "v$(VERSION)"
-	@echo "Released v$(VERSION)"
+	@echo "Released v$(VERSION); CI release workflow is triggered by the pushed tag."
 
 # ── Android ───────────────────────────────────────────────────────────────────
 
