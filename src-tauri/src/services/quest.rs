@@ -9,7 +9,7 @@ use crate::models::{
     clamp_order_rank, CreateFocusHistoryInput, CreateQuestInput, CreateSeriesInput, Quest,
     QuestSeries, UpdateQuestInput,
 };
-use crate::schema::{focus_history, quest_series, quests};
+use crate::schema::{focus_history, quest_series, quests, settings};
 use crate::services::db::{utc_now, DbState};
 use crate::services::device_connection::DeviceConnectionState;
 use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
@@ -363,6 +363,75 @@ pub fn resolve_active_quest(
     conn: &mut SqliteConnection,
 ) -> Result<Option<Quest>, diesel::result::Error> {
     resolve_active_quest_at(conn, Utc::now())
+}
+
+const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
+
+fn last_recorded_focus_id(
+    conn: &mut SqliteConnection,
+) -> Result<Option<String>, diesel::result::Error> {
+    settings::table
+        .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
+        .select(settings::value)
+        .first::<String>(conn)
+        .optional()
+}
+
+fn save_last_recorded_focus_id(
+    conn: &mut SqliteConnection,
+    quest_id: Option<&str>,
+) -> Result<(), diesel::result::Error> {
+    if let Some(quest_id) = quest_id {
+        let inserted = diesel::insert_or_ignore_into(settings::table)
+            .values((
+                settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
+                settings::value.eq(quest_id),
+            ))
+            .execute(conn)?;
+
+        if inserted == 0 {
+            diesel::update(settings::table.find(ACTIVE_FOCUS_QUEST_SETTING_KEY))
+                .set(settings::value.eq(quest_id))
+                .execute(conn)?;
+        }
+        return Ok(());
+    }
+
+    diesel::delete(settings::table.find(ACTIVE_FOCUS_QUEST_SETTING_KEY)).execute(conn)?;
+    Ok(())
+}
+
+fn record_focus_entry_transition(
+    conn: &mut SqliteConnection,
+    resolved: Option<Quest>,
+) -> Result<Option<Quest>, diesel::result::Error> {
+    let Some(quest) = resolved else {
+        save_last_recorded_focus_id(conn, None)?;
+        return Ok(None);
+    };
+
+    let last_id = last_recorded_focus_id(conn)?;
+    if last_id.as_deref() == Some(quest.id.as_str()) {
+        return Ok(Some(quest));
+    }
+
+    diesel::update(quests::table.find(&quest.id))
+        .set(quests::focus_entry_count.eq(quests::focus_entry_count + 1))
+        .execute(conn)?;
+    save_last_recorded_focus_id(conn, Some(&quest.id))?;
+
+    quests::table
+        .find(&quest.id)
+        .select(Quest::as_select())
+        .first(conn)
+        .optional()
+}
+
+pub fn resolve_and_record_active_quest(
+    conn: &mut SqliteConnection,
+) -> Result<Option<Quest>, diesel::result::Error> {
+    let resolved = resolve_active_quest(conn)?;
+    record_focus_entry_transition(conn, resolved)
 }
 
 fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -863,7 +932,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
 #[tauri::command]
 pub fn get_active_focus(state: State<DbState>) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    resolve_active_quest(&mut conn).map_err(|e| e.to_string())
+    resolve_and_record_active_quest(&mut conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -880,6 +949,10 @@ pub fn set_focus(state: State<DbState>, id: String) -> Result<Quest, String> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "cannot set Focus on non-active quest".to_string())?;
 
+    let previous_focus_id = resolve_active_quest(&mut conn)
+        .map_err(|e| e.to_string())?
+        .map(|quest| quest.id);
+
     diesel::update(quests::table.find(&id))
         .set(quests::updated_at.eq(&now))
         .execute(&mut *conn)
@@ -887,7 +960,14 @@ pub fn set_focus(state: State<DbState>, id: String) -> Result<Quest, String> {
 
     append_focus_history(&mut conn, &quest.id, &quest.space_id, "manual")?;
 
-    Ok(quest)
+    if previous_focus_id.as_deref() == Some(quest.id.as_str()) {
+        save_last_recorded_focus_id(&mut conn, Some(&quest.id)).map_err(|e| e.to_string())?;
+        return Ok(quest);
+    }
+
+    record_focus_entry_transition(&mut conn, Some(quest))
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "focused quest disappeared".to_string())
 }
 
 #[tauri::command]
@@ -1157,6 +1237,14 @@ mod tests {
         }
     }
 
+    fn focus_entry_count(conn: &mut SqliteConnection, quest_id: &str) -> i64 {
+        quests::table
+            .find(quest_id)
+            .select(quests::focus_entry_count)
+            .first(conn)
+            .expect("load focus entry count")
+    }
+
     #[test]
     fn order_rank_is_clamped_to_signed_100() {
         assert_eq!(clamp_order_rank(150.0), 100.0);
@@ -1405,6 +1493,113 @@ mod tests {
             after_due.id, reminder_id,
             "due reminder timestamp must preempt older manual Focus"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn focus_entry_count_increments_once_for_duplicate_reads() {
+        let db_path = temp_db_path("focus-entry-count-duplicate-reads");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest_id = insert_active_quest(
+            &mut conn,
+            "read-counted-once",
+            3,
+            "2026-03-01T10:00:00Z",
+            None,
+            None,
+        );
+
+        let first = resolve_and_record_active_quest(&mut conn)
+            .expect("resolve first")
+            .expect("must return active quest");
+        let second = resolve_and_record_active_quest(&mut conn)
+            .expect("resolve second")
+            .expect("must return active quest");
+
+        assert_eq!(first.id, quest_id);
+        assert_eq!(second.id, quest_id);
+        assert_eq!(
+            focus_entry_count(&mut conn, &quest_id),
+            1,
+            "repeated reads of the same Focus must not inflate the count"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn focus_entry_count_records_virtual_reminder_transition_once() {
+        let db_path = temp_db_path("focus-entry-count-reminder-transition");
+        let mut conn = open_db_at_path(&db_path);
+
+        let manual_id = insert_active_quest(
+            &mut conn,
+            "manual-count",
+            2,
+            "2026-03-01T10:00:00Z",
+            None,
+            None,
+        );
+        let reminder_id = insert_active_quest(
+            &mut conn,
+            "reminder-count",
+            2,
+            "2026-03-01T11:00:00Z",
+            Some("2026-03-05"),
+            Some("09:31"),
+        );
+
+        let reminder_quest: Quest = quests::table
+            .find(&reminder_id)
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("load reminder quest");
+        let fire_at = parse_due_reminder_fire_utc(&reminder_quest).expect("parse reminder fire");
+        let manual_at = fire_at - chrono::Duration::minutes(1);
+
+        diesel::sql_query(format!(
+            "INSERT INTO focus_history (quest_id, space_id, trigger, created_at) \
+             VALUES ('{}', '1', 'manual', '{}')",
+            manual_id,
+            manual_at.format("%Y-%m-%dT%H:%M:%SZ")
+        ))
+        .execute(&mut conn)
+        .expect("insert manual focus_history row");
+
+        let before_due_resolved =
+            resolve_active_quest_at(&mut conn, fire_at - chrono::Duration::seconds(1))
+                .expect("resolve before due");
+        let before_due = record_focus_entry_transition(&mut conn, before_due_resolved)
+            .expect("record before due")
+            .expect("must return active quest");
+        assert_eq!(before_due.id, manual_id);
+
+        let before_due_again_resolved =
+            resolve_active_quest_at(&mut conn, fire_at - chrono::Duration::seconds(1))
+                .expect("resolve before due again");
+        let before_due_again = record_focus_entry_transition(&mut conn, before_due_again_resolved)
+            .expect("record before due again")
+            .expect("must return active quest");
+        assert_eq!(before_due_again.id, manual_id);
+
+        let after_due_resolved =
+            resolve_active_quest_at(&mut conn, fire_at).expect("resolve after due");
+        let after_due = record_focus_entry_transition(&mut conn, after_due_resolved)
+            .expect("record after due")
+            .expect("must return active quest");
+        assert_eq!(after_due.id, reminder_id);
+
+        let after_due_again_resolved =
+            resolve_active_quest_at(&mut conn, fire_at).expect("resolve after due again");
+        let after_due_again = record_focus_entry_transition(&mut conn, after_due_again_resolved)
+            .expect("record after due again")
+            .expect("must return active quest");
+        assert_eq!(after_due_again.id, reminder_id);
+
+        assert_eq!(focus_entry_count(&mut conn, &manual_id), 1);
+        assert_eq!(focus_entry_count(&mut conn, &reminder_id), 1);
 
         let _ = std::fs::remove_file(db_path);
     }
