@@ -1,5 +1,3 @@
-#![cfg_attr(all(feature = "cli-plane", not(feature = "ui-plane")), allow(dead_code, unused_imports))]
-
 pub mod models;
 mod schema;
 mod services;
@@ -26,7 +24,7 @@ use services::device_connection::{
 use services::notification::{
     dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
 };
-#[cfg(all(feature = "ui-plane", feature = "e2e-testing"))]
+#[cfg(all(feature = "ui-plane", feature = "devtools"))]
 use services::notification::{
     e2e_clear_notification_events, e2e_dispatch_notification_action, e2e_list_notification_events,
     NotificationObserverState,
@@ -159,7 +157,7 @@ pub fn run() {
     ));
     #[cfg(all(debug_assertions, feature = "cli-plane", not(mobile)))]
     let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let builder = {
         let socket_path = std::env::var("TAURI_PLAYWRIGHT_SOCKET")
             .unwrap_or_else(|_| "/tmp/tauri-playwright.sock".to_string());
@@ -174,7 +172,7 @@ pub fn run() {
             let conn = open_db(&app_handle);
             app.manage(DbState(std::sync::Mutex::new(conn)));
             app.manage(SchedulerState::new());
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             app.manage(NotificationObserverState::new());
 
             setup_notifications(&app_handle);
@@ -259,11 +257,11 @@ pub fn run() {
             sync_native_theme,
             notification_action,
             notification_tap,
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             e2e_list_notification_events,
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             e2e_clear_notification_events,
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             e2e_dispatch_notification_action,
         ])
         .run(tauri::generate_context!())

@@ -32,7 +32,7 @@ const tauriCommand = process.env.FINI_APP_BINARY
   ? (headful
       ? `${binaryTimeout}env ${envFlags} ${process.env.FINI_APP_BINARY}`
       : `${binaryTimeout}xvfb-run -a env ${envFlags} ${process.env.FINI_APP_BINARY}`)
-  : `env ${envFlags} npm run tauri -- dev --features ui-plane,e2e-testing`;
+  : `env ${envFlags} npm run tauri -- dev --features ui-plane,devtools`;
 
 export const { test, expect } = createTauriTest({
   tauriCommand,

@@ -65,7 +65,7 @@ This depends on `make pr-gate-be-compile`, then runs the `be-unit-test` Dockerfi
 make e2e-headed
 ```
 
-Builds `fini-app` with `--features ui-plane,e2e-testing` and `fini` with `--features cli-plane`, then executes `npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors`. The Playwright fixtures spawn the real app processes. `make e2e` is an alias for `make e2e-headed`.
+Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--features cli-plane,devtools`, then executes `npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors`. The Playwright fixtures spawn the real app processes. `make e2e` is an alias for `make e2e-headed`.
 
 ### E2E — containerized CI parity
 
@@ -73,7 +73,7 @@ Builds `fini-app` with `--features ui-plane,e2e-testing` and `fini` with `--feat
 make pr-gate-e2e
 ```
 
-Runs the chain `pr-gate-e2e-build-actor` → `pr-gate-e2e-build-runner` → `pr-gate-e2e-network` → `pr-gate-e2e-start-actors` → `pr-gate-e2e-wait-actors` → `pr-gate-e2e-run` (each phase callable independently for failure diagnosis). The network/start/wait phases are compatibility no-ops; the runner image owns actor startup and sockets. `make e2e-ci` is the older `CI=1 make e2e-actors` shortcut.
+Runs the chain `pr-gate-e2e-build-dev-runner` → `pr-gate-e2e-run`. The dev-runner image owns actor startup and sockets. `make e2e-ci` is a shortcut for the same containerized E2E flow.
 
 ### Targeting a single Playwright project
 
@@ -170,7 +170,7 @@ Conventions:
 
 Layout: `specs/e2e/ui/tests/<feature>.spec.ts`. Fixture: `specs/e2e/ui/fixtures.ts` exports `test` and `expect` from `createTauriTest({ tauriCommand, mcpSocket: '/var/tmp/fini-playwright.sock' })`. The test receives a `tauriPage` that drives the real Fini window.
 
-App data is isolated under `FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui` so the user's normal data directory is untouched. The app is launched with `--features e2e-testing`.
+App data is isolated under `FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui` so the user's normal data directory is untouched. The app is launched with `--features devtools`.
 
 Skeleton from `specs/e2e/ui/tests/context-menu-submenu-hover.spec.ts`:
 

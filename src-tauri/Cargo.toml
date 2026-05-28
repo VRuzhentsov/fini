@@ -73,7 +73,6 @@ notify-rust = "4"
 default = []
 ui-plane = []
 cli-plane = ["dep:clap", "dep:rmcp", "dep:tauri-plugin-mcp-bridge"]
-# Enable the Playwright control-server plugin for UI e2e tests. Off by default;
-# the production build must not ship this — it exposes an in-process socket
-# bridge that accepts webview.eval() from a test runner.
-e2e-testing = ["dep:tauri-plugin-playwright"]
+# Enable developer/test control-plane hooks. Off by default; production builds
+# must not ship this because it exposes an in-process Playwright socket bridge.
+devtools = ["dep:tauri-plugin-playwright"]

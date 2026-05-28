@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use diesel::prelude::*;
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(target_os = "android")]
@@ -58,7 +58,7 @@ impl SchedulerState {
     }
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 #[derive(Clone, Serialize)]
 pub struct NotificationEvent {
     pub phase: String,
@@ -70,24 +70,24 @@ pub struct NotificationEvent {
     pub scheduled_notification_id: Option<String>,
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 pub struct NotificationObserverState(pub Mutex<Vec<NotificationEvent>>);
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 impl NotificationObserverState {
     pub fn new() -> Self {
         Self(Mutex::new(Vec::new()))
     }
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 fn record_notification_event(app: &AppHandle, event: NotificationEvent) {
     if let Some(state) = app.try_state::<NotificationObserverState>() {
         state.0.lock().unwrap().push(event);
     }
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 #[tauri::command]
 pub fn e2e_list_notification_events(app: AppHandle) -> Result<Vec<NotificationEvent>, String> {
     let state = app
@@ -97,7 +97,7 @@ pub fn e2e_list_notification_events(app: AppHandle) -> Result<Vec<NotificationEv
     Ok(events)
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 #[tauri::command]
 pub fn e2e_clear_notification_events(app: AppHandle) -> Result<(), String> {
     let state = app
@@ -108,8 +108,8 @@ pub fn e2e_clear_notification_events(app: AppHandle) -> Result<(), String> {
 }
 
 /// Directly dispatch a notification action without going through the OS notification layer.
-/// Only available in e2e-testing builds to simulate user action button clicks.
-#[cfg(feature = "e2e-testing")]
+/// Only available in devtools builds to simulate user action button clicks.
+#[cfg(feature = "devtools")]
 #[tauri::command]
 pub fn e2e_dispatch_notification_action(
     app: AppHandle,
@@ -198,7 +198,7 @@ pub fn schedule_reminder(
 
         match result {
             Ok(()) => {
-                #[cfg(feature = "e2e-testing")]
+                #[cfg(feature = "devtools")]
                 record_notification_event(
                     app,
                     NotificationEvent {
@@ -244,7 +244,7 @@ pub fn schedule_reminder(
             state.0.lock().unwrap().insert(reminder_id_key, handle);
         }
 
-        #[cfg(feature = "e2e-testing")]
+        #[cfg(feature = "devtools")]
         record_notification_event(
             app,
             NotificationEvent {
@@ -305,11 +305,11 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
     #[allow(unused_variables)]
     let quest_id_owned = quest_id.to_string();
 
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let app_for_record = app.clone();
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let reminder_id_for_record = reminder_id.to_string();
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let body_for_record = body.to_string();
 
     // std::thread::spawn (not tokio::task::spawn_blocking) so this can be called
@@ -348,7 +348,7 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
 
         match notif.show() {
             Ok(handle) => {
-                #[cfg(feature = "e2e-testing")]
+                #[cfg(feature = "devtools")]
                 record_notification_event(
                     &app_for_record,
                     NotificationEvent {
@@ -363,7 +363,7 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
                 );
 
                 handle.wait_for_action(|action| {
-                    #[cfg(feature = "e2e-testing")]
+                    #[cfg(feature = "devtools")]
                     record_notification_event(
                         &app_for_record,
                         NotificationEvent {
@@ -410,7 +410,7 @@ fn show_plugin(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
 
     match result {
         Ok(()) => {
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             record_notification_event(
                 app,
                 NotificationEvent {

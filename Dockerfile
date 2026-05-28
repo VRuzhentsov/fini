@@ -46,7 +46,7 @@ COPY src-tauri/patches ./src-tauri/patches
 COPY src-tauri/migrations ./src-tauri/migrations
 COPY src-tauri/src ./src-tauri/src
 COPY src-tauri/capabilities ./src-tauri/capabilities
-COPY src-tauri/e2e-capabilities ./src-tauri/e2e-capabilities
+COPY src-tauri/devtools-capabilities ./src-tauri/devtools-capabilities
 COPY src-tauri/icons ./src-tauri/icons
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 
@@ -58,23 +58,26 @@ FROM be-test-compile AS be-unit-test
 
 RUN cargo test --manifest-path src-tauri/Cargo.toml
 
-FROM rust-builder-base AS app-build-release
+FROM rust-builder-base AS app-build-cli-prod
 
 RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane && \
     cp src-tauri/target/release/fini /workspace/fini && \
     rm -rf src-tauri/target
 
-FROM rust-builder-base AS app-build-e2e-cli
+FROM rust-builder-base AS app-build-cli-dev
 
-RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --bin fini --features cli-plane && \
+RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --bin fini --features cli-plane,devtools && \
     cp src-tauri/target/debug/fini /workspace/fini && \
     rm -rf src-tauri/target
 
-FROM rust-builder-base AS app-build-e2e-gui
+FROM rust-builder-base AS app-build-ui-dev
 
 COPY --from=node-deps /usr/local/ /usr/local/
 
 WORKDIR /workspace
+
+ARG TAURI_CAPABILITIES_DIR=src-tauri/devtools-capabilities
+COPY ${TAURI_CAPABILITIES_DIR} ./src-tauri/capabilities
 
 COPY package.json package-lock.json* ./
 COPY --from=node-deps /app/node_modules ./node_modules
@@ -83,12 +86,9 @@ COPY src ./src
 COPY vite.config.ts ./
 COPY index.html ./
 
-RUN cp src-tauri/capabilities/default.json /tmp/fini-default-capability.json && \
-    cp src-tauri/e2e-capabilities/default.json src-tauri/capabilities/default.json && \
-    npm run tauri -- build --debug --features ui-plane,e2e-testing --no-bundle -- --bin fini-app && \
+RUN npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- --bin fini-app && \
     test -x src-tauri/target/debug/fini-app && \
     cp src-tauri/target/debug/fini-app /workspace/fini-app && \
-    cp /tmp/fini-default-capability.json src-tauri/capabilities/default.json && \
     rm -rf src-tauri/target
 
 FROM ubuntu:24.04 AS runtime-base
@@ -116,11 +116,11 @@ VOLUME ["/data"]
 
 FROM runtime-base AS runtime
 
-COPY --from=app-build-release /workspace/fini /usr/local/bin/fini
+COPY --from=app-build-cli-prod /workspace/fini /usr/local/bin/fini
 
 ENTRYPOINT ["/usr/local/bin/fini"]
 
-FROM node-deps AS e2e-runner
+FROM node-deps AS dev-runner
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -158,9 +158,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
 
-COPY --from=app-build-e2e-gui /workspace/fini-app /usr/local/bin/fini-app
-COPY --from=app-build-e2e-cli /workspace/fini /usr/local/bin/fini
-COPY --from=app-build-e2e-gui /workspace/dist ./dist
+COPY --from=app-build-ui-dev /workspace/fini-app /usr/local/bin/fini-app
+COPY --from=app-build-cli-dev /workspace/fini /usr/local/bin/fini
+COPY --from=app-build-ui-dev /workspace/dist ./dist
 
 WORKDIR /app
 
@@ -182,67 +182,3 @@ ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
     TZ=UTC
 
 CMD ["sh", "./scripts/e2e-runner.sh"]
-
-# Compatibility alias for the older actor-image tag name.
-FROM e2e-runner AS e2e-actor
-
-# ── E2E test stage ─────────────────────────────────────────────────────────────
-FROM node:24.15.0-trixie-slim AS test
-
-# Fini binary runtime libs + Playwright Chromium system deps (fonts, nss/nspr,
-# dbus, X11 bits). The browser binary comes from the cached Playwright stage;
-# this apt layer provides the runtime libraries it expects.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    rm -f /etc/apt/apt.conf.d/docker-clean && \
-    printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/keep-cache && \
-    apt-get update -o Acquire::Retries=5 && apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
-    libgtk-3-0 \
-    libwebkit2gtk-4.1-0 \
-    libayatana-appindicator3-1 \
-    librsvg2-2 \
-    libglib2.0-0 \
-    libnss3 \
-    libnspr4 \
-    libdbus-1-3 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libx11-6 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxrandr2 \
-    libxkbcommon0 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libasound2 \
-    fonts-liberation \
-    ca-certificates \
-    xvfb \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=app-build-e2e-gui /workspace/fini-app /usr/local/bin/fini-app
-COPY --from=app-build-e2e-cli /workspace/fini /usr/local/bin/fini
-COPY --from=app-build-e2e-gui /workspace/dist ./dist
-
-WORKDIR /app
-
-COPY package.json package-lock.json* ./
-COPY --from=node-deps /app/node_modules ./node_modules
-COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
-
-COPY tsconfig*.json ./
-COPY src ./src
-COPY vite.config.ts ./
-COPY index.html ./
-COPY specs/e2e ./specs/e2e
-
-ENV FINI_APP_BINARY=/usr/local/bin/fini-app \
-    FINI_CLI_BINARY=/usr/local/bin/fini \
-    FINI_E2E_CONTAINER_RUNNER=1 \
-    TZ=UTC \
-    CI=1
-
-CMD ["npm", "run", "test:e2e:ci"]

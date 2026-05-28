@@ -161,8 +161,8 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 | Release desktop build | `make build` |
 | Visible local two-app E2E | `make e2e` or `make e2e-headed` |
 | Containerized CI-style E2E | `make e2e-ci` |
-| Build/update E2E images | `make e2e-image` or `make e2e-actors-image` |
-| Full containerized actor E2E | `make e2e-actors` |
+| Build/update E2E images | `make e2e-image` |
+| Full containerized E2E | `make pr-gate-e2e` |
 | Runtime container image | `make runtime-image` |
 | Runtime CLI smoke | `make runtime-smoke` |
 | Android device list | `make android-devices` |
@@ -205,6 +205,8 @@ Use this loop for implementation and fixes:
 7. Update companion docs/specs when behavior or structure changes.
 8. Verify with the smallest useful check, then escalate only as needed.
 9. Report the exact evidence collected and any remaining risk.
+
+Resolve compiler warnings by improving code structure, feature boundaries, visibility, or imports. Treat broad suppression such as crate-level `allow(dead_code, unused_imports)` as a user-owned exception: add it only after explicit user approval, keep its scope as narrow as possible, and call it out in the report.
 
 ## Verification Defaults
 
