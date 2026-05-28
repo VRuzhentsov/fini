@@ -7,10 +7,10 @@ Rust backend of the Fini app, powered by Tauri 2.0.
 ```
 src-tauri/
 ├── src/
-│   ├── lib.rs         # App entry point — DB setup, models, command handlers
+│   ├── lib.rs         # Shared app library — DB setup, models, command handlers
 │   ├── schema.rs      # Diesel table definitions
-│   ├── main.rs        # CLI-only binary entry point (`fini`)
-│   └── bin/fini-app.rs # Desktop GUI binary entry point (`fini-app`)
+│   ├── main.rs        # Desktop GUI binary entry point (`fini-app`)
+│   └── bin/fini.rs    # CLI-only binary entry point (`fini`)
 ├── migrations/        # SQL migrations (Diesel format)
 ├── gen/
 │   └── android/       # Generated Android Studio project
@@ -85,7 +85,7 @@ General notes:
 ## Platform notes
 
 - **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
-- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,cli-plane`
+- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane`
 - **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle

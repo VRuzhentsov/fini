@@ -65,7 +65,7 @@ This depends on `make pr-gate-be-compile`, then runs the `be-unit-test` Dockerfi
 make e2e-headed
 ```
 
-Builds a debug binary with `--features e2e-testing` (`node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle`), spawns actor processes locally, then executes `npx playwright test --config specs/e2e/playwright.config.ts --project actors`. `make e2e` is an alias for `make e2e-headed`.
+Builds `fini-app` with `--features ui-plane,e2e-testing` and `fini` with `--features cli-plane`, then executes `npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors`. The Playwright fixtures spawn the real app processes. `make e2e` is an alias for `make e2e-headed`.
 
 ### E2E — containerized CI parity
 
@@ -73,7 +73,7 @@ Builds a debug binary with `--features e2e-testing` (`node ./node_modules/@tauri
 make pr-gate-e2e
 ```
 
-Runs the chain `pr-gate-e2e-build-actor` → `pr-gate-e2e-build-runner` → `pr-gate-e2e-network` → `pr-gate-e2e-start-actors` → `pr-gate-e2e-wait-actors` → `pr-gate-e2e-run` (each phase callable independently for failure diagnosis). `make e2e-ci` is the older `CI=1 make e2e-actors` shortcut.
+Runs the chain `pr-gate-e2e-build-actor` → `pr-gate-e2e-build-runner` → `pr-gate-e2e-network` → `pr-gate-e2e-start-actors` → `pr-gate-e2e-wait-actors` → `pr-gate-e2e-run` (each phase callable independently for failure diagnosis). The network/start/wait phases are compatibility no-ops; the runner image owns actor startup and sockets. `make e2e-ci` is the older `CI=1 make e2e-actors` shortcut.
 
 ### Targeting a single Playwright project
 
@@ -196,7 +196,7 @@ Conventions:
 
 Layout: `specs/e2e/actors/tests/<feature>.spec.ts`. Fixture: `specs/e2e/actors/fixtures.ts` exposes `actorA`, `actorB`, and a generic `actors` map. Each actor is a separate Fini instance with its own `FINI_APP_DATA_DIR` and its own Unix socket; the runner connects via `PluginClient(socketPath)` and exposes `actor.page` (a `TauriPage`) and `actor.invoke<T>(command, args)` (a typed Tauri command call).
 
-Actor processes are spawned by `specs/e2e/actors/start-actor.sh`. The runner discovers actors through environment variables:
+Actor processes are spawned by the worker-scoped fixture in `specs/e2e/actors/fixtures.ts`. The runner discovers actors through environment variables:
 
 - `FINI_E2E_ACTORS` — comma-separated slugs (default `actor-a,actor-b`).
 - `FINI_E2E_SOCKET_DIR` — directory where each actor's `<slug>.sock` appears (default `/var/run/fini-e2e`).

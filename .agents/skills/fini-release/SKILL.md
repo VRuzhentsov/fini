@@ -1,6 +1,6 @@
 ---
 name: fini-release
-description: "Run and maintain Fini's GitOps release workflow. Use this whenever the user asks to make a release, bump a release version, push a release tag, inspect release readiness, fix release automation, or verify release CI. Releases are initiated by pushing a signed annotated v* tag; before any release push, local agents must collect passing local CI-equivalent evidence for all current CI gates."
+description: "Run and maintain Fini's GitOps release workflow. Use this whenever the user asks to make a release, bump a release version, push a release tag, inspect release readiness, fix release automation, or verify release CI. Releases are initiated by pushing a signed annotated v* tag; `make release` must run `make pre-release-check` before any version commit, branch push, or tag push."
 ---
 
 # Fini Release
@@ -15,7 +15,7 @@ Ship a release through GitOps:
 - A GPG-signed annotated `vX.Y.Z` tag points at that exact commit.
 - The tag push starts `.github/workflows/release-tag.yml`.
 - CI owns tests, builds, signing readiness, packaging, artifacts, and publication.
-- Local release work proves the current release-tag Quality Gates pass before any release metadata commit, branch push, or tag push.
+- Local release work runs the current pre-release check locally before any release metadata commit, branch push, or tag push.
 
 ## Required Skills
 
@@ -37,45 +37,45 @@ Before a real release:
 5. Confirm `HEAD` matches `origin/main` before creating release metadata.
 6. Confirm the target tag does not already exist locally or remotely.
 7. Inspect `git diff`, `git diff --cached`, and `git log --oneline --decorate -10` before committing.
-8. Run the full local CI release gate below and keep concrete passing evidence before creating the release metadata commit.
+8. Use `make release VERSION=x.y.z`; it runs `make pre-release-check` before creating the release metadata commit.
 
-If interrupted release metadata is already present, inspect it and decide whether it is intended release metadata before continuing. Re-run the local CI release gate if any release commit, implementation commit, dependency file, workflow, build script, or generated metadata changed after the last successful local gate.
+If interrupted release metadata is already present, inspect it and decide whether it is intended release metadata before continuing. Re-run `make pre-release-check` if any implementation commit, dependency file, workflow, build script, or generated metadata changed after the last successful local check.
 
-## Local CI Release Gate
+## Pre-Release Check
 
-Before creating a release metadata commit, pushing `main`, or pushing a release tag for a real release, run every locally reproducible gate from `.github/workflows/ci.yml` and `.github/workflows/release-tag.yml`. Treat this as mandatory release evidence, not optional preflight.
-
-Run these commands from the repo root and capture pass/fail output:
+Before creating a release metadata commit, pushing `main`, or pushing a release tag for a real release, `make release` must run exactly one local pre-release entrypoint:
 
 ```bash
-CONTAINER=docker make pr-gate-fe-unit
-CONTAINER=docker make pr-gate-be-compile
-CONTAINER=docker make pr-gate-be-unit
-npm run build
-CONTAINER=docker make runtime-image
-CONTAINER=docker make runtime-smoke
-CONTAINER=docker make pr-gate-e2e
-make android-build-emulator-e2e
+make pre-release-check
 ```
 
-Run the Snyk gate locally when `SNYK_TOKEN` is available:
+Treat this as mandatory release behavior, not optional preflight. The command must log its output to `/var/tmp/fini-pre-release/pre-release-check-*.log` by default so the release has a traceable local evidence artifact.
 
-```bash
-npx snyk test --file=package.json --severity-threshold=high
-```
+`make pre-release-check` must run the local equivalent of release-tag `Quality Gates` from `.github/workflows/release-tag.yml`. Keep the command list minimal and avoid duplicated expensive work when one target already includes another.
 
-If `SNYK_TOKEN`, Docker/Podman, Android SDK/NDK, KVM/emulator support, or another CI dependency is unavailable, stop before creating the release commit or pushing anything and ask the user how to satisfy the missing gate. Do not mark a release ready with skipped local CI unless the user explicitly changes this release policy for the current release.
+- backend unit tests, using the target that already compiles backend tests
+- runtime container image
+- runtime smoke check
+- E2E actor image compatibility alias, still built for cache/tag parity
+- E2E runner image, which owns the Playwright run and spawns actor processes internally
+- E2E network/start/wait/run/cleanup, where network/start/wait are compatibility no-ops around the runner-owned actor lifecycle
 
-The release-tag Quality Gates use `FINI_E2E_CI_ACTOR_WAIT_SECS=180` by default through the Makefile. Do not lower that timeout for release evidence; if actor sockets still do not appear, inspect the container `ps`, `inspect`, and logs output before deciding whether a tag re-push is safe.
+When changing `make pre-release-check`, verify each command is still necessary against the current Makefile/Dockerfile behavior and update this section if the composition changes.
 
-The Android emulator workflow's final emulator assertions are not fully represented by `make android-build-emulator-e2e`; when a local emulator is available, locate the debug APK, set `ANDROID_E2E_APK`, and run `bash scripts/android-e2e-assert.sh` against an API 34 x86_64 emulator too. If no local emulator is available, report that the Android emulator runtime assertion is the only remaining local evidence gap and stop for a user decision before push.
+Security scan, signing readiness, platform package builds, Play upload, Docker publication, and GitHub release publication remain GitHub CI responsibilities and are not part of the local release Quality Gate.
+
+The local gate uses the Makefile's container-engine detection: Docker when available, otherwise Podman. CI can still force `CONTAINER=docker`. If no usable container engine is available, stop before creating the release commit or pushing anything.
+
+If `make pre-release-check` cannot complete because of ENOSPC, missing Docker/Podman, missing dependencies, failed E2E, missing logs, or missing diagnostics, hard stop. Do not commit, push `main`, push a tag, retarget a tag, or ask the user to accept partial evidence.
+
+The release-tag Quality Gates use `FINI_E2E_CI_ACTOR_WAIT_SECS=180` by default through the Makefile. Do not lower that timeout for release evidence. If actor sockets do not appear, use the preserved runner output and actor log files under the mounted results tree to fix the startup failure before any release push.
 
 ## Release Command Policy
 
 The human entrypoint is:
 
 ```bash
-FINI_RELEASE_LOCAL_CI_PASSED=1 make release VERSION=x.y.z
+make release VERSION=x.y.z
 ```
 
 `make release` should:
@@ -83,10 +83,10 @@ FINI_RELEASE_LOCAL_CI_PASSED=1 make release VERSION=x.y.z
 1. Validate `VERSION` as `x.y.z`.
 2. Require branch `main`.
 3. Require a clean worktree at command start.
-4. Refuse to run unless `FINI_RELEASE_LOCAL_CI_PASSED=1` is set after the local CI release gate passed for the commit being released.
-5. Fetch `origin/main` and tags.
-6. Require local `HEAD` to match `origin/main`.
-7. Reject existing `vX.Y.Z` tags.
+4. Fetch `origin/main` and tags.
+5. Require local `HEAD` to match `origin/main`.
+6. Reject existing `vX.Y.Z` tags.
+7. Run `make pre-release-check` on the current implementation commit and stop on any failure.
 8. Update committed version metadata with `cargo xtask release-version`.
 9. Commit version files as `chore: release vX.Y.Z`.
 10. Push `main`.
@@ -94,14 +94,14 @@ FINI_RELEASE_LOCAL_CI_PASSED=1 make release VERSION=x.y.z
 12. Push the tag.
 13. Point the user to the GitHub Actions release workflow.
 
-The release command should not hide the local CI release gate inside version/tag mutation. Run and report the gate explicitly before invoking `make release`, then let tag-triggered CI own package artifact creation and publication after the push.
+Do not manually run `git tag`, `git push origin main`, or `git push origin vX.Y.Z` to bypass `make release`. If `make pre-release-check` fails, fix the failure and rerun `make release` from the beginning.
 
 ## Manual Recovery Path
 
 When release metadata already exists because a prior release command was interrupted:
 
 1. Verify only release metadata and intended workflow/doc changes are dirty.
-2. Re-run the local CI release gate unless there is already passing evidence for the exact commit that will be pushed.
+2. Re-run `make pre-release-check` unless there is already passing evidence for the exact implementation commit that will be released.
 3. Commit the intended files directly with `chore: release vX.Y.Z` if the user wants them in the release commit.
 4. Push `main`.
 5. Create and verify the signed annotated tag on the pushed commit.
@@ -110,25 +110,25 @@ When release metadata already exists because a prior release command was interru
 
 ## Failed CI Tag Re-Push
 
-When a release tag exists but the tag-triggered CI failed before completing release artifacts or publication, prefer a safe re-push of the same signed tag object only for transient CI, runner, network, credential, or external-service failures.
+When a release tag exists but the tag-triggered CI failed before completing release artifacts or publication, first inspect whether anything was published. Retargeting or re-pushing an existing release tag is allowed only when no GitHub release, package artifact, Docker image, Play upload, or other external release output was published.
 
 Before re-pushing a failed CI tag:
 
 1. Inspect the failed workflow logs and identify the failure cause.
-2. Confirm the failure does not require source, version metadata, workflow, dependency, or build-script changes.
-3. Verify the local tag signature with `git tag -v vX.Y.Z`.
-4. Verify local and remote tag object IDs and peeled commit targets match with `git show-ref --tags vX.Y.Z`, `git rev-parse vX.Y.Z^{}`, and `git ls-remote --tags origin "refs/tags/vX.Y.Z" "refs/tags/vX.Y.Z^{}"`.
-5. Confirm the tag target is the intended release commit already present on `origin/main`.
-6. Confirm local CI release evidence still applies to that exact commit, or re-run the local CI release gate.
+2. Confirm no release output was published.
+3. Fix any source, workflow, dependency, or build-script problem on `main`.
+4. Run `make pre-release-check` successfully on the fixed implementation commit before retargeting or re-pushing the tag.
+5. Verify the local tag signature with `git tag -v vX.Y.Z`.
+6. Verify local and remote tag object IDs and peeled commit targets with `git show-ref --tags vX.Y.Z`, `git rev-parse vX.Y.Z^{}`, and `git ls-remote --tags origin "refs/tags/vX.Y.Z" "refs/tags/vX.Y.Z^{}"`.
 
-To re-trigger tag CI without changing the release identity, delete only the remote tag and push the existing local signed tag again:
+To re-trigger tag CI after an unpublished failure, delete only the remote tag and push the locally signed tag that points to the fixed `origin/main` commit:
 
 ```bash
 git push origin :refs/tags/vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-Do not recreate, move, force-push, or retarget an existing release tag unless the user explicitly requests breaking tag immutability for a specific incident. If the failure requires code, metadata, workflow, dependency, or build-script changes, create a new patch release instead of re-pushing the old tag.
+If any release output was published, do not retarget the existing tag. Create a new patch release instead.
 
 ## CI Verification
 
@@ -144,8 +144,8 @@ After pushing the tag, collect evidence:
 Final release reports should include:
 
 - release version and commit SHA
-- local CI release gate commands and outcomes
+- `make pre-release-check` command, log path, and outcome
 - pushed branch and tag evidence
 - signed tag verification evidence
 - CI workflow evidence or the reason it could not be checked
-- any local CI release gate that could not run, plus the explicit user decision that allowed continuing despite the gap
+- any pre-release check that could not run; this is a blocker unless the user explicitly changes the release policy

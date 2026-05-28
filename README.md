@@ -101,7 +101,7 @@ Fini has separate CLI and desktop GUI entrypoints that share the same Rust backe
 
 Build planes are explicit:
 
-- Desktop GUI builds use `ui-plane,cli-plane`.
+- Desktop GUI builds use `ui-plane`.
 - Mobile builds use `ui-plane` only; CLI code is not compiled into mobile bundles.
 - Docker/runtime builds use `cli-plane` only and expose `/usr/local/bin/fini`.
 
@@ -109,7 +109,7 @@ The CLI binary is built separately from the desktop app binary:
 
 ```bash
 cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane
-npm run tauri build -- --features ui-plane,cli-plane
+npm run tauri build -- --features ui-plane
 ```
 
 ## Tech Stack

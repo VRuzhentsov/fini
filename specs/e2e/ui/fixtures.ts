@@ -26,12 +26,13 @@ const wsPort = pickRandomPort('FINI_SPACE_SYNC_WS_PORT', 47500, 500);
 const headful = process.env.FINI_E2E_HEADFUL === '1';
 
 const envFlags = `FINI_APP_DATA_DIR=${dataDir} FINI_DISCOVERY_PORT=${discoveryPort} FINI_SPACE_SYNC_WS_PORT=${wsPort} TZ=UTC`;
+const binaryTimeout = process.platform === 'linux' ? '/usr/bin/timeout --foreground --kill-after=5s 300s ' : '';
 
 const tauriCommand = process.env.FINI_APP_BINARY
   ? (headful
-      ? `env ${envFlags} ${process.env.FINI_APP_BINARY}`
-      : `xvfb-run -a env ${envFlags} ${process.env.FINI_APP_BINARY}`)
-  : `env ${envFlags} npx tauri dev --features ui-plane,cli-plane,e2e-testing`;
+      ? `${binaryTimeout}env ${envFlags} ${process.env.FINI_APP_BINARY}`
+      : `${binaryTimeout}xvfb-run -a env ${envFlags} ${process.env.FINI_APP_BINARY}`)
+  : `env ${envFlags} npm run tauri -- dev --features ui-plane,e2e-testing`;
 
 export const { test, expect } = createTauriTest({
   tauriCommand,
