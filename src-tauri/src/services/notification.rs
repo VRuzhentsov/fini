@@ -34,19 +34,7 @@ pub fn compute_fire_utc(
     due: &str,
     due_time: Option<&str>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
-    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
-    let time = match due_time {
-        Some(t) => NaiveTime::parse_from_str(t, "%H:%M")
-            .or_else(|_| NaiveTime::parse_from_str(t, "%H:%M:%S"))
-            .ok()?,
-        None => NaiveTime::from_hms_opt(9, 0, 0)?,
-    };
-    let naive = NaiveDateTime::new(date, time);
-    Local
-        .from_local_datetime(&naive)
-        .single()
-        .map(|dt| dt.with_timezone(&chrono::Utc))
+    crate::services::due_time::compute_fire_utc(due, due_time)
 }
 
 /// In-process timer handles keyed by reminder ID (desktop only).

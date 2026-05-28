@@ -2,18 +2,26 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "ui-plane", test))]
 use std::collections::HashMap;
+#[cfg(any(feature = "ui-plane", test))]
 use tauri::{Manager, State};
 
 use crate::models::{
-    clamp_order_rank, CreateFocusHistoryInput, CreateQuestInput, CreateSeriesInput, Quest,
-    QuestSeries, UpdateQuestInput,
+    CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries,
 };
+#[cfg(any(feature = "ui-plane", test))]
+use crate::models::{clamp_order_rank, CreateQuestInput, UpdateQuestInput};
 use crate::schema::{focus_history, quest_series, quests};
-use crate::services::db::{utc_now, DbState};
+use crate::services::db::utc_now;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::DbState;
+#[cfg(any(feature = "ui-plane", test))]
 use crate::services::device_connection::DeviceConnectionState;
+#[cfg(any(feature = "ui-plane", test))]
 use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
-use crate::services::{notification, reminder};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::reminder;
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 
@@ -251,7 +259,7 @@ fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
 
 fn parse_due_reminder_fire_utc(quest: &Quest) -> Option<DateTime<Utc>> {
     let due = quest.due.as_deref()?;
-    notification::compute_fire_utc(due, quest.due_time.as_deref())
+    crate::services::due_time::compute_fire_utc(due, quest.due_time.as_deref())
 }
 
 pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
@@ -365,6 +373,7 @@ pub fn resolve_active_quest(
     resolve_active_quest_at(conn, Utc::now())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
     let Some(due_str) = due else {
         return true;
@@ -397,6 +406,7 @@ pub(crate) fn append_focus_history(
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 fn emit_quest_sync_events(
     conn: &mut SqliteConnection,
     origin_device_id: &str,
@@ -447,6 +457,7 @@ fn emit_quest_sync_events(
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 fn update_quest_in_db(
     conn: &mut SqliteConnection,
     id: &str,
@@ -540,6 +551,7 @@ fn update_quest_in_db(
     Ok((updated_quest, restore_should_focus, next_occurrence))
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 fn compare_series_occurrence_order(a: &Quest, b: &Quest) -> std::cmp::Ordering {
     match (parse_due_deadline_utc(a), parse_due_deadline_utc(b)) {
         (Some(a_due), Some(b_due)) if a_due != b_due => a_due.cmp(&b_due),
@@ -560,6 +572,7 @@ fn compare_series_occurrence_order(a: &Quest, b: &Quest) -> std::cmp::Ordering {
     .then_with(|| a.id.cmp(&b.id))
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 fn collapse_active_series_occurrences(loaded: Vec<Quest>) -> Vec<Quest> {
     let mut active_by_series: HashMap<String, Quest> = HashMap::new();
     let mut passthrough = Vec::with_capacity(loaded.len());
@@ -586,6 +599,7 @@ fn collapse_active_series_occurrences(loaded: Vec<Quest>) -> Vec<Quest> {
     passthrough
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 pub fn load_quests_for_list(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<Quest>, diesel::result::Error> {
@@ -650,12 +664,14 @@ pub fn load_quests_for_list(
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn get_quests(state: State<DbState>) -> Result<Vec<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     load_quests_for_list(&mut conn).map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn create_quest(
     app: tauri::AppHandle,
@@ -798,6 +814,7 @@ pub fn create_quest(
 
 /// Complete a quest from a notification action. Handles its own DB locking and sync emission.
 /// Logs errors rather than returning them — callers are notification action handlers.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     let db = match app.try_state::<DbState>() {
         Some(s) => s,
@@ -860,12 +877,14 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     }
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn get_active_focus(state: State<DbState>) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     resolve_active_quest(&mut conn).map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn set_focus(state: State<DbState>, id: String) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
@@ -890,6 +909,7 @@ pub fn set_focus(state: State<DbState>, id: String) -> Result<Quest, String> {
     Ok(quest)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn update_quest(
     app: tauri::AppHandle,
@@ -942,6 +962,7 @@ pub fn update_quest(
     Ok(quest)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn delete_quest(
     app: tauri::AppHandle,
@@ -978,6 +999,7 @@ pub fn delete_quest(
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 fn delete_quest_series_in_db(
     conn: &mut SqliteConnection,
     device_id: &str,
@@ -1025,6 +1047,7 @@ fn delete_quest_series_in_db(
     })
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn delete_quest_series(
     app: tauri::AppHandle,
