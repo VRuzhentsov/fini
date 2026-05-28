@@ -9,8 +9,8 @@ src-tauri/
 ├── src/
 │   ├── lib.rs         # Shared app library — DB setup, models, command handlers
 │   ├── schema.rs      # Diesel table definitions
-│   ├── main.rs        # Desktop GUI binary entry point (`fini-app`)
-│   └── bin/fini.rs    # CLI-only binary entry point (`fini`)
+│   ├── desktop.rs     # Desktop GUI binary entry point (`fini-app`)
+│   └── cli.rs         # CLI-only binary entry point (`fini`)
 ├── migrations/        # SQL migrations (Diesel format)
 ├── gen/
 │   └── android/       # Generated Android Studio project

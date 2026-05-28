@@ -18,12 +18,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
 name = "fini"
-path = "src/bin/fini.rs"
+path = "src/cli.rs"
 required-features = ["cli-plane"]
 
 [[bin]]
 name = "fini-app"
-path = "src/main.rs"
+path = "src/desktop.rs"
 required-features = ["ui-plane"]
 
 [patch.crates-io]

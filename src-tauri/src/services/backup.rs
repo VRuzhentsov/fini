@@ -323,6 +323,7 @@ pub fn apply_import(
     })
 }
 
+#[cfg(feature = "cli-plane")]
 pub fn import_cli(
     conn: &mut SqliteConnection,
     path: &Path,

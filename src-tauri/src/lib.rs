@@ -1,3 +1,5 @@
+#![cfg_attr(all(feature = "cli-plane", not(feature = "ui-plane")), allow(dead_code, unused_imports))]
+
 pub mod models;
 mod schema;
 mod services;

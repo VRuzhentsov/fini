@@ -23,6 +23,7 @@ pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+#[cfg(feature = "cli-plane")]
 pub fn db_default_path() -> PathBuf {
     if let Ok(p) = std::env::var("FINI_DB_PATH") {
         return PathBuf::from(p);

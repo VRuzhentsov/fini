@@ -64,7 +64,13 @@ RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fi
     cp src-tauri/target/release/fini /workspace/fini && \
     rm -rf src-tauri/target
 
-FROM rust-builder-base AS app-build-e2e
+FROM rust-builder-base AS app-build-e2e-cli
+
+RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --bin fini --features cli-plane && \
+    cp src-tauri/target/debug/fini /workspace/fini && \
+    rm -rf src-tauri/target
+
+FROM rust-builder-base AS app-build-e2e-gui
 
 COPY --from=node-deps /usr/local/ /usr/local/
 
@@ -83,8 +89,6 @@ RUN cp src-tauri/capabilities/default.json /tmp/fini-default-capability.json && 
     test -x src-tauri/target/debug/fini-app && \
     cp src-tauri/target/debug/fini-app /workspace/fini-app && \
     cp /tmp/fini-default-capability.json src-tauri/capabilities/default.json && \
-    cargo build --manifest-path src-tauri/Cargo.toml --locked --bin fini --features cli-plane && \
-    cp src-tauri/target/debug/fini /workspace/fini && \
     rm -rf src-tauri/target
 
 FROM ubuntu:24.04 AS runtime-base
@@ -154,9 +158,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
 
-COPY --from=app-build-e2e /workspace/fini-app /usr/local/bin/fini-app
-COPY --from=app-build-e2e /workspace/fini /usr/local/bin/fini
-COPY --from=app-build-e2e /workspace/dist ./dist
+COPY --from=app-build-e2e-gui /workspace/fini-app /usr/local/bin/fini-app
+COPY --from=app-build-e2e-cli /workspace/fini /usr/local/bin/fini
+COPY --from=app-build-e2e-gui /workspace/dist ./dist
 
 WORKDIR /app
 
@@ -219,9 +223,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=app-build-e2e /workspace/fini-app /usr/local/bin/fini-app
-COPY --from=app-build-e2e /workspace/fini /usr/local/bin/fini
-COPY --from=app-build-e2e /workspace/dist ./dist
+COPY --from=app-build-e2e-gui /workspace/fini-app /usr/local/bin/fini-app
+COPY --from=app-build-e2e-cli /workspace/fini /usr/local/bin/fini
+COPY --from=app-build-e2e-gui /workspace/dist ./dist
 
 WORKDIR /app
 
