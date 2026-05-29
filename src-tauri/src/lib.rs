@@ -7,7 +7,7 @@ mod services;
 #[cfg(feature = "ui-plane")]
 use services::backup::{backup_apply_import, backup_export, backup_preflight_import};
 #[cfg(feature = "ui-plane")]
-use services::db::{app_data_dir, open_db, DbState};
+use services::db::{app_data_dir, open_db, AppDbConnection};
 #[cfg(feature = "ui-plane")]
 use services::device_connection::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
@@ -24,7 +24,7 @@ use services::device_connection::{
 use services::notification::{
     dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
 };
-#[cfg(all(feature = "ui-plane", feature = "e2e-testing"))]
+#[cfg(all(feature = "ui-plane", feature = "devtools"))]
 use services::notification::{
     e2e_clear_notification_events, e2e_dispatch_notification_action, e2e_list_notification_events,
     NotificationObserverState,
@@ -84,7 +84,7 @@ const _: &str = TAP_EVENT;
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn get_theme_mode(db: tauri::State<DbState>) -> Result<String, String> {
+fn get_theme_mode(db: tauri::State<AppDbConnection>) -> Result<String, String> {
     let mut conn = db.0.lock().unwrap();
     settings::theme_mode(&mut conn).map(|mode| mode.as_str().to_string())
 }
@@ -93,7 +93,7 @@ fn get_theme_mode(db: tauri::State<DbState>) -> Result<String, String> {
 #[tauri::command]
 fn set_theme_mode(
     app: AppHandle,
-    db: tauri::State<DbState>,
+    db: tauri::State<AppDbConnection>,
     mode: String,
 ) -> Result<String, String> {
     let mode = ThemeMode::parse(&mode).ok_or_else(|| "invalid theme mode".to_string())?;
@@ -107,7 +107,7 @@ fn set_theme_mode(
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn theme_hint(db: tauri::State<DbState>) -> String {
+fn theme_hint(db: tauri::State<AppDbConnection>) -> String {
     let mut conn = db.0.lock().unwrap();
     settings::theme_hint(&mut conn)
 }
@@ -116,16 +116,6 @@ fn theme_hint(db: tauri::State<DbState>) -> String {
 #[tauri::command]
 fn sync_native_theme(app: AppHandle, theme: String) {
     settings::apply_native_theme(&app, &theme);
-}
-
-#[cfg(feature = "cli-plane")]
-pub fn run_mcp() {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(services::mcp::run())
-        .unwrap();
 }
 
 #[cfg(feature = "cli-plane")]
@@ -155,9 +145,7 @@ pub fn run() {
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
     ));
-    #[cfg(all(debug_assertions, feature = "cli-plane", not(mobile)))]
-    let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let builder = {
         let socket_path = std::env::var("TAURI_PLAYWRIGHT_SOCKET")
             .unwrap_or_else(|_| "/tmp/tauri-playwright.sock".to_string());
@@ -170,15 +158,15 @@ pub fn run() {
             let app_handle = app.handle();
 
             let conn = open_db(&app_handle);
-            app.manage(DbState(std::sync::Mutex::new(conn)));
+            app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
             app.manage(SchedulerState::new());
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             app.manage(NotificationObserverState::new());
 
             setup_notifications(&app_handle);
 
             let initial_theme = {
-                let db = app.state::<DbState>();
+                let db = app.state::<AppDbConnection>();
                 let mut conn = db.0.lock().unwrap();
                 settings::theme_hint(&mut conn)
             };
@@ -196,7 +184,7 @@ pub fn run() {
                 }
             }
 
-            let db_state = app.state::<DbState>();
+            let db_state = app.state::<AppDbConnection>();
             reconciler::run(&app_handle, &db_state);
 
             resume_watcher::spawn(&app_handle);
@@ -257,11 +245,11 @@ pub fn run() {
             sync_native_theme,
             notification_action,
             notification_tap,
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             e2e_list_notification_events,
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             e2e_clear_notification_events,
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             e2e_dispatch_notification_action,
         ])
         .run(tauri::generate_context!())

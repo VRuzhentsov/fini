@@ -155,27 +155,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build E2E actor image
-        run: make pr-gate-e2e-build-actor
-
-      - name: Build E2E runner image
-        run: make pr-gate-e2e-build-runner
-
-      - name: Create E2E network
-        run: make pr-gate-e2e-network
-
-      - name: Start E2E actors
-        run: make pr-gate-e2e-start-actors
-
-      - name: Wait for E2E actors
-        run: make pr-gate-e2e-wait-actors
+      - name: Build dev-runner image
+        run: make pr-gate-e2e-build-dev-runner
 
       - name: Run Playwright E2E suite
         run: make pr-gate-e2e-run
 
-      - name: Print actor logs on failure
+      - name: Print E2E artifacts on failure
         if: failure()
-        run: make pr-gate-e2e-logs
+        run: make pr-gate-e2e-artifacts
 
       - name: Cleanup E2E containers
         if: always()

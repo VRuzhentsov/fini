@@ -1,9 +1,38 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
-use serde_json::Value;
+use diesel::prelude::*;
+use serde_json::{json, Value};
 
+use crate::models::{
+    CreateQuestInput, CreateReminderInput, CreateSpaceInput, UpdateQuestInput, UpdateSpaceInput,
+};
+use crate::schema::quests;
 use crate::services::backup;
-use crate::services::db::{db_default_path, open_db_at_path};
-use crate::services::mcp::{FiniServer, UpdateQuestParams};
+use crate::services::db::{db_default_path, open_db_at_path, utc_now};
+use crate::services::device_connection::types::{
+    DevicePairRequestAckInput, DevicePairRequestInput,
+};
+use crate::services::device_connection::{
+    device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,
+    device_connection_discovery_snapshot_impl, device_connection_enter_add_mode_impl,
+    device_connection_get_identity_impl, device_connection_get_paired_devices_impl,
+    device_connection_leave_add_mode_impl, device_connection_pair_accept_request_impl,
+    device_connection_pair_acknowledge_request_impl, device_connection_pair_complete_request_impl,
+    device_connection_pair_incoming_requests_impl,
+    device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
+    device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
+    device_connection_send_pair_request_impl, device_connection_unpair_impl,
+    device_connection_update_last_seen_impl, DeviceConnectionState,
+};
+use crate::services::quest::{append_focus_history, resolve_active_quest, QuestRepository};
+use crate::services::reminder::ReminderRepository;
+use crate::services::settings::{self, ThemeMode};
+use crate::services::space::SpaceRepository;
+use crate::services::space_sync::outbox::emit_sync_event;
+use crate::services::space_sync::{
+    space_sync_apply_remote_mappings_impl, space_sync_list_mappings_impl,
+    space_sync_resolve_custom_space_mapping_impl, space_sync_status_impl, space_sync_tick_impl,
+    space_sync_update_mappings_impl, SpaceResolutionMode,
+};
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_NOT_FOUND: i32 = 3;
@@ -21,7 +50,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Mcp,
     Focus {
         #[command(subcommand)]
         command: FocusCommand,
@@ -49,6 +77,10 @@ enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCommand,
     },
 }
 
@@ -138,6 +170,20 @@ enum SpaceCommand {
     Delete(IdArg),
 }
 
+#[derive(Args)]
+struct SpaceCreateArgs {
+    #[arg(long)]
+    name: String,
+}
+
+#[derive(Args)]
+struct SpaceUpdateArgs {
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    name: Option<String>,
+}
+
 #[derive(Subcommand)]
 enum BackupCommand {
     Export(BackupExportArgs),
@@ -160,20 +206,6 @@ struct BackupImportArgs {
     path: String,
     #[arg(long, action = ArgAction::SetTrue)]
     force: bool,
-}
-
-#[derive(Args)]
-struct SpaceCreateArgs {
-    #[arg(long)]
-    name: String,
-}
-
-#[derive(Args)]
-struct SpaceUpdateArgs {
-    #[arg(long)]
-    id: String,
-    #[arg(long)]
-    name: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -247,12 +279,15 @@ struct DevicePairSendArgs {
     to_device_id: String,
     #[arg(long)]
     to_addr: String,
+    #[arg(long)]
+    to_ws_port: Option<u16>,
 }
 
 #[derive(Subcommand)]
 enum DevicePairedCommand {
     List,
     Save(DevicePairedSaveArgs),
+    UpdateLastSeen(DevicePairedLastSeenArgs),
     Unpair(PeerDeviceIdArg),
 }
 
@@ -262,6 +297,14 @@ struct DevicePairedSaveArgs {
     peer_device_id: String,
     #[arg(long)]
     display_name: String,
+}
+
+#[derive(Args)]
+struct DevicePairedLastSeenArgs {
+    #[arg(long)]
+    peer_device_id: String,
+    #[arg(long)]
+    last_seen_at: String,
 }
 
 #[derive(Subcommand)]
@@ -328,6 +371,19 @@ struct SyncResolveCustomArgs {
     existing_local_space_id: Option<String>,
 }
 
+#[derive(Subcommand)]
+enum SettingsCommand {
+    ThemeGet,
+    ThemeSet(SettingsThemeSetArgs),
+    ThemeHint,
+}
+
+#[derive(Args)]
+struct SettingsThemeSetArgs {
+    #[arg(long)]
+    mode: String,
+}
+
 #[derive(Args)]
 struct IdArg {
     #[arg(long)]
@@ -382,8 +438,7 @@ type CliResult<T> = Result<T, CliError>;
 
 struct CliContext {
     db_path: std::path::PathBuf,
-    server: FiniServer,
-    runtime: tokio::runtime::Runtime,
+    device_state: DeviceConnectionState,
 }
 
 impl CliContext {
@@ -393,16 +448,14 @@ impl CliContext {
             std::fs::create_dir_all(parent)
                 .map_err(|err| CliError::runtime(format!("failed to create data dir: {err}")))?;
         }
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| CliError::runtime(format!("failed to create tokio runtime: {err}")))?;
-
+        let app_data_dir = db_path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let device_state = DeviceConnectionState::new_with_db_path(&app_data_dir, db_path.clone());
         Ok(Self {
-            db_path: db_path.clone(),
-            server: FiniServer::new(&db_path),
-            runtime,
+            db_path,
+            device_state,
         })
     }
 }
@@ -427,134 +480,286 @@ pub fn run(args: Vec<String>) -> i32 {
 }
 
 fn execute(cli: Cli) -> CliResult<i32> {
-    if let Some(Command::Mcp) = cli.command {
-        crate::run_mcp();
-        return Ok(EXIT_SUCCESS);
-    }
-
     let ctx = CliContext::new()?;
-
     let value = match cli.command {
-        None => ctx
-            .runtime
-            .block_on(ctx.server.cli_get_active_focus())
-            .map_err(CliError::from_string)?,
+        None => handle_focus(&ctx, FocusCommand::Get)?,
         Some(Command::Focus { command }) => handle_focus(&ctx, command)?,
         Some(Command::Quest { command }) => handle_quest(&ctx, command)?,
         Some(Command::Space { command }) => handle_space(&ctx, command)?,
         Some(Command::Backup { command }) => handle_backup(&ctx, command)?,
         Some(Command::Reminder { command }) => handle_reminder(&ctx, command)?,
-        Some(Command::Device { command: _ }) => {
-            return Err(CliError::runtime(
-                "device command group is not implemented yet in CLI runtime",
-            ));
-        }
-        Some(Command::Sync { command: _ }) => {
-            return Err(CliError::runtime(
-                "sync command group is not implemented yet in CLI runtime",
-            ));
-        }
-        Some(Command::Mcp) => unreachable!(),
+        Some(Command::Device { command }) => handle_device(&ctx, command)?,
+        Some(Command::Sync { command }) => handle_sync(&ctx, command)?,
+        Some(Command::Settings { command }) => handle_settings(&ctx, command)?,
     };
-
     print_output(&value, cli.json).map_err(CliError::runtime)?;
     Ok(EXIT_SUCCESS)
 }
 
-fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
-    let value = match command {
-        FocusCommand::Get => ctx
-            .runtime
-            .block_on(ctx.server.cli_get_active_focus())
-            .map_err(CliError::from_string)?,
-        FocusCommand::Set(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_set_focus(args.quest_id, args.trigger))
-            .map_err(CliError::from_string)?,
+fn emit_quest_sync(
+    ctx: &CliContext,
+    conn: &mut diesel::sqlite::SqliteConnection,
+    quest: &crate::models::Quest,
+    op_type: &str,
+) {
+    let payload = if op_type == "delete" {
+        None
+    } else {
+        serde_json::to_string(quest).ok()
     };
-    Ok(value)
+    let _ = emit_sync_event(
+        conn,
+        &ctx.device_state.identity.device_id,
+        "quest",
+        &quest.id,
+        &quest.space_id,
+        op_type,
+        payload,
+    );
+}
+
+fn emit_series_sync(
+    ctx: &CliContext,
+    conn: &mut diesel::sqlite::SqliteConnection,
+    series: &crate::models::QuestSeries,
+) {
+    let payload = serde_json::to_string(series).ok();
+    let _ = emit_sync_event(
+        conn,
+        &ctx.device_state.identity.device_id,
+        "quest_series",
+        &series.id,
+        &series.space_id,
+        "upsert",
+        payload,
+    );
+}
+
+fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    match command {
+        FocusCommand::Get => resolve_active_quest(&mut conn)
+            .map_err(|e| CliError::runtime(e.to_string()))?
+            .map(|quest| serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string())))
+            .transpose()
+            .map(|value| value.unwrap_or(Value::Null)),
+        FocusCommand::Set(args) => {
+            let quest = quests::table
+                .find(&args.quest_id)
+                .filter(quests::status.eq("active"))
+                .select(crate::models::Quest::as_select())
+                .first(&mut conn)
+                .optional()
+                .map_err(|e| CliError::runtime(e.to_string()))?
+                .ok_or_else(|| {
+                    CliError::from_string("cannot set Focus on non-active quest".to_string())
+                })?;
+            diesel::update(quests::table.find(&quest.id))
+                .set(quests::updated_at.eq(utc_now()))
+                .execute(&mut conn)
+                .map_err(|e| CliError::runtime(e.to_string()))?;
+            let trigger = if args.trigger.as_deref() == Some("reminder") {
+                "reminder"
+            } else {
+                "manual"
+            };
+            append_focus_history(&mut conn, &quest.id, &quest.space_id, trigger)
+                .map_err(CliError::from_string)?;
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+        }
+    }
 }
 
 fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
-    let value = match command {
-        QuestCommand::List(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_list_quests(args.space_id, args.status))
-            .map_err(CliError::from_string)?,
-        QuestCommand::Get(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_get_quest(args.id))
-            .map_err(CliError::from_string)?,
-        QuestCommand::Create(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_create_quest(
-                args.title,
-                args.space_id,
-                args.description,
-                args.due,
-                args.due_time,
-                args.repeat_rule,
-            ))
-            .map_err(CliError::from_string)?,
-        QuestCommand::Update(args) => {
-            let params = UpdateQuestParams {
-                id: args.id,
+    let mut conn = open_db_at_path(&ctx.db_path);
+    match command {
+        QuestCommand::List(args) => {
+            let status = args.status.unwrap_or_else(|| "active".to_string());
+            let quests: Vec<_> = QuestRepository::new(&mut conn)
+                .list_for_ui()
+                .map_err(CliError::from_string)?
+                .into_iter()
+                .filter(|quest| quest.status == status)
+                .filter(|quest| {
+                    args.space_id
+                        .as_ref()
+                        .map(|id| &quest.space_id == id)
+                        .unwrap_or(true)
+                })
+                .collect();
+            Ok(json!({ "quests": quests }))
+        }
+        QuestCommand::Get(args) => serde_json::to_value(
+            QuestRepository::new(&mut conn)
+                .get(&args.id)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string())),
+        QuestCommand::Create(args) => {
+            let input = CreateQuestInput {
+                space_id: args.space_id.unwrap_or_else(|| "1".to_string()),
                 title: args.title,
                 description: args.description,
-                status: args.status,
-                space_id: args.space_id,
-                pinned: args.pinned,
+                energy: "medium".to_string(),
+                priority: 1,
                 due: args.due,
                 due_time: args.due_time,
                 repeat_rule: args.repeat_rule,
-                order_rank: args.order_rank,
-                set_focus: args.set_focus.then_some(true),
-                trigger_reminder_focus: args.trigger_reminder_focus.then_some(true),
+                order_rank: None,
             };
-            ctx.runtime
-                .block_on(ctx.server.cli_update_quest(params))
-                .map_err(CliError::from_string)?
+            let created = QuestRepository::new(&mut conn)
+                .create(input)
+                .map_err(CliError::from_string)?;
+            if let Some(series) = &created.series {
+                emit_series_sync(ctx, &mut conn, series);
+            }
+            if created.quest.status == "active" && created.quest.due.is_some() {
+                let _ = ReminderRepository::new(&mut conn).upsert_for_quest(&created.quest);
+            }
+            emit_quest_sync(ctx, &mut conn, &created.quest, "upsert");
+            serde_json::to_value(created.quest).map_err(|e| CliError::runtime(e.to_string()))
         }
-        QuestCommand::Complete(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_complete_quest(args.id))
-            .map_err(CliError::from_string)?,
-        QuestCommand::Abandon(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_abandon_quest(args.id))
-            .map_err(CliError::from_string)?,
-        QuestCommand::Delete(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_delete_quest(args.id))
-            .map_err(CliError::from_string)?,
-        QuestCommand::History => ctx
-            .runtime
-            .block_on(ctx.server.cli_list_history())
-            .map_err(CliError::from_string)?,
+        QuestCommand::Update(args) => update_quest_from_cli(ctx, &mut conn, args),
+        QuestCommand::Complete(args) => update_quest_status(ctx, &mut conn, args.id, "completed"),
+        QuestCommand::Abandon(args) => update_quest_status(ctx, &mut conn, args.id, "abandoned"),
+        QuestCommand::Delete(args) => {
+            let quest = QuestRepository::new(&mut conn)
+                .delete(&args.id)
+                .map_err(CliError::from_string)?;
+            let _ = ReminderRepository::new(&mut conn).delete_for_quest(&quest.id);
+            emit_quest_sync(ctx, &mut conn, &quest, "delete");
+            Ok(json!({ "deleted": true, "id": args.id }))
+        }
+        QuestCommand::History => {
+            let mut quests: Vec<_> = QuestRepository::new(&mut conn)
+                .list_for_ui()
+                .map_err(CliError::from_string)?
+                .into_iter()
+                .filter(|quest| quest.status != "active")
+                .collect();
+            quests.sort_by(|a, b| {
+                b.updated_at
+                    .cmp(&a.updated_at)
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            Ok(json!({ "quests": quests }))
+        }
+    }
+}
+
+fn update_quest_from_cli(
+    ctx: &CliContext,
+    conn: &mut diesel::sqlite::SqliteConnection,
+    args: QuestUpdateArgs,
+) -> CliResult<Value> {
+    let input = UpdateQuestInput {
+        space_id: args.space_id,
+        title: args.title,
+        description: args.description,
+        status: args.status.clone(),
+        energy: None,
+        priority: None,
+        pinned: args.pinned,
+        due: args.due,
+        due_time: args.due_time,
+        repeat_rule: args.repeat_rule,
+        order_rank: args.order_rank,
     };
-    Ok(value)
+    let result = QuestRepository::new(conn)
+        .update(&args.id, input)
+        .map_err(CliError::from_string)?;
+    if args.trigger_reminder_focus {
+        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "reminder")
+            .map_err(CliError::from_string)?;
+    } else if args.set_focus
+        || args.status.as_deref() == Some("active")
+        || result.restore_should_focus
+    {
+        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "manual")
+            .map_err(CliError::from_string)?;
+    }
+    sync_reminder_rows(conn, &result.quest);
+    if let Some(ref occurrence) = result.next_occurrence {
+        sync_reminder_rows(conn, occurrence);
+    }
+    emit_quest_sync(ctx, conn, &result.quest, "upsert");
+    serde_json::to_value(result.quest).map_err(|e| CliError::runtime(e.to_string()))
+}
+
+fn update_quest_status(
+    ctx: &CliContext,
+    conn: &mut diesel::sqlite::SqliteConnection,
+    id: String,
+    status: &str,
+) -> CliResult<Value> {
+    update_quest_from_cli(
+        ctx,
+        conn,
+        QuestUpdateArgs {
+            id,
+            title: None,
+            description: None,
+            status: Some(status.to_string()),
+            space_id: None,
+            pinned: None,
+            due: None,
+            due_time: None,
+            repeat_rule: None,
+            order_rank: None,
+            set_focus: false,
+            trigger_reminder_focus: false,
+        },
+    )
+}
+
+fn sync_reminder_rows(conn: &mut diesel::sqlite::SqliteConnection, quest: &crate::models::Quest) {
+    if quest.status == "active" && quest.due.is_some() {
+        let _ = ReminderRepository::new(conn).upsert_for_quest(quest);
+    } else {
+        let _ = ReminderRepository::new(conn).delete_for_quest(&quest.id);
+    }
 }
 
 fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
-    let value = match command {
-        SpaceCommand::List => ctx
-            .runtime
-            .block_on(ctx.server.cli_list_spaces())
-            .map_err(CliError::from_string)?,
-        SpaceCommand::Create(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_create_space(args.name))
-            .map_err(CliError::from_string)?,
-        SpaceCommand::Update(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_update_space(args.id, args.name))
-            .map_err(CliError::from_string)?,
-        SpaceCommand::Delete(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_delete_space(args.id))
-            .map_err(CliError::from_string)?,
-    };
-    Ok(value)
+    let mut conn = open_db_at_path(&ctx.db_path);
+    match command {
+        SpaceCommand::List => Ok(json!({
+            "spaces": SpaceRepository::new(&mut conn).list().map_err(CliError::from_string)?
+        })),
+        SpaceCommand::Create(args) => {
+            let item_order = SpaceRepository::new(&mut conn)
+                .list()
+                .map(|spaces| spaces.len() as i64)
+                .unwrap_or(0);
+            serde_json::to_value(
+                SpaceRepository::new(&mut conn)
+                    .create(CreateSpaceInput {
+                        name: args.name,
+                        item_order,
+                    })
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))
+        }
+        SpaceCommand::Update(args) => serde_json::to_value(
+            SpaceRepository::new(&mut conn)
+                .update(
+                    &args.id,
+                    UpdateSpaceInput {
+                        name: args.name,
+                        item_order: None,
+                    },
+                )
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string())),
+        SpaceCommand::Delete(args) => {
+            SpaceRepository::new(&mut conn)
+                .delete(&args.id)
+                .map_err(CliError::from_string)?;
+            Ok(json!({ "deleted": true, "id": args.id }))
+        }
+    }
 }
 
 fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
@@ -567,10 +772,8 @@ fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
                 ));
             }
             let space_ids = if args.all_spaces {
-                use crate::schema::spaces;
-                use diesel::prelude::*;
-                spaces::table
-                    .select(spaces::id)
+                crate::schema::spaces::table
+                    .select(crate::schema::spaces::id)
                     .load::<String>(&mut conn)
                     .map_err(|e| CliError::runtime(e.to_string()))?
             } else if args.space_id.is_empty() {
@@ -596,24 +799,275 @@ fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
 }
 
 fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    match command {
+        ReminderCommand::List(args) => serde_json::to_value(
+            ReminderRepository::new(&mut conn)
+                .list_for_quest(&args.quest_id)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string())),
+        ReminderCommand::Create(args) => serde_json::to_value(
+            ReminderRepository::new(&mut conn)
+                .create(CreateReminderInput {
+                    quest_id: args.quest_id,
+                    kind: args.kind,
+                    mm_offset: args.mm_offset,
+                    due_at_utc: args.due_at_utc,
+                })
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string())),
+        ReminderCommand::Delete(args) => {
+            ReminderRepository::new(&mut conn)
+                .delete(&args.id)
+                .map_err(CliError::from_string)?;
+            Ok(json!({ "deleted": true, "id": args.id }))
+        }
+    }
+}
+
+fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
     let value = match command {
-        ReminderCommand::List(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_list_reminders(args.quest_id))
+        DeviceCommand::Identity => serde_json::to_value(
+            device_connection_get_identity_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DeviceCommand::AddMode { command } => {
+            match command {
+                DeviceAddModeCommand::Enter => {
+                    device_connection_enter_add_mode_impl(&ctx.device_state)
+                }
+                DeviceAddModeCommand::Leave => {
+                    device_connection_leave_add_mode_impl(&ctx.device_state)
+                }
+            }
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+        DeviceCommand::Discovery => serde_json::to_value(
+            device_connection_discovery_snapshot_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DeviceCommand::Presence => serde_json::to_value(
+            device_connection_presence_snapshot_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DeviceCommand::Pair { command } => handle_device_pair(ctx, command)?,
+        DeviceCommand::Paired { command } => match command {
+            DevicePairedCommand::List => serde_json::to_value(
+                device_connection_get_paired_devices_impl(&mut conn)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            DevicePairedCommand::Save(args) => serde_json::to_value(
+                device_connection_save_paired_device_impl(
+                    &mut conn,
+                    args.peer_device_id,
+                    args.display_name,
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            DevicePairedCommand::UpdateLastSeen(args) => {
+                device_connection_update_last_seen_impl(
+                    &mut conn,
+                    args.peer_device_id,
+                    args.last_seen_at,
+                )
+                .map_err(CliError::from_string)?;
+                json!({ "ok": true })
+            }
+            DevicePairedCommand::Unpair(args) => {
+                device_connection_unpair_impl(&mut conn, args.peer_device_id)
+                    .map_err(CliError::from_string)?;
+                json!({ "ok": true })
+            }
+        },
+        DeviceCommand::Updates { command } => match command {
+            DeviceUpdatesCommand::ConsumeSpaceMapping => serde_json::to_value(
+                device_connection_consume_space_mapping_updates_impl(&ctx.device_state)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+        },
+        DeviceCommand::Debug { command } => match command {
+            DeviceDebugCommand::Status => serde_json::to_value(
+                device_connection_debug_status_impl(&ctx.device_state)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+        },
+    };
+    Ok(value)
+}
+
+fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult<Value> {
+    let value = match command {
+        DevicePairCommand::Send(args) => {
+            device_connection_send_pair_request_impl(
+                &ctx.device_state,
+                DevicePairRequestInput {
+                    request_id: args.request_id,
+                    to_device_id: args.to_device_id,
+                    to_addr: args.to_addr,
+                    to_ws_port: args.to_ws_port,
+                },
+            )
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+        DevicePairCommand::Incoming => serde_json::to_value(
+            device_connection_pair_incoming_requests_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::OutgoingUpdates => serde_json::to_value(
+            device_connection_pair_outgoing_updates_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::OutgoingCompletions => serde_json::to_value(
+            device_connection_pair_outgoing_completions_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::Accept(args) => serde_json::to_value(
+            device_connection_pair_accept_request_impl(
+                &ctx.device_state,
+                DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                },
+            )
             .map_err(CliError::from_string)?,
-        ReminderCommand::Create(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_create_reminder(
-                args.quest_id,
-                args.kind,
-                args.mm_offset,
-                args.due_at_utc,
-            ))
-            .map_err(CliError::from_string)?,
-        ReminderCommand::Delete(args) => ctx
-            .runtime
-            .block_on(ctx.server.cli_delete_reminder(args.id))
-            .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::Complete(args) => {
+            device_connection_pair_complete_request_impl(
+                &ctx.device_state,
+                DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                },
+            )
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+        DevicePairCommand::Acknowledge(args) => {
+            device_connection_pair_acknowledge_request_impl(
+                &ctx.device_state,
+                DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                },
+            )
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+    };
+    Ok(value)
+}
+
+fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    let value = match command {
+        SyncCommand::Mappings { command } => match command {
+            SyncMappingsCommand::List(args) => serde_json::to_value(
+                space_sync_list_mappings_impl(&mut conn, args.peer_device_id)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            SyncMappingsCommand::Update(args) => serde_json::to_value(
+                space_sync_update_mappings_impl(
+                    &mut conn,
+                    &ctx.device_state,
+                    args.peer_device_id,
+                    args.mapped_space_id,
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            SyncMappingsCommand::ApplyRemote(args) => serde_json::to_value(
+                space_sync_apply_remote_mappings_impl(
+                    &mut conn,
+                    &ctx.device_state,
+                    args.peer_device_id,
+                    args.mapped_space_id,
+                    Vec::new(),
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            SyncMappingsCommand::ResolveCustom(args) => serde_json::to_value(
+                space_sync_resolve_custom_space_mapping_impl(
+                    &mut conn,
+                    &ctx.device_state,
+                    args.peer_device_id,
+                    args.space_id,
+                    args.space_name,
+                    parse_space_resolution_mode(&args.mode)?,
+                    args.existing_local_space_id,
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+        },
+        SyncCommand::Tick { peer_device_id } => {
+            let result = space_sync_tick_impl(&mut conn, &ctx.device_state)
+                .map_err(CliError::from_string)?;
+            if let Some(peer_id) = peer_device_id {
+                let peers: Vec<Value> = result
+                    .peers
+                    .iter()
+                    .filter(|peer| peer.peer_device_id == peer_id)
+                    .map(|peer| serde_json::to_value(peer).unwrap_or(Value::Null))
+                    .collect();
+                json!({
+                    "sent_events": result.sent_events,
+                    "applied_events": result.applied_events,
+                    "received_acks": result.received_acks,
+                    "peers": peers,
+                    "ticked_at": result.ticked_at,
+                })
+            } else {
+                serde_json::to_value(result).map_err(|e| CliError::runtime(e.to_string()))?
+            }
+        }
+        SyncCommand::Status { peer_device_id } => serde_json::to_value(
+            space_sync_status_impl(&mut conn, peer_device_id).map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+    };
+    Ok(value)
+}
+
+fn parse_space_resolution_mode(value: &str) -> CliResult<SpaceResolutionMode> {
+    match value {
+        "create_new" => Ok(SpaceResolutionMode::CreateNew),
+        "use_existing" => Ok(SpaceResolutionMode::UseExisting),
+        _ => Err(CliError::from_string(
+            "mode must be create_new or use_existing".to_string(),
+        )),
+    }
+}
+
+fn handle_settings(ctx: &CliContext, command: SettingsCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    let value = match command {
+        SettingsCommand::ThemeGet => {
+            let mode = settings::theme_mode(&mut conn).map_err(CliError::from_string)?;
+            json!({ "mode": mode.as_str() })
+        }
+        SettingsCommand::ThemeSet(args) => {
+            let mode = ThemeMode::parse(&args.mode).ok_or_else(|| {
+                CliError::from_string("mode must be system, light, or dark".to_string())
+            })?;
+            let mode = settings::set_theme_mode(&mut conn, mode).map_err(CliError::from_string)?;
+            json!({ "mode": mode.as_str() })
+        }
+        SettingsCommand::ThemeHint => json!({ "theme": settings::theme_hint(&mut conn) }),
     };
     Ok(value)
 }
@@ -626,9 +1080,7 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
     }
 
     match value {
-        Value::Null => {
-            println!("No active Focus quest.");
-        }
+        Value::Null => println!("No active Focus quest."),
         Value::Object(map) if map.contains_key("deleted") => {
             let id = map.get("id").and_then(Value::as_str).unwrap_or("unknown");
             println!("Deleted: {id}");
@@ -687,6 +1139,5 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
             println!("{text}");
         }
     }
-
     Ok(())
 }

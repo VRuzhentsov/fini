@@ -3,6 +3,7 @@ use diesel::sql_types::Text;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use std::path::{Path, PathBuf};
+#[cfg(any(feature = "ui-plane", test))]
 use std::sync::Mutex;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
@@ -11,7 +12,8 @@ pub const APP_DATA_DIR_NAME: &str = "com.fini.app";
 #[cfg(not(target_os = "android"))]
 pub const APP_DATA_DIR_NAME: &str = "fini";
 
-pub struct DbState(pub Mutex<SqliteConnection>);
+#[cfg(any(feature = "ui-plane", test))]
+pub struct AppDbConnection(pub Mutex<SqliteConnection>);
 
 #[derive(QueryableByName)]
 struct MigrationTableRow {
@@ -33,6 +35,7 @@ pub fn db_default_path() -> PathBuf {
         .join("fini.db")
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
     if let Ok(p) = std::env::var("FINI_APP_DATA_DIR") {
         return PathBuf::from(p);
@@ -77,7 +80,16 @@ fn should_run_migrations(conn: &mut SqliteConnection) -> bool {
     .unwrap_or(true)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 pub fn open_db(app: &tauri::AppHandle) -> SqliteConnection {
+    if std::env::var_os("FINI_DB_PATH").is_some() {
+        let db_path = db_default_path();
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).expect("failed to create app data dir");
+        }
+        return open_db_at_path(&db_path);
+    }
+
     let data_dir = app_data_dir(app);
     std::fs::create_dir_all(&data_dir).expect("failed to create app data dir");
     let db_path = data_dir.join("fini.db");

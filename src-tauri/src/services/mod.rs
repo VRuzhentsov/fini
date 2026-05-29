@@ -3,10 +3,11 @@ pub mod backup;
 pub mod cli;
 pub mod db;
 pub mod device_connection;
-#[cfg(feature = "cli-plane")]
-pub mod mcp;
+pub mod due_time;
+#[cfg(any(feature = "ui-plane", test))]
 pub mod notification;
 pub mod quest;
+#[cfg(any(feature = "ui-plane", test))]
 pub mod reconciler;
 pub mod reminder;
 pub mod settings;

@@ -2,6 +2,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+#[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
 
 use super::merge::incoming_wins;
@@ -14,7 +15,9 @@ use crate::schema::{
     focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces, sync_acks,
     sync_outbox, sync_seen, tombstones,
 };
-use crate::services::db::{utc_now, DbState};
+use crate::services::db::utc_now;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::AppDbConnection;
 use crate::services::device_connection::{CustomSpaceDescriptor, DeviceConnectionState};
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
@@ -832,30 +835,29 @@ fn partition_remote_mapped_spaces(
 }
 
 pub fn space_sync_list_mappings_impl(
-    db: &DbState,
+    conn: &mut SqliteConnection,
+    peer_device_id: String,
+) -> Result<Vec<String>, String> {
+    list_mappings_for_peer(conn, &peer_device_id)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn space_sync_list_mappings(
+    db: State<AppDbConnection>,
     peer_device_id: String,
 ) -> Result<Vec<String>, String> {
     let mut conn = db.0.lock().unwrap();
-    list_mappings_for_peer(&mut conn, &peer_device_id)
-}
-
-#[tauri::command]
-pub fn space_sync_list_mappings(
-    db: State<DbState>,
-    peer_device_id: String,
-) -> Result<Vec<String>, String> {
-    space_sync_list_mappings_impl(&db, peer_device_id)
+    space_sync_list_mappings_impl(&mut conn, peer_device_id)
 }
 
 pub fn space_sync_update_mappings_impl(
-    db: &DbState,
+    conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
     peer_device_id: String,
     mapped_space_ids: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let mut conn = db.0.lock().unwrap();
-
-    let before = list_mappings_for_peer(&mut conn, &peer_device_id)?;
+    let before = list_mappings_for_peer(conn, &peer_device_id)?;
     let before_set: BTreeSet<String> = before.into_iter().collect();
     let desired = normalized_space_ids(mapped_space_ids);
     let desired_set: BTreeSet<String> = desired.iter().cloned().collect();
@@ -863,9 +865,9 @@ pub fn space_sync_update_mappings_impl(
     let ended: Vec<String> = before_set.difference(&desired_set).cloned().collect();
     let ended_at = utc_now();
 
-    let mapped = apply_mappings_in_db(&mut conn, &peer_device_id, desired)?;
+    let mapped = apply_mappings_in_db(conn, &peer_device_id, desired)?;
 
-    let custom_spaces = load_custom_space_descriptors(&mut conn, &requested)?;
+    let custom_spaces = load_custom_space_descriptors(conn, &requested)?;
 
     for space_id in requested {
         let custom = custom_spaces
@@ -891,36 +893,41 @@ pub fn space_sync_update_mappings_impl(
     Ok(mapped)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn space_sync_update_mappings(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     peer_device_id: String,
     mapped_space_ids: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    space_sync_update_mappings_impl(&db, &device_connection, peer_device_id, mapped_space_ids)
+    let mut conn = db.0.lock().unwrap();
+    space_sync_update_mappings_impl(
+        &mut conn,
+        &device_connection,
+        peer_device_id,
+        mapped_space_ids,
+    )
 }
 
 pub fn space_sync_apply_remote_mappings_impl(
-    db: &DbState,
+    conn: &mut SqliteConnection,
     _device_connection: &DeviceConnectionState,
     peer_device_id: String,
     mapped_space_ids: Vec<String>,
     custom_spaces: Vec<CustomSpaceDescriptor>,
 ) -> Result<SpaceMappingApplyResult, String> {
-    let mut conn = db.0.lock().unwrap();
-
     let (resolved_ids, unresolved_custom_spaces) =
-        partition_remote_mapped_spaces(&mut conn, mapped_space_ids, custom_spaces)?;
+        partition_remote_mapped_spaces(conn, mapped_space_ids, custom_spaces)?;
 
-    let mut desired = list_mappings_for_peer(&mut conn, &peer_device_id)?;
+    let mut desired = list_mappings_for_peer(conn, &peer_device_id)?;
     for space_id in resolved_ids {
         if !desired.contains(&space_id) {
             desired.push(space_id);
         }
     }
 
-    let mapped_space_ids = apply_mappings_in_db(&mut conn, &peer_device_id, desired)?;
+    let mapped_space_ids = apply_mappings_in_db(conn, &peer_device_id, desired)?;
 
     Ok(SpaceMappingApplyResult {
         mapped_space_ids,
@@ -928,16 +935,18 @@ pub fn space_sync_apply_remote_mappings_impl(
     })
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn space_sync_apply_remote_mappings(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     peer_device_id: String,
     mapped_space_ids: Vec<String>,
     custom_spaces: Vec<CustomSpaceDescriptor>,
 ) -> Result<SpaceMappingApplyResult, String> {
+    let mut conn = db.0.lock().unwrap();
     space_sync_apply_remote_mappings_impl(
-        &db,
+        &mut conn,
         &device_connection,
         peer_device_id,
         mapped_space_ids,
@@ -946,7 +955,7 @@ pub fn space_sync_apply_remote_mappings(
 }
 
 pub fn space_sync_resolve_custom_space_mapping_impl(
-    db: &DbState,
+    conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
     peer_device_id: String,
     remote_space_id: String,
@@ -954,8 +963,6 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
     resolution_mode: SpaceResolutionMode,
     existing_space_id: Option<String>,
 ) -> Result<SpaceMappingApplyResult, String> {
-    let mut conn = db.0.lock().unwrap();
-
     if is_builtin_space_id(&remote_space_id) {
         return Err("remote custom-space resolution expects non built-in space id".to_string());
     }
@@ -967,14 +974,14 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
                 .filter(|value| !value.trim().is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| placeholder_space_name(&remote_space_id));
-            create_space_with_id(&mut conn, &remote_space_id, &name)?;
+            create_space_with_id(conn, &remote_space_id, &name)?;
         }
         SpaceResolutionMode::UseExisting => {
             let local_space_id = existing_space_id
                 .as_deref()
                 .ok_or_else(|| "existing_space_id is required for use_existing".to_string())?;
             merge_local_space_into_remote_id(
-                &mut conn,
+                conn,
                 local_space_id,
                 &remote_space_id,
                 remote_space_name.as_deref(),
@@ -982,14 +989,14 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
         }
     }
 
-    let mut mapped = list_mappings_for_peer(&mut conn, &peer_device_id)?;
+    let mut mapped = list_mappings_for_peer(conn, &peer_device_id)?;
     if !mapped.contains(&remote_space_id) {
         mapped.push(remote_space_id.clone());
     }
 
-    let mapped_space_ids = apply_mappings_in_db(&mut conn, &peer_device_id, mapped)?;
+    let mapped_space_ids = apply_mappings_in_db(conn, &peer_device_id, mapped)?;
 
-    let custom_spaces = load_custom_space_descriptors(&mut conn, &mapped_space_ids)?;
+    let custom_spaces = load_custom_space_descriptors(conn, &mapped_space_ids)?;
     if let Err(err) = send_mapping_update_to_peer(
         &device_connection,
         &peer_device_id,
@@ -1005,9 +1012,10 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
     })
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn space_sync_resolve_custom_space_mapping(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     peer_device_id: String,
     remote_space_id: String,
@@ -1015,8 +1023,9 @@ pub fn space_sync_resolve_custom_space_mapping(
     resolution_mode: SpaceResolutionMode,
     existing_space_id: Option<String>,
 ) -> Result<SpaceMappingApplyResult, String> {
+    let mut conn = db.0.lock().unwrap();
     space_sync_resolve_custom_space_mapping_impl(
-        &db,
+        &mut conn,
         &device_connection,
         peer_device_id,
         remote_space_id,
@@ -1027,15 +1036,13 @@ pub fn space_sync_resolve_custom_space_mapping(
 }
 
 pub fn space_sync_tick_impl(
-    db: &DbState,
+    mut conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
 ) -> Result<SpaceSyncTickResult, String> {
-    let mut conn = db.0.lock().unwrap();
     let peer_ids: Vec<String> = paired_devices::table
         .select(paired_devices::peer_device_id)
         .load(&mut *conn)
         .map_err(|e| e.to_string())?;
-    drop(conn);
 
     // Ensure WS sessions are open for peers where we are the dialer
     let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
@@ -1045,7 +1052,6 @@ pub fn space_sync_tick_impl(
         &paired_peer_ids,
     );
 
-    let mut conn = db.0.lock().unwrap();
     let ticked_at = utc_now();
     let mut transferred_by_peer: std::collections::HashMap<String, (usize, usize, usize)> =
         std::collections::HashMap::new();
@@ -1217,20 +1223,20 @@ pub fn space_sync_tick_impl(
     })
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn space_sync_tick(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
 ) -> Result<SpaceSyncTickResult, String> {
-    space_sync_tick_impl(&db, &device_connection)
+    let mut conn = db.0.lock().unwrap();
+    space_sync_tick_impl(&mut conn, &device_connection)
 }
 
 pub fn space_sync_status_impl(
-    db: &DbState,
+    mut conn: &mut SqliteConnection,
     peer_device_id: Option<String>,
 ) -> Result<SpaceSyncStatus, String> {
-    let mut conn = db.0.lock().unwrap();
-
     let outbox_event_count: i64 = sync_outbox::table
         .count()
         .get_result(&mut *conn)
@@ -1313,12 +1319,14 @@ pub fn space_sync_status_impl(
     })
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn space_sync_status(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
     peer_device_id: Option<String>,
 ) -> Result<SpaceSyncStatus, String> {
-    space_sync_status_impl(&db, peer_device_id)
+    let mut conn = db.0.lock().unwrap();
+    space_sync_status_impl(&mut conn, peer_device_id)
 }
 
 #[cfg(test)]
@@ -1684,8 +1692,7 @@ mod tests {
             .execute(&mut conn)
             .unwrap();
 
-        let db = DbState(std::sync::Mutex::new(conn));
-        let status = space_sync_status_impl(&db, Some("peer-a".to_string())).unwrap();
+        let status = space_sync_status_impl(&mut conn, Some("peer-a".to_string())).unwrap();
 
         assert_eq!(
             status.last_synced_at,
@@ -1700,7 +1707,6 @@ mod tests {
             Some(&Some("2026-04-07T10:06:00Z".to_string()))
         );
 
-        drop(db);
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -1722,7 +1728,6 @@ mod tests {
             .execute(&mut conn)
             .unwrap();
 
-        let db = DbState(std::sync::Mutex::new(conn));
         let device_connection = DeviceConnectionState::new(&app_dir);
         let quest = test_quest("q-gated", "Blocked Until Approval", "2026-04-11T20:00:00Z");
         let event = test_envelope(
@@ -1737,15 +1742,14 @@ mod tests {
 
         device_connection.restore_incoming_sync_events(vec![event]);
 
-        let first_tick = space_sync_tick_impl(&db, &device_connection).unwrap();
+        let first_tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
         assert_eq!(first_tick.applied_events, 0);
 
         {
-            let mut conn = db.0.lock().unwrap();
             let count: i64 = quests::table
                 .filter(quests::id.eq("q-gated"))
                 .count()
-                .get_result(&mut *conn)
+                .get_result(&mut conn)
                 .unwrap();
             assert_eq!(count, 0);
 
@@ -1756,24 +1760,22 @@ mod tests {
                     pair_space_mappings::enabled_at.eq("2026-04-11T20:01:00Z"),
                     pair_space_mappings::last_synced_at.eq(Option::<String>::None),
                 ))
-                .execute(&mut *conn)
+                .execute(&mut conn)
                 .unwrap();
         }
 
-        let second_tick = space_sync_tick_impl(&db, &device_connection).unwrap();
+        let second_tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
         assert_eq!(second_tick.applied_events, 1);
 
         {
-            let mut conn = db.0.lock().unwrap();
             let count: i64 = quests::table
                 .filter(quests::id.eq("q-gated"))
                 .count()
-                .get_result(&mut *conn)
+                .get_result(&mut conn)
                 .unwrap();
             assert_eq!(count, 1);
         }
 
-        drop(db);
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(app_dir);
     }
@@ -1805,12 +1807,11 @@ mod tests {
             .execute(&mut conn)
             .unwrap();
 
-        let db = DbState(std::sync::Mutex::new(conn));
         let device_connection = DeviceConnectionState::new(&app_dir);
         let (tx, mut rx) = mpsc::channel(4);
         device_connection.register_session("peer-a".to_string(), tx);
 
-        let tick = space_sync_tick_impl(&db, &device_connection).unwrap();
+        let tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
         assert_eq!(tick.sent_events, 0);
 
         while let Ok(sent) = rx.try_recv() {
@@ -1819,7 +1820,6 @@ mod tests {
             }
         }
 
-        drop(db);
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(app_dir);
     }

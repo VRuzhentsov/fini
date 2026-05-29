@@ -1,16 +1,17 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use std::thread;
 
 use crate::models::UpsertSettingInput;
 use crate::schema::settings;
-#[cfg(target_os = "linux")]
-use crate::services::db::DbState;
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
+use crate::services::db::AppDbConnection;
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use gtk::prelude::GtkSettingsExt;
+#[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Theme};
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use tauri::{Emitter, Manager};
 
 const THEME_KEY: &str = "theme";
@@ -89,6 +90,7 @@ pub fn set_theme_mode(conn: &mut SqliteConnection, mode: ThemeMode) -> Result<Th
     Ok(mode)
 }
 
+#[cfg(feature = "ui-plane")]
 fn native_theme(theme_hint: &str) -> Option<Theme> {
     match theme_hint {
         "dark" => Some(Theme::Dark),
@@ -97,21 +99,22 @@ fn native_theme(theme_hint: &str) -> Option<Theme> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
 fn prefer_dark_theme(theme_hint: &str) -> bool {
     theme_hint == "dark"
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
 fn apply_gtk_theme(theme_hint: &str) {
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_application_prefer_dark_theme(prefer_dark_theme(theme_hint));
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "ui-plane", not(target_os = "linux")))]
 fn apply_gtk_theme(_theme_hint: &str) {}
 
+#[cfg(feature = "ui-plane")]
 pub fn apply_native_theme(app: &AppHandle, theme_hint: &str) {
     let runner = app.clone();
     let app = app.clone();
@@ -123,7 +126,7 @@ pub fn apply_native_theme(app: &AppHandle, theme_hint: &str) {
     });
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
 pub fn spawn_theme_watcher(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || {
@@ -182,7 +185,7 @@ pub fn spawn_theme_watcher(app: &AppHandle) {
             };
 
             let mode = {
-                let db = app.state::<DbState>();
+                let db = app.state::<AppDbConnection>();
                 let mut conn = db.0.lock().unwrap();
                 theme_mode(&mut conn).unwrap_or(ThemeMode::System)
             };
@@ -195,7 +198,7 @@ pub fn spawn_theme_watcher(app: &AppHandle) {
     });
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "ui-plane", not(target_os = "linux")))]
 pub fn spawn_theme_watcher(_app: &AppHandle) {}
 
 #[cfg(target_os = "linux")]
@@ -245,7 +248,11 @@ pub fn theme_hint(conn: &mut SqliteConnection) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{native_theme, prefer_dark_theme, ThemeMode};
+    #[cfg(feature = "ui-plane")]
+    use super::native_theme;
+    #[cfg(all(feature = "ui-plane", target_os = "linux"))]
+    use super::prefer_dark_theme;
+    use super::ThemeMode;
 
     #[test]
     fn parses_theme_modes() {
@@ -255,6 +262,7 @@ mod tests {
         assert_eq!(ThemeMode::parse("wat"), None);
     }
 
+    #[cfg(feature = "ui-plane")]
     #[test]
     fn maps_theme_hints_to_native_theme() {
         assert_eq!(native_theme("system"), None);
@@ -262,6 +270,7 @@ mod tests {
         assert_eq!(native_theme("dark"), Some(tauri::Theme::Dark));
     }
 
+    #[cfg(all(feature = "ui-plane", target_os = "linux"))]
     #[test]
     fn maps_theme_hints_to_gtk_preference() {
         assert!(!prefer_dark_theme("system"));

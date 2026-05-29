@@ -1,33 +1,29 @@
 -include .env
 export
 
-CONTAINER ?= podman
+CONTAINER ?= auto
+CONTAINER_ENGINE = $(shell if [ "$(CONTAINER)" = "auto" ]; then if command -v docker >/dev/null 2>&1; then printf docker; elif command -v podman >/dev/null 2>&1; then printf podman; else printf missing; fi; else printf '%s' "$(CONTAINER)"; fi)
 FINI_BE_COMPILE_IMAGE ?= fini-be-compile-ci
 FINI_BE_UNIT_IMAGE ?= fini-be-unit-test
 FINI_BE_CACHE_IMAGE_PREFIX ?=
 FINI_BE_CACHE_PUSH ?= 0
 FINI_E2E_CI_RUN_ID ?= pr-gate
 FINI_E2E_CI_RUN_DIR ?= /var/tmp/fini-e2e-$(FINI_E2E_CI_RUN_ID)
-FINI_E2E_CI_SOCKET_DIR ?= $(FINI_E2E_CI_RUN_DIR)/sockets
 FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
-FINI_E2E_CI_NETWORK ?= fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_ACTORS ?= actor-a,actor-b
 FINI_E2E_CI_ACTOR_WAIT_SECS ?= 180
-FINI_E2E_ACTOR_IMAGE ?= fini-e2e-actor-ci
-FINI_E2E_RUNNER_IMAGE ?= fini-e2e-runner-ci
+FINI_DEV_RUNNER_IMAGE ?= fini-dev-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 RELEASE_BUNDLES ?= deb,rpm
-FINI_RELEASE_LOCAL_CI_PASSED ?= 0
 
-.PHONY: help dev build mcp play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-actor pr-gate-e2e-build-runner pr-gate-e2e-network pr-gate-e2e-start-actors pr-gate-e2e-wait-actors pr-gate-e2e-run pr-gate-e2e-logs pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-actors-image e2e-actors runtime-image runtime-smoke release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
 	@echo "Linux"
 	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
 	@echo "  make build            Release build"
-	@echo "  make mcp              Run MCP server (debug binary)"
 	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-be-compile  Compile backend tests in Dockerfile stage"
 	@echo "  make pr-gate-be-unit  Run backend unit tests in Dockerfile stage"
@@ -36,17 +32,17 @@ help:
 	@echo "  make pr-gate-e2e-*    Run one named CI E2E phase for easier failure diagnosis"
 	@echo "  make e2e              Run visible local E2E (UI + multi-actor) alongside make dev"
 	@echo "  make e2e-ci           Run containerized headless E2E in CI mode"
-	@echo "  make e2e-image        Build/update the container e2e image"
-	@echo "  make e2e-build        Build container image and run e2e-ci inside it"
+	@echo "  make e2e-image        Build/update the dev-runner E2E image"
+	@echo "  make e2e-build        Build dev-runner image and run E2E inside it"
 	@echo "  make e2e-headed       Run visible local E2E (UI + multi-actor) alongside make dev"
-	@echo "  make e2e-actors-image Force rebuild actor and runner images"
-	@echo "  make e2e-actors       Run containerized full E2E suite, reusing fresh images"
+	@echo "  make pr-gate-e2e      Run containerized full E2E suite in dev-runner"
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
 	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
 	@echo "  make play-store-screenshots  Validate Play Store screenshots and write manifest"
 	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
-	@echo "  FINI_RELEASE_LOCAL_CI_PASSED=1 make release VERSION=x.y.z  Bump versions, push main, and push signed tag vX.Y.Z"
+	@echo "  make pre-release-check  Run pre-release checks locally with trace log"
+	@echo "  make release VERSION=x.y.z  Run pre-release check, bump versions, push main, and push signed tag vX.Y.Z"
 	@echo ""
 	@echo "Android"
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
@@ -65,24 +61,30 @@ help:
 
 # ── Linux ─────────────────────────────────────────────────────────────────────
 
+require-container:
+	@test "$(CONTAINER_ENGINE)" != "missing" || (echo "No container engine found. Install Docker or Podman, or set CONTAINER=docker|podman." && exit 1)
+
 dev:
-	npm run tauri dev -- --features ui-plane,cli-plane
+	@set -eu; \
+	capability_backup="$$(mktemp /var/tmp/fini-default-capability.XXXXXX)"; \
+	cp src-tauri/capabilities/default.json "$$capability_backup"; \
+	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
+	trap restore_capability EXIT INT TERM; \
+	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+	npm run tauri dev -- --features ui-plane,devtools
 
 build:
-	npm run tauri build -- --features ui-plane,cli-plane
+	npm run tauri build -- --features ui-plane
 
 flatpak-install-local:
 	-$(MAKE) build
 	flatpak run org.flatpak.Builder --force-clean --user --install flatpak-build com.fini.app.yml
 
-mcp:
-	cargo run --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane -- mcp
-
 play-store-screenshots:
 	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
 
-pr-gate-fe-unit:
-	$(CONTAINER) build --target fe-unit-test -t fini-fe-unit-test .
+pr-gate-fe-unit: require-container
+	$(CONTAINER_ENGINE) build --target fe-unit-test -t fini-fe-unit-test .
 
 pr-gate-be-cache-key:
 	@set -eu; \
@@ -112,7 +114,7 @@ pr-gate-be-cache-key:
 	      src-tauri/tauri.conf.json; \
 	  } | sort -zu; \
 	}; \
-	cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1
+	cache_inputs | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d ' ' -f 1
 
 pr-gate-be-compile:
 	@set -eu; \
@@ -120,34 +122,30 @@ pr-gate-be-compile:
 	cache_prefix="$(FINI_BE_CACHE_IMAGE_PREFIX)"; \
 	cache_image=""; \
 	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-be-compile-cache:$$cache_key"; fi; \
-	if [ -n "$$cache_image" ] && $(CONTAINER) pull "$$cache_image"; then \
+	if [ -n "$$cache_image" ] && $(CONTAINER_ENGINE) pull "$$cache_image"; then \
 	  printf 'Using cached backend compile image: %s\n' "$$cache_image"; \
-	  $(CONTAINER) tag "$$cache_image" "$(FINI_BE_COMPILE_IMAGE)"; \
+	  $(CONTAINER_ENGINE) tag "$$cache_image" "$(FINI_BE_COMPILE_IMAGE)"; \
 	  exit 0; \
 	fi; \
 	printf 'Building backend compile image for cache key: %s\n' "$$cache_key"; \
 	if [ -n "$$cache_image" ]; then \
-	  $(CONTAINER) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" -t "$$cache_image" .; \
+	  $(CONTAINER_ENGINE) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" -t "$$cache_image" .; \
 	else \
-	  $(CONTAINER) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" .; \
+	  $(CONTAINER_ENGINE) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" .; \
 	fi; \
 	if [ -n "$$cache_image" ] && [ "$(FINI_BE_CACHE_PUSH)" = "1" ]; then \
-	  $(CONTAINER) push "$$cache_image"; \
+	  $(CONTAINER_ENGINE) push "$$cache_image"; \
 	fi
 
 pr-gate-be-unit:
 	$(MAKE) pr-gate-be-compile
-	$(CONTAINER) build --target be-unit-test --cache-from "$(FINI_BE_COMPILE_IMAGE)" -t "$(FINI_BE_UNIT_IMAGE)" .
+	$(CONTAINER_ENGINE) build --target be-unit-test --cache-from "$(FINI_BE_COMPILE_IMAGE)" -t "$(FINI_BE_UNIT_IMAGE)" .
 
 pr-gate-e2e:
 	@set -eu; \
 	cleanup() { $(MAKE) pr-gate-e2e-cleanup >/dev/null 2>&1 || true; }; \
 	trap cleanup EXIT INT TERM; \
-	$(MAKE) pr-gate-e2e-build-actor; \
-	$(MAKE) pr-gate-e2e-build-runner; \
-	$(MAKE) pr-gate-e2e-network; \
-	$(MAKE) pr-gate-e2e-start-actors; \
-	$(MAKE) pr-gate-e2e-wait-actors; \
+	$(MAKE) pr-gate-e2e-build-dev-runner; \
 	$(MAKE) pr-gate-e2e-run
 
 pr-gate-e2e-cache-key:
@@ -160,6 +158,7 @@ pr-gate-e2e-cache-key:
 	      package-lock.json \
 	      tsconfig\*.json \
 	      index.html \
+	      scripts/e2e-runner.sh \
 	      vite.config.ts \
 	      src \
 	      src-tauri/Cargo.toml \
@@ -169,6 +168,7 @@ pr-gate-e2e-cache-key:
 	      src-tauri/migrations \
 	      src-tauri/patches \
 	      src-tauri/capabilities \
+	      src-tauri/devtools-capabilities \
 	      src-tauri/icons \
 	      src-tauri/tauri.conf.json \
 	      specs/e2e; \
@@ -178,6 +178,7 @@ pr-gate-e2e-cache-key:
 	      package-lock.json \
 	      tsconfig\*.json \
 	      index.html \
+	      scripts/e2e-runner.sh \
 	      vite.config.ts \
 	      src \
 	      src-tauri/Cargo.toml \
@@ -187,133 +188,65 @@ pr-gate-e2e-cache-key:
 	      src-tauri/migrations \
 	      src-tauri/patches \
 	      src-tauri/capabilities \
+	      src-tauri/devtools-capabilities \
 	      src-tauri/icons \
 	      src-tauri/tauri.conf.json \
 	      specs/e2e; \
 	  } | sort -zu; \
 	}; \
-	cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1
+	cache_inputs | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d ' ' -f 1
 
-pr-gate-e2e-build-actor:
+pr-gate-e2e-build-dev-runner:
 	@set -eu; \
 	cache_key="$$(make --no-print-directory pr-gate-e2e-cache-key)"; \
 	cache_prefix="$(FINI_E2E_CACHE_IMAGE_PREFIX)"; \
 	cache_image=""; \
-	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-e2e-actor-cache:$$cache_key"; fi; \
-	if [ -n "$$cache_image" ] && $(CONTAINER) pull "$$cache_image"; then \
-	  printf 'Using cached actor image: %s\n' "$$cache_image"; \
-	  $(CONTAINER) tag "$$cache_image" "$(FINI_E2E_ACTOR_IMAGE)"; \
+	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-dev-runner-cache:$$cache_key"; fi; \
+	if [ -n "$$cache_image" ] && $(CONTAINER_ENGINE) pull "$$cache_image"; then \
+	  printf 'Using cached dev-runner image: %s\n' "$$cache_image"; \
+	  $(CONTAINER_ENGINE) tag "$$cache_image" "$(FINI_DEV_RUNNER_IMAGE)"; \
 	  exit 0; \
 	fi; \
-	printf 'Building actor image for E2E cache key: %s\n' "$$cache_key"; \
+	printf 'Building dev-runner image for E2E cache key: %s\n' "$$cache_key"; \
 	if [ -n "$$cache_image" ]; then \
-	  $(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_ACTOR_IMAGE)" -t "$$cache_image" .; \
+	  $(CONTAINER_ENGINE) build --target dev-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_DEV_RUNNER_IMAGE)" -t "$$cache_image" .; \
 	else \
-	  $(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_ACTOR_IMAGE)" .; \
+	  $(CONTAINER_ENGINE) build --target dev-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_DEV_RUNNER_IMAGE)" .; \
 	fi; \
 	if [ -n "$$cache_image" ] && [ "$(FINI_E2E_CACHE_PUSH)" = "1" ]; then \
-	  $(CONTAINER) push "$$cache_image"; \
+	  $(CONTAINER_ENGINE) push "$$cache_image"; \
 	fi
-
-pr-gate-e2e-build-runner:
-	@set -eu; \
-	cache_key="$$(make --no-print-directory pr-gate-e2e-cache-key)"; \
-	cache_prefix="$(FINI_E2E_CACHE_IMAGE_PREFIX)"; \
-	cache_image=""; \
-	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-e2e-runner-cache:$$cache_key"; fi; \
-	if [ -n "$$cache_image" ] && $(CONTAINER) pull "$$cache_image"; then \
-	  printf 'Using cached runner image: %s\n' "$$cache_image"; \
-	  $(CONTAINER) tag "$$cache_image" "$(FINI_E2E_RUNNER_IMAGE)"; \
-	  exit 0; \
-	fi; \
-	printf 'Building runner image for E2E cache key: %s\n' "$$cache_key"; \
-	if [ -n "$$cache_image" ]; then \
-	  $(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_RUNNER_IMAGE)" -t "$$cache_image" .; \
-	else \
-	  $(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_E2E_RUNNER_IMAGE)" .; \
-	fi; \
-	if [ -n "$$cache_image" ] && [ "$(FINI_E2E_CACHE_PUSH)" = "1" ]; then \
-	  $(CONTAINER) push "$$cache_image"; \
-	fi
-
-pr-gate-e2e-network:
-	@set -eu; \
-	mkdir -p "$(FINI_E2E_CI_SOCKET_DIR)" "$(FINI_E2E_CI_RESULTS_DIR)"; \
-	$(CONTAINER) network rm "$(FINI_E2E_CI_NETWORK)" >/dev/null 2>&1 || true; \
-	$(CONTAINER) network create "$(FINI_E2E_CI_NETWORK)" >/dev/null
-
-pr-gate-e2e-start-actors:
-	@set -eu; \
-	actor_list="$(FINI_E2E_CI_ACTORS)"; \
-	IFS=','; set -- $$actor_list; \
-	if [ "$$#" -lt 2 ]; then \
-	  printf 'Need at least two actors, got: %s\n' "$(FINI_E2E_CI_ACTORS)" >&2; \
-	  exit 1; \
-	fi; \
-	for actor in "$$@"; do \
-	  actor_data_dir="$(FINI_E2E_CI_RUN_DIR)/$$actor-data"; \
-	  mkdir -p "$$actor_data_dir"; \
-	  $(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >/dev/null 2>&1 || true; \
-	  $(CONTAINER) run -d --rm \
-	    --name "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" \
-	    --hostname "$$actor" \
-	    --network "$(FINI_E2E_CI_NETWORK)" \
-	    -e FINI_ACTOR_SLUG="$$actor" \
-	    -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
-	    -e FINI_APP_DATA_DIR=/data \
-	    -v "$(FINI_E2E_CI_SOCKET_DIR):/var/run/fini-e2e:z" \
-	    -v "$$actor_data_dir:/data:Z" \
-	    "$(FINI_E2E_ACTOR_IMAGE)" >/dev/null; \
-	done
-
-pr-gate-e2e-wait-actors:
-	@set -eu; \
-	actor_list="$(FINI_E2E_CI_ACTORS)"; \
-	IFS=','; set -- $$actor_list; \
-	for actor in "$$@"; do \
-	  socket_path="$(FINI_E2E_CI_SOCKET_DIR)/$$actor.sock"; \
-	  deadline=$$(($$(date +%s) + $(FINI_E2E_CI_ACTOR_WAIT_SECS))); \
-	  while [ ! -S "$$socket_path" ]; do \
-	    if [ "$$(date +%s)" -ge "$$deadline" ]; then \
-	      printf 'Actor socket did not appear: %s\n' "$$socket_path" >&2; \
-	      $(CONTAINER) ps -a --filter "name=fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >&2 || true; \
-	      $(CONTAINER) inspect "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >&2 || true; \
-	      $(CONTAINER) logs "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" 2>/dev/null || true; \
-	      exit 1; \
-	    fi; \
-	    sleep 1; \
-	  done; \
-	done
 
 pr-gate-e2e-run:
-	$(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true
-	$(CONTAINER) run --rm \
-	  --name "fini-$(FINI_E2E_CI_RUN_ID)-runner" \
-	  --network "$(FINI_E2E_CI_NETWORK)" \
-	  -e FINI_E2E_ACTORS="$(FINI_E2E_CI_ACTORS)" \
-	  -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
-	  -v "$(FINI_E2E_CI_SOCKET_DIR):/var/run/fini-e2e:z" \
-	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
-	  "$(FINI_E2E_RUNNER_IMAGE)"
-
-pr-gate-e2e-logs:
 	@set -eu; \
-	actor_list="$(FINI_E2E_CI_ACTORS)"; \
-	IFS=','; set -- $$actor_list; \
-	for actor in "$$@"; do \
-	  printf '\n===== logs: %s =====\n' "$$actor"; \
-	  $(CONTAINER) logs "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" 2>/dev/null || true; \
-	done
+	mkdir -p "$(FINI_E2E_CI_RESULTS_DIR)"; \
+	$(CONTAINER_ENGINE) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true; \
+	$(CONTAINER_ENGINE) run --rm \
+	  --name "fini-$(FINI_E2E_CI_RUN_ID)-runner" \
+	  -e FINI_E2E_ACTORS="$(FINI_E2E_CI_ACTORS)" \
+	  -e FINI_E2E_CI_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
+	  -e FINI_E2E_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
+	  -e FINI_E2E_CI_ACTOR_WAIT_SECS="$(FINI_E2E_CI_ACTOR_WAIT_SECS)" \
+	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
+	  "$(FINI_DEV_RUNNER_IMAGE)"
+
+pr-gate-e2e-artifacts:
+	@set -eu; \
+	run_root="$(FINI_E2E_CI_RESULTS_DIR)/fini-e2e-runs/$(FINI_E2E_CI_RUN_ID)/actors"; \
+	printf '\n===== actor logs =====\n'; \
+	if [ -d "$$run_root" ]; then \
+	  for log_path in "$$run_root"/*.log; do \
+	    [ -f "$$log_path" ] || continue; \
+	    printf '\n--- %s ---\n' "$$log_path"; \
+	    tail -n 200 "$$log_path" || true; \
+	  done; \
+	else \
+	  printf 'No actor log directory found: %s\n' "$$run_root"; \
+	fi
 
 pr-gate-e2e-cleanup:
 	@set -eu; \
-	$(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true; \
-	actor_list="$(FINI_E2E_CI_ACTORS)"; \
-	IFS=','; set -- $$actor_list; \
-	for actor in "$$@"; do \
-	  $(CONTAINER) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-$$actor" >/dev/null 2>&1 || true; \
-	done; \
-	$(CONTAINER) network rm "$(FINI_E2E_CI_NETWORK)" >/dev/null 2>&1 || true
+	$(CONTAINER_ENGINE) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true
 
 # Run the real-app e2e lane locally.
 e2e:
@@ -321,301 +254,86 @@ e2e:
 
 # Run the same lane under CI settings.
 e2e-ci:
-	CI=1 $(MAKE) e2e-actors
+	CI=1 $(MAKE) pr-gate-e2e
 
 # Build/update the container image used for CI-style local e2e runs.
 e2e-image:
-	$(CONTAINER) build --target test -t fini-e2e .
+	$(MAKE) require-container
+	$(CONTAINER_ENGINE) build --target dev-runner -t fini-dev-runner .
 
 # Run the headless e2e tier inside the cached Podman image.
 e2e-build:
-	$(CONTAINER) image inspect fini-e2e >/dev/null 2>&1 || $(CONTAINER) build --target test -t fini-e2e .
-	$(CONTAINER) run --rm fini-e2e
+	$(MAKE) require-container
+	$(CONTAINER_ENGINE) image inspect fini-dev-runner >/dev/null 2>&1 || $(CONTAINER_ENGINE) build --target dev-runner -t fini-dev-runner .
+	$(CONTAINER_ENGINE) run --rm fini-dev-runner
 
 # Run the visible local E2E suite (UI single-actor + multi-actor) against the host desktop display.
-# Designed to run alongside `make dev`: builds into a separate cargo target dir
-# (src-tauri/target/debug-e2e), spawns its own binary instead of starting Vite,
-# and uses non-default discovery / sync-WS ports so it does not collide with a
-# live `make dev` instance.
+# Builds the local binaries, then lets the Playwright fixtures spawn the real app processes.
 e2e-headed:
 	@set -eu; \
-	actor_list="$${FINI_E2E_ACTORS:-actor-a,actor-b}"; \
-	keep="$${FINI_E2E_KEEP:-0}"; \
 	run_root="$${FINI_E2E_ROOT:-/var/tmp/fini-e2e-headed}"; \
-	base_discovery_port="$${FINI_E2E_BASE_DISCOVERY_PORT:-$$((46000 + ($$RANDOM % 1000) * 10))}"; \
-	run_id="$$(date +%Y%m%d-%H%M%S)-$$$$"; \
-	run_dir="$$run_root/$$run_id"; \
-	socket_dir="$$run_dir/sockets"; \
-	test_results_dir="$$run_dir/test-results"; \
-	ui_data_dir="$$run_dir/ui-data"; \
 	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
 	app_bin_path="$$e2e_target_dir/debug/fini-app"; \
 	cli_bin_path="$$e2e_target_dir/debug/fini"; \
-	printf 'FINI_E2E_RUN_DIR=%s\n' "$$run_dir"; \
-	mkdir -p "$$socket_dir" "$$test_results_dir" "$$ui_data_dir"; \
-	IFS=','; set -- $$actor_list; \
-	if [ "$$#" -lt 2 ]; then \
-	  printf 'Need at least two actors, got: %s\n' "$$actor_list" >&2; \
-	  exit 1; \
-	fi; \
-	peer_ports=""; \
-	idx=0; \
-	for actor in "$$@"; do \
-	  port=$$((base_discovery_port + idx * 2)); \
-	  if [ -z "$$peer_ports" ]; then peer_ports="$$port"; else peer_ports="$$peer_ports,$$port"; fi; \
-	  idx=$$((idx + 1)); \
-	done; \
-	cleanup() { \
-	  status="$$?"; \
-	  if [ "$$keep" = "1" ]; then \
-	    printf 'Keeping local app processes for debugging: %s\n' "$$run_id"; \
-	    printf 'Stop them manually if needed. Run dir: %s\n' "$$run_dir"; \
-	    exit "$$status"; \
-	  fi; \
-	  for pid_file in "$$run_dir"/*.pid; do \
-	    [ -f "$$pid_file" ] || continue; \
-	    pid="$$(cat "$$pid_file")"; \
-	    kill "$$pid" >/dev/null 2>&1 || true; \
-	  done; \
-	  wait >/dev/null 2>&1 || true; \
-	  rm -f "$$run_dir"/*.pid; \
-	  rm -rf "$$socket_dir" "$$ui_data_dir" "$$run_dir"/*-data; \
-	  exit "$$status"; \
-	}; \
-	trap cleanup EXIT INT TERM; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features ui-plane,cli-plane,e2e-testing --no-bundle; \
+	capability_backup="$$(mktemp /var/tmp/fini-default-capability.XXXXXX)"; \
+	cp src-tauri/capabilities/default.json "$$capability_backup"; \
+	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
+	trap restore_capability EXIT INT TERM; \
+	mkdir -p "$$run_root"; \
+	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- --bin fini-app; \
+	restore_capability; \
+	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
-	idx=0; \
-	for actor in "$$@"; do \
-	  actor_data_dir="$$run_dir/$$actor-data"; \
-	  actor_socket="$$socket_dir/$$actor.sock"; \
-	  actor_log="$$run_dir/$$actor.log"; \
-	  discovery_port=$$((base_discovery_port + idx * 2)); \
-	  ws_port=$$((base_discovery_port + idx * 2 + 1)); \
-	  mkdir -p "$$actor_data_dir"; \
-	  rm -f "$$actor_socket"; \
-	  printf 'Launching visible app window: %s (discovery=%s ws=%s)\n' "$$actor" "$$discovery_port" "$$ws_port"; \
-	  HOSTNAME="$$actor" FINI_APP_DATA_DIR="$$actor_data_dir" TAURI_PLAYWRIGHT_SOCKET="$$actor_socket" FINI_DISCOVERY_PORT="$$discovery_port" FINI_DISCOVERY_PEER_PORTS="$$peer_ports" FINI_SPACE_SYNC_WS_PORT="$$ws_port" TZ=UTC "$$app_bin_path" >"$$actor_log" 2>&1 & \
-	  printf '%s' "$$!" > "$$run_dir/$$actor.pid"; \
-	  idx=$$((idx + 1)); \
-	done; \
-	for actor in "$$@"; do \
-	  socket_path="$$socket_dir/$$actor.sock"; \
-	  deadline=$$(($$(date +%s) + 60)); \
-	  while [ ! -S "$$socket_path" ]; do \
-	    if [ "$$(date +%s)" -ge "$$deadline" ]; then \
-	      printf 'Actor socket did not appear: %s\n' "$$socket_path" >&2; \
-	      log_path="$$run_dir/$$actor.log"; \
-	      [ -f "$$log_path" ] && printf 'Actor log: %s\n' "$$log_path" >&2; \
-	      exit 1; \
-	    fi; \
-	    sleep 1; \
-	  done; \
-	done; \
-	ui_discovery_port=$$((base_discovery_port + idx * 2 + 100)); \
-	ui_ws_port=$$((ui_discovery_port + 1)); \
-	printf 'UI fixture ports: discovery=%s ws=%s\n' "$$ui_discovery_port" "$$ui_ws_port"; \
-	FINI_E2E_ACTORS="$$actor_list" FINI_E2E_SOCKET_DIR="$$socket_dir" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_APP_DATA_DIR="$$ui_data_dir" FINI_DISCOVERY_PORT="$$ui_discovery_port" FINI_SPACE_SYNC_WS_PORT="$$ui_ws_port" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors --output "$$test_results_dir"
-
-# Build/update the actor and runner images for multi-actor desktop e2e.
-e2e-actors-image:
-	@set -eu; \
-	cache_inputs() { \
-	  { \
-	    git ls-files -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	    git ls-files --others --exclude-standard -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	  } | sort -zu; \
-	}; \
-	cache_key="$$(cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"; \
-	$(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-actor .; \
-	$(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t fini-e2e-runner .
-
-# Run the multi-actor desktop e2e smoke lane.
-e2e-actors:
-	@set -eu; \
-	actor_image="$${FINI_E2E_ACTOR_IMAGE:-fini-e2e-actor}"; \
-	runner_image="$${FINI_E2E_RUNNER_IMAGE:-fini-e2e-runner}"; \
-	force_rebuild="$${FINI_E2E_REBUILD:-0}"; \
-	actor_list="$${FINI_E2E_ACTORS:-actor-a,actor-b}"; \
-	keep="$${FINI_E2E_KEEP:-0}"; \
-	run_root="$${FINI_E2E_ROOT:-/var/tmp/fini-e2e-actors}"; \
-	run_id="$$(date +%Y%m%d-%H%M%S)-$$$$"; \
-	run_dir="$$run_root/$$run_id"; \
-	socket_dir="$$run_dir/sockets"; \
-	test_results_dir="$$run_dir/test-results"; \
-	network_name="fini-e2e-$$run_id"; \
-	cache_inputs() { \
-	  { \
-	    git ls-files -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	    git ls-files --others --exclude-standard -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	  } | sort -zu; \
-	}; \
-	image_cache_key() { \
-	  $(CONTAINER) image inspect "$$1" --format '{{ index .Config.Labels "fini.e2e.cache-key" }}' 2>/dev/null || true; \
-	}; \
-	cache_key="$$(cache_inputs | xargs -0 sha256sum | sha256sum | cut -d ' ' -f 1)"; \
-	actor_current_key="$$(image_cache_key "$$actor_image")"; \
-	runner_current_key="$$(image_cache_key "$$runner_image")"; \
-	printf 'FINI_E2E_RUN_DIR=%s\n' "$$run_dir"; \
-	mkdir -p "$$socket_dir" "$$test_results_dir"; \
-	IFS=','; set -- $$actor_list; \
-	if [ "$$#" -lt 2 ]; then \
-	  printf 'Need at least two actors, got: %s\n' "$$actor_list" >&2; \
-	  exit 1; \
-	fi; \
-	cleanup() { \
-	  status="$$?"; \
-	  if [ "$$status" -ne 0 ]; then \
-	    for actor in "$$@"; do $(CONTAINER) logs "fini-$$run_id-$$actor" 2>/dev/null || true; done; \
-	  fi; \
-	  if [ "$$keep" = "1" ]; then \
-	    printf 'Keeping containers and network for debugging: %s\n' "$$run_id"; \
-	    exit "$$status"; \
-	  fi; \
-	  $(CONTAINER) rm -f "fini-$$run_id-runner" >/dev/null 2>&1 || true; \
-	  for actor in "$$@"; do $(CONTAINER) rm -f "fini-$$run_id-$$actor" >/dev/null 2>&1 || true; done; \
-	  $(CONTAINER) network rm "$$network_name" >/dev/null 2>&1 || true; \
-	  rm -rf "$$socket_dir" "$$run_dir"/*-data; \
-	  exit "$$status"; \
-	}; \
-	trap 'cleanup "$$@"' EXIT INT TERM; \
-	if [ "$$force_rebuild" = "1" ] || [ "$$actor_current_key" != "$$cache_key" ]; then \
-	  printf 'Building actor image: %s\n' "$$actor_image"; \
-	  $(CONTAINER) build --target e2e-actor --label "fini.e2e.cache-key=$$cache_key" -t "$$actor_image" .; \
-	else \
-	  printf 'Using cached actor image: %s\n' "$$actor_image"; \
-	fi; \
-	if [ "$$force_rebuild" = "1" ] || [ "$$runner_current_key" != "$$cache_key" ]; then \
-	  printf 'Building runner image: %s\n' "$$runner_image"; \
-	  $(CONTAINER) build --target e2e-runner --label "fini.e2e.cache-key=$$cache_key" -t "$$runner_image" .; \
-	else \
-	  printf 'Using cached runner image: %s\n' "$$runner_image"; \
-	fi; \
-	$(CONTAINER) network create "$$network_name" >/dev/null; \
-	for actor in "$$@"; do \
-	  actor_data_dir="$$run_dir/$$actor-data"; \
-	  mkdir -p "$$actor_data_dir"; \
-	  $(CONTAINER) run -d --rm \
-	    --name "fini-$$run_id-$$actor" \
-	    --hostname "$$actor" \
-	    --network "$$network_name" \
-	    -e FINI_ACTOR_SLUG="$$actor" \
-	    -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
-	    -e FINI_APP_DATA_DIR=/data \
-	    -v "$$socket_dir:/var/run/fini-e2e:z" \
-	    -v "$$actor_data_dir:/data:Z" \
-	    "$$actor_image" >/dev/null; \
-	done; \
-	for actor in "$$@"; do \
-	  socket_path="$$socket_dir/$$actor.sock"; \
-	  deadline=$$(($$(date +%s) + 60)); \
-	  while [ ! -S "$$socket_path" ]; do \
-	    if [ "$$(date +%s)" -ge "$$deadline" ]; then \
-	      printf 'Actor socket did not appear: %s\n' "$$socket_path" >&2; \
-	      exit 1; \
-	    fi; \
-	    sleep 1; \
-	  done; \
-	done; \
-	$(CONTAINER) run --rm \
-	  --name "fini-$$run_id-runner" \
-	  --network "$$network_name" \
-	  -e FINI_E2E_ACTORS="$$actor_list" \
-	  -e FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
-	  -v "$$socket_dir:/var/run/fini-e2e:z" \
-	  -v "$$test_results_dir:/app/test-results:Z" \
-	  "$$runner_image"
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors
 
 # Build/update the published headless runtime image locally.
 runtime-image:
-	$(CONTAINER) build --target runtime -t fini-runtime .
+	$(MAKE) require-container
+	$(CONTAINER_ENGINE) build --target runtime -t fini-runtime .
 
 # Verify the runtime container executes the CLI surface.
 runtime-smoke:
-	$(CONTAINER) image inspect fini-runtime >/dev/null 2>&1 || $(CONTAINER) build --target runtime -t fini-runtime .
-	$(CONTAINER) run --rm fini-runtime --help
+	$(MAKE) require-container
+	$(CONTAINER_ENGINE) image inspect fini-runtime >/dev/null 2>&1 || $(CONTAINER_ENGINE) build --target runtime -t fini-runtime .
+	$(CONTAINER_ENGINE) run --rm fini-runtime --help
+
+pre-release-check:
+	@set -eu; \
+	log_dir="$${PRE_RELEASE_LOG_DIR:-/var/tmp/fini-pre-release}"; \
+	mkdir -p "$$log_dir"; \
+	log_file="$$log_dir/pre-release-check-$$(date -u +%Y%m%dT%H%M%SZ).log"; \
+	printf 'Writing pre-release log: %s\n' "$$log_file"; \
+	bash -o pipefail -c 'set -eu; \
+	  cleanup() { $(MAKE) pr-gate-e2e-cleanup >/dev/null 2>&1 || true; }; \
+	  step() { printf "\n[%s] pre-release-check: %s\n" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$1"; }; \
+	  trap cleanup EXIT INT TERM; \
+	  step "require container engine"; \
+	  $(MAKE) require-container; \
+	  step "backend unit tests"; \
+	  $(MAKE) pr-gate-be-unit; \
+	  step "runtime image"; \
+	  $(MAKE) runtime-image; \
+	  step "runtime smoke"; \
+	  $(MAKE) runtime-smoke; \
+	  step "E2E dev-runner image"; \
+	  $(MAKE) pr-gate-e2e-build-dev-runner; \
+	  step "E2E run"; \
+	  $(MAKE) pr-gate-e2e-run' 2>&1 | tee "$$log_file"
 
 release:
 	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release VERSION=x.y.z" && exit 1)
 	@printf '%s\n' "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || (echo "VERSION must match x.y.z" && exit 1)
-	@test "$(FINI_RELEASE_LOCAL_CI_PASSED)" = "1" || (echo "Refusing release: run the local CI release gate first, then rerun with FINI_RELEASE_LOCAL_CI_PASSED=1" && exit 1)
-	@branch="$$(git branch --show-current)"; \
+	@set -eu; \
+	branch="$$(git branch --show-current)"; \
 	if [ "$$branch" != "main" ]; then \
 	  echo "Release must run from main"; \
 	  echo "current branch=$$branch"; \
 	  exit 1; \
 	fi; \
-	git diff --quiet || (echo "Working tree has unstaged changes" && exit 1); \
-	git diff --cached --quiet || (echo "Working tree has staged changes" && exit 1); \
-	test -z "$$(git ls-files --others --exclude-standard)" || (echo "Working tree has untracked files" && exit 1); \
+	git diff --quiet || { echo "Working tree has unstaged changes"; exit 1; }; \
+	git diff --cached --quiet || { echo "Working tree has staged changes"; exit 1; }; \
+	test -z "$$(git ls-files --others --exclude-standard)" || { echo "Working tree has untracked files"; exit 1; }; \
 	git fetch origin main --tags --force; \
 	main_commit="$$(git rev-parse origin/main)"; \
 	current_commit="$$(git rev-parse HEAD)"; \
@@ -630,6 +348,7 @@ release:
 	  echo "Tag already exists: $$tag"; \
 	  exit 1; \
 	fi; \
+	$(MAKE) pre-release-check; \
 	cargo run --manifest-path xtask/Cargo.toml -- release-version "$(VERSION)"
 	git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
 	git commit -m "chore: release v$(VERSION)"

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::services::space_sync::types::{SessionSender, SyncEventEnvelope, WsMessage};
 
+#[cfg(any(feature = "ui-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
     device_connection_discovery_snapshot, device_connection_enter_add_mode,
@@ -19,12 +20,26 @@ pub use commands::{
     device_connection_save_paired_device, device_connection_send_pair_request,
     device_connection_unpair, device_connection_update_last_seen,
 };
+#[cfg(feature = "cli-plane")]
+pub use commands::{
+    device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,
+    device_connection_discovery_snapshot_impl, device_connection_enter_add_mode_impl,
+    device_connection_get_identity_impl, device_connection_get_paired_devices_impl,
+    device_connection_leave_add_mode_impl, device_connection_pair_accept_request_impl,
+    device_connection_pair_acknowledge_request_impl, device_connection_pair_complete_request_impl,
+    device_connection_pair_incoming_requests_impl,
+    device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
+    device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
+    device_connection_send_pair_request_impl, device_connection_unpair_impl,
+    device_connection_update_last_seen_impl,
+};
 use runtime::{load_or_create_identity, spawn_discovery_worker};
 use types::DiscoveryRuntime;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
     IncomingSyncAck,
 };
+#[cfg(any(feature = "ui-plane", test))]
 use types::{
     PairAcceptPayload, PairCodeUpdate, PairCompletePayload, PairCompletionUpdate,
     PairRequestPayload,
@@ -78,10 +93,14 @@ fn env_port_list(name: &str, fallback: u16) -> Vec<u16> {
 }
 
 impl DeviceConnectionState {
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn new(app_data_dir: &Path) -> Self {
+        Self::new_with_db_path(app_data_dir, app_data_dir.join("fini.db"))
+    }
+
+    pub fn new_with_db_path(app_data_dir: &Path, db_path: PathBuf) -> Self {
         let identity = load_or_create_identity(app_data_dir);
         let runtime = Arc::new(Mutex::new(DiscoveryRuntime::default()));
-        let db_path = app_data_dir.join("fini.db");
         let discovery_port = env_port("FINI_DISCOVERY_PORT", DISCOVERY_PORT);
         let space_sync_ws_port = env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT);
         let discovery_broadcast_ports = env_port_list("FINI_DISCOVERY_PEER_PORTS", discovery_port);
@@ -222,6 +241,7 @@ impl DeviceConnectionState {
         guard.peer_sessions.contains_key(peer_device_id)
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn receive_ws_pair_request(
         &self,
         payload: PairRequestPayload,
@@ -257,6 +277,7 @@ impl DeviceConnectionState {
         Ok(())
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn receive_ws_pair_accept(&self, payload: PairAcceptPayload) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
@@ -278,6 +299,7 @@ impl DeviceConnectionState {
         Ok(())
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn receive_ws_pair_complete(&self, payload: PairCompletePayload) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());

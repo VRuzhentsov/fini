@@ -8,13 +8,16 @@ use diesel::prelude::*;
 use diesel::sql_types::Text;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
 use crate::models::{Quest, QuestSeries, Space};
 use crate::schema::{quest_series, quests, spaces};
-use crate::services::db::{utc_now, DbState};
+use crate::services::db::utc_now;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::AppDbConnection;
 
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
@@ -104,9 +107,10 @@ struct TableNameRow {
     name: String,
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_export(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     space_ids: Vec<String>,
 ) -> Result<BackupExportResult, String> {
@@ -114,9 +118,10 @@ pub fn backup_export(
     export_backup(&mut conn, Path::new(&path), &space_ids)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_preflight_import(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
 ) -> Result<BackupImportPreflight, String> {
@@ -124,9 +129,10 @@ pub fn backup_preflight_import(
     preflight_import(&mut conn, Path::new(&path), &mappings)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_apply_import(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
     resolutions: Vec<BackupConflictResolutionInput>,
@@ -323,6 +329,7 @@ pub fn apply_import(
     })
 }
 
+#[cfg(feature = "cli-plane")]
 pub fn import_cli(
     conn: &mut SqliteConnection,
     path: &Path,
