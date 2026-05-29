@@ -131,7 +131,7 @@ Conventions:
 
 ## Writing BE unit tests
 
-Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.rs`, `src-tauri/src/services/quest.rs`, `src-tauri/src/services/settings.rs`, `src-tauri/src/services/mcp.rs`, `src-tauri/src/services/device_connection/runtime.rs`.
+Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.rs`, `src-tauri/src/services/quest.rs`, `src-tauri/src/services/settings.rs`, `src-tauri/src/services/device_connection/runtime.rs`.
 
 For DB-touching tests, use the `temp_db_path(label)` helper in `src-tauri/src/services/db.rs`:
 

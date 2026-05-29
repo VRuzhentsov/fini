@@ -14,7 +14,7 @@ Fini exposes a CLI-only binary named `fini` for synchronous automation.
 
 ## Feature Planes
 
-- `cli-plane` owns CLI parsing, MCP stdio server mode, and CLI-only dependencies such as `clap` and `rmcp`.
+- `cli-plane` owns CLI parsing and CLI-only dependencies such as `clap`.
 - `ui-plane` owns the Tauri app runtime and mobile/desktop UI entrypoint.
 - Desktop app builds enable only `ui-plane`; local automation uses the separate `fini` CLI binary.
 - Docker runtime builds enable only `cli-plane` and expose the CLI binary by default.

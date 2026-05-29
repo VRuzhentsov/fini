@@ -127,7 +127,7 @@ Use the repo structure as the default map:
 
 - Frontend: `src/`, Vue 3, TypeScript, Vite, Tailwind CSS, DaisyUI, Pinia.
 - Backend: `src-tauri/`, Rust, Tauri 2, Diesel, SQLite.
-- Domain specs and companion specs: `spec/`, folder `README.md` files, and sidecar `.md` files next to source files.
+- Domain specs and companion specs: `specs/`, folder `README.md` files, and sidecar `.md` files next to source files.
 - Repo automation: `Makefile` is the primary human execution entrypoint, `npm run` owns JS/TS package tasks, and `xtask/` owns non-trivial automation logic. See `fini-scripting`.
 
 Before changing a significant source file, read its companion `.md` spec when present. Write code to match the spec, or update docs/specs deliberately when the behavior changes.

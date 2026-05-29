@@ -3,11 +3,11 @@ use diesel::sqlite::SqliteConnection;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::{AppHandle, State};
 
-use crate::models::Quest;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::models::Reminder;
+use crate::models::Space;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::models::{CreateReminderInput, Space, UpdateReminderInput};
+use crate::models::UpdateReminderInput;
+use crate::models::{CreateReminderInput, Quest, Reminder};
 use crate::schema::reminders;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::schema::{quests, spaces};
@@ -38,56 +38,94 @@ fn load_quest_and_space(
 
 // ── Bridge helpers (called from quest service, not frontend) ─────────────────
 
-/// DB-only upsert: compute due_at_utc from quest fields and upsert the Reminder row.
-/// No notification scheduling — callable without AppHandle (e.g. from MCP mode).
-pub fn upsert_reminder_db(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
-    let due_str = match quest.due.as_deref() {
-        Some(d) => d,
-        None => return Ok(()),
-    };
-
-    let due_at_utc =
-        crate::services::due_time::compute_fire_utc(due_str, quest.due_time.as_deref())
-            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
-
-    let existing: Option<String> = reminders::table
-        .filter(reminders::quest_id.eq(&quest.id))
-        .select(reminders::id)
-        .first(conn)
-        .optional()
-        .map_err(|e| e.to_string())?;
-
-    match existing {
-        Some(existing_id) => {
-            diesel::update(reminders::table.find(&existing_id))
-                .set(reminders::due_at_utc.eq(&due_at_utc))
-                .execute(conn)
-                .map_err(|e| e.to_string())?;
-        }
-        None => {
-            let now = utc_now();
-            diesel::insert_into(reminders::table)
-                .values((
-                    reminders::quest_id.eq(&quest.id),
-                    reminders::kind.eq("absolute"),
-                    reminders::due_at_utc.eq(&due_at_utc),
-                    reminders::created_at.eq(&now),
-                ))
-                .execute(conn)
-                .map_err(|e| e.to_string())?;
-        }
-    }
-
-    Ok(())
+pub struct ReminderRepository<'a> {
+    conn: &'a mut SqliteConnection,
 }
 
-/// DB-only delete: remove all Reminder rows for a quest.
-/// No notification cancellation — callable without AppHandle (e.g. from MCP mode).
-pub fn delete_reminder_db(conn: &mut SqliteConnection, quest_id: &str) -> Result<(), String> {
-    diesel::delete(reminders::table.filter(reminders::quest_id.eq(quest_id)))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+impl<'a> ReminderRepository<'a> {
+    pub fn new(conn: &'a mut SqliteConnection) -> Self {
+        Self { conn }
+    }
+
+    pub fn upsert_for_quest(&mut self, quest: &Quest) -> Result<(), String> {
+        let due_str = match quest.due.as_deref() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        let due_at_utc =
+            crate::services::due_time::compute_fire_utc(due_str, quest.due_time.as_deref())
+                .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+
+        let existing: Option<String> = reminders::table
+            .filter(reminders::quest_id.eq(&quest.id))
+            .select(reminders::id)
+            .first(self.conn)
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        match existing {
+            Some(existing_id) => {
+                diesel::update(reminders::table.find(&existing_id))
+                    .set(reminders::due_at_utc.eq(&due_at_utc))
+                    .execute(self.conn)
+                    .map_err(|e| e.to_string())?;
+            }
+            None => {
+                let now = utc_now();
+                diesel::insert_into(reminders::table)
+                    .values((
+                        reminders::quest_id.eq(&quest.id),
+                        reminders::kind.eq("absolute"),
+                        reminders::due_at_utc.eq(&due_at_utc),
+                        reminders::created_at.eq(&now),
+                    ))
+                    .execute(self.conn)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn delete_for_quest(&mut self, quest_id: &str) -> Result<(), String> {
+        diesel::delete(reminders::table.filter(reminders::quest_id.eq(quest_id)))
+            .execute(self.conn)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_for_quest(&mut self, quest_id: &str) -> Result<Vec<Reminder>, String> {
+        reminders::table
+            .filter(reminders::quest_id.eq(quest_id))
+            .select(Reminder::as_select())
+            .load(self.conn)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn create(&mut self, input: CreateReminderInput) -> Result<Reminder, String> {
+        diesel::insert_into(reminders::table)
+            .values(&input)
+            .returning(Reminder::as_returning())
+            .get_result(self.conn)
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn update(&mut self, id: &str, input: UpdateReminderInput) -> Result<Reminder, String> {
+        diesel::update(reminders::table.find(id))
+            .set(&input)
+            .returning(Reminder::as_returning())
+            .get_result(self.conn)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn delete(&mut self, id: &str) -> Result<(), String> {
+        diesel::delete(reminders::table.find(id))
+            .execute(self.conn)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -111,7 +149,7 @@ pub fn upsert_reminder_for_quest(
         notification::cancel_in_process(app, &existing.id);
     }
 
-    upsert_reminder_db(conn, quest)?;
+    ReminderRepository::new(conn).upsert_for_quest(quest)?;
 
     let reminder: Reminder = reminders::table
         .filter(reminders::quest_id.eq(&quest.id))
@@ -157,7 +195,7 @@ pub fn delete_reminder_for_quest(
         notification::cancel_snooze_with_conn(conn, app, &r.id);
     }
 
-    delete_reminder_db(conn, quest_id)
+    ReminderRepository::new(conn).delete_for_quest(quest_id)
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -169,11 +207,7 @@ pub fn get_reminders(
     quest_id: String,
 ) -> Result<Vec<Reminder>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    reminders::table
-        .filter(reminders::quest_id.eq(&quest_id))
-        .select(Reminder::as_select())
-        .load(&mut *conn)
-        .map_err(|e| e.to_string())
+    ReminderRepository::new(&mut conn).list_for_quest(&quest_id)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -185,11 +219,7 @@ pub fn create_reminder(
 ) -> Result<Reminder, String> {
     let notif_id = {
         let mut conn = state.inner().0.lock().unwrap();
-        let reminder: Reminder = diesel::insert_into(reminders::table)
-            .values(&input)
-            .returning(Reminder::as_returning())
-            .get_result(&mut *conn)
-            .map_err(|e| e.to_string())?;
+        let reminder = ReminderRepository::new(&mut conn).create(input)?;
 
         if reminder.due_at_utc.is_some() {
             let (quest, space) = load_quest_and_space(&mut conn, &reminder.quest_id)?;
@@ -237,11 +267,7 @@ pub fn update_reminder(
     notification::cancel_in_process(&app, &existing.id);
 
     // Apply update
-    let updated: Reminder = diesel::update(reminders::table.find(&id))
-        .set(&input)
-        .returning(Reminder::as_returning())
-        .get_result(&mut *conn)
-        .map_err(|e| e.to_string())?;
+    let updated = ReminderRepository::new(&mut conn).update(&id, input)?;
 
     // Reschedule if new time is set
     let new_notif_id = if updated.due_at_utc.is_some() {
@@ -309,8 +335,5 @@ pub fn delete_reminder(
         notification::cancel_in_process(&app, &reminder.id);
     }
 
-    diesel::delete(reminders::table.find(&id))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    ReminderRepository::new(&mut conn).delete(&id)
 }

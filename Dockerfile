@@ -66,7 +66,7 @@ RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fi
 
 FROM rust-builder-base AS app-build-cli-dev
 
-RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --bin fini --features cli-plane,devtools && \
+RUN cargo build --manifest-path src-tauri/Cargo.toml --locked --bin fini --features cli-plane && \
     cp src-tauri/target/debug/fini /workspace/fini && \
     rm -rf src-tauri/target
 
@@ -178,7 +178,6 @@ ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
     FINI_APP_BINARY=/usr/local/bin/fini-app \
     FINI_CLI_BINARY=/usr/local/bin/fini \
     FINI_E2E_CONTAINER_RUNNER=1 \
-    FINI_E2E_HEADFUL=1 \
     TZ=UTC
 
 CMD ["sh", "./scripts/e2e-runner.sh"]

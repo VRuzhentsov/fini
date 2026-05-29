@@ -17,14 +17,13 @@ FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 RELEASE_BUNDLES ?= deb,rpm
 
-.PHONY: help require-container dev build mcp play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-install-debug android-install-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
 	@echo "Linux"
 	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
 	@echo "  make build            Release build"
-	@echo "  make mcp              Run MCP server (debug binary)"
 	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-be-compile  Compile backend tests in Dockerfile stage"
 	@echo "  make pr-gate-be-unit  Run backend unit tests in Dockerfile stage"
@@ -72,17 +71,14 @@ dev:
 	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
 	trap restore_capability EXIT INT TERM; \
 	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	npm run tauri dev -- --features ui-plane,cli-plane,devtools
+	npm run tauri dev -- --features ui-plane,devtools
 
 build:
-	npm run tauri build -- --features ui-plane,cli-plane
+	npm run tauri build -- --features ui-plane
 
 flatpak-install-local:
 	-$(MAKE) build
 	flatpak run org.flatpak.Builder --force-clean --user --install flatpak-build com.fini.app.yml
-
-mcp:
-	cargo run --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane -- mcp
 
 play-store-screenshots:
 	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
@@ -288,7 +284,7 @@ e2e-headed:
 	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- --bin fini-app; \
 	restore_capability; \
 	trap - EXIT INT TERM; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane,devtools; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors
 
 # Build/update the published headless runtime image locally.

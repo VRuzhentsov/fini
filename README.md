@@ -62,7 +62,7 @@ Quests are organized into **Spaces** — named contexts like Personal, Work, or 
 |---|---|
 | `src/` | Vue 3 frontend — see `src/README.md` |
 | `src-tauri/` | Rust backend (Tauri 2.0) — see `src-tauri/README.md` |
-| `spec/` | Domain model specs shared between frontend and backend |
+| `specs/` | Domain model and E2E specs shared between frontend and backend |
 
 Each folder has its own `README.md` with structure and conventions. Each significant source file has a companion `.md` spec — see **Spec files** below.
 
@@ -71,8 +71,8 @@ Each folder has its own `README.md` with structure and conventions. Each signifi
 Every significant source file has a companion `.md` file with the same name (e.g. `App.vue` → [[App.md]]). These files are the **source of truth** for that file: they describe its purpose, the sections or structure it must contain, its props/events/commands, and any design decisions. Code should be written to match the spec, not the other way around.
 
 Convention:
-- **Domain model specs** live in `spec/` — shared between frontend and backend
-- **E2E QA specs** live in `spec/e2e/` — execution guide in `spec/e2e/README.md`
+- **Domain model specs** live in `specs/` — shared between frontend and backend
+- **E2E QA specs** live in `specs/e2e/`
 - **UI specs** live next to the source file they describe (e.g. `App.vue` → `App.md`)
 - A spec file for a view describes its concept and sections
 - A spec file for a component describes its props, events, and behaviour

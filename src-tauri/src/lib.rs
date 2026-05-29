@@ -119,16 +119,6 @@ fn sync_native_theme(app: AppHandle, theme: String) {
 }
 
 #[cfg(feature = "cli-plane")]
-pub fn run_mcp() {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(services::mcp::run())
-        .unwrap();
-}
-
-#[cfg(feature = "cli-plane")]
 pub fn run_cli() -> i32 {
     services::cli::run(std::env::args().collect())
 }
@@ -155,8 +145,6 @@ pub fn run() {
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
     ));
-    #[cfg(all(debug_assertions, feature = "cli-plane", not(mobile)))]
-    let builder = builder.plugin(tauri_plugin_mcp_bridge::init());
     #[cfg(feature = "devtools")]
     let builder = {
         let socket_path = std::env::var("TAURI_PLAYWRIGHT_SOCKET")

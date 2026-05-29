@@ -23,7 +23,7 @@ src-tauri/
 
 ## Data model
 
-See `spec/` at the repo root for domain model specs ([[Quest]], [[Space]], [[RepeatRule]], [[QuestSeries]], [[QuestOccurrence]], [[Reminder]], [[FocusHistory]], [[DeviceConnection]], [[SpaceSync]], [[Network]]).
+See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[RepeatRule]], [[QuestSeries]], [[QuestOccurrence]], [[Reminder]], [[FocusHistory]], [[DeviceConnection]], [[SpaceSync]], [[Network]]).
 
 ## Commands (target naming for upcoming sync implementation)
 

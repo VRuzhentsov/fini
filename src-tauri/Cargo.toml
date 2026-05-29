@@ -48,11 +48,8 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 futures-util = "0.3"
 tokio-tungstenite = "0.26"
 tokio = { version = "1", features = ["full"] }
-rmcp = { version = "1.2.0", features = ["server", "transport-io", "macros"], optional = true }
 dirs = "5"
-anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
-tauri-plugin-mcp-bridge = { version = "0.10", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-autostart = "2.5.1"
@@ -72,7 +69,7 @@ notify-rust = "4"
 [features]
 default = []
 ui-plane = []
-cli-plane = ["dep:clap", "dep:rmcp", "dep:tauri-plugin-mcp-bridge"]
+cli-plane = ["dep:clap"]
 # Enable developer/test control-plane hooks. Off by default; production builds
 # must not ship this because it exposes an in-process Playwright socket bridge.
 devtools = ["dep:tauri-plugin-playwright"]
