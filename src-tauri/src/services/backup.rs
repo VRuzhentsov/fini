@@ -17,7 +17,7 @@ use crate::models::{Quest, QuestSeries, Space};
 use crate::schema::{quest_series, quests, spaces};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::DbState;
+use crate::services::db::AppDbConnection;
 
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
@@ -110,7 +110,7 @@ struct TableNameRow {
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_export(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     space_ids: Vec<String>,
 ) -> Result<BackupExportResult, String> {
@@ -121,7 +121,7 @@ pub fn backup_export(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_preflight_import(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
 ) -> Result<BackupImportPreflight, String> {
@@ -132,7 +132,7 @@ pub fn backup_preflight_import(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_apply_import(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
     resolutions: Vec<BackupConflictResolutionInput>,

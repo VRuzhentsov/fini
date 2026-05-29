@@ -7,21 +7,19 @@ use std::collections::HashMap;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::{Manager, State};
 
-use crate::models::{
-    CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries,
-};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::{clamp_order_rank, CreateQuestInput, UpdateQuestInput};
+use crate::models::{CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries};
 use crate::schema::{focus_history, quest_series, quests};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::DbState;
+use crate::services::db::AppDbConnection;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::device_connection::DeviceConnectionState;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
-#[cfg(any(feature = "ui-plane", test))]
 use crate::services::reminder;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 
@@ -666,7 +664,7 @@ pub fn load_quests_for_list(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn get_quests(state: State<DbState>) -> Result<Vec<Quest>, String> {
+pub fn get_quests(state: State<AppDbConnection>) -> Result<Vec<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     load_quests_for_list(&mut conn).map_err(|e| e.to_string())
 }
@@ -675,7 +673,7 @@ pub fn get_quests(state: State<DbState>) -> Result<Vec<Quest>, String> {
 #[tauri::command]
 pub fn create_quest(
     app: tauri::AppHandle,
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     input: CreateQuestInput,
 ) -> Result<Quest, String> {
@@ -816,10 +814,10 @@ pub fn create_quest(
 /// Logs errors rather than returning them — callers are notification action handlers.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
-    let db = match app.try_state::<DbState>() {
+    let db = match app.try_state::<AppDbConnection>() {
         Some(s) => s,
         None => {
-            eprintln!("[notification] complete: DbState not available");
+            eprintln!("[notification] complete: AppDbConnection not available");
             return;
         }
     };
@@ -879,14 +877,14 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn get_active_focus(state: State<DbState>) -> Result<Option<Quest>, String> {
+pub fn get_active_focus(state: State<AppDbConnection>) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     resolve_active_quest(&mut conn).map_err(|e| e.to_string())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn set_focus(state: State<DbState>, id: String) -> Result<Quest, String> {
+pub fn set_focus(state: State<AppDbConnection>, id: String) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
     let now = utc_now();
 
@@ -913,7 +911,7 @@ pub fn set_focus(state: State<DbState>, id: String) -> Result<Quest, String> {
 #[tauri::command]
 pub fn update_quest(
     app: tauri::AppHandle,
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     id: String,
     input: UpdateQuestInput,
@@ -966,7 +964,7 @@ pub fn update_quest(
 #[tauri::command]
 pub fn delete_quest(
     app: tauri::AppHandle,
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     id: String,
 ) -> Result<(), String> {
@@ -1051,7 +1049,7 @@ fn delete_quest_series_in_db(
 #[tauri::command]
 pub fn delete_quest_series(
     app: tauri::AppHandle,
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     series_id: String,
 ) -> Result<(), String> {

@@ -22,6 +22,7 @@ use crate::{
         db::open_db_at_path,
         quest::{append_focus_history, generate_next_occurrence, resolve_active_quest},
         reminder::{delete_reminder_db, upsert_reminder_db},
+        space_sync::outbox::emit_sync_event,
     },
 };
 
@@ -30,16 +31,42 @@ use crate::{
 #[derive(Clone)]
 pub struct FiniServer {
     db: Arc<Mutex<SqliteConnection>>,
+    origin_device_id: Option<String>,
     tool_router: ToolRouter<FiniServer>,
 }
 
 impl FiniServer {
     pub fn new(db_path: &std::path::Path) -> Self {
+        Self::new_with_origin(db_path, None)
+    }
+
+    pub fn new_with_origin(db_path: &std::path::Path, origin_device_id: Option<String>) -> Self {
         let conn = open_db_at_path(db_path);
         Self {
             db: Arc::new(Mutex::new(conn)),
+            origin_device_id,
             tool_router: Self::tool_router(),
         }
+    }
+
+    fn emit_quest_sync(&self, conn: &mut SqliteConnection, quest: &Quest, op_type: &str) {
+        let Some(origin_device_id) = self.origin_device_id.as_deref() else {
+            return;
+        };
+        let payload = if op_type == "delete" {
+            None
+        } else {
+            serde_json::to_string(quest).ok()
+        };
+        let _ = emit_sync_event(
+            conn,
+            origin_device_id,
+            "quest",
+            &quest.id,
+            &quest.space_id,
+            op_type,
+            payload,
+        );
     }
 
     fn cli_structured(result: CallToolResult) -> serde_json::Value {
@@ -507,6 +534,7 @@ impl FiniServer {
         if quest.status == "active" && quest.due.is_some() {
             let _ = upsert_reminder_db(&mut conn, &quest);
         }
+        self.emit_quest_sync(&mut conn, &quest, "upsert");
 
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
@@ -586,6 +614,7 @@ impl FiniServer {
         } else {
             let _ = delete_reminder_db(&mut conn, &quest.id);
         }
+        self.emit_quest_sync(&mut conn, &quest, "upsert");
 
         Ok(CallToolResult::structured(
             serde_json::to_value(quest_to_record(&quest)).unwrap(),
@@ -613,6 +642,7 @@ impl FiniServer {
             .first(&mut *conn)
             .map_err(db_err)?;
         let _ = delete_reminder_db(&mut conn, &quest.id);
+        self.emit_quest_sync(&mut conn, &quest, "upsert");
         if quest.repeat_rule.is_some() || quest.series_id.is_some() {
             if let Ok(Some(occ)) = generate_next_occurrence(&mut conn, &quest) {
                 if occ.due.is_some() {
@@ -642,6 +672,7 @@ impl FiniServer {
             .first(&mut *conn)
             .map_err(db_err)?;
         let _ = delete_reminder_db(&mut conn, &quest.id);
+        self.emit_quest_sync(&mut conn, &quest, "upsert");
         if quest.repeat_rule.is_some() || quest.series_id.is_some() {
             if let Ok(Some(occ)) = generate_next_occurrence(&mut conn, &quest) {
                 if occ.due.is_some() {
@@ -660,9 +691,15 @@ impl FiniServer {
         Parameters(p): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let mut conn = self.db.lock().unwrap();
+        let quest: Quest = quests::table
+            .find(&p.id)
+            .select(Quest::as_select())
+            .first(&mut *conn)
+            .map_err(db_err)?;
         diesel::delete(quests::table.find(&p.id))
             .execute(&mut *conn)
             .map_err(db_err)?;
+        self.emit_quest_sync(&mut conn, &quest, "delete");
         Ok(CallToolResult::structured(serde_json::json!({
             "deleted": true,
             "id": p.id,

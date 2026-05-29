@@ -3,17 +3,17 @@ use diesel::sqlite::SqliteConnection;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::{AppHandle, State};
 
-#[cfg(any(feature = "ui-plane", test))]
-use crate::models::{CreateReminderInput, Space, UpdateReminderInput};
 use crate::models::Quest;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::Reminder;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::models::{CreateReminderInput, Space, UpdateReminderInput};
 use crate::schema::reminders;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::schema::{quests, spaces};
-#[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::DbState;
 use crate::services::db::utc_now;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::AppDbConnection;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::notification;
 
@@ -46,8 +46,9 @@ pub fn upsert_reminder_db(conn: &mut SqliteConnection, quest: &Quest) -> Result<
         None => return Ok(()),
     };
 
-    let due_at_utc = crate::services::due_time::compute_fire_utc(due_str, quest.due_time.as_deref())
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    let due_at_utc =
+        crate::services::due_time::compute_fire_utc(due_str, quest.due_time.as_deref())
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
 
     let existing: Option<String> = reminders::table
         .filter(reminders::quest_id.eq(&quest.id))
@@ -163,7 +164,10 @@ pub fn delete_reminder_for_quest(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn get_reminders(state: State<DbState>, quest_id: String) -> Result<Vec<Reminder>, String> {
+pub fn get_reminders(
+    state: State<AppDbConnection>,
+    quest_id: String,
+) -> Result<Vec<Reminder>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     reminders::table
         .filter(reminders::quest_id.eq(&quest_id))
@@ -176,7 +180,7 @@ pub fn get_reminders(state: State<DbState>, quest_id: String) -> Result<Vec<Remi
 #[tauri::command]
 pub fn create_reminder(
     app: AppHandle,
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
     let notif_id = {
@@ -215,7 +219,7 @@ pub fn create_reminder(
 #[tauri::command]
 pub fn update_reminder(
     app: AppHandle,
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     id: String,
     input: UpdateReminderInput,
 ) -> Result<Reminder, String> {
@@ -266,7 +270,7 @@ pub fn update_reminder(
 #[tauri::command]
 pub fn cancel_quest_notifications(
     app: AppHandle,
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     quest_id: String,
 ) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
@@ -286,7 +290,11 @@ pub fn cancel_quest_notifications(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn delete_reminder(app: AppHandle, state: State<DbState>, id: String) -> Result<(), String> {
+pub fn delete_reminder(
+    app: AppHandle,
+    state: State<AppDbConnection>,
+    id: String,
+) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
 
     // Cancel scheduled notification if any

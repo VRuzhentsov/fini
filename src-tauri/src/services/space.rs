@@ -1,12 +1,18 @@
+#[cfg(any(feature = "ui-plane", test))]
 use diesel::prelude::*;
+#[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
 
+#[cfg(any(feature = "ui-plane", test))]
 use crate::models::{CreateSpaceInput, Space, UpdateSpaceInput};
+#[cfg(any(feature = "ui-plane", test))]
 use crate::schema::spaces;
-use crate::services::db::DbState;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::AppDbConnection;
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn get_spaces(state: State<DbState>) -> Result<Vec<Space>, String> {
+pub fn get_spaces(state: State<AppDbConnection>) -> Result<Vec<Space>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     spaces::table
         .select(Space::as_select())
@@ -15,8 +21,12 @@ pub fn get_spaces(state: State<DbState>) -> Result<Vec<Space>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn create_space(state: State<DbState>, input: CreateSpaceInput) -> Result<Space, String> {
+pub fn create_space(
+    state: State<AppDbConnection>,
+    input: CreateSpaceInput,
+) -> Result<Space, String> {
     let mut conn = state.inner().0.lock().unwrap();
     diesel::insert_into(spaces::table)
         .values(&input)
@@ -25,9 +35,10 @@ pub fn create_space(state: State<DbState>, input: CreateSpaceInput) -> Result<Sp
         .map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn update_space(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     id: String,
     input: UpdateSpaceInput,
 ) -> Result<Space, String> {
@@ -43,8 +54,9 @@ pub fn update_space(
         .map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn delete_space(state: State<DbState>, id: String) -> Result<(), String> {
+pub fn delete_space(state: State<AppDbConnection>, id: String) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
     diesel::delete(spaces::table.find(&id))
         .execute(&mut *conn)

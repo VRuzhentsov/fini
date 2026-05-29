@@ -7,7 +7,7 @@ mod services;
 #[cfg(feature = "ui-plane")]
 use services::backup::{backup_apply_import, backup_export, backup_preflight_import};
 #[cfg(feature = "ui-plane")]
-use services::db::{app_data_dir, open_db, DbState};
+use services::db::{app_data_dir, open_db, AppDbConnection};
 #[cfg(feature = "ui-plane")]
 use services::device_connection::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
@@ -84,7 +84,7 @@ const _: &str = TAP_EVENT;
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn get_theme_mode(db: tauri::State<DbState>) -> Result<String, String> {
+fn get_theme_mode(db: tauri::State<AppDbConnection>) -> Result<String, String> {
     let mut conn = db.0.lock().unwrap();
     settings::theme_mode(&mut conn).map(|mode| mode.as_str().to_string())
 }
@@ -93,7 +93,7 @@ fn get_theme_mode(db: tauri::State<DbState>) -> Result<String, String> {
 #[tauri::command]
 fn set_theme_mode(
     app: AppHandle,
-    db: tauri::State<DbState>,
+    db: tauri::State<AppDbConnection>,
     mode: String,
 ) -> Result<String, String> {
     let mode = ThemeMode::parse(&mode).ok_or_else(|| "invalid theme mode".to_string())?;
@@ -107,7 +107,7 @@ fn set_theme_mode(
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn theme_hint(db: tauri::State<DbState>) -> String {
+fn theme_hint(db: tauri::State<AppDbConnection>) -> String {
     let mut conn = db.0.lock().unwrap();
     settings::theme_hint(&mut conn)
 }
@@ -170,7 +170,7 @@ pub fn run() {
             let app_handle = app.handle();
 
             let conn = open_db(&app_handle);
-            app.manage(DbState(std::sync::Mutex::new(conn)));
+            app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
             app.manage(SchedulerState::new());
             #[cfg(feature = "devtools")]
             app.manage(NotificationObserverState::new());
@@ -178,7 +178,7 @@ pub fn run() {
             setup_notifications(&app_handle);
 
             let initial_theme = {
-                let db = app.state::<DbState>();
+                let db = app.state::<AppDbConnection>();
                 let mut conn = db.0.lock().unwrap();
                 settings::theme_hint(&mut conn)
             };
@@ -196,7 +196,7 @@ pub fn run() {
                 }
             }
 
-            let db_state = app.state::<DbState>();
+            let db_state = app.state::<AppDbConnection>();
             reconciler::run(&app_handle, &db_state);
 
             resume_watcher::spawn(&app_handle);

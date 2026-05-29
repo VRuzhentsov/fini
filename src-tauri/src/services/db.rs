@@ -13,7 +13,7 @@ pub const APP_DATA_DIR_NAME: &str = "com.fini.app";
 pub const APP_DATA_DIR_NAME: &str = "fini";
 
 #[cfg(any(feature = "ui-plane", test))]
-pub struct DbState(pub Mutex<SqliteConnection>);
+pub struct AppDbConnection(pub Mutex<SqliteConnection>);
 
 #[derive(QueryableByName)]
 struct MigrationTableRow {

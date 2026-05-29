@@ -1,9 +1,30 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::services::backup;
 use crate::services::db::{db_default_path, open_db_at_path};
+use crate::services::device_connection::types::{
+    DevicePairRequestAckInput, DevicePairRequestInput,
+};
+use crate::services::device_connection::{
+    device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,
+    device_connection_discovery_snapshot_impl, device_connection_enter_add_mode_impl,
+    device_connection_get_identity_impl, device_connection_get_paired_devices_impl,
+    device_connection_leave_add_mode_impl, device_connection_pair_accept_request_impl,
+    device_connection_pair_acknowledge_request_impl, device_connection_pair_complete_request_impl,
+    device_connection_pair_incoming_requests_impl,
+    device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
+    device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
+    device_connection_send_pair_request_impl, device_connection_unpair_impl,
+    device_connection_update_last_seen_impl, DeviceConnectionState,
+};
 use crate::services::mcp::{FiniServer, UpdateQuestParams};
+use crate::services::settings::{self, ThemeMode};
+use crate::services::space_sync::{
+    space_sync_apply_remote_mappings_impl, space_sync_list_mappings_impl,
+    space_sync_resolve_custom_space_mapping_impl, space_sync_status_impl, space_sync_tick_impl,
+    space_sync_update_mappings_impl, SpaceResolutionMode,
+};
 
 const EXIT_SUCCESS: i32 = 0;
 const EXIT_NOT_FOUND: i32 = 3;
@@ -49,6 +70,10 @@ enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCommand,
     },
 }
 
@@ -247,12 +272,15 @@ struct DevicePairSendArgs {
     to_device_id: String,
     #[arg(long)]
     to_addr: String,
+    #[arg(long)]
+    to_ws_port: Option<u16>,
 }
 
 #[derive(Subcommand)]
 enum DevicePairedCommand {
     List,
     Save(DevicePairedSaveArgs),
+    UpdateLastSeen(DevicePairedLastSeenArgs),
     Unpair(PeerDeviceIdArg),
 }
 
@@ -262,6 +290,14 @@ struct DevicePairedSaveArgs {
     peer_device_id: String,
     #[arg(long)]
     display_name: String,
+}
+
+#[derive(Args)]
+struct DevicePairedLastSeenArgs {
+    #[arg(long)]
+    peer_device_id: String,
+    #[arg(long)]
+    last_seen_at: String,
 }
 
 #[derive(Subcommand)]
@@ -296,6 +332,19 @@ enum SyncMappingsCommand {
     Update(SyncMappingsUpdateArgs),
     ApplyRemote(SyncMappingsApplyRemoteArgs),
     ResolveCustom(SyncResolveCustomArgs),
+}
+
+#[derive(Subcommand)]
+enum SettingsCommand {
+    ThemeGet,
+    ThemeSet(SettingsThemeSetArgs),
+    ThemeHint,
+}
+
+#[derive(Args)]
+struct SettingsThemeSetArgs {
+    #[arg(long)]
+    mode: String,
 }
 
 #[derive(Args)]
@@ -382,6 +431,7 @@ type CliResult<T> = Result<T, CliError>;
 
 struct CliContext {
     db_path: std::path::PathBuf,
+    device_state: DeviceConnectionState,
     server: FiniServer,
     runtime: tokio::runtime::Runtime,
 }
@@ -399,9 +449,17 @@ impl CliContext {
             .build()
             .map_err(|err| CliError::runtime(format!("failed to create tokio runtime: {err}")))?;
 
+        let app_data_dir = db_path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let device_state = DeviceConnectionState::new_with_db_path(&app_data_dir, db_path.clone());
+        let origin_device_id = Some(device_state.identity.device_id.clone());
+
         Ok(Self {
             db_path: db_path.clone(),
-            server: FiniServer::new(&db_path),
+            device_state,
+            server: FiniServer::new_with_origin(&db_path, origin_device_id),
             runtime,
         })
     }
@@ -444,16 +502,9 @@ fn execute(cli: Cli) -> CliResult<i32> {
         Some(Command::Space { command }) => handle_space(&ctx, command)?,
         Some(Command::Backup { command }) => handle_backup(&ctx, command)?,
         Some(Command::Reminder { command }) => handle_reminder(&ctx, command)?,
-        Some(Command::Device { command: _ }) => {
-            return Err(CliError::runtime(
-                "device command group is not implemented yet in CLI runtime",
-            ));
-        }
-        Some(Command::Sync { command: _ }) => {
-            return Err(CliError::runtime(
-                "sync command group is not implemented yet in CLI runtime",
-            ));
-        }
+        Some(Command::Device { command }) => handle_device(&ctx, command)?,
+        Some(Command::Sync { command }) => handle_sync(&ctx, command)?,
+        Some(Command::Settings { command }) => handle_settings(&ctx, command)?,
         Some(Command::Mcp) => unreachable!(),
     };
 
@@ -614,6 +665,251 @@ fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Valu
             .runtime
             .block_on(ctx.server.cli_delete_reminder(args.id))
             .map_err(CliError::from_string)?,
+    };
+    Ok(value)
+}
+
+fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    let value = match command {
+        DeviceCommand::Identity => serde_json::to_value(
+            device_connection_get_identity_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DeviceCommand::AddMode { command } => {
+            match command {
+                DeviceAddModeCommand::Enter => {
+                    device_connection_enter_add_mode_impl(&ctx.device_state)
+                }
+                DeviceAddModeCommand::Leave => {
+                    device_connection_leave_add_mode_impl(&ctx.device_state)
+                }
+            }
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+        DeviceCommand::Discovery => serde_json::to_value(
+            device_connection_discovery_snapshot_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DeviceCommand::Presence => serde_json::to_value(
+            device_connection_presence_snapshot_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DeviceCommand::Pair { command } => handle_device_pair(ctx, command)?,
+        DeviceCommand::Paired { command } => match command {
+            DevicePairedCommand::List => serde_json::to_value(
+                device_connection_get_paired_devices_impl(&mut conn)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            DevicePairedCommand::Save(args) => serde_json::to_value(
+                device_connection_save_paired_device_impl(
+                    &mut conn,
+                    args.peer_device_id,
+                    args.display_name,
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            DevicePairedCommand::UpdateLastSeen(args) => {
+                device_connection_update_last_seen_impl(
+                    &mut conn,
+                    args.peer_device_id,
+                    args.last_seen_at,
+                )
+                .map_err(CliError::from_string)?;
+                json!({ "ok": true })
+            }
+            DevicePairedCommand::Unpair(args) => {
+                device_connection_unpair_impl(&mut conn, args.peer_device_id)
+                    .map_err(CliError::from_string)?;
+                json!({ "ok": true })
+            }
+        },
+        DeviceCommand::Updates { command } => match command {
+            DeviceUpdatesCommand::ConsumeSpaceMapping => serde_json::to_value(
+                device_connection_consume_space_mapping_updates_impl(&ctx.device_state)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+        },
+        DeviceCommand::Debug { command } => match command {
+            DeviceDebugCommand::Status => serde_json::to_value(
+                device_connection_debug_status_impl(&ctx.device_state)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+        },
+    };
+    Ok(value)
+}
+
+fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult<Value> {
+    let value = match command {
+        DevicePairCommand::Send(args) => {
+            device_connection_send_pair_request_impl(
+                &ctx.device_state,
+                DevicePairRequestInput {
+                    request_id: args.request_id,
+                    to_device_id: args.to_device_id,
+                    to_addr: args.to_addr,
+                    to_ws_port: args.to_ws_port,
+                },
+            )
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+        DevicePairCommand::Incoming => serde_json::to_value(
+            device_connection_pair_incoming_requests_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::OutgoingUpdates => serde_json::to_value(
+            device_connection_pair_outgoing_updates_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::OutgoingCompletions => serde_json::to_value(
+            device_connection_pair_outgoing_completions_impl(&ctx.device_state)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::Accept(args) => serde_json::to_value(
+            device_connection_pair_accept_request_impl(
+                &ctx.device_state,
+                DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                },
+            )
+            .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+        DevicePairCommand::Complete(args) => {
+            device_connection_pair_complete_request_impl(
+                &ctx.device_state,
+                DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                },
+            )
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+        DevicePairCommand::Acknowledge(args) => {
+            device_connection_pair_acknowledge_request_impl(
+                &ctx.device_state,
+                DevicePairRequestAckInput {
+                    request_id: args.request_id,
+                },
+            )
+            .map_err(CliError::from_string)?;
+            json!({ "ok": true })
+        }
+    };
+    Ok(value)
+}
+
+fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    let value = match command {
+        SyncCommand::Mappings { command } => match command {
+            SyncMappingsCommand::List(args) => serde_json::to_value(
+                space_sync_list_mappings_impl(&mut conn, args.peer_device_id)
+                    .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            SyncMappingsCommand::Update(args) => serde_json::to_value(
+                space_sync_update_mappings_impl(
+                    &mut conn,
+                    &ctx.device_state,
+                    args.peer_device_id,
+                    args.mapped_space_id,
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            SyncMappingsCommand::ApplyRemote(args) => serde_json::to_value(
+                space_sync_apply_remote_mappings_impl(
+                    &mut conn,
+                    &ctx.device_state,
+                    args.peer_device_id,
+                    args.mapped_space_id,
+                    Vec::new(),
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+            SyncMappingsCommand::ResolveCustom(args) => serde_json::to_value(
+                space_sync_resolve_custom_space_mapping_impl(
+                    &mut conn,
+                    &ctx.device_state,
+                    args.peer_device_id,
+                    args.space_id,
+                    args.space_name,
+                    parse_space_resolution_mode(&args.mode)?,
+                    args.existing_local_space_id,
+                )
+                .map_err(CliError::from_string)?,
+            )
+            .map_err(|e| CliError::runtime(e.to_string()))?,
+        },
+        SyncCommand::Tick { peer_device_id } => {
+            let result = space_sync_tick_impl(&mut conn, &ctx.device_state)
+                .map_err(CliError::from_string)?;
+            if let Some(peer_id) = peer_device_id {
+                let peers: Vec<Value> = result
+                    .peers
+                    .iter()
+                    .filter(|peer| peer.peer_device_id == peer_id)
+                    .map(|peer| serde_json::to_value(peer).unwrap_or(Value::Null))
+                    .collect();
+                json!({
+                    "sent_events": result.sent_events,
+                    "applied_events": result.applied_events,
+                    "received_acks": result.received_acks,
+                    "peers": peers,
+                    "ticked_at": result.ticked_at,
+                })
+            } else {
+                serde_json::to_value(result).map_err(|e| CliError::runtime(e.to_string()))?
+            }
+        }
+        SyncCommand::Status { peer_device_id } => serde_json::to_value(
+            space_sync_status_impl(&mut conn, peer_device_id).map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()))?,
+    };
+    Ok(value)
+}
+
+fn parse_space_resolution_mode(value: &str) -> CliResult<SpaceResolutionMode> {
+    match value {
+        "create_new" => Ok(SpaceResolutionMode::CreateNew),
+        "use_existing" => Ok(SpaceResolutionMode::UseExisting),
+        _ => Err(CliError::from_string(
+            "mode must be create_new or use_existing".to_string(),
+        )),
+    }
+}
+
+fn handle_settings(ctx: &CliContext, command: SettingsCommand) -> CliResult<Value> {
+    let mut conn = open_db_at_path(&ctx.db_path);
+    let value = match command {
+        SettingsCommand::ThemeGet => {
+            let mode = settings::theme_mode(&mut conn).map_err(CliError::from_string)?;
+            json!({ "mode": mode.as_str() })
+        }
+        SettingsCommand::ThemeSet(args) => {
+            let mode = ThemeMode::parse(&args.mode).ok_or_else(|| {
+                CliError::from_string("mode must be system, light, or dark".to_string())
+            })?;
+            let mode = settings::set_theme_mode(&mut conn, mode).map_err(CliError::from_string)?;
+            json!({ "mode": mode.as_str() })
+        }
+        SettingsCommand::ThemeHint => json!({ "theme": settings::theme_hint(&mut conn) }),
     };
     Ok(value)
 }
