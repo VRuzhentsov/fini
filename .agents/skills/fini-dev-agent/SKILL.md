@@ -7,6 +7,12 @@ metadata:
       - name: FINI_DEV_TG_CHANNEL_ID
         required: false
         description: Telegram group chat ID for Fini Dev.
+      - name: FINI_ISSUE_TOPIC_SYNC_FILE
+        required: false
+        description: Optional JSON file syncing Fini GitHub issue numbers to messenger topic/thread targets.
+      - name: FINI_ISSUE_TG_TOPIC_MAP
+        required: false
+        description: Legacy optional JSON file mapping Fini GitHub issue numbers to Telegram topic targets.
       - name: FINI_DAILY_TG_TARGET
         required: false
         description: Preferred Telegram target for Daily topic reports, usually <group-id>:topic:<thread-id>.
@@ -21,6 +27,8 @@ metadata:
 # Fini Autonomous Dev Agent
 
 Use this skill as a behavior overlay for autonomous coding agents working on Fini. It does not replace `fini-dev`; it adds delegation, progress, and handoff discipline around it.
+
+When the work is happening in the Fini Dev Telegram group, also load `fini-dev-telegram` for group-topic routing, Fini Self Improvement handling, and issue-topic coordination.
 
 ## First Step
 
@@ -50,6 +58,43 @@ If the task comes from a GitHub issue, follow `fini-dev` branch guidance before 
 
 Use Fini Dev Telegram topics as coordination surfaces when the channel is available. Do not let Telegram delivery failures block local implementation; continue the work and report the delivery blocker in the final handoff.
 
+### Conversation Context
+
+In the Fini Dev Telegram group, treat messages in the same forum topic as shared task context even when the newest message does not explicitly mention the bot. The group is configured to ingest Fini Dev messages without requiring `@will_o_claw_bot`.
+
+When invoked from Fini Dev:
+
+1. Read the current message, reply chain, and recent same-topic context before deciding what the user wants.
+2. If the newest message is a follow-up, interpret it against the nearest replied-to message and the recent topic conversation.
+3. Continue the active task when the follow-up is consistent with the current thread, instead of asking for a fresh explicit command.
+4. Stay quiet when the message is ordinary human discussion and no useful action or correction is needed.
+5. Never expose private workspace, credential, or unrelated personal context into the group while using prior messages.
+
+### Dynamic Issue Topics
+
+Every GitHub issue that an autonomous Fini agent is actively working on should have its own Fini Dev Telegram forum topic.
+
+Before sending progress for issue work:
+
+1. Check the issue/topic sync file at `FINI_ISSUE_TOPIC_SYNC_FILE`, then legacy `FINI_ISSUE_TG_TOPIC_MAP`, or, if both are unset, `issue-topic-sync.json` at the local Fini checkout root.
+2. If the issue already has an `issueTarget`, use that for all issue-specific progress, blockers, verification evidence, and PR-ready handoff.
+3. If no mapping exists and Telegram topic creation is available, create a topic named `#<issue> <short title>` in the Fini Dev group.
+4. Record the mapping immediately with the issue number, title, GitHub URL, topic id, and `<group-id>:topic:<thread-id>` target.
+5. Send a short starting message inside the new issue topic so future readers know the branch, PR, and current phase.
+
+Use the shared `In Progress` topic only for generic status, scheduler work, or work that is not tied to one GitHub issue. Do not put detailed implementation updates for a specific issue in `Daily` or the root Fini Dev topic once its dynamic issue topic exists.
+
+### Closing Issue Topics
+
+When a pull request for a mapped issue is merged, the issue-specific Telegram topic should be marked closed:
+
+1. Close the related GitHub issue if GitHub did not close it automatically.
+2. Rename the Telegram forum topic so the title begins `closed #<issue>`.
+3. Update the topic map entry with `status: "closed"`, `closedAt`, `closedByPullRequest`, and `topicTitle`.
+4. Send one short final note inside the issue topic with the merged PR URL and issue close status.
+
+The `fini-merged-pr-topic-reconcile` system cron performs this idempotently every five minutes. Agents may still do it immediately during handoff after a merge, but they should preserve the same map fields and title convention.
+
 Preferred targets:
 
 | Topic | Use For | Preferred Env Var |
@@ -57,6 +102,7 @@ Preferred targets:
 | `Daily` | Daily issue reports, triage summaries, next-delegation recommendations | `FINI_DAILY_TG_TARGET` |
 | `Create` | New ticket intake, issue drafting, scope capture, task creation status | `FINI_CREATE_TG_TARGET` |
 | `In Progress` | Implementation progress, blockers, verification updates, PR-ready notices | `FINI_PROGRESS_TG_TARGET` |
+| Dynamic issue topic `#<issue> <title>` | All progress for one active GitHub issue | `FINI_ISSUE_TOPIC_SYNC_FILE` |
 
 Fallback:
 
