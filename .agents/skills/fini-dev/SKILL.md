@@ -92,7 +92,8 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | First-run setup, bootstrap, install, or verification of required sibling project context such as `../fini-wiki/` | `fini-dev-install` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
-| Change package metadata, app version display, CLI version output, Android versioning, release commands, signed tags, or CI release version sync | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
+| Make a release, bump a release version for shipping, push a release tag, inspect release readiness, fix release automation, or verify release CI | `fini-release`; also load `fini-versioning` for metadata semantics and `fini-scripting` when automation changes are needed |
+| Change package metadata, app version display, CLI version output, Android versioning, or CI release version sync outside an operational release | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
 | Prepare a major release, Play Store listing assets, Android marketplace screenshots, or release screenshot packages | `fini-release-prep`; also follow `fini-scripting` when automation changes are needed |
 | Query product/domain/history/architecture context from the wiki, or save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
 | Debug errors, regressions, stack traces, crashes, or unexpected behavior | `investigate` |
@@ -136,7 +137,7 @@ Use the repo structure as the default map:
 
 - Frontend: `src/`, Vue 3, TypeScript, Vite, Tailwind CSS, DaisyUI, Pinia.
 - Backend: `src-tauri/`, Rust, Tauri 2, Diesel, SQLite.
-- Domain specs and companion specs: `spec/`, folder `README.md` files, and sidecar `.md` files next to source files.
+- Domain specs and companion specs: `specs/`, folder `README.md` files, and sidecar `.md` files next to source files.
 - Repo automation: `Makefile` is the primary human execution entrypoint, `npm run` owns JS/TS package tasks, and `xtask/` owns non-trivial automation logic. See `fini-scripting`.
 
 Before changing a significant source file, read its companion `.md` spec when present. Write code to match the spec, or update docs/specs deliberately when the behavior changes.
@@ -170,8 +171,8 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 | Release desktop build | `make build` |
 | Visible local two-app E2E | `make e2e` or `make e2e-headed` |
 | Containerized CI-style E2E | `make e2e-ci` |
-| Build/update E2E images | `make e2e-image` or `make e2e-actors-image` |
-| Full containerized actor E2E | `make e2e-actors` |
+| Build/update E2E images | `make e2e-image` |
+| Full containerized E2E | `make pr-gate-e2e` |
 | Runtime container image | `make runtime-image` |
 | Runtime CLI smoke | `make runtime-smoke` |
 | Android device list | `make android-devices` |
@@ -180,7 +181,7 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 | Android build | `make android-build` |
 | Android debug deploy | `make android-debug-deploy` |
 | Android local release deploy | `make android-release-deploy-local` |
-| Release commit + signed tag | `make release VERSION=x.y.z` |
+| GitOps release commit + signed tag | `make release VERSION=x.y.z` |
 
 Use package scripts directly only when no Makefile target exists or when a narrower check is clearly better, such as `npm run build` for frontend type/build validation.
 
@@ -215,6 +216,8 @@ Use this loop for implementation and fixes:
 8. Verify with the smallest useful check, then escalate only as needed.
 9. Report the exact evidence collected and any remaining risk.
 
+Resolve compiler warnings by improving code structure, feature boundaries, visibility, or imports. Treat broad suppression such as crate-level `allow(dead_code, unused_imports)` as a user-owned exception: add it only after explicit user approval, keep its scope as narrow as possible, and call it out in the report.
+
 ## Verification Defaults
 
 Choose verification based on touched area:
@@ -228,7 +231,7 @@ Choose verification based on touched area:
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
-- Release work: follow release tag rules in `AGENTS.md`; do not create or push tags unless explicitly requested.
+- Release work: load `fini-release`, follow release tag rules in `AGENTS.md`, and do not create or push tags unless explicitly requested.
 
 If a command cannot be run, say why, what evidence is missing, and the exact command the user can run.
 

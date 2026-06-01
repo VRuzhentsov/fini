@@ -14,7 +14,7 @@ export interface CliClient {
 export function createCliClient(): CliClient {
   const dbDir = mkdtempSync(join(tmpdir(), 'fini-e2e-'));
   const dbPath = join(dbDir, 'fini.db');
-  const binary = process.env.FINI_BINARY ?? join(REPO_ROOT, 'src-tauri/target/debug/fini');
+  const binary = process.env.FINI_CLI_BINARY ?? join(REPO_ROOT, 'src-tauri/target/debug/fini');
 
   function run<T = unknown>(args: string[]): T {
     const result = spawnSync(binary, ['--json', ...args], {

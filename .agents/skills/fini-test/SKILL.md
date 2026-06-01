@@ -65,7 +65,7 @@ This depends on `make pr-gate-be-compile`, then runs the `be-unit-test` Dockerfi
 make e2e-headed
 ```
 
-Builds a debug binary with `--features e2e-testing` (`node ./node_modules/@tauri-apps/cli/tauri.js build --debug --features e2e-testing --no-bundle`), spawns actor processes locally, then executes `npx playwright test --config specs/e2e/playwright.config.ts --project actors`. `make e2e` is an alias for `make e2e-headed`.
+Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--features cli-plane,devtools`, then executes `npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors`. The Playwright fixtures spawn the real app processes. `make e2e` is an alias for `make e2e-headed`.
 
 ### E2E — containerized CI parity
 
@@ -73,7 +73,7 @@ Builds a debug binary with `--features e2e-testing` (`node ./node_modules/@tauri
 make pr-gate-e2e
 ```
 
-Runs the chain `pr-gate-e2e-build-actor` → `pr-gate-e2e-build-runner` → `pr-gate-e2e-network` → `pr-gate-e2e-start-actors` → `pr-gate-e2e-wait-actors` → `pr-gate-e2e-run` (each phase callable independently for failure diagnosis). `make e2e-ci` is the older `CI=1 make e2e-actors` shortcut.
+Runs the chain `pr-gate-e2e-build-dev-runner` → `pr-gate-e2e-run`. The dev-runner image owns actor startup and sockets. `make e2e-ci` is a shortcut for the same containerized E2E flow.
 
 ### Targeting a single Playwright project
 
@@ -131,7 +131,7 @@ Conventions:
 
 ## Writing BE unit tests
 
-Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.rs`, `src-tauri/src/services/quest.rs`, `src-tauri/src/services/settings.rs`, `src-tauri/src/services/mcp.rs`, `src-tauri/src/services/device_connection/runtime.rs`.
+Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.rs`, `src-tauri/src/services/quest.rs`, `src-tauri/src/services/settings.rs`, `src-tauri/src/services/device_connection/runtime.rs`.
 
 For DB-touching tests, use the `temp_db_path(label)` helper in `src-tauri/src/services/db.rs`:
 
@@ -170,7 +170,7 @@ Conventions:
 
 Layout: `specs/e2e/ui/tests/<feature>.spec.ts`. Fixture: `specs/e2e/ui/fixtures.ts` exports `test` and `expect` from `createTauriTest({ tauriCommand, mcpSocket: '/var/tmp/fini-playwright.sock' })`. The test receives a `tauriPage` that drives the real Fini window.
 
-App data is isolated under `FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui` so the user's normal data directory is untouched. The app is launched with `--features e2e-testing`.
+App data is isolated under `FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui` so the user's normal data directory is untouched. The app is launched with `--features devtools`.
 
 Skeleton from `specs/e2e/ui/tests/context-menu-submenu-hover.spec.ts`:
 
@@ -196,7 +196,7 @@ Conventions:
 
 Layout: `specs/e2e/actors/tests/<feature>.spec.ts`. Fixture: `specs/e2e/actors/fixtures.ts` exposes `actorA`, `actorB`, and a generic `actors` map. Each actor is a separate Fini instance with its own `FINI_APP_DATA_DIR` and its own Unix socket; the runner connects via `PluginClient(socketPath)` and exposes `actor.page` (a `TauriPage`) and `actor.invoke<T>(command, args)` (a typed Tauri command call).
 
-Actor processes are spawned by `specs/e2e/actors/start-actor.sh`. The runner discovers actors through environment variables:
+Actor processes are spawned by the worker-scoped fixture in `specs/e2e/actors/fixtures.ts`. The runner discovers actors through environment variables:
 
 - `FINI_E2E_ACTORS` — comma-separated slugs (default `actor-a,actor-b`).
 - `FINI_E2E_SOCKET_DIR` — directory where each actor's `<slug>.sock` appears (default `/var/run/fini-e2e`).

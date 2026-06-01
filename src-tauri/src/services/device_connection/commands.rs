@@ -1,15 +1,18 @@
 use chrono::Utc;
 use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use futures_util::SinkExt;
 use std::net::IpAddr;
 use std::time::Duration;
+#[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;
-use crate::services::db::DbState;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::AppDbConnection;
 use crate::services::device_connection::runtime::{
     generate_passcode, prune_expired_incoming_requests, utc_now,
 };
@@ -50,6 +53,7 @@ pub fn device_connection_get_identity_impl(
     Ok(state.identity.clone())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_get_identity(
     state: State<DeviceConnectionState>,
@@ -71,6 +75,7 @@ pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> R
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_enter_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
     device_connection_enter_add_mode_impl(&state)
@@ -93,6 +98,7 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_leave_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
     device_connection_leave_add_mode_impl(&state)
@@ -126,7 +132,11 @@ pub fn device_connection_send_pair_request_impl(
     };
 
     let target_port = input.to_ws_port.unwrap_or(state.space_sync_ws_port);
-    send_pair_ws(target_ip, target_port, WsMessage::PairRequest(payload.clone()))?;
+    send_pair_ws(
+        target_ip,
+        target_port,
+        WsMessage::PairRequest(payload.clone()),
+    )?;
 
     if let Ok(mut guard) = state.runtime.lock() {
         guard.tx_count += 1;
@@ -140,6 +150,7 @@ pub fn device_connection_send_pair_request_impl(
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_send_pair_request(
     state: State<DeviceConnectionState>,
@@ -172,6 +183,7 @@ pub fn device_connection_pair_incoming_requests_impl(
     Ok(requests)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_pair_incoming_requests(
     state: State<DeviceConnectionState>,
@@ -197,6 +209,7 @@ pub fn device_connection_pair_outgoing_updates_impl(
     Ok(updates)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_pair_outgoing_updates(
     state: State<DeviceConnectionState>,
@@ -223,6 +236,7 @@ pub fn device_connection_pair_outgoing_completions_impl(
     Ok(updates)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_pair_outgoing_completions(
     state: State<DeviceConnectionState>,
@@ -287,6 +301,7 @@ pub fn device_connection_pair_accept_request_impl(
     Ok(update)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_pair_accept_request(
     state: State<DeviceConnectionState>,
@@ -349,6 +364,7 @@ pub fn device_connection_pair_complete_request_impl(
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_pair_complete_request(
     state: State<DeviceConnectionState>,
@@ -370,6 +386,7 @@ pub fn device_connection_pair_acknowledge_request_impl(
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_pair_acknowledge_request(
     state: State<DeviceConnectionState>,
@@ -413,6 +430,7 @@ pub fn device_connection_discovery_snapshot_impl(
     Ok(items)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_discovery_snapshot(
     state: State<DeviceConnectionState>,
@@ -450,6 +468,7 @@ pub fn device_connection_presence_snapshot_impl(
     Ok(items)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_presence_snapshot(
     state: State<DeviceConnectionState>,
@@ -482,6 +501,7 @@ pub fn device_connection_debug_status_impl(
     })
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_debug_status(
     state: State<DeviceConnectionState>,
@@ -510,6 +530,7 @@ pub fn device_connection_consume_space_mapping_updates_impl(
     Ok(updates)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_consume_space_mapping_updates(
     state: State<DeviceConnectionState>,
@@ -520,29 +541,29 @@ pub fn device_connection_consume_space_mapping_updates(
 // ── Paired device CRUD (SQLite) ──────────────────────────────────────────────
 
 pub fn device_connection_get_paired_devices_impl(
-    db: &DbState,
+    conn: &mut SqliteConnection,
 ) -> Result<Vec<PairedDevice>, String> {
-    let mut conn = db.0.lock().unwrap();
     paired_devices::table
         .select(PairedDevice::as_select())
         .order(paired_devices::paired_at.desc())
-        .load(&mut *conn)
+        .load(conn)
         .map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_get_paired_devices(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
 ) -> Result<Vec<PairedDevice>, String> {
-    device_connection_get_paired_devices_impl(&db)
+    let mut conn = db.0.lock().unwrap();
+    device_connection_get_paired_devices_impl(&mut conn)
 }
 
 pub fn device_connection_save_paired_device_impl(
-    db: &DbState,
+    conn: &mut SqliteConnection,
     peer_device_id: String,
     display_name: String,
 ) -> Result<PairedDevice, String> {
-    let mut conn = db.0.lock().unwrap();
     let now = utc_now();
 
     let existing: Option<PairedDevice> = paired_devices::table
@@ -579,46 +600,56 @@ pub fn device_connection_save_paired_device_impl(
         .map_err(|e| e.to_string())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_save_paired_device(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
     peer_device_id: String,
     display_name: String,
 ) -> Result<PairedDevice, String> {
-    device_connection_save_paired_device_impl(&db, peer_device_id, display_name)
+    let mut conn = db.0.lock().unwrap();
+    device_connection_save_paired_device_impl(&mut conn, peer_device_id, display_name)
 }
 
-pub fn device_connection_unpair_impl(db: &DbState, peer_device_id: String) -> Result<(), String> {
-    let mut conn = db.0.lock().unwrap();
+pub fn device_connection_unpair_impl(
+    conn: &mut SqliteConnection,
+    peer_device_id: String,
+) -> Result<(), String> {
     diesel::delete(paired_devices::table.find(&peer_device_id))
-        .execute(&mut *conn)
+        .execute(conn)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_unpair(db: State<DbState>, peer_device_id: String) -> Result<(), String> {
-    device_connection_unpair_impl(&db, peer_device_id)
+pub fn device_connection_unpair(
+    db: State<AppDbConnection>,
+    peer_device_id: String,
+) -> Result<(), String> {
+    let mut conn = db.0.lock().unwrap();
+    device_connection_unpair_impl(&mut conn, peer_device_id)
 }
 
 pub fn device_connection_update_last_seen_impl(
-    db: &DbState,
+    conn: &mut SqliteConnection,
     peer_device_id: String,
     last_seen_at: String,
 ) -> Result<(), String> {
-    let mut conn = db.0.lock().unwrap();
     diesel::update(paired_devices::table.find(&peer_device_id))
         .set(paired_devices::last_seen_at.eq(&last_seen_at))
-        .execute(&mut *conn)
+        .execute(conn)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_update_last_seen(
-    db: State<DbState>,
+    db: State<AppDbConnection>,
     peer_device_id: String,
     last_seen_at: String,
 ) -> Result<(), String> {
-    device_connection_update_last_seen_impl(&db, peer_device_id, last_seen_at)
+    let mut conn = db.0.lock().unwrap();
+    device_connection_update_last_seen_impl(&mut conn, peer_device_id, last_seen_at)
 }

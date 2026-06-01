@@ -10,7 +10,7 @@ use tauri::AppHandle;
 #[cfg(target_os = "linux")]
 use tauri::Manager;
 
-use crate::services::db::DbState;
+use crate::services::db::AppDbConnection;
 use crate::services::reconciler;
 
 pub fn spawn(app: &AppHandle) {
@@ -58,7 +58,7 @@ async fn linux_sleep_watch(app: AppHandle) -> Result<(), zbus::Error> {
         let is_sleeping = body.deserialize::<(bool,)>().map(|(b,)| b).unwrap_or(true);
         if !is_sleeping {
             // System just resumed — re-run reconciler to catch up missed reminder fires.
-            let db = match app.try_state::<DbState>() {
+            let db = match app.try_state::<AppDbConnection>() {
                 Some(s) => s,
                 None => continue,
             };

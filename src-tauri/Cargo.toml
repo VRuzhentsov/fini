@@ -1,9 +1,11 @@
 [package]
 name = "fini"
-version = "0.1.27"
+version = "0.1.30"
 description = "Fini"
 authors = []
 edition = "2021"
+autobins = false
+default-run = "fini-app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,6 +15,16 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "fini_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "fini"
+path = "src/cli.rs"
+required-features = ["cli-plane"]
+
+[[bin]]
+name = "fini-app"
+path = "src/desktop.rs"
+required-features = ["ui-plane"]
 
 [patch.crates-io]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
@@ -36,16 +48,13 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 futures-util = "0.3"
 tokio-tungstenite = "0.26"
 tokio = { version = "1", features = ["full"] }
-rmcp = { version = "1.2.0", features = ["server", "transport-io", "macros"] }
 dirs = "5"
-anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
-tauri-plugin-mcp-bridge = "0.10"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive"], optional = true }
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-autostart = "2.5.1"
 time = { version = "0.3.47", features = ["parsing", "formatting"] }
-tauri-plugin-playwright = { version = "0.2" }
+tauri-plugin-playwright = { version = "0.2", optional = true }
 socket2 = "0.6"
 mdns-sd = "0.13"
 zbus = { version = "5.14.0", features = ["blocking-api"] }
@@ -58,7 +67,9 @@ gtk = "0.18.2"
 notify-rust = "4"
 
 [features]
-# Enable the Playwright control-server plugin for UI e2e tests. Off by default;
-# the production build must not ship this — it exposes an in-process socket
-# bridge that accepts webview.eval() from a test runner.
-e2e-testing = []
+default = []
+ui-plane = []
+cli-plane = ["dep:clap"]
+# Enable developer/test control-plane hooks. Off by default; production builds
+# must not ship this because it exposes an in-process Playwright socket bridge.
+devtools = ["dep:tauri-plugin-playwright"]

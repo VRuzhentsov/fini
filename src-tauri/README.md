@@ -7,9 +7,10 @@ Rust backend of the Fini app, powered by Tauri 2.0.
 ```
 src-tauri/
 ├── src/
-│   ├── lib.rs         # App entry point — DB setup, models, command handlers
+│   ├── lib.rs         # Shared app library — DB setup, models, command handlers
 │   ├── schema.rs      # Diesel table definitions
-│   └── main.rs        # Binary entry point (calls lib::run)
+│   ├── desktop.rs     # Desktop GUI binary entry point (`fini-app`)
+│   └── cli.rs         # CLI-only binary entry point (`fini`)
 ├── migrations/        # SQL migrations (Diesel format)
 ├── gen/
 │   └── android/       # Generated Android Studio project
@@ -22,7 +23,7 @@ src-tauri/
 
 ## Data model
 
-See `spec/` at the repo root for domain model specs ([[Quest]], [[Space]], [[RepeatRule]], [[QuestSeries]], [[QuestOccurrence]], [[Reminder]], [[FocusHistory]], [[DeviceConnection]], [[SpaceSync]], [[Network]]).
+See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[RepeatRule]], [[QuestSeries]], [[QuestOccurrence]], [[Reminder]], [[FocusHistory]], [[DeviceConnection]], [[SpaceSync]], [[Network]]).
 
 ## Commands (target naming for upcoming sync implementation)
 
@@ -84,7 +85,10 @@ General notes:
 ## Platform notes
 
 - **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
+- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane`
+- **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
+  - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle
   - `make android-debug-deploy` builds, signs, installs, and launches a local debug-keystore APK using git-derived `versionName` and `versionCode`
   - `make android-release-deploy-local` performs the same local build/install flow but signs with release-lineage credentials from `ANDROID_KEYSTORE_PATH` or `ANDROID_KEYSTORE_BASE64` plus the matching password and alias env vars
   - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
