@@ -457,6 +457,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
+            quests::focus_enter_count.eq(quest.focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -477,6 +478,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
+            quests::focus_enter_count.eq(quest.focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -1502,7 +1504,8 @@ mod tests {
         );
 
         // Incoming newer event should win
-        let new_quest = test_quest("q1", "Remote New", "2026-03-03T00:00:00Z");
+        let mut new_quest = test_quest("q1", "Remote New", "2026-03-03T00:00:00Z");
+        new_quest.focus_enter_count = 3;
         let new_event = test_envelope(
             "evt-new",
             "dev-remote",
@@ -1516,6 +1519,13 @@ mod tests {
             apply_sync_event(&mut conn, &new_event).unwrap(),
             "newer incoming event should be applied"
         );
+
+        let synced_focus_enter_count: i64 = quests::table
+            .find("q1")
+            .select(quests::focus_enter_count)
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(synced_focus_enter_count, 3);
 
         let _ = std::fs::remove_file(db_path);
     }
