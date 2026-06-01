@@ -61,7 +61,7 @@ Before sending issue-specific progress:
 1. Check the issue/topic sync file at `FINI_ISSUE_TOPIC_SYNC_FILE`, then legacy `FINI_ISSUE_TG_TOPIC_MAP`, or, if both are unset, `issue-topic-sync.json` at the local Fini checkout root.
 2. If the issue already has an `issueTarget`, use it for all progress, blockers, verification evidence, and PR-ready handoff.
 3. If no mapping exists and Telegram topic creation is available, create a topic named `#<issue> <short title>`.
-4. Record the issue number, title, GitHub URL, topic id, and `<group-id>:topic:<thread-id>` target immediately.
+4. Record the issue number, title, GitHub URL, topic id, `<group-id>:topic:<thread-id>` target, and `createdAt` timestamp immediately.
 5. Send a short starting message inside the new issue topic so future readers know the branch, PR, and phase.
 
 Use `In Progress` only for generic status, scheduler work, or work not tied to one GitHub issue. Do not put detailed implementation updates for a specific issue in `Daily` or the root Fini Dev topic once its dynamic issue topic exists.
@@ -108,6 +108,6 @@ Daily Fini reports posted to Telegram must include full GitHub URLs for every li
 ## Boundaries
 
 - Do not expose bot tokens, GitHub tokens, secret file contents, or private personal context.
-- Do not act as Vitalii's voice in the group.
+- Do not act as the configured user's voice in the group.
 - Do not merge PRs or push to `main` from Telegram coordination alone.
-- Do not convert `Fini Self Improvement` discussions into code changes unless Vitalii selects or confirms an action item.
+- Do not convert `Fini Self Improvement` discussions into code changes unless the configured user selects or confirms an action item.

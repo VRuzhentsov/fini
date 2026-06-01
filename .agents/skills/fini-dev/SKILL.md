@@ -120,6 +120,16 @@ Never write absolute paths containing a username, home directory, or machine-spe
 - Use `/var/tmp` for temporary files, not `/tmp` or any user-specific temp path.
 - When adding permission entries to `.claude/settings.local.json`, use relative or `~`-anchored paths only. The local config is project-specific and minimal; do not accumulate machine-specific one-off entries there.
 
+## User-Agnostic Agent Instructions
+
+Keep repo-local skills, scripts, prompts, and generated artifacts portable across Fini users and agent hosts.
+
+- Do not hard-code a person's name, an agent nickname, a bot username or handle, a chat ID, a topic ID, or a repository owner in source-controlled instructions.
+- Refer to configured values instead, such as `FINI_REPO`, `FINI_DAILY_RECIPIENT`, `FINI_DAILY_TG_TARGET`, `FINI_PROGRESS_TG_TARGET`, and `FINI_DEV_TG_CHANNEL_ID`.
+- If a script needs a repository, prefer `FINI_REPO`; otherwise infer the GitHub `owner/repo` from the current checkout's `origin` remote.
+- If a prompt needs a greeting or addressee, use `FINI_DAILY_RECIPIENT` when it is set; otherwise write a neutral report with no personal salutation.
+- Mention bot behavior generically. Do not include concrete bot handles in repo-local skills.
+
 ## Project Context Rules
 
 Use the repo structure as the default map:

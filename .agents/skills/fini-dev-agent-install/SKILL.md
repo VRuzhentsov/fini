@@ -16,6 +16,12 @@ metadata:
       - name: FINI_DAILY_TZ
         required: false
         description: Optional timezone override for the 8 AM daily schedule.
+      - name: FINI_REPO
+        required: false
+        description: GitHub owner/repo to report on; when unset, infer it from the current Fini checkout.
+      - name: FINI_DAILY_RECIPIENT
+        required: false
+        description: Optional name to use in the daily report greeting.
 ---
 
 # Fini Dev Agent Install
@@ -32,7 +38,7 @@ Daily triage report:
 - Schedule: `0 8 * * *`
 - Timezone: local timezone, or `FINI_DAILY_TZ` when configured
 - Session: isolated
-- Prompt: load `fini-daily`, run from `~/projects/fini`, use `triage`, query open `VRuzhentsov/fini` GitHub issues and pull requests with GitHub URLs, call out stale or near-ready PRs, include full GitHub links for every issue and PR in the final report, and send the final report to `FINI_DAILY_TG_TARGET`
+- Prompt: load `fini-daily`, run from `~/projects/fini`, use `triage`, query open GitHub issues and pull requests from `FINI_REPO` or the current checkout's `origin` remote with GitHub URLs, call out stale or near-ready PRs, include full GitHub links for every issue and PR in the final report, and send the final report to `FINI_DAILY_TG_TARGET`
 - Delivery: Telegram `Daily` topic parsed from `FINI_DAILY_TG_TARGET`
 
 Branch fetch:
@@ -48,7 +54,7 @@ Merged PR topic reconcile system cron:
 - Script: `~/.openclaw/workspace/skills/fini-dev-agent-install/scripts/reconcile-fini-merged-pr-topics.mjs`
 - Schedule: every `5m`
 - Runtime: host crontab, not OpenClaw isolated cron, because it must use local `gh`, filesystem, and Telegram Bot API access directly
-- Behavior: query merged `VRuzhentsov/fini` pull requests, close mapped related issues, rename each dynamic messenger topic so its title begins `closed #<issue>`, send one final issue-topic note, and update `issue-topic-sync.json` at the local Fini checkout root
+- Behavior: query merged pull requests from `FINI_REPO` or the current checkout's `origin` remote, close mapped related issues, rename each dynamic messenger topic so its title begins `closed #<issue>`, send one final issue-topic note, and update `issue-topic-sync.json` at the local Fini checkout root
 
 ## Prerequisites
 
@@ -58,7 +64,7 @@ Before writing schedule state, verify:
 2. `fini-daily` is installed for the local agent.
 3. `triage` is installed for the local agent.
 4. `FINI_DAILY_TG_TARGET` is set to the Daily topic target in `<group-id>:topic:<thread-id>` form.
-5. GitHub access for `VRuzhentsov/fini` works without printing tokens.
+5. GitHub access for `FINI_REPO`, or the current checkout's inferred GitHub repository, works without printing tokens.
 6. The dynamic issue/topic sync file is stored at the local Fini checkout root as `issue-topic-sync.json`, unless `FINI_ISSUE_TOPIC_SYNC_FILE` or legacy `FINI_ISSUE_TG_TOPIC_MAP` explicitly overrides it.
 
 If a prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that cannot deliver to `Daily`.
@@ -112,7 +118,7 @@ If OpenClaw CLI cron commands are blocked by device-scope approval, verify by re
 The scheduled prompt must preserve this intent:
 
 ```text
-Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and FINI_PROGRESS_TG_TARGET from the local agent environment. Query current open GitHub issues and pull requests for VRuzhentsov/fini using configured GitHub access without printing secrets, including the GitHub URL for each item. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format addressed to Vitalii with full GitHub links for every listed issue and pull request. Deliver the final report to FINI_DAILY_TG_TARGET.
+Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET, FINI_PROGRESS_TG_TARGET, FINI_REPO, and FINI_DAILY_RECIPIENT from the local agent environment when they are set. Query current open GitHub issues and pull requests using configured GitHub access without printing secrets, including the GitHub URL for each item. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format with a configured-recipient greeting only when FINI_DAILY_RECIPIENT is set, and with full GitHub links for every listed issue and pull request. Deliver the final report to FINI_DAILY_TG_TARGET.
 ```
 
 Keep this prompt focused on read-only triage and reporting. Do not edit issues, labels, code, docs, or branches from the daily job unless the user explicitly delegates implementation.

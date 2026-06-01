@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const repo = process.env.FINI_REPO || 'VRuzhentsov/fini';
 const repoDir = expandPath(process.env.FINI_REPO_DIR || '~/projects/fini');
+const repo = process.env.FINI_REPO || inferRepo(repoDir);
 const mapPath = expandPath(
   process.env.FINI_ISSUE_TOPIC_SYNC_FILE
     || process.env.FINI_ISSUE_TG_TOPIC_MAP
@@ -17,12 +17,34 @@ function expandPath(value) {
   return value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
 }
 
+function inferRepo(cwd) {
+  const remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const match = remote.match(/github\.com[:/](.+?\/.+?)(?:\.git)?$/);
+  if (!match) throw new Error('FINI_REPO is required when remote.origin.url is not a GitHub owner/repo URL');
+  return match[1];
+}
+
 function runGh(args) {
   return execFileSync('gh', args, {
     cwd: repoDir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
+}
+
+function runGhJson(args) {
+  const raw = runGh(args);
+  return raw ? JSON.parse(raw) : null;
+}
+
+function runGhApiJson(args) {
+  const raw = runGh(['api', '--paginate', '--slurp', '-X', 'GET', ...args]);
+  const pages = raw ? JSON.parse(raw) : [];
+  return pages.flat();
 }
 
 function readJson(filePath) {
@@ -47,8 +69,7 @@ function topicTitle(issue, title) {
 }
 
 function issueState(issue) {
-  const raw = runGh(['issue', 'view', String(issue), '--repo', repo, '--json', 'state']);
-  return JSON.parse(raw).state;
+  return runGhJson(['issue', 'view', String(issue), '--repo', repo, '--json', 'state']).state;
 }
 
 function closeIssue(issue) {
@@ -77,7 +98,7 @@ async function telegram(method, payload) {
 }
 
 function mergedPr(number) {
-  const raw = runGh([
+  const pr = runGhJson([
     'pr',
     'view',
     String(number),
@@ -86,20 +107,64 @@ function mergedPr(number) {
     '--json',
     'number,title,state,mergedAt,url,closingIssuesReferences',
   ]);
-  const pr = JSON.parse(raw);
   return pr.state === 'MERGED' || pr.mergedAt ? pr : null;
 }
 
-function findCompletionPr(entry) {
-  const mappedPrNumber = prNumberFromUrl(entry.pullRequest);
-  if (!mappedPrNumber) return null;
+function entryMappedAt(entry, map) {
+  const candidates = [
+    entry.mappedAt,
+    entry.createdAt,
+    entry.startedAt,
+    entry.topicCreatedAt,
+    map.createdAt,
+  ];
+  for (const value of candidates) {
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+}
 
-  const pr = mergedPr(mappedPrNumber);
+function mergedPrsAfter(timestampMs) {
+  return runGhApiJson([
+    `repos/${repo}/pulls`,
+    '-f', 'state=closed',
+    '-f', 'sort=updated',
+    '-f', 'direction=desc',
+    '-F', 'per_page=100',
+  ])
+    .filter((pr) => pr.merged_at && Date.parse(pr.merged_at) > timestampMs)
+    .map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      state: 'MERGED',
+      mergedAt: pr.merged_at,
+      url: pr.html_url,
+    }));
+}
+
+function prClosesIssue(prNumber, issue) {
+  const pr = mergedPr(prNumber);
   if (!pr) return null;
-
   const refs = Array.isArray(pr.closingIssuesReferences) ? pr.closingIssuesReferences : [];
-  const closesIssue = refs.some((ref) => Number(ref.number) === Number(entry.issue));
-  return closesIssue || entry.pullRequest === pr.url ? pr : null;
+  return refs.some((ref) => Number(ref.number) === Number(issue)) ? pr : null;
+}
+
+function findCompletionPr(entry, map) {
+  const issue = Number(entry.issue);
+  const mappedPrNumber = prNumberFromUrl(entry.pullRequest);
+  if (mappedPrNumber) {
+    return mergedPr(mappedPrNumber);
+  }
+
+  const mappedAt = entryMappedAt(entry, map);
+  if (!mappedAt) return null;
+
+  for (const candidate of mergedPrsAfter(mappedAt)) {
+    const pr = prClosesIssue(candidate.number, issue);
+    if (pr) return pr;
+  }
+  return null;
 }
 
 function parseTopicTarget(value) {
@@ -130,7 +195,7 @@ async function main() {
       const address = topicAddress(map, entry);
       if (!issue || !address.chatId || !address.topicId) continue;
 
-      const completionPr = findCompletionPr({ ...entry, issue });
+      const completionPr = findCompletionPr({ ...entry, issue }, map);
       if (!completionPr) continue;
 
       const newTitle = topicTitle(issue, entry.title);

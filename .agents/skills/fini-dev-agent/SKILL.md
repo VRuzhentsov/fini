@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent
-description: "Use this when an autonomous-coding-agent, autonomous coding agent, remote agent, Will Claw/Milo, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline."
+description: "Use this when an autonomous coding agent, remote agent, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline."
 metadata:
   openclaw:
     envVars:
@@ -60,7 +60,7 @@ Use Fini Dev Telegram topics as coordination surfaces when the channel is availa
 
 ### Conversation Context
 
-In the Fini Dev Telegram group, treat messages in the same forum topic as shared task context even when the newest message does not explicitly mention the bot. The group is configured to ingest Fini Dev messages without requiring `@will_o_claw_bot`.
+In the Fini Dev Telegram group, treat messages in the same forum topic as shared task context even when the newest message does not explicitly mention the bot. The group may be configured to ingest Fini Dev messages without requiring an explicit bot mention.
 
 When invoked from Fini Dev:
 
@@ -79,7 +79,7 @@ Before sending progress for issue work:
 1. Check the issue/topic sync file at `FINI_ISSUE_TOPIC_SYNC_FILE`, then legacy `FINI_ISSUE_TG_TOPIC_MAP`, or, if both are unset, `issue-topic-sync.json` at the local Fini checkout root.
 2. If the issue already has an `issueTarget`, use that for all issue-specific progress, blockers, verification evidence, and PR-ready handoff.
 3. If no mapping exists and Telegram topic creation is available, create a topic named `#<issue> <short title>` in the Fini Dev group.
-4. Record the mapping immediately with the issue number, title, GitHub URL, topic id, and `<group-id>:topic:<thread-id>` target.
+4. Record the mapping immediately with the issue number, title, GitHub URL, topic id, `<group-id>:topic:<thread-id>` target, and `createdAt` timestamp.
 5. Send a short starting message inside the new issue topic so future readers know the branch, PR, and current phase.
 
 Use the shared `In Progress` topic only for generic status, scheduler work, or work that is not tied to one GitHub issue. Do not put detailed implementation updates for a specific issue in `Daily` or the root Fini Dev topic once its dynamic issue topic exists.
