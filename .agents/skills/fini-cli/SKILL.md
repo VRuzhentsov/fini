@@ -42,12 +42,11 @@ Do not run quest, space, reminder, focus, or app commands until preflight succee
 |---|---|
 | `fini` | Return the current Focus quest using CLI default behavior |
 | `fini focus get` | Explicitly return the current Focus quest |
-| `fini app` | Launch the GUI app |
 | `fini quest ...` | List, get, create, update, complete, abandon, delete, or inspect quest history |
 | `fini space ...` | List, create, update, or delete spaces |
 | `fini reminder ...` | List, create, or delete reminders |
 
-Use `fini app` when the user asks to open or launch the graphical app. Use CLI commands when the user asks for data, state changes, or automation.
+Use the desktop launcher or `fini-app` when the user asks to open or launch the graphical app. Use CLI commands when the user asks for data, state changes, or automation.
 
 ## Output Mode
 

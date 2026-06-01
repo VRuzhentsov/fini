@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Fini",
-  "version": "0.1.27",
+  "mainBinaryName": "fini-app",
+  "version": "0.1.30",
   "identifier": "fini",
   "build": {
     "beforeDevCommand": "npm run dev",

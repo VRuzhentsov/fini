@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent
-description: "Use this when an autonomous-coding-agent, autonomous coding agent, remote agent, Will Claw/Milo, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline."
+description: "Use this when an autonomous-coding-agent, autonomous coding agent, remote agent, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline. If work arrives from the Telegram `Create` topic, always route it through `fini-create-ticket` as ticket intake before treating it as implementation work."
 metadata:
   openclaw:
     envVars:
@@ -49,6 +49,8 @@ If the task comes from a GitHub issue, follow `fini-dev` branch guidance before 
 ## Telegram Topic Coordination
 
 Use Fini Dev Telegram topics as coordination surfaces when the channel is available. Do not let Telegram delivery failures block local implementation; continue the work and report the delivery blocker in the final handoff.
+
+When the task source, channel, or thread is the Telegram `Create` topic, load `fini-create-ticket` after `fini-dev` and treat the work as ticket intake, issue drafting, scope capture, or follow-up creation. Do not treat `Create` topic messages as implementation delegation until a ticket or explicit implementation scope exists. Send ticket-creation status updates to `FINI_CREATE_TG_TARGET` when configured.
 
 Preferred targets:
 

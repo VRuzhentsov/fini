@@ -24,7 +24,7 @@ pub struct Quest {
     pub completed_at: Option<String>,
     pub order_rank: f64,
     #[serde(default)]
-    pub focus_entry_count: i64,
+    pub focus_enter_count: i64,
     pub created_at: String,
     pub updated_at: String,
     pub series_id: Option<String>,

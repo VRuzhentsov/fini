@@ -44,7 +44,7 @@ diesel::table! {
         repeat_rule -> Nullable<Text>,
         completed_at -> Nullable<Text>,
         order_rank -> Double,
-        focus_entry_count -> BigInt,
+        focus_enter_count -> BigInt,
         created_at  -> Text,
         updated_at  -> Text,
         series_id   -> Nullable<Text>,

@@ -16,7 +16,7 @@ function quest(input: Partial<Quest> & Pick<Quest, "id" | "title" | "status" | "
     repeat_rule: input.repeat_rule ?? null,
     completed_at: input.completed_at ?? null,
     order_rank: input.order_rank ?? 0,
-    focus_entry_count: input.focus_entry_count ?? 0,
+    focus_enter_count: input.focus_enter_count ?? 0,
     created_at: input.created_at ?? input.updated_at,
     updated_at: input.updated_at,
     series_id: input.series_id ?? null,

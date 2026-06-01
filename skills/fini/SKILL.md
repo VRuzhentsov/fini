@@ -60,7 +60,7 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 ## Focus and App Entry Behavior
 
 - `fini` with no args returns current Focus quest.
-- `fini app` launches GUI explicitly.
+- `fini-app` launches the desktop GUI explicitly.
 - Use `fini-cli` when the task is mainly about launching the app or validating the binary rather than managing quest domain state.
 
 ## Failure Handling

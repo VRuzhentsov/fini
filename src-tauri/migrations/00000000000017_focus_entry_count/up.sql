@@ -1,1 +1,0 @@
-ALTER TABLE quests ADD COLUMN focus_entry_count INTEGER NOT NULL DEFAULT 0;

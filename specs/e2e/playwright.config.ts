@@ -9,7 +9,7 @@ export default defineConfig({
   projects: [
     {
       name: 'cli',
-      testMatch: ['reminder-bridge.spec.ts'],
+      testMatch: ['reminder-bridge.spec.ts', 'feature-plane-cli.spec.ts'],
     },
     {
       name: 'ui',

@@ -16,7 +16,7 @@ const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
 const focusEntryLabel = computed(() => {
-  const count = props.quest.focus_entry_count ?? 0;
+  const count = props.quest.focus_enter_count ?? 0;
   if (count < 2) return null;
   return count === 2 ? "Focus 2 times" : `Focus ${count} times`;
 });
@@ -155,7 +155,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     <div v-if="focusEntryLabel" class="active-quest-attention" aria-label="Focus entry count">
       <span class="attention-dot" />
       <span>{{ focusEntryLabel }}</span>
-      <span v-if="quest.focus_entry_count >= 4" class="attention-copy">Keeps returning</span>
+      <span v-if="quest.focus_enter_count >= 4" class="attention-copy">Keeps returning</span>
     </div>
 
     <div class="active-quest-actions">
