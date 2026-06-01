@@ -24,7 +24,8 @@ use crate::services::device_connection::{
     device_connection_update_last_seen_impl, DeviceConnectionState,
 };
 use crate::services::quest::{
-    append_focus_history, resolve_active_quest, resolve_and_record_active_quest, QuestRepository,
+    append_focus_history, record_manual_focus_enter_transition, resolve_active_quest,
+    resolve_and_record_active_quest_transition, QuestRepository,
 };
 use crate::services::reminder::ReminderRepository;
 use crate::services::settings::{self, ThemeMode};
@@ -540,11 +541,21 @@ fn emit_series_sync(
 fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
     let mut conn = open_db_at_path(&ctx.db_path);
     match command {
-        FocusCommand::Get => resolve_and_record_active_quest(&mut conn)
-            .map_err(|e| CliError::runtime(e.to_string()))?
-            .map(|quest| serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string())))
-            .transpose()
-            .map(|value| value.unwrap_or(Value::Null)),
+        FocusCommand::Get => {
+            let (quest, did_increment) = resolve_and_record_active_quest_transition(&mut conn)
+                .map_err(|e| CliError::runtime(e.to_string()))?;
+            if did_increment {
+                if let Some(ref quest) = quest {
+                    emit_quest_sync(ctx, &mut conn, quest, "upsert");
+                }
+            }
+            quest
+                .map(|quest| {
+                    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+                })
+                .transpose()
+                .map(|value| value.unwrap_or(Value::Null))
+        }
         FocusCommand::Set(args) => {
             let quest = quests::table
                 .find(&args.quest_id)
@@ -556,6 +567,9 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
                 .ok_or_else(|| {
                     CliError::from_string("cannot set Focus on non-active quest".to_string())
                 })?;
+            let previous_focus_id = resolve_active_quest(&mut conn)
+                .map_err(|e| CliError::runtime(e.to_string()))?
+                .map(|quest| quest.id);
             diesel::update(quests::table.find(&quest.id))
                 .set(quests::updated_at.eq(utc_now()))
                 .execute(&mut conn)
@@ -567,6 +581,12 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
             };
             append_focus_history(&mut conn, &quest.id, &quest.space_id, trigger)
                 .map_err(CliError::from_string)?;
+            let (quest, did_increment) =
+                record_manual_focus_enter_transition(&mut conn, quest, previous_focus_id)
+                    .map_err(CliError::from_string)?;
+            if did_increment {
+                emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            }
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
     }
