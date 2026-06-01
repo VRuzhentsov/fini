@@ -23,10 +23,7 @@ use crate::services::device_connection::{
     device_connection_send_pair_request_impl, device_connection_unpair_impl,
     device_connection_update_last_seen_impl, DeviceConnectionState,
 };
-use crate::services::quest::{
-    append_focus_history, record_manual_focus_enter_transition, resolve_active_quest,
-    resolve_and_record_active_quest_transition, QuestRepository,
-};
+use crate::services::quest::QuestRepository;
 use crate::services::reminder::ReminderRepository;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
@@ -542,8 +539,9 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
     let mut conn = open_db_at_path(&ctx.db_path);
     match command {
         FocusCommand::Get => {
-            let (quest, did_increment) = resolve_and_record_active_quest_transition(&mut conn)
-                .map_err(|e| CliError::runtime(e.to_string()))?;
+            let (quest, did_increment) = QuestRepository::new(&mut conn)
+                .resolve_and_record_active_transition()
+                .map_err(CliError::from_string)?;
             if did_increment {
                 if let Some(ref quest) = quest {
                     emit_quest_sync(ctx, &mut conn, quest, "upsert");
@@ -557,33 +555,30 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
                 .map(|value| value.unwrap_or(Value::Null))
         }
         FocusCommand::Set(args) => {
-            let quest = quests::table
-                .find(&args.quest_id)
-                .filter(quests::status.eq("active"))
-                .select(crate::models::Quest::as_select())
-                .first(&mut conn)
-                .optional()
-                .map_err(|e| CliError::runtime(e.to_string()))?
-                .ok_or_else(|| {
-                    CliError::from_string("cannot set Focus on non-active quest".to_string())
-                })?;
-            let previous_focus_id = resolve_active_quest(&mut conn)
-                .map_err(|e| CliError::runtime(e.to_string()))?
-                .map(|quest| quest.id);
-            diesel::update(quests::table.find(&quest.id))
-                .set(quests::updated_at.eq(utc_now()))
-                .execute(&mut conn)
-                .map_err(|e| CliError::runtime(e.to_string()))?;
             let trigger = if args.trigger.as_deref() == Some("reminder") {
                 "reminder"
             } else {
                 "manual"
             };
-            append_focus_history(&mut conn, &quest.id, &quest.space_id, trigger)
-                .map_err(CliError::from_string)?;
-            let (quest, did_increment) =
-                record_manual_focus_enter_transition(&mut conn, quest, previous_focus_id)
+            let (quest, did_increment) = {
+                let mut repository = QuestRepository::new(&mut conn);
+                let quest = repository
+                    .get_active(&args.quest_id)
                     .map_err(CliError::from_string)?;
+                let previous_focus_id = repository
+                    .resolve_active()
+                    .map_err(CliError::from_string)?
+                    .map(|quest| quest.id);
+                repository
+                    .touch_updated_at(&quest.id)
+                    .map_err(CliError::from_string)?;
+                repository
+                    .append_focus_history(&quest.id, &quest.space_id, trigger)
+                    .map_err(CliError::from_string)?;
+                repository
+                    .record_manual_focus_enter_transition(quest, previous_focus_id)
+                    .map_err(CliError::from_string)?
+            };
             if did_increment {
                 emit_quest_sync(ctx, &mut conn, &quest, "upsert");
             }

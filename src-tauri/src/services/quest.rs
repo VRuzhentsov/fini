@@ -432,19 +432,6 @@ fn record_focus_enter_transition(
     Ok((updated, true))
 }
 
-pub fn resolve_and_record_active_quest_transition(
-    conn: &mut SqliteConnection,
-) -> Result<(Option<Quest>, bool), diesel::result::Error> {
-    let resolved = resolve_active_quest(conn)?;
-    record_focus_enter_transition(conn, resolved)
-}
-
-pub fn resolve_and_record_active_quest(
-    conn: &mut SqliteConnection,
-) -> Result<Option<Quest>, diesel::result::Error> {
-    resolve_and_record_active_quest_transition(conn).map(|(quest, _)| quest)
-}
-
 #[cfg(any(feature = "ui-plane", test))]
 fn emit_focus_enter_sync_if_needed(
     conn: &mut SqliteConnection,
@@ -458,34 +445,6 @@ fn emit_focus_enter_sync_if_needed(
         }
     }
     Ok(())
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-pub fn resolve_and_record_active_quest_with_sync(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-) -> Result<Option<Quest>, String> {
-    let (quest, did_increment) =
-        resolve_and_record_active_quest_transition(conn).map_err(|e| e.to_string())?;
-    emit_focus_enter_sync_if_needed(conn, origin_device_id, quest.as_ref(), did_increment)?;
-    Ok(quest)
-}
-
-pub(crate) fn record_manual_focus_enter_transition(
-    conn: &mut SqliteConnection,
-    quest: Quest,
-    previous_focus_id: Option<String>,
-) -> Result<(Quest, bool), String> {
-    if previous_focus_id.as_deref() == Some(quest.id.as_str()) {
-        save_last_recorded_focus_id(conn, Some(&quest.id)).map_err(|e| e.to_string())?;
-        return Ok((quest, false));
-    }
-
-    let (quest, did_increment) =
-        record_focus_enter_transition(conn, Some(quest)).map_err(|e| e.to_string())?;
-    quest
-        .map(|quest| (quest, did_increment))
-        .ok_or_else(|| "focused quest disappeared".to_string())
 }
 
 fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -617,6 +576,67 @@ impl<'a> QuestRepository<'a> {
 
     pub fn delete(&mut self, id: &str) -> Result<Quest, String> {
         delete_quest_in_db(self.conn, id)
+    }
+
+    pub fn get_active(&mut self, id: &str) -> Result<Quest, String> {
+        quests::table
+            .find(id)
+            .filter(quests::status.eq("active"))
+            .select(Quest::as_select())
+            .first(self.conn)
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "cannot set Focus on non-active quest".to_string())
+    }
+
+    pub fn touch_updated_at(&mut self, id: &str) -> Result<(), String> {
+        diesel::update(quests::table.find(id))
+            .set(quests::updated_at.eq(utc_now()))
+            .execute(self.conn)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn resolve_active(&mut self) -> Result<Option<Quest>, String> {
+        resolve_active_quest(self.conn).map_err(|e| e.to_string())
+    }
+
+    pub fn resolve_and_record_active_transition(
+        &mut self,
+    ) -> Result<(Option<Quest>, bool), String> {
+        let resolved = self.resolve_active()?;
+        record_focus_enter_transition(self.conn, resolved).map_err(|e| e.to_string())
+    }
+
+    pub fn resolve_and_record_active(&mut self) -> Result<Option<Quest>, String> {
+        self.resolve_and_record_active_transition()
+            .map(|(quest, _)| quest)
+    }
+
+    pub fn record_manual_focus_enter_transition(
+        &mut self,
+        quest: Quest,
+        previous_focus_id: Option<String>,
+    ) -> Result<(Quest, bool), String> {
+        if previous_focus_id.as_deref() == Some(quest.id.as_str()) {
+            save_last_recorded_focus_id(self.conn, Some(&quest.id)).map_err(|e| e.to_string())?;
+            return Ok((quest, false));
+        }
+
+        let (quest, did_increment) =
+            record_focus_enter_transition(self.conn, Some(quest)).map_err(|e| e.to_string())?;
+        quest
+            .map(|quest| (quest, did_increment))
+            .ok_or_else(|| "focused quest disappeared".to_string())
+    }
+
+    pub fn append_focus_history(
+        &mut self,
+        quest_id: &str,
+        space_id: &str,
+        trigger: &str,
+    ) -> Result<(), String> {
+        append_focus_history(self.conn, quest_id, space_id, trigger)
     }
 }
 
@@ -1071,7 +1091,15 @@ pub fn get_active_focus(
     device_connection: State<DeviceConnectionState>,
 ) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    resolve_and_record_active_quest_with_sync(&mut conn, &device_connection.identity.device_id)
+    let (quest, did_increment) =
+        QuestRepository::new(&mut conn).resolve_and_record_active_transition()?;
+    emit_focus_enter_sync_if_needed(
+        &mut conn,
+        &device_connection.identity.device_id,
+        quest.as_ref(),
+        did_increment,
+    )?;
+    Ok(quest)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1082,30 +1110,14 @@ pub fn set_focus(
     id: String,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let now = utc_now();
-
-    let quest: Quest = quests::table
-        .find(&id)
-        .filter(quests::status.eq("active"))
-        .select(Quest::as_select())
-        .first(&mut *conn)
-        .optional()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "cannot set Focus on non-active quest".to_string())?;
-
-    let previous_focus_id = resolve_active_quest(&mut conn)
-        .map_err(|e| e.to_string())?
-        .map(|quest| quest.id);
-
-    diesel::update(quests::table.find(&id))
-        .set(quests::updated_at.eq(&now))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
-
-    append_focus_history(&mut conn, &quest.id, &quest.space_id, "manual")?;
-
-    let (quest, did_increment) =
-        record_manual_focus_enter_transition(&mut conn, quest, previous_focus_id)?;
+    let (quest, did_increment) = {
+        let mut repository = QuestRepository::new(&mut conn);
+        let quest = repository.get_active(&id)?;
+        let previous_focus_id = repository.resolve_active()?.map(|quest| quest.id);
+        repository.touch_updated_at(&id)?;
+        repository.append_focus_history(&quest.id, &quest.space_id, "manual")?;
+        repository.record_manual_focus_enter_transition(quest, previous_focus_id)?
+    };
     emit_focus_enter_sync_if_needed(
         &mut conn,
         &device_connection.identity.device_id,
@@ -1656,12 +1668,18 @@ mod tests {
             None,
         );
 
-        let first = resolve_and_record_active_quest(&mut conn)
-            .expect("resolve first")
-            .expect("must return active quest");
-        let second = resolve_and_record_active_quest(&mut conn)
-            .expect("resolve second")
-            .expect("must return active quest");
+        let (first, second) = {
+            let mut repository = QuestRepository::new(&mut conn);
+            let first = repository
+                .resolve_and_record_active()
+                .expect("resolve first")
+                .expect("must return active quest");
+            let second = repository
+                .resolve_and_record_active()
+                .expect("resolve second")
+                .expect("must return active quest");
+            (first, second)
+        };
 
         assert_eq!(first.id, quest_id);
         assert_eq!(second.id, quest_id);
@@ -1688,9 +1706,12 @@ mod tests {
             None,
         );
 
-        let focused = resolve_and_record_active_quest_with_sync(&mut conn, "device-test")
-            .expect("resolve and emit sync")
-            .expect("must return active quest");
+        let (focused, did_increment) = QuestRepository::new(&mut conn)
+            .resolve_and_record_active_transition()
+            .expect("resolve active focus");
+        emit_focus_enter_sync_if_needed(&mut conn, "device-test", focused.as_ref(), did_increment)
+            .expect("emit focus sync");
+        let focused = focused.expect("must return active quest");
         assert_eq!(focused.id, quest_id);
         assert_eq!(focused.focus_enter_count, 1);
 
@@ -1720,9 +1741,17 @@ mod tests {
         .expect("parse quest sync payload");
         assert_eq!(payload.focus_enter_count, 1);
 
-        let repeated = resolve_and_record_active_quest_with_sync(&mut conn, "device-test")
-            .expect("resolve repeated")
-            .expect("must return active quest");
+        let (repeated, repeated_increment) = QuestRepository::new(&mut conn)
+            .resolve_and_record_active_transition()
+            .expect("resolve repeated");
+        emit_focus_enter_sync_if_needed(
+            &mut conn,
+            "device-test",
+            repeated.as_ref(),
+            repeated_increment,
+        )
+        .expect("emit repeated focus sync");
+        let repeated = repeated.expect("must return active quest");
         assert_eq!(repeated.focus_enter_count, 1);
         let event_count: i64 = sync_outbox::table
             .filter(sync_outbox::entity_type.eq("quest"))
