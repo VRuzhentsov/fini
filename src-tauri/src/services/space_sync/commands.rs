@@ -516,7 +516,14 @@ fn apply_quest_focus_enter_count(
         .optional()
         .map_err(|e| e.to_string())?;
 
-    if current_count.is_some_and(|count| payload.focus_enter_count > count) {
+    let current_count = current_count.ok_or_else(|| {
+        format!(
+            "quest {} missing for focus_enter_count sync",
+            event.entity_id
+        )
+    })?;
+
+    if payload.focus_enter_count > current_count {
         diesel::update(quests::table.find(&event.entity_id))
             .set(quests::focus_enter_count.eq(payload.focus_enter_count))
             .execute(conn)
@@ -1687,6 +1694,50 @@ mod tests {
         );
 
         assert!(apply_sync_event(&mut conn, &older_higher_event).unwrap());
+        let focus_enter_count: i64 = quests::table
+            .find("q1")
+            .select(quests::focus_enter_count)
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(focus_enter_count, 5);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn focus_enter_count_event_waits_for_quest_row() {
+        let db_path = temp_db_path("focus-count-waits-for-quest");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let count_event = test_envelope(
+            "evt-count-before-quest",
+            "dev-remote",
+            "quest_focus_enter_count",
+            "q1",
+            "upsert",
+            Some(r#"{"focus_enter_count":5}"#.to_string()),
+            "2026-03-03T10:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &count_event).is_err());
+        assert!(!is_event_seen(&mut conn, "evt-count-before-quest").unwrap());
+
+        let mut quest = test_quest("q1", "Remote Title", "2026-03-03T11:00:00Z");
+        quest.focus_enter_count = 1;
+        let quest_event = test_envelope(
+            "evt-quest-after-count",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&quest)),
+            "2026-03-03T11:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &quest_event).unwrap());
+        assert!(apply_sync_event(&mut conn, &count_event).unwrap());
+
         let focus_enter_count: i64 = quests::table
             .find("q1")
             .select(quests::focus_enter_count)
