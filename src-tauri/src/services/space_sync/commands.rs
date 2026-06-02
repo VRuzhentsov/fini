@@ -22,6 +22,7 @@ use crate::services::device_connection::{CustomSpaceDescriptor, DeviceConnection
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
+const FOCUS_COUNT_MISSING_QUEST_ERROR: &str = "missing quest for focus_enter_count sync";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SpaceSyncStatus {
@@ -542,7 +543,7 @@ fn apply_quest_focus_enter_count(
         }
 
         return Err(format!(
-            "quest {} missing for focus_enter_count sync",
+            "{FOCUS_COUNT_MISSING_QUEST_ERROR}: {}",
             event.entity_id
         ));
     };
@@ -1215,6 +1216,9 @@ pub fn space_sync_tick_impl(
                     "[space-sync] failed to apply incoming event {}: {err}",
                     event.event_id
                 );
+                if err.starts_with(FOCUS_COUNT_MISSING_QUEST_ERROR) {
+                    deferred_events.push(event);
+                }
             }
         }
     }
@@ -2100,6 +2104,76 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1);
         }
+
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(app_dir);
+    }
+
+    #[test]
+    fn space_sync_tick_requeues_count_event_until_quest_arrives() {
+        let db_path = temp_db_path("tick-requeues-count-until-quest");
+        let app_dir = temp_app_dir("tick-requeues-count-until-quest");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+        diesel::insert_into(pair_space_mappings::table)
+            .values((
+                pair_space_mappings::peer_device_id.eq("peer-a"),
+                pair_space_mappings::space_id.eq("1"),
+                pair_space_mappings::enabled_at.eq("2026-04-11T20:01:00Z"),
+                pair_space_mappings::last_synced_at.eq(Option::<String>::None),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        let device_connection = DeviceConnectionState::new(&app_dir);
+        let count_event = test_envelope(
+            "evt-count-before-quest-tick",
+            "peer-a",
+            "quest_focus_enter_count",
+            "q1",
+            "upsert",
+            Some(r#"{"focus_enter_count":5}"#.to_string()),
+            "2026-04-11T20:00:00Z",
+        );
+        let mut quest = test_quest("q1", "Remote Quest", "2026-04-11T20:00:01Z");
+        quest.focus_enter_count = 1;
+        let quest_event = test_envelope(
+            "evt-quest-after-count-tick",
+            "peer-a",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&quest)),
+            "2026-04-11T20:00:01Z",
+        );
+
+        device_connection.restore_incoming_sync_events(vec![count_event, quest_event]);
+
+        let first_tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
+        assert_eq!(first_tick.applied_events, 1);
+        assert!(!is_event_seen(&mut conn, "evt-count-before-quest-tick").unwrap());
+
+        let second_tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
+        assert_eq!(second_tick.applied_events, 1);
+        assert!(is_event_seen(&mut conn, "evt-count-before-quest-tick").unwrap());
+
+        let focus_enter_count: i64 = quests::table
+            .find("q1")
+            .select(quests::focus_enter_count)
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(focus_enter_count, 5);
 
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(app_dir);
