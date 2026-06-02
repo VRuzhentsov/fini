@@ -447,6 +447,16 @@ fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String
 fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
     ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
 
+    let stored_focus_enter_count = quests::table
+        .find(&quest.id)
+        .select(quests::focus_enter_count)
+        .first::<i64>(conn)
+        .optional()
+        .map_err(|e| e.to_string())?
+        .map_or(quest.focus_enter_count, |count| {
+            count.max(quest.focus_enter_count)
+        });
+
     diesel::insert_into(quests::table)
         .values((
             quests::id.eq(&quest.id),
@@ -462,7 +472,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
-            quests::focus_enter_count.eq(quest.focus_enter_count),
+            quests::focus_enter_count.eq(stored_focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -483,7 +493,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
-            quests::focus_enter_count.eq(quest.focus_enter_count),
+            quests::focus_enter_count.eq(stored_focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -1608,6 +1618,40 @@ mod tests {
             .first(&mut conn)
             .unwrap();
         assert_eq!(count_after_lower_event, 4);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn quest_upsert_preserves_max_focus_enter_count() {
+        let db_path = temp_db_path("quest-upsert-preserves-max-focus-count");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let mut local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
+        local_quest.focus_enter_count = 5;
+        upsert_quest(&mut conn, &local_quest).unwrap();
+
+        let mut remote_quest = test_quest("q1", "Remote Title", "2026-03-03T00:00:00Z");
+        remote_quest.focus_enter_count = 2;
+        let event = test_envelope(
+            "evt-stale-full-upsert",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-03T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+        let synced: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(synced.title, "Remote Title");
+        assert_eq!(synced.focus_enter_count, 5);
 
         let _ = std::fs::remove_file(db_path);
     }

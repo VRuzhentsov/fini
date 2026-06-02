@@ -697,27 +697,44 @@ fn update_quest_from_cli(
         repeat_rule: args.repeat_rule,
         order_rank: args.order_rank,
     };
-    let mut repository = QuestRepository::new(conn);
-    let result = repository
-        .update(&args.id, input)
-        .map_err(CliError::from_string)?;
-    if args.trigger_reminder_focus {
-        repository
-            .append_focus_history(&result.quest.id, &result.quest.space_id, "reminder")
+    let (result, did_increment_focus_enter_count) = {
+        let mut repository = QuestRepository::new(conn);
+        let mut result = repository
+            .update(&args.id, input)
             .map_err(CliError::from_string)?;
-    } else if args.set_focus
-        || args.status.as_deref() == Some("active")
-        || result.restore_should_focus
-    {
-        repository
-            .append_focus_history(&result.quest.id, &result.quest.space_id, "manual")
-            .map_err(CliError::from_string)?;
-    }
+        let mut did_increment_focus_enter_count = false;
+        if args.trigger_reminder_focus {
+            repository
+                .append_focus_history(&result.quest.id, &result.quest.space_id, "reminder")
+                .map_err(CliError::from_string)?;
+            let (quest, did_increment) = repository
+                .record_manual_focus_enter_transition(result.quest)
+                .map_err(CliError::from_string)?;
+            result.quest = quest;
+            did_increment_focus_enter_count = did_increment;
+        } else if args.set_focus
+            || args.status.as_deref() == Some("active")
+            || result.restore_should_focus
+        {
+            repository
+                .append_focus_history(&result.quest.id, &result.quest.space_id, "manual")
+                .map_err(CliError::from_string)?;
+            let (quest, did_increment) = repository
+                .record_manual_focus_enter_transition(result.quest)
+                .map_err(CliError::from_string)?;
+            result.quest = quest;
+            did_increment_focus_enter_count = did_increment;
+        }
+        (result, did_increment_focus_enter_count)
+    };
     sync_reminder_rows(conn, &result.quest);
     if let Some(ref occurrence) = result.next_occurrence {
         sync_reminder_rows(conn, occurrence);
     }
     emit_quest_sync(ctx, conn, &result.quest, "upsert");
+    if did_increment_focus_enter_count {
+        emit_focus_enter_count_sync(ctx, conn, &result.quest);
+    }
     serde_json::to_value(result.quest).map_err(|e| CliError::runtime(e.to_string()))
 }
 
@@ -1175,4 +1192,85 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{quests, sync_outbox};
+    use uuid::Uuid;
+
+    fn temp_db_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("fini-test-cli-{label}-{}.db", Uuid::new_v4()))
+    }
+
+    fn temp_app_dir(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("fini-test-cli-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn quest_update_trigger_reminder_focus_records_and_syncs_focus_count() {
+        let db_path = temp_db_path("quest-update-reminder-focus-count");
+        let app_dir = temp_app_dir("quest-update-reminder-focus-count");
+        let device_state = DeviceConnectionState::new_with_db_path(&app_dir, db_path.clone());
+        let ctx = CliContext {
+            db_path: db_path.clone(),
+            device_state,
+        };
+        let mut conn = open_db_at_path(&db_path);
+
+        diesel::insert_into(quests::table)
+            .values((
+                quests::id.eq("q-cli-count"),
+                quests::space_id.eq("1"),
+                quests::title.eq("cli reminder focus count"),
+                quests::status.eq("active"),
+                quests::due.eq(Some("2026-03-05")),
+                quests::due_time.eq(Some("09:31")),
+                quests::created_at.eq("2026-03-01T10:00:00Z"),
+                quests::updated_at.eq("2026-03-01T10:00:00Z"),
+            ))
+            .execute(&mut conn)
+            .expect("insert quest");
+
+        update_quest_from_cli(
+            &ctx,
+            &mut conn,
+            QuestUpdateArgs {
+                id: "q-cli-count".to_string(),
+                title: None,
+                description: None,
+                status: None,
+                space_id: None,
+                pinned: None,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                set_focus: false,
+                trigger_reminder_focus: true,
+            },
+        )
+        .unwrap_or_else(|err| panic!("update quest from cli: {}", err.message));
+
+        let focus_enter_count: i64 = quests::table
+            .find("q-cli-count")
+            .select(quests::focus_enter_count)
+            .first(&mut conn)
+            .expect("load focus count");
+        assert_eq!(focus_enter_count, 1);
+
+        let count_sync_events: i64 = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest_focus_enter_count"))
+            .filter(sync_outbox::entity_id.eq("q-cli-count"))
+            .count()
+            .get_result(&mut conn)
+            .expect("count sync events");
+        assert_eq!(count_sync_events, 1);
+
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(app_dir);
+    }
 }
