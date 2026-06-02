@@ -301,6 +301,9 @@ jobs:
       - name: Build Linux bundles
         run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm
 
+      - name: Build Linux CLI
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
+
       - name: Collect Linux release files
         run: |
           set -euo pipefail
@@ -341,6 +344,13 @@ jobs:
             echo "Expected Linux artifacts (.deb, .rpm, .AppImage) were not all produced" >&2
             exit 1
           fi
+
+          cli_binary="src-tauri/target/${{ matrix.rust_target }}/release/fini"
+          if [ ! -f "$cli_binary" ]; then
+            echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
+            exit 1
+          fi
+          tar -C "$(dirname "$cli_binary")" -czf "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz" fini
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -406,28 +416,34 @@ jobs:
       - name: Build Windows bundles
         run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
+      - name: Build Windows CLI
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
+
       - name: Collect Windows release files
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
-          mkdir -p release/windows
+          $ErrorActionPreference = "Stop"
+          $bundleRoot = "src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          New-Item -ItemType Directory -Force release/windows | Out-Null
 
-          found_exe="false"
-          while IFS= read -r file; do
-            output_path="release/windows/fini-${GITHUB_REF_NAME}-windows-${{ matrix.arch }}-setup.exe"
-            cp "$file" "$output_path"
-            if [ -f "${file}.sig" ]; then
-              cp "${file}.sig" "${output_path}.sig"
-            fi
-            found_exe="true"
-          done < <(find "$bundle_root" -type f \
-            -name '*-setup.exe')
+          $setupFiles = Get-ChildItem -Path $bundleRoot -Recurse -Filter "*-setup.exe"
+          if ($setupFiles.Count -eq 0) {
+            throw "Expected Windows .exe artifacts were not produced"
+          }
+          foreach ($file in $setupFiles) {
+            $outputPath = "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-setup.exe"
+            Copy-Item -LiteralPath $file.FullName -Destination $outputPath -Force
+            $signaturePath = "$($file.FullName).sig"
+            if (Test-Path -LiteralPath $signaturePath) {
+              Copy-Item -LiteralPath $signaturePath -Destination "$outputPath.sig" -Force
+            }
+          }
 
-          if [ "$found_exe" != "true" ]; then
-            echo "Expected Windows .exe artifacts were not produced" >&2
-            exit 1
-          fi
+          $cliBinary = "src-tauri/target/${{ matrix.rust_target }}/release/fini.exe"
+          if (!(Test-Path -LiteralPath $cliBinary)) {
+            throw "Expected Windows CLI binary was not produced: $cliBinary"
+          }
+          Compress-Archive -LiteralPath $cliBinary -DestinationPath "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip" -Force
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
