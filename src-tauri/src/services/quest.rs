@@ -608,11 +608,6 @@ impl<'a> QuestRepository<'a> {
         record_focus_enter_transition(self.conn, resolved).map_err(|e| e.to_string())
     }
 
-    pub fn resolve_and_record_active(&mut self) -> Result<Option<Quest>, String> {
-        self.resolve_and_record_active_transition()
-            .map(|(quest, _)| quest)
-    }
-
     pub fn record_manual_focus_enter_transition(
         &mut self,
         quest: Quest,
@@ -1671,11 +1666,13 @@ mod tests {
         let (first, second) = {
             let mut repository = QuestRepository::new(&mut conn);
             let first = repository
-                .resolve_and_record_active()
+                .resolve_and_record_active_transition()
+                .map(|(quest, _)| quest)
                 .expect("resolve first")
                 .expect("must return active quest");
             let second = repository
-                .resolve_and_record_active()
+                .resolve_and_record_active_transition()
+                .map(|(quest, _)| quest)
                 .expect("resolve second")
                 .expect("must return active quest");
             (first, second)

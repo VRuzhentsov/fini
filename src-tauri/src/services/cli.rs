@@ -5,9 +5,8 @@ use serde_json::{json, Value};
 use crate::models::{
     CreateQuestInput, CreateReminderInput, CreateSpaceInput, UpdateQuestInput, UpdateSpaceInput,
 };
-use crate::schema::quests;
 use crate::services::backup;
-use crate::services::db::{db_default_path, open_db_at_path, utc_now};
+use crate::services::db::{db_default_path, open_db_at_path};
 use crate::services::device_connection::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
 };
@@ -682,17 +681,20 @@ fn update_quest_from_cli(
         repeat_rule: args.repeat_rule,
         order_rank: args.order_rank,
     };
-    let result = QuestRepository::new(conn)
+    let mut repository = QuestRepository::new(conn);
+    let result = repository
         .update(&args.id, input)
         .map_err(CliError::from_string)?;
     if args.trigger_reminder_focus {
-        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "reminder")
+        repository
+            .append_focus_history(&result.quest.id, &result.quest.space_id, "reminder")
             .map_err(CliError::from_string)?;
     } else if args.set_focus
         || args.status.as_deref() == Some("active")
         || result.restore_should_focus
     {
-        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "manual")
+        repository
+            .append_focus_history(&result.quest.id, &result.quest.space_id, "manual")
             .map_err(CliError::from_string)?;
     }
     sync_reminder_rows(conn, &result.quest);
