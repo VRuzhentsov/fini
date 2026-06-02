@@ -104,6 +104,7 @@ Build planes are explicit:
 - Desktop GUI builds use `ui-plane`.
 - Mobile builds use `ui-plane` only; CLI code is not compiled into mobile bundles.
 - Docker/runtime builds use `cli-plane` only and expose `/usr/local/bin/fini`.
+- Release artifacts keep GUI and CLI distribution separate. Linux and Windows releases publish standalone CLI archives alongside GUI installers.
 
 The CLI binary is built separately from the desktop app binary:
 
@@ -111,6 +112,15 @@ The CLI binary is built separately from the desktop app binary:
 cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane
 npm run tauri build -- --features ui-plane
 ```
+
+CLI release artifacts are named by platform and architecture:
+
+| Platform | CLI artifact |
+|---|---|
+| Linux x64 | `fini-vX.Y.Z-linux-x64-cli.tar.gz` |
+| Linux arm64 | `fini-vX.Y.Z-linux-arm64-cli.tar.gz` |
+| Windows x64 | `fini-vX.Y.Z-windows-x64-cli.zip` |
+| Windows arm64 | `fini-vX.Y.Z-windows-arm64-cli.zip` |
 
 ## Tech Stack
 

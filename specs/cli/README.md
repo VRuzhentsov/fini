@@ -20,6 +20,20 @@ Fini exposes a CLI-only binary named `fini` for synchronous automation.
 - Docker runtime builds enable only `cli-plane` and expose the CLI binary by default.
 - Mobile builds enable only `ui-plane`; adding `cli-plane` to mobile builds violates this contract.
 
+## Release Artifacts
+
+GUI and CLI distribution are separate release surfaces.
+
+| Surface | Artifact shape |
+|---|---|
+| Linux GUI | `.deb`, `.rpm`, `.AppImage` |
+| Windows GUI | NSIS setup `.exe` |
+| Linux CLI | `fini-vX.Y.Z-linux-ARCH-cli.tar.gz` containing `fini` |
+| Windows CLI | `fini-vX.Y.Z-windows-ARCH-cli.zip` containing `fini.exe` |
+| Docker runtime | Image entrypoint `/usr/local/bin/fini` |
+
+Desktop installers must not be required to expose the CLI on `PATH`. Users who want CLI-only automation should install the standalone CLI artifact or use the Docker runtime image.
+
 ## Verification
 
 Use these checks when changing the binary contract:
