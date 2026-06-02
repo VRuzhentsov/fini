@@ -405,6 +405,16 @@ fn save_last_recorded_focus_id(
     Ok(())
 }
 
+fn clear_last_recorded_focus_id_if_matches(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+) -> Result<(), diesel::result::Error> {
+    if last_recorded_focus_id(conn)?.as_deref() == Some(quest_id) {
+        save_last_recorded_focus_id(conn, None)?;
+    }
+    Ok(())
+}
+
 fn record_focus_enter_transition(
     conn: &mut SqliteConnection,
     resolved: Option<Quest>,
@@ -814,6 +824,10 @@ fn update_quest_result_in_db(
             .map_err(|e| e.to_string())?;
     }
 
+    if existing.status == "active" && matches!(status.as_deref(), Some("completed" | "abandoned")) {
+        clear_last_recorded_focus_id_if_matches(conn, id).map_err(|e| e.to_string())?;
+    }
+
     let updated_quest: Quest = quests::table
         .find(id)
         .select(Quest::as_select())
@@ -969,6 +983,7 @@ pub fn delete_quest_in_db(conn: &mut SqliteConnection, id: &str) -> Result<Quest
     diesel::delete(quests::table.find(id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
+    clear_last_recorded_focus_id_if_matches(conn, id).map_err(|e| e.to_string())?;
     Ok(quest)
 }
 
@@ -1829,6 +1844,41 @@ mod tests {
             .expect("record repeated reminder focus transition");
         assert!(!repeated_increment);
         assert_eq!(focus_enter_count(&mut conn, &reminder_id), 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn restoring_same_quest_after_completion_records_new_focus_enter() {
+        let db_path = temp_db_path("restore-same-quest-records-focus-enter");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest_id = insert_active_quest(
+            &mut conn,
+            "completed-and-restored-focus",
+            2,
+            "2026-03-01T10:00:00Z",
+            None,
+            None,
+        );
+        save_last_recorded_focus_id(&mut conn, Some(&quest_id)).expect("seed last focus id");
+
+        update_quest_in_db(&mut conn, &quest_id, status_patch("completed"))
+            .expect("complete focused quest");
+        update_quest_in_db(&mut conn, &quest_id, status_patch("active"))
+            .expect("restore focused quest");
+
+        let restored: Quest = quests::table
+            .find(&quest_id)
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("load restored quest");
+        let (_, did_increment) = QuestRepository::new(&mut conn)
+            .record_manual_focus_enter_transition(restored)
+            .expect("record restored focus transition");
+
+        assert!(did_increment);
+        assert_eq!(focus_enter_count(&mut conn, &quest_id), 1);
 
         let _ = std::fs::remove_file(db_path);
     }

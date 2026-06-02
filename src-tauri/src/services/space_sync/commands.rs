@@ -516,12 +516,24 @@ fn apply_quest_focus_enter_count(
         .optional()
         .map_err(|e| e.to_string())?;
 
-    let current_count = current_count.ok_or_else(|| {
-        format!(
+    let Some(current_count) = current_count else {
+        let is_tombstoned: bool = tombstones::table
+            .filter(tombstones::entity_type.eq("quest"))
+            .filter(tombstones::entity_id.eq(&event.entity_id))
+            .select(tombstones::entity_id)
+            .first::<String>(conn)
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if is_tombstoned {
+            return Ok(());
+        }
+
+        return Err(format!(
             "quest {} missing for focus_enter_count sync",
             event.entity_id
-        )
-    })?;
+        ));
+    };
 
     if payload.focus_enter_count > current_count {
         diesel::update(quests::table.find(&event.entity_id))
@@ -1744,6 +1756,38 @@ mod tests {
             .first(&mut conn)
             .unwrap();
         assert_eq!(focus_enter_count, 5);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn focus_enter_count_event_for_tombstoned_quest_is_seen() {
+        let db_path = temp_db_path("focus-count-tombstoned-quest");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        diesel::insert_into(tombstones::table)
+            .values((
+                tombstones::entity_type.eq("quest"),
+                tombstones::entity_id.eq("q1"),
+                tombstones::space_id.eq("1"),
+                tombstones::deleted_at.eq("2026-03-03T09:00:00Z"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        let count_event = test_envelope(
+            "evt-count-after-delete",
+            "dev-remote",
+            "quest_focus_enter_count",
+            "q1",
+            "upsert",
+            Some(r#"{"focus_enter_count":5}"#.to_string()),
+            "2026-03-03T10:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &count_event).unwrap());
+        assert!(is_event_seen(&mut conn, "evt-count-after-delete").unwrap());
 
         let _ = std::fs::remove_file(db_path);
     }
