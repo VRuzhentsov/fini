@@ -184,15 +184,16 @@ pub fn run() {
                 }
             }
 
+            let data_dir = app_data_dir(&app_handle);
+            let dc_state = DeviceConnectionState::new(&data_dir);
+            app.manage(dc_state.clone());
+
             let db_state = app.state::<AppDbConnection>();
             reconciler::run(&app_handle, &db_state);
 
             resume_watcher::spawn(&app_handle);
 
-            let data_dir = app_data_dir(&app_handle);
-            let dc_state = DeviceConnectionState::new(&data_dir);
             tauri::async_runtime::spawn(run_ws_server(dc_state.clone(), dc_state.db_path.clone()));
-            app.manage(dc_state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -458,7 +458,7 @@ fn emit_focus_enter_sync_if_needed(
 }
 
 #[cfg(any(feature = "ui-plane", test))]
-fn emit_focus_enter_count_sync_event(
+pub(crate) fn emit_focus_enter_count_sync_event(
     conn: &mut SqliteConnection,
     origin_device_id: &str,
     quest: &Quest,
