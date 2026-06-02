@@ -652,12 +652,14 @@ fn apply_sync_event(
             delete_entity(conn, event)?;
         }
         "upsert" => {
-            if let Some(local_event) =
-                load_latest_event_for_entity(conn, &event.entity_type, &event.entity_id)?
-            {
-                if !incoming_wins(event, &local_event) {
-                    mark_event_seen(conn, &event.event_id)?;
-                    return Ok(false);
+            if event.entity_type != "quest_focus_enter_count" {
+                if let Some(local_event) =
+                    load_latest_event_for_entity(conn, &event.entity_type, &event.entity_id)?
+                {
+                    if !incoming_wins(event, &local_event) {
+                        mark_event_seen(conn, &event.event_id)?;
+                        return Ok(false);
+                    }
                 }
             }
 
@@ -1652,6 +1654,45 @@ mod tests {
             .unwrap();
         assert_eq!(synced.title, "Remote Title");
         assert_eq!(synced.focus_enter_count, 5);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn focus_enter_count_event_bypasses_lww_and_applies_max() {
+        let db_path = temp_db_path("focus-count-bypasses-lww");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let mut local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
+        local_quest.focus_enter_count = 1;
+        upsert_quest(&mut conn, &local_quest).unwrap();
+        insert_outbox_entry(
+            &mut conn,
+            "dev-local",
+            "quest_focus_enter_count",
+            "q1",
+            "2026-03-03T11:00:00Z",
+            Some(r#"{"focus_enter_count":1}"#.to_string()),
+        );
+
+        let older_higher_event = test_envelope(
+            "evt-older-higher-count",
+            "dev-remote",
+            "quest_focus_enter_count",
+            "q1",
+            "upsert",
+            Some(r#"{"focus_enter_count":5}"#.to_string()),
+            "2026-03-03T10:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &older_higher_event).unwrap());
+        let focus_enter_count: i64 = quests::table
+            .find("q1")
+            .select(quests::focus_enter_count)
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(focus_enter_count, 5);
 
         let _ = std::fs::remove_file(db_path);
     }
