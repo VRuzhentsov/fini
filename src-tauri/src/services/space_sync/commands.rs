@@ -68,6 +68,11 @@ pub struct SpaceMappingApplyResult {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct QuestFocusEnterCountPayload {
+    focus_enter_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpaceResolutionMode {
     CreateNew,
@@ -489,6 +494,28 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
     Ok(())
 }
 
+fn apply_quest_focus_enter_count(
+    conn: &mut SqliteConnection,
+    event: &SyncEventEnvelope,
+    payload: &QuestFocusEnterCountPayload,
+) -> Result<(), String> {
+    let current_count: Option<i64> = quests::table
+        .find(&event.entity_id)
+        .select(quests::focus_enter_count)
+        .first(conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    if current_count.is_some_and(|count| payload.focus_enter_count > count) {
+        diesel::update(quests::table.find(&event.entity_id))
+            .set(quests::focus_enter_count.eq(payload.focus_enter_count))
+            .execute(conn)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Result<(), String> {
     ensure_spaces_exist(conn, &[series.space_id.clone()])?;
 
@@ -647,6 +674,11 @@ fn apply_sync_event(
                     let focus: FocusHistoryEntry =
                         serde_json::from_str(payload).map_err(|e| e.to_string())?;
                     upsert_focus_history(conn, &focus)?;
+                }
+                "quest_focus_enter_count" => {
+                    let payload: QuestFocusEnterCountPayload =
+                        serde_json::from_str(payload).map_err(|e| e.to_string())?;
+                    apply_quest_focus_enter_count(conn, event, &payload)?;
                 }
                 _ => {}
             }
@@ -1526,6 +1558,56 @@ mod tests {
             .first(&mut conn)
             .unwrap();
         assert_eq!(synced_focus_enter_count, 3);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn focus_enter_count_event_preserves_existing_quest_fields() {
+        let db_path = temp_db_path("focus-enter-count-preserves-fields");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let mut local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
+        local_quest.focus_enter_count = 1;
+        upsert_quest(&mut conn, &local_quest).unwrap();
+
+        let event = test_envelope(
+            "evt-count",
+            "dev-remote",
+            "quest_focus_enter_count",
+            "q1",
+            "upsert",
+            Some(r#"{"focus_enter_count":4}"#.to_string()),
+            "2026-03-03T00:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let synced: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(synced.focus_enter_count, 4);
+        assert_eq!(synced.title, "Local Title");
+        assert_eq!(synced.updated_at, "2026-03-02T00:00:00Z");
+
+        let lower_event = test_envelope(
+            "evt-count-lower",
+            "dev-remote",
+            "quest_focus_enter_count",
+            "q1",
+            "upsert",
+            Some(r#"{"focus_enter_count":2}"#.to_string()),
+            "2026-03-04T00:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &lower_event).unwrap());
+        let count_after_lower_event: i64 = quests::table
+            .find("q1")
+            .select(quests::focus_enter_count)
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(count_after_lower_event, 4);
 
         let _ = std::fs::remove_file(db_path);
     }
