@@ -12,8 +12,8 @@ use super::types::{SyncEventEnvelope, WsMessage};
 use super::ws_client::ensure_peer_sessions;
 use crate::models::{CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space};
 use crate::schema::{
-    focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces, sync_acks,
-    sync_outbox, sync_seen, tombstones,
+    focus_history, pair_space_mappings, paired_devices, quest_series, quests, settings, spaces,
+    sync_acks, sync_outbox, sync_seen, tombstones,
 };
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
@@ -21,6 +21,7 @@ use crate::services::db::AppDbConnection;
 use crate::services::device_connection::{CustomSpaceDescriptor, DeviceConnectionState};
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
+const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SpaceSyncStatus {
@@ -501,6 +502,17 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
         ))
         .execute(conn)
         .map_err(|e| e.to_string())?;
+
+    if quest.status != "active" {
+        diesel::delete(
+            settings::table
+                .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
+                .filter(settings::value.eq(&quest.id)),
+        )
+        .execute(conn)
+        .map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
@@ -1673,6 +1685,46 @@ mod tests {
             .unwrap();
         assert_eq!(synced.title, "Remote Title");
         assert_eq!(synced.focus_enter_count, 5);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn quest_upsert_clears_recorded_focus_when_quest_leaves_active() {
+        let db_path = temp_db_path("quest-upsert-clears-recorded-focus");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
+        upsert_quest(&mut conn, &local_quest).unwrap();
+        diesel::insert_into(settings::table)
+            .values((
+                settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
+                settings::value.eq("q1"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        let mut remote_quest = test_quest("q1", "Remote Title", "2026-03-03T00:00:00Z");
+        remote_quest.status = "completed".to_string();
+        let event = test_envelope(
+            "evt-remote-completed-focus",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-03T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+        let recorded_focus: Option<String> = settings::table
+            .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
+            .select(settings::value)
+            .first(&mut conn)
+            .optional()
+            .unwrap();
+        assert_eq!(recorded_focus, None);
 
         let _ = std::fs::remove_file(db_path);
     }
