@@ -12,8 +12,8 @@ use super::types::{SyncEventEnvelope, WsMessage};
 use super::ws_client::ensure_peer_sessions;
 use crate::models::{CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space};
 use crate::schema::{
-    focus_history, pair_space_mappings, paired_devices, quest_series, quests, settings, spaces,
-    sync_acks, sync_outbox, sync_seen, tombstones,
+    focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces, sync_acks,
+    sync_outbox, sync_seen, tombstones,
 };
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
@@ -21,8 +21,6 @@ use crate::services::db::AppDbConnection;
 use crate::services::device_connection::{CustomSpaceDescriptor, DeviceConnectionState};
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
-const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
-const FOCUS_COUNT_MISSING_QUEST_ERROR: &str = "missing quest for focus_enter_count sync";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SpaceSyncStatus {
@@ -67,11 +65,6 @@ pub struct UnresolvedCustomSpace {
 pub struct SpaceMappingApplyResult {
     pub mapped_space_ids: Vec<String>,
     pub unresolved_custom_spaces: Vec<UnresolvedCustomSpace>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct QuestFocusEnterCountPayload {
-    focus_enter_count: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -449,16 +442,6 @@ fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String
 fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
     ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
 
-    let stored_focus_enter_count = quests::table
-        .find(&quest.id)
-        .select(quests::focus_enter_count)
-        .first::<i64>(conn)
-        .optional()
-        .map_err(|e| e.to_string())?
-        .map_or(quest.focus_enter_count, |count| {
-            count.max(quest.focus_enter_count)
-        });
-
     diesel::insert_into(quests::table)
         .values((
             quests::id.eq(&quest.id),
@@ -474,7 +457,6 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
-            quests::focus_enter_count.eq(stored_focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -495,7 +477,6 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
-            quests::focus_enter_count.eq(stored_focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -503,58 +484,6 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
         ))
         .execute(conn)
         .map_err(|e| e.to_string())?;
-
-    if quest.status != "active" {
-        diesel::delete(
-            settings::table
-                .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
-                .filter(settings::value.eq(&quest.id)),
-        )
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
-}
-
-fn apply_quest_focus_enter_count(
-    conn: &mut SqliteConnection,
-    event: &SyncEventEnvelope,
-    payload: &QuestFocusEnterCountPayload,
-) -> Result<(), String> {
-    let current_count: Option<i64> = quests::table
-        .find(&event.entity_id)
-        .select(quests::focus_enter_count)
-        .first(conn)
-        .optional()
-        .map_err(|e| e.to_string())?;
-
-    let Some(current_count) = current_count else {
-        let is_tombstoned: bool = tombstones::table
-            .filter(tombstones::entity_type.eq("quest"))
-            .filter(tombstones::entity_id.eq(&event.entity_id))
-            .select(tombstones::entity_id)
-            .first::<String>(conn)
-            .optional()
-            .map_err(|e| e.to_string())?
-            .is_some();
-        if is_tombstoned {
-            return Ok(());
-        }
-
-        return Err(format!(
-            "{FOCUS_COUNT_MISSING_QUEST_ERROR}: {}",
-            event.entity_id
-        ));
-    };
-
-    if payload.focus_enter_count > current_count {
-        diesel::update(quests::table.find(&event.entity_id))
-            .set(quests::focus_enter_count.eq(payload.focus_enter_count))
-            .execute(conn)
-            .map_err(|e| e.to_string())?;
-    }
-
     Ok(())
 }
 
@@ -684,14 +613,12 @@ fn apply_sync_event(
             delete_entity(conn, event)?;
         }
         "upsert" => {
-            if event.entity_type != "quest_focus_enter_count" {
-                if let Some(local_event) =
-                    load_latest_event_for_entity(conn, &event.entity_type, &event.entity_id)?
-                {
-                    if !incoming_wins(event, &local_event) {
-                        mark_event_seen(conn, &event.event_id)?;
-                        return Ok(false);
-                    }
+            if let Some(local_event) =
+                load_latest_event_for_entity(conn, &event.entity_type, &event.entity_id)?
+            {
+                if !incoming_wins(event, &local_event) {
+                    mark_event_seen(conn, &event.event_id)?;
+                    return Ok(false);
                 }
             }
 
@@ -718,11 +645,6 @@ fn apply_sync_event(
                     let focus: FocusHistoryEntry =
                         serde_json::from_str(payload).map_err(|e| e.to_string())?;
                     upsert_focus_history(conn, &focus)?;
-                }
-                "quest_focus_enter_count" => {
-                    let payload: QuestFocusEnterCountPayload =
-                        serde_json::from_str(payload).map_err(|e| e.to_string())?;
-                    apply_quest_focus_enter_count(conn, event, &payload)?;
                 }
                 _ => {}
             }
@@ -1216,9 +1138,6 @@ pub fn space_sync_tick_impl(
                     "[space-sync] failed to apply incoming event {}: {err}",
                     event.event_id
                 );
-                if err.starts_with(FOCUS_COUNT_MISSING_QUEST_ERROR) {
-                    deferred_events.push(event);
-                }
             }
         }
     }
@@ -1583,8 +1502,7 @@ mod tests {
         );
 
         // Incoming newer event should win
-        let mut new_quest = test_quest("q1", "Remote New", "2026-03-03T00:00:00Z");
-        new_quest.focus_enter_count = 3;
+        let new_quest = test_quest("q1", "Remote New", "2026-03-03T00:00:00Z");
         let new_event = test_envelope(
             "evt-new",
             "dev-remote",
@@ -1598,252 +1516,6 @@ mod tests {
             apply_sync_event(&mut conn, &new_event).unwrap(),
             "newer incoming event should be applied"
         );
-
-        let synced_focus_enter_count: i64 = quests::table
-            .find("q1")
-            .select(quests::focus_enter_count)
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(synced_focus_enter_count, 3);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn focus_enter_count_event_preserves_existing_quest_fields() {
-        let db_path = temp_db_path("focus-enter-count-preserves-fields");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let mut local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
-        local_quest.focus_enter_count = 1;
-        upsert_quest(&mut conn, &local_quest).unwrap();
-
-        let event = test_envelope(
-            "evt-count",
-            "dev-remote",
-            "quest_focus_enter_count",
-            "q1",
-            "upsert",
-            Some(r#"{"focus_enter_count":4}"#.to_string()),
-            "2026-03-03T00:00:00Z",
-        );
-        assert!(apply_sync_event(&mut conn, &event).unwrap());
-
-        let synced: Quest = quests::table
-            .find("q1")
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(synced.focus_enter_count, 4);
-        assert_eq!(synced.title, "Local Title");
-        assert_eq!(synced.updated_at, "2026-03-02T00:00:00Z");
-
-        let lower_event = test_envelope(
-            "evt-count-lower",
-            "dev-remote",
-            "quest_focus_enter_count",
-            "q1",
-            "upsert",
-            Some(r#"{"focus_enter_count":2}"#.to_string()),
-            "2026-03-04T00:00:00Z",
-        );
-        assert!(apply_sync_event(&mut conn, &lower_event).unwrap());
-        let count_after_lower_event: i64 = quests::table
-            .find("q1")
-            .select(quests::focus_enter_count)
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(count_after_lower_event, 4);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn quest_upsert_preserves_max_focus_enter_count() {
-        let db_path = temp_db_path("quest-upsert-preserves-max-focus-count");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let mut local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
-        local_quest.focus_enter_count = 5;
-        upsert_quest(&mut conn, &local_quest).unwrap();
-
-        let mut remote_quest = test_quest("q1", "Remote Title", "2026-03-03T00:00:00Z");
-        remote_quest.focus_enter_count = 2;
-        let event = test_envelope(
-            "evt-stale-full-upsert",
-            "dev-remote",
-            "quest",
-            "q1",
-            "upsert",
-            Some(quest_payload(&remote_quest)),
-            "2026-03-03T00:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &event).unwrap());
-        let synced: Quest = quests::table
-            .find("q1")
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(synced.title, "Remote Title");
-        assert_eq!(synced.focus_enter_count, 5);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn quest_upsert_clears_recorded_focus_when_quest_leaves_active() {
-        let db_path = temp_db_path("quest-upsert-clears-recorded-focus");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
-        upsert_quest(&mut conn, &local_quest).unwrap();
-        diesel::insert_into(settings::table)
-            .values((
-                settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
-                settings::value.eq("q1"),
-            ))
-            .execute(&mut conn)
-            .unwrap();
-
-        let mut remote_quest = test_quest("q1", "Remote Title", "2026-03-03T00:00:00Z");
-        remote_quest.status = "completed".to_string();
-        let event = test_envelope(
-            "evt-remote-completed-focus",
-            "dev-remote",
-            "quest",
-            "q1",
-            "upsert",
-            Some(quest_payload(&remote_quest)),
-            "2026-03-03T00:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &event).unwrap());
-        let recorded_focus: Option<String> = settings::table
-            .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
-            .select(settings::value)
-            .first(&mut conn)
-            .optional()
-            .unwrap();
-        assert_eq!(recorded_focus, None);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn focus_enter_count_event_bypasses_lww_and_applies_max() {
-        let db_path = temp_db_path("focus-count-bypasses-lww");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let mut local_quest = test_quest("q1", "Local Title", "2026-03-02T00:00:00Z");
-        local_quest.focus_enter_count = 1;
-        upsert_quest(&mut conn, &local_quest).unwrap();
-        insert_outbox_entry(
-            &mut conn,
-            "dev-local",
-            "quest_focus_enter_count",
-            "q1",
-            "2026-03-03T11:00:00Z",
-            Some(r#"{"focus_enter_count":1}"#.to_string()),
-        );
-
-        let older_higher_event = test_envelope(
-            "evt-older-higher-count",
-            "dev-remote",
-            "quest_focus_enter_count",
-            "q1",
-            "upsert",
-            Some(r#"{"focus_enter_count":5}"#.to_string()),
-            "2026-03-03T10:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &older_higher_event).unwrap());
-        let focus_enter_count: i64 = quests::table
-            .find("q1")
-            .select(quests::focus_enter_count)
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(focus_enter_count, 5);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn focus_enter_count_event_waits_for_quest_row() {
-        let db_path = temp_db_path("focus-count-waits-for-quest");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let count_event = test_envelope(
-            "evt-count-before-quest",
-            "dev-remote",
-            "quest_focus_enter_count",
-            "q1",
-            "upsert",
-            Some(r#"{"focus_enter_count":5}"#.to_string()),
-            "2026-03-03T10:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &count_event).is_err());
-        assert!(!is_event_seen(&mut conn, "evt-count-before-quest").unwrap());
-
-        let mut quest = test_quest("q1", "Remote Title", "2026-03-03T11:00:00Z");
-        quest.focus_enter_count = 1;
-        let quest_event = test_envelope(
-            "evt-quest-after-count",
-            "dev-remote",
-            "quest",
-            "q1",
-            "upsert",
-            Some(quest_payload(&quest)),
-            "2026-03-03T11:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &quest_event).unwrap());
-        assert!(apply_sync_event(&mut conn, &count_event).unwrap());
-
-        let focus_enter_count: i64 = quests::table
-            .find("q1")
-            .select(quests::focus_enter_count)
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(focus_enter_count, 5);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn focus_enter_count_event_for_tombstoned_quest_is_seen() {
-        let db_path = temp_db_path("focus-count-tombstoned-quest");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        diesel::insert_into(tombstones::table)
-            .values((
-                tombstones::entity_type.eq("quest"),
-                tombstones::entity_id.eq("q1"),
-                tombstones::space_id.eq("1"),
-                tombstones::deleted_at.eq("2026-03-03T09:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .unwrap();
-
-        let count_event = test_envelope(
-            "evt-count-after-delete",
-            "dev-remote",
-            "quest_focus_enter_count",
-            "q1",
-            "upsert",
-            Some(r#"{"focus_enter_count":5}"#.to_string()),
-            "2026-03-03T10:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &count_event).unwrap());
-        assert!(is_event_seen(&mut conn, "evt-count-after-delete").unwrap());
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -2104,76 +1776,6 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1);
         }
-
-        let _ = std::fs::remove_file(db_path);
-        let _ = std::fs::remove_dir_all(app_dir);
-    }
-
-    #[test]
-    fn space_sync_tick_requeues_count_event_until_quest_arrives() {
-        let db_path = temp_db_path("tick-requeues-count-until-quest");
-        let app_dir = temp_app_dir("tick-requeues-count-until-quest");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        diesel::insert_into(paired_devices::table)
-            .values((
-                paired_devices::peer_device_id.eq("peer-a"),
-                paired_devices::display_name.eq("Peer A"),
-                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
-                paired_devices::last_seen_at.eq(Option::<String>::None),
-                paired_devices::pair_state.eq("paired"),
-            ))
-            .execute(&mut conn)
-            .unwrap();
-        diesel::insert_into(pair_space_mappings::table)
-            .values((
-                pair_space_mappings::peer_device_id.eq("peer-a"),
-                pair_space_mappings::space_id.eq("1"),
-                pair_space_mappings::enabled_at.eq("2026-04-11T20:01:00Z"),
-                pair_space_mappings::last_synced_at.eq(Option::<String>::None),
-            ))
-            .execute(&mut conn)
-            .unwrap();
-
-        let device_connection = DeviceConnectionState::new(&app_dir);
-        let count_event = test_envelope(
-            "evt-count-before-quest-tick",
-            "peer-a",
-            "quest_focus_enter_count",
-            "q1",
-            "upsert",
-            Some(r#"{"focus_enter_count":5}"#.to_string()),
-            "2026-04-11T20:00:00Z",
-        );
-        let mut quest = test_quest("q1", "Remote Quest", "2026-04-11T20:00:01Z");
-        quest.focus_enter_count = 1;
-        let quest_event = test_envelope(
-            "evt-quest-after-count-tick",
-            "peer-a",
-            "quest",
-            "q1",
-            "upsert",
-            Some(quest_payload(&quest)),
-            "2026-04-11T20:00:01Z",
-        );
-
-        device_connection.restore_incoming_sync_events(vec![count_event, quest_event]);
-
-        let first_tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
-        assert_eq!(first_tick.applied_events, 1);
-        assert!(!is_event_seen(&mut conn, "evt-count-before-quest-tick").unwrap());
-
-        let second_tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
-        assert_eq!(second_tick.applied_events, 1);
-        assert!(is_event_seen(&mut conn, "evt-count-before-quest-tick").unwrap());
-
-        let focus_enter_count: i64 = quests::table
-            .find("q1")
-            .select(quests::focus_enter_count)
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(focus_enter_count, 5);
 
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(app_dir);

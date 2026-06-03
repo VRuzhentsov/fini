@@ -12,8 +12,6 @@ Primary card for the current Focus quest. Used in [[FocusView]].
 
 Header row with the quest title on the left and action buttons on the right. Optional description below.
 
-When `quest.focus_enter_count >= 2`, the card shows a quiet warm attention badge such as `Focus 3 times`. At `4+`, it adds `Keeps returning`. The copy is informational and must not imply failure.
-
 ## Actions
 
 | Button | Behaviour |

@@ -5,8 +5,9 @@ use serde_json::{json, Value};
 use crate::models::{
     CreateQuestInput, CreateReminderInput, CreateSpaceInput, UpdateQuestInput, UpdateSpaceInput,
 };
+use crate::schema::quests;
 use crate::services::backup;
-use crate::services::db::{db_default_path, open_db_at_path};
+use crate::services::db::{db_default_path, open_db_at_path, utc_now};
 use crate::services::device_connection::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
 };
@@ -22,7 +23,7 @@ use crate::services::device_connection::{
     device_connection_send_pair_request_impl, device_connection_unpair_impl,
     device_connection_update_last_seen_impl, DeviceConnectionState,
 };
-use crate::services::quest::{emit_focus_enter_count_sync_event, QuestRepository};
+use crate::services::quest::{append_focus_history, resolve_active_quest, QuestRepository};
 use crate::services::reminder::ReminderRepository;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
@@ -537,54 +538,33 @@ fn emit_series_sync(
 fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
     let mut conn = open_db_at_path(&ctx.db_path);
     match command {
-        FocusCommand::Get => {
-            let (quest, did_increment) = QuestRepository::new(&mut conn)
-                .resolve_and_record_active_transition()
-                .map_err(CliError::from_string)?;
-            if did_increment {
-                if let Some(ref quest) = quest {
-                    let _ = emit_focus_enter_count_sync_event(
-                        &mut conn,
-                        &ctx.device_state.identity.device_id,
-                        quest,
-                    );
-                }
-            }
-            quest
-                .map(|quest| {
-                    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
-                })
-                .transpose()
-                .map(|value| value.unwrap_or(Value::Null))
-        }
+        FocusCommand::Get => resolve_active_quest(&mut conn)
+            .map_err(|e| CliError::runtime(e.to_string()))?
+            .map(|quest| serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string())))
+            .transpose()
+            .map(|value| value.unwrap_or(Value::Null)),
         FocusCommand::Set(args) => {
+            let quest = quests::table
+                .find(&args.quest_id)
+                .filter(quests::status.eq("active"))
+                .select(crate::models::Quest::as_select())
+                .first(&mut conn)
+                .optional()
+                .map_err(|e| CliError::runtime(e.to_string()))?
+                .ok_or_else(|| {
+                    CliError::from_string("cannot set Focus on non-active quest".to_string())
+                })?;
+            diesel::update(quests::table.find(&quest.id))
+                .set(quests::updated_at.eq(utc_now()))
+                .execute(&mut conn)
+                .map_err(|e| CliError::runtime(e.to_string()))?;
             let trigger = if args.trigger.as_deref() == Some("reminder") {
                 "reminder"
             } else {
                 "manual"
             };
-            let (quest, did_increment) = {
-                let mut repository = QuestRepository::new(&mut conn);
-                let quest = repository
-                    .get_active(&args.quest_id)
-                    .map_err(CliError::from_string)?;
-                repository
-                    .touch_updated_at(&quest.id)
-                    .map_err(CliError::from_string)?;
-                repository
-                    .append_focus_history(&quest.id, &quest.space_id, trigger)
-                    .map_err(CliError::from_string)?;
-                repository
-                    .record_manual_focus_enter_transition(quest)
-                    .map_err(CliError::from_string)?
-            };
-            if did_increment {
-                let _ = emit_focus_enter_count_sync_event(
-                    &mut conn,
-                    &ctx.device_state.identity.device_id,
-                    &quest,
-                );
-            }
+            append_focus_history(&mut conn, &quest.id, &quest.space_id, trigger)
+                .map_err(CliError::from_string)?;
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
     }
@@ -685,48 +665,24 @@ fn update_quest_from_cli(
         repeat_rule: args.repeat_rule,
         order_rank: args.order_rank,
     };
-    let (result, did_increment_focus_enter_count) = {
-        let mut repository = QuestRepository::new(conn);
-        let mut result = repository
-            .update(&args.id, input)
+    let result = QuestRepository::new(conn)
+        .update(&args.id, input)
+        .map_err(CliError::from_string)?;
+    if args.trigger_reminder_focus {
+        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "reminder")
             .map_err(CliError::from_string)?;
-        let mut did_increment_focus_enter_count = false;
-        if args.trigger_reminder_focus {
-            repository
-                .append_focus_history(&result.quest.id, &result.quest.space_id, "reminder")
-                .map_err(CliError::from_string)?;
-            let (quest, did_increment) = repository
-                .record_manual_focus_enter_transition(result.quest)
-                .map_err(CliError::from_string)?;
-            result.quest = quest;
-            did_increment_focus_enter_count = did_increment;
-        } else if args.set_focus
-            || args.status.as_deref() == Some("active")
-            || result.restore_should_focus
-        {
-            repository
-                .append_focus_history(&result.quest.id, &result.quest.space_id, "manual")
-                .map_err(CliError::from_string)?;
-            let (quest, did_increment) = repository
-                .record_manual_focus_enter_transition(result.quest)
-                .map_err(CliError::from_string)?;
-            result.quest = quest;
-            did_increment_focus_enter_count = did_increment;
-        }
-        (result, did_increment_focus_enter_count)
-    };
+    } else if args.set_focus
+        || args.status.as_deref() == Some("active")
+        || result.restore_should_focus
+    {
+        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "manual")
+            .map_err(CliError::from_string)?;
+    }
     sync_reminder_rows(conn, &result.quest);
     if let Some(ref occurrence) = result.next_occurrence {
         sync_reminder_rows(conn, occurrence);
     }
     emit_quest_sync(ctx, conn, &result.quest, "upsert");
-    if did_increment_focus_enter_count {
-        let _ = emit_focus_enter_count_sync_event(
-            conn,
-            &ctx.device_state.identity.device_id,
-            &result.quest,
-        );
-    }
     serde_json::to_value(result.quest).map_err(|e| CliError::runtime(e.to_string()))
 }
 
@@ -1184,85 +1140,4 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::schema::{quests, sync_outbox};
-    use uuid::Uuid;
-
-    fn temp_db_path(label: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("fini-test-cli-{label}-{}.db", Uuid::new_v4()))
-    }
-
-    fn temp_app_dir(label: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("fini-test-cli-{label}-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn quest_update_trigger_reminder_focus_records_and_syncs_focus_count() {
-        let db_path = temp_db_path("quest-update-reminder-focus-count");
-        let app_dir = temp_app_dir("quest-update-reminder-focus-count");
-        let device_state = DeviceConnectionState::new_with_db_path(&app_dir, db_path.clone());
-        let ctx = CliContext {
-            db_path: db_path.clone(),
-            device_state,
-        };
-        let mut conn = open_db_at_path(&db_path);
-
-        diesel::insert_into(quests::table)
-            .values((
-                quests::id.eq("q-cli-count"),
-                quests::space_id.eq("1"),
-                quests::title.eq("cli reminder focus count"),
-                quests::status.eq("active"),
-                quests::due.eq(Some("2026-03-05")),
-                quests::due_time.eq(Some("09:31")),
-                quests::created_at.eq("2026-03-01T10:00:00Z"),
-                quests::updated_at.eq("2026-03-01T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert quest");
-
-        update_quest_from_cli(
-            &ctx,
-            &mut conn,
-            QuestUpdateArgs {
-                id: "q-cli-count".to_string(),
-                title: None,
-                description: None,
-                status: None,
-                space_id: None,
-                pinned: None,
-                due: None,
-                due_time: None,
-                repeat_rule: None,
-                order_rank: None,
-                set_focus: false,
-                trigger_reminder_focus: true,
-            },
-        )
-        .unwrap_or_else(|err| panic!("update quest from cli: {}", err.message));
-
-        let focus_enter_count: i64 = quests::table
-            .find("q-cli-count")
-            .select(quests::focus_enter_count)
-            .first(&mut conn)
-            .expect("load focus count");
-        assert_eq!(focus_enter_count, 1);
-
-        let count_sync_events: i64 = sync_outbox::table
-            .filter(sync_outbox::entity_type.eq("quest_focus_enter_count"))
-            .filter(sync_outbox::entity_id.eq("q-cli-count"))
-            .count()
-            .get_result(&mut conn)
-            .expect("count sync events");
-        assert_eq!(count_sync_events, 1);
-
-        let _ = std::fs::remove_file(db_path);
-        let _ = std::fs::remove_dir_all(app_dir);
-    }
 }
