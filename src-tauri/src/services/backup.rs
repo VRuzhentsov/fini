@@ -431,23 +431,6 @@ fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             ));
         }
     }
-    ensure_backup_quest_columns(conn)?;
-    Ok(())
-}
-
-fn ensure_backup_quest_columns(conn: &mut SqliteConnection) -> Result<(), String> {
-    let rows = diesel::sql_query("PRAGMA table_info(quests)")
-        .load::<TableNameRow>(conn)
-        .map_err(|e| format!("failed to inspect backup quest columns: {e}"))?;
-    let columns: HashSet<String> = rows.into_iter().map(|row| row.name).collect();
-
-    if !columns.contains("focus_enter_count") {
-        conn.batch_execute(
-            "ALTER TABLE quests ADD COLUMN focus_enter_count INTEGER NOT NULL DEFAULT 0",
-        )
-        .map_err(|e| format!("failed to upgrade backup quest schema: {e}"))?;
-    }
-
     Ok(())
 }
 

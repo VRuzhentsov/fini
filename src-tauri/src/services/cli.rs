@@ -22,7 +22,7 @@ use crate::services::device_connection::{
     device_connection_send_pair_request_impl, device_connection_unpair_impl,
     device_connection_update_last_seen_impl, DeviceConnectionState,
 };
-use crate::services::quest::QuestRepository;
+use crate::services::quest::{emit_focus_enter_count_sync_event, QuestRepository};
 use crate::services::reminder::ReminderRepository;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
@@ -517,26 +517,6 @@ fn emit_quest_sync(
     );
 }
 
-fn emit_focus_enter_count_sync(
-    ctx: &CliContext,
-    conn: &mut diesel::sqlite::SqliteConnection,
-    quest: &crate::models::Quest,
-) {
-    let payload = json!({
-        "focus_enter_count": quest.focus_enter_count,
-    })
-    .to_string();
-    let _ = emit_sync_event(
-        conn,
-        &ctx.device_state.identity.device_id,
-        "quest_focus_enter_count",
-        &quest.id,
-        &quest.space_id,
-        "upsert",
-        Some(payload),
-    );
-}
-
 fn emit_series_sync(
     ctx: &CliContext,
     conn: &mut diesel::sqlite::SqliteConnection,
@@ -563,7 +543,11 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
                 .map_err(CliError::from_string)?;
             if did_increment {
                 if let Some(ref quest) = quest {
-                    emit_focus_enter_count_sync(ctx, &mut conn, quest);
+                    let _ = emit_focus_enter_count_sync_event(
+                        &mut conn,
+                        &ctx.device_state.identity.device_id,
+                        quest,
+                    );
                 }
             }
             quest
@@ -595,7 +579,11 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
                     .map_err(CliError::from_string)?
             };
             if did_increment {
-                emit_focus_enter_count_sync(ctx, &mut conn, &quest);
+                let _ = emit_focus_enter_count_sync_event(
+                    &mut conn,
+                    &ctx.device_state.identity.device_id,
+                    &quest,
+                );
             }
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
@@ -733,7 +721,11 @@ fn update_quest_from_cli(
     }
     emit_quest_sync(ctx, conn, &result.quest, "upsert");
     if did_increment_focus_enter_count {
-        emit_focus_enter_count_sync(ctx, conn, &result.quest);
+        let _ = emit_focus_enter_count_sync_event(
+            conn,
+            &ctx.device_state.identity.device_id,
+            &result.quest,
+        );
     }
     serde_json::to_value(result.quest).map_err(|e| CliError::runtime(e.to_string()))
 }
