@@ -22,7 +22,7 @@ use crate::services::db::AppDbConnection;
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
 const BACKUP_FORMAT: &str = "fini-backup";
-const BACKUP_VERSION: u32 = 1;
+const BACKUP_VERSION: u32 = 2;
 const BUILTIN_SPACE_IDS: [&str; 3] = ["1", "2", "3"];
 
 #[derive(Debug, Serialize, Deserialize)]

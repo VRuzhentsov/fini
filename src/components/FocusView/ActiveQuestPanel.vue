@@ -127,7 +127,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     <div class="active-quest-top">
       <button class="active-quest-title" @click="expanded = true">{{ quest.title }}</button>
       <div class="active-quest-meta">
-        <span v-if="quest.focus_enter_count > 0" class="badge badge-xs">Focus {{ quest.focus_enter_count }}</span>
+        <span v-if="quest.focus_enter_count > 1" class="badge badge-xs">Focus {{ quest.focus_enter_count }}</span>
         <span class="badge badge-xs active-quest-space" :class="spaceCss()">{{ spaceName() }}</span>
         <button
           class="hold-ring-menu"
