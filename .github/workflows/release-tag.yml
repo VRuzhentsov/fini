@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -53,16 +52,11 @@ jobs:
           echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
 
-      - name: Verify release actor has maintain/admin access
+      - name: Verify tag actor has maintain/admin access
         uses: actions/github-script@v8
         with:
           script: |
             const actor = context.actor;
-            if (context.eventName === "workflow_dispatch" && actor === "github-actions[bot]") {
-              core.info("Release workflow was dispatched by GitHub Actions automation.");
-              return;
-            }
-
             const { owner, repo } = context.repo;
             const result = await github.rest.repos.getCollaboratorPermissionLevel({
               owner,
@@ -71,9 +65,9 @@ jobs:
             });
             const allowed = new Set(["maintain", "admin"]);
             const permission = result.data.permission;
-            core.info(`Release actor ${actor} has permission: ${permission}`);
+            core.info(`Tag actor ${actor} has permission: ${permission}`);
             if (!allowed.has(permission)) {
-              core.setFailed(`Release actor ${actor} must have maintain/admin permission.`);
+              core.setFailed(`Tag actor ${actor} must have maintain/admin permission.`);
             }
 
       - name: Resolve tag commit and compare with origin/main
