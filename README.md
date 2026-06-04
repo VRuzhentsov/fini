@@ -168,6 +168,26 @@ make build
 
 Release workflow is GitOps: pushing a signed annotated `v*` tag starts CI. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit. CI owns tests, builds, signing checks, packaging, and artifacts.
 
+The one-click release path is the `Release Button` GitHub Actions workflow. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes a `release/vX.Y.Z` trace branch and `main`, creates a signed annotated tag, opens a release issue, and dispatches the tag release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create an issue, commit, tag, or release pipeline run.
+
+Before using the button, add the release signing key secrets once:
+
+```bash
+release_key_id="$(git config user.signingkey)"
+gpg --armor --export-secret-keys "$release_key_id" | gh secret set RELEASE_TAG_GPG_PRIVATE_KEY
+gpg --armor --export "$release_key_id" | gh secret set RELEASE_TAG_GPG_PUBLIC_KEY
+```
+
+If the release key has a passphrase, also add it:
+
+```bash
+read -rsp 'GPG passphrase: ' RELEASE_TAG_GPG_PASSPHRASE; printf '\n'
+gh secret set RELEASE_TAG_GPG_PASSPHRASE --body "$RELEASE_TAG_GPG_PASSPHRASE"
+unset RELEASE_TAG_GPG_PASSPHRASE
+```
+
+The local release path remains available:
+
 ```bash
 make release VERSION=0.1.12
 ```
