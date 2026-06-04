@@ -168,9 +168,15 @@ make build
 
 Release workflow is GitOps: pushing a signed annotated `v*` tag starts CI. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit. CI owns tests, builds, signing checks, packaging, and artifacts.
 
-The one-click release path is the `Release Button` GitHub Actions workflow. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes a `release/vX.Y.Z` trace branch and `main`, creates a signed annotated tag, opens a release issue, and dispatches the tag release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create an issue, commit, tag, or release pipeline run.
+The one-click release path is the `Release Button` GitHub Actions workflow. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes `main` and a `release/vX.Y.Z` trace branch, creates a signed annotated tag, and opens a release issue. The tag push starts the release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create an issue, commit, tag, or release pipeline run.
 
-Before using the button, add the release signing key secrets once:
+Because `main` is protected, the button needs an automation token that can update protected branches for the repository:
+
+```bash
+gh auth token | gh secret set RELEASE_AUTOMATION_TOKEN --repo VRuzhentsov/fini
+```
+
+Before using the button, also add the release signing key secrets once:
 
 ```bash
 release_key_id="$(git config user.signingkey)"
