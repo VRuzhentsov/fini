@@ -22,7 +22,7 @@ use crate::services::db::AppDbConnection;
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
 const BACKUP_FORMAT: &str = "fini-backup";
-const BACKUP_VERSION: u32 = 1;
+const BACKUP_VERSION: u32 = 2;
 const BUILTIN_SPACE_IDS: [&str; 3] = ["1", "2", "3"];
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -406,6 +406,7 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             repeat_rule TEXT,
             completed_at TEXT,
             order_rank REAL NOT NULL DEFAULT 0,
+            focus_enter_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
@@ -708,6 +709,7 @@ fn insert_quest(
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
+            quests::focus_enter_count.eq(quest.focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -779,6 +781,7 @@ fn upsert_quest_for_import(
                 quests::repeat_rule.eq(&quest.repeat_rule),
                 quests::completed_at.eq(&quest.completed_at),
                 quests::order_rank.eq(quest.order_rank),
+                quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
                 quests::series_id.eq(&quest.series_id),
@@ -859,6 +862,7 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         repeat_rule: quest.repeat_rule.clone(),
         completed_at: quest.completed_at.clone(),
         order_rank: quest.order_rank,
+        focus_enter_count: quest.focus_enter_count,
         created_at: quest.created_at.clone(),
         updated_at: quest.updated_at.clone(),
         series_id: quest.series_id.clone(),
