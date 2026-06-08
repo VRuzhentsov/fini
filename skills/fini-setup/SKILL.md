@@ -35,7 +35,7 @@ Let the current system decide the exact detection method: `uname`, PowerShell, e
 3. Open the latest release/API above, or the user-requested release.
 4. Select the matching standalone CLI asset and download URL.
 5. Download into `/var/tmp` or the platform's normal temporary directory.
-6. If a matching `.sig` is present, verify it when a verifier is available.
+6. Do not treat `.sig` as verified unless the release also provides public verification material or instructions.
 7. Extract the archive and locate the actual executable path.
 8. Smoke-test the extracted executable with `--help`.
 9. Install to a location on `PATH`, or ask if multiple locations are plausible.
