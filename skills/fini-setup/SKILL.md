@@ -1,50 +1,49 @@
 ---
 name: fini-setup
-description: "Install or upgrade Fini CLI from the matching GitHub release executable archive."
+description: "Install or upgrade Fini CLI from the latest GitHub release assets."
 ---
 
 # Fini Setup
 
 Use when `fini` is missing, broken, outdated, or needed for agent terminal use.
 
-## Goal
+## Release Sources
 
-Make a working `fini` command available:
+Use these before doing a general web search:
 
-- choose the correct release asset for the current OS and architecture
-- download the standalone CLI package, not a GUI installer
-- verify the executable with `fini --help`
-- report version, install path, and replacement status
+- Latest release page: `https://github.com/VRuzhentsov/fini/releases/latest`
+- Latest release API: `https://api.github.com/repos/VRuzhentsov/fini/releases/latest`
 
-## Assets
+For a requested version, use the matching release page instead of latest.
 
-Use the requested `vX.Y.Z`, or the latest stable release from `VRuzhentsov/fini`.
+## Selection
 
-CLI asset patterns:
+Choose a standalone CLI asset from the release assets for the current system.
+The asset should match OS and CPU architecture and should be a CLI archive, not a GUI installer.
 
-- Linux x64: `fini-v<VERSION>-linux-x64-cli.tar.gz`
-- Linux arm64: `fini-v<VERSION>-linux-arm64-cli.tar.gz`
-- Windows x64: `fini-v<VERSION>-windows-x64-cli.zip`
-- Windows arm64: `fini-v<VERSION>-windows-arm64-cli.zip`
+Common release families:
 
-Map `x86_64`/`amd64` to `x64`; map `aarch64`/`arm64` to `arm64`.
-Linux archives contain `fini`; Windows archives contain `fini.exe`.
-Use GUI/package assets only when the user explicitly asks for the desktop app.
+- Linux CLI archives contain `fini`
+- Windows CLI archives contain `fini.exe`
+
+Let the current system decide the exact detection method: `uname`, PowerShell, environment variables, package metadata, or another reliable local signal.
 
 ## Workflow
 
-1. Check existing binary: `command -v fini` and `fini --help`.
-2. Detect platform with `uname -s` and `uname -m`.
-3. Resolve the release version and matching CLI asset.
-4. Download with `gh release download --repo VRuzhentsov/fini` or the release asset URL.
-5. Extract under `/var/tmp`; never extract directly into the install directory.
-6. Verify the extracted binary with `--help`.
-7. Install to a directory already on `PATH`, or `~/.local/bin` when acceptable.
-8. On Unix, set executable mode with `chmod 0755 <installed-fini-path>`.
-9. Verify final state with `command -v fini` and `fini --help`.
+1. Check whether `fini` already works: `command -v fini` and `fini --help`.
+2. Resolve the target OS and architecture from the current environment.
+3. Open the latest release/API above, or the user-requested release.
+4. Select the matching standalone CLI asset and download URL.
+5. Download into `/var/tmp` or the platform's normal temporary directory.
+6. If a matching `.sig` is present, verify it when a verifier is available.
+7. Extract the archive and locate the actual executable path.
+8. Smoke-test the extracted executable with `--help`.
+9. Install to a location on `PATH`, or ask if multiple locations are plausible.
+10. Verify the final `fini --help` command.
 
 ## Safety
 
 - Stop if no matching CLI asset exists; say which platform was detected.
 - Do not overwrite an existing binary until the replacement passes `--help`.
 - Do not run quest, space, reminder, or Focus commands until setup succeeds.
+- Report the release, asset, install path, and verification result.
