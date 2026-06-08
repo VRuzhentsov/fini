@@ -52,6 +52,28 @@ Use Fini Dev Telegram topics as coordination surfaces when the channel is availa
 
 When the task source, channel, or thread is the Telegram `Create` topic, load `fini-create-ticket` after `fini-dev` and treat the work as ticket intake, issue drafting, scope capture, or follow-up creation. Do not treat `Create` topic messages as implementation delegation until a ticket or explicit implementation scope exists. Send ticket-creation status updates to `FINI_CREATE_TG_TARGET` when configured.
 
+### Per-Task Topic Binding
+
+Every active Fini implementation, debugging, verification, release, or skill task should have a specific Telegram topic when topic creation is available.
+
+At task start:
+
+1. Reuse the current Telegram topic when the user delegated the work from a task-specific topic.
+2. For GitHub issue work, create or reuse a topic named `#<issue> <short title>`.
+3. For direct PR or no-issue work, create or reuse a short task topic named after the deliverable, such as `Fini install skill`.
+4. Send the first progress message inside that topic before editing when possible.
+5. Keep later progress, blockers, verification, PR links, and handoff in the same topic.
+
+The starting message must include the local checkout context so the developer can see where the agent is working:
+
+- worktree path, from `pwd` or `git rev-parse --show-toplevel`
+- branch, from `git branch --show-current`
+- HEAD, from `git rev-parse --short HEAD`
+- worktree state, from `git status --short --branch`
+- related issue, branch, or PR when known
+
+If Telegram topic creation or delivery fails, continue locally, then report the failed topic action in the handoff with the exact branch and worktree state.
+
 Preferred targets:
 
 | Topic | Use For | Preferred Env Var |
@@ -71,6 +93,9 @@ Progress messages should be short and phase-based:
 ```text
 Fini #<issue-or-task>: <phase>
 - Working on: <one sentence>
+- Worktree: <path>
+- Branch: <branch> @ <short-sha>
+- Status: <clean | short status summary>
 - Evidence: <file, command, log, or current finding>
 - Next: <next concrete step>
 - Blocker: <only if blocked>
