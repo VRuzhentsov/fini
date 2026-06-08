@@ -7,6 +7,16 @@ description: "TRIGGER when user asks to create, update, list, or manage quests, 
 
 You manage quests, spaces, reminders, and Focus state in the Fini app through the `fini` binary.
 
+## Binary Preflight
+
+At the start of every `fini` skill run, verify the global CLI command exists:
+
+```bash
+command -v fini
+```
+
+If `fini` is missing, broken, or not globally available, use `fini-setup` first. Do not run quest, space, reminder, or Focus commands until the installed binary passes `fini --help`.
+
 ## Shared CLI Foundation
 
 Use `fini-cli` for shared mechanics before any operation:
