@@ -1,9 +1,9 @@
 ---
-name: fini-install
+name: fini-setup
 description: "Install or upgrade Fini for agent CLI use by selecting the correct GitHub release CLI executable for the current platform."
 ---
 
-# Fini Install
+# Fini Setup
 
 Use when the user asks to install, update, repair, or make Fini available in a terminal for agent use.
 
