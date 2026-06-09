@@ -1,6 +1,6 @@
 ---
 name: fini-daily
-description: "Use for the daily Fini GitHub issue and pull request report, stale PR attention callout, and delegation recommendation. Summarizes open VRuzhentsov/fini issues and PRs for Vitalii, recommends the next issue or PR to finish, and uses the configured Fini Dev Telegram targets for daily reports and implementation progress updates."
+description: "Use for the daily Fini GitHub issue and pull request report, stale PR attention callout, and delegation recommendation. Summarizes open VRuzhentsov/fini issues and PRs for the configured user, recommends the next issue or PR to finish, and uses the configured Fini Dev Telegram targets for daily reports and implementation progress updates."
 metadata:
   openclaw:
     envVars:
@@ -31,7 +31,7 @@ If the `triage` skill is unavailable, stop and report that `triage` is missing. 
 
 - Run from the Fini repository root: `~/projects/fini`.
 - Repository: `VRuzhentsov/fini`.
-- Primary recipient: Vitalii.
+- Primary recipient: `<user-name>`.
 - Preferred Telegram group: `Fini Dev`.
 - Preferred report target comes from `FINI_DAILY_TG_TARGET`.
 - Preferred implementation progress target comes from `FINI_PROGRESS_TG_TARGET`.
@@ -85,12 +85,12 @@ Use open PRs as first-class daily report inputs:
 
 ## Daily Report Format
 
-Write a concise report addressed to Vitalii.
+Write a concise report addressed to `<user-name>`.
 
 Use this structure:
 
 ```text
-Vitalii, here is the daily Fini issue report.
+<user-name>, here is the daily Fini issue and pull request report.
 
 Status:
 - <short status summary>
@@ -104,7 +104,7 @@ Open PRs:
 Recommended Next Delegation:
 - Target: <PR #number or Issue #number> <title>
 - Why now: <one sentence>
-- Suggested assignment prompt: <copy-pasteable instruction for Will Claw/Milo>
+- Suggested assignment prompt: <copy-pasteable instruction for an autonomous Fini agent>
 
 Risks / Blockers:
 - <only meaningful blockers, or "none found">
@@ -120,7 +120,7 @@ Pass the following prioritization hints to `triage`:
 2. Blockers for current Fini development or release work.
 3. Labeled as high priority, MVP, design-required, or current phase work.
 4. Small enough for an agent to complete and verify in one focused session.
-5. Recently created or updated by Vitalii.
+5. Recently created or updated by the configured user or maintainer.
 6. Unassigned and not already in progress.
 
 Ask `triage` to deprioritize issues that are:
@@ -134,6 +134,7 @@ Ask `triage` to deprioritize issues that are:
 
 Ask `triage` to deprioritize PRs that are:
 
+- labeled `no-auto`, or linked to an issue labeled `no-auto` (exclude from autonomous delegation entirely)
 - draft and still actively being built, unless they have been stale long enough to need explicit attention
 - blocked on a user/product decision
 - superseded by a newer PR or branch
@@ -141,7 +142,7 @@ Ask `triage` to deprioritize PRs that are:
 
 ## Delegated Implementation Progress
 
-When Vitalii asks Will Claw/Milo to implement a specific Fini issue or task, report progress to `FINI_PROGRESS_TG_TARGET` when available.
+When the configured user asks an autonomous Fini agent to implement a specific Fini issue or task, report progress to `FINI_PROGRESS_TG_TARGET` when available.
 
 Progress updates should include:
 
