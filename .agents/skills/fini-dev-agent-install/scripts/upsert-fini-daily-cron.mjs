@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// Legacy stable ID: keep this name so existing cron entries are updated in place.
+// Do not rename it without a migration that removes or rewrites the old job.
 const DAILY_JOB_ID = 'fini-daily-issue-report';
 const FETCH_JOB_ID = 'fini-fetch-all-branches';
 const DAILY_JOB_NAME = 'Fini daily issue and PR report';

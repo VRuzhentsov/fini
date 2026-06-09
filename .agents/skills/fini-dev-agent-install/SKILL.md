@@ -89,6 +89,8 @@ The helper:
 
 Use `--store <path>` only for tests or non-standard OpenClaw stores.
 
+This helper manages only the OpenClaw cron jobs above. It does not install the host crontab entry for `fini-merged-pr-topic-reconcile`; install or verify that managed crontab block separately before reporting the merged-PR topic reconciler as active.
+
 ## Verification
 
 After `--write`, verify with the local agent tools when available:
@@ -106,7 +108,7 @@ Expected evidence:
 - Exactly one enabled job with ID `fini-fetch-all-branches`.
 - The job schedule is `0 8 * * *` in the selected timezone.
 - The fetch job schedule is every `5m`.
-- The host crontab contains one managed `fini-merged-pr-topic-reconcile` block that runs every 5 minutes.
+- If merged-PR topic reconciliation is being installed, the host crontab contains one managed `fini-merged-pr-topic-reconcile` block that runs every 5 minutes.
 - Delivery points to the `Daily` topic thread from `FINI_DAILY_TG_TARGET`.
 - `fini-daily` and `triage` are available.
 - Telegram is configured and can send to the Daily topic, or the blocker is explicitly reported.
@@ -152,7 +154,7 @@ Job: fini-fetch-all-branches
 Schedule: every 5m
 Delivery: none
 System cron: fini-merged-pr-topic-reconcile
-Schedule: every 5m
+Schedule: every 5m, or not installed by this helper
 Delivery: issue topic updates only on merge
 Evidence: <commands and outcomes>
 Blocker: <only if blocked>

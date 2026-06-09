@@ -63,6 +63,11 @@ function prNumberFromUrl(url) {
   return match ? Number.parseInt(match[1], 10) : null;
 }
 
+function samePullRequest(leftUrl, rightPr) {
+  const leftNumber = prNumberFromUrl(leftUrl);
+  return Boolean(leftNumber && rightPr?.number && Number(leftNumber) === Number(rightPr.number));
+}
+
 function topicTitle(issue, title) {
   const shortTitle = String(title || '').replace(/^closed\s+/i, '').trim();
   return `closed #${issue} ${shortTitle}`.slice(0, 128);
@@ -199,14 +204,10 @@ async function main() {
       if (!completionPr) continue;
 
       const newTitle = topicTitle(issue, entry.title);
-      const alreadyClosed = entry.status === 'closed' && entry.topicTitle === newTitle && entry.closedByPullRequest === completionPr.url;
+      const alreadyClosed = entry.status === 'closed' && entry.topicTitle === newTitle && samePullRequest(entry.closedByPullRequest, completionPr);
       if (alreadyClosed) continue;
 
-      let closeStatus = 'already closed';
-      if (issueState(issue) !== 'CLOSED') {
-        closeIssue(issue);
-        closeStatus = 'closed';
-      }
+      const closeStatus = issueState(issue) === 'CLOSED' ? 'already closed' : 'closing';
 
       await telegram('editForumTopic', {
         chat_id: address.chatId,
@@ -220,6 +221,10 @@ async function main() {
         text: `Closed after merge: ${completionPr.url}\nIssue #${issue}: ${closeStatus}`,
         disable_web_page_preview: true,
       });
+
+      if (closeStatus === 'closing') {
+        closeIssue(issue);
+      }
 
       map.issues[issueKey] = {
         ...entry,

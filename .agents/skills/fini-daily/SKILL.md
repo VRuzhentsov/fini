@@ -98,7 +98,7 @@ Write a concise report for the configured recipient. If `FINI_DAILY_RECIPIENT` i
 Use this structure:
 
 ```text
-<recipient>, here is the daily Fini issue report.
+<recipient>, here is the daily Fini issue and pull request report.
 
 Status:
 - <short status summary>
@@ -144,6 +144,7 @@ Ask `triage` to deprioritize issues that are:
 
 Ask `triage` to deprioritize PRs that are:
 
+- labeled `no-auto`, or linked to an issue labeled `no-auto` (exclude from autonomous delegation entirely)
 - draft and still actively being built, unless they have been stale long enough to need explicit attention
 - blocked on a user/product decision
 - superseded by a newer PR or branch
