@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use diesel::prelude::*;
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(target_os = "android")]
@@ -12,7 +12,7 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::models::{InsertNotificationSnooze, NotificationSnooze, Quest, Reminder, Space};
 use crate::schema::notification_snoozes;
-use crate::services::db::{utc_now, DbState};
+use crate::services::db::{utc_now, AppDbConnection};
 
 #[cfg(not(target_os = "linux"))]
 const CHANNEL_ID: &str = "fini.reminders";
@@ -34,19 +34,7 @@ pub fn compute_fire_utc(
     due: &str,
     due_time: Option<&str>,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
-    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
-    let time = match due_time {
-        Some(t) => NaiveTime::parse_from_str(t, "%H:%M")
-            .or_else(|_| NaiveTime::parse_from_str(t, "%H:%M:%S"))
-            .ok()?,
-        None => NaiveTime::from_hms_opt(9, 0, 0)?,
-    };
-    let naive = NaiveDateTime::new(date, time);
-    Local
-        .from_local_datetime(&naive)
-        .single()
-        .map(|dt| dt.with_timezone(&chrono::Utc))
+    crate::services::due_time::compute_fire_utc(due, due_time)
 }
 
 /// In-process timer handles keyed by reminder ID (desktop only).
@@ -58,7 +46,7 @@ impl SchedulerState {
     }
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 #[derive(Clone, Serialize)]
 pub struct NotificationEvent {
     pub phase: String,
@@ -70,24 +58,24 @@ pub struct NotificationEvent {
     pub scheduled_notification_id: Option<String>,
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 pub struct NotificationObserverState(pub Mutex<Vec<NotificationEvent>>);
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 impl NotificationObserverState {
     pub fn new() -> Self {
         Self(Mutex::new(Vec::new()))
     }
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 fn record_notification_event(app: &AppHandle, event: NotificationEvent) {
     if let Some(state) = app.try_state::<NotificationObserverState>() {
         state.0.lock().unwrap().push(event);
     }
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 #[tauri::command]
 pub fn e2e_list_notification_events(app: AppHandle) -> Result<Vec<NotificationEvent>, String> {
     let state = app
@@ -97,7 +85,7 @@ pub fn e2e_list_notification_events(app: AppHandle) -> Result<Vec<NotificationEv
     Ok(events)
 }
 
-#[cfg(feature = "e2e-testing")]
+#[cfg(feature = "devtools")]
 #[tauri::command]
 pub fn e2e_clear_notification_events(app: AppHandle) -> Result<(), String> {
     let state = app
@@ -108,8 +96,8 @@ pub fn e2e_clear_notification_events(app: AppHandle) -> Result<(), String> {
 }
 
 /// Directly dispatch a notification action without going through the OS notification layer.
-/// Only available in e2e-testing builds to simulate user action button clicks.
-#[cfg(feature = "e2e-testing")]
+/// Only available in devtools builds to simulate user action button clicks.
+#[cfg(feature = "devtools")]
 #[tauri::command]
 pub fn e2e_dispatch_notification_action(
     app: AppHandle,
@@ -198,7 +186,7 @@ pub fn schedule_reminder(
 
         match result {
             Ok(()) => {
-                #[cfg(feature = "e2e-testing")]
+                #[cfg(feature = "devtools")]
                 record_notification_event(
                     app,
                     NotificationEvent {
@@ -244,7 +232,7 @@ pub fn schedule_reminder(
             state.0.lock().unwrap().insert(reminder_id_key, handle);
         }
 
-        #[cfg(feature = "e2e-testing")]
+        #[cfg(feature = "devtools")]
         record_notification_event(
             app,
             NotificationEvent {
@@ -305,11 +293,11 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
     #[allow(unused_variables)]
     let quest_id_owned = quest_id.to_string();
 
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let app_for_record = app.clone();
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let reminder_id_for_record = reminder_id.to_string();
-    #[cfg(feature = "e2e-testing")]
+    #[cfg(feature = "devtools")]
     let body_for_record = body.to_string();
 
     // std::thread::spawn (not tokio::task::spawn_blocking) so this can be called
@@ -348,7 +336,7 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
 
         match notif.show() {
             Ok(handle) => {
-                #[cfg(feature = "e2e-testing")]
+                #[cfg(feature = "devtools")]
                 record_notification_event(
                     &app_for_record,
                     NotificationEvent {
@@ -363,7 +351,7 @@ fn show_linux(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
                 );
 
                 handle.wait_for_action(|action| {
-                    #[cfg(feature = "e2e-testing")]
+                    #[cfg(feature = "devtools")]
                     record_notification_event(
                         &app_for_record,
                         NotificationEvent {
@@ -410,7 +398,7 @@ fn show_plugin(app: &AppHandle, reminder_id: &str, quest_id: &str, body: &str) {
 
     match result {
         Ok(()) => {
-            #[cfg(feature = "e2e-testing")]
+            #[cfg(feature = "devtools")]
             record_notification_event(
                 app,
                 NotificationEvent {
@@ -453,7 +441,7 @@ pub fn dispatch_action(app: &AppHandle, action_id: &str, reminder_id: &str) {
 /// Look up the quest_id for a reminder from the DB.
 fn reminder_quest_id(app: &AppHandle, reminder_id: &str) -> Option<String> {
     use crate::schema::reminders;
-    let db = app.try_state::<DbState>()?;
+    let db = app.try_state::<AppDbConnection>()?;
     let mut conn = db.0.lock().unwrap();
     reminders::table
         .find(reminder_id)
@@ -474,7 +462,7 @@ pub fn snooze(app: &AppHandle, reminder_id: &str, minutes: i64) {
     let now_str = utc_now();
 
     // Persist snooze so it survives app restart.
-    if let Some(db) = app.try_state::<DbState>() {
+    if let Some(db) = app.try_state::<AppDbConnection>() {
         let mut conn = db.0.lock().unwrap();
         let row = InsertNotificationSnooze {
             reminder_id: reminder_id.to_string(),
@@ -525,7 +513,7 @@ pub fn snooze(app: &AppHandle, reminder_id: &str, minutes: i64) {
 
 fn snooze_body(app: &AppHandle, reminder_id: &str) -> Option<String> {
     use crate::schema::{quests, reminders, spaces};
-    let db = app.try_state::<DbState>()?;
+    let db = app.try_state::<AppDbConnection>()?;
     let mut conn = db.0.lock().unwrap();
     let quest_id: String = reminders::table
         .find(reminder_id)
@@ -547,7 +535,7 @@ fn snooze_body(app: &AppHandle, reminder_id: &str) -> Option<String> {
 
 fn remove_snooze(app: &AppHandle, reminder_id: &str) {
     use diesel::prelude::*;
-    if let Some(db) = app.try_state::<DbState>() {
+    if let Some(db) = app.try_state::<AppDbConnection>() {
         let mut conn = db.0.lock().unwrap();
         let _ = diesel::delete(notification_snoozes::table.find(reminder_id)).execute(&mut *conn);
     }
@@ -556,7 +544,7 @@ fn remove_snooze(app: &AppHandle, reminder_id: &str) {
 /// Re-arm in-process timers for snoozed reminders found in the DB. Called by the reconciler.
 pub fn rearm_snoozed_reminders(app: &AppHandle) {
     use diesel::prelude::*;
-    let db = match app.try_state::<DbState>() {
+    let db = match app.try_state::<AppDbConnection>() {
         Some(s) => s,
         None => return,
     };
@@ -642,7 +630,7 @@ pub fn cancel_in_process(app: &AppHandle, reminder_id: &str) {
 }
 
 /// Cancel the DB snooze record using a connection the caller already holds.
-/// Use this instead of `cancel_snooze` when the DbState mutex is already locked
+/// Use this instead of `cancel_snooze` when the AppDbConnection mutex is already locked
 /// on the current thread to avoid a deadlock.
 pub fn cancel_snooze_with_conn(
     conn: &mut diesel::sqlite::SqliteConnection,

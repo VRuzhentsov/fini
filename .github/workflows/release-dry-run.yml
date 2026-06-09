@@ -130,27 +130,15 @@ jobs:
       - name: Run runtime smoke check
         run: docker run --rm fini-runtime-ci --help
 
-      - name: Build E2E actor image
-        run: make pr-gate-e2e-build-actor
-
-      - name: Build E2E runner image
-        run: make pr-gate-e2e-build-runner
-
-      - name: Create E2E network
-        run: make pr-gate-e2e-network
-
-      - name: Start E2E actors
-        run: make pr-gate-e2e-start-actors
-
-      - name: Wait for E2E actors
-        run: make pr-gate-e2e-wait-actors
+      - name: Build dev-runner image
+        run: make pr-gate-e2e-build-dev-runner
 
       - name: Run desktop e2e flow
         run: make pr-gate-e2e-run
 
-      - name: Print actor logs on failure
+      - name: Print E2E artifacts on failure
         if: failure()
-        run: make pr-gate-e2e-logs
+        run: make pr-gate-e2e-artifacts
 
       - name: Cleanup E2E containers
         if: always()
@@ -208,7 +196,10 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
-        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm
+        run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm
+
+      - name: Build Linux CLI
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Linux release files
         run: |
@@ -246,6 +237,13 @@ jobs:
             echo "Expected Linux artifacts (.deb, .rpm, .AppImage) were not all produced" >&2
             exit 1
           fi
+
+          cli_binary="src-tauri/target/${{ matrix.rust_target }}/release/fini"
+          if [ ! -f "$cli_binary" ]; then
+            echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
+            exit 1
+          fi
+          tar -C "$(dirname "$cli_binary")" -czf "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.arch }}-cli.tar.gz" fini
 
       - name: Upload Linux bundle artifact
         uses: actions/upload-artifact@v4
@@ -296,27 +294,33 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
-        run: npm run tauri build -- --target ${{ matrix.rust_target }} --bundles nsis
+        run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
+
+      - name: Build Windows CLI
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Windows release files
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
-          mkdir -p prep/windows
-          short_sha="${GITHUB_SHA::7}"
+          $ErrorActionPreference = "Stop"
+          $bundleRoot = "src-tauri/target/${{ matrix.rust_target }}/release/bundle"
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          New-Item -ItemType Directory -Force prep/windows | Out-Null
 
-          found_exe="false"
-          while IFS= read -r file; do
-            output_path="prep/windows/fini-prep-${short_sha}-windows-${{ matrix.arch }}-setup.exe"
-            cp "$file" "$output_path"
-            found_exe="true"
-          done < <(find "$bundle_root" -type f -name '*-setup.exe')
+          $setupFiles = Get-ChildItem -Path $bundleRoot -Recurse -Filter "*-setup.exe"
+          if ($setupFiles.Count -eq 0) {
+            throw "Expected Windows .exe artifacts were not produced"
+          }
+          foreach ($file in $setupFiles) {
+            $outputPath = "prep/windows/fini-prep-$shortSha-windows-${{ matrix.arch }}-setup.exe"
+            Copy-Item -LiteralPath $file.FullName -Destination $outputPath -Force
+          }
 
-          if [ "$found_exe" != "true" ]; then
-            echo "Expected Windows .exe artifacts were not produced" >&2
-            exit 1
-          fi
+          $cliBinary = "src-tauri/target/${{ matrix.rust_target }}/release/fini.exe"
+          if (!(Test-Path -LiteralPath $cliBinary)) {
+            throw "Expected Windows CLI binary was not produced: $cliBinary"
+          }
+          Compress-Archive -LiteralPath $cliBinary -DestinationPath "prep/windows/fini-prep-$shortSha-windows-${{ matrix.arch }}-cli.zip" -Force
 
       - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v4
@@ -377,7 +381,7 @@ jobs:
         run: npm ci
 
       - name: Build Android APK and AAB (arm64)
-        run: npm run tauri android build -- --ci --apk --aab --target aarch64
+        run: npm run tauri android build -- --features ui-plane --ci --apk --aab --target aarch64
 
       - name: Prepare Android keystore
         env:

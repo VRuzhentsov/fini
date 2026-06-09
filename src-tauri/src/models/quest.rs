@@ -23,6 +23,8 @@ pub struct Quest {
     pub repeat_rule: Option<String>,
     pub completed_at: Option<String>,
     pub order_rank: f64,
+    #[serde(default)]
+    pub focus_enter_count: i64,
     pub created_at: String,
     pub updated_at: String,
     pub series_id: Option<String>,

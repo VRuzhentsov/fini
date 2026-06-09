@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent
-description: "Use this when an autonomous-coding-agent, autonomous coding agent, remote agent, Will Claw/Milo, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline."
+description: "Use this when an autonomous-coding-agent, autonomous coding agent, remote agent, or other delegated agent is asked to implement, debug, verify, or report progress on Fini repository work. This is a behavior overlay for agents: load `fini-dev` for Fini development mechanics, then use this skill to organize scope, autonomy, Telegram topic coordination, progress updates, blockers, verification evidence, and handoff discipline. If work arrives from the Telegram `Create` topic, always route it through `fini-create-ticket` as ticket intake before treating it as implementation work."
 metadata:
   openclaw:
     envVars:
@@ -50,6 +50,30 @@ If the task comes from a GitHub issue, follow `fini-dev` branch guidance before 
 
 Use Fini Dev Telegram topics as coordination surfaces when the channel is available. Do not let Telegram delivery failures block local implementation; continue the work and report the delivery blocker in the final handoff.
 
+When the task source, channel, or thread is the Telegram `Create` topic, load `fini-create-ticket` after `fini-dev` and treat the work as ticket intake, issue drafting, scope capture, or follow-up creation. Do not treat `Create` topic messages as implementation delegation until a ticket or explicit implementation scope exists. Send ticket-creation status updates to `FINI_CREATE_TG_TARGET` when configured.
+
+### Per-Task Topic Binding
+
+Every active Fini implementation, debugging, verification, release, or skill task should have a specific Telegram topic when topic creation is available.
+
+At task start:
+
+1. Reuse the current Telegram topic when the user delegated the work from a task-specific topic.
+2. For GitHub issue work, create or reuse a topic named `#<issue> <short title>`.
+3. For direct PR or no-issue work, create or reuse a short task topic named after the deliverable, such as `Fini install skill`.
+4. Send the first progress message inside that topic before editing when possible.
+5. Keep later progress, blockers, verification, PR links, and handoff in the same topic.
+
+The starting message must include the local checkout context so the developer can see where the agent is working:
+
+- worktree path, from `pwd` or `git rev-parse --show-toplevel`
+- branch, from `git branch --show-current`
+- HEAD, from `git rev-parse --short HEAD`
+- worktree state, from `git status --short --branch`
+- related issue, branch, or PR when known
+
+If Telegram topic creation or delivery fails, continue locally, then report the failed topic action in the handoff with the exact branch and worktree state.
+
 Preferred targets:
 
 | Topic | Use For | Preferred Env Var |
@@ -69,6 +93,9 @@ Progress messages should be short and phase-based:
 ```text
 Fini #<issue-or-task>: <phase>
 - Working on: <one sentence>
+- Worktree: <path>
+- Branch: <branch> @ <short-sha>
+- Status: <clean | short status summary>
 - Evidence: <file, command, log, or current finding>
 - Next: <next concrete step>
 - Blocker: <only if blocked>

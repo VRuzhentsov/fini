@@ -4,8 +4,9 @@ use tauri::AppHandle;
 
 use crate::models::{CreateFocusHistoryInput, Quest, Reminder, Space};
 use crate::schema::{focus_history, quests, reminders, spaces};
-use crate::services::db::DbState;
+use crate::services::db::AppDbConnection;
 use crate::services::notification;
+use crate::services::quest::record_focus_enter;
 use crate::services::reminder as reminder_svc;
 
 /// Run on every app launch and after system resume.
@@ -14,7 +15,7 @@ use crate::services::reminder as reminder_svc;
 /// 2. Past-due reminders: fire immediately + insert focus_history if not already recorded.
 /// 3. Retroactive bridge: active quests with a due date but no Reminder row get one created
 ///    and scheduled (handles imports, multi-device bootstrap, pre-bridge data).
-pub fn run(app: &AppHandle, db: &DbState) {
+pub fn run(app: &AppHandle, db: &AppDbConnection) {
     notification::rearm_snoozed_reminders(app);
     let mut conn = db.0.lock().unwrap();
     let now = Utc::now();
@@ -55,6 +56,12 @@ pub fn run(app: &AppHandle, db: &DbState) {
                 quest.id
             );
             continue;
+        }
+        if let Err(e) = record_focus_enter(&mut conn, quest) {
+            eprintln!(
+                "[reconciler] failed to record focus enter for {}: {e}",
+                quest.id
+            );
         }
 
         // Always fire immediately — no grace window

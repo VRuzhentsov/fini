@@ -8,18 +8,21 @@ use diesel::prelude::*;
 use diesel::sql_types::Text;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
 use crate::models::{Quest, QuestSeries, Space};
 use crate::schema::{quest_series, quests, spaces};
-use crate::services::db::{utc_now, DbState};
+use crate::services::db::utc_now;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::AppDbConnection;
 
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
 const BACKUP_FORMAT: &str = "fini-backup";
-const BACKUP_VERSION: u32 = 1;
+const BACKUP_VERSION: u32 = 2;
 const BUILTIN_SPACE_IDS: [&str; 3] = ["1", "2", "3"];
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -104,9 +107,10 @@ struct TableNameRow {
     name: String,
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_export(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     space_ids: Vec<String>,
 ) -> Result<BackupExportResult, String> {
@@ -114,9 +118,10 @@ pub fn backup_export(
     export_backup(&mut conn, Path::new(&path), &space_ids)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_preflight_import(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
 ) -> Result<BackupImportPreflight, String> {
@@ -124,9 +129,10 @@ pub fn backup_preflight_import(
     preflight_import(&mut conn, Path::new(&path), &mappings)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_apply_import(
-    state: State<DbState>,
+    state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
     resolutions: Vec<BackupConflictResolutionInput>,
@@ -323,6 +329,7 @@ pub fn apply_import(
     })
 }
 
+#[cfg(feature = "cli-plane")]
 pub fn import_cli(
     conn: &mut SqliteConnection,
     path: &Path,
@@ -399,6 +406,7 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             repeat_rule TEXT,
             completed_at TEXT,
             order_rank REAL NOT NULL DEFAULT 0,
+            focus_enter_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
@@ -701,6 +709,7 @@ fn insert_quest(
             quests::repeat_rule.eq(&quest.repeat_rule),
             quests::completed_at.eq(&quest.completed_at),
             quests::order_rank.eq(quest.order_rank),
+            quests::focus_enter_count.eq(quest.focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
@@ -772,6 +781,7 @@ fn upsert_quest_for_import(
                 quests::repeat_rule.eq(&quest.repeat_rule),
                 quests::completed_at.eq(&quest.completed_at),
                 quests::order_rank.eq(quest.order_rank),
+                quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
                 quests::series_id.eq(&quest.series_id),
@@ -852,6 +862,7 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         repeat_rule: quest.repeat_rule.clone(),
         completed_at: quest.completed_at.clone(),
         order_rank: quest.order_rank,
+        focus_enter_count: quest.focus_enter_count,
         created_at: quest.created_at.clone(),
         updated_at: quest.updated_at.clone(),
         series_id: quest.series_id.clone(),

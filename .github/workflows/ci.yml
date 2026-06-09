@@ -8,12 +8,43 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect App Changes
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Detect changed app inputs
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            app:
+              - '.github/workflows/ci.yml'
+              - 'Dockerfile'
+              - 'Makefile'
+              - 'com.fini.app.yml'
+              - 'index.html'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig*.json'
+              - 'vite.config.ts'
+              - 'scripts/**'
+              - 'specs/**'
+              - 'src/**'
+              - 'src-tauri/**'
+              - 'xtask/**'
+
   snyk:
     name: Snyk Vulnerability Scan
     runs-on: ubuntu-latest
@@ -38,6 +69,8 @@ jobs:
 
   fe-unit-tests:
     name: FE Unit Tests
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,6 +81,8 @@ jobs:
 
   be-unit-tests:
     name: BE Unit Tests
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -85,6 +120,8 @@ jobs:
 
   be-compile:
     name: BE Compile
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -122,6 +159,8 @@ jobs:
 
   e2e-ci:
     name: E2E Tests
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -155,27 +194,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build E2E actor image
-        run: make pr-gate-e2e-build-actor
-
-      - name: Build E2E runner image
-        run: make pr-gate-e2e-build-runner
-
-      - name: Create E2E network
-        run: make pr-gate-e2e-network
-
-      - name: Start E2E actors
-        run: make pr-gate-e2e-start-actors
-
-      - name: Wait for E2E actors
-        run: make pr-gate-e2e-wait-actors
+      - name: Build dev-runner image
+        run: make pr-gate-e2e-build-dev-runner
 
       - name: Run Playwright E2E suite
         run: make pr-gate-e2e-run
 
-      - name: Print actor logs on failure
+      - name: Print E2E artifacts on failure
         if: failure()
-        run: make pr-gate-e2e-logs
+        run: make pr-gate-e2e-artifacts
 
       - name: Cleanup E2E containers
         if: always()
@@ -183,6 +210,8 @@ jobs:
 
   android-emulator-e2e:
     name: Android Emulator E2E
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -7,11 +7,11 @@ const DAILY_JOB_ID = 'fini-daily-issue-report';
 const FETCH_JOB_ID = 'fini-fetch-all-branches';
 const DAILY_JOB_NAME = 'Fini daily issue and PR report';
 const FETCH_JOB_NAME = 'Fini fetch all branches';
-const DAILY_JOB_DESCRIPTION = 'Daily Fini issue and pull request report for Vitalii';
+const DAILY_JOB_DESCRIPTION = 'Daily Fini issue and pull request report';
 const FETCH_JOB_DESCRIPTION = 'Fetch all Fini remote branches every five minutes';
 const CRON_EXPR = '0 8 * * *';
 const FETCH_EVERY_MS = 5 * 60 * 1000;
-const DAILY_MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and FINI_PROGRESS_TG_TARGET from the local agent environment. Query current open GitHub issues and pull requests for VRuzhentsov/fini using configured GitHub access without printing secrets. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format addressed to Vitalii. Deliver the final report to FINI_DAILY_TG_TARGET.';
+const DAILY_MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and FINI_PROGRESS_TG_TARGET from the local agent environment. Query current open GitHub issues and pull requests for VRuzhentsov/fini using configured GitHub access without printing secrets. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format addressed to <user>. Deliver the final report to FINI_DAILY_TG_TARGET.';
 const FETCH_MESSAGE = 'From ~/projects/fini, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.';
 
 function usage() {
