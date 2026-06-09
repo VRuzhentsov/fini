@@ -23,7 +23,9 @@ use crate::services::device_connection::{
     device_connection_send_pair_request_impl, device_connection_unpair_impl,
     device_connection_update_last_seen_impl, DeviceConnectionState,
 };
-use crate::services::quest::{append_focus_history, resolve_active_quest, QuestRepository};
+use crate::services::quest::{
+    append_focus_history, record_focus_enter, resolve_active_quest, QuestRepository,
+};
 use crate::services::reminder::ReminderRepository;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
@@ -538,11 +540,19 @@ fn emit_series_sync(
 fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
     let mut conn = open_db_at_path(&ctx.db_path);
     match command {
-        FocusCommand::Get => resolve_active_quest(&mut conn)
-            .map_err(|e| CliError::runtime(e.to_string()))?
-            .map(|quest| serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string())))
-            .transpose()
-            .map(|value| value.unwrap_or(Value::Null)),
+        FocusCommand::Get => {
+            let quest = resolve_active_quest(&mut conn)
+                .map_err(|e| CliError::runtime(e.to_string()))?
+                .map(|quest| record_focus_enter(&mut conn, &quest))
+                .transpose()
+                .map_err(|e| CliError::runtime(e.to_string()))?;
+            quest
+                .map(|quest| {
+                    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+                })
+                .transpose()
+                .map(|value| value.unwrap_or(Value::Null))
+        }
         FocusCommand::Set(args) => {
             let quest = quests::table
                 .find(&args.quest_id)
@@ -565,6 +575,8 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
             };
             append_focus_history(&mut conn, &quest.id, &quest.space_id, trigger)
                 .map_err(CliError::from_string)?;
+            let quest = record_focus_enter(&mut conn, &quest)
+                .map_err(|e| CliError::runtime(e.to_string()))?;
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
     }

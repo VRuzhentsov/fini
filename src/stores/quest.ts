@@ -18,6 +18,7 @@ export interface Quest {
   repeat_rule: string | null;
   completed_at: string | null;
   order_rank: number;
+  focus_enter_count: number;
   created_at: string;
   updated_at: string;
   series_id: string | null;

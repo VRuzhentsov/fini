@@ -8,7 +8,7 @@ use tauri::{Manager, State};
 
 use crate::models::{clamp_order_rank, CreateQuestInput, UpdateQuestInput};
 use crate::models::{CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries};
-use crate::schema::{focus_history, quest_series, quests};
+use crate::schema::{focus_history, quest_series, quests, settings};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
@@ -367,6 +367,62 @@ pub fn resolve_active_quest(
     conn: &mut SqliteConnection,
 ) -> Result<Option<Quest>, diesel::result::Error> {
     resolve_active_quest_at(conn, Utc::now())
+}
+
+const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
+
+fn save_active_focus_quest_id(
+    conn: &mut SqliteConnection,
+    quest_id: Option<&str>,
+) -> Result<(), diesel::result::Error> {
+    if let Some(quest_id) = quest_id {
+        diesel::insert_into(settings::table)
+            .values((
+                settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
+                settings::value.eq(quest_id),
+            ))
+            .on_conflict(settings::key)
+            .do_update()
+            .set(settings::value.eq(quest_id))
+            .execute(conn)?;
+    } else {
+        diesel::delete(settings::table.find(ACTIVE_FOCUS_QUEST_SETTING_KEY)).execute(conn)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn record_focus_enter(
+    conn: &mut SqliteConnection,
+    quest: &Quest,
+) -> Result<Quest, diesel::result::Error> {
+    let previous_focus_id = settings::table
+        .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
+        .select(settings::value)
+        .first::<String>(conn)
+        .optional()?;
+
+    if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
+        diesel::update(quests::table.find(&quest.id))
+            .set(quests::focus_enter_count.eq(quests::focus_enter_count + 1))
+            .execute(conn)?;
+        save_active_focus_quest_id(conn, Some(&quest.id))?;
+    }
+
+    quests::table
+        .find(&quest.id)
+        .select(Quest::as_select())
+        .first(conn)
+}
+
+fn resolve_and_record_active_quest(
+    conn: &mut SqliteConnection,
+) -> Result<Option<Quest>, diesel::result::Error> {
+    let Some(quest) = resolve_active_quest(conn)? else {
+        save_active_focus_quest_id(conn, None)?;
+        return Ok(None);
+    };
+
+    record_focus_enter(conn, &quest).map(Some)
 }
 
 fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -949,7 +1005,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
 #[tauri::command]
 pub fn get_active_focus(state: State<AppDbConnection>) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    resolve_active_quest(&mut conn).map_err(|e| e.to_string())
+    resolve_and_record_active_quest(&mut conn).map_err(|e| e.to_string())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -974,7 +1030,7 @@ pub fn set_focus(state: State<AppDbConnection>, id: String) -> Result<Quest, Str
 
     append_focus_history(&mut conn, &quest.id, &quest.space_id, "manual")?;
 
-    Ok(quest)
+    record_focus_enter(&mut conn, &quest).map_err(|e| e.to_string())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -996,11 +1052,12 @@ pub fn update_quest(
     let previous_space_id = previous.space_id.clone();
 
     let update_result = QuestRepository::new(&mut conn).update(&id, input)?;
-    let quest = update_result.quest;
+    let mut quest = update_result.quest;
 
     if previous_status != "active" && quest.status == "active" && update_result.restore_should_focus
     {
         append_focus_history(&mut conn, &quest.id, &quest.space_id, "restore")?;
+        quest = record_focus_enter(&mut conn, &quest).map_err(|e| e.to_string())?;
     }
 
     // Bridge: manage Reminder row based on resulting quest state
