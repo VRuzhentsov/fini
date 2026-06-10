@@ -252,6 +252,14 @@ function homeAnchored(value) {
   return normalized;
 }
 
+function homeAnchoredPathList(value) {
+  return String(value)
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((entry) => homeAnchored(entry))
+    .join(':');
+}
+
 function shellDoubleQuote(value) {
   return `"${String(value).replace(/(["`\\])/g, '\\$1').replace(/\n/g, '')}"`;
 }
@@ -261,12 +269,15 @@ function reconcileCrontabBlock() {
   const nodeBin = shellDoubleQuote(homeAnchored(process.execPath));
   const scriptPath = shellDoubleQuote(homeAnchored(RECONCILE_SCRIPT));
   const repoDir = shellDoubleQuote(homeAnchored(process.env.FINI_REPO_DIR || process.cwd()));
-  const nodeDir = shellDoubleQuote(homeAnchored(path.dirname(process.execPath)));
+  const cronPath = shellDoubleQuote(homeAnchoredPathList([
+    path.dirname(process.execPath),
+    process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+  ].join(path.delimiter)));
   const command = [
     'mkdir -p "$HOME/.openclaw/logs"',
     '&&',
     `FINI_REPO_DIR=${repoDir}`,
-    `PATH=${nodeDir}:/usr/local/bin:/usr/bin:/bin`,
+    `PATH=${cronPath}`,
     nodeBin,
     scriptPath,
     `>> "${logPath}" 2>&1`,
