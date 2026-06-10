@@ -148,6 +148,11 @@ function mergedPrsAfter(timestampMs) {
     }));
 }
 
+function prMergedAfter(pr, timestampMs) {
+  const mergedAtMs = Date.parse(pr?.mergedAt);
+  return Number.isFinite(mergedAtMs) && mergedAtMs > timestampMs;
+}
+
 function prClosesIssue(prNumber, issue) {
   const pr = mergedPr(prNumber);
   if (!pr) return null;
@@ -157,13 +162,14 @@ function prClosesIssue(prNumber, issue) {
 
 function findCompletionPr(entry, map) {
   const issue = Number(entry.issue);
-  const mappedPrNumber = prNumberFromUrl(entry.pullRequest);
-  if (mappedPrNumber) {
-    return mergedPr(mappedPrNumber);
-  }
-
   const mappedAt = entryMappedAt(entry, map);
   if (!mappedAt) return null;
+
+  const mappedPrNumber = prNumberFromUrl(entry.pullRequest);
+  if (mappedPrNumber) {
+    const pr = mergedPr(mappedPrNumber);
+    return prMergedAfter(pr, mappedAt) ? pr : null;
+  }
 
   for (const candidate of mergedPrsAfter(mappedAt)) {
     const pr = prClosesIssue(candidate.number, issue);
