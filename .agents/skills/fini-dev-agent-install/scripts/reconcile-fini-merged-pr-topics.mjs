@@ -219,7 +219,10 @@ async function main() {
       if (!completionPr) continue;
 
       const newTitle = topicTitle(issue, entry.title);
-      const alreadyClosed = entry.status === 'closed' && entry.topicTitle === newTitle && samePullRequest(entry.closedByPullRequest, completionPr);
+      const alreadyClosed = entry.status === 'closed'
+        && entry.finalTopicNoteStatus === 'sent'
+        && entry.topicTitle === newTitle
+        && samePullRequest(entry.closedByPullRequest, completionPr);
       if (alreadyClosed) continue;
 
       const closeStatus = issueState(issue) === 'CLOSED' ? 'already closed' : 'closed';
@@ -248,12 +251,21 @@ async function main() {
         status: 'closed',
         closedAt: completionPr.mergedAt || new Date().toISOString(),
         closedByPullRequest: completionPr.url,
+        finalTopicNoteStatus: 'pending',
         topicTitle: newTitle,
       };
       map.updatedAt = new Date().toISOString();
       writeJson(mapPath, map);
 
       await sendFinalTopicNote(address, issue, completionPr, closeStatus);
+
+      map.issues[issueKey] = {
+        ...map.issues[issueKey],
+        finalTopicNoteStatus: 'sent',
+        finalTopicNoteSentAt: new Date().toISOString(),
+      };
+      map.updatedAt = new Date().toISOString();
+      writeJson(mapPath, map);
       changes.push(`#${issue} via PR #${completionPr.number}`);
     } catch (error) {
       errors.push(`${issueKey}: ${error instanceof Error ? error.message : String(error)}`);
