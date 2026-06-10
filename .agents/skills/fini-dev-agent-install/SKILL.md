@@ -83,13 +83,12 @@ The helper:
 - Reads `~/.openclaw/cron/jobs.json` by default.
 - Preserves unrelated cron jobs.
 - Replaces only the managed jobs with IDs `fini-daily-issue-report` and `fini-fetch-all-branches`.
+- Installs or updates the managed host crontab block for `fini-merged-pr-topic-reconcile`.
 - Defaults to dry-run and requires `--write` to modify the store.
 - Uses `FINI_DAILY_TG_TARGET` for Telegram delivery.
 - Uses `FINI_DAILY_TZ` or the local system timezone for the 8 AM schedule.
 
 Use `--store <path>` only for tests or non-standard OpenClaw stores.
-
-This helper manages only the OpenClaw cron jobs above. It does not install the host crontab entry for `fini-merged-pr-topic-reconcile`; install or verify that managed crontab block separately before reporting the merged-PR topic reconciler as active.
 
 ## Verification
 

@@ -81,6 +81,15 @@ function closeIssue(issue) {
   runGh(['issue', 'close', String(issue), '--repo', repo, '--reason', 'completed']);
 }
 
+async function sendFinalTopicNote(address, issue, completionPr, closeStatus) {
+  await telegram('sendMessage', {
+    chat_id: address.chatId,
+    message_thread_id: address.topicId,
+    text: `Closed after merge: ${completionPr.url}\nIssue #${issue}: ${closeStatus}`,
+    disable_web_page_preview: true,
+  });
+}
+
 function telegramToken() {
   if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN;
   const config = readJson(configPath);
@@ -231,13 +240,6 @@ async function main() {
         closeIssue(issue);
       }
 
-      await telegram('sendMessage', {
-        chat_id: address.chatId,
-        message_thread_id: address.topicId,
-        text: `Closed after merge: ${completionPr.url}\nIssue #${issue}: ${closeStatus}`,
-        disable_web_page_preview: true,
-      });
-
       map.issues[issueKey] = {
         ...entry,
         issue,
@@ -250,6 +252,8 @@ async function main() {
       };
       map.updatedAt = new Date().toISOString();
       writeJson(mapPath, map);
+
+      await sendFinalTopicNote(address, issue, completionPr, closeStatus);
       changes.push(`#${issue} via PR #${completionPr.number}`);
     } catch (error) {
       errors.push(`${issueKey}: ${error instanceof Error ? error.message : String(error)}`);
