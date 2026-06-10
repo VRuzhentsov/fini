@@ -299,7 +299,29 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
-        run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm
+        run: npm run tauri build -- --features ui-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
+
+      - name: Verify Linux desktop binary
+        run: |
+          set -euo pipefail
+          desktop_binary="src-tauri/target/${{ matrix.rust_target }}/release/fini-app"
+          symbols_file="/var/tmp/fini-app-${{ matrix.arch }}-symbols.txt"
+
+          if [ ! -f "$desktop_binary" ]; then
+            echo "Expected Linux desktop binary was not produced: $desktop_binary" >&2
+            exit 1
+          fi
+
+          nm -C "$desktop_binary" > "$symbols_file"
+          if ! grep -Eq '(^|[[:space:]])fini_lib::run$' "$symbols_file"; then
+            echo "Linux desktop binary is missing the GUI entrypoint fini_lib::run" >&2
+            exit 1
+          fi
+
+          if grep -Fq 'fini_lib::run_cli' "$symbols_file" || grep -Fq 'fini_lib::services::cli::run' "$symbols_file"; then
+            echo "Linux desktop binary contains CLI symbols and may launch the CLI instead of the GUI" >&2
+            exit 1
+          fi
 
       - name: Build Linux CLI
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
