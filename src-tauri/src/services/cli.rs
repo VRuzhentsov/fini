@@ -1,5 +1,6 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use serde_json::{json, Value};
 
 use crate::models::{
@@ -7,7 +8,7 @@ use crate::models::{
 };
 use crate::schema::quests;
 use crate::services::backup;
-use crate::services::db::{db_default_path, open_db_at_path, utc_now};
+use crate::services::db::{db_default_path, try_open_db_at_path, utc_now};
 use crate::services::device_connection::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
 };
@@ -462,6 +463,10 @@ impl CliContext {
     }
 }
 
+fn open_cli_db(ctx: &CliContext) -> CliResult<SqliteConnection> {
+    try_open_db_at_path(&ctx.db_path).map_err(CliError::runtime)
+}
+
 pub fn run(args: Vec<String>) -> i32 {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
@@ -538,7 +543,7 @@ fn emit_series_sync(
 }
 
 fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     match command {
         FocusCommand::Get => {
             let quest = resolve_active_quest(&mut conn)
@@ -583,7 +588,7 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
 }
 
 fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     match command {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
@@ -733,7 +738,7 @@ fn sync_reminder_rows(conn: &mut diesel::sqlite::SqliteConnection, quest: &crate
 }
 
 fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     match command {
         SpaceCommand::List => Ok(json!({
             "spaces": SpaceRepository::new(&mut conn).list().map_err(CliError::from_string)?
@@ -775,7 +780,7 @@ fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
 }
 
 fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     let value = match command {
         BackupCommand::Export(args) => {
             if args.all_spaces && !args.space_id.is_empty() {
@@ -811,7 +816,7 @@ fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
 }
 
 fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     match command {
         ReminderCommand::List(args) => serde_json::to_value(
             ReminderRepository::new(&mut conn)
@@ -840,7 +845,7 @@ fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Valu
 }
 
 fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     let value = match command {
         DeviceCommand::Identity => serde_json::to_value(
             device_connection_get_identity_impl(&ctx.device_state)
@@ -983,7 +988,7 @@ fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult
 }
 
 fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     let value = match command {
         SyncCommand::Mappings { command } => match command {
             SyncMappingsCommand::List(args) => serde_json::to_value(
@@ -1066,7 +1071,7 @@ fn parse_space_resolution_mode(value: &str) -> CliResult<SpaceResolutionMode> {
 }
 
 fn handle_settings(ctx: &CliContext, command: SettingsCommand) -> CliResult<Value> {
-    let mut conn = open_db_at_path(&ctx.db_path);
+    let mut conn = open_cli_db(ctx)?;
     let value = match command {
         SettingsCommand::ThemeGet => {
             let mode = settings::theme_mode(&mut conn).map_err(CliError::from_string)?;

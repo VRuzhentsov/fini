@@ -1,7 +1,9 @@
+use diesel::migration::MigrationSource;
 use diesel::prelude::*;
-use diesel::sql_types::Text;
+use diesel::sqlite::Sqlite;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 #[cfg(any(feature = "ui-plane", test))]
 use std::sync::Mutex;
@@ -14,12 +16,6 @@ pub const APP_DATA_DIR_NAME: &str = "fini";
 
 #[cfg(any(feature = "ui-plane", test))]
 pub struct AppDbConnection(pub Mutex<SqliteConnection>);
-
-#[derive(QueryableByName)]
-struct MigrationTableRow {
-    #[diesel(sql_type = Text)]
-    _name: String,
-}
 
 pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -57,27 +53,52 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
 }
 
 pub fn open_db_at_path(path: &Path) -> SqliteConnection {
-    let mut conn =
-        SqliteConnection::establish(path.to_str().unwrap()).expect("failed to open database");
+    try_open_db_at_path(path).expect("failed to open compatible Fini database")
+}
+
+pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
+    let mut conn = SqliteConnection::establish(path.to_str().ok_or("database path is not UTF-8")?)
+        .map_err(|err| format!("failed to open database: {err}"))?;
     diesel::sql_query(
         "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
     )
     .execute(&mut conn)
-    .expect("failed to set PRAGMAs");
-    if should_run_migrations(&mut conn) {
-        conn.run_pending_migrations(MIGRATIONS)
-            .expect("failed to run migrations");
-    }
-    conn
+    .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
+    ensure_database_schema_is_supported(&mut conn)?;
+    conn.run_pending_migrations(MIGRATIONS)
+        .map_err(|err| format!("failed to run database migrations: {err}"))?;
+    Ok(conn)
 }
 
-fn should_run_migrations(conn: &mut SqliteConnection) -> bool {
-    diesel::sql_query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__diesel_schema_migrations' LIMIT 1;",
-    )
-    .load::<MigrationTableRow>(conn)
-    .map(|rows| rows.is_empty())
-    .unwrap_or(true)
+fn ensure_database_schema_is_supported(conn: &mut SqliteConnection) -> Result<(), String> {
+    let known_versions = embedded_migration_versions()?;
+    let applied_versions = conn
+        .applied_migrations()
+        .map_err(|err| format!("failed to read database migration state: {err}"))?;
+
+    if let Some(version) = applied_versions
+        .iter()
+        .map(ToString::to_string)
+        .find(|version| !known_versions.contains(version))
+    {
+        return Err(format!(
+            "database schema is newer than this Fini binary. App/CLI version: {}; unknown database migration: {version}. Upgrade Fini before opening this database.",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+
+    Ok(())
+}
+
+fn embedded_migration_versions() -> Result<BTreeSet<String>, String> {
+    <EmbeddedMigrations as MigrationSource<Sqlite>>::migrations(&MIGRATIONS)
+        .map_err(|err| format!("failed to read embedded database migrations: {err}"))
+        .map(|migrations| {
+            migrations
+                .into_iter()
+                .map(|migration| migration.name().version().to_string())
+                .collect()
+        })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -196,6 +217,49 @@ mod tests {
     }
 
     #[test]
+    fn database_with_newer_migration_is_rejected() {
+        let db_path = temp_db_path("database-with-newer-migration-is-rejected");
+
+        let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
+            .expect("open db path");
+
+        diesel::sql_query(
+            "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (
+                version VARCHAR(50) PRIMARY KEY NOT NULL,
+                run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut conn)
+        .expect("create migrations metadata table");
+        diesel::sql_query(
+            "INSERT INTO __diesel_schema_migrations (version) VALUES ('99999999999999')",
+        )
+        .execute(&mut conn)
+        .expect("seed unknown future migration version");
+        drop(conn);
+
+        let err = match try_open_db_at_path(&db_path) {
+            Ok(_) => panic!("newer-schema database must be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("database schema is newer than this Fini binary"),
+            "error should explain newer schema, got: {err}"
+        );
+        assert!(
+            err.contains("App/CLI version:"),
+            "error should include app/CLI version, got: {err}"
+        );
+        assert!(
+            err.contains("99999999999999"),
+            "error should include unknown migration version, got: {err}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn legacy_v2_db_migrates_to_text_ids_without_data_loss() {
         let db_path = temp_db_path("legacy-v2-db-migrates-to-text-ids");
 
@@ -242,9 +306,9 @@ mod tests {
         )
         .execute(&mut conn)
         .expect("insert legacy quest row");
+        drop(conn);
 
-        conn.run_pending_migrations(MIGRATIONS)
-            .expect("run pending migrations from legacy to latest");
+        let mut conn = open_db_at_path(&db_path);
 
         let legacy_space_id: String = spaces::table
             .filter(spaces::name.eq("Legacy Custom"))
