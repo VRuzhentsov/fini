@@ -207,7 +207,7 @@ async function main() {
       const alreadyClosed = entry.status === 'closed' && entry.topicTitle === newTitle && samePullRequest(entry.closedByPullRequest, completionPr);
       if (alreadyClosed) continue;
 
-      const closeStatus = issueState(issue) === 'CLOSED' ? 'already closed' : 'closing';
+      const closeStatus = issueState(issue) === 'CLOSED' ? 'already closed' : 'closed';
 
       await telegram('editForumTopic', {
         chat_id: address.chatId,
@@ -215,16 +215,22 @@ async function main() {
         name: newTitle,
       });
 
+      await telegram('sendChatAction', {
+        chat_id: address.chatId,
+        message_thread_id: address.topicId,
+        action: 'typing',
+      });
+
+      if (closeStatus === 'closed') {
+        closeIssue(issue);
+      }
+
       await telegram('sendMessage', {
         chat_id: address.chatId,
         message_thread_id: address.topicId,
         text: `Closed after merge: ${completionPr.url}\nIssue #${issue}: ${closeStatus}`,
         disable_web_page_preview: true,
       });
-
-      if (closeStatus === 'closing') {
-        closeIssue(issue);
-      }
 
       map.issues[issueKey] = {
         ...entry,
