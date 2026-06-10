@@ -242,9 +242,35 @@ function currentCrontab() {
   }
 }
 
+function homeAnchored(value) {
+  const home = os.homedir();
+  const normalized = String(value);
+  if (normalized === home) return '$HOME';
+  if (normalized.startsWith(`${home}${path.sep}`)) {
+    return `$HOME/${normalized.slice(home.length + 1).split(path.sep).join('/')}`;
+  }
+  return normalized;
+}
+
+function shellDoubleQuote(value) {
+  return `"${String(value).replace(/(["`\\])/g, '\\$1').replace(/\n/g, '')}"`;
+}
+
 function reconcileCrontabBlock() {
   const logPath = '$HOME/.openclaw/logs/fini-merged-pr-topic-reconcile.log';
-  const command = `mkdir -p "$HOME/.openclaw/logs" && node ${JSON.stringify(RECONCILE_SCRIPT)} >> "${logPath}" 2>&1`;
+  const nodeBin = shellDoubleQuote(homeAnchored(process.execPath));
+  const scriptPath = shellDoubleQuote(homeAnchored(RECONCILE_SCRIPT));
+  const repoDir = shellDoubleQuote(homeAnchored(process.env.FINI_REPO_DIR || process.cwd()));
+  const nodeDir = shellDoubleQuote(homeAnchored(path.dirname(process.execPath)));
+  const command = [
+    'mkdir -p "$HOME/.openclaw/logs"',
+    '&&',
+    `FINI_REPO_DIR=${repoDir}`,
+    `PATH=${nodeDir}:/usr/local/bin:/usr/bin:/bin`,
+    nodeBin,
+    scriptPath,
+    `>> "${logPath}" 2>&1`,
+  ].join(' ');
   return [
     RECONCILE_CRON_START,
     '*/5 * * * * ' + command,
