@@ -264,6 +264,10 @@ function shellDoubleQuote(value) {
   return `"${String(value).replace(/(["`\\])/g, '\\$1').replace(/\n/g, '')}"`;
 }
 
+function optionalShellEnv(name, value) {
+  return value ? [`${name}=${shellDoubleQuote(homeAnchored(value))}`] : [];
+}
+
 function reconcileCrontabBlock() {
   const logPath = '$HOME/.openclaw/logs/fini-merged-pr-topic-reconcile.log';
   const nodeBin = shellDoubleQuote(homeAnchored(process.execPath));
@@ -277,6 +281,8 @@ function reconcileCrontabBlock() {
     'mkdir -p "$HOME/.openclaw/logs"',
     '&&',
     `FINI_REPO_DIR=${repoDir}`,
+    ...optionalShellEnv('FINI_ISSUE_TOPIC_SYNC_FILE', process.env.FINI_ISSUE_TOPIC_SYNC_FILE),
+    ...optionalShellEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
     `PATH=${cronPath}`,
     nodeBin,
     scriptPath,
