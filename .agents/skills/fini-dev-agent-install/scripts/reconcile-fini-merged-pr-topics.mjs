@@ -19,6 +19,7 @@ const lockDir = expandPath(
     || path.join(os.homedir(), '.fini-dev', 'locks', `fini-merged-pr-topic-reconcile-${repo.replace(/[^a-zA-Z0-9_.-]+/g, '-')}.lock`),
 );
 let lockHeld = false;
+let lockHeartbeat = null;
 
 function expandPath(value) {
   return value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
@@ -65,6 +66,56 @@ function writeJson(filePath, value) {
   fs.renameSync(tempPath, filePath);
 }
 
+function lockOwnerPath() {
+  return path.join(lockDir, 'owner.json');
+}
+
+function readLockOwner() {
+  try {
+    return readJson(lockOwnerPath());
+  } catch {
+    return null;
+  }
+}
+
+function pidIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function lockOwnerIsActive() {
+  const owner = readLockOwner();
+  return Boolean(owner?.repo === repo && pidIsAlive(owner.pid));
+}
+
+function writeLockOwner(startedAt = new Date().toISOString()) {
+  fs.writeFileSync(lockOwnerPath(), `${JSON.stringify({
+    pid: process.pid,
+    repo,
+    startedAt,
+    heartbeatAt: new Date().toISOString(),
+  }, null, 2)}\n`, 'utf8');
+}
+
+function startLockHeartbeat(startedAt) {
+  writeLockOwner(startedAt);
+  lockHeartbeat = setInterval(() => {
+    try {
+      writeLockOwner(startedAt);
+      const now = new Date();
+      fs.utimesSync(lockDir, now, now);
+    } catch {
+      // The final release path may remove the lock while the timer is queued.
+    }
+  }, 60 * 1000);
+  lockHeartbeat.unref?.();
+}
+
 function acquireLock() {
   fs.mkdirSync(path.dirname(lockDir), { recursive: true });
   try {
@@ -77,19 +128,23 @@ function acquireLock() {
       console.log(JSON.stringify({ changed: false, changes: [], errors: [], skipped: 'lock-held' }, null, 2));
       process.exit(0);
     }
+    if (lockOwnerIsActive()) {
+      console.log(JSON.stringify({ changed: false, changes: [], errors: [], skipped: 'lock-held-active-owner' }, null, 2));
+      process.exit(0);
+    }
     fs.rmSync(lockDir, { recursive: true, force: true });
     fs.mkdirSync(lockDir);
   }
   lockHeld = true;
-  fs.writeFileSync(path.join(lockDir, 'owner.json'), `${JSON.stringify({
-    pid: process.pid,
-    repo,
-    startedAt: new Date().toISOString(),
-  }, null, 2)}\n`, 'utf8');
+  startLockHeartbeat(new Date().toISOString());
 }
 
 function releaseLock() {
   if (!lockHeld) return;
+  if (lockHeartbeat) {
+    clearInterval(lockHeartbeat);
+    lockHeartbeat = null;
+  }
   fs.rmSync(lockDir, { recursive: true, force: true });
   lockHeld = false;
 }
