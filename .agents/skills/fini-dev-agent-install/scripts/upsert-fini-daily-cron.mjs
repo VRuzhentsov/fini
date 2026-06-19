@@ -2,16 +2,23 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
+// Legacy stable ID: keep this name so existing cron entries are updated in place.
+// Do not rename it without a migration that removes or rewrites the old job.
 const DAILY_JOB_ID = 'fini-daily-issue-report';
 const FETCH_JOB_ID = 'fini-fetch-all-branches';
-const DAILY_JOB_NAME = 'Fini daily issue report';
+const DAILY_JOB_NAME = 'Fini daily issue and PR report';
 const FETCH_JOB_NAME = 'Fini fetch all branches';
-const DAILY_JOB_DESCRIPTION = 'Daily Fini issue report for <user>';
+const DAILY_JOB_DESCRIPTION = 'Daily Fini issue and pull request report';
 const FETCH_JOB_DESCRIPTION = 'Fetch all Fini remote branches every five minutes';
 const CRON_EXPR = '0 8 * * *';
 const FETCH_EVERY_MS = 5 * 60 * 1000;
-const DAILY_MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and FINI_PROGRESS_TG_TARGET from the local agent environment. Query current open GitHub issues for VRuzhentsov/fini using configured GitHub access without printing secrets. Run or load triage before choosing the recommendation. Produce the daily report format addressed to <user>. Deliver the final report to FINI_DAILY_TG_TARGET.';
+const RECONCILE_CRON_START = '# OPENCLAW FINI MERGED PR TOPIC RECONCILE START';
+const RECONCILE_CRON_END = '# OPENCLAW FINI MERGED PR TOPIC RECONCILE END';
+const RECONCILE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'reconcile-fini-merged-pr-topics.mjs');
+const DAILY_MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET, FINI_PROGRESS_TG_TARGET, FINI_REPO, and FINI_DAILY_RECIPIENT from the local agent environment when they are set. Query current open GitHub issues and pull requests using configured GitHub access without printing secrets, including the GitHub URL for each item. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format with a configured-recipient greeting only when FINI_DAILY_RECIPIENT is set, and with full GitHub links for every listed issue and pull request. Deliver the final report to FINI_DAILY_TG_TARGET.';
 const FETCH_MESSAGE = 'From ~/projects/fini, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.';
 
 function usage() {
@@ -175,6 +182,7 @@ function buildFetchJob(nowMs) {
       timeoutSeconds: 120,
       lightContext: true,
       tools: ['exec'],
+      toolsAllow: ['exec'],
     },
     delivery: {
       mode: 'none',
@@ -223,23 +231,182 @@ function writeStore(storePath, store) {
   fs.renameSync(tempPath, storePath);
 }
 
+function currentCrontab() {
+  try {
+    return execFileSync('crontab', ['-l'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    return '';
+  }
+}
+
+function homeAnchored(value) {
+  const home = os.homedir();
+  const normalized = String(value);
+  if (normalized === home) return '$HOME';
+  if (normalized.startsWith(`${home}${path.sep}`)) {
+    return `$HOME/${normalized.slice(home.length + 1).split(path.sep).join('/')}`;
+  }
+  return normalized;
+}
+
+function homeAnchoredPathList(value) {
+  return String(value)
+    .split(path.delimiter)
+    .filter(Boolean)
+    .map((entry) => homeAnchored(entry))
+    .join(':');
+}
+
+function shellDoubleQuote(value) {
+  return `"${String(value).replace(/(["`\\])/g, '\\$1').replace(/\n/g, '')}"`;
+}
+
+function optionalShellEnv(name, value) {
+  return value ? [`${name}=${shellDoubleQuote(homeAnchored(value))}`] : [];
+}
+
+function cronPathValue(value) {
+  const normalized = String(value);
+  if (normalized.startsWith('~')) return normalized;
+  if (path.isAbsolute(normalized)) return homeAnchored(normalized);
+  return homeAnchored(path.resolve(process.cwd(), normalized));
+}
+
+function optionalShellPathEnv(name, value) {
+  return value ? [`${name}=${shellDoubleQuote(cronPathValue(value))}`] : [];
+}
+
+function telegramConfigPath() {
+  return process.env.FINI_TELEGRAM_CONFIG_PATH
+    || process.env.OPENCLAW_CONFIG_PATH
+    || path.join(os.homedir(), '.openclaw', 'openclaw.json');
+}
+
+function telegramConfigHasToken(configPath) {
+  try {
+    const text = fs.readFileSync(configPath.startsWith('~') ? path.join(os.homedir(), configPath.slice(1)) : configPath, 'utf8');
+    const config = JSON.parse(text);
+    return Boolean(config?.channels?.telegram?.botToken);
+  } catch {
+    return false;
+  }
+}
+
+function requireTelegramCredentials() {
+  if (process.env.TELEGRAM_BOT_TOKEN || telegramConfigHasToken(telegramConfigPath())) return;
+  throw new Error('TELEGRAM_BOT_TOKEN, FINI_TELEGRAM_CONFIG_PATH, or OpenClaw Telegram config is required to install merged-PR topic reconciliation');
+}
+
+function inferGithubRepo(cwd) {
+  const remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const match = remote.match(/github\.com[:/](.+?\/.+?)(?:\.git)?$/);
+  if (!match) throw new Error('FINI_REPO is required when remote.origin.url is not a GitHub owner/repo URL');
+  return match[1];
+}
+
+function requireGithubCliAccess() {
+  const repo = process.env.FINI_REPO || inferGithubRepo(process.cwd());
+  try {
+    const raw = execFileSync('gh', ['repo', 'view', repo, '--json', 'nameWithOwner,viewerPermission'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const access = JSON.parse(raw);
+    const writePermissions = new Set(['ADMIN', 'MAINTAIN', 'WRITE']);
+    if (!writePermissions.has(access.viewerPermission)) {
+      throw new Error(`GitHub CLI user has ${access.viewerPermission || 'unknown'} permission; write permission is required to close issues`);
+    }
+  } catch (error) {
+    const detail = error?.stderr?.trim() || error?.message || 'unknown error';
+    throw new Error(`GitHub CLI access is required to install merged-PR topic reconciliation for ${repo}: ${detail}`);
+  }
+}
+
+function reconcileCrontabBlock() {
+  const logPath = '$HOME/.fini-dev/logs/fini-merged-pr-topic-reconcile.log';
+  const nodeBin = shellDoubleQuote(homeAnchored(process.execPath));
+  const scriptPath = shellDoubleQuote(homeAnchored(RECONCILE_SCRIPT));
+  const repoDir = shellDoubleQuote(cronPathValue(process.env.FINI_REPO_DIR || process.cwd()));
+  const cronPath = shellDoubleQuote(homeAnchoredPathList([
+    path.dirname(process.execPath),
+    process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+  ].join(path.delimiter)));
+  const command = [
+    'mkdir -p "$HOME/.fini-dev/logs"',
+    '&&',
+    `FINI_REPO_DIR=${repoDir}`,
+    ...optionalShellEnv('FINI_REPO', process.env.FINI_REPO),
+    ...optionalShellPathEnv('FINI_ISSUE_TOPIC_SYNC_FILE', process.env.FINI_ISSUE_TOPIC_SYNC_FILE),
+    ...optionalShellPathEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
+    ...optionalShellPathEnv('FINI_TELEGRAM_CONFIG_PATH', process.env.FINI_TELEGRAM_CONFIG_PATH),
+    ...optionalShellPathEnv('OPENCLAW_CONFIG_PATH', process.env.OPENCLAW_CONFIG_PATH),
+    ...optionalShellPathEnv('FINI_RECONCILE_LOCK_DIR', process.env.FINI_RECONCILE_LOCK_DIR),
+    ...optionalShellEnv('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
+    ...optionalShellEnv('GH_TOKEN', process.env.GH_TOKEN),
+    ...optionalShellEnv('GITHUB_TOKEN', process.env.GITHUB_TOKEN),
+    ...optionalShellPathEnv('GH_CONFIG_DIR', process.env.GH_CONFIG_DIR),
+    `PATH=${cronPath}`,
+    nodeBin,
+    scriptPath,
+    `>> "${logPath}" 2>&1`,
+  ].join(' ');
+  return [
+    RECONCILE_CRON_START,
+    '*/5 * * * * ' + command,
+    RECONCILE_CRON_END,
+  ].join('\n');
+}
+
+function upsertCrontabBlock(crontabText, block) {
+  const pattern = new RegExp(`${RECONCILE_CRON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${RECONCILE_CRON_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm');
+  const trimmed = crontabText.trimEnd();
+  if (pattern.test(crontabText)) {
+    const next = crontabText.replace(pattern, block);
+    return { changed: next !== crontabText, crontab: `${next.trimEnd()}\n` };
+  }
+  return { changed: true, crontab: `${trimmed ? `${trimmed}\n\n` : ''}${block}\n` };
+}
+
+function writeCrontab(crontabText) {
+  execFileSync('crontab', ['-'], {
+    input: crontabText,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const target = parseDailyTarget(process.env.FINI_DAILY_TG_TARGET);
+  requireTelegramCredentials();
+  requireGithubCliAccess();
   const timezone = localTimezone();
   const store = readStore(options.store);
   const nowMs = Date.now();
   const dailyResult = upsert(store, buildDailyJob(target, timezone, nowMs));
   const fetchResult = upsert(dailyResult.store, buildFetchJob(nowMs));
+  const existingCrontab = currentCrontab();
+  const reconcileCron = upsertCrontabBlock(existingCrontab, reconcileCrontabBlock());
 
+  if (!options.dryRun && reconcileCron.changed) {
+    writeCrontab(reconcileCron.crontab);
+  }
   if (!options.dryRun && (dailyResult.changed || fetchResult.changed)) {
     writeStore(options.store, fetchResult.store);
   }
 
   console.log(JSON.stringify({
     dryRun: options.dryRun,
-    changed: dailyResult.changed || fetchResult.changed,
-    written: !options.dryRun && (dailyResult.changed || fetchResult.changed),
+    changed: dailyResult.changed || fetchResult.changed || reconcileCron.changed,
+    written: !options.dryRun && (dailyResult.changed || fetchResult.changed || reconcileCron.changed),
     store: options.store,
     jobs: [
       {
@@ -255,6 +422,13 @@ function main() {
         existing: fetchResult.existing,
         schedule: 'every 5m',
         delivery: 'none',
+      },
+      {
+        jobId: 'fini-merged-pr-topic-reconcile',
+        changed: reconcileCron.changed,
+        existing: existingCrontab.includes(RECONCILE_CRON_START),
+        schedule: 'every 5m',
+        delivery: 'issue topic updates',
       },
     ],
   }, null, 2));
