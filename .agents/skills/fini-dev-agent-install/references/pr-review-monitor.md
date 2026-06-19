@@ -42,9 +42,8 @@ Example whitelist shape:
 ```json
 {
   "githubAuthors": [
-    "VRuzhentsov",
-    "chatgpt-codex-connector",
-    "chatgpt-codex-connector[bot]"
+    "trusted-maintainer",
+    "trusted-review-bot"
   ]
 }
 ```
