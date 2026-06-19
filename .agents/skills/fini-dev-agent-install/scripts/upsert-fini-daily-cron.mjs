@@ -285,6 +285,7 @@ function reconcileCrontabBlock() {
     ...optionalShellEnv('FINI_ISSUE_TOPIC_SYNC_FILE', process.env.FINI_ISSUE_TOPIC_SYNC_FILE),
     ...optionalShellEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
     ...optionalShellEnv('OPENCLAW_CONFIG_PATH', process.env.OPENCLAW_CONFIG_PATH),
+    ...optionalShellEnv('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
     `PATH=${cronPath}`,
     nodeBin,
     scriptPath,
