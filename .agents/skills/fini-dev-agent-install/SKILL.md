@@ -2,7 +2,7 @@
 name: fini-dev-agent-install
 description: "Use this to install, repair, or verify the Fini autonomous dev agent schedules. Trigger when asked to set up fini-dev-agent, local autonomous agent scheduling, daily 8 AM triage, every-5-minutes branch fetch, Daily topic reports, or rerunnable/idempotent install of the Fini dev agent. This skill ensures a stable daily 8 AM local-time job runs `fini-daily`, uses `triage`, reports Fini issues and pull requests to the Fini Dev `Daily` Telegram topic, and keeps all Git branches fetched every 5 minutes."
 metadata:
-  fini:
+  openclaw:
     envVars:
       - name: FINI_DEV_TG_CHANNEL_ID
         required: false
@@ -25,6 +25,9 @@ metadata:
       - name: FINI_TELEGRAM_CONFIG_PATH
         required: false
         description: Optional Telegram config JSON path for the merged-PR topic reconciler when TELEGRAM_BOT_TOKEN is not set.
+      - name: OPENCLAW_CONFIG_PATH
+        required: false
+        description: Optional OpenClaw config JSON path used when FINI_TELEGRAM_CONFIG_PATH is not set.
       - name: FINI_RECONCILE_LOCK_DIR
         required: false
         description: Optional lock directory override for merged-PR topic reconciliation.
@@ -38,7 +41,7 @@ metadata:
 
 # Fini Dev Agent Install
 
-Use this skill to install or repair autonomous Fini dev-agent schedules. The workflow is intentionally idempotent: repeated runs should converge on the same managed jobs without duplicating schedules or changing unrelated jobs.
+Use this skill to install or repair autonomous Fini dev-agent schedules on OpenClaw. The workflow is intentionally idempotent: repeated runs should converge on the same managed jobs without duplicating schedules or changing unrelated jobs.
 
 ## Outcome
 
@@ -78,12 +81,12 @@ Optional PR review monitor:
 
 Before writing schedule state, verify:
 
-1. A local agent runner is installed and the schedule store path is available.
+1. OpenClaw is installed and the local cron store path is available.
 2. `fini-daily` is installed for the local agent.
 3. `triage` is installed for the local agent.
 4. `FINI_DAILY_TG_TARGET` is set to the Daily topic target in `<group-id>:topic:<thread-id>` form.
 5. GitHub access for `FINI_REPO`, or the current checkout's inferred GitHub repository, works without printing tokens.
-6. Telegram credentials are available through `TELEGRAM_BOT_TOKEN` or `FINI_TELEGRAM_CONFIG_PATH`.
+6. Telegram credentials are available through `TELEGRAM_BOT_TOKEN`, `FINI_TELEGRAM_CONFIG_PATH`, `OPENCLAW_CONFIG_PATH`, or the default OpenClaw config.
 7. The dynamic issue/topic sync file is stored at the local Fini checkout root as `issue-topic-sync.json`, unless `FINI_ISSUE_TOPIC_SYNC_FILE` or legacy `FINI_ISSUE_TG_TOPIC_MAP` explicitly overrides it.
 
 If a prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that cannot deliver to `Daily`.
@@ -99,7 +102,7 @@ node .agents/skills/fini-dev-agent-install/scripts/upsert-fini-daily-cron.mjs --
 
 The helper:
 
-- Reads `~/.fini-dev/automation/jobs.json` by default.
+- Reads `~/.openclaw/cron/jobs.json` by default.
 - Preserves unrelated cron jobs.
 - Replaces only the managed jobs with IDs `fini-daily-issue-report` and `fini-fetch-all-branches`.
 - Installs or updates the managed host crontab block for `fini-merged-pr-topic-reconcile`.
@@ -111,13 +114,13 @@ Use `--store <path>` only for tests or non-standard schedule stores.
 
 ## Verification
 
-After `--write`, verify with the local agent tools when available:
+After `--write`, verify with the local OpenClaw tools when available:
 
 ```bash
-<scheduler> cron list --json
-<scheduler> skills info fini-daily
-<scheduler> skills info triage
-<scheduler> channels status --probe
+openclaw cron list --json
+openclaw skills info fini-daily
+openclaw skills info triage
+openclaw channels status --probe
 ```
 
 Expected evidence:
@@ -131,7 +134,7 @@ Expected evidence:
 - `fini-daily` and `triage` are available.
 - Telegram is configured and can send to the Daily topic, or the blocker is explicitly reported.
 
-If scheduler CLI commands are blocked by device-scope approval, verify by reading the cron list through any available read-only status path and report the approval blocker. Do not keep retrying approval loops.
+If OpenClaw CLI cron commands are blocked by device-scope approval, verify by reading the cron list through any available read-only status path and report the approval blocker. Do not keep retrying approval loops.
 
 ## Prompt Contracts
 
@@ -151,8 +154,8 @@ From ~/projects/fini, run git fetch --all --prune to update every remote branch 
 
 ## Idempotency Rules
 
-- Treat `fini-daily-issue-report` and `fini-fetch-all-branches` as the only managed scheduler jobs.
-- Treat the host crontab block between `FINI MERGED PR TOPIC RECONCILE START/END` as the only managed system cron entry for merged PR topic reconciliation.
+- Treat `fini-daily-issue-report` and `fini-fetch-all-branches` as the only managed OpenClaw cron jobs.
+- Treat the host crontab block between `OPENCLAW FINI MERGED PR TOPIC RECONCILE START/END` as the only managed system cron entry for merged PR topic reconciliation.
 - Do not create timestamped duplicate daily jobs.
 - Do not remove unrelated jobs.
 - Do not overwrite a different job unless it has the managed ID.

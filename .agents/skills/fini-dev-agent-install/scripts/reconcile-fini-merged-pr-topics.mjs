@@ -13,7 +13,7 @@ const mapPath = expandPath(
 );
 const configPath = process.env.FINI_TELEGRAM_CONFIG_PATH
   ? expandPath(process.env.FINI_TELEGRAM_CONFIG_PATH)
-  : null;
+  : expandPath(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
 const lockDir = expandPath(
   process.env.FINI_RECONCILE_LOCK_DIR
     || path.join(os.homedir(), '.fini-dev', 'locks', `fini-merged-pr-topic-reconcile-${repo.replace(/[^a-zA-Z0-9_.-]+/g, '-')}.lock`),
@@ -144,7 +144,7 @@ async function sendFinalTopicNote(address, issue, completionPr, closeStatus) {
 function telegramToken() {
   if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN;
   if (!configPath) {
-    throw new Error('Set TELEGRAM_BOT_TOKEN or FINI_TELEGRAM_CONFIG_PATH before reconciling topics');
+    throw new Error('Set TELEGRAM_BOT_TOKEN, FINI_TELEGRAM_CONFIG_PATH, or OPENCLAW_CONFIG_PATH before reconciling topics');
   }
   const config = readJson(configPath);
   const token = config?.channels?.telegram?.botToken;

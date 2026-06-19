@@ -15,20 +15,20 @@ const DAILY_JOB_DESCRIPTION = 'Daily Fini issue and pull request report';
 const FETCH_JOB_DESCRIPTION = 'Fetch all Fini remote branches every five minutes';
 const CRON_EXPR = '0 8 * * *';
 const FETCH_EVERY_MS = 5 * 60 * 1000;
-const RECONCILE_CRON_START = '# FINI MERGED PR TOPIC RECONCILE START';
-const RECONCILE_CRON_END = '# FINI MERGED PR TOPIC RECONCILE END';
+const RECONCILE_CRON_START = '# OPENCLAW FINI MERGED PR TOPIC RECONCILE START';
+const RECONCILE_CRON_END = '# OPENCLAW FINI MERGED PR TOPIC RECONCILE END';
 const RECONCILE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'reconcile-fini-merged-pr-topics.mjs');
 const DAILY_MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET, FINI_PROGRESS_TG_TARGET, FINI_REPO, and FINI_DAILY_RECIPIENT from the local agent environment when they are set. Query current open GitHub issues and pull requests using configured GitHub access without printing secrets, including the GitHub URL for each item. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format with a configured-recipient greeting only when FINI_DAILY_RECIPIENT is set, and with full GitHub links for every listed issue and pull request. Deliver the final report to FINI_DAILY_TG_TARGET.';
 const FETCH_MESSAGE = 'From ~/projects/fini, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.';
 
 function usage() {
-  return `Usage: node upsert-fini-daily-cron.mjs [--dry-run|--write] [--store <path>]\n\nDefaults to --dry-run and ~/.fini-dev/automation/jobs.json.`;
+  return `Usage: node upsert-fini-daily-cron.mjs [--dry-run|--write] [--store <path>]\n\nDefaults to --dry-run and ~/.openclaw/cron/jobs.json.`;
 }
 
 function parseArgs(argv) {
   const options = {
     dryRun: true,
-    store: path.join(os.homedir(), '.fini-dev', 'automation', 'jobs.json'),
+    store: path.join(os.homedir(), '.openclaw', 'cron', 'jobs.json'),
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -268,9 +268,25 @@ function optionalShellEnv(name, value) {
   return value ? [`${name}=${shellDoubleQuote(homeAnchored(value))}`] : [];
 }
 
+function telegramConfigPath() {
+  return process.env.FINI_TELEGRAM_CONFIG_PATH
+    || process.env.OPENCLAW_CONFIG_PATH
+    || path.join(os.homedir(), '.openclaw', 'openclaw.json');
+}
+
+function telegramConfigHasToken(configPath) {
+  try {
+    const text = fs.readFileSync(configPath.startsWith('~') ? path.join(os.homedir(), configPath.slice(1)) : configPath, 'utf8');
+    const config = JSON.parse(text);
+    return Boolean(config?.channels?.telegram?.botToken);
+  } catch {
+    return false;
+  }
+}
+
 function requireTelegramCredentials() {
-  if (process.env.TELEGRAM_BOT_TOKEN || process.env.FINI_TELEGRAM_CONFIG_PATH) return;
-  throw new Error('TELEGRAM_BOT_TOKEN or FINI_TELEGRAM_CONFIG_PATH is required to install merged-PR topic reconciliation');
+  if (process.env.TELEGRAM_BOT_TOKEN || telegramConfigHasToken(telegramConfigPath())) return;
+  throw new Error('TELEGRAM_BOT_TOKEN, FINI_TELEGRAM_CONFIG_PATH, or OpenClaw Telegram config is required to install merged-PR topic reconciliation');
 }
 
 function reconcileCrontabBlock() {
@@ -290,6 +306,7 @@ function reconcileCrontabBlock() {
     ...optionalShellEnv('FINI_ISSUE_TOPIC_SYNC_FILE', process.env.FINI_ISSUE_TOPIC_SYNC_FILE),
     ...optionalShellEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
     ...optionalShellEnv('FINI_TELEGRAM_CONFIG_PATH', process.env.FINI_TELEGRAM_CONFIG_PATH),
+    ...optionalShellEnv('OPENCLAW_CONFIG_PATH', process.env.OPENCLAW_CONFIG_PATH),
     ...optionalShellEnv('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
     ...optionalShellEnv('GH_TOKEN', process.env.GH_TOKEN),
     ...optionalShellEnv('GITHUB_TOKEN', process.env.GITHUB_TOKEN),
