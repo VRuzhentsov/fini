@@ -144,7 +144,9 @@ Ask `triage` to deprioritize PRs that are:
 
 ## Delegated Implementation Progress
 
-When the configured user asks an autonomous Fini agent to implement a specific Fini issue or task, report progress to `FINI_PROGRESS_TG_TARGET` when available.
+When the configured user asks an autonomous Fini agent to implement a specific Fini issue or task, create or reuse the issue/task-specific Telegram topic and keep detailed progress there.
+
+Use `FINI_PROGRESS_TG_TARGET` only as a fallback for generic implementation status or when topic creation/reuse is unavailable.
 
 Progress updates should include:
 
