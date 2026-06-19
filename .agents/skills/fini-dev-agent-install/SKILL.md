@@ -44,7 +44,7 @@ Daily triage report:
 - Schedule: `0 8 * * *`
 - Timezone: local timezone, or `FINI_DAILY_TZ` when configured
 - Session: isolated
-- Prompt: load `fini-daily`, run from the local Fini checkout, use `triage`, query open GitHub issues and pull requests from `FINI_REPO` or the checkout's `origin` remote, include GitHub URLs, call out stale or near-ready PRs, and send the final report to `FINI_DAILY_TG_TARGET`
+- Prompt: load `fini-daily`, run from the local Fini checkout, use `triage` when available or `fini-daily`'s fallback ranking otherwise, query open GitHub issues and pull requests from `FINI_REPO` or the checkout's `origin` remote, include GitHub URLs, call out stale or near-ready PRs, and send the final report to `FINI_DAILY_TG_TARGET`
 - Delivery: Telegram `Daily` topic parsed from `FINI_DAILY_TG_TARGET`
 
 Branch fetch:
@@ -91,19 +91,19 @@ Before installing or repairing local schedules, verify:
 
 1. The local agent runtime is installed and has a writable schedule store.
 2. `fini-daily` is installed for the local agent.
-3. `triage` is installed for the local agent.
+3. `triage` is installed for the local agent, or the agent is prepared to use `fini-daily`'s explicit fallback ranking.
 4. `FINI_DAILY_TG_TARGET` is set to the Daily topic target in `<group-id>:topic:<thread-id>` form.
 5. GitHub access for `FINI_REPO`, or the checkout's inferred GitHub repository, works without printing tokens.
 6. Any optional merged-PR topic reconciler has local Telegram credentials and GitHub write access in the private agent environment.
 
-If a prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that appears healthy but cannot deliver to the Daily topic.
+If a required prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that appears healthy but cannot deliver to the Daily topic. Missing `triage` is not a hard blocker when `fini-daily`'s fallback ranking is available; report that the scheduled job will use fallback ranking until `triage` is installed.
 
 ## Prompt Contracts
 
 The daily report prompt must preserve this intent:
 
 ```text
-Use the fini-daily skill. Run from the local Fini checkout. Use FINI_DAILY_TG_TARGET, FINI_PROGRESS_TG_TARGET, FINI_REPO, and FINI_DAILY_RECIPIENT from the local agent environment when they are set. Query current open GitHub issues and pull requests using configured GitHub access without printing secrets, including the GitHub URL for each item. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format with a configured-recipient greeting only when FINI_DAILY_RECIPIENT is set, and with full GitHub links for every listed issue and pull request. Deliver the final report to FINI_DAILY_TG_TARGET.
+Use the fini-daily skill. Run from the local Fini checkout. Use FINI_DAILY_TG_TARGET, FINI_PROGRESS_TG_TARGET, FINI_REPO, and FINI_DAILY_RECIPIENT from the local agent environment when they are set. Query current open GitHub issues and pull requests using configured GitHub access without printing secrets, including the GitHub URL for each item. Run or load triage before choosing the recommendation when triage is available; otherwise use fini-daily's explicit fallback ranking and say fallback ranking was used. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when the ranking supports it. Produce the daily report format with a configured-recipient greeting only when FINI_DAILY_RECIPIENT is set, and with full GitHub links for every listed issue and pull request. Deliver the final report to FINI_DAILY_TG_TARGET.
 ```
 
 Keep this prompt focused on read-only triage and reporting. Do not edit issues, labels, code, docs, or branches from the daily job unless the user explicitly delegates implementation.
@@ -133,7 +133,7 @@ Use local agent tooling where available. Expected evidence:
 - The daily job schedule is `0 8 * * *` in the selected timezone.
 - The fetch job schedule is every `5m`.
 - Delivery points to the Daily topic thread from `FINI_DAILY_TG_TARGET`.
-- `fini-daily` and `triage` are available.
+- `fini-daily` is available, and either `triage` is available or fallback ranking is explicitly accepted for the daily job.
 - Telegram is configured and can send to the Daily topic, or the blocker is explicitly reported.
 
 If local agent commands are blocked by device-scope approval, verify through any available read-only status path and report the approval blocker. Do not keep retrying approval loops.
