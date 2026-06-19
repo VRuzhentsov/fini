@@ -281,6 +281,7 @@ function reconcileCrontabBlock() {
     'mkdir -p "$HOME/.openclaw/logs"',
     '&&',
     `FINI_REPO_DIR=${repoDir}`,
+    ...optionalShellEnv('FINI_REPO', process.env.FINI_REPO),
     ...optionalShellEnv('FINI_ISSUE_TOPIC_SYNC_FILE', process.env.FINI_ISSUE_TOPIC_SYNC_FILE),
     ...optionalShellEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
     `PATH=${cronPath}`,
