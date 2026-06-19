@@ -286,6 +286,8 @@ function reconcileCrontabBlock() {
     ...optionalShellEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
     ...optionalShellEnv('FINI_TELEGRAM_CONFIG_PATH', process.env.FINI_TELEGRAM_CONFIG_PATH),
     ...optionalShellEnv('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
+    ...optionalShellEnv('GH_TOKEN', process.env.GH_TOKEN),
+    ...optionalShellEnv('GITHUB_TOKEN', process.env.GITHUB_TOKEN),
     `PATH=${cronPath}`,
     nodeBin,
     scriptPath,

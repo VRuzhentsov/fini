@@ -25,6 +25,15 @@ metadata:
       - name: FINI_TELEGRAM_CONFIG_PATH
         required: false
         description: Optional Telegram config JSON path for the merged-PR topic reconciler when TELEGRAM_BOT_TOKEN is not set.
+      - name: FINI_RECONCILE_LOCK_DIR
+        required: false
+        description: Optional lock directory override for merged-PR topic reconciliation.
+      - name: GH_TOKEN
+        required: false
+        description: Optional GitHub CLI token passed through to host cron when set.
+      - name: GITHUB_TOKEN
+        required: false
+        description: Optional GitHub CLI token passed through to host cron when set.
 ---
 
 # Fini Dev Automation Install

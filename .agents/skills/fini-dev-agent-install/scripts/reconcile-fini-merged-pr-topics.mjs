@@ -14,6 +14,11 @@ const mapPath = expandPath(
 const configPath = process.env.FINI_TELEGRAM_CONFIG_PATH
   ? expandPath(process.env.FINI_TELEGRAM_CONFIG_PATH)
   : null;
+const lockDir = expandPath(
+  process.env.FINI_RECONCILE_LOCK_DIR
+    || path.join(os.homedir(), '.fini', 'locks', `fini-merged-pr-topic-reconcile-${repo.replace(/[^a-zA-Z0-9_.-]+/g, '-')}.lock`),
+);
+let lockHeld = false;
 
 function expandPath(value) {
   return value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
@@ -58,6 +63,35 @@ function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   fs.renameSync(tempPath, filePath);
+}
+
+function acquireLock() {
+  fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  try {
+    fs.mkdirSync(lockDir);
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+    const staleMs = 30 * 60 * 1000;
+    const stats = fs.statSync(lockDir);
+    if (Date.now() - stats.mtimeMs < staleMs) {
+      console.log(JSON.stringify({ changed: false, changes: [], errors: [], skipped: 'lock-held' }, null, 2));
+      process.exit(0);
+    }
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    fs.mkdirSync(lockDir);
+  }
+  lockHeld = true;
+  fs.writeFileSync(path.join(lockDir, 'owner.json'), `${JSON.stringify({
+    pid: process.pid,
+    repo,
+    startedAt: new Date().toISOString(),
+  }, null, 2)}\n`, 'utf8');
+}
+
+function releaseLock() {
+  if (!lockHeld) return;
+  fs.rmSync(lockDir, { recursive: true, force: true });
+  lockHeld = false;
 }
 
 function updateIssueEntry(issueKey, updater) {
@@ -225,6 +259,17 @@ function topicAddress(map, entry) {
 }
 
 async function main() {
+  acquireLock();
+  process.once('exit', releaseLock);
+  process.once('SIGINT', () => {
+    releaseLock();
+    process.exit(130);
+  });
+  process.once('SIGTERM', () => {
+    releaseLock();
+    process.exit(143);
+  });
+
   const map = fs.existsSync(mapPath) ? readJson(mapPath) : { issues: {} };
   const changes = [];
   const errors = [];
@@ -290,6 +335,7 @@ async function main() {
 
   console.log(JSON.stringify({ changed: changes.length > 0, changes, errors }, null, 2));
   if (errors.length > 0) process.exitCode = 1;
+  releaseLock();
 }
 
 main().catch((error) => {
