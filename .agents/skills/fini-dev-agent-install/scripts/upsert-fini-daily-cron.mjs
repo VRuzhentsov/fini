@@ -22,13 +22,13 @@ const DAILY_MESSAGE = 'Use the fini-daily skill. Run from ~/projects/fini. Use F
 const FETCH_MESSAGE = 'From ~/projects/fini, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.';
 
 function usage() {
-  return `Usage: node upsert-fini-daily-cron.mjs [--dry-run|--write] [--store <path>]\n\nDefaults to --dry-run and ~/.fini/automation/jobs.json.`;
+  return `Usage: node upsert-fini-daily-cron.mjs [--dry-run|--write] [--store <path>]\n\nDefaults to --dry-run and ~/.fini-dev/automation/jobs.json.`;
 }
 
 function parseArgs(argv) {
   const options = {
     dryRun: true,
-    store: path.join(os.homedir(), '.fini', 'automation', 'jobs.json'),
+    store: path.join(os.homedir(), '.fini-dev', 'automation', 'jobs.json'),
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -274,7 +274,7 @@ function requireTelegramCredentials() {
 }
 
 function reconcileCrontabBlock() {
-  const logPath = '$HOME/.fini/logs/fini-merged-pr-topic-reconcile.log';
+  const logPath = '$HOME/.fini-dev/logs/fini-merged-pr-topic-reconcile.log';
   const nodeBin = shellDoubleQuote(homeAnchored(process.execPath));
   const scriptPath = shellDoubleQuote(homeAnchored(RECONCILE_SCRIPT));
   const repoDir = shellDoubleQuote(homeAnchored(process.env.FINI_REPO_DIR || process.cwd()));
@@ -283,7 +283,7 @@ function reconcileCrontabBlock() {
     process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
   ].join(path.delimiter)));
   const command = [
-    'mkdir -p "$HOME/.fini/logs"',
+    'mkdir -p "$HOME/.fini-dev/logs"',
     '&&',
     `FINI_REPO_DIR=${repoDir}`,
     ...optionalShellEnv('FINI_REPO', process.env.FINI_REPO),

@@ -16,7 +16,7 @@ const configPath = process.env.FINI_TELEGRAM_CONFIG_PATH
   : null;
 const lockDir = expandPath(
   process.env.FINI_RECONCILE_LOCK_DIR
-    || path.join(os.homedir(), '.fini', 'locks', `fini-merged-pr-topic-reconcile-${repo.replace(/[^a-zA-Z0-9_.-]+/g, '-')}.lock`),
+    || path.join(os.homedir(), '.fini-dev', 'locks', `fini-merged-pr-topic-reconcile-${repo.replace(/[^a-zA-Z0-9_.-]+/g, '-')}.lock`),
 );
 let lockHeld = false;
 

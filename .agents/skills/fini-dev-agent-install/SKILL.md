@@ -99,7 +99,7 @@ node .agents/skills/fini-dev-agent-install/scripts/upsert-fini-daily-cron.mjs --
 
 The helper:
 
-- Reads `~/.fini/automation/jobs.json` by default.
+- Reads `~/.fini-dev/automation/jobs.json` by default.
 - Preserves unrelated cron jobs.
 - Replaces only the managed jobs with IDs `fini-daily-issue-report` and `fini-fetch-all-branches`.
 - Installs or updates the managed host crontab block for `fini-merged-pr-topic-reconcile`.
