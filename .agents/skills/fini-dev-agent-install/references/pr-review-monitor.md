@@ -31,10 +31,10 @@ The repository may document schemas and behavior, but each agent owns its own ru
 
 Agents can choose their own paths, but the files should be explicit and separate:
 
-- whitelist config, such as `~/.openclaw/workspace/config/fini-pr-review-monitor-whitelist.json`
-- queue, such as `~/.openclaw/workspace/memory/fini-pr-review-monitor-queue.json`
-- state, such as `~/.openclaw/workspace/memory/fini-pr-review-monitor-state.json`
-- lock directory, such as `~/.openclaw/workspace/memory/fini-pr-review-monitor.lock`
+- whitelist config, such as `~/.fini/pr-review-monitor/whitelist.json`
+- queue, such as `~/.fini/pr-review-monitor/queue.json`
+- state, such as `~/.fini/pr-review-monitor/state.json`
+- lock directory, such as `~/.fini/pr-review-monitor/lock`
 - Fini issue/topic sync file, usually `issue-topic-sync.json` at the checkout root or `FINI_ISSUE_TOPIC_SYNC_FILE`
 
 Example whitelist shape:

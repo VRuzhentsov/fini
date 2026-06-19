@@ -11,7 +11,9 @@ const mapPath = expandPath(
     || process.env.FINI_ISSUE_TG_TOPIC_MAP
     || path.join(repoDir, 'issue-topic-sync.json'),
 );
-const configPath = expandPath(process.env.OPENCLAW_CONFIG_PATH || '~/.openclaw/openclaw.json');
+const configPath = process.env.FINI_TELEGRAM_CONFIG_PATH
+  ? expandPath(process.env.FINI_TELEGRAM_CONFIG_PATH)
+  : null;
 
 function expandPath(value) {
   return value.startsWith('~/') ? path.join(os.homedir(), value.slice(2)) : value;
@@ -107,6 +109,9 @@ async function sendFinalTopicNote(address, issue, completionPr, closeStatus) {
 
 function telegramToken() {
   if (process.env.TELEGRAM_BOT_TOKEN) return process.env.TELEGRAM_BOT_TOKEN;
+  if (!configPath) {
+    throw new Error('Set TELEGRAM_BOT_TOKEN or FINI_TELEGRAM_CONFIG_PATH before reconciling topics');
+  }
   const config = readJson(configPath);
   const token = config?.channels?.telegram?.botToken;
   if (!token) throw new Error(`Telegram bot token not found in ${configPath}`);
