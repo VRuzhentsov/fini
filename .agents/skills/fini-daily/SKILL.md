@@ -1,6 +1,6 @@
 ---
 name: fini-daily
-description: "Use for the daily Fini GitHub issue and pull request report, stale PR attention callout, and delegation recommendation. Summarizes open VRuzhentsov/fini issues and PRs for the configured user, recommends the next issue or PR to finish, and uses the configured Fini Dev Telegram targets for daily reports and implementation progress updates."
+description: "Use for the daily Fini GitHub issue and pull request report, stale PR attention callout, and delegation recommendation. Summarizes open Fini issues and PRs, recommends the next issue or PR to finish, and uses the configured Fini Dev Telegram targets for daily reports and implementation progress updates."
 metadata:
   openclaw:
     envVars:
@@ -30,7 +30,7 @@ If the `triage` skill is unavailable, stop and report that `triage` is missing. 
 ## Operating Context
 
 - Run from the Fini repository root: `~/projects/fini`.
-- Repository: `VRuzhentsov/fini`.
+- Repository: `FINI_REPO`, or the GitHub `owner/repo` inferred from the current checkout.
 - Primary recipient: `<user-name>`.
 - Preferred Telegram group: `Fini Dev`.
 - Preferred report target comes from `FINI_DAILY_TG_TARGET`.
@@ -41,7 +41,7 @@ If the `triage` skill is unavailable, stop and report that `triage` is missing. 
 
 Gather current status from GitHub issues and pull requests before running `triage` and writing the report.
 
-Use the available GitHub access on the Will Claw host. If `gh` needs an explicit token, use the host's configured Fini GitHub token source without printing token values.
+Use the available GitHub access on the local agent host. If `gh` needs an explicit token, use that host's configured Fini GitHub token source without printing token values.
 
 Minimum issue fields:
 
