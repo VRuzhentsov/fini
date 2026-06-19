@@ -346,6 +346,7 @@ function reconcileCrontabBlock() {
     ...optionalShellEnv('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
     ...optionalShellEnv('GH_TOKEN', process.env.GH_TOKEN),
     ...optionalShellEnv('GITHUB_TOKEN', process.env.GITHUB_TOKEN),
+    ...optionalShellPathEnv('GH_CONFIG_DIR', process.env.GH_CONFIG_DIR),
     `PATH=${cronPath}`,
     nodeBin,
     scriptPath,
@@ -386,13 +387,14 @@ function main() {
   const nowMs = Date.now();
   const dailyResult = upsert(store, buildDailyJob(target, timezone, nowMs));
   const fetchResult = upsert(dailyResult.store, buildFetchJob(nowMs));
-  const reconcileCron = upsertCrontabBlock(currentCrontab(), reconcileCrontabBlock());
+  const existingCrontab = currentCrontab();
+  const reconcileCron = upsertCrontabBlock(existingCrontab, reconcileCrontabBlock());
 
-  if (!options.dryRun && (dailyResult.changed || fetchResult.changed)) {
-    writeStore(options.store, fetchResult.store);
-  }
   if (!options.dryRun && reconcileCron.changed) {
     writeCrontab(reconcileCron.crontab);
+  }
+  if (!options.dryRun && (dailyResult.changed || fetchResult.changed)) {
+    writeStore(options.store, fetchResult.store);
   }
 
   console.log(JSON.stringify({
@@ -418,7 +420,7 @@ function main() {
       {
         jobId: 'fini-merged-pr-topic-reconcile',
         changed: reconcileCron.changed,
-        existing: currentCrontab().includes(RECONCILE_CRON_START),
+        existing: existingCrontab.includes(RECONCILE_CRON_START),
         schedule: 'every 5m',
         delivery: 'issue topic updates',
       },
