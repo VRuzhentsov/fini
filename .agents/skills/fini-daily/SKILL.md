@@ -31,7 +31,7 @@ If the `triage` skill is unavailable, stop and report that `triage` is missing. 
 
 - Run from the current local Fini checkout. If the root is unclear, resolve it with `git rev-parse --show-toplevel`.
 - Repository: `FINI_REPO`, or the GitHub `owner/repo` inferred from the current checkout.
-- Primary recipient: `<user-name>`.
+- Primary recipient: `FINI_DAILY_RECIPIENT` when set; otherwise use a neutral report greeting.
 - Preferred Telegram group: `Fini Dev`.
 - Preferred report target comes from `FINI_DAILY_TG_TARGET`.
 - Preferred implementation progress target comes from `FINI_PROGRESS_TG_TARGET`.
@@ -85,12 +85,14 @@ Use open PRs as first-class daily report inputs:
 
 ## Daily Report Format
 
-Write a concise report addressed to `<user-name>`.
+Write a concise report. Use a configured-recipient greeting only when `FINI_DAILY_RECIPIENT` is set; otherwise use the neutral report opening.
 
 Use this structure:
 
 ```text
-<user-name>, here is the daily Fini issue and pull request report.
+<FINI_DAILY_RECIPIENT>, here is the daily Fini issue and pull request report.
+OR, when `FINI_DAILY_RECIPIENT` is unset:
+Daily Fini issue and pull request report.
 
 Status:
 - <short status summary>
