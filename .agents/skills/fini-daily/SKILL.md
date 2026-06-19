@@ -29,7 +29,7 @@ If the `triage` skill is unavailable, stop and report that `triage` is missing. 
 
 ## Operating Context
 
-- Run from the Fini repository root: `~/projects/fini`.
+- Run from the current local Fini checkout. If the root is unclear, resolve it with `git rev-parse --show-toplevel`.
 - Repository: `FINI_REPO`, or the GitHub `owner/repo` inferred from the current checkout.
 - Primary recipient: `<user-name>`.
 - Preferred Telegram group: `Fini Dev`.
@@ -96,13 +96,13 @@ Status:
 - <short status summary>
 
 Open Issues:
-- #<number> <title> — <labels/priority signal> — <current recommendation>
+- #<number> <title> — <GitHub URL> — <labels/priority signal> — <current recommendation>
 
 Open PRs:
-- PR #<number> <title> — <age/staleness/review/CI signal> — <current recommendation>
+- PR #<number> <title> — <GitHub URL> — <age/staleness/review/CI signal> — <current recommendation>
 
 Recommended Next Delegation:
-- Target: <PR #number or Issue #number> <title>
+- Target: <PR #number or Issue #number> <title> — <GitHub URL>
 - Why now: <one sentence>
 - Suggested assignment prompt: <copy-pasteable instruction for an autonomous Fini agent>
 
