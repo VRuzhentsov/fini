@@ -1,6 +1,6 @@
 ---
 name: fini-dev-install
-description: "Use this for first-run Fini repository setup before normal development work. Ensures required sibling project context exists, especially cloning and verifying ../fini-wiki from git@github.com:VRuzhentsov/fini-wiki.git when missing, then records evidence for fini-dev bootstrap."
+description: "Use this for first-run Fini repository setup before normal development work. Ensures required sibling project context exists, especially cloning and verifying ../fini-wiki from FINI_WIKI_REPO when missing, then records evidence for fini-dev bootstrap."
 ---
 
 # Fini Dev Install
@@ -20,7 +20,7 @@ Run it directly when the user asks to bootstrap, install, or set up the Fini dev
 Ensure the sibling wiki repo exists and is usable:
 
 - Expected path: `../fini-wiki/`
-- Expected remote: `git@github.com:VRuzhentsov/fini-wiki.git`
+- Expected remote: `FINI_WIKI_REPO`, or the GitHub SSH URL for a sibling wiki repository inferred from the current checkout's `origin` remote.
 - Required entries: `AGENTS.md`, `_hot.md`, `_index.md`, `raw/`, `pages/`, `tools/`
 
 ## Workflow
@@ -29,11 +29,11 @@ Ensure the sibling wiki repo exists and is usable:
 2. If `../fini-wiki/` does not exist, clone it with:
 
    ```bash
-   git clone git@github.com:VRuzhentsov/fini-wiki.git ../fini-wiki
+   git clone <configured-or-inferred-wiki-repo-url> ../fini-wiki
    ```
 
 3. If `../fini-wiki/` exists, verify it is a git repository.
-4. Verify the wiki remote includes `git@github.com:VRuzhentsov/fini-wiki.git`.
+4. Verify the wiki remote includes the configured or inferred wiki repository URL.
 5. Verify required entries exist: `AGENTS.md`, `_hot.md`, `_index.md`, `raw/`, `pages/`, `tools/`.
 6. Read `../fini-wiki/AGENTS.md` so the active session has the wiki schema before wiki-dependent work.
 7. When all checks pass, create `.fini-dev-install.done` at the Fini repo root.
