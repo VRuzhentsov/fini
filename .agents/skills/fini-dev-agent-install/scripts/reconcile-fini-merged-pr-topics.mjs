@@ -227,6 +227,10 @@ async function main() {
 
       const closeStatus = issueState(issue) === 'CLOSED' ? 'already closed' : 'closed';
 
+      if (closeStatus === 'closed') {
+        closeIssue(issue);
+      }
+
       await telegram('editForumTopic', {
         chat_id: address.chatId,
         message_thread_id: address.topicId,
@@ -238,10 +242,6 @@ async function main() {
         message_thread_id: address.topicId,
         action: 'typing',
       });
-
-      if (closeStatus === 'closed') {
-        closeIssue(issue);
-      }
 
       map.issues[issueKey] = {
         ...entry,
