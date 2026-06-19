@@ -30,7 +30,7 @@ bin/*.idsig
 flatpak-build/
 .flatpak-builder/
 
-# Local review scratch (Claude Design bundles, etc.)
+# Local review scratch
 tmp/
 *.zip
 
