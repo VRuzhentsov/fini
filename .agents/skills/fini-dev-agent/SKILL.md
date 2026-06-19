@@ -90,8 +90,8 @@ When a pull request for a mapped issue is merged, the issue-specific Telegram to
 
 1. Close the related GitHub issue if GitHub did not close it automatically.
 2. Rename the Telegram forum topic so the title begins `closed #<issue>`.
-3. Update the topic map entry with `status: "closed"`, `closedAt`, `closedByPullRequest`, and `topicTitle`.
-4. Send one short final note inside the issue topic with the merged PR URL and issue close status.
+3. Send one short final note inside the issue topic with the merged PR URL and issue close status.
+4. Update the topic map entry with `status: "closed"`, `closedAt`, `closedByPullRequest`, `topicTitle`, `finalTopicNoteStatus: "sent"`, and `finalTopicNoteSentAt`.
 
 The `fini-merged-pr-topic-reconcile` system cron performs this idempotently every five minutes. Agents may still do it immediately during handoff after a merge, but they should preserve the same map fields and title convention.
 
