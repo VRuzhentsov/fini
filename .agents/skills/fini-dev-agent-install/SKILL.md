@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent-install
-description: "Use this to install, repair, or verify the Fini autonomous dev schedules. Trigger when asked to set up local automation scheduling, daily 8 AM triage, every-5-minutes branch fetch, Daily topic reports, or rerunnable/idempotent install of the Fini dev automation. This skill ensures a stable daily 8 AM local-time job runs `fini-daily`, uses `triage`, reports Fini issues and pull requests to the Fini Dev `Daily` Telegram topic, and keeps all Git branches fetched every 5 minutes."
+description: "Use this to install, repair, or verify the Fini autonomous dev agent schedules. Trigger when asked to set up fini-dev-agent, local autonomous agent scheduling, daily 8 AM triage, every-5-minutes branch fetch, Daily topic reports, or rerunnable/idempotent install of the Fini dev agent. This skill ensures a stable daily 8 AM local-time job runs `fini-daily`, uses `triage`, reports Fini issues and pull requests to the Fini Dev `Daily` Telegram topic, and keeps all Git branches fetched every 5 minutes."
 metadata:
   fini:
     envVars:
@@ -36,13 +36,13 @@ metadata:
         description: Optional GitHub CLI token passed through to host cron when set.
 ---
 
-# Fini Dev Automation Install
+# Fini Dev Agent Install
 
-Use this skill to install or repair autonomous Fini dev schedules. The workflow is intentionally idempotent: repeated runs should converge on the same managed jobs without duplicating schedules or changing unrelated jobs.
+Use this skill to install or repair autonomous Fini dev-agent schedules. The workflow is intentionally idempotent: repeated runs should converge on the same managed jobs without duplicating schedules or changing unrelated jobs.
 
 ## Outcome
 
-Ensure the local automation runner has these schedules:
+Ensure the local agent host has these schedules:
 
 Daily triage report:
 
@@ -72,18 +72,19 @@ Optional PR review monitor:
 
 - This is a portable contract, not a default install target.
 - Use [references/pr-review-monitor.md](references/pr-review-monitor.md) when setting up, auditing, or sharing an autonomous monitor that watches Fini pull request review feedback.
-- Keep runtime state, concrete cron IDs, messenger topic IDs, credentials, and author trust policy in the local automation environment rather than in this repository.
+- Keep runtime state, concrete cron IDs, messenger topic IDs, credentials, and author trust policy in the local agent environment rather than in this repository.
 
 ## Prerequisites
 
 Before writing schedule state, verify:
 
-1. A local automation runner is installed and the schedule store path is available.
-2. `fini-daily` is installed for the local runner.
-3. `triage` is installed for the local runner.
+1. A local agent runner is installed and the schedule store path is available.
+2. `fini-daily` is installed for the local agent.
+3. `triage` is installed for the local agent.
 4. `FINI_DAILY_TG_TARGET` is set to the Daily topic target in `<group-id>:topic:<thread-id>` form.
 5. GitHub access for `FINI_REPO`, or the current checkout's inferred GitHub repository, works without printing tokens.
-6. The dynamic issue/topic sync file is stored at the local Fini checkout root as `issue-topic-sync.json`, unless `FINI_ISSUE_TOPIC_SYNC_FILE` or legacy `FINI_ISSUE_TG_TOPIC_MAP` explicitly overrides it.
+6. Telegram credentials are available through `TELEGRAM_BOT_TOKEN` or `FINI_TELEGRAM_CONFIG_PATH`.
+7. The dynamic issue/topic sync file is stored at the local Fini checkout root as `issue-topic-sync.json`, unless `FINI_ISSUE_TOPIC_SYNC_FILE` or legacy `FINI_ISSUE_TG_TOPIC_MAP` explicitly overrides it.
 
 If a prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that cannot deliver to `Daily`.
 
@@ -110,7 +111,7 @@ Use `--store <path>` only for tests or non-standard schedule stores.
 
 ## Verification
 
-After `--write`, verify with the local automation tools when available:
+After `--write`, verify with the local agent tools when available:
 
 ```bash
 <scheduler> cron list --json

@@ -268,6 +268,11 @@ function optionalShellEnv(name, value) {
   return value ? [`${name}=${shellDoubleQuote(homeAnchored(value))}`] : [];
 }
 
+function requireTelegramCredentials() {
+  if (process.env.TELEGRAM_BOT_TOKEN || process.env.FINI_TELEGRAM_CONFIG_PATH) return;
+  throw new Error('TELEGRAM_BOT_TOKEN or FINI_TELEGRAM_CONFIG_PATH is required to install merged-PR topic reconciliation');
+}
+
 function reconcileCrontabBlock() {
   const logPath = '$HOME/.fini/logs/fini-merged-pr-topic-reconcile.log';
   const nodeBin = shellDoubleQuote(homeAnchored(process.execPath));
@@ -321,6 +326,7 @@ function writeCrontab(crontabText) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const target = parseDailyTarget(process.env.FINI_DAILY_TG_TARGET);
+  requireTelegramCredentials();
   const timezone = localTimezone();
   const store = readStore(options.store);
   const nowMs = Date.now();
