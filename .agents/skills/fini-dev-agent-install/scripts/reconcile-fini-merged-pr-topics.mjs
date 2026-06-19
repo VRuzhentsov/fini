@@ -58,6 +58,21 @@ function writeJson(filePath, value) {
   fs.renameSync(tempPath, filePath);
 }
 
+function updateIssueEntry(issueKey, updater) {
+  const latestMap = fs.existsSync(mapPath) ? readJson(mapPath) : { issues: {} };
+  const latestIssues = latestMap.issues || {};
+  const nextMap = {
+    ...latestMap,
+    issues: {
+      ...latestIssues,
+      [issueKey]: updater(latestIssues[issueKey] || {}, latestMap),
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  writeJson(mapPath, nextMap);
+  return nextMap;
+}
+
 function prNumberFromUrl(url) {
   const match = String(url || '').match(/\/pull\/(\d+)(?:$|[/?#])/);
   return match ? Number.parseInt(match[1], 10) : null;
@@ -243,29 +258,25 @@ async function main() {
         action: 'typing',
       });
 
-      map.issues[issueKey] = {
-        ...entry,
+      updateIssueEntry(issueKey, (latestEntry) => ({
+        ...latestEntry,
         issue,
         topicId: address.topicId,
-        issueTarget: entry.issueTarget || `${address.chatId}:topic:${address.topicId}`,
+        issueTarget: latestEntry.issueTarget || latestEntry.target || entry.issueTarget || `${address.chatId}:topic:${address.topicId}`,
         status: 'closed',
         closedAt: completionPr.mergedAt || new Date().toISOString(),
         closedByPullRequest: completionPr.url,
         finalTopicNoteStatus: 'pending',
         topicTitle: newTitle,
-      };
-      map.updatedAt = new Date().toISOString();
-      writeJson(mapPath, map);
+      }));
 
       await sendFinalTopicNote(address, issue, completionPr, closeStatus);
 
-      map.issues[issueKey] = {
-        ...map.issues[issueKey],
+      updateIssueEntry(issueKey, (latestEntry) => ({
+        ...latestEntry,
         finalTopicNoteStatus: 'sent',
         finalTopicNoteSentAt: new Date().toISOString(),
-      };
-      map.updatedAt = new Date().toISOString();
-      writeJson(mapPath, map);
+      }));
       changes.push(`#${issue} via PR #${completionPr.number}`);
     } catch (error) {
       errors.push(`${issueKey}: ${error instanceof Error ? error.message : String(error)}`);
