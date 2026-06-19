@@ -95,6 +95,10 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Make a release, bump a release version for shipping, push a release tag, inspect release readiness, fix release automation, or verify release CI | `fini-release`; also load `fini-versioning` for metadata semantics and `fini-scripting` when automation changes are needed |
 | Change package metadata, app version display, CLI version output, Android versioning, or CI release version sync outside an operational release | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
 | Prepare a major release, Play Store listing assets, Android marketplace screenshots, or release screenshot packages | `fini-release-prep`; also follow `fini-scripting` when automation changes are needed |
+| Produce the daily Fini GitHub issue/PR report, stale PR attention callout, or delegation recommendation | `fini-daily` |
+| Install, repair, verify, or reason about local autonomous Fini dev-agent schedules, Daily topic reports, branch fetch cron, PR review monitors, or host-specific agent runtime wiring | `fini-dev-agent-install` |
+| Autonomous, delegated, background, or remote agent implementation/debugging/verification/progress reporting for Fini repo work | `fini-dev-agent` |
+| Participate in the Fini Dev Telegram group, create/rename/close issue or PR topics, update topic mappings, or route work across Create/Daily/In Progress/dynamic topics | `fini-dev-telegram` |
 | Query product/domain/history/architecture context from the wiki, or save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
 | Debug errors, regressions, stack traces, crashes, or unexpected behavior | `investigate` |
 | QA a web/app flow and fix bugs found | `qa` |
