@@ -13,6 +13,12 @@ metadata:
       - name: FINI_PROGRESS_TG_TARGET
         required: false
         description: Preferred Telegram target for delegated implementation progress updates.
+      - name: FINI_REPO
+        required: false
+        description: GitHub owner/repo to report on; when unset, infer it from the current Fini checkout.
+      - name: FINI_DAILY_RECIPIENT
+        required: false
+        description: Optional name to use in the daily report greeting.
 ---
 
 # Fini Daily
