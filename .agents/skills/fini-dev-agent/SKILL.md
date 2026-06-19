@@ -93,7 +93,7 @@ When a pull request for a mapped issue is merged, the issue-specific Telegram to
 3. Send one short final note inside the issue topic with the merged PR URL and issue close status.
 4. Update the topic map entry with `status: "closed"`, `closedAt`, `closedByPullRequest`, `topicTitle`, `finalTopicNoteStatus: "sent"`, and `finalTopicNoteSentAt`.
 
-The `fini-merged-pr-topic-reconcile` system cron performs this idempotently every five minutes. Agents may still do it immediately during handoff after a merge, but they should preserve the same map fields and title convention.
+If the optional `fini-merged-pr-topic-reconcile` local automation is installed, it may perform this idempotently on its own schedule. When that automation is unavailable or unknown, agents should perform the closure steps during merge handoff and preserve the same map fields and title convention.
 
 ### Create Topic Intake
 
@@ -123,12 +123,12 @@ If Telegram topic creation or delivery fails, continue locally, then report the 
 
 Preferred targets:
 
-| Topic | Use For | Preferred Env Var |
+| Topic | Use For | Preferred Target Source |
 |---|---|---|
 | `Daily` | Daily issue reports, triage summaries, next-delegation recommendations | `FINI_DAILY_TG_TARGET` |
 | `Create` | New ticket intake, issue drafting, scope capture, task creation status | `FINI_CREATE_TG_TARGET` |
 | `In Progress` | Implementation progress, blockers, verification updates, PR-ready notices | `FINI_PROGRESS_TG_TARGET` |
-| Dynamic issue topic `#<issue> <title>` | All progress for one active GitHub issue | `FINI_ISSUE_TOPIC_SYNC_FILE` |
+| Dynamic issue topic `#<issue> <title>` | All progress for one active GitHub issue | `issueTarget` read from the issue entry in `FINI_ISSUE_TOPIC_SYNC_FILE` or legacy `FINI_ISSUE_TG_TOPIC_MAP` |
 
 Fallback:
 
