@@ -30,12 +30,14 @@ bin/*.idsig
 flatpak-build/
 .flatpak-builder/
 
-# Local review scratch (Claude Design bundles, etc.)
+# Local review scratch
 tmp/
 *.zip
 
 # Local agent bootstrap marker
 .fini-dev-install.done
+issue-topic-sync.json
+fini-issue-topics.json
 
 # Obsidian
 .obsidian/*

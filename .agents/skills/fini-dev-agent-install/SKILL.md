@@ -1,6 +1,6 @@
 ---
 name: fini-dev-agent-install
-description: "Use this to install, repair, or verify the Fini autonomous dev agent schedules. Trigger when asked to set up fini-dev-agent, local autonomous agent scheduling, daily 8 AM triage, every-5-minutes branch fetch, Daily topic reports, OpenClaw cron for Fini, or rerunnable/idempotent install of the Fini dev agent. This skill ensures a stable daily 8 AM local-time job runs `fini-daily`, uses `triage`, reports to the Fini Dev `Daily` Telegram topic, and keeps all Git branches fetched every 5 minutes."
+description: "Use this to install, repair, or verify local Fini autonomous dev-agent schedules. This Fini repo skill defines the portable contract only; host-specific OpenClaw cron scripts, credentials, locks, and runtime state live in the agent environment."
 metadata:
   openclaw:
     envVars:
@@ -16,15 +16,27 @@ metadata:
       - name: FINI_DAILY_TZ
         required: false
         description: Optional timezone override for the 8 AM daily schedule.
+      - name: FINI_REPO
+        required: false
+        description: Optional GitHub owner/repo override for local agent automation.
+      - name: FINI_DAILY_RECIPIENT
+        required: false
+        description: Optional name to use in the daily report greeting.
+      - name: FINI_ISSUE_TOPIC_SYNC_FILE
+        required: false
+        description: Optional local issue/topic sync file path for dynamic Fini Dev topics.
+      - name: FINI_ISSUE_TG_TOPIC_MAP
+        required: false
+        description: Legacy optional local issue/topic sync file path.
 ---
 
 # Fini Dev Agent Install
 
-Use this skill to install or repair autonomous Fini dev-agent schedules. The workflow is intentionally idempotent: repeated runs should converge on the same managed cron jobs without duplicating schedules or changing unrelated jobs.
+Use this skill to install or repair autonomous Fini dev-agent schedules in a local agent environment. The Fini repo owns the portable behavior contract; concrete scheduler implementation, host crontab wiring, Telegram credentials, GitHub CLI auth, locks, retry state, trusted-author policy, and runtime files belong to the private agent/OpenClaw environment.
 
-## Outcome
+Do not add host-specific install scripts to this repository. If a local agent needs executable automation, implement it in that agent's own repo or workspace skill and keep only the expected Fini-facing contract here.
 
-Ensure the local agent has these schedules:
+## Expected Jobs
 
 Daily triage report:
 
@@ -32,7 +44,7 @@ Daily triage report:
 - Schedule: `0 8 * * *`
 - Timezone: local timezone, or `FINI_DAILY_TZ` when configured
 - Session: isolated
-- Prompt: load `fini-daily`, run from `~/projects/fini`, use `triage`, query open `VRuzhentsov/fini` GitHub issues, and send the final report to `FINI_DAILY_TG_TARGET`
+- Prompt: load `fini-daily`, run from the local Fini checkout, use `triage`, query open GitHub issues and pull requests from `FINI_REPO` or the checkout's `origin` remote, include GitHub URLs, call out stale or near-ready PRs, and send the final report to `FINI_DAILY_TG_TARGET`
 - Delivery: Telegram `Daily` topic parsed from `FINI_DAILY_TG_TARGET`
 
 Branch fetch:
@@ -40,70 +52,58 @@ Branch fetch:
 - Job ID: `fini-fetch-all-branches`
 - Schedule: every `5m`
 - Session: isolated, light context
-- Prompt: run `git fetch --all --prune` from `~/projects/fini` and report only failures
+- Prompt: run `git fetch --all --prune` from the local Fini checkout and report only failures
 - Delivery: none
+- Tool boundary: exec-only or equivalent least-privilege command execution
+
+Merged PR topic reconciliation:
+
+- Optional local agent automation, not a Fini repo implementation.
+- May run every `5m` in the private agent environment.
+- Should query merged pull requests from `FINI_REPO` or the checkout's `origin` remote.
+- Should update only locally ignored issue-topic sync state.
+- Should not require source-controlled credentials, host paths, cron IDs, lock paths, or trust policy.
+
+## Issue Topic Sync Contract
+
+Dynamic Fini Dev issue topics may be recorded in a local JSON file. The default local path is `issue-topic-sync.json` at the Fini checkout root unless `FINI_ISSUE_TOPIC_SYNC_FILE` or legacy `FINI_ISSUE_TG_TOPIC_MAP` points elsewhere.
+
+The file is runtime state and must stay untracked. Fini commits may document the shape, but should not commit real topic IDs, chat IDs, tokens, local paths, or author allowlists.
+
+Expected issue entry fields:
+
+- `issue`: GitHub issue number
+- `title`: issue title or topic title source
+- `issueTarget`: Telegram target in `<group-id>:topic:<thread-id>` form when available
+- `topicId`: messenger topic/thread ID when stored separately
+- `createdAt`, `mappedAt`, `startedAt`, or `topicCreatedAt`: entry-level mapping timestamp for stale-merge protection
+- `pullRequest`: optional related PR URL
+- `status`: local lifecycle state such as `open` or `closed`
+- `closedAt`: timestamp for local topic closure state
+- `closedByPullRequest`: PR URL that caused closure
+- `finalTopicNoteStatus`: local notification state such as `pending` or `sent`
+- `finalTopicNoteSentAt`: timestamp for final topic note delivery
+- `topicTitle`: last reconciled topic title
 
 ## Prerequisites
 
-Before writing schedule state, verify:
+Before installing or repairing local schedules, verify:
 
-1. OpenClaw is installed and the local gateway or cron store path is available.
+1. The local agent runtime is installed and has a writable schedule store.
 2. `fini-daily` is installed for the local agent.
 3. `triage` is installed for the local agent.
 4. `FINI_DAILY_TG_TARGET` is set to the Daily topic target in `<group-id>:topic:<thread-id>` form.
-5. GitHub access for `VRuzhentsov/fini` works without printing tokens.
+5. GitHub access for `FINI_REPO`, or the checkout's inferred GitHub repository, works without printing tokens.
+6. Any optional merged-PR topic reconciler has local Telegram credentials and GitHub write access in the private agent environment.
 
-If a prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that cannot deliver to `Daily`.
-
-## Helper Script
-
-Use the bundled helper to upsert the cron job safely:
-
-```bash
-node .agents/skills/fini-dev-agent-install/scripts/upsert-fini-daily-cron.mjs --dry-run
-node .agents/skills/fini-dev-agent-install/scripts/upsert-fini-daily-cron.mjs --write
-```
-
-The helper:
-
-- Reads `~/.openclaw/cron/jobs.json` by default.
-- Preserves unrelated cron jobs.
-- Replaces only the managed jobs with IDs `fini-daily-issue-report` and `fini-fetch-all-branches`.
-- Defaults to dry-run and requires `--write` to modify the store.
-- Uses `FINI_DAILY_TG_TARGET` for Telegram delivery.
-- Uses `FINI_DAILY_TZ` or the local system timezone for the 8 AM schedule.
-
-Use `--store <path>` only for tests or non-standard OpenClaw stores.
-
-## Verification
-
-After `--write`, verify with the local agent tools when available:
-
-```bash
-openclaw cron list --json
-openclaw skills info fini-daily
-openclaw skills info triage
-openclaw channels status --probe
-```
-
-Expected evidence:
-
-- Exactly one enabled job with ID `fini-daily-issue-report`.
-- Exactly one enabled job with ID `fini-fetch-all-branches`.
-- The job schedule is `0 8 * * *` in the selected timezone.
-- The fetch job schedule is every `5m`.
-- Delivery points to the `Daily` topic thread from `FINI_DAILY_TG_TARGET`.
-- `fini-daily` and `triage` are available.
-- Telegram is configured and can send to the Daily topic, or the blocker is explicitly reported.
-
-If OpenClaw CLI cron commands are blocked by device-scope approval, verify by reading the cron list through any available read-only status path and report the approval blocker. Do not keep retrying approval loops.
+If a prerequisite is missing, stop and report the exact blocker. Do not create a partial schedule that appears healthy but cannot deliver to the Daily topic.
 
 ## Prompt Contracts
 
-The scheduled prompt must preserve this intent:
+The daily report prompt must preserve this intent:
 
 ```text
-Use the fini-daily skill. Run from ~/projects/fini. Use FINI_DAILY_TG_TARGET and FINI_PROGRESS_TG_TARGET from the local agent environment. Query current open GitHub issues for VRuzhentsov/fini using configured GitHub access without printing secrets. Run or load triage before choosing the recommendation. Produce the daily report format addressed to <user>. Deliver the final report to FINI_DAILY_TG_TARGET.
+Use the fini-daily skill. Run from the local Fini checkout. Use FINI_DAILY_TG_TARGET, FINI_PROGRESS_TG_TARGET, FINI_REPO, and FINI_DAILY_RECIPIENT from the local agent environment when they are set. Query current open GitHub issues and pull requests using configured GitHub access without printing secrets, including the GitHub URL for each item. Run or load triage before choosing the recommendation. Call out stale, blocked, or near-ready pull requests and prefer finishing a stale or close PR over starting a new issue when triage supports it. Produce the daily report format with a configured-recipient greeting only when FINI_DAILY_RECIPIENT is set, and with full GitHub links for every listed issue and pull request. Deliver the final report to FINI_DAILY_TG_TARGET.
 ```
 
 Keep this prompt focused on read-only triage and reporting. Do not edit issues, labels, code, docs, or branches from the daily job unless the user explicitly delegates implementation.
@@ -111,17 +111,32 @@ Keep this prompt focused on read-only triage and reporting. Do not edit issues, 
 The fetch prompt must preserve this intent:
 
 ```text
-From ~/projects/fini, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.
+From the local Fini checkout, run git fetch --all --prune to update every remote branch reference. Do not switch branches, merge, rebase, reset, clean, edit files, or push. Report only if the fetch fails, including the command and error summary.
 ```
 
 ## Idempotency Rules
 
-- Treat `fini-daily-issue-report` and `fini-fetch-all-branches` as the only managed cron jobs.
-- Do not create timestamped duplicate daily jobs.
+- Treat `fini-daily-issue-report` and `fini-fetch-all-branches` as the only portable job IDs defined by this repo.
+- Do not create timestamped duplicate jobs.
 - Do not remove unrelated jobs.
 - Do not overwrite a different job unless it has the managed ID.
+- Keep private runtime IDs and host crontab markers in the local agent repo or workspace, not in Fini.
 - Prefer dry-run output before write output when reporting changes.
-- If the existing job already matches, report `changed: false`.
+- If existing jobs already match, report `changed: false`.
+
+## Verification
+
+Use local agent tooling where available. Expected evidence:
+
+- Exactly one enabled job with ID `fini-daily-issue-report`.
+- Exactly one enabled job with ID `fini-fetch-all-branches`.
+- The daily job schedule is `0 8 * * *` in the selected timezone.
+- The fetch job schedule is every `5m`.
+- Delivery points to the Daily topic thread from `FINI_DAILY_TG_TARGET`.
+- `fini-daily` and `triage` are available.
+- Telegram is configured and can send to the Daily topic, or the blocker is explicitly reported.
+
+If local agent commands are blocked by device-scope approval, verify through any available read-only status path and report the approval blocker. Do not keep retrying approval loops.
 
 ## Report Format
 
@@ -135,6 +150,7 @@ Delivery: <group-id>:topic:<thread-id>
 Job: fini-fetch-all-branches
 Schedule: every 5m
 Delivery: none
+Optional reconciler: <not installed | installed in local agent environment | blocked>
 Evidence: <commands and outcomes>
 Blocker: <only if blocked>
 ```
