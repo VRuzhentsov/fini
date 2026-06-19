@@ -268,6 +268,17 @@ function optionalShellEnv(name, value) {
   return value ? [`${name}=${shellDoubleQuote(homeAnchored(value))}`] : [];
 }
 
+function cronPathValue(value) {
+  const normalized = String(value);
+  if (normalized.startsWith('~')) return normalized;
+  if (path.isAbsolute(normalized)) return homeAnchored(normalized);
+  return homeAnchored(path.resolve(process.cwd(), normalized));
+}
+
+function optionalShellPathEnv(name, value) {
+  return value ? [`${name}=${shellDoubleQuote(cronPathValue(value))}`] : [];
+}
+
 function telegramConfigPath() {
   return process.env.FINI_TELEGRAM_CONFIG_PATH
     || process.env.OPENCLAW_CONFIG_PATH
@@ -303,10 +314,10 @@ function reconcileCrontabBlock() {
     '&&',
     `FINI_REPO_DIR=${repoDir}`,
     ...optionalShellEnv('FINI_REPO', process.env.FINI_REPO),
-    ...optionalShellEnv('FINI_ISSUE_TOPIC_SYNC_FILE', process.env.FINI_ISSUE_TOPIC_SYNC_FILE),
-    ...optionalShellEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
-    ...optionalShellEnv('FINI_TELEGRAM_CONFIG_PATH', process.env.FINI_TELEGRAM_CONFIG_PATH),
-    ...optionalShellEnv('OPENCLAW_CONFIG_PATH', process.env.OPENCLAW_CONFIG_PATH),
+    ...optionalShellPathEnv('FINI_ISSUE_TOPIC_SYNC_FILE', process.env.FINI_ISSUE_TOPIC_SYNC_FILE),
+    ...optionalShellPathEnv('FINI_ISSUE_TG_TOPIC_MAP', process.env.FINI_ISSUE_TG_TOPIC_MAP),
+    ...optionalShellPathEnv('FINI_TELEGRAM_CONFIG_PATH', process.env.FINI_TELEGRAM_CONFIG_PATH),
+    ...optionalShellPathEnv('OPENCLAW_CONFIG_PATH', process.env.OPENCLAW_CONFIG_PATH),
     ...optionalShellEnv('TELEGRAM_BOT_TOKEN', process.env.TELEGRAM_BOT_TOKEN),
     ...optionalShellEnv('GH_TOKEN', process.env.GH_TOKEN),
     ...optionalShellEnv('GITHUB_TOKEN', process.env.GITHUB_TOKEN),
