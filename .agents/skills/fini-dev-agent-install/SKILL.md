@@ -56,6 +56,12 @@ Merged PR topic reconcile system cron:
 - Runtime: host crontab, not OpenClaw isolated cron, because it must use local `gh`, filesystem, and Telegram Bot API access directly
 - Behavior: query merged pull requests from `FINI_REPO` or the current checkout's `origin` remote, close mapped related issues, rename each dynamic messenger topic so its title begins `closed #<issue>`, send one final issue-topic note, and update `issue-topic-sync.json` at the local Fini checkout root
 
+Optional PR review monitor:
+
+- This is a portable contract, not a default install target.
+- Use [references/pr-review-monitor.md](references/pr-review-monitor.md) when setting up, auditing, or sharing an autonomous monitor that watches Fini pull request review feedback.
+- Keep runtime state, concrete cron IDs, messenger topic IDs, credentials, and author trust policy in the local agent environment rather than in this repository.
+
 ## Prerequisites
 
 Before writing schedule state, verify:
