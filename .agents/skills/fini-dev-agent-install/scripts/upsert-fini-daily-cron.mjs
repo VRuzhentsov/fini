@@ -300,6 +300,31 @@ function requireTelegramCredentials() {
   throw new Error('TELEGRAM_BOT_TOKEN, FINI_TELEGRAM_CONFIG_PATH, or OpenClaw Telegram config is required to install merged-PR topic reconciliation');
 }
 
+function inferGithubRepo(cwd) {
+  const remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+  const match = remote.match(/github\.com[:/](.+?\/.+?)(?:\.git)?$/);
+  if (!match) throw new Error('FINI_REPO is required when remote.origin.url is not a GitHub owner/repo URL');
+  return match[1];
+}
+
+function requireGithubCliAccess() {
+  const repo = process.env.FINI_REPO || inferGithubRepo(process.cwd());
+  try {
+    execFileSync('gh', ['repo', 'view', repo, '--json', 'nameWithOwner'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    const detail = error?.stderr?.trim() || error?.message || 'unknown error';
+    throw new Error(`GitHub CLI access is required to install merged-PR topic reconciliation for ${repo}: ${detail}`);
+  }
+}
+
 function reconcileCrontabBlock() {
   const logPath = '$HOME/.fini-dev/logs/fini-merged-pr-topic-reconcile.log';
   const nodeBin = shellDoubleQuote(homeAnchored(process.execPath));
@@ -355,6 +380,7 @@ function main() {
   const options = parseArgs(process.argv.slice(2));
   const target = parseDailyTarget(process.env.FINI_DAILY_TG_TARGET);
   requireTelegramCredentials();
+  requireGithubCliAccess();
   const timezone = localTimezone();
   const store = readStore(options.store);
   const nowMs = Date.now();
