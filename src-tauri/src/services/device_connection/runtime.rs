@@ -27,17 +27,26 @@ pub(super) fn utc_now() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+#[cfg(test)]
 pub(super) fn load_or_create_identity(app_data_dir: &Path) -> DeviceIdentity {
-    let legacy_path = app_data_dir.join("device_identity.json");
     let db_path = app_data_dir.join("fini.db");
-    let mut conn = db::open_db_at_path(&db_path);
+    try_load_or_create_identity(app_data_dir, &db_path)
+        .expect("failed to load or create device identity")
+}
+
+pub(super) fn try_load_or_create_identity(
+    app_data_dir: &Path,
+    db_path: &Path,
+) -> Result<DeviceIdentity, String> {
+    let file_identity_path = app_data_dir.join("device_identity.json");
+    let mut conn = db::try_open_db_at_path(db_path)?;
 
     let settings_device_id = settings::load_setting(&mut conn, DEVICE_ID_KEY)
         .ok()
         .flatten()
         .filter(|value| !value.trim().is_empty());
-    let legacy_device_id = || {
-        std::fs::read_to_string(&legacy_path)
+    let file_device_id = || {
+        std::fs::read_to_string(&file_identity_path)
             .ok()
             .and_then(|raw| serde_json::from_str::<DeviceIdentity>(&raw).ok())
             .map(|identity| identity.device_id)
@@ -45,7 +54,7 @@ pub(super) fn load_or_create_identity(app_data_dir: &Path) -> DeviceIdentity {
     };
 
     let device_id = settings_device_id
-        .or_else(legacy_device_id)
+        .or_else(file_device_id)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let existing_name = settings::load_setting(&mut conn, DEVICE_NAME_KEY)
         .ok()
@@ -55,12 +64,12 @@ pub(super) fn load_or_create_identity(app_data_dir: &Path) -> DeviceIdentity {
 
     let _ = settings::upsert_setting(&mut conn, DEVICE_ID_KEY, &device_id);
     let _ = settings::upsert_setting(&mut conn, DEVICE_NAME_KEY, &hostname);
-    let _ = std::fs::remove_file(legacy_path);
+    let _ = std::fs::remove_file(file_identity_path);
 
-    DeviceIdentity {
+    Ok(DeviceIdentity {
         device_id,
         hostname,
-    }
+    })
 }
 
 fn current_device_name(device_id: &str, existing_name: Option<&str>) -> String {
@@ -890,19 +899,20 @@ mod tests {
     }
 
     #[test]
-    fn load_or_create_identity_imports_legacy_id_and_deletes_file() {
+    fn load_or_create_identity_imports_file_id_and_deletes_file() {
         let dir = unique_temp_dir("identity-import");
-        let legacy = DeviceIdentity {
+        let file_identity = DeviceIdentity {
             device_id: "existing-device-id".to_string(),
-            hostname: "legacy-host".to_string(),
+            hostname: "file-host".to_string(),
         };
 
-        let payload = serde_json::to_string_pretty(&legacy).expect("serialize fixture identity");
+        let payload =
+            serde_json::to_string_pretty(&file_identity).expect("serialize fixture identity");
         std::fs::write(dir.join("device_identity.json"), payload)
             .expect("failed to write fixture identity file");
 
         let loaded = load_or_create_identity(&dir);
-        assert_eq!(loaded.device_id, legacy.device_id);
+        assert_eq!(loaded.device_id, file_identity.device_id);
         assert!(!loaded.hostname.trim().is_empty());
         assert!(
             !dir.join("device_identity.json").exists(),
@@ -911,18 +921,19 @@ mod tests {
     }
 
     #[test]
-    fn load_or_create_identity_prefers_settings_over_legacy_file() {
+    fn load_or_create_identity_prefers_settings_over_file_identity() {
         let dir = unique_temp_dir("identity-settings-win");
         let mut conn = db::open_db_at_path(&dir.join("fini.db"));
         settings::upsert_setting(&mut conn, DEVICE_ID_KEY, "settings-device-id")
             .expect("seed device id setting");
         settings::upsert_setting(&mut conn, DEVICE_NAME_KEY, "settings-device-name")
             .expect("seed device name setting");
-        let legacy = DeviceIdentity {
-            device_id: "legacy-device-id".to_string(),
-            hostname: "legacy-host".to_string(),
+        let file_identity = DeviceIdentity {
+            device_id: "file-device-id".to_string(),
+            hostname: "file-host".to_string(),
         };
-        let payload = serde_json::to_string_pretty(&legacy).expect("serialize fixture identity");
+        let payload =
+            serde_json::to_string_pretty(&file_identity).expect("serialize fixture identity");
         std::fs::write(dir.join("device_identity.json"), payload)
             .expect("failed to write fixture identity file");
 

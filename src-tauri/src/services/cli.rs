@@ -455,16 +455,21 @@ impl CliContext {
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let device_state = DeviceConnectionState::new_with_db_path(&app_data_dir, db_path.clone());
+        let device_state = DeviceConnectionState::try_from_db_path(&app_data_dir, db_path.clone())
+            .map_err(CliError::runtime)?;
         Ok(Self {
             db_path,
             device_state,
         })
     }
+
+    fn open_db(&self) -> CliResult<SqliteConnection> {
+        open_cli_db_at_path(&self.db_path)
+    }
 }
 
-fn open_cli_db(ctx: &CliContext) -> CliResult<SqliteConnection> {
-    try_open_db_at_path(&ctx.db_path).map_err(CliError::runtime)
+fn open_cli_db_at_path(path: &std::path::Path) -> CliResult<SqliteConnection> {
+    try_open_db_at_path(path).map_err(CliError::runtime)
 }
 
 pub fn run(args: Vec<String>) -> i32 {
@@ -543,7 +548,7 @@ fn emit_series_sync(
 }
 
 fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     match command {
         FocusCommand::Get => {
             let quest = resolve_active_quest(&mut conn)
@@ -588,7 +593,7 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
 }
 
 fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     match command {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
@@ -738,7 +743,7 @@ fn sync_reminder_rows(conn: &mut diesel::sqlite::SqliteConnection, quest: &crate
 }
 
 fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     match command {
         SpaceCommand::List => Ok(json!({
             "spaces": SpaceRepository::new(&mut conn).list().map_err(CliError::from_string)?
@@ -780,7 +785,7 @@ fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
 }
 
 fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     let value = match command {
         BackupCommand::Export(args) => {
             if args.all_spaces && !args.space_id.is_empty() {
@@ -816,7 +821,7 @@ fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
 }
 
 fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     match command {
         ReminderCommand::List(args) => serde_json::to_value(
             ReminderRepository::new(&mut conn)
@@ -845,7 +850,7 @@ fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Valu
 }
 
 fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     let value = match command {
         DeviceCommand::Identity => serde_json::to_value(
             device_connection_get_identity_impl(&ctx.device_state)
@@ -988,7 +993,7 @@ fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult
 }
 
 fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     let value = match command {
         SyncCommand::Mappings { command } => match command {
             SyncMappingsCommand::List(args) => serde_json::to_value(
@@ -1071,7 +1076,7 @@ fn parse_space_resolution_mode(value: &str) -> CliResult<SpaceResolutionMode> {
 }
 
 fn handle_settings(ctx: &CliContext, command: SettingsCommand) -> CliResult<Value> {
-    let mut conn = open_cli_db(ctx)?;
+    let mut conn = ctx.open_db()?;
     let value = match command {
         SettingsCommand::ThemeGet => {
             let mode = settings::theme_mode(&mut conn).map_err(CliError::from_string)?;
@@ -1157,4 +1162,68 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::db::temp_db_path;
+    use std::path::Path;
+
+    fn seed_unknown_schema_migration_db(db_path: &Path) {
+        let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
+            .expect("open db path");
+
+        diesel::sql_query(
+            "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (
+                version VARCHAR(50) PRIMARY KEY NOT NULL,
+                run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut conn)
+        .expect("create migrations metadata table");
+        diesel::sql_query(
+            "INSERT INTO __diesel_schema_migrations (version) VALUES ('99999999999999')",
+        )
+        .execute(&mut conn)
+        .expect("seed unknown future migration version");
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn cli_execute_rejects_unknown_schema_migration_before_device_state_creation() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-db-open-rejects-unknown-schema-migration");
+        seed_unknown_schema_migration_db(&db_path);
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let result = execute(Cli {
+            json: true,
+            command: Some(Command::Space {
+                command: SpaceCommand::List,
+            }),
+        });
+        std::env::remove_var("FINI_DB_PATH");
+
+        let err = match result {
+            Ok(_) => panic!("CLI execute must reject database with unknown migration"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code, EXIT_RUNTIME);
+        assert!(
+            err.message
+                .contains("database schema is not supported by this Fini binary"),
+            "error should explain unsupported schema, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("Upgrade Fini"),
+            "error should include next step, got: {}",
+            err.message
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }

@@ -179,7 +179,7 @@ mod tests {
 
             let data_dir = db_path.with_extension("data");
             std::fs::create_dir_all(&data_dir).unwrap();
-            let state = DeviceConnectionState::new(&data_dir);
+            let state = DeviceConnectionState::from_app_data_dir(&data_dir);
             let state_clone = state.clone();
             let db_clone = db_path.clone();
 

@@ -33,7 +33,7 @@ pub use commands::{
     device_connection_send_pair_request_impl, device_connection_unpair_impl,
     device_connection_update_last_seen_impl,
 };
-use runtime::{load_or_create_identity, spawn_discovery_worker};
+use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 use types::DiscoveryRuntime;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
@@ -94,12 +94,17 @@ fn env_port_list(name: &str, fallback: u16) -> Vec<u16> {
 
 impl DeviceConnectionState {
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn new(app_data_dir: &Path) -> Self {
-        Self::new_with_db_path(app_data_dir, app_data_dir.join("fini.db"))
+    pub fn from_app_data_dir(app_data_dir: &Path) -> Self {
+        Self::from_db_path(app_data_dir, app_data_dir.join("fini.db"))
     }
 
-    pub fn new_with_db_path(app_data_dir: &Path, db_path: PathBuf) -> Self {
-        let identity = load_or_create_identity(app_data_dir);
+    pub fn from_db_path(app_data_dir: &Path, db_path: PathBuf) -> Self {
+        Self::try_from_db_path(app_data_dir, db_path)
+            .expect("failed to create device connection state")
+    }
+
+    pub fn try_from_db_path(app_data_dir: &Path, db_path: PathBuf) -> Result<Self, String> {
+        let identity = try_load_or_create_identity(app_data_dir, &db_path)?;
         let runtime = Arc::new(Mutex::new(DiscoveryRuntime::default()));
         let discovery_port = env_port("FINI_DISCOVERY_PORT", DISCOVERY_PORT);
         let space_sync_ws_port = env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT);
@@ -113,13 +118,13 @@ impl DeviceConnectionState {
             space_sync_ws_port,
         );
 
-        Self {
+        Ok(Self {
             identity,
             db_path,
             discovery_port,
             space_sync_ws_port,
             runtime,
-        }
+        })
     }
 
     pub fn take_incoming_sync_events(&self) -> Vec<SyncEventEnvelope> {

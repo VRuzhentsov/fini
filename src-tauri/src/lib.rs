@@ -7,7 +7,7 @@ mod services;
 #[cfg(feature = "ui-plane")]
 use services::backup::{backup_apply_import, backup_export, backup_preflight_import};
 #[cfg(feature = "ui-plane")]
-use services::db::{app_data_dir, open_db, AppDbConnection};
+use services::db::{app_data_dir, try_open_db, AppDbConnection};
 #[cfg(feature = "ui-plane")]
 use services::device_connection::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
@@ -157,7 +157,7 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle();
 
-            let conn = open_db(&app_handle);
+            let conn = try_open_db(&app_handle).map_err(std::io::Error::other)?;
             app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
             app.manage(SchedulerState::new());
             #[cfg(feature = "devtools")]
@@ -190,7 +190,7 @@ pub fn run() {
             resume_watcher::spawn(&app_handle);
 
             let data_dir = app_data_dir(&app_handle);
-            let dc_state = DeviceConnectionState::new(&data_dir);
+            let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
             tauri::async_runtime::spawn(run_ws_server(dc_state.clone(), dc_state.db_path.clone()));
             app.manage(dc_state);
             Ok(())

@@ -82,7 +82,7 @@ fn ensure_database_schema_is_supported(conn: &mut SqliteConnection) -> Result<()
         .find(|version| !known_versions.contains(version))
     {
         return Err(format!(
-            "database schema is newer than this Fini binary. App/CLI version: {}; unknown database migration: {version}. Upgrade Fini before opening this database.",
+            "database schema is not supported by this Fini binary. Fini version: {}; unknown database migration: {version}. Upgrade Fini before opening this database.",
             env!("CARGO_PKG_VERSION")
         ));
     }
@@ -102,19 +102,21 @@ fn embedded_migration_versions() -> Result<BTreeSet<String>, String> {
 }
 
 #[cfg(any(feature = "ui-plane", test))]
-pub fn open_db(app: &tauri::AppHandle) -> SqliteConnection {
+pub fn try_open_db(app: &tauri::AppHandle) -> Result<SqliteConnection, String> {
     if std::env::var_os("FINI_DB_PATH").is_some() {
         let db_path = db_default_path();
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create app data dir");
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create app data dir: {err}"))?;
         }
-        return open_db_at_path(&db_path);
+        return try_open_db_at_path(&db_path);
     }
 
     let data_dir = app_data_dir(app);
-    std::fs::create_dir_all(&data_dir).expect("failed to create app data dir");
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|err| format!("failed to create app data dir: {err}"))?;
     let db_path = data_dir.join("fini.db");
-    open_db_at_path(&db_path)
+    try_open_db_at_path(&db_path)
 }
 
 #[cfg(test)]
@@ -217,8 +219,8 @@ mod tests {
     }
 
     #[test]
-    fn database_with_newer_migration_is_rejected() {
-        let db_path = temp_db_path("database-with-newer-migration-is-rejected");
+    fn database_with_unknown_migration_is_rejected() {
+        let db_path = temp_db_path("database-with-unknown-migration-is-rejected");
 
         let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
             .expect("open db path");
@@ -239,17 +241,17 @@ mod tests {
         drop(conn);
 
         let err = match try_open_db_at_path(&db_path) {
-            Ok(_) => panic!("newer-schema database must be rejected"),
+            Ok(_) => panic!("database with unknown migration must be rejected"),
             Err(err) => err,
         };
 
         assert!(
-            err.contains("database schema is newer than this Fini binary"),
-            "error should explain newer schema, got: {err}"
+            err.contains("database schema is not supported by this Fini binary"),
+            "error should explain unsupported schema, got: {err}"
         );
         assert!(
-            err.contains("App/CLI version:"),
-            "error should include app/CLI version, got: {err}"
+            err.contains("Fini version:"),
+            "error should include Fini version, got: {err}"
         );
         assert!(
             err.contains("99999999999999"),
@@ -260,15 +262,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v2_db_migrates_to_text_ids_without_data_loss() {
-        let db_path = temp_db_path("legacy-v2-db-migrates-to-text-ids");
+    fn v2_numeric_id_db_migrates_to_text_ids_without_data_loss() {
+        let db_path = temp_db_path("v2-numeric-id-db-migrates-to-text-ids");
 
         let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
-            .expect("open legacy db path");
+            .expect("open v2 db path");
 
         diesel::sql_query("PRAGMA foreign_keys = ON")
             .execute(&mut conn)
-            .expect("enable foreign keys on legacy db");
+            .expect("enable foreign keys on v2 db");
 
         execute_sql_script(
             &mut conn,
@@ -293,72 +295,70 @@ mod tests {
                 ('00000000000002')",
         )
         .execute(&mut conn)
-        .expect("seed applied legacy migration versions");
+        .expect("seed applied v2 migration versions");
 
-        diesel::sql_query(
-            "INSERT INTO spaces (id, name, item_order) VALUES (7, 'Legacy Custom', 7)",
-        )
-        .execute(&mut conn)
-        .expect("insert legacy custom space");
+        diesel::sql_query("INSERT INTO spaces (id, name, item_order) VALUES (7, 'V2 Custom', 7)")
+            .execute(&mut conn)
+            .expect("insert v2 custom space");
         diesel::sql_query(
             "INSERT INTO quests (id, space_id, title, description, status, energy, priority, pinned, created_at, updated_at)
-             VALUES (55, 7, 'Legacy Quest', 'before migration', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
+             VALUES (55, 7, 'V2 Quest', 'before migration', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
         )
         .execute(&mut conn)
-        .expect("insert legacy quest row");
+        .expect("insert v2 quest row");
         drop(conn);
 
         let mut conn = open_db_at_path(&db_path);
 
-        let legacy_space_id: String = spaces::table
-            .filter(spaces::name.eq("Legacy Custom"))
+        let migrated_space_id: String = spaces::table
+            .filter(spaces::name.eq("V2 Custom"))
             .select(spaces::id)
             .first(&mut conn)
-            .expect("load migrated legacy space id");
-        assert_ne!(legacy_space_id, "1");
-        assert_ne!(legacy_space_id, "2");
-        assert_ne!(legacy_space_id, "3");
+            .expect("load migrated v2 space id");
+        assert_ne!(migrated_space_id, "1");
+        assert_ne!(migrated_space_id, "2");
+        assert_ne!(migrated_space_id, "3");
         assert!(
-            is_uuid_like(&legacy_space_id),
-            "legacy custom space id must become UUID"
+            is_uuid_like(&migrated_space_id),
+            "v2 custom space id must become UUID"
         );
 
         let migrated_rows: Vec<(String, String, Option<String>)> = quests::table
-            .filter(quests::title.eq("Legacy Quest"))
+            .filter(quests::title.eq("V2 Quest"))
             .select((quests::id, quests::space_id, quests::description))
             .load(&mut conn)
-            .expect("load migrated legacy quest");
+            .expect("load migrated v2 quest");
 
         assert_eq!(
             migrated_rows.len(),
             1,
-            "legacy quest must still exist after migration"
+            "v2 quest must still exist after migration"
         );
         let (quest_id, quest_space_id, description) = &migrated_rows[0];
-        assert!(is_uuid_like(quest_id), "legacy quest id must become UUID");
+        assert!(is_uuid_like(quest_id), "v2 quest id must become UUID");
         assert_eq!(
-            quest_space_id, &legacy_space_id,
-            "legacy quest must keep space membership"
+            quest_space_id, &migrated_space_id,
+            "v2 quest must keep space membership"
         );
         assert_eq!(
             description.as_deref(),
             Some("before migration"),
-            "legacy quest payload must be preserved"
+            "v2 quest payload must be preserved"
         );
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn legacy_v2_custom_work_space_migrates_without_duplicate_work() {
-        let db_path = temp_db_path("legacy-v2-custom-work-space-migrates-without-duplicate-work");
+    fn v2_custom_work_space_migrates_without_duplicate_work() {
+        let db_path = temp_db_path("v2-custom-work-space-migrates-without-duplicate-work");
 
         let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
-            .expect("open legacy db path");
+            .expect("open v2 db path");
 
         diesel::sql_query("PRAGMA foreign_keys = ON")
             .execute(&mut conn)
-            .expect("enable foreign keys on legacy db");
+            .expect("enable foreign keys on v2 db");
 
         execute_sql_script(
             &mut conn,
@@ -383,20 +383,20 @@ mod tests {
                 ('00000000000002')",
         )
         .execute(&mut conn)
-        .expect("seed applied legacy migration versions");
+        .expect("seed applied v2 migration versions");
 
         diesel::sql_query("INSERT INTO spaces (id, name, item_order) VALUES (2, 'Work', 2)")
             .execute(&mut conn)
-            .expect("insert legacy custom work space");
+            .expect("insert v2 custom work space");
         diesel::sql_query(
             "INSERT INTO quests (id, space_id, title, status, energy, priority, pinned, created_at, updated_at)
-             VALUES (77, 2, 'Legacy Work Quest', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
+             VALUES (77, 2, 'V2 Work Quest', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
         )
         .execute(&mut conn)
-        .expect("insert quest in legacy custom work space");
+        .expect("insert quest in v2 custom work space");
 
         conn.run_pending_migrations(MIGRATIONS)
-            .expect("run pending migrations from legacy to latest");
+            .expect("run pending migrations from v2 state");
 
         let work_count = spaces::table
             .filter(spaces::name.eq("Work"))
@@ -416,13 +416,13 @@ mod tests {
         assert_eq!(family_count, 1, "migration must produce one Family space");
 
         let quest_space_id: String = quests::table
-            .filter(quests::title.eq("Legacy Work Quest"))
+            .filter(quests::title.eq("V2 Work Quest"))
             .select(quests::space_id)
             .first(&mut conn)
             .expect("load migrated work quest space id");
         assert_eq!(
             quest_space_id, "3",
-            "legacy Work-named custom space should map to built-in Work id=3"
+            "v2 Work-named custom space should map to built-in Work id=3"
         );
 
         let _ = std::fs::remove_file(db_path);
