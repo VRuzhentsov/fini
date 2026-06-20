@@ -78,6 +78,10 @@ Expected issue entry fields:
 - `topicId`: messenger topic/thread ID when stored separately
 - `createdAt`, `mappedAt`, `startedAt`, or `topicCreatedAt`: entry-level mapping timestamp for stale-merge protection
 - `pullRequest`: optional related PR URL
+- `pinnedPrLinkUrl`: PR URL sent as a standalone pinned topic message
+- `pinnedPrLinkMessageId`: Telegram message id for the pinned standalone PR URL
+- `pinnedPrLinkSentAt`: timestamp for standalone PR URL delivery
+- `pinnedPrLinkPinnedAt`: timestamp for pinning the standalone PR URL message
 - `status`: local lifecycle state such as `open` or `closed`
 - `closedAt`: timestamp for local topic closure state
 - `closedByPullRequest`: PR URL that caused closure

@@ -49,6 +49,7 @@ Use topic targets in `<group-id>:topic:<thread-id>` form when available. Fall ba
 - If the message asks how the agent should behave while developing Fini, keep it in `Fini Self Improvement`.
 - If the message is a daily/status question across issues and PRs, route it to `Daily`.
 - If the message is implementation progress for one GitHub issue, route it to that issue's dynamic topic.
+- If the message or task is about a pull request directly, create or reuse that PR's dynamic topic and keep PR-specific review, CI, verification, and merge-readiness discussion there.
 - If the message is implementation progress without a GitHub issue yet, use `In Progress` until an issue exists.
 - If the user is brainstorming process but not asking for implementation, respond with triage and selectable action items before editing files.
 
@@ -65,6 +66,20 @@ Before sending issue-specific progress:
 5. Send a short starting message inside the new issue topic so future readers know the branch, PR, and phase.
 
 Use `In Progress` only for generic status, scheduler work, or work not tied to one GitHub issue. Do not put detailed implementation updates for a specific issue in `Daily` or the root Fini Dev topic once its dynamic issue topic exists.
+
+## Dynamic PR Topics
+
+Every active pull request that gets a Fini Dev Telegram topic must have a pinned PR link message.
+
+When creating or reusing a PR topic:
+
+1. Record the PR mapping in the local issue/topic sync file under `pullRequests[<pr-number>]`, including the PR number, title, URL, topic id, reusable target, status, and timestamp.
+2. Send the PR URL as its own standalone message inside the PR topic.
+3. Pin that standalone PR URL message in the topic.
+4. Record `pinnedPrLinkUrl`, `pinnedPrLinkMessageId`, `pinnedPrLinkSentAt`, and `pinnedPrLinkPinnedAt` in the PR mapping when available.
+5. If the PR topic already has `pinnedPrLinkMessageId` for the same `pinnedPrLinkUrl`, do not send or pin another link message.
+
+Pinned PR links are coordination metadata, not progress updates. Do this once per PR topic creation or recovery, then keep normal progress messages phase-based.
 
 ## Closing Issue Topics
 

@@ -107,9 +107,12 @@ At task start:
 
 1. Reuse the current Telegram topic when the user delegated the work from a task-specific topic.
 2. For GitHub issue work, create or reuse a topic named `#<issue> <short title>`.
-3. For direct PR or no-issue work, create or reuse a short task topic named after the deliverable, such as `Fini install skill`.
-4. Send the first progress message inside that topic before editing when possible.
-5. Keep later progress, blockers, verification, PR links, and handoff in the same topic.
+3. For direct PR work, create or reuse a PR topic named `PR #<number> <short title>`.
+4. For no-issue work, create or reuse a short task topic named after the deliverable, such as `Fini install skill`.
+5. Send the first progress message inside that topic before editing when possible.
+6. Keep later progress, blockers, verification, PR links, and handoff in the same topic.
+
+When creating or recovering a PR topic, send the PR URL as its own standalone message in that topic, pin that message, and record the pinned message metadata in the local issue/topic sync file under `pullRequests[<pr-number>]`. If the PR mapping already has `pinnedPrLinkMessageId` for the same `pinnedPrLinkUrl`, reuse it instead of sending a duplicate link.
 
 The starting message must include the local checkout context so the developer can see where the agent is working:
 
