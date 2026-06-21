@@ -39,15 +39,17 @@ jobs:
             exit 0
           fi
 
-          bump=none
-          if printf '%s\n' "$subjects" | grep -Eq '^[a-z]+(\([^)]+\))?!:'; then bump=major;
-          elif printf '%s\n' "$subjects" | grep -Eq '^feat(\([^)]+\))?:'; then bump=minor;
-          elif printf '%s\n' "$subjects" | grep -Eq '^(fix|perf|refactor|build|release)(\([^)]+\))?:'; then bump=patch; fi
-
-          if [ "$bump" = none ]; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            printf '## Release skipped\n\n- Latest tag: %s\n- origin/main: %s\n- Reason: no releasable commits since latest release tag\n' "$latest_tag" "$main_sha" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+          bump=patch
+          bump_reason="commits exist after latest release tag"
+          if printf '%s\n' "$subjects" | grep -Eqi '^[a-z]+(\([^)]+\))?!:'; then
+            bump=major
+            bump_reason="breaking-change commit subject"
+          elif printf '%s\n' "$subjects" | grep -Eqi '^feat(\([^)]+\))?:'; then
+            bump=minor
+            bump_reason="feature commit subject"
+          elif printf '%s\n' "$subjects" | grep -Eqi '^(fix|perf|refactor|build|release)(\([^)]+\))?:'; then
+            bump=patch
+            bump_reason="patch-level commit subject"
           fi
 
           IFS=. read -r major minor patch <<< "${latest_tag#v}"
@@ -60,8 +62,8 @@ jobs:
           tag="v$version"
           branch="release/$tag"
 
-          { echo "should_release=true"; echo "latest_tag=$latest_tag"; echo "main_sha=$main_sha"; echo "bump=$bump"; echo "version=$version"; echo "tag=$tag"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
-          printf '## Release planned\n\n- Latest tag: %s\n- Next tag: %s\n- Bump: %s\n- origin/main: %s\n\n### Commits\n%s\n' "$latest_tag" "$tag" "$bump" "$main_sha" "$(git log --oneline "${latest_tag}..origin/main")" >> "$GITHUB_STEP_SUMMARY"
+          { echo "should_release=true"; echo "latest_tag=$latest_tag"; echo "main_sha=$main_sha"; echo "bump=$bump"; echo "bump_reason=$bump_reason"; echo "version=$version"; echo "tag=$tag"; echo "branch=$branch"; } >> "$GITHUB_OUTPUT"
+          printf '## Release planned\n\n- Latest tag: %s\n- Next tag: %s\n- Bump: %s\n- Reason: %s\n- origin/main: %s\n\n### Commits\n%s\n' "$latest_tag" "$tag" "$bump" "$bump_reason" "$main_sha" "$(git log --oneline "${latest_tag}..origin/main")" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit version bump
         if: steps.plan.outputs.should_release == 'true'
