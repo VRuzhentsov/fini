@@ -105,8 +105,9 @@ Treat GitHub issues as the authoritative source for auto-starting implementation
 1. start from the issue body, labels, linked context, and current comments
 2. create or reuse an issue-numbered branch
 3. implement and verify the smallest useful slice
-4. push the branch
-5. create or update the linked pull request as the review artifact
+4. for implementation changes, wait for the user-verification gate required by `AGENTS.md` before committing, pushing, or opening the PR
+5. for docs, specs, process guidance, or implementation work after required user verification, push the branch
+6. create or update the linked pull request as the review artifact
 
 The daily recommendation should make this PR expectation explicit in the suggested assignment prompt. A delegated issue is not fully handed off when only a branch exists; it should have a PR URL, or a stated blocker explaining why the PR could not be created.
 

@@ -70,9 +70,11 @@ When an issue is `ready-to-start` and not excluded by labels or maintainer direc
 
 1. Create or reuse an issue-numbered branch before editing.
 2. Implement the smallest verified slice described by the issue.
-3. Push the branch to the configured remote when local verification is complete.
-4. Create or update the linked pull request as the review surface for the issue.
-5. Report the PR URL, readiness state, verification evidence, and remaining risks in the issue topic or handoff.
+3. Run the smallest useful local verification and report the evidence.
+4. For implementation changes, wait for the user-verification gate required by `AGENTS.md` before committing, pushing, or opening the PR.
+5. For docs, specs, process guidance, or implementation work after required user verification, push the branch to the configured remote.
+6. Create or update the linked pull request as the review surface for the issue.
+7. Report the PR URL, readiness state, verification evidence, and remaining risks in the issue topic or handoff.
 
 If a host or policy prevents creating a public PR automatically, stop at the pushed branch and report that the missing PR is a delivery blocker, not a completed handoff.
 
