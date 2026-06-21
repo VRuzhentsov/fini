@@ -1,7 +1,9 @@
+use diesel::migration::MigrationSource;
 use diesel::prelude::*;
-use diesel::sql_types::Text;
+use diesel::sqlite::Sqlite;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 #[cfg(any(feature = "ui-plane", test))]
 use std::sync::Mutex;
@@ -14,12 +16,6 @@ pub const APP_DATA_DIR_NAME: &str = "fini";
 
 #[cfg(any(feature = "ui-plane", test))]
 pub struct AppDbConnection(pub Mutex<SqliteConnection>);
-
-#[derive(QueryableByName)]
-struct MigrationTableRow {
-    #[diesel(sql_type = Text)]
-    _name: String,
-}
 
 pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -57,43 +53,70 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
 }
 
 pub fn open_db_at_path(path: &Path) -> SqliteConnection {
-    let mut conn =
-        SqliteConnection::establish(path.to_str().unwrap()).expect("failed to open database");
+    try_open_db_at_path(path).expect("failed to open compatible Fini database")
+}
+
+pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
+    let mut conn = SqliteConnection::establish(path.to_str().ok_or("database path is not UTF-8")?)
+        .map_err(|err| format!("failed to open database: {err}"))?;
     diesel::sql_query(
         "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
     )
     .execute(&mut conn)
-    .expect("failed to set PRAGMAs");
-    if should_run_migrations(&mut conn) {
-        conn.run_pending_migrations(MIGRATIONS)
-            .expect("failed to run migrations");
-    }
-    conn
+    .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
+    ensure_database_schema_is_supported(&mut conn)?;
+    conn.run_pending_migrations(MIGRATIONS)
+        .map_err(|err| format!("failed to run database migrations: {err}"))?;
+    Ok(conn)
 }
 
-fn should_run_migrations(conn: &mut SqliteConnection) -> bool {
-    diesel::sql_query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__diesel_schema_migrations' LIMIT 1;",
-    )
-    .load::<MigrationTableRow>(conn)
-    .map(|rows| rows.is_empty())
-    .unwrap_or(true)
+fn ensure_database_schema_is_supported(conn: &mut SqliteConnection) -> Result<(), String> {
+    let known_versions = embedded_migration_versions()?;
+    let applied_versions = conn
+        .applied_migrations()
+        .map_err(|err| format!("failed to read database migration state: {err}"))?;
+
+    if let Some(version) = applied_versions
+        .iter()
+        .map(ToString::to_string)
+        .find(|version| !known_versions.contains(version))
+    {
+        return Err(format!(
+            "database schema is not supported by this Fini binary. Fini version: {}; unknown database migration: {version}. Upgrade Fini before opening this database.",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+
+    Ok(())
+}
+
+fn embedded_migration_versions() -> Result<BTreeSet<String>, String> {
+    <EmbeddedMigrations as MigrationSource<Sqlite>>::migrations(&MIGRATIONS)
+        .map_err(|err| format!("failed to read embedded database migrations: {err}"))
+        .map(|migrations| {
+            migrations
+                .into_iter()
+                .map(|migration| migration.name().version().to_string())
+                .collect()
+        })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
-pub fn open_db(app: &tauri::AppHandle) -> SqliteConnection {
+pub fn try_open_db(app: &tauri::AppHandle) -> Result<SqliteConnection, String> {
     if std::env::var_os("FINI_DB_PATH").is_some() {
         let db_path = db_default_path();
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).expect("failed to create app data dir");
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create app data dir: {err}"))?;
         }
-        return open_db_at_path(&db_path);
+        return try_open_db_at_path(&db_path);
     }
 
     let data_dir = app_data_dir(app);
-    std::fs::create_dir_all(&data_dir).expect("failed to create app data dir");
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|err| format!("failed to create app data dir: {err}"))?;
     let db_path = data_dir.join("fini.db");
-    open_db_at_path(&db_path)
+    try_open_db_at_path(&db_path)
 }
 
 #[cfg(test)]
@@ -196,24 +219,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v2_db_migrates_to_text_ids_without_data_loss() {
-        let db_path = temp_db_path("legacy-v2-db-migrates-to-text-ids");
+    fn database_with_unknown_migration_is_rejected() {
+        let db_path = temp_db_path("database-with-unknown-migration-is-rejected");
 
         let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
-            .expect("open legacy db path");
-
-        diesel::sql_query("PRAGMA foreign_keys = ON")
-            .execute(&mut conn)
-            .expect("enable foreign keys on legacy db");
-
-        execute_sql_script(
-            &mut conn,
-            include_str!("../../migrations/00000000000001_init/up.sql"),
-        );
-        execute_sql_script(
-            &mut conn,
-            include_str!("../../migrations/00000000000002_quest_model_v2/up.sql"),
-        );
+            .expect("open db path");
 
         diesel::sql_query(
             "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (
@@ -224,77 +234,43 @@ mod tests {
         .execute(&mut conn)
         .expect("create migrations metadata table");
         diesel::sql_query(
-            "INSERT INTO __diesel_schema_migrations (version) VALUES
-                ('00000000000001'),
-                ('00000000000002')",
+            "INSERT INTO __diesel_schema_migrations (version) VALUES ('99999999999999')",
         )
         .execute(&mut conn)
-        .expect("seed applied legacy migration versions");
+        .expect("seed unknown future migration version");
+        drop(conn);
 
-        diesel::sql_query(
-            "INSERT INTO spaces (id, name, item_order) VALUES (7, 'Legacy Custom', 7)",
-        )
-        .execute(&mut conn)
-        .expect("insert legacy custom space");
-        diesel::sql_query(
-            "INSERT INTO quests (id, space_id, title, description, status, energy, priority, pinned, created_at, updated_at)
-             VALUES (55, 7, 'Legacy Quest', 'before migration', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
-        )
-        .execute(&mut conn)
-        .expect("insert legacy quest row");
+        let err = match try_open_db_at_path(&db_path) {
+            Ok(_) => panic!("database with unknown migration must be rejected"),
+            Err(err) => err,
+        };
 
-        conn.run_pending_migrations(MIGRATIONS)
-            .expect("run pending migrations from legacy to latest");
-
-        let legacy_space_id: String = spaces::table
-            .filter(spaces::name.eq("Legacy Custom"))
-            .select(spaces::id)
-            .first(&mut conn)
-            .expect("load migrated legacy space id");
-        assert_ne!(legacy_space_id, "1");
-        assert_ne!(legacy_space_id, "2");
-        assert_ne!(legacy_space_id, "3");
         assert!(
-            is_uuid_like(&legacy_space_id),
-            "legacy custom space id must become UUID"
+            err.contains("database schema is not supported by this Fini binary"),
+            "error should explain unsupported schema, got: {err}"
         );
-
-        let migrated_rows: Vec<(String, String, Option<String>)> = quests::table
-            .filter(quests::title.eq("Legacy Quest"))
-            .select((quests::id, quests::space_id, quests::description))
-            .load(&mut conn)
-            .expect("load migrated legacy quest");
-
-        assert_eq!(
-            migrated_rows.len(),
-            1,
-            "legacy quest must still exist after migration"
+        assert!(
+            err.contains("Fini version:"),
+            "error should include Fini version, got: {err}"
         );
-        let (quest_id, quest_space_id, description) = &migrated_rows[0];
-        assert!(is_uuid_like(quest_id), "legacy quest id must become UUID");
-        assert_eq!(
-            quest_space_id, &legacy_space_id,
-            "legacy quest must keep space membership"
-        );
-        assert_eq!(
-            description.as_deref(),
-            Some("before migration"),
-            "legacy quest payload must be preserved"
+        assert!(
+            err.contains("99999999999999"),
+            "error should include unknown migration version, got: {err}"
         );
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn legacy_v2_custom_work_space_migrates_without_duplicate_work() {
-        let db_path = temp_db_path("legacy-v2-custom-work-space-migrates-without-duplicate-work");
+    fn v2_numeric_id_db_migrates_to_text_ids_without_data_loss() {
+        let db_path = temp_db_path("v2-numeric-id-db-migrates-to-text-ids");
 
         let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
-            .expect("open legacy db path");
+            .expect("open v2 db path");
 
         diesel::sql_query("PRAGMA foreign_keys = ON")
             .execute(&mut conn)
-            .expect("enable foreign keys on legacy db");
+            .expect("enable foreign keys on v2 db");
 
         execute_sql_script(
             &mut conn,
@@ -319,20 +295,108 @@ mod tests {
                 ('00000000000002')",
         )
         .execute(&mut conn)
-        .expect("seed applied legacy migration versions");
+        .expect("seed applied v2 migration versions");
+
+        diesel::sql_query("INSERT INTO spaces (id, name, item_order) VALUES (7, 'V2 Custom', 7)")
+            .execute(&mut conn)
+            .expect("insert v2 custom space");
+        diesel::sql_query(
+            "INSERT INTO quests (id, space_id, title, description, status, energy, priority, pinned, created_at, updated_at)
+             VALUES (55, 7, 'V2 Quest', 'before migration', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
+        )
+        .execute(&mut conn)
+        .expect("insert v2 quest row");
+        drop(conn);
+
+        let mut conn = open_db_at_path(&db_path);
+
+        let migrated_space_id: String = spaces::table
+            .filter(spaces::name.eq("V2 Custom"))
+            .select(spaces::id)
+            .first(&mut conn)
+            .expect("load migrated v2 space id");
+        assert_ne!(migrated_space_id, "1");
+        assert_ne!(migrated_space_id, "2");
+        assert_ne!(migrated_space_id, "3");
+        assert!(
+            is_uuid_like(&migrated_space_id),
+            "v2 custom space id must become UUID"
+        );
+
+        let migrated_rows: Vec<(String, String, Option<String>)> = quests::table
+            .filter(quests::title.eq("V2 Quest"))
+            .select((quests::id, quests::space_id, quests::description))
+            .load(&mut conn)
+            .expect("load migrated v2 quest");
+
+        assert_eq!(
+            migrated_rows.len(),
+            1,
+            "v2 quest must still exist after migration"
+        );
+        let (quest_id, quest_space_id, description) = &migrated_rows[0];
+        assert!(is_uuid_like(quest_id), "v2 quest id must become UUID");
+        assert_eq!(
+            quest_space_id, &migrated_space_id,
+            "v2 quest must keep space membership"
+        );
+        assert_eq!(
+            description.as_deref(),
+            Some("before migration"),
+            "v2 quest payload must be preserved"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn v2_custom_work_space_migrates_without_duplicate_work() {
+        let db_path = temp_db_path("v2-custom-work-space-migrates-without-duplicate-work");
+
+        let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
+            .expect("open v2 db path");
+
+        diesel::sql_query("PRAGMA foreign_keys = ON")
+            .execute(&mut conn)
+            .expect("enable foreign keys on v2 db");
+
+        execute_sql_script(
+            &mut conn,
+            include_str!("../../migrations/00000000000001_init/up.sql"),
+        );
+        execute_sql_script(
+            &mut conn,
+            include_str!("../../migrations/00000000000002_quest_model_v2/up.sql"),
+        );
+
+        diesel::sql_query(
+            "CREATE TABLE IF NOT EXISTS __diesel_schema_migrations (
+                version VARCHAR(50) PRIMARY KEY NOT NULL,
+                run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut conn)
+        .expect("create migrations metadata table");
+        diesel::sql_query(
+            "INSERT INTO __diesel_schema_migrations (version) VALUES
+                ('00000000000001'),
+                ('00000000000002')",
+        )
+        .execute(&mut conn)
+        .expect("seed applied v2 migration versions");
 
         diesel::sql_query("INSERT INTO spaces (id, name, item_order) VALUES (2, 'Work', 2)")
             .execute(&mut conn)
-            .expect("insert legacy custom work space");
+            .expect("insert v2 custom work space");
         diesel::sql_query(
             "INSERT INTO quests (id, space_id, title, status, energy, priority, pinned, created_at, updated_at)
-             VALUES (77, 2, 'Legacy Work Quest', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
+             VALUES (77, 2, 'V2 Work Quest', 'active', 'medium', 1, 0, datetime('now'), datetime('now'))",
         )
         .execute(&mut conn)
-        .expect("insert quest in legacy custom work space");
+        .expect("insert quest in v2 custom work space");
 
         conn.run_pending_migrations(MIGRATIONS)
-            .expect("run pending migrations from legacy to latest");
+            .expect("run pending migrations from v2 state");
 
         let work_count = spaces::table
             .filter(spaces::name.eq("Work"))
@@ -352,13 +416,13 @@ mod tests {
         assert_eq!(family_count, 1, "migration must produce one Family space");
 
         let quest_space_id: String = quests::table
-            .filter(quests::title.eq("Legacy Work Quest"))
+            .filter(quests::title.eq("V2 Work Quest"))
             .select(quests::space_id)
             .first(&mut conn)
             .expect("load migrated work quest space id");
         assert_eq!(
             quest_space_id, "3",
-            "legacy Work-named custom space should map to built-in Work id=3"
+            "v2 Work-named custom space should map to built-in Work id=3"
         );
 
         let _ = std::fs::remove_file(db_path);

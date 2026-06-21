@@ -1731,7 +1731,7 @@ mod tests {
             .execute(&mut conn)
             .unwrap();
 
-        let device_connection = DeviceConnectionState::new(&app_dir);
+        let device_connection = DeviceConnectionState::from_app_data_dir(&app_dir);
         let quest = test_quest("q-gated", "Blocked Until Approval", "2026-04-11T20:00:00Z");
         let event = test_envelope(
             "evt-gated",
@@ -1810,7 +1810,7 @@ mod tests {
             .execute(&mut conn)
             .unwrap();
 
-        let device_connection = DeviceConnectionState::new(&app_dir);
+        let device_connection = DeviceConnectionState::from_app_data_dir(&app_dir);
         let (tx, mut rx) = mpsc::channel(4);
         device_connection.register_session("peer-a".to_string(), tx);
 
