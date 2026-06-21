@@ -54,6 +54,42 @@ Start each delegated task by establishing:
 
 If the task comes from a GitHub issue, follow `fini-dev` branch guidance before editing. If the issue is ambiguous, inspect the issue body, labels, linked design/spec/wiki context, and source code before asking the user.
 
+## Issue Readiness And Review Contract
+
+Treat the configured tracker ticket as the authoritative work source for delegated Fini implementation. The current Fini instance uses GitHub issues and pull requests, but tracker providers and communication channels belong to the agent environment. Before implementation, classify the delegated ticket in Fini-facing terms:
+
+- `ready-to-start`: the ticket has a clear goal, bounded scope, expected behavior, and a practical verification path.
+- `needs-clarification`: the ticket is actionable only after a missing scope, product, behavior, or verification decision is answered.
+- `needs-human-review`: the ticket touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area that should not proceed without explicit maintainer direction.
+
+Treat the Fini `no-auto` label as a hard exclusion from autonomous pickup. Include `no-auto` tickets in reports and handoffs for visibility, but do not classify them as `ready-to-start` or begin branch, commit, push, or review-artifact work unless the maintainer explicitly overrides that ticket's exclusion for the current task.
+
+Do not expose private agent internals, credential handling, channel routing, or host-specific trust mechanics in tracker tickets, review artifacts, or messenger progress. Report only the Fini-facing contract: scope, assumptions, evidence, risk, and review needs.
+
+When a ticket is `needs-clarification`, ask the smallest useful question and include the recommended answer. When it is `needs-human-review`, explain the Fini project risk and stop before implementation unless the maintainer explicitly delegates the next step.
+
+When a ticket is `ready-to-start` and not excluded by labels or maintainer direction, the agent loop should move from authoritative ticket source to branch to review artifact without waiting for a separate "create PR" prompt:
+
+1. Create or reuse a ticket-numbered branch before editing when the tracker has stable ticket numbers.
+2. Implement the smallest verified slice described by the ticket.
+3. Run the smallest useful local verification and report the evidence.
+4. For implementation changes, wait for the user-verification gate required by `AGENTS.md` before committing, pushing, or opening the PR.
+5. For docs, specs, process guidance, or implementation work after required user verification, push the branch to the configured remote.
+6. Create or update the linked review artifact, such as a pull request for a GitHub-backed project.
+7. Report the review URL, readiness state, verification evidence, and remaining risks in the configured progress channel or handoff.
+
+If a host or policy prevents creating a public review artifact automatically, stop at the pushed branch and report that the missing review artifact is a delivery blocker, not a completed handoff.
+
+For agent-assisted pull requests, include a review payload in the PR body or handoff:
+
+- linked ticket
+- readiness state used at start
+- assumptions made
+- files or Fini areas changed
+- verification commands and outcomes
+- remaining risks
+- whether human review is required before merge
+
 ## Telegram Topic Coordination
 
 Use Fini Dev Telegram topics as coordination surfaces when the channel is available. Do not let Telegram delivery failures block local implementation; continue the work and report the delivery blocker in the final handoff.
@@ -220,9 +256,13 @@ For PR-ready work, include:
 
 - branch name
 - issue number or task source
+- readiness state used at start
+- assumptions made
 - verification commands and outcomes
+- remaining risks
+- whether human review is required before merge
 - manual checks still needed
-- whether Telegram progress delivery succeeded or failed
+- whether configured progress delivery succeeded or failed
 
 ## Non-Goals
 
