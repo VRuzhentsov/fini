@@ -54,6 +54,38 @@ Start each delegated task by establishing:
 
 If the task comes from a GitHub issue, follow `fini-dev` branch guidance before editing. If the issue is ambiguous, inspect the issue body, labels, linked design/spec/wiki context, and source code before asking the user.
 
+## Issue Readiness And Review Contract
+
+Treat the GitHub issue as the authoritative work source for delegated Fini implementation. Before implementation, classify the delegated issue in Fini-facing terms:
+
+- `ready-to-start`: the issue has a clear goal, bounded scope, expected behavior, and a practical verification path.
+- `needs-clarification`: the issue is actionable only after a missing scope, product, behavior, or verification decision is answered.
+- `needs-human-review`: the issue touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area that should not proceed without explicit maintainer direction.
+
+Do not expose private agent internals, credential handling, or host-specific trust mechanics in GitHub issues, pull requests, or Telegram progress. Report only the Fini-facing contract: scope, assumptions, evidence, risk, and review needs.
+
+When an issue is `needs-clarification`, ask the smallest useful question and include the recommended answer. When it is `needs-human-review`, explain the Fini project risk and stop before implementation unless the maintainer explicitly delegates the next step.
+
+When an issue is `ready-to-start` and not excluded by labels or maintainer direction, the agent loop should move from authoritative issue source to branch to pull request without waiting for a separate "create PR" prompt:
+
+1. Create or reuse an issue-numbered branch before editing.
+2. Implement the smallest verified slice described by the issue.
+3. Push the branch to the configured remote when local verification is complete.
+4. Create or update the linked pull request as the review surface for the issue.
+5. Report the PR URL, readiness state, verification evidence, and remaining risks in the issue topic or handoff.
+
+If a host or policy prevents creating a public PR automatically, stop at the pushed branch and report that the missing PR is a delivery blocker, not a completed handoff.
+
+For agent-assisted pull requests, include a review payload in the PR body or handoff:
+
+- linked issue
+- readiness state used at start
+- assumptions made
+- files or Fini areas changed
+- verification commands and outcomes
+- remaining risks
+- whether human review is required before merge
+
 ## Telegram Topic Coordination
 
 Use Fini Dev Telegram topics as coordination surfaces when the channel is available. Do not let Telegram delivery failures block local implementation; continue the work and report the delivery blocker in the final handoff.
@@ -220,7 +252,11 @@ For PR-ready work, include:
 
 - branch name
 - issue number or task source
+- readiness state used at start
+- assumptions made
 - verification commands and outcomes
+- remaining risks
+- whether human review is required before merge
 - manual checks still needed
 - whether Telegram progress delivery succeeded or failed
 

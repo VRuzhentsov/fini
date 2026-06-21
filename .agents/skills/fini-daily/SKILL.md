@@ -96,6 +96,36 @@ Use open PRs as first-class daily report inputs:
 - Prefer recommending "finish PR #<number>" over "start issue #<number>" when the PR is close to merge, has been hanging, or just needs verification/review/fixes.
 - Draft PRs should be reported separately as in-progress, not as ready-to-finish unless the next step is clearly to undraft or complete review fixes.
 
+## Project Support Contract
+
+Use this skill as Fini's project-local support layer for daily triage and ticket pickup decisions. Keep the guidance Fini-facing: define what the project expects from issues, pull requests, verification, and review. Do not document private agent internals, credential handling, or host-specific trust mechanics here.
+
+Treat GitHub issues as the authoritative source for auto-starting implementation work. When daily triage recommends a `ready-to-start` issue for delegated implementation, the expected loop is:
+
+1. start from the issue body, labels, linked context, and current comments
+2. create or reuse an issue-numbered branch
+3. implement and verify the smallest useful slice
+4. push the branch
+5. create or update the linked pull request as the review artifact
+
+The daily recommendation should make this PR expectation explicit in the suggested assignment prompt. A delegated issue is not fully handed off when only a branch exists; it should have a PR URL, or a stated blocker explaining why the PR could not be created.
+
+Classify candidate issues with these readiness states:
+
+- `ready-to-start`: the issue has a clear goal, bounded scope, expected behavior, and a practical verification path. It may be recommended for delegated implementation when it has no exclusion label and no stronger PR should be finished first.
+- `needs-clarification`: the issue is potentially useful, but scope, product intent, expected behavior, or verification is ambiguous. Recommend one concise clarification question instead of implementation.
+- `needs-human-review`: the issue touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area. Include it for visibility, but do not recommend autonomous pickup without explicit maintainer direction.
+
+Treat these Fini signals as project-specific triage inputs:
+
+- `no-auto` always excludes an issue or linked PR from autonomous pickup.
+- Stale or near-ready PRs usually outrank starting a fresh issue.
+- Issues that lack acceptance criteria, reproduction steps for bugs, or verification expectations should be marked `needs-clarification`.
+- Tickets involving release, credentials, privacy, destructive data behavior, database migrations, or external service behavior should be marked `needs-human-review` unless the issue explicitly narrows the work to documentation or dry-run planning.
+- Prefer a small, verifiable implementation slice over broad exploratory work.
+
+When recommending a next delegation, include the readiness state and the reason it is safe or unsafe to start. If no issue is ready, recommend the highest-value clarification or review action instead of forcing a pickup.
+
 ## Daily Report Format
 
 Write a concise report for the configured recipient. If `FINI_DAILY_RECIPIENT` is unset, omit the personal salutation.
