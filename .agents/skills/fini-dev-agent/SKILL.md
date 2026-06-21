@@ -62,6 +62,8 @@ Treat the GitHub issue as the authoritative work source for delegated Fini imple
 - `needs-clarification`: the issue is actionable only after a missing scope, product, behavior, or verification decision is answered.
 - `needs-human-review`: the issue touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area that should not proceed without explicit maintainer direction.
 
+Treat the Fini `no-auto` label as a hard exclusion from autonomous pickup. Include `no-auto` issues in reports and handoffs for visibility, but do not classify them as `ready-to-start` or begin branch, commit, push, or PR work unless the maintainer explicitly overrides that issue's exclusion for the current task.
+
 Do not expose private agent internals, credential handling, or host-specific trust mechanics in GitHub issues, pull requests, or Telegram progress. Report only the Fini-facing contract: scope, assumptions, evidence, risk, and review needs.
 
 When an issue is `needs-clarification`, ask the smallest useful question and include the recommended answer. When it is `needs-human-review`, explain the Fini project risk and stop before implementation unless the maintainer explicitly delegates the next step.
