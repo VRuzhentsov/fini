@@ -56,33 +56,33 @@ If the task comes from a GitHub issue, follow `fini-dev` branch guidance before 
 
 ## Issue Readiness And Review Contract
 
-Treat the GitHub issue as the authoritative work source for delegated Fini implementation. Before implementation, classify the delegated issue in Fini-facing terms:
+Treat the configured tracker ticket as the authoritative work source for delegated Fini implementation. The current Fini instance uses GitHub issues and pull requests, but tracker providers and communication channels belong to the agent environment. Before implementation, classify the delegated ticket in Fini-facing terms:
 
-- `ready-to-start`: the issue has a clear goal, bounded scope, expected behavior, and a practical verification path.
-- `needs-clarification`: the issue is actionable only after a missing scope, product, behavior, or verification decision is answered.
-- `needs-human-review`: the issue touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area that should not proceed without explicit maintainer direction.
+- `ready-to-start`: the ticket has a clear goal, bounded scope, expected behavior, and a practical verification path.
+- `needs-clarification`: the ticket is actionable only after a missing scope, product, behavior, or verification decision is answered.
+- `needs-human-review`: the ticket touches security, privacy, data migration, release behavior, broad architecture, user-visible product direction, or another high-risk area that should not proceed without explicit maintainer direction.
 
-Treat the Fini `no-auto` label as a hard exclusion from autonomous pickup. Include `no-auto` issues in reports and handoffs for visibility, but do not classify them as `ready-to-start` or begin branch, commit, push, or PR work unless the maintainer explicitly overrides that issue's exclusion for the current task.
+Treat the Fini `no-auto` label as a hard exclusion from autonomous pickup. Include `no-auto` tickets in reports and handoffs for visibility, but do not classify them as `ready-to-start` or begin branch, commit, push, or review-artifact work unless the maintainer explicitly overrides that ticket's exclusion for the current task.
 
-Do not expose private agent internals, credential handling, or host-specific trust mechanics in GitHub issues, pull requests, or Telegram progress. Report only the Fini-facing contract: scope, assumptions, evidence, risk, and review needs.
+Do not expose private agent internals, credential handling, channel routing, or host-specific trust mechanics in tracker tickets, review artifacts, or messenger progress. Report only the Fini-facing contract: scope, assumptions, evidence, risk, and review needs.
 
-When an issue is `needs-clarification`, ask the smallest useful question and include the recommended answer. When it is `needs-human-review`, explain the Fini project risk and stop before implementation unless the maintainer explicitly delegates the next step.
+When a ticket is `needs-clarification`, ask the smallest useful question and include the recommended answer. When it is `needs-human-review`, explain the Fini project risk and stop before implementation unless the maintainer explicitly delegates the next step.
 
-When an issue is `ready-to-start` and not excluded by labels or maintainer direction, the agent loop should move from authoritative issue source to branch to pull request without waiting for a separate "create PR" prompt:
+When a ticket is `ready-to-start` and not excluded by labels or maintainer direction, the agent loop should move from authoritative ticket source to branch to review artifact without waiting for a separate "create PR" prompt:
 
-1. Create or reuse an issue-numbered branch before editing.
-2. Implement the smallest verified slice described by the issue.
+1. Create or reuse a ticket-numbered branch before editing when the tracker has stable ticket numbers.
+2. Implement the smallest verified slice described by the ticket.
 3. Run the smallest useful local verification and report the evidence.
 4. For implementation changes, wait for the user-verification gate required by `AGENTS.md` before committing, pushing, or opening the PR.
 5. For docs, specs, process guidance, or implementation work after required user verification, push the branch to the configured remote.
-6. Create or update the linked pull request as the review surface for the issue.
-7. Report the PR URL, readiness state, verification evidence, and remaining risks in the issue topic or handoff.
+6. Create or update the linked review artifact, such as a pull request for a GitHub-backed project.
+7. Report the review URL, readiness state, verification evidence, and remaining risks in the configured progress channel or handoff.
 
-If a host or policy prevents creating a public PR automatically, stop at the pushed branch and report that the missing PR is a delivery blocker, not a completed handoff.
+If a host or policy prevents creating a public review artifact automatically, stop at the pushed branch and report that the missing review artifact is a delivery blocker, not a completed handoff.
 
 For agent-assisted pull requests, include a review payload in the PR body or handoff:
 
-- linked issue
+- linked ticket
 - readiness state used at start
 - assumptions made
 - files or Fini areas changed
@@ -262,7 +262,7 @@ For PR-ready work, include:
 - remaining risks
 - whether human review is required before merge
 - manual checks still needed
-- whether Telegram progress delivery succeeded or failed
+- whether configured progress delivery succeeded or failed
 
 ## Non-Goals
 
