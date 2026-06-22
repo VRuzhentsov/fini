@@ -78,9 +78,14 @@ Color tokens describe semantic roles rather than component names:
   - `base.content`
   - `primary`
   - `primary.content`
+  - `secondary`
+  - `secondary.content`
   - `success`
+  - `success.content`
   - `warning`
+  - `warning.content`
   - `error`
+  - `error.content`
 
 ### Typography
 
@@ -147,6 +152,7 @@ Examples:
 | `color.base.100` | `--theme-color-base-100` |
 | `color.base.content` | `--theme-color-base-content` |
 | `color.primary.content` | `--theme-color-primary-content` |
+| `color.secondary.content` | `--theme-color-secondary-content` |
 | `typography.family.sans` | `--theme-typography-family-sans` |
 | `radius.md` | `--theme-radius-md` |
 
@@ -155,17 +161,38 @@ Existing Fini variables may bridge to theme variables during migration:
 ```css
 :root {
   --color-page-bg: var(--theme-color-page-bg);
+  --color-border-soft: var(--theme-color-border-soft);
+  --color-border-softer: var(--theme-color-border-softer);
   --fg-1: var(--theme-color-fg-1);
+  --fg-2: var(--theme-color-fg-2);
+  --fg-3: var(--theme-color-fg-3);
+  --fg-4: var(--theme-color-fg-4);
+  --fg-5: var(--theme-color-fg-5);
+  --fg-6: var(--theme-color-fg-6);
+  --space-color-personal: var(--theme-color-space-personal);
+  --space-color-family: var(--theme-color-space-family);
+  --space-color-work: var(--theme-color-space-work);
   --color-base-100: var(--theme-color-base-100);
   --color-base-200: var(--theme-color-base-200);
   --color-base-300: var(--theme-color-base-300);
   --color-base-content: var(--theme-color-base-content);
   --color-primary: var(--theme-color-primary);
   --color-primary-content: var(--theme-color-primary-content);
+  --color-secondary: var(--theme-color-secondary);
+  --color-secondary-content: var(--theme-color-secondary-content);
   --color-success: var(--theme-color-success);
+  --color-success-content: var(--theme-color-success-content);
   --color-warning: var(--theme-color-warning);
+  --color-warning-content: var(--theme-color-warning-content);
   --color-error: var(--theme-color-error);
+  --color-error-content: var(--theme-color-error-content);
+  --radius-sm: var(--theme-radius-sm);
   --radius-md: var(--theme-radius-md);
+  --radius-lg: var(--theme-radius-lg);
+  --radius-xl: var(--theme-radius-xl);
+  --radius-2xl: var(--theme-radius-2xl);
+  --shadow-sm: var(--theme-shadow-sm);
+  --shadow-lg: var(--theme-shadow-lg);
 }
 ```
 
