@@ -71,8 +71,16 @@ Color tokens describe semantic roles rather than component names:
 - `space.personal`
 - `space.family`
 - `space.work`
-- DaisyUI bridge colors used by existing UI surfaces, such as base, primary,
-  success, warning, and error roles.
+- DaisyUI bridge colors used by existing UI surfaces:
+  - `base.100`
+  - `base.200`
+  - `base.300`
+  - `base.content`
+  - `primary`
+  - `primary.content`
+  - `success`
+  - `warning`
+  - `error`
 
 ### Typography
 
@@ -136,6 +144,9 @@ Examples:
 |---|---|
 | `color.page.bg` | `--theme-color-page-bg` |
 | `color.fg.1` | `--theme-color-fg-1` |
+| `color.base.100` | `--theme-color-base-100` |
+| `color.base.content` | `--theme-color-base-content` |
+| `color.primary.content` | `--theme-color-primary-content` |
 | `typography.family.sans` | `--theme-typography-family-sans` |
 | `radius.md` | `--theme-radius-md` |
 
@@ -145,6 +156,15 @@ Existing Fini variables may bridge to theme variables during migration:
 :root {
   --color-page-bg: var(--theme-color-page-bg);
   --fg-1: var(--theme-color-fg-1);
+  --color-base-100: var(--theme-color-base-100);
+  --color-base-200: var(--theme-color-base-200);
+  --color-base-300: var(--theme-color-base-300);
+  --color-base-content: var(--theme-color-base-content);
+  --color-primary: var(--theme-color-primary);
+  --color-primary-content: var(--theme-color-primary-content);
+  --color-success: var(--theme-color-success);
+  --color-warning: var(--theme-color-warning);
+  --color-error: var(--theme-color-error);
   --radius-md: var(--theme-radius-md);
 }
 ```
