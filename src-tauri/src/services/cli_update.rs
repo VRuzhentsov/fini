@@ -74,7 +74,7 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
     let install_bin = options
         .install_bin
         .or_else(|| std::env::var_os("FINI_UPDATE_BIN_PATH").map(PathBuf::from))
-        .unwrap_or_else(default_install_bin);
+        .unwrap_or_else(|| default_install_bin(&target));
     let releases = list_releases(&repo)?;
     let plan = select_update_plan(
         repo,
@@ -97,22 +97,8 @@ fn list_releases(repo: &str) -> Result<Vec<GitHubRelease>, String> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|err| format!("failed to create update runtime: {err}"))?;
     runtime.block_on(async {
-        let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static("fini-cli-updater"));
-        headers.insert(
-            ACCEPT,
-            HeaderValue::from_static("application/vnd.github+json"),
-        );
-        if let Ok(token) = std::env::var("GH_TOKEN") {
-            if !token.trim().is_empty() {
-                let value = HeaderValue::from_str(&format!("Bearer {}", token.trim()))
-                    .map_err(|err| format!("invalid GH_TOKEN for GitHub API: {err}"))?;
-                headers.insert(AUTHORIZATION, value);
-            }
-        }
-
         let client = reqwest::Client::builder()
-            .default_headers(headers)
+            .default_headers(github_headers()?)
             .build()
             .map_err(|err| format!("failed to create GitHub client: {err}"))?;
         let response = client
@@ -168,7 +154,7 @@ fn download_asset(url: &str, archive_path: &Path) -> Result<(), String> {
         .map_err(|err| format!("failed to create download runtime: {err}"))?;
     let bytes = runtime.block_on(async {
         let client = reqwest::Client::builder()
-            .user_agent("fini-cli-updater")
+            .default_headers(github_headers()?)
             .build()
             .map_err(|err| format!("failed to create download client: {err}"))?;
         let response = client
@@ -190,6 +176,28 @@ fn download_asset(url: &str, archive_path: &Path) -> Result<(), String> {
     fs::write(archive_path, bytes)
         .map_err(|err| format!("failed to write update archive: {err}"))?;
     Ok(())
+}
+
+fn github_headers() -> Result<HeaderMap, String> {
+    github_headers_from_token(std::env::var("GH_TOKEN").ok())
+}
+
+fn github_headers_from_token(token: Option<String>) -> Result<HeaderMap, String> {
+    let mut headers = HeaderMap::new();
+    headers.insert(USER_AGENT, HeaderValue::from_static("fini-cli-updater"));
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
+    if let Some(token) = token {
+        let token = token.trim();
+        if !token.is_empty() {
+            let value = HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|err| format!("invalid GH_TOKEN for GitHub API: {err}"))?;
+            headers.insert(AUTHORIZATION, value);
+        }
+    }
+    Ok(headers)
 }
 
 fn verify_digest(archive_path: &Path, expected: Option<&str>) -> Result<(), String> {
@@ -481,10 +489,10 @@ fn default_install_root() -> Result<PathBuf, String> {
         .ok_or_else(|| "could not determine home directory for CLI install".to_string())
 }
 
-fn default_install_bin() -> PathBuf {
+fn default_install_bin(target: &CliAssetTarget) -> PathBuf {
     dirs::home_dir()
-        .map(|home| home.join(".local/bin/fini"))
-        .unwrap_or_else(|| PathBuf::from("fini"))
+        .map(|home| home.join(".local/bin").join(&target.executable_name))
+        .unwrap_or_else(|| PathBuf::from(&target.executable_name))
 }
 
 fn plan_json(plan: &UpdatePlan, dry_run: bool, updated: bool) -> Value {
@@ -521,6 +529,31 @@ mod tests {
         assert_eq!(
             cli_asset_name("v0.1.33", &windows),
             "fini-v0.1.33-windows-arm64-cli.zip"
+        );
+    }
+
+    #[test]
+    fn default_install_bin_uses_target_executable_name() {
+        let windows = cli_asset_target("windows", "x86_64").expect("windows x64 target");
+        assert_eq!(
+            default_install_bin(&windows),
+            dirs::home_dir().expect("home").join(".local/bin/fini.exe")
+        );
+
+        assert_eq!(
+            default_install_bin(&linux_x64_target()),
+            dirs::home_dir().expect("home").join(".local/bin/fini")
+        );
+    }
+
+    #[test]
+    fn github_headers_include_authorization_when_token_is_present() {
+        let headers = github_headers_from_token(Some("  test-token  ".to_string()))
+            .expect("headers with token");
+
+        assert_eq!(
+            headers.get(AUTHORIZATION).expect("authorization header"),
+            "Bearer test-token"
         );
     }
 
