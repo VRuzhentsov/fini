@@ -61,7 +61,8 @@ fn quote_desktop_exec_path(path: &Path) -> String {
     let escaped = path
         .to_string_lossy()
         .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+        .replace('"', "\\\"")
+        .replace('%', "%%");
     format!("\"{escaped}\"")
 }
 
@@ -155,6 +156,13 @@ mod tests {
         assert!(entry.contains("Icon=fini-app"));
         assert!(entry.contains("StartupWMClass=fini-app"));
         assert!(entry.contains("Categories=Utility;"));
+    }
+
+    #[test]
+    fn desktop_entry_escapes_percent_in_appimage_path() {
+        let entry = desktop_entry_for(Path::new("/var/tmp/Fini%20Folder/Fini.AppImage"));
+
+        assert!(entry.contains("Exec=\"/var/tmp/Fini%%20Folder/Fini.AppImage\" %U"));
     }
 
     #[test]
