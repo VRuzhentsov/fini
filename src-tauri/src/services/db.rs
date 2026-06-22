@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 #[cfg(any(feature = "ui-plane", test))]
 use std::sync::Mutex;
 
+use crate::services::update_recovery::unsupported_schema_guidance;
+
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 #[cfg(target_os = "android")]
 pub const APP_DATA_DIR_NAME: &str = "com.fini.app";
@@ -82,8 +84,9 @@ fn ensure_database_schema_is_supported(conn: &mut SqliteConnection) -> Result<()
         .find(|version| !known_versions.contains(version))
     {
         return Err(format!(
-            "database schema is not supported by this Fini binary. Fini version: {}; unknown database migration: {version}. Upgrade Fini before opening this database.",
-            env!("CARGO_PKG_VERSION")
+            "database schema is not supported by this Fini binary. Fini version: {}; unknown database migration: {version}. {}",
+            env!("CARGO_PKG_VERSION"),
+            unsupported_schema_guidance()
         ));
     }
 

@@ -65,6 +65,43 @@ use tauri_plugin_autostart::ManagerExt;
 const THEME_EVENT: &str = "theme://changed";
 
 #[cfg(feature = "ui-plane")]
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartupRecovery {
+    kind: &'static str,
+    title: &'static str,
+    message: String,
+}
+
+#[cfg(feature = "ui-plane")]
+struct StartupRecoveryState(std::sync::Mutex<Option<StartupRecovery>>);
+
+#[cfg(feature = "ui-plane")]
+fn unsupported_schema_startup_recovery(error: String) -> Option<StartupRecovery> {
+    if !error.contains("database schema is not supported by this Fini binary") {
+        return None;
+    }
+
+    Some(StartupRecovery {
+        kind: "update-required",
+        title: "Update required",
+        message: error,
+    })
+}
+
+#[cfg(feature = "ui-plane")]
+#[tauri::command]
+fn startup_recovery(
+    state: tauri::State<StartupRecoveryState>,
+) -> Result<Option<StartupRecovery>, String> {
+    state
+        .0
+        .lock()
+        .map(|recovery| recovery.clone())
+        .map_err(|err| format!("failed to read startup recovery state: {err}"))
+}
+
+#[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn notification_action(app: AppHandle, action_id: String, reminder_id: String) {
     dispatch_action(&app, &action_id, &reminder_id);
@@ -157,8 +194,19 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle();
 
-            let conn = try_open_db(&app_handle).map_err(std::io::Error::other)?;
-            app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
+            match try_open_db(&app_handle) {
+                Ok(conn) => {
+                    app.manage(StartupRecoveryState(std::sync::Mutex::new(None)));
+                    app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
+                }
+                Err(error) => match unsupported_schema_startup_recovery(error.clone()) {
+                    Some(recovery) => {
+                        app.manage(StartupRecoveryState(std::sync::Mutex::new(Some(recovery))));
+                        return Ok(());
+                    }
+                    None => return Err(std::io::Error::other(error).into()),
+                },
+            }
             app.manage(SchedulerState::new());
             #[cfg(feature = "devtools")]
             app.manage(NotificationObserverState::new());
@@ -243,6 +291,7 @@ pub fn run() {
             get_theme_mode,
             set_theme_mode,
             sync_native_theme,
+            startup_recovery,
             notification_action,
             notification_tap,
             #[cfg(feature = "devtools")]
@@ -254,4 +303,29 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, feature = "ui-plane"))]
+mod startup_recovery_tests {
+    use super::unsupported_schema_startup_recovery;
+
+    #[test]
+    fn unsupported_schema_error_selects_update_required_recovery() {
+        let recovery = unsupported_schema_startup_recovery(
+            "database schema is not supported by this Fini binary. Update required (AppImage)."
+                .to_string(),
+        )
+        .expect("unsupported schema should route to startup recovery");
+
+        assert_eq!(recovery.kind, "update-required");
+        assert_eq!(recovery.title, "Update required");
+        assert!(recovery.message.contains("Update required (AppImage)"));
+    }
+
+    #[test]
+    fn unrelated_database_error_remains_startup_failure() {
+        assert!(
+            unsupported_schema_startup_recovery("failed to open database".to_string()).is_none()
+        );
+    }
 }

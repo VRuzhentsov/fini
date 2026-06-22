@@ -10,6 +10,11 @@ import "./style.css";
 
 type ThemeMode = "dark" | "light" | "system";
 type ThemeSource = "bootstrap" | "native" | "portal";
+type StartupRecovery = {
+  kind: string;
+  title: string;
+  message: string;
+};
 
 const themeSourceRank: Record<ThemeSource, number> = {
   bootstrap: 0,
@@ -56,9 +61,16 @@ async function applyTheme(theme: ThemeMode, source: ThemeSource) {
 }
 
 async function bootstrap() {
+  let startupRecovery: StartupRecovery | null = null;
   let theme: ThemeMode = window.matchMedia("(prefers-color-scheme: dark)").matches
     ? "dark"
     : "light";
+
+  try {
+    startupRecovery = await invoke<StartupRecovery | null>("startup_recovery");
+  } catch {
+    startupRecovery = null;
+  }
 
   try {
     const hint = await invoke<string>("theme_hint");
@@ -73,7 +85,7 @@ async function bootstrap() {
 
   await applyTheme(theme, "bootstrap");
 
-  createApp(App).use(createPinia()).use(router).use(i18n).mount("#app");
+  createApp(App, { startupRecovery }).use(createPinia()).use(router).use(i18n).mount("#app");
 
   try {
     await getCurrentWindow().onThemeChanged(({ payload }) => {

@@ -13,3 +13,4 @@ pub mod reminder;
 pub mod settings;
 pub mod space;
 pub mod space_sync;
+pub mod update_recovery;

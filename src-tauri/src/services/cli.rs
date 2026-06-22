@@ -1197,6 +1197,7 @@ mod tests {
         let db_path = temp_db_path("cli-db-open-rejects-unknown-schema-migration");
         seed_unknown_schema_migration_db(&db_path);
         std::env::set_var("FINI_DB_PATH", &db_path);
+        std::env::set_var("FINI_INSTALL_CHANNEL", "appimage");
 
         let result = execute(Cli {
             json: true,
@@ -1205,6 +1206,7 @@ mod tests {
             }),
         });
         std::env::remove_var("FINI_DB_PATH");
+        std::env::remove_var("FINI_INSTALL_CHANNEL");
 
         let err = match result {
             Ok(_) => panic!("CLI execute must reject database with unknown migration"),
@@ -1219,8 +1221,13 @@ mod tests {
             err.message
         );
         assert!(
-            err.message.contains("Upgrade Fini"),
+            err.message.contains("Update required (AppImage)"),
             "error should include next step, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("latest Fini AppImage"),
+            "error should include AppImage guidance, got: {}",
             err.message
         );
 
