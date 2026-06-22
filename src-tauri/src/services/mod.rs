@@ -1,3 +1,5 @@
+#[cfg(all(any(feature = "ui-plane", test), target_os = "linux"))]
+pub mod appimage_desktop;
 pub mod backup;
 #[cfg(feature = "cli-plane")]
 pub mod cli;
