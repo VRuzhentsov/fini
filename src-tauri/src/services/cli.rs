@@ -104,7 +104,7 @@ struct UpdateArgs {
     repo: Option<String>,
     #[arg(
         long,
-        help = "Override the activated CLI path; defaults to ~/.local/bin/fini"
+        help = "Override the activated CLI path; defaults to the target CLI name under ~/.local/bin"
     )]
     install_bin: Option<std::path::PathBuf>,
 }

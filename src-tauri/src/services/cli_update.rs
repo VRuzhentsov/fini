@@ -364,6 +364,9 @@ fn activate_binary(target_binary: &Path, install_bin: &Path) -> Result<(), Strin
 #[cfg(any(not(unix), test))]
 fn replace_file_non_unix(staged: &Path, destination: &Path) -> Result<(), String> {
     if destination.exists() {
+        if should_defer_non_unix_replacement(destination)? {
+            return schedule_deferred_non_unix_replacement(staged, destination);
+        }
         if let Err(err) = fs::remove_file(destination) {
             let _ = fs::remove_file(staged);
             return Err(format!("failed to replace existing CLI binary: {err}"));
@@ -374,6 +377,84 @@ fn replace_file_non_unix(staged: &Path, destination: &Path) -> Result<(), String
         return Err(format!("failed to activate updated CLI binary: {err}"));
     }
     Ok(())
+}
+
+#[cfg(any(not(unix), test))]
+fn should_defer_non_unix_replacement(destination: &Path) -> Result<bool, String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|err| format!("failed to resolve current CLI binary: {err}"))?;
+    replacement_targets_running_binary(destination, &current_exe)
+}
+
+#[cfg(any(not(unix), test))]
+fn replacement_targets_running_binary(
+    destination: &Path,
+    current_exe: &Path,
+) -> Result<bool, String> {
+    let destination = destination
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve existing CLI binary: {err}"))?;
+    let current_exe = current_exe
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve current CLI binary: {err}"))?;
+    Ok(destination == current_exe)
+}
+
+#[cfg(windows)]
+fn schedule_deferred_non_unix_replacement(staged: &Path, destination: &Path) -> Result<(), String> {
+    let script = destination.with_extension("fini-update.cmd");
+    let content = windows_replacement_script(staged, destination);
+    fs::write(&script, content)
+        .map_err(|err| format!("failed to write deferred CLI replacement helper: {err}"))?;
+    Command::new("cmd")
+        .args(["/C", "start", "", "/min"])
+        .arg(&script)
+        .spawn()
+        .map_err(|err| format!("failed to start deferred CLI replacement helper: {err}"))?;
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn schedule_deferred_non_unix_replacement(
+    staged: &Path,
+    _destination: &Path,
+) -> Result<(), String> {
+    let _ = fs::remove_file(staged);
+    Err("cannot replace the running CLI binary on this platform".to_string())
+}
+
+#[cfg(all(test, not(windows)))]
+fn schedule_deferred_non_unix_replacement(
+    _staged: &Path,
+    _destination: &Path,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn windows_replacement_script(staged: &Path, destination: &Path) -> String {
+    let staged = batch_literal(staged);
+    let destination = batch_literal(destination);
+    format!(
+        "@echo off\r\n\
+         setlocal\r\n\
+         set \"STAGED={staged}\"\r\n\
+         set \"DESTINATION={destination}\"\r\n\
+         for /l %%i in (1,1,30) do (\r\n\
+         \u{20} move /Y \"%STAGED%\" \"%DESTINATION%\" >nul 2>nul\r\n\
+         \u{20} if not exist \"%STAGED%\" (\r\n\
+         \u{20}\u{20} del \"%~f0\" >nul 2>nul\r\n\
+         \u{20}\u{20} exit /b 0\r\n\
+         \u{20} )\r\n\
+         \u{20} timeout /t 1 /nobreak >nul\r\n\
+         )\r\n\
+         exit /b 1\r\n"
+    )
+}
+
+#[cfg(any(windows, test))]
+fn batch_literal(path: &Path) -> String {
+    path.to_string_lossy().replace('%', "%%")
 }
 
 fn build_update_plan(
@@ -680,5 +761,42 @@ mod tests {
         assert!(!staged.exists());
         assert!(destination.is_dir());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn non_unix_replacement_detects_running_destination() {
+        let root = PathBuf::from("/var/tmp").join(format!(
+            "fini-replace-test-{}-{}",
+            std::process::id(),
+            "running"
+        ));
+        fs::create_dir_all(&root).expect("create temp dir");
+        fs::create_dir_all(root.join("nested")).expect("create nested temp dir");
+        let current = root.join("fini.exe");
+        let alias = root.join("nested").join("..").join("fini.exe");
+        let other = root.join("other.exe");
+        fs::write(&current, b"current").expect("write current");
+        fs::write(&other, b"other").expect("write other");
+
+        assert!(
+            replacement_targets_running_binary(&alias, &current).expect("compare running target")
+        );
+        assert!(
+            !replacement_targets_running_binary(&other, &current).expect("compare other target")
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn windows_replacement_script_escapes_percent_paths() {
+        let staged = PathBuf::from(r"C:\Users\example\AppData\Local\fini%20folder\fini.tmp");
+        let destination = PathBuf::from(r"C:\Users\example\.local\bin\fini.exe");
+
+        let script = windows_replacement_script(&staged, &destination);
+
+        assert!(script.contains(r"fini%%20folder"));
+        assert!(script.contains("move /Y"));
+        assert!(script.contains(r"%STAGED%"));
+        assert!(script.contains(r"%DESTINATION%"));
     }
 }
