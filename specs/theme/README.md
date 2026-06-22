@@ -69,23 +69,36 @@ Color tokens describe semantic roles rather than component names:
 - `border.softer`
 - `fg.1` through `fg.6`
 - `space.personal`
+- `space.personal.content`
 - `space.family`
+- `space.family.content`
 - `space.work`
+- `space.work.content`
 - DaisyUI bridge colors used by existing UI surfaces:
   - `base.100`
   - `base.200`
   - `base.300`
   - `base.content`
+  - `base.content.channel`
   - `primary`
   - `primary.content`
   - `secondary`
   - `secondary.content`
   - `success`
   - `success.content`
+  - `success.channel`
   - `warning`
   - `warning.content`
+  - `warning.channel`
   - `error`
   - `error.content`
+  - `error.channel`
+
+Color tokens without a `.channel` suffix must be complete CSS color values.
+The `.channel` tokens must be OKLCH channel tuples suitable for consumers that
+wrap them in `oklch(var(...))`, such as priority rings. Keeping full colors and
+channel tuples separate avoids one token value needing to satisfy incompatible
+CSS syntaxes.
 
 ### Typography
 
@@ -151,8 +164,10 @@ Examples:
 | `color.fg.1` | `--theme-color-fg-1` |
 | `color.base.100` | `--theme-color-base-100` |
 | `color.base.content` | `--theme-color-base-content` |
+| `color.base.content.channel` | `--theme-color-base-content-channel` |
 | `color.primary.content` | `--theme-color-primary-content` |
 | `color.secondary.content` | `--theme-color-secondary-content` |
+| `color.success.channel` | `--theme-color-success-channel` |
 | `typography.family.sans` | `--theme-typography-family-sans` |
 | `radius.md` | `--theme-radius-md` |
 
@@ -170,22 +185,29 @@ Existing Fini variables may bridge to theme variables during migration:
   --fg-5: var(--theme-color-fg-5);
   --fg-6: var(--theme-color-fg-6);
   --space-color-personal: var(--theme-color-space-personal);
+  --space-color-personal-content: var(--theme-color-space-personal-content);
   --space-color-family: var(--theme-color-space-family);
+  --space-color-family-content: var(--theme-color-space-family-content);
   --space-color-work: var(--theme-color-space-work);
+  --space-color-work-content: var(--theme-color-space-work-content);
   --color-base-100: var(--theme-color-base-100);
   --color-base-200: var(--theme-color-base-200);
   --color-base-300: var(--theme-color-base-300);
   --color-base-content: var(--theme-color-base-content);
+  --color-base-content-channel: var(--theme-color-base-content-channel);
   --color-primary: var(--theme-color-primary);
   --color-primary-content: var(--theme-color-primary-content);
   --color-secondary: var(--theme-color-secondary);
   --color-secondary-content: var(--theme-color-secondary-content);
   --color-success: var(--theme-color-success);
   --color-success-content: var(--theme-color-success-content);
+  --color-success-channel: var(--theme-color-success-channel);
   --color-warning: var(--theme-color-warning);
   --color-warning-content: var(--theme-color-warning-content);
+  --color-warning-channel: var(--theme-color-warning-channel);
   --color-error: var(--theme-color-error);
   --color-error-content: var(--theme-color-error-content);
+  --color-error-channel: var(--theme-color-error-channel);
   --radius-sm: var(--theme-radius-sm);
   --radius-md: var(--theme-radius-md);
   --radius-lg: var(--theme-radius-lg);
@@ -198,6 +220,24 @@ Existing Fini variables may bridge to theme variables during migration:
 
 This bridge lets components migrate incrementally without changing every
 surface in the first implementation PR.
+
+Existing filled space badges should bridge foreground colors as well as
+backgrounds:
+
+```css
+.badge.space-color-personal {
+  background-color: var(--space-color-personal);
+  border-color: var(--space-color-personal);
+  color: var(--space-color-personal-content);
+}
+```
+
+Current priority UI that needs OKLCH channel values should migrate from
+`oklch(var(--color-base-content)/0.3)`, `oklch(var(--color-success))`,
+`oklch(var(--color-warning))`, and `oklch(var(--color-error))` to the
+corresponding `--color-*-channel` bridge variables. Direct surfaces should keep
+using the complete color variables such as `--color-base-content`,
+`--color-success`, `--color-warning`, and `--color-error`.
 
 ## Runtime Selection
 
