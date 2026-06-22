@@ -341,10 +341,30 @@ fn activate_binary(target_binary: &Path, install_bin: &Path) -> Result<(), Strin
         .ok_or_else(|| "install path has no parent directory".to_string())?;
     fs::create_dir_all(parent).map_err(|err| format!("failed to create bin dir: {err}"))?;
     let tmp_bin = install_bin.with_extension("fini-update-tmp");
-    fs::copy(target_binary, &tmp_bin)
-        .map_err(|err| format!("failed to stage updated CLI binary: {err}"))?;
-    fs::rename(&tmp_bin, install_bin)
-        .map_err(|err| format!("failed to activate updated CLI binary: {err}"))?;
+    if tmp_bin.exists() {
+        fs::remove_file(&tmp_bin)
+            .map_err(|err| format!("failed to remove stale staged CLI binary: {err}"))?;
+    }
+    if let Err(err) = fs::copy(target_binary, &tmp_bin) {
+        let _ = fs::remove_file(&tmp_bin);
+        return Err(format!("failed to stage updated CLI binary: {err}"));
+    }
+    replace_file_non_unix(&tmp_bin, install_bin)?;
+    Ok(())
+}
+
+#[cfg(any(not(unix), test))]
+fn replace_file_non_unix(staged: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() {
+        if let Err(err) = fs::remove_file(destination) {
+            let _ = fs::remove_file(staged);
+            return Err(format!("failed to replace existing CLI binary: {err}"));
+        }
+    }
+    if let Err(err) = fs::rename(staged, destination) {
+        let _ = fs::remove_file(staged);
+        return Err(format!("failed to activate updated CLI binary: {err}"));
+    }
     Ok(())
 }
 
@@ -586,5 +606,46 @@ mod tests {
         assert!(result
             .expect_err("digest mismatch")
             .contains("digest mismatch"));
+    }
+
+    #[test]
+    fn non_unix_replacement_overwrites_existing_destination() {
+        let root = PathBuf::from("/var/tmp").join(format!(
+            "fini-replace-test-{}-{}",
+            std::process::id(),
+            "overwrite"
+        ));
+        fs::create_dir_all(&root).expect("create temp dir");
+        let staged = root.join("fini-update-tmp");
+        let destination = root.join("fini.exe");
+        fs::write(&staged, b"new").expect("write staged");
+        fs::write(&destination, b"old").expect("write destination");
+
+        replace_file_non_unix(&staged, &destination).expect("replace destination");
+
+        assert!(!staged.exists());
+        assert_eq!(fs::read(&destination).expect("read destination"), b"new");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn non_unix_replacement_cleans_staged_file_when_destination_cannot_be_removed() {
+        let root = PathBuf::from("/var/tmp").join(format!(
+            "fini-replace-test-{}-{}",
+            std::process::id(),
+            "cleanup"
+        ));
+        fs::create_dir_all(&root).expect("create temp dir");
+        let staged = root.join("fini-update-tmp");
+        let destination = root.join("fini.exe");
+        fs::write(&staged, b"new").expect("write staged");
+        fs::create_dir(&destination).expect("create blocking destination");
+
+        let result = replace_file_non_unix(&staged, &destination);
+
+        assert!(result.is_err());
+        assert!(!staged.exists());
+        assert!(destination.is_dir());
+        let _ = fs::remove_dir_all(&root);
     }
 }
