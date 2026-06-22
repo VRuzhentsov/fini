@@ -316,13 +316,28 @@ fn verify_candidate_binary(binary: &Path, target_version: &str) -> Result<(), St
         return Err("extracted CLI binary failed minimal version check".to_string());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.contains(target_version) {
+    let actual_version = candidate_version_from_stdout(&stdout)?;
+    let expected_version = Version::parse(target_version)
+        .map_err(|err| format!("failed to parse target CLI version {target_version}: {err}"))?;
+    if actual_version != expected_version {
         return Err(format!(
             "extracted CLI version check failed: expected {target_version}, got {}",
             stdout.trim()
         ));
     }
     Ok(())
+}
+
+fn candidate_version_from_stdout(stdout: &str) -> Result<Version, String> {
+    stdout
+        .split_whitespace()
+        .find_map(|part| Version::parse(part.trim_start_matches('v')).ok())
+        .ok_or_else(|| {
+            format!(
+                "extracted CLI version check failed: could not parse version from {}",
+                stdout.trim()
+            )
+        })
 }
 
 #[cfg(unix)]
@@ -707,6 +722,31 @@ mod tests {
         assert_eq!(
             result.expect_err("older target rejected"),
             "refusing to downgrade CLI from 0.1.34-rc.1 to 0.1.33"
+        );
+    }
+
+    #[test]
+    fn candidate_version_parser_rejects_prefix_prerelease() {
+        let actual =
+            candidate_version_from_stdout("fini 0.1.33-rc.1\n").expect("candidate version");
+        let target = Version::parse("0.1.33").expect("target version");
+
+        assert_ne!(actual, target);
+    }
+
+    #[test]
+    fn candidate_version_parser_rejects_prefix_patch_version() {
+        let actual = candidate_version_from_stdout("fini 0.1.330\n").expect("candidate version");
+        let target = Version::parse("0.1.33").expect("target version");
+
+        assert_ne!(actual, target);
+    }
+
+    #[test]
+    fn candidate_version_parser_accepts_exact_target() {
+        assert_eq!(
+            candidate_version_from_stdout("fini 0.1.33\n").expect("candidate version"),
+            Version::parse("0.1.33").expect("target version")
         );
     }
 
