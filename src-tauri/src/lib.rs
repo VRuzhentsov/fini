@@ -198,6 +198,12 @@ pub fn run() {
                 Ok(conn) => {
                     app.manage(StartupRecoveryState(std::sync::Mutex::new(None)));
                     app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
+                    #[cfg(target_os = "linux")]
+                    if let Err(error) =
+                        services::appimage_desktop::self_register_appimage_desktop_entry()
+                    {
+                        eprintln!("[appimage-desktop] self-registration failed: {error}");
+                    }
                 }
                 Err(error) => match unsupported_schema_startup_recovery(error.clone()) {
                     Some(recovery) => {
