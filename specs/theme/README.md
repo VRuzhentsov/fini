@@ -327,13 +327,19 @@ Existing Fini variables may bridge to theme variables during migration:
 This bridge lets components migrate incrementally without changing every
 surface in the first implementation PR.
 
-Existing filled space badges should bridge foreground colors as well as
-backgrounds:
+Existing filled space surfaces should bridge foreground colors as well as
+backgrounds. Badge surfaces and the selected space picker chip must use the
+matching `--space-color-*-content` variable instead of fixed white or dark text:
 
 ```css
 .badge.space-color-personal {
   background-color: var(--space-color-personal);
   border-color: var(--space-color-personal);
+  color: var(--space-color-personal-content);
+}
+
+.space-chip.space-color-personal {
+  background-color: var(--space-color-personal);
   color: var(--space-color-personal-content);
 }
 ```
@@ -343,7 +349,10 @@ Current priority UI that needs OKLCH channel values should migrate from
 `oklch(var(--color-warning))`, and `oklch(var(--color-error))` to the
 corresponding `--color-*-channel` bridge variables. Direct surfaces should keep
 using the complete color variables such as `--color-base-content`,
-`--color-success`, `--color-warning`, and `--color-error`.
+`--color-success`, `--color-warning`, and `--color-error` for backgrounds.
+Filled status text on those surfaces should use the matching content variables,
+such as `--color-success-content` and `--color-error-content`, instead of fixed
+foreground colors.
 
 ## Runtime Selection
 
