@@ -11,6 +11,8 @@ use std::process::Command;
 
 const DEFAULT_REPO: &str = "VRuzhentsov/fini";
 const GITHUB_API: &str = "https://api.github.com";
+const GITHUB_RELEASES_PER_PAGE: usize = 100;
+const GITHUB_RELEASES_MAX_PAGES: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct UpdateOptions {
@@ -61,7 +63,7 @@ struct GitHubRelease {
 #[derive(Debug, Deserialize)]
 struct GitHubAsset {
     name: String,
-    browser_download_url: String,
+    url: String,
     digest: Option<String>,
 }
 
@@ -95,7 +97,6 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
 }
 
 fn list_releases(repo: &str) -> Result<Vec<GitHubRelease>, String> {
-    let url = format!("{GITHUB_API}/repos/{repo}/releases");
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|err| format!("failed to create update runtime: {err}"))?;
     runtime.block_on(async {
@@ -103,25 +104,47 @@ fn list_releases(repo: &str) -> Result<Vec<GitHubRelease>, String> {
             .default_headers(github_headers()?)
             .build()
             .map_err(|err| format!("failed to create GitHub client: {err}"))?;
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|err| format!("failed to query GitHub releases: {err}"))?;
-        if !response.status().is_success() {
-            return Err(format!(
-                "GitHub releases query failed with HTTP {}",
-                response.status()
-            ));
+        let mut releases = Vec::new();
+        let mut page = 1;
+        loop {
+            let response = client
+                .get(releases_page_url(repo, page))
+                .send()
+                .await
+                .map_err(|err| format!("failed to query GitHub releases: {err}"))?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "GitHub releases query failed with HTTP {}",
+                    response.status()
+                ));
+            }
+            let text = response
+                .text()
+                .await
+                .map_err(|err| format!("failed to read GitHub release response: {err}"))?;
+            let mut page_releases: Vec<GitHubRelease> = serde_json::from_str(&text)
+                .map_err(|err| format!("failed to parse GitHub release response: {err}"))?;
+            let fetched = page_releases.len();
+            releases.append(&mut page_releases);
+            let Some(next_page) = next_releases_page(page, fetched) else {
+                break;
+            };
+            page = next_page;
         }
-        let text = response
-            .text()
-            .await
-            .map_err(|err| format!("failed to read GitHub release response: {err}"))?;
-        let releases: Vec<GitHubRelease> = serde_json::from_str(&text)
-            .map_err(|err| format!("failed to parse GitHub release response: {err}"))?;
         Ok(releases)
     })
+}
+
+fn releases_page_url(repo: &str, page: usize) -> String {
+    format!("{GITHUB_API}/repos/{repo}/releases?per_page={GITHUB_RELEASES_PER_PAGE}&page={page}")
+}
+
+fn next_releases_page(current_page: usize, fetched: usize) -> Option<usize> {
+    if fetched < GITHUB_RELEASES_PER_PAGE || current_page >= GITHUB_RELEASES_MAX_PAGES {
+        None
+    } else {
+        Some(current_page + 1)
+    }
 }
 
 fn apply_update(plan: &UpdatePlan) -> Result<(), String> {
@@ -161,6 +184,7 @@ fn download_asset(url: &str, archive_path: &Path) -> Result<(), String> {
             .map_err(|err| format!("failed to create download client: {err}"))?;
         let response = client
             .get(url)
+            .header(ACCEPT, HeaderValue::from_static("application/octet-stream"))
             .send()
             .await
             .map_err(|err| format!("failed to download update asset: {err}"))?;
@@ -553,7 +577,7 @@ fn select_update_plan(
         current_version.to_string(),
         release.tag_name.clone(),
         asset.name.clone(),
-        asset.browser_download_url.clone(),
+        asset.url.clone(),
         asset.digest.clone(),
         install_bin,
         target,
@@ -759,7 +783,7 @@ mod tests {
                 prerelease: true,
                 assets: vec![GitHubAsset {
                     name: "fini-v0.1.34-linux-x64-cli.tar.gz".to_string(),
-                    browser_download_url: "https://example.test/pre.tar.gz".to_string(),
+                    url: "https://api.github.test/assets/pre".to_string(),
                     digest: None,
                 }],
             },
@@ -769,7 +793,7 @@ mod tests {
                 prerelease: false,
                 assets: vec![GitHubAsset {
                     name: "fini-v0.1.33-linux-x64-cli.tar.gz".to_string(),
-                    browser_download_url: "https://example.test/stable.tar.gz".to_string(),
+                    url: "https://api.github.test/assets/stable".to_string(),
                     digest: Some("sha256:abc".to_string()),
                 }],
             },
@@ -789,7 +813,7 @@ mod tests {
         assert_eq!(plan.asset_name, "fini-v0.1.33-linux-x64-cli.tar.gz");
         assert_eq!(
             plan.asset_url,
-            "https://example.test/stable.tar.gz".to_string()
+            "https://api.github.test/assets/stable".to_string()
         );
     }
 
@@ -802,7 +826,7 @@ mod tests {
                 prerelease: false,
                 assets: vec![GitHubAsset {
                     name: "fini-v0.1.32-linux-x64-cli.tar.gz".to_string(),
-                    browser_download_url: "https://example.test/old.tar.gz".to_string(),
+                    url: "https://api.github.test/assets/old".to_string(),
                     digest: None,
                 }],
             },
@@ -812,7 +836,7 @@ mod tests {
                 prerelease: false,
                 assets: vec![GitHubAsset {
                     name: "fini-v0.1.34-linux-x64-cli.tar.gz".to_string(),
-                    browser_download_url: "https://example.test/new.tar.gz".to_string(),
+                    url: "https://api.github.test/assets/new".to_string(),
                     digest: Some("sha256:def".to_string()),
                 }],
             },
@@ -822,7 +846,7 @@ mod tests {
                 prerelease: true,
                 assets: vec![GitHubAsset {
                     name: "fini-v0.1.35-rc.1-linux-x64-cli.tar.gz".to_string(),
-                    browser_download_url: "https://example.test/pre.tar.gz".to_string(),
+                    url: "https://api.github.test/assets/pre".to_string(),
                     digest: None,
                 }],
             },
@@ -840,7 +864,25 @@ mod tests {
         assert!(!plan.already_current);
         assert_eq!(plan.target_tag, "v0.1.34");
         assert_eq!(plan.asset_name, "fini-v0.1.34-linux-x64-cli.tar.gz");
-        assert_eq!(plan.asset_url, "https://example.test/new.tar.gz");
+        assert_eq!(plan.asset_url, "https://api.github.test/assets/new");
+    }
+
+    #[test]
+    fn releases_page_url_requests_bounded_pages() {
+        assert_eq!(
+            releases_page_url("example/fini", 2),
+            "https://api.github.com/repos/example/fini/releases?per_page=100&page=2"
+        );
+    }
+
+    #[test]
+    fn release_pagination_continues_only_after_full_pages() {
+        assert_eq!(next_releases_page(1, GITHUB_RELEASES_PER_PAGE), Some(2));
+        assert_eq!(next_releases_page(1, GITHUB_RELEASES_PER_PAGE - 1), None);
+        assert_eq!(
+            next_releases_page(GITHUB_RELEASES_MAX_PAGES, GITHUB_RELEASES_PER_PAGE),
+            None
+        );
     }
 
     #[test]
