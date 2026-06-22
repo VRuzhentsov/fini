@@ -517,16 +517,21 @@ fn select_update_plan(
     target: CliAssetTarget,
     install_bin: PathBuf,
 ) -> Result<UpdatePlan, String> {
-    let release = releases
+    let (release, asset) = releases
         .iter()
-        .find(|release| !release.draft && !release.prerelease)
-        .ok_or_else(|| "no stable GitHub release found".to_string())?;
-    let asset_name = cli_asset_name(&release.tag_name, &target);
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == asset_name)
-        .ok_or_else(|| format!("release {} does not include {asset_name}", release.tag_name))?;
+        .filter(|release| !release.draft && !release.prerelease)
+        .filter_map(|release| {
+            let version = release_version(&release.tag_name).ok()?;
+            let asset_name = cli_asset_name(&release.tag_name, &target);
+            let asset = release
+                .assets
+                .iter()
+                .find(|asset| asset.name == asset_name)?;
+            Some((version, release, asset))
+        })
+        .max_by(|(left, _, _), (right, _, _)| left.cmp(right))
+        .map(|(_, release, asset)| (release, asset))
+        .ok_or_else(|| "no stable GitHub release with matching CLI asset found".to_string())?;
 
     build_update_plan(
         repo,
@@ -538,6 +543,11 @@ fn select_update_plan(
         install_bin,
         target,
     )
+}
+
+fn release_version(tag: &str) -> Result<Version, String> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    Version::parse(version).map_err(|err| format!("failed to parse release tag {tag}: {err}"))
 }
 
 pub fn cli_asset_name(tag: &str, target: &CliAssetTarget) -> String {
@@ -741,6 +751,56 @@ mod tests {
             plan.asset_url,
             "https://example.test/stable.tar.gz".to_string()
         );
+    }
+
+    #[test]
+    fn select_update_plan_chooses_highest_stable_matching_asset() {
+        let releases = vec![
+            GitHubRelease {
+                tag_name: "v0.1.32".to_string(),
+                draft: false,
+                prerelease: false,
+                assets: vec![GitHubAsset {
+                    name: "fini-v0.1.32-linux-x64-cli.tar.gz".to_string(),
+                    browser_download_url: "https://example.test/old.tar.gz".to_string(),
+                    digest: None,
+                }],
+            },
+            GitHubRelease {
+                tag_name: "v0.1.34".to_string(),
+                draft: false,
+                prerelease: false,
+                assets: vec![GitHubAsset {
+                    name: "fini-v0.1.34-linux-x64-cli.tar.gz".to_string(),
+                    browser_download_url: "https://example.test/new.tar.gz".to_string(),
+                    digest: Some("sha256:def".to_string()),
+                }],
+            },
+            GitHubRelease {
+                tag_name: "v0.1.35-rc.1".to_string(),
+                draft: false,
+                prerelease: true,
+                assets: vec![GitHubAsset {
+                    name: "fini-v0.1.35-rc.1-linux-x64-cli.tar.gz".to_string(),
+                    browser_download_url: "https://example.test/pre.tar.gz".to_string(),
+                    digest: None,
+                }],
+            },
+        ];
+
+        let plan = select_update_plan(
+            "example/fini".to_string(),
+            "0.1.33",
+            &releases,
+            linux_x64_target(),
+            PathBuf::from("/var/tmp/fini-test-bin/fini"),
+        )
+        .expect("selected update plan");
+
+        assert!(!plan.already_current);
+        assert_eq!(plan.target_tag, "v0.1.34");
+        assert_eq!(plan.asset_name, "fini-v0.1.34-linux-x64-cli.tar.gz");
+        assert_eq!(plan.asset_url, "https://example.test/new.tar.gz");
     }
 
     #[test]
