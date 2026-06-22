@@ -1,7 +1,9 @@
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+use semver::Version;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
@@ -471,12 +473,18 @@ fn build_update_plan(
         .strip_prefix('v')
         .unwrap_or(&target_tag)
         .to_string();
+    let version_order = compare_update_versions(&current_version, &target_version)?;
+    if version_order == Ordering::Less {
+        return Err(format!(
+            "refusing to downgrade CLI from {current_version} to {target_version}"
+        ));
+    }
     let install_root = default_install_root()?;
     let install_dir = install_root.join(&target_tag);
     let target_binary = install_dir.join(&target.executable_name);
     Ok(UpdatePlan {
         repo,
-        already_current: current_version == target_version,
+        already_current: version_order == Ordering::Equal,
         current_version,
         target_tag,
         target_version,
@@ -489,6 +497,17 @@ fn build_update_plan(
         archive_kind: target.archive_kind,
         executable_name: target.executable_name,
     })
+}
+
+fn compare_update_versions(
+    current_version: &str,
+    target_version: &str,
+) -> Result<Ordering, String> {
+    let current = Version::parse(current_version)
+        .map_err(|err| format!("failed to parse current CLI version {current_version}: {err}"))?;
+    let target = Version::parse(target_version)
+        .map_err(|err| format!("failed to parse target CLI version {target_version}: {err}"))?;
+    Ok(target.cmp(&current))
 }
 
 fn select_update_plan(
@@ -659,6 +678,25 @@ mod tests {
             dirs::home_dir()
                 .expect("home")
                 .join(".local/lib/fini/v0.1.33/fini")
+        );
+    }
+
+    #[test]
+    fn update_plan_rejects_target_older_than_current_version() {
+        let result = build_update_plan(
+            "example/fini".to_string(),
+            "0.1.34-rc.1".to_string(),
+            "v0.1.33".to_string(),
+            "fini-v0.1.33-linux-x64-cli.tar.gz".to_string(),
+            "https://example.test/fini.tar.gz".to_string(),
+            Some("sha256:abc".to_string()),
+            PathBuf::from("/var/tmp/fini-test-bin/fini"),
+            linux_x64_target(),
+        );
+
+        assert_eq!(
+            result.expect_err("older target rejected"),
+            "refusing to downgrade CLI from 0.1.34-rc.1 to 0.1.33"
         );
     }
 
