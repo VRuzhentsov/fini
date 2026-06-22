@@ -7,17 +7,38 @@ import SpacePicker from "./components/SpacePicker.vue";
 import { useDeviceStore } from "./stores/device";
 import { useNotificationActions } from "./composables/useNotificationActions";
 
+type StartupRecovery = {
+  kind: string;
+  title: string;
+  message: string;
+};
+
+const props = defineProps<{
+  startupRecovery?: StartupRecovery | null;
+}>();
+
 const deviceStore = useDeviceStore();
 
 useNotificationActions();
 
 onMounted(() => {
+  if (props.startupRecovery) {
+    return;
+  }
+
   void deviceStore.hydrate();
 });
 </script>
 
 <template>
-  <div class="app-shell">
+  <main v-if="startupRecovery" class="recovery-shell">
+    <section class="recovery-panel" role="alert" aria-live="assertive">
+      <p class="recovery-kicker">Fini cannot open this database</p>
+      <h1>{{ startupRecovery.title }}</h1>
+      <p class="recovery-message">{{ startupRecovery.message }}</p>
+    </section>
+  </main>
+  <div v-else class="app-shell">
     <nav class="nav">
       <div class="nav-links">
         <router-link to="/main">Focus</router-link>
@@ -71,6 +92,42 @@ html, body, #app {
   color: var(--color-base-content);
   background-color: var(--color-page-bg);
   padding-top: env(safe-area-inset-top);
+}
+
+.recovery-shell {
+  display: grid;
+  min-height: 100vh;
+  padding: 1rem;
+  place-items: center;
+  color: var(--color-base-content);
+  background: var(--color-page-bg);
+}
+
+.recovery-panel {
+  width: min(100%, 42rem);
+  padding: 1.5rem;
+  border: 1px solid color-mix(in srgb, var(--color-error) 35%, transparent);
+  border-radius: 8px;
+  background: var(--color-base-100);
+  box-shadow: var(--shadow-sm);
+}
+
+.recovery-kicker {
+  margin: 0 0 0.5rem;
+  color: var(--color-error);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.recovery-panel h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.recovery-message {
+  margin: 1rem 0 0;
+  white-space: pre-wrap;
 }
 
 .nav {
