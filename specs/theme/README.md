@@ -14,6 +14,8 @@ user-installed theme packs later, without adding theme import UI in this slice.
 - Tokens map to CSS custom properties consumed by Vue components and global
   styles.
 - Typography tokens are part of the contract.
+- Theme packs may optionally declare semantic icon mappings for future icon
+  customization.
 - Theme scope is app-wide.
 - Active theme preference is stored per device and must not sync through
   paired-device replication.
@@ -21,13 +23,17 @@ user-installed theme packs later, without adding theme import UI in this slice.
 
 ## Token Shape
 
-A theme token file must contain:
+A theme token file has this shape:
 
 ```json
 {
   "id": "fini-default",
   "name": "Fini Default",
   "version": 1,
+  "icons": {
+    "set": "heroicons-outline-24",
+    "overrides": {}
+  },
   "modes": {
     "light": {
       "color": {},
@@ -55,8 +61,71 @@ Required top-level fields:
 - `modes.light`: tokens for light rendering.
 - `modes.dark`: tokens for dark rendering.
 
+Optional top-level fields:
+
+- `icons`: icon asset mapping for semantic icon slots.
+
 The runtime may reject a theme when required top-level fields or required mode
 objects are missing.
+
+## Token Leaves
+
+Version 1 token leaves use primitive JSON values, not object wrappers. Theme
+authors must set each token path directly to the CSS value that will be assigned
+to the mapped custom property.
+
+```json
+{
+  "modes": {
+    "light": {
+      "color": {
+        "page": {
+          "bg": "#f8fafc"
+        },
+        "base": {
+          "content": {
+            "channel": "27.8078% 0.029596 256.848"
+          }
+        }
+      },
+      "typography": {
+        "family": {
+          "sans": "Inter, ui-sans-serif, system-ui, sans-serif"
+        },
+        "size": {
+          "body": "1rem"
+        },
+        "weight": {
+          "semibold": 600
+        }
+      },
+      "spacing": {
+        "4": "1rem"
+      },
+      "radius": {
+        "md": "0.5rem"
+      },
+      "shadow": {
+        "sm": "0 1px 2px 0 rgb(15 23 42 / 0.08)"
+      }
+    }
+  }
+}
+```
+
+Accepted leaf value forms:
+
+- Color, typography family, typography size, line height, spacing, radius, and
+  shadow tokens: strings containing complete CSS property values.
+- Typography weight tokens: numbers or strings that are valid CSS
+  `font-weight` values.
+- OKLCH `.channel` color tokens: strings containing channel tuples only,
+  without the wrapping `oklch(...)` function.
+
+Object leaves such as `{ "value": "#f8fafc" }` are not part of the version 1
+contract. A future schema version may add token metadata, but the runtime for
+version 1 should reject object leaves instead of silently accepting a different
+shape.
 
 ## Token Categories
 
@@ -150,6 +219,43 @@ Shadow tokens define:
 
 - `shadow.sm`
 - `shadow.lg`
+
+## Icon Assets
+
+Icon mappings are optional and are not mode-specific. They describe semantic UI
+slots rather than component filenames, so the app can keep stable defaults when
+a theme does not customize icons.
+
+```json
+{
+  "icons": {
+    "set": "heroicons-outline-24",
+    "overrides": {
+      "quest.complete": "check",
+      "quest.focus": "bolt",
+      "quest.move": "arrows-right-left",
+      "quest.delete": "trash",
+      "reminder.due": "calendar-days",
+      "space.personal": "user",
+      "space.family": "home",
+      "space.work": "briefcase"
+    }
+  }
+}
+```
+
+Icon fields:
+
+- `icons.set`: approved built-in icon set used by the mapping.
+- `icons.overrides`: semantic slot to icon-name mapping.
+
+For version 1, icon values should resolve to known icons from approved built-in
+sets. Theme JSON should not contain arbitrary remote image URLs or raw SVG
+markup. Future theme-pack import work may add bundled local SVG assets, with
+validation and sanitization, without changing the color token contract.
+
+When an icon slot is missing or an icon name is unsupported, the runtime should
+fall back to the app default for that slot.
 
 ## CSS Variable Mapping
 
