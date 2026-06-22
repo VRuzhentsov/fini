@@ -3,6 +3,8 @@ pub mod appimage_desktop;
 pub mod backup;
 #[cfg(feature = "cli-plane")]
 pub mod cli;
+#[cfg(feature = "cli-plane")]
+pub mod cli_update;
 pub mod db;
 pub mod device_connection;
 pub mod due_time;
