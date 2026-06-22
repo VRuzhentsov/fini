@@ -97,12 +97,12 @@ classes rather than hard-coded font stacks when a token exists.
 
 Spacing tokens define app-level rhythm values:
 
-- `space.1`
-- `space.2`
-- `space.3`
-- `space.4`
-- `space.6`
-- `space.8`
+- `spacing.1`
+- `spacing.2`
+- `spacing.3`
+- `spacing.4`
+- `spacing.6`
+- `spacing.8`
 
 This does not replace all Tailwind spacing utilities in one change. New shared
 surfaces should prefer token-backed variables when the spacing is semantic or
