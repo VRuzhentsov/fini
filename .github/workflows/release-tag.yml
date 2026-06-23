@@ -117,6 +117,8 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          FINI_TAURI_UPDATER_PUBKEY: ${{ vars.FINI_TAURI_UPDATER_PUBKEY }}
         run: |
           set -euo pipefail
           required=(
@@ -124,6 +126,8 @@ jobs:
             ANDROID_KEYSTORE_PASSWORD
             ANDROID_KEY_ALIAS
             ANDROID_KEY_PASSWORD
+            TAURI_SIGNING_PRIVATE_KEY
+            FINI_TAURI_UPDATER_PUBKEY
           )
           for key in "${required[@]}"; do
             if [ -z "${!key:-}" ]; then
@@ -299,6 +303,9 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify Linux desktop binary
@@ -324,9 +331,14 @@ jobs:
           fi
 
       - name: Build Linux CLI
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ vars.FINI_TAURI_UPDATER_PUBKEY }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Linux release files
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
@@ -372,6 +384,9 @@ jobs:
             echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
             exit 1
           fi
+          raw_cli_asset="release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli"
+          cp "$cli_binary" "$raw_cli_asset"
+          npm run tauri -- signer sign "$raw_cli_asset"
           tar -C "$(dirname "$cli_binary")" -czf "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz" fini
 
       - name: Upload Linux artifact
@@ -436,9 +451,14 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Build Windows CLI
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ vars.FINI_TAURI_UPDATER_PUBKEY }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Windows release files
@@ -771,6 +791,34 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Generate CLI updater manifest
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          x64_asset="fini-${GITHUB_REF_NAME}-linux-x64-cli"
+          arm64_asset="fini-${GITHUB_REF_NAME}-linux-arm64-cli"
+          for asset in "$x64_asset" "$arm64_asset"; do
+            test -f "release-assets/${asset}" || { echo "Missing CLI updater asset: ${asset}" >&2; exit 1; }
+            test -f "release-assets/${asset}.sig" || { echo "Missing CLI updater signature: ${asset}.sig" >&2; exit 1; }
+          done
+          x64_sig="$(cat "release-assets/${x64_asset}.sig")"
+          arm64_sig="$(cat "release-assets/${arm64_asset}.sig")"
+          cat > release-assets/latest-cli.json <<EOF
+          {
+            "version": "${version}",
+            "platforms": {
+              "cli-linux-x86_64": {
+                "signature": "${x64_sig}",
+                "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${x64_asset}"
+              },
+              "cli-linux-aarch64": {
+                "signature": "${arm64_sig}",
+                "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${arm64_asset}"
+              }
+            }
+          }
+          EOF
+
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
         with:
@@ -829,6 +877,34 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+
+      - name: Generate CLI updater manifest
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          x64_asset="fini-${GITHUB_REF_NAME}-linux-x64-cli"
+          arm64_asset="fini-${GITHUB_REF_NAME}-linux-arm64-cli"
+          for asset in "$x64_asset" "$arm64_asset"; do
+            test -f "release-assets/${asset}" || { echo "Missing CLI updater asset: ${asset}" >&2; exit 1; }
+            test -f "release-assets/${asset}.sig" || { echo "Missing CLI updater signature: ${asset}.sig" >&2; exit 1; }
+          done
+          x64_sig="$(cat "release-assets/${x64_asset}.sig")"
+          arm64_sig="$(cat "release-assets/${arm64_asset}.sig")"
+          cat > release-assets/latest-cli.json <<EOF
+          {
+            "version": "${version}",
+            "platforms": {
+              "cli-linux-x86_64": {
+                "signature": "${x64_sig}",
+                "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${x64_asset}"
+              },
+              "cli-linux-aarch64": {
+                "signature": "${arm64_sig}",
+                "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${arm64_asset}"
+              }
+            }
+          }
+          EOF
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
