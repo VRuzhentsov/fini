@@ -40,19 +40,13 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|err| format!("failed to create update runtime: {err}"))?;
     runtime.block_on(async move {
-        let mut builder = app_handle
+        let builder = app_handle
             .updater_builder()
             .target(config.target.clone())
             .pubkey(config.pubkey.clone())
             .endpoints(vec![config.endpoint.clone()])
             .map_err(|err| format!("failed to configure updater endpoint: {err}"))?
             .executable_path(&config.executable_path);
-
-        if let Some(token) = github_token_for_endpoint(&config.endpoint) {
-            builder = builder
-                .header("Authorization", format!("Bearer {token}"))
-                .map_err(|err| format!("failed to configure updater auth header: {err}"))?;
-        }
 
         let updater = builder
             .build()
@@ -134,22 +128,6 @@ fn default_cli_update_target() -> Result<String, String> {
         .ok_or_else(|| "CLI updates are not supported on this platform".to_string())
 }
 
-fn github_token_for_endpoint(endpoint: &Url) -> Option<String> {
-    if !is_trusted_github_update_endpoint(endpoint) {
-        return None;
-    }
-
-    std::env::var("GH_TOKEN")
-        .ok()
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty())
-}
-
-fn is_trusted_github_update_endpoint(endpoint: &Url) -> bool {
-    endpoint.scheme() == "https"
-        && matches!(endpoint.host_str(), Some("github.com" | "api.github.com"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,32 +182,27 @@ mod tests {
     }
 
     #[test]
-    fn github_token_is_only_used_for_trusted_github_update_endpoints() {
+    fn github_token_does_not_affect_cli_update_config() {
         let _guard = ENV_LOCK.lock().expect("env lock poisoned");
         let previous = std::env::var_os("GH_TOKEN");
         std::env::set_var("GH_TOKEN", " test-token ");
 
-        let github_endpoint = Url::parse(
-            "https://github.com/VRuzhentsov/fini/releases/latest/download/latest-cli.json",
-        )
-        .expect("valid GitHub endpoint");
-        let api_endpoint = Url::parse("https://api.github.com/repos/VRuzhentsov/fini/releases")
-            .expect("valid GitHub API endpoint");
-        let custom_endpoint =
-            Url::parse("https://updates.example.test/latest-cli.json").expect("valid endpoint");
-        let insecure_endpoint =
-            Url::parse("http://github.com/VRuzhentsov/fini/latest-cli.json").expect("valid URL");
+        let config = resolve_update_config(UpdateOptions {
+            dry_run: true,
+            endpoint: Some(
+                "https://github.com/VRuzhentsov/fini/releases/latest/download/latest-cli.json"
+                    .to_string(),
+            ),
+            pubkey: Some("test-public-key".to_string()),
+            target: Some("cli-linux-x86_64".to_string()),
+            executable_path: Some(PathBuf::from("/var/tmp/fini-test-bin")),
+        })
+        .expect("resolved update config");
 
         assert_eq!(
-            github_token_for_endpoint(&github_endpoint).as_deref(),
-            Some("test-token")
+            config.endpoint.as_str(),
+            "https://github.com/VRuzhentsov/fini/releases/latest/download/latest-cli.json"
         );
-        assert_eq!(
-            github_token_for_endpoint(&api_endpoint).as_deref(),
-            Some("test-token")
-        );
-        assert_eq!(github_token_for_endpoint(&custom_endpoint), None);
-        assert_eq!(github_token_for_endpoint(&insecure_endpoint), None);
 
         match previous {
             Some(value) => std::env::set_var("GH_TOKEN", value),
