@@ -99,14 +99,25 @@ struct UpdateArgs {
     dry_run: bool,
     #[arg(
         long,
-        help = "Override the GitHub release repository in owner/name form"
+        help = "Override the Tauri updater endpoint; defaults to FINI_UPDATE_ENDPOINT or Fini's latest CLI manifest"
     )]
-    repo: Option<String>,
+    endpoint: Option<String>,
     #[arg(
         long,
-        help = "Override the activated CLI path; defaults to the target CLI name under ~/.local/bin"
+        help = "Override the Tauri updater public key; defaults to FINI_UPDATE_PUBKEY or the build-time key"
     )]
-    install_bin: Option<std::path::PathBuf>,
+    pubkey: Option<String>,
+    #[arg(
+        long,
+        help = "Override the Tauri updater target; defaults to cli-<platform>-<arch>"
+    )]
+    target: Option<String>,
+    #[arg(
+        long,
+        hide = true,
+        help = "Override the executable path passed to the Tauri updater"
+    )]
+    executable_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -517,8 +528,10 @@ fn execute(cli: Cli) -> CliResult<i32> {
     if let Some(Command::Update(args)) = cli.command {
         let value = run_update(UpdateOptions {
             dry_run: args.dry_run,
-            repo: args.repo,
-            install_bin: args.install_bin,
+            endpoint: args.endpoint,
+            pubkey: args.pubkey,
+            target: args.target,
+            executable_path: args.executable_path,
         })
         .map_err(CliError::runtime)?;
         print_output(&value, cli.json).map_err(CliError::runtime)?;
