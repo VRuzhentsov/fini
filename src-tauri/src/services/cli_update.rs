@@ -26,7 +26,6 @@ struct CliUpdateConfig {
 
 pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
     let config = resolve_update_config(options.clone())?;
-    ensure_tauri_updater_runtime_available()?;
     let app = tauri::Builder::default()
         .plugin(
             tauri_plugin_updater::Builder::new()
@@ -49,7 +48,7 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
             .map_err(|err| format!("failed to configure updater endpoint: {err}"))?
             .executable_path(&config.executable_path);
 
-        if let Some(token) = github_token() {
+        if let Some(token) = github_token_for_endpoint(&config.endpoint) {
             builder = builder
                 .header("Authorization", format!("Bearer {token}"))
                 .map_err(|err| format!("failed to configure updater auth header: {err}"))?;
@@ -135,28 +134,27 @@ fn default_cli_update_target() -> Result<String, String> {
         .ok_or_else(|| "CLI updates are not supported on this platform".to_string())
 }
 
-fn github_token() -> Option<String> {
+fn github_token_for_endpoint(endpoint: &Url) -> Option<String> {
+    if !is_trusted_github_update_endpoint(endpoint) {
+        return None;
+    }
+
     std::env::var("GH_TOKEN")
         .ok()
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty())
 }
 
-fn ensure_tauri_updater_runtime_available() -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-            return Err(
-                "Tauri's built-in updater requires a graphical Linux session; set DISPLAY or WAYLAND_DISPLAY before running fini update".to_string(),
-            );
-        }
-    }
-    Ok(())
+fn is_trusted_github_update_endpoint(endpoint: &Url) -> bool {
+    endpoint.scheme() == "https"
+        && matches!(endpoint.host_str(), Some("github.com" | "api.github.com"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn default_cli_target_prefixes_tauri_target() {
@@ -206,24 +204,36 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    fn tauri_updater_runtime_requires_linux_graphical_session() {
-        let display = std::env::var_os("DISPLAY");
-        let wayland_display = std::env::var_os("WAYLAND_DISPLAY");
-        std::env::remove_var("DISPLAY");
-        std::env::remove_var("WAYLAND_DISPLAY");
+    fn github_token_is_only_used_for_trusted_github_update_endpoints() {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let previous = std::env::var_os("GH_TOKEN");
+        std::env::set_var("GH_TOKEN", " test-token ");
 
-        let result = ensure_tauri_updater_runtime_available();
+        let github_endpoint = Url::parse(
+            "https://github.com/VRuzhentsov/fini/releases/latest/download/latest-cli.json",
+        )
+        .expect("valid GitHub endpoint");
+        let api_endpoint = Url::parse("https://api.github.com/repos/VRuzhentsov/fini/releases")
+            .expect("valid GitHub API endpoint");
+        let custom_endpoint =
+            Url::parse("https://updates.example.test/latest-cli.json").expect("valid endpoint");
+        let insecure_endpoint =
+            Url::parse("http://github.com/VRuzhentsov/fini/latest-cli.json").expect("valid URL");
 
-        if let Some(display) = display {
-            std::env::set_var("DISPLAY", display);
+        assert_eq!(
+            github_token_for_endpoint(&github_endpoint).as_deref(),
+            Some("test-token")
+        );
+        assert_eq!(
+            github_token_for_endpoint(&api_endpoint).as_deref(),
+            Some("test-token")
+        );
+        assert_eq!(github_token_for_endpoint(&custom_endpoint), None);
+        assert_eq!(github_token_for_endpoint(&insecure_endpoint), None);
+
+        match previous {
+            Some(value) => std::env::set_var("GH_TOKEN", value),
+            None => std::env::remove_var("GH_TOKEN"),
         }
-        if let Some(wayland_display) = wayland_display {
-            std::env::set_var("WAYLAND_DISPLAY", wayland_display);
-        }
-
-        assert!(result
-            .expect_err("headless updater should fail")
-            .contains("requires a graphical Linux session"));
     }
 }
