@@ -40,8 +40,6 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          FINI_TAURI_UPDATER_PUBKEY: ${{ vars.FINI_TAURI_UPDATER_PUBKEY }}
         run: |
           set -euo pipefail
           required=(
@@ -50,8 +48,6 @@ jobs:
             ANDROID_KEYSTORE_PASSWORD
             ANDROID_KEY_ALIAS
             ANDROID_KEY_PASSWORD
-            TAURI_SIGNING_PRIVATE_KEY
-            FINI_TAURI_UPDATER_PUBKEY
           )
           for key in "${required[@]}"; do
             if [ -z "${!key:-}" ]; then
@@ -200,9 +196,6 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify Linux desktop binary
@@ -228,14 +221,9 @@ jobs:
           fi
 
       - name: Build Linux CLI
-        env:
-          FINI_TAURI_UPDATER_PUBKEY: ${{ vars.FINI_TAURI_UPDATER_PUBKEY }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Linux release files
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           bundle_root="src-tauri/target/${{ matrix.rust_target }}/release/bundle"
@@ -277,9 +265,6 @@ jobs:
             echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
             exit 1
           fi
-          raw_cli_asset="prep/linux/fini-prep-${short_sha}-linux-${{ matrix.arch }}-cli"
-          cp "$cli_binary" "$raw_cli_asset"
-          npm run tauri -- signer sign "$raw_cli_asset"
           tar -C "$(dirname "$cli_binary")" -czf "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.arch }}-cli.tar.gz" fini
 
       - name: Upload Linux bundle artifact
@@ -331,14 +316,9 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Build Windows CLI
-        env:
-          FINI_TAURI_UPDATER_PUBKEY: ${{ vars.FINI_TAURI_UPDATER_PUBKEY }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Windows release files
