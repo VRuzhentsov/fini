@@ -125,6 +125,13 @@ function clearReminder() {
   repeatRule.value = null;
 }
 
+function onTitleKeydown(event: KeyboardEvent) {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    void onSubmit();
+  }
+}
+
 async function onSubmit() {
   const value = title.value.trim();
   if (!value || isSubmitting.value) return;
@@ -151,13 +158,14 @@ async function onSubmit() {
   <form class="new-quest-composer" @submit.prevent="onSubmit">
     <div class="new-quest-title-row">
       <span class="new-quest-check" aria-hidden="true" />
-      <input
+      <textarea
         v-model="title"
-        data-testid="new-quest-title"
+        data-testid="chat-input"
         class="new-quest-title"
-        type="text"
         placeholder="New quest"
+        rows="1"
         :disabled="isSubmitting"
+        @keydown="onTitleKeydown"
       />
       <select
         v-model="selectedSpaceId"
@@ -198,7 +206,7 @@ async function onSubmit() {
 
       <button
         type="submit"
-        data-testid="new-quest-submit"
+        data-testid="chat-submit"
         class="new-quest-submit"
         :disabled="!canSubmit"
         aria-label="Create quest"

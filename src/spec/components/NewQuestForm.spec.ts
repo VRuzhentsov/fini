@@ -69,7 +69,7 @@ describe("NewQuestForm", () => {
       },
     });
 
-    await wrapper.find('[data-testid="new-quest-title"]').setValue("Plan the rich composer");
+    await wrapper.find('[data-testid="chat-input"]').setValue("Plan the rich composer");
     await wrapper.find('[data-testid="new-quest-space"]').setValue("2");
     await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");
     await wrapper.find('[data-testid="stub-reminder-save"]').trigger("click");
@@ -111,12 +111,12 @@ describe("NewQuestForm", () => {
       },
     });
 
-    await wrapper.find('[data-testid="new-quest-title"]').setValue("Avoid duplicates");
+    await wrapper.find('[data-testid="chat-input"]').setValue("Avoid duplicates");
     await wrapper.find("form").trigger("submit");
     await wrapper.find("form").trigger("submit");
 
     expect(createQuest).toHaveBeenCalledTimes(1);
-    expect(wrapper.find('[data-testid="new-quest-submit"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="chat-submit"]').attributes("disabled")).toBeDefined();
 
     resolveCreate();
     await nextTick();
@@ -133,7 +133,7 @@ describe("NewQuestForm", () => {
 
     spaceStoreState.selectedSpaceId = "2";
     await nextTick();
-    await wrapper.find('[data-testid="new-quest-title"]').setValue("Create in filtered space");
+    await wrapper.find('[data-testid="chat-input"]').setValue("Create in filtered space");
     await wrapper.find("form").trigger("submit");
 
     expect(createQuest).toHaveBeenCalledWith({
