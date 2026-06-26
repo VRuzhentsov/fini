@@ -1,3 +1,7 @@
 include ':app'
 
 apply from: 'tauri.settings.gradle'
+
+// Android 17 (API 37) fix: ActivityResultLauncher.launch() must be called on main thread.
+// tauri-android-patched is a local copy of tauri-android with runOnUiThread wrapping in PluginManager.
+project(':tauri-android').projectDir = new File("${rootDir}/tauri-android-patched")

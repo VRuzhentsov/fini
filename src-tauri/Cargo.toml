@@ -62,6 +62,7 @@ zbus = { version = "5.14.0", features = ["blocking-api"] }
 zvariant = "5.10.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 url = { version = "2", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
