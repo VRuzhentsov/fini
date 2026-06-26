@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:24.15.0-trixie-slim AS node-deps
+FROM node:24.18.0-trixie-slim AS node-deps
 
 WORKDIR /app
 
