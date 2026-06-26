@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { SPACE_COLOR_CLASS, useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
@@ -16,15 +16,31 @@ const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
 const repeatRule = ref<string | null>(null);
 const reminderOpen = ref(false);
+const isSubmitting = ref(false);
+
+const hasDraftContent = computed(() => title.value.trim().length > 0 || !!due.value || !!dueTime.value || !!repeatRule.value);
+
+function defaultSpaceId() {
+  return spaceStore.selectedSpaceId ?? spaceStore.spaces.find((space) => space.id === "1")?.id ?? spaceStore.spaces[0]?.id ?? "1";
+}
 
 onMounted(async () => {
   if (!spaceStore.spaces.length) {
     await spaceStore.fetchSpaces();
   }
   if (!spaceStore.spaces.some((space) => space.id === selectedSpaceId.value)) {
-    selectedSpaceId.value = spaceStore.spaces.find((space) => space.id === "1")?.id ?? spaceStore.spaces[0]?.id ?? "1";
+    selectedSpaceId.value = defaultSpaceId();
   }
 });
+
+watch(
+  () => spaceStore.selectedSpaceId,
+  () => {
+    if (!hasDraftContent.value) {
+      selectedSpaceId.value = defaultSpaceId();
+    }
+  },
+);
 
 const draftQuest = computed<Quest>(() => ({
   id: "__new_quest__",
@@ -47,7 +63,7 @@ const draftQuest = computed<Quest>(() => ({
   period_key: null,
 }));
 
-const canSubmit = computed(() => title.value.trim().length > 0);
+const canSubmit = computed(() => title.value.trim().length > 0 && !isSubmitting.value);
 
 function spaceCss(spaceId: string): string {
   return SPACE_COLOR_CLASS[spaceId] ?? "";
@@ -111,18 +127,23 @@ function clearReminder() {
 
 async function onSubmit() {
   const value = title.value.trim();
-  if (!value) return;
+  if (!value || isSubmitting.value) return;
 
-  await questStore.createQuest({
-    title: value,
-    space_id: selectedSpaceId.value,
-    due: due.value,
-    due_time: dueTime.value,
-    repeat_rule: repeatRule.value,
-  });
+  isSubmitting.value = true;
+  try {
+    await questStore.createQuest({
+      title: value,
+      space_id: selectedSpaceId.value,
+      due: due.value,
+      due_time: dueTime.value,
+      repeat_rule: repeatRule.value,
+    });
 
-  title.value = "";
-  clearReminder();
+    title.value = "";
+    clearReminder();
+  } finally {
+    isSubmitting.value = false;
+  }
 }
 </script>
 
@@ -136,6 +157,7 @@ async function onSubmit() {
         class="new-quest-title"
         type="text"
         placeholder="New quest"
+        :disabled="isSubmitting"
       />
       <select
         v-model="selectedSpaceId"
@@ -143,6 +165,7 @@ async function onSubmit() {
         class="new-quest-space"
         :class="spaceCss(selectedSpaceId)"
         aria-label="Quest space"
+        :disabled="isSubmitting"
       >
         <option v-for="space in spaceStore.spaces" :key="space.id" :value="space.id">
           {{ space.name }}

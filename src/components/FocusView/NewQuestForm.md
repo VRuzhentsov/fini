@@ -16,6 +16,7 @@ The composer uses the same compact card language as [[QuestEditor]] instead of t
 - Inline `select` listing all spaces from `spaces` store.
 - Default: the current global selected space when present; otherwise built-in Personal (`id = "1"`); otherwise the first loaded space.
 - Selection is local to the draft and does not mutate the global Space filter.
+- Empty drafts follow changes to the global Space filter so quick-capture creates into the visible filtered Space.
 
 ## Reminder / date
 
@@ -28,6 +29,7 @@ The composer uses the same compact card language as [[QuestEditor]] instead of t
 On submit, calls `createQuest({ title, space_id, due, due_time, repeat_rule })` via [[quest.ts]].
 
 Empty titles cannot create a Quest.
+While a create request is pending, the composer disables submit controls and ignores duplicate submits.
 
 After a successful create:
 

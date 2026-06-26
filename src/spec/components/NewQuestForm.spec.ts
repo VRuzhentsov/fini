@@ -1,4 +1,5 @@
 import { mount } from "@vue/test-utils";
+import { nextTick, reactive } from "vue";
 import NewQuestForm from "../../components/FocusView/NewQuestForm.vue";
 import { useQuestStore } from "../../stores/quest";
 import { useSpaceStore } from "../../stores/space";
@@ -30,15 +31,16 @@ const reminderPayload = {
 describe("NewQuestForm", () => {
   let createQuest: jest.Mock;
   let fetchSpaces: jest.Mock;
+  let spaceStoreState: {
+    selectedSpaceId: string | null;
+    spaces: Array<{ id: string; name: string }>;
+    fetchSpaces: jest.Mock;
+  };
 
   beforeEach(() => {
     createQuest = jest.fn().mockResolvedValue({});
     fetchSpaces = jest.fn().mockResolvedValue(undefined);
-
-    (useQuestStore as unknown as jest.Mock).mockReturnValue({
-      createQuest,
-    });
-    (useSpaceStore as unknown as jest.Mock).mockReturnValue({
+    spaceStoreState = reactive({
       selectedSpaceId: null,
       spaces: [
         { id: "1", name: "Personal" },
@@ -46,6 +48,11 @@ describe("NewQuestForm", () => {
       ],
       fetchSpaces,
     });
+
+    (useQuestStore as unknown as jest.Mock).mockReturnValue({
+      createQuest,
+    });
+    (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreState);
   });
 
   it("creates a quest with explicit space and reminder draft fields", async () => {
@@ -89,5 +96,52 @@ describe("NewQuestForm", () => {
     await wrapper.find("form").trigger("submit");
 
     expect(createQuest).not.toHaveBeenCalled();
+  });
+
+  it("prevents duplicate creates while submit is pending", async () => {
+    let resolveCreate: () => void = () => {};
+    createQuest.mockReturnValue(new Promise<void>((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="new-quest-title"]').setValue("Avoid duplicates");
+    await wrapper.find("form").trigger("submit");
+    await wrapper.find("form").trigger("submit");
+
+    expect(createQuest).toHaveBeenCalledTimes(1);
+    expect(wrapper.find('[data-testid="new-quest-submit"]').attributes("disabled")).toBeDefined();
+
+    resolveCreate();
+    await nextTick();
+  });
+
+  it("keeps an empty draft space aligned with the active filter", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    spaceStoreState.selectedSpaceId = "2";
+    await nextTick();
+    await wrapper.find('[data-testid="new-quest-title"]').setValue("Create in filtered space");
+    await wrapper.find("form").trigger("submit");
+
+    expect(createQuest).toHaveBeenCalledWith({
+      title: "Create in filtered space",
+      space_id: "2",
+      due: null,
+      due_time: null,
+      repeat_rule: null,
+    });
   });
 });
