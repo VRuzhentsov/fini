@@ -71,7 +71,7 @@ notify-rust = "4"
 
 [features]
 default = []
-ui-plane = []
+ui-plane = ["dep:tauri-plugin-updater"]
 cli-plane = ["dep:clap", "dep:tauri-plugin-updater", "dep:url"]
 # Enable developer/test control-plane hooks. Off by default; production builds
 # must not ship this because it exposes an in-process Playwright socket bridge.
