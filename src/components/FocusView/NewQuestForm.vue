@@ -121,13 +121,19 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     return;
   }
 
-  if (!(await ensureReminderNotificationsAllowed(payload))) {
+  const reminder = {
+    due: payload.due,
+    due_time: payload.due ? payload.due_time : null,
+    repeat_rule: payload.repeat_rule,
+  };
+
+  if (!(await ensureReminderNotificationsAllowed(reminder))) {
     return;
   }
 
-  due.value = payload.due;
-  dueTime.value = payload.due_time;
-  repeatRule.value = payload.repeat_rule;
+  due.value = reminder.due;
+  dueTime.value = reminder.due_time;
+  repeatRule.value = reminder.repeat_rule;
   reminderOpen.value = false;
 }
 

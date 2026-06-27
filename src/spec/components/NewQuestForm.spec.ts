@@ -86,6 +86,35 @@ describe("NewQuestForm", () => {
     });
   });
 
+  it("drops reminder time when no due date is selected", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: {
+            template: '<button data-testid="stub-reminder-save" @click="$emit(\'save\', payload)">save reminder</button>',
+            props: ["quest"],
+            emits: ["save", "close"],
+            data: () => ({ payload: { due: null, due_time: "14:30", repeat_rule: null } }),
+          },
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Do not keep invisible reminder time");
+    await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");
+    await wrapper.find('[data-testid="stub-reminder-save"]').trigger("click");
+    await wrapper.find("form").trigger("submit");
+
+    expect(createQuest).toHaveBeenCalledWith({
+      title: "Do not keep invisible reminder time",
+      description: null,
+      space_id: "1",
+      due: null,
+      due_time: null,
+      repeat_rule: null,
+    });
+  });
+
   it("does not create a quest without a title", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
