@@ -77,8 +77,12 @@ jobs:
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor }}@users.noreply.github.com"
           git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
-          git commit -m "chore: release ${{ steps.plan.outputs.tag }}"
-          git push origin "HEAD:refs/heads/main"
+          if git diff --cached --quiet; then
+            echo "Version metadata already matches ${{ steps.plan.outputs.version }}; reusing current main commit."
+          else
+            git commit -m "chore: release ${{ steps.plan.outputs.tag }}"
+            git push origin "HEAD:refs/heads/main"
+          fi
           git push origin "HEAD:refs/heads/${{ steps.plan.outputs.branch }}"
 
       - name: Import GPG key
