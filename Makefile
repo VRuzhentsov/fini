@@ -71,10 +71,10 @@ dev:
 	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
 	trap restore_capability EXIT INT TERM; \
 	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	npm run tauri dev -- --features ui-plane,devtools
+	npm run tauri dev -- --features ui-plane,desktop-updater,devtools
 
 build:
-	npm run tauri build -- --features ui-plane
+	npm run tauri build -- --features ui-plane,desktop-updater
 
 flatpak-install-local:
 	-$(MAKE) build
@@ -281,7 +281,7 @@ e2e-headed:
 	trap restore_capability EXIT INT TERM; \
 	mkdir -p "$$run_root"; \
 	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- --bin fini-app; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,desktop-updater,devtools --no-bundle -- --bin fini-app; \
 	restore_capability; \
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
