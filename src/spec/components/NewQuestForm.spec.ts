@@ -55,7 +55,7 @@ describe("NewQuestForm", () => {
     (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreState);
   });
 
-  it("creates a quest with explicit space and reminder draft fields", async () => {
+  it("creates a quest with explicit space, description, and reminder draft fields", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
         stubs: {
@@ -70,6 +70,7 @@ describe("NewQuestForm", () => {
     });
 
     await wrapper.find('[data-testid="chat-input"]').setValue("Plan the rich composer");
+    await wrapper.find('[data-testid="new-quest-description"]').setValue("Capture the extra notes here.");
     await wrapper.find('[data-testid="new-quest-space"]').setValue("2");
     await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");
     await wrapper.find('[data-testid="stub-reminder-save"]').trigger("click");
@@ -77,6 +78,7 @@ describe("NewQuestForm", () => {
 
     expect(createQuest).toHaveBeenCalledWith({
       title: "Plan the rich composer",
+      description: "Capture the extra notes here.",
       space_id: "2",
       due: "2099-06-15",
       due_time: "14:30",
@@ -138,6 +140,7 @@ describe("NewQuestForm", () => {
 
     expect(createQuest).toHaveBeenCalledWith({
       title: "Create in filtered space",
+      description: null,
       space_id: "2",
       due: null,
       due_time: null,

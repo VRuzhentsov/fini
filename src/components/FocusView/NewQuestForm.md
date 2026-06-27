@@ -6,6 +6,7 @@ Rich draft composer for Quest creation. Used in [[FocusView]].
 
 ```
 [ checkbox affordance ] [ title input                    ] [ Space ▾ ]
+[ description textarea                                      ]
 [ Date / reminder ]                                      [ Send ]
 ```
 
@@ -26,7 +27,9 @@ The composer uses the same compact card language as [[QuestEditor]] instead of t
 
 ## Behaviour
 
-On submit, calls `createQuest({ title, space_id, due, due_time, repeat_rule })` via [[quest.ts]].
+On submit, calls `createQuest({ title, description, space_id, due, due_time, repeat_rule })` via [[quest.ts]].
+
+Description is optional. Whitespace-only descriptions are saved as `null`.
 
 Empty titles cannot create a Quest.
 While a create request is pending, the composer disables submit controls and ignores duplicate submits.
@@ -34,6 +37,7 @@ While a create request is pending, the composer disables submit controls and ign
 After a successful create:
 
 - title is cleared
+- description is cleared
 - reminder fields are cleared
 - selected Space is preserved for the next draft
 

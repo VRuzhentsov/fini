@@ -11,6 +11,7 @@ const spaceStore = useSpaceStore();
 const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 
 const title = ref("");
+const description = ref("");
 const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
@@ -18,7 +19,14 @@ const repeatRule = ref<string | null>(null);
 const reminderOpen = ref(false);
 const isSubmitting = ref(false);
 
-const hasDraftContent = computed(() => title.value.trim().length > 0 || !!due.value || !!dueTime.value || !!repeatRule.value);
+const hasDraftContent = computed(
+  () =>
+    title.value.trim().length > 0 ||
+    description.value.trim().length > 0 ||
+    !!due.value ||
+    !!dueTime.value ||
+    !!repeatRule.value,
+);
 
 function defaultSpaceId() {
   return spaceStore.selectedSpaceId ?? spaceStore.spaces.find((space) => space.id === "1")?.id ?? spaceStore.spaces[0]?.id ?? "1";
@@ -46,7 +54,7 @@ const draftQuest = computed<Quest>(() => ({
   id: "__new_quest__",
   space_id: selectedSpaceId.value,
   title: title.value,
-  description: null,
+  description: description.value.trim() || null,
   status: "active",
   energy: "medium",
   priority: 1,
@@ -135,11 +143,13 @@ function onTitleKeydown(event: KeyboardEvent) {
 async function onSubmit() {
   const value = title.value.trim();
   if (!value || isSubmitting.value) return;
+  const descriptionValue = description.value.trim() || null;
 
   isSubmitting.value = true;
   try {
     await questStore.createQuest({
       title: value,
+      description: descriptionValue,
       space_id: selectedSpaceId.value,
       due: due.value,
       due_time: dueTime.value,
@@ -147,6 +157,7 @@ async function onSubmit() {
     });
 
     title.value = "";
+    description.value = "";
     clearReminder();
   } finally {
     isSubmitting.value = false;
@@ -180,6 +191,15 @@ async function onSubmit() {
         </option>
       </select>
     </div>
+
+    <textarea
+      v-model="description"
+      data-testid="new-quest-description"
+      class="new-quest-description"
+      placeholder="Description"
+      rows="2"
+      :disabled="isSubmitting"
+    />
 
     <div class="new-quest-footer">
       <div class="new-quest-date-wrap">
@@ -265,6 +285,21 @@ async function onSubmit() {
 }
 
 .new-quest-title::placeholder {
+  color: var(--fg-5);
+}
+
+.new-quest-description {
+  min-height: 2.75rem;
+  padding: 0.125rem 0 0.125rem calc(18px + 0.625rem);
+  color: var(--fg-2);
+  font: 400 13px/1.35 Inter, Avenir, Helvetica, Arial, sans-serif;
+  resize: vertical;
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.new-quest-description::placeholder {
   color: var(--fg-5);
 }
 
