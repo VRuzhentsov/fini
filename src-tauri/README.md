@@ -84,7 +84,10 @@ General notes:
 
 ## Platform notes
 
-- **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
+- **Linux GUI**: Applies default WebKit startup guards before Tauri initializes:
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` for Wayland/mesa stability and
+  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts. Existing
+  environment values are preserved for explicit local diagnostics.
 - **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`
 - **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
@@ -96,7 +99,7 @@ General notes:
 
 ## Linux AppImage WebKit crash reports
 
-Fini already starts Linux WebKit with `WEBKIT_DISABLE_DMABUF_RENDERER=1` and `WEBKIT_DISABLE_SANDBOX=1` in `src-tauri/src/lib.rs`.
+Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1` and `WEBKIT_DISABLE_SANDBOX=1`.
 If `WebKitWebProcess` aborts in an AppImage build, capture a sanitized report that keeps the failure actionable without exposing host identifiers.
 
 Report only:
