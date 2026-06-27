@@ -140,6 +140,13 @@ Use the repo structure as the default map:
 - Domain specs and companion specs: `specs/`, folder `README.md` files, and sidecar `.md` files next to source files.
 - Repo automation: `Makefile` is the primary human execution entrypoint, `npm run` owns JS/TS package tasks, and `xtask/` owns non-trivial automation logic. See `fini-scripting`.
 
+For Vue templates and CSS/class work, prefer the existing UI framework before writing local styles:
+
+- Use DaisyUI component classes first when they express the control or surface.
+- Use Tailwind utilities for layout, spacing, sizing, state, and small visual adjustments.
+- Add scoped custom CSS/classes only when DaisyUI/Tailwind cannot produce a high-quality result, when a reusable semantic component class already exists locally, or when a narrow interaction/layout behavior would be unreadable as utilities.
+- Keep custom CSS concise and justify it through the component/spec context; do not create parallel style systems, broad one-off class taxonomies, or copied prototype class names.
+
 Before changing a significant source file, read its companion `.md` spec when present. Write code to match the spec, or update docs/specs deliberately when the behavior changes.
 
 For product semantics, read wiki context using this order:
