@@ -1,6 +1,8 @@
 pub mod models;
 mod schema;
 mod services;
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
+mod webkit_runtime;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
@@ -164,11 +166,7 @@ pub fn run_cli() -> i32 {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
-    {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        // SELinux-enforcing distros (Fedora Kinoite, Silverblue) block the bwrap sandbox.
-        std::env::set_var("WEBKIT_DISABLE_SANDBOX", "1");
-    }
+    webkit_runtime::apply_startup_guards();
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
