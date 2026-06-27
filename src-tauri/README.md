@@ -85,7 +85,7 @@ General notes:
 ## Platform notes
 
 - **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
-- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane`
+- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`
 - **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle

@@ -176,6 +176,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init());
     #[cfg(all(
+        feature = "desktop-updater",
+        any(target_os = "linux", target_os = "macos", target_os = "windows")
+    ))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(all(
         any(target_os = "linux", target_os = "macos", target_os = "windows"),
         not(debug_assertions)
     ))]
