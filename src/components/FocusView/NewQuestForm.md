@@ -18,6 +18,7 @@ The composer uses the same compact card language as [[QuestEditor]] instead of t
 - Default: the current global selected space when present; otherwise built-in Personal (`id = "1"`); otherwise the first loaded space.
 - Selection is local to the draft and does not mutate the global Space filter.
 - Empty drafts follow changes to the global Space filter so quick-capture creates into the visible filtered Space.
+- If a filter change happens while the draft has content, the draft resyncs to the current filter as soon as it becomes empty again.
 
 ## Reminder / date
 
@@ -39,7 +40,7 @@ After a successful create:
 - title is cleared
 - description is cleared
 - reminder fields are cleared
-- selected Space is preserved for the next draft
+- selected Space resyncs to the current global Space filter for the next empty draft
 
 ## Dependencies
 

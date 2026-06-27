@@ -182,4 +182,31 @@ describe("NewQuestForm", () => {
       repeat_rule: null,
     });
   });
+
+  it("resyncs draft space after skipped filter changes when the draft becomes empty", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Started in Personal");
+    spaceStoreState.selectedSpaceId = "2";
+    await nextTick();
+    await wrapper.find('[data-testid="chat-input"]').setValue("");
+    await nextTick();
+    await wrapper.find('[data-testid="chat-input"]').setValue("Create in refreshed filter");
+    await wrapper.find("form").trigger("submit");
+
+    expect(createQuest).toHaveBeenCalledWith({
+      title: "Create in refreshed filter",
+      description: null,
+      space_id: "2",
+      due: null,
+      due_time: null,
+      repeat_rule: null,
+    });
+  });
 });

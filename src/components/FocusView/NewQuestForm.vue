@@ -42,7 +42,7 @@ onMounted(async () => {
 });
 
 watch(
-  () => spaceStore.selectedSpaceId,
+  [() => spaceStore.selectedSpaceId, hasDraftContent],
   () => {
     if (!hasDraftContent.value) {
       selectedSpaceId.value = defaultSpaceId();
