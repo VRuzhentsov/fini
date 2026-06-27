@@ -81,8 +81,8 @@ jobs:
             echo "Version metadata already matches ${{ steps.plan.outputs.version }}; reusing current main commit."
           else
             git commit -m "chore: release ${{ steps.plan.outputs.tag }}"
-            git push origin "HEAD:refs/heads/main"
           fi
+          git push origin "HEAD:refs/heads/main"
           git push origin "HEAD:refs/heads/${{ steps.plan.outputs.branch }}"
 
       - name: Import GPG key
