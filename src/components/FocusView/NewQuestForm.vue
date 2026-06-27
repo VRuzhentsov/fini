@@ -117,6 +117,10 @@ const reminderText = computed(() => {
 });
 
 async function onReminderSave(payload: { due: string | null; due_time: string | null; repeat_rule: string | null }) {
+  if (isSubmitting.value) {
+    return;
+  }
+
   if (!(await ensureReminderNotificationsAllowed(payload))) {
     return;
   }
@@ -208,6 +212,7 @@ async function onSubmit() {
           data-testid="new-quest-reminder"
           class="new-quest-date"
           :class="{ set: reminderText }"
+          :disabled="isSubmitting"
           @click.stop="reminderOpen = true"
         >
           <CalendarDaysIcon />
@@ -216,8 +221,10 @@ async function onSubmit() {
         <button
           v-if="reminderText"
           type="button"
+          data-testid="new-quest-clear-reminder"
           class="new-quest-clear-date"
           aria-label="Clear date"
+          :disabled="isSubmitting"
           @click.stop="clearReminder"
         >
           <XMarkIcon />
@@ -237,7 +244,7 @@ async function onSubmit() {
   </form>
 
   <ReminderMenu
-    v-if="reminderOpen"
+    v-if="reminderOpen && !isSubmitting"
     :quest="draftQuest"
     @close="reminderOpen = false"
     @save="onReminderSave"
@@ -374,6 +381,15 @@ async function onSubmit() {
   background: var(--color-base-200);
 }
 
+.new-quest-date:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.new-quest-date:disabled:hover {
+  background: transparent;
+}
+
 .new-quest-date svg {
   width: 18px;
   height: 18px;
@@ -416,6 +432,16 @@ async function onSubmit() {
 .new-quest-clear-date:hover {
   color: var(--fg-1);
   background: var(--color-base-200);
+}
+
+.new-quest-clear-date:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.new-quest-clear-date:disabled:hover {
+  color: var(--fg-4);
+  background: transparent;
 }
 
 .new-quest-submit {

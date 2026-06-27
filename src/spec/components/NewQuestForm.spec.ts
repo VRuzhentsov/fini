@@ -124,6 +124,41 @@ describe("NewQuestForm", () => {
     await nextTick();
   });
 
+  it("disables reminder controls while submit is pending", async () => {
+    let resolveCreate: () => void = () => {};
+    createQuest.mockReturnValue(new Promise<void>((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: {
+            template: '<button data-testid="stub-reminder-save" @click="$emit(\'save\', payload)">save reminder</button>',
+            props: ["quest"],
+            emits: ["save", "close"],
+            data: () => ({ payload: reminderPayload }),
+          },
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Keep reminder stable");
+    await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");
+    await wrapper.find('[data-testid="stub-reminder-save"]').trigger("click");
+    await wrapper.find("form").trigger("submit");
+    await nextTick();
+
+    expect(wrapper.find('[data-testid="new-quest-reminder"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="new-quest-clear-reminder"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");
+
+    expect(wrapper.find('[data-testid="stub-reminder-save"]').exists()).toBe(false);
+
+    resolveCreate();
+    await nextTick();
+  });
+
   it("keeps an empty draft space aligned with the active filter", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
