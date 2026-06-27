@@ -196,7 +196,7 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
-        run: npm run tauri build -- --features ui-plane --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
+        run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify Linux desktop binary
         run: |
@@ -316,7 +316,7 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
-        run: npm run tauri build -- --features ui-plane,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
+        run: npm run tauri build -- --features ui-plane,desktop-updater,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Build Windows CLI
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
