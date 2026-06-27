@@ -94,6 +94,37 @@ General notes:
   - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
+## Linux AppImage WebKit crash reports
+
+Fini already starts Linux WebKit with `WEBKIT_DISABLE_DMABUF_RENDERER=1` and `WEBKIT_DISABLE_SANDBOX=1` in `src-tauri/src/lib.rs`.
+If `WebKitWebProcess` aborts in an AppImage build, capture a sanitized report that keeps the failure actionable without exposing host identifiers.
+
+Report only:
+
+- Fini version and install channel (`AppImage`)
+- Linux distro and session type (`Wayland` or `X11`)
+- The last user action before the abort
+- Whether the crash reproduces in a fresh Fini profile
+- Whether the crash still reproduces with the repo's default Linux WebKit guards in place
+- A redacted `coredumpctl info` or journal excerpt that keeps the process name, signal, package/build, and stack summary
+
+Do not publish raw coredumps or any user, host, machine, boot, session, or transient mount identifiers.
+Do not include local core storage paths, AppImage mount paths, or usernames in public reports.
+
+Suggested template:
+
+```text
+Fini version:
+Install channel: AppImage
+Linux distro:
+Session type:
+Trigger action:
+Fresh profile repro:
+Default Linux guards present:
+Sanitized coredump summary:
+Stack summary:
+```
+
 ## Postponed
 
 - **Voice / ASR** (`src/voice.rs`, `src/model_download.rs`) — offline speech recognition via sherpa-onnx. Code is present but not compiled or registered. Will be revisited after the core quest flow is stable.
