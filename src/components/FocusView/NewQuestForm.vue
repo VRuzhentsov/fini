@@ -303,6 +303,8 @@ async function onSubmit() {
   min-width: 0;
   flex: 1;
   padding: 0.125rem 0;
+  resize: none;
+  overflow: hidden;
   color: var(--fg-1);
   font: 600 15px/1.3 Inter, Avenir, Helvetica, Arial, sans-serif;
   letter-spacing: -0.01em;
@@ -318,9 +320,10 @@ async function onSubmit() {
 .new-quest-description {
   min-height: 2.75rem;
   padding: 0.125rem 0 0.125rem calc(18px + 0.625rem);
+  overflow-y: auto;
+  resize: none;
   color: var(--fg-2);
   font: 400 13px/1.35 Inter, Avenir, Helvetica, Arial, sans-serif;
-  resize: vertical;
   background: transparent;
   border: 0;
   outline: none;
