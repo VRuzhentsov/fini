@@ -5,7 +5,7 @@ Rich draft composer for Quest creation. Used in [[FocusView]] as the persistent 
 ## Layout
 
 ```
-[ checkbox affordance ] [ title input                    ] [ Space ▾ ]
+[ title input                                      ] [ Space ▾ ]
 [ description textarea                                      ]
 [ Date / reminder ]                                      [ Send ]
 ```
