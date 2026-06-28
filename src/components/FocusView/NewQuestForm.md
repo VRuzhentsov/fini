@@ -1,6 +1,6 @@
 # NewQuestForm
 
-Rich draft composer for Quest creation. Used in [[FocusView]].
+Rich draft composer for Quest creation. Used in [[FocusView]] as the persistent bottom quick-capture bar.
 
 ## Layout
 
@@ -10,7 +10,7 @@ Rich draft composer for Quest creation. Used in [[FocusView]].
 [ Date / reminder ]                                      [ Send ]
 ```
 
-The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input.
+The composer uses the same compact card language as [[QuestEditor]], but it keeps the same screen role as [[ChatInput]]: fixed to the bottom edge, above the safe-area/keyboard inset, and outside the quest list flow.
 
 ## Space selector
 

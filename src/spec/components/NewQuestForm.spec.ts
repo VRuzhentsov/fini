@@ -55,6 +55,18 @@ describe("NewQuestForm", () => {
     (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreState);
   });
 
+  it("renders as the persistent bottom composer surface", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    expect(wrapper.find(".chat-composer-bar").exists()).toBe(true);
+  });
+
   it("creates a quest with explicit space, description, and reminder draft fields", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {

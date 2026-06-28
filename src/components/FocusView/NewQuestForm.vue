@@ -176,78 +176,80 @@ async function onSubmit() {
 </script>
 
 <template>
-  <form class="new-quest-composer" @submit.prevent="onSubmit">
-    <div class="new-quest-title-row">
-      <span class="new-quest-check" aria-hidden="true" />
-      <textarea
-        v-model="title"
-        data-testid="chat-input"
-        class="new-quest-title"
-        placeholder="New quest"
-        rows="1"
-        :disabled="isSubmitting"
-        @keydown="onTitleKeydown"
-      />
-      <select
-        v-model="selectedSpaceId"
-        data-testid="new-quest-space"
-        class="new-quest-space"
-        :class="spaceCss(selectedSpaceId)"
-        aria-label="Quest space"
-        :disabled="isSubmitting"
-      >
-        <option v-for="space in spaceStore.spaces" :key="space.id" :value="space.id">
-          {{ space.name }}
-        </option>
-      </select>
-    </div>
-
-    <textarea
-      v-model="description"
-      data-testid="new-quest-description"
-      class="new-quest-description"
-      placeholder="Description"
-      rows="2"
-      :disabled="isSubmitting"
-    />
-
-    <div class="new-quest-footer">
-      <div class="new-quest-date-wrap">
-        <button
-          type="button"
-          data-testid="new-quest-reminder"
-          class="new-quest-date"
-          :class="{ set: reminderText }"
+  <div class="chat-composer-bar">
+    <form class="new-quest-composer" @submit.prevent="onSubmit">
+      <div class="new-quest-title-row">
+        <span class="new-quest-check" aria-hidden="true" />
+        <textarea
+          v-model="title"
+          data-testid="chat-input"
+          class="new-quest-title"
+          placeholder="New quest"
+          rows="1"
           :disabled="isSubmitting"
-          @click.stop="reminderOpen = true"
-        >
-          <CalendarDaysIcon />
-          <span>{{ reminderText || "Date" }}</span>
-        </button>
-        <button
-          v-if="reminderText"
-          type="button"
-          data-testid="new-quest-clear-reminder"
-          class="new-quest-clear-date"
-          aria-label="Clear date"
+          @keydown="onTitleKeydown"
+        />
+        <select
+          v-model="selectedSpaceId"
+          data-testid="new-quest-space"
+          class="new-quest-space"
+          :class="spaceCss(selectedSpaceId)"
+          aria-label="Quest space"
           :disabled="isSubmitting"
-          @click.stop="clearReminder"
         >
-          <XMarkIcon />
-        </button>
+          <option v-for="space in spaceStore.spaces" :key="space.id" :value="space.id">
+            {{ space.name }}
+          </option>
+        </select>
       </div>
 
-      <button
-        type="submit"
-        data-testid="chat-submit"
-        class="new-quest-submit"
-        :disabled="!canSubmit"
-        aria-label="Create quest"
-      >
-        <PaperAirplaneIcon />
-      </button>
-    </div>
-  </form>
+      <textarea
+        v-model="description"
+        data-testid="new-quest-description"
+        class="new-quest-description"
+        placeholder="Description"
+        rows="2"
+        :disabled="isSubmitting"
+      />
+
+      <div class="new-quest-footer">
+        <div class="new-quest-date-wrap">
+          <button
+            type="button"
+            data-testid="new-quest-reminder"
+            class="new-quest-date"
+            :class="{ set: reminderText }"
+            :disabled="isSubmitting"
+            @click.stop="reminderOpen = true"
+          >
+            <CalendarDaysIcon />
+            <span>{{ reminderText || "Date" }}</span>
+          </button>
+          <button
+            v-if="reminderText"
+            type="button"
+            data-testid="new-quest-clear-reminder"
+            class="new-quest-clear-date"
+            aria-label="Clear date"
+            :disabled="isSubmitting"
+            @click.stop="clearReminder"
+          >
+            <XMarkIcon />
+          </button>
+        </div>
+
+        <button
+          type="submit"
+          data-testid="chat-submit"
+          class="new-quest-submit"
+          :disabled="!canSubmit"
+          aria-label="Create quest"
+        >
+          <PaperAirplaneIcon />
+        </button>
+      </div>
+    </form>
+  </div>
 
   <ReminderMenu
     v-if="reminderOpen && !isSubmitting"
@@ -258,6 +260,18 @@ async function onSubmit() {
 </template>
 
 <style scoped>
+.chat-composer-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 50;
+  width: 100%;
+  padding: 0.25rem 0.25rem calc(0.25rem + env(safe-area-inset-bottom));
+  background: var(--color-page-bg);
+  border-top: 1px solid var(--color-border-soft);
+}
+
 .new-quest-composer {
   display: flex;
   flex-direction: column;
