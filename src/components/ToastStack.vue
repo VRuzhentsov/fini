@@ -4,7 +4,7 @@ const { toasts } = useToast();
 </script>
 
 <template>
-  <div class="fixed bottom-20 left-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none">
+  <div class="toast-stack fixed left-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none">
     <transition-group name="toast">
       <div
         v-for="t in toasts"
@@ -28,6 +28,10 @@ const { toasts } = useToast();
 </template>
 
 <style scoped>
+.toast-stack {
+  bottom: calc(var(--content-bottom-inset) + env(safe-area-inset-bottom) + 0.75rem);
+}
+
 .toast-enter-active, .toast-leave-active { transition: all 0.2s ease; }
 .toast-enter-from { opacity: 0; transform: translateY(8px); }
 .toast-leave-to   { opacity: 0; transform: translateY(-8px); }
