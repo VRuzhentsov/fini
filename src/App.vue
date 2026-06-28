@@ -81,6 +81,12 @@ html, body, #app {
 *, *::before, *::after {
   box-sizing: border-box;
 }
+
+@media (max-width: 420px) {
+  :root {
+    --content-bottom-inset: 11rem;
+  }
+}
 </style>
 
 <style scoped>
@@ -176,11 +182,5 @@ html, body, #app {
 @media (max-width: 640px) {
   .nav { padding: 0.625rem 0.875rem; }
   .content { padding-inline: 0.75rem; }
-}
-
-@media (max-width: 420px) {
-  :root {
-    --content-bottom-inset: 11rem;
-  }
 }
 </style>
