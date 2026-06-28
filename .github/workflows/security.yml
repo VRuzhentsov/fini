@@ -20,8 +20,9 @@ jobs:
         run: npm ci
 
       - name: Run Snyk checks
-        uses: snyk/actions/node@master
+        uses: snyk/actions/node@v0.4.0
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --file=package.json --severity-threshold=high
+

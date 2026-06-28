@@ -61,7 +61,7 @@ jobs:
         run: npm ci
 
       - name: Run Snyk checks
-        uses: snyk/actions/node@master
+        uses: snyk/actions/node@v0.4.0
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
@@ -291,3 +291,4 @@ jobs:
           emulator-options: -no-window -no-audio -gpu swiftshader_indirect -no-snapshot -no-metrics
           disable-animations: true
           script: bash scripts/android-e2e-assert.sh
+
