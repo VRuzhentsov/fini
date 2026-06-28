@@ -59,6 +59,7 @@ onMounted(() => {
 <style>
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  --content-bottom-inset: 10rem;
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
@@ -169,11 +170,17 @@ html, body, #app {
   overflow: auto;
   overscroll-behavior: contain;
   width: 100%;
-  padding: 1rem 1rem calc(10rem + env(safe-area-inset-bottom));
+  padding: 1rem 1rem calc(var(--content-bottom-inset) + env(safe-area-inset-bottom));
 }
 
 @media (max-width: 640px) {
   .nav { padding: 0.625rem 0.875rem; }
   .content { padding-inline: 0.75rem; }
+}
+
+@media (max-width: 420px) {
+  :root {
+    --content-bottom-inset: 11rem;
+  }
 }
 </style>
