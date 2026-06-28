@@ -84,7 +84,7 @@ html, body, #app {
 
 @media (max-width: 420px) {
   :root {
-    --content-bottom-inset: 11rem;
+    --content-bottom-inset: 12rem;
   }
 }
 </style>
