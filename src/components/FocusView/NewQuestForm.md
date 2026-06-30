@@ -1,20 +1,20 @@
 # NewQuestForm
 
-Rich draft composer for Quest creation. Used in [[FocusView]].
+Rich draft composer for Quest creation. Used in [[FocusView]] as the persistent bottom quick-capture bar.
 
 ## Layout
 
 ```
-[ checkbox affordance ] [ title input                    ] [ Space ▾ ]
+[ title input                                      ] [ [[SpacePicker]] ▾ ]
 [ description textarea                                      ]
 [ Date / reminder ]                                      [ Send ]
 ```
 
-The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input.
+The composer uses the same compact card language as [[QuestEditor]], but it keeps the same screen role as [[ChatInput]]: fixed to the bottom edge, above the safe-area/keyboard inset, and outside the quest list flow.
 
 ## Space selector
 
-- Inline `select` listing all spaces from `spaces` store.
+- Controlled [[SpacePicker]] listing concrete spaces from `spaces` store.
 - Default: the current global selected space when present; otherwise built-in Personal (`id = "1"`); otherwise the first loaded space.
 - Selection is local to the draft and does not mutate the global Space filter.
 - Empty drafts follow changes to the global Space filter so quick-capture creates into the visible filtered Space.
@@ -47,5 +47,6 @@ After a successful create:
 | Dep              | Role                                    |
 | ---------------- | --------------------------------------- |
 | [[quest.ts]]     | `createQuest` and draft Quest typing    |
-| [[spaces.ts]]    | Space list and color classes            |
+| [[spaces.ts]]    | Space list and default draft space      |
+| [[SpacePicker]]  | Local draft Space dropdown              |
 | [[ReminderMenu]] | Date/time/repeat picker for draft state |

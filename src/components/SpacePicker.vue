@@ -1,16 +1,43 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { computed, ref, onMounted, onUnmounted } from "vue";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../stores/space";
+
+const props = withDefaults(defineProps<{
+  modelValue?: string | null;
+  allowAll?: boolean;
+  allLabel?: string;
+  clearLabel?: string;
+  testId?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+}>(), {
+  allowAll: true,
+  allLabel: "All spaces",
+  clearLabel: "Clear space filter",
+  ariaLabel: "Switch space",
+  disabled: false,
+});
+
+const emit = defineEmits<{
+  "update:modelValue": [value: string | null];
+}>();
 
 const spaceStore = useSpaceStore();
 const open = ref(false);
+const controlled = computed(() => props.modelValue !== undefined);
+const currentSpaceId = computed(() => controlled.value ? props.modelValue ?? null : spaceStore.selectedSpaceId);
 
 onMounted(async () => {
   if (!spaceStore.spaces.length) await spaceStore.fetchSpaces();
 });
 
 function select(id: string | null) {
-  spaceStore.selectSpace(id);
+  if (id === null && !props.allowAll) return;
+  if (controlled.value) {
+    emit("update:modelValue", id);
+  } else {
+    spaceStore.selectSpace(id);
+  }
   open.value = false;
 }
 
@@ -23,12 +50,12 @@ onMounted(() => window.addEventListener('click', onClickOutside));
 onUnmounted(() => window.removeEventListener('click', onClickOutside));
 
 function selectedLabel(): string {
-  if (!spaceStore.selectedSpaceId) return "All spaces";
-  return spaceStore.spaces.find(s => s.id === spaceStore.selectedSpaceId)?.name ?? "All spaces";
+  if (!currentSpaceId.value) return props.allLabel;
+  return spaceStore.spaces.find(s => s.id === currentSpaceId.value)?.name ?? props.allLabel;
 }
 
 function selectedClass(): string {
-  return spaceStore.selectedSpaceId ? (SPACE_COLOR_CLASS[spaceStore.selectedSpaceId] ?? "") : "";
+  return currentSpaceId.value ? (SPACE_COLOR_CLASS[currentSpaceId.value] ?? "") : "";
 }
 
 function colorClass(id: string): string {
@@ -38,30 +65,50 @@ function colorClass(id: string): string {
 
 <template>
   <div class="space-picker dropdown dropdown-end" :class="{ 'dropdown-open': open }">
-    <div v-if="spaceStore.selectedSpaceId" class="space-chip" :class="selectedClass()">
-      <button class="space-chip-open" title="Switch space" @click.stop="open = !open">
+    <div v-if="currentSpaceId" class="space-chip" :class="selectedClass()">
+      <button
+        class="space-chip-open"
+        :title="ariaLabel"
+        :aria-label="ariaLabel"
+        :data-testid="testId"
+        :disabled="disabled"
+        @click.stop="open = !open"
+      >
         <span>{{ selectedLabel() }}</span>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
       </button>
-      <span class="space-chip-divider" />
-      <button class="space-chip-clear" aria-label="Clear space filter" @click.stop="select(null)">
+      <span v-if="allowAll" class="space-chip-divider" />
+      <button v-if="allowAll" class="space-chip-clear" :aria-label="clearLabel" :disabled="disabled" @click.stop="select(null)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
       </button>
     </div>
-    <button v-else class="space-picker-all" @click.stop="open = !open">
-      All spaces
+    <button
+      v-else
+      class="space-picker-all"
+      :aria-label="ariaLabel"
+      :data-testid="testId"
+      :disabled="disabled"
+      @click.stop="open = !open"
+    >
+      {{ allLabel }}
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
     </button>
     <ul v-if="open" class="space-menu">
       <li v-for="space in spaceStore.spaces" :key="space.id">
-        <button class="space-menu-item" :class="{ active: spaceStore.selectedSpaceId === space.id }" @click="select(space.id)">
+        <button
+          class="space-menu-item"
+          :class="{ active: currentSpaceId === space.id }"
+          :data-space-id="space.id"
+          :disabled="disabled"
+          @click="select(space.id)"
+        >
           <span class="space-dot" :class="colorClass(space.id)" />
           <span>{{ space.name }}</span>
         </button>
       </li>
-      <li class="space-menu-separator" />
-      <li>
-        <button class="space-menu-item" :class="{ active: !spaceStore.selectedSpaceId }" @click="select(null)">Clear space filter</button>
+      <li v-if="allowAll" class="space-menu-separator" />
+      <li v-if="allowAll">
+        <button class="space-menu-item" :class="{ active: !currentSpaceId }" :disabled="disabled" @click="select(null)">{{ clearLabel }}</button>
       </li>
     </ul>
   </div>
@@ -94,6 +141,7 @@ function colorClass(id: string): string {
 .space-chip {
   overflow: hidden;
   border: 0;
+  max-width: 100%;
 }
 
 .space-chip.space-color-personal,
@@ -116,7 +164,18 @@ function colorClass(id: string): string {
   border: 0;
 }
 
-.space-chip-open { gap: 0.25rem; }
+.space-chip-open {
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.space-chip-open span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .space-chip-open:hover,
 .space-chip-clear:hover { background: rgba(255, 255, 255, 0.18); }
 .space-chip.space-color-family .space-chip-open:hover,
