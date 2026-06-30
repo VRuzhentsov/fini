@@ -231,7 +231,6 @@ Resolve compiler warnings by improving code structure, feature boundaries, visib
 Choose verification based on touched area:
 
 - Frontend-only logic or UI: run the narrowest available unit/type/build check; use browser/QA skill when visual behavior matters.
-- For UI layout, placement, sticky/fixed positioning, keyboard/safe-area behavior, or screen-scope changes, verify with a full viewport screenshot that includes surrounding context. Component crops are allowed only as supplementary evidence; never use a crop alone to claim placement correctness.
 - Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence.
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.

@@ -29,7 +29,6 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 ### Quick capture
 
 - Always-visible [[NewQuestForm]] for creating new quests
-- Rendered outside the active/backlog stack as a persistent bottom bar, not as a quest-list item
 
 ## Focus quest computation contract
 

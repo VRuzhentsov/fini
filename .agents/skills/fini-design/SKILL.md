@@ -74,7 +74,6 @@ The prototypes are reference, not production code. Recreate the visual output in
 - Keep custom CSS small and local. Avoid broad one-off class taxonomies, parallel style systems, and copying prototype class names into production Vue.
 - Match the exact vocabulary in `project/README.md` ("Quest", "Space", "Focus", "Abandon", etc.). Do not rename product concepts.
 - Sentence case for buttons and labels; uppercase tracked-out only for app-chrome section headers (`SPACES`, `DEVICES`, `VOICE MODEL`).
-- When validating screen placement, sticky/fixed positioning, keyboard/safe-area behavior, or whether a component belongs inside a list vs app chrome, use a full viewport screenshot with surrounding UI. A cropped component screenshot can supplement details, but it is not valid placement evidence by itself.
 
 ## Ambiguity protocol
 

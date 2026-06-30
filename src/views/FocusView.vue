@@ -120,9 +120,11 @@ const activeQuest = computed(() => {
     <section v-if="backlog.length">
       <QuestList :quests="backlog" />
     </section>
-  </div>
 
-  <NewQuestForm />
+    <section>
+      <NewQuestForm />
+    </section>
+  </div>
 </template>
 
 <style scoped>
