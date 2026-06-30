@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
-import { SPACE_COLOR_CLASS, useSpaceStore } from "../../stores/space";
+import { useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { CalendarDaysIcon, PaperAirplaneIcon, XMarkIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
+import SpacePicker from "../SpacePicker.vue";
 
 const questStore = useQuestStore();
 const spaceStore = useSpaceStore();
@@ -72,14 +73,6 @@ const draftQuest = computed<Quest>(() => ({
 }));
 
 const canSubmit = computed(() => title.value.trim().length > 0 && !isSubmitting.value);
-
-function spaceCss(spaceId: string): string {
-  const className = SPACE_COLOR_CLASS[spaceId];
-  if (className === "space-color-personal") return "border-0 bg-[var(--space-color-personal)] text-white";
-  if (className === "space-color-family") return "border-0 bg-[var(--space-color-family)] text-[#1a1a1a]";
-  if (className === "space-color-work") return "border-0 bg-[var(--space-color-work)] text-white";
-  return "";
-}
 
 function formatDate(value: string): string {
   const date = new Date(value + "T00:00:00");
@@ -180,7 +173,7 @@ async function onSubmit() {
 </script>
 
 <template>
-  <div class="chat-composer-bar fixed inset-x-0 bottom-0 z-50 w-full border-t border-base-300 bg-base-100 p-1 [padding-bottom:calc(0.25rem+env(safe-area-inset-bottom))]">
+  <div class="chat-composer-bar fixed inset-x-0 bottom-0 z-50 w-full border-t border-base-300 bg-base-100 p-1">
     <form class="flex w-full flex-col gap-2 rounded-lg border border-base-300 bg-base-100 p-3 shadow-sm" @submit.prevent="onSubmit">
       <div class="flex items-start gap-2">
         <textarea
@@ -192,18 +185,14 @@ async function onSubmit() {
           :disabled="isSubmitting"
           @keydown="onTitleKeydown"
         />
-        <select
+        <SpacePicker
           v-model="selectedSpaceId"
-          data-testid="new-quest-space"
-          class="select select-sm min-h-0 w-auto max-w-[42%] shrink-0 truncate rounded-md pr-8 text-xs font-semibold"
-          :class="spaceCss(selectedSpaceId)"
+          class="max-w-[42%] shrink-0"
+          test-id="new-quest-space"
           aria-label="Quest space"
+          :allow-all="false"
           :disabled="isSubmitting"
-        >
-          <option v-for="space in spaceStore.spaces" :key="space.id" :value="space.id">
-            {{ space.name }}
-          </option>
-        </select>
+        />
       </div>
 
       <textarea
@@ -261,3 +250,9 @@ async function onSubmit() {
     @save="onReminderSave"
   />
 </template>
+
+<style scoped>
+.chat-composer-bar {
+  padding-bottom: calc(0.25rem + env(safe-area-inset-bottom));
+}
+</style>
