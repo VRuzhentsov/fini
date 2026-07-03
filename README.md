@@ -33,6 +33,17 @@ Fini replaces the todo list with a quest system inspired by RPG games like Skyri
 
 Quests are organized into **Spaces** — named contexts like Personal, Work, or any project. A Space is a lightweight container; every quest belongs to exactly one space.
 
+### Core Action Framework (Target — not all implemented yet)
+
+Fini should help users move work out of their head and into one concrete next action inside a Quest, with Focus, Spaces, and reminders helping them start, continue, and finish without guilt.
+
+- **Keep the work out of memory.** The app should hold the task so the user does not have to.
+- **Make the next action visible.** An active Quest should show the next concrete step.
+- **Keep the step small enough to start and finish.** If a Quest is too large, break it down until it is finishable.
+- **Define done before starting.** The finish line should be clear before work begins.
+- **Turn blockers into follow-up actions.** A blocker should become a separate action instead of freezing the current Quest.
+- **Let the environment help.** Focus should reduce start friction, Spaces should provide context, and reminders should bring the right work back at the right time.
+
 ### Core Principles (Target — not all implemented yet)
 
 - **One quest at a time.** No overwhelming lists. Just your current mission.
@@ -168,7 +179,7 @@ make build
 
 Release workflow is GitOps: pushing a signed annotated `v*` tag starts CI. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit. CI owns tests, builds, signing checks, packaging, and artifacts.
 
-The one-click release path is the `Release Button` GitHub Actions workflow. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes `main` and a `release/vX.Y.Z` trace branch, creates a signed annotated tag, and opens a release issue. The tag push starts the release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create an issue, commit, tag, or release pipeline run.
+The one-click release path is the `Release Button` GitHub Actions workflow. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes `main` and a `release/vX.Y.Z` trace branch, and creates a signed annotated tag. The tag push starts the release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create a commit, tag, or release pipeline run.
 
 Because `main` is protected, the button needs an automation token that can update protected branches for the repository:
 
