@@ -39,6 +39,7 @@
     "identity-obj-proxy": "^3.0.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
+    "snyk": "^1.1305.2",
     "tailwindcss": "^4.2.1",
     "ts-jest": "^29.4.1",
     "typescript": "~5.6.2",

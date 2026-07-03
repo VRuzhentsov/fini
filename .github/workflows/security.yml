@@ -22,10 +22,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Snyk CLI
-        run: npm install --global snyk
-
       - name: Run Snyk checks
-        run: snyk test --file=package.json --severity-threshold=high
+        run: npx --no-install snyk test --file=package.json --severity-threshold=high
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
