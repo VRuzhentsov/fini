@@ -48,6 +48,8 @@ jobs:
   snyk:
     name: Snyk Vulnerability Scan
     runs-on: ubuntu-latest
+    env:
+      SNYK_CLI_VERSION: 1.1305.2
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -60,12 +62,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Snyk CLI
+        run: npm install --global snyk@"$SNYK_CLI_VERSION"
+
       - name: Run Snyk checks
-        uses: snyk/actions/node@master
+        run: snyk test --file=package.json --severity-threshold=high
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --file=package.json --severity-threshold=high
 
   fe-unit-tests:
     name: FE Unit Tests
