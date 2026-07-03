@@ -59,10 +59,16 @@ async function exportSelected() {
     path = e2eHook ?? null;
     delete (window as Window & { __FINI_E2E_SAVE_PATH__?: string | null }).__FINI_E2E_SAVE_PATH__;
   } else {
-    path = await save({
-      defaultPath: filename,
-      filters: [{ name: "Fini backup", extensions: ["zip"] }],
-    });
+    try {
+      path = await save({
+        defaultPath: filename,
+        filters: [{ name: "Fini backup", extensions: ["zip"] }],
+      });
+    } catch (err) {
+      error.value = String(err);
+      toast.error("Could not open file picker");
+      return;
+    }
   }
   if (!path) return;
 

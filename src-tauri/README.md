@@ -84,8 +84,11 @@ General notes:
 
 ## Platform notes
 
-- **Linux**: Sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` at startup to ensure Wayland compatibility
-- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane`
+- **Linux GUI**: Applies default WebKit startup guards before Tauri initializes:
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` for Wayland/mesa stability and
+  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts. Existing
+  environment values are preserved for explicit local diagnostics.
+- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`
 - **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle
@@ -93,6 +96,37 @@ General notes:
   - `make android-release-deploy-local` performs the same local build/install flow but signs with release-lineage credentials from `ANDROID_KEYSTORE_PATH` or `ANDROID_KEYSTORE_BASE64` plus the matching password and alias env vars
   - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
+
+## Linux AppImage WebKit crash reports
+
+Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1` and `WEBKIT_DISABLE_SANDBOX=1`.
+If `WebKitWebProcess` aborts in an AppImage build, capture a sanitized report that keeps the failure actionable without exposing host identifiers.
+
+Report only:
+
+- Fini version and install channel (`AppImage`)
+- Linux distro and session type (`Wayland` or `X11`)
+- The last user action before the abort
+- Whether the crash reproduces in a fresh Fini profile
+- Whether the crash still reproduces with the repo's default Linux WebKit guards in place
+- A redacted `coredumpctl info` or journal excerpt that keeps the process name, signal, package/build, and stack summary
+
+Do not publish raw coredumps or any user, host, machine, boot, session, or transient mount identifiers.
+Do not include local core storage paths, AppImage mount paths, or usernames in public reports.
+
+Suggested template:
+
+```text
+Fini version:
+Install channel: AppImage
+Linux distro:
+Session type:
+Trigger action:
+Fresh profile repro:
+Default Linux guards present:
+Sanitized coredump summary:
+Stack summary:
+```
 
 ## Postponed
 

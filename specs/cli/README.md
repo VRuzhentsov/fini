@@ -34,6 +34,33 @@ GUI and CLI distribution are separate release surfaces.
 
 Desktop installers must not be required to expose the CLI on `PATH`. Users who want CLI-only automation should install the standalone CLI artifact or use the Docker runtime image.
 
+## CLI Updates
+
+`fini update` is the manual update entrypoint for the CLI plane. It must use
+Tauri's updater package for update discovery, signature verification, download,
+and installation rather than scraping GitHub releases or hand-rolling archive
+replacement.
+
+The default CLI update endpoint is the signed static manifest published with
+GitHub releases:
+
+```text
+https://github.com/VRuzhentsov/fini/releases/latest/download/latest-cli.json
+```
+
+The CLI updater uses a custom Tauri updater target named
+`cli-<platform>-<arch>`, such as `cli-linux-x86_64`, so CLI artifacts do not
+share platform keys with GUI app updater bundles. The manifest must contain a
+valid SemVer version and a Tauri updater signature for each exposed CLI target.
+The initial built-in updater manifest publishes Linux CLI targets only: Tauri's
+Windows updater install path expects a Windows installer, not a raw standalone
+`fini.exe` replacement.
+
+Release builds should embed the Tauri updater public key with
+`FINI_TAURI_UPDATER_PUBKEY`. Local and test builds may supply
+`FINI_UPDATE_PUBKEY` at runtime. `FINI_UPDATE_ENDPOINT` may override the default
+manifest endpoint for staging channels.
+
 ## Verification
 
 Use these checks when changing the binary contract:

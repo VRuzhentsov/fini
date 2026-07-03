@@ -1,31 +1,51 @@
 # NewQuestForm
 
-Thin wrapper that connects [[ChatInput]] to quest creation. Used in [[FocusView]].
+Rich draft composer for Quest creation. Used in [[FocusView]].
 
 ## Layout
 
 ```
-[ Space selector ▾ ]
-[ Chat input field  ] [Send]
+[ checkbox affordance ] [ title input                    ] [ Space ▾ ]
+[ description textarea                                      ]
+[ Date / reminder ]                                      [ Send ]
 ```
 
-Space selector sits directly above the input row.
+The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input.
 
 ## Space selector
 
-- DaisyUI `select select-sm` dropdown listing all spaces from `spaces` store
-- Default: built-in Personal space (`id = "1"`), or the last selected space (`localStorage.lastSpaceId`)
-- On mount: restore `lastSpaceId`; fall back to built-in Personal; fall back to first available space
-- On change: save selection to `localStorage`
+- Inline `select` listing all spaces from `spaces` store.
+- Default: the current global selected space when present; otherwise built-in Personal (`id = "1"`); otherwise the first loaded space.
+- Selection is local to the draft and does not mutate the global Space filter.
+- Empty drafts follow changes to the global Space filter so quick-capture creates into the visible filtered Space.
+- If a filter change happens while the draft has content, the draft resyncs to the current filter as soon as it becomes empty again.
+
+## Reminder / date
+
+- `Date` opens [[ReminderMenu]] against a draft Quest object.
+- Saving the reminder stores `due`, `due_time`, and `repeat_rule` in draft state.
+- Clearing the reminder resets those draft fields before creation.
 
 ## Behaviour
 
-On `submit` from [[ChatInput]], calls `createQuest({ title: text, space_id: selectedSpaceId })` via [[quest.ts]].
+On submit, calls `createQuest({ title, description, space_id, due, due_time, repeat_rule })` via [[quest.ts]].
+
+Description is optional. Whitespace-only descriptions are saved as `null`.
+
+Empty titles cannot create a Quest.
+While a create request is pending, the composer disables submit controls and ignores duplicate submits.
+
+After a successful create:
+
+- title is cleared
+- description is cleared
+- reminder fields are cleared
+- selected Space resyncs to the current global Space filter for the next empty draft
 
 ## Dependencies
 
-| Dep           | Role                     |
-| ------------- | ------------------------ |
-| [[ChatInput]] | Input UI, emits `submit` |
-| [[quest.ts]]  | `createQuest`            |
-| [[spaces.ts]] | Space list for selector  |
+| Dep              | Role                                    |
+| ---------------- | --------------------------------------- |
+| [[quest.ts]]     | `createQuest` and draft Quest typing    |
+| [[spaces.ts]]    | Space list and color classes            |
+| [[ReminderMenu]] | Date/time/repeat picker for draft state |

@@ -17,7 +17,7 @@ FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 RELEASE_BUNDLES ?= deb,rpm
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-devices android-debug-deploy android-release-deploy-local flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-devices android-debug-deploy android-debug-deploy-debug android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
@@ -71,10 +71,10 @@ dev:
 	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
 	trap restore_capability EXIT INT TERM; \
 	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	npm run tauri dev -- --features ui-plane,devtools
+	npm run tauri dev -- --features ui-plane,desktop-updater,devtools
 
 build:
-	npm run tauri build -- --features ui-plane
+	npm run tauri build -- --features ui-plane,desktop-updater
 
 flatpak-install-local:
 	-$(MAKE) build
@@ -281,7 +281,7 @@ e2e-headed:
 	trap restore_capability EXIT INT TERM; \
 	mkdir -p "$$run_root"; \
 	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- --bin fini-app; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,desktop-updater,devtools --no-bundle -- --bin fini-app; \
 	restore_capability; \
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
@@ -432,6 +432,12 @@ android-debug-deploy:
 	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-debug
 	$(MAKE) android-install-debug
+	$(MAKE) android-launch
+
+android-debug-deploy-debug:
+	@printf 'Android debug (debug profile) version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --debug --target "$(ANDROID_TARGET)"
+	adb install -r "src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
 	$(MAKE) android-launch
 
 android-release-deploy-local:

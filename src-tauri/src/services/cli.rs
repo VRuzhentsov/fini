@@ -8,6 +8,7 @@ use crate::models::{
 };
 use crate::schema::quests;
 use crate::services::backup;
+use crate::services::cli_update::{run_update, UpdateOptions};
 use crate::services::db::{db_default_path, try_open_db_at_path, utc_now};
 use crate::services::device_connection::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
@@ -53,6 +54,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(about = "Download and install the latest standalone Fini CLI release")]
+    Update(UpdateArgs),
     Focus {
         #[command(subcommand)]
         command: FocusCommand,
@@ -85,6 +88,36 @@ enum Command {
         #[command(subcommand)]
         command: SettingsCommand,
     },
+}
+
+#[derive(Args)]
+struct UpdateArgs {
+    #[arg(
+        long,
+        help = "Print the selected release and install paths without changing files"
+    )]
+    dry_run: bool,
+    #[arg(
+        long,
+        help = "Override the Tauri updater endpoint; defaults to FINI_UPDATE_ENDPOINT or Fini's latest CLI manifest"
+    )]
+    endpoint: Option<String>,
+    #[arg(
+        long,
+        help = "Override the Tauri updater public key; defaults to FINI_UPDATE_PUBKEY or the build-time key"
+    )]
+    pubkey: Option<String>,
+    #[arg(
+        long,
+        help = "Override the Tauri updater target; defaults to cli-<platform>-<arch>"
+    )]
+    target: Option<String>,
+    #[arg(
+        long,
+        hide = true,
+        help = "Override the executable path passed to the Tauri updater"
+    )]
+    executable_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -492,9 +525,23 @@ pub fn run(args: Vec<String>) -> i32 {
 }
 
 fn execute(cli: Cli) -> CliResult<i32> {
+    if let Some(Command::Update(args)) = cli.command {
+        let value = run_update(UpdateOptions {
+            dry_run: args.dry_run,
+            endpoint: args.endpoint,
+            pubkey: args.pubkey,
+            target: args.target,
+            executable_path: args.executable_path,
+        })
+        .map_err(CliError::runtime)?;
+        print_output(&value, cli.json).map_err(CliError::runtime)?;
+        return Ok(EXIT_SUCCESS);
+    }
+
     let ctx = CliContext::new()?;
     let value = match cli.command {
         None => handle_focus(&ctx, FocusCommand::Get)?,
+        Some(Command::Update(_)) => unreachable!("update is handled before DB initialization"),
         Some(Command::Focus { command }) => handle_focus(&ctx, command)?,
         Some(Command::Quest { command }) => handle_quest(&ctx, command)?,
         Some(Command::Space { command }) => handle_space(&ctx, command)?,

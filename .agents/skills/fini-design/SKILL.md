@@ -69,6 +69,9 @@ The prototypes are reference, not production code. Recreate the visual output in
 - Match visual output pixel-for-pixel. Do not copy the prototype's HTML structure unless it happens to fit the target.
 - Map prototype tokens to the existing app tokens. Do not introduce a parallel token system. If a prototype token has no app equivalent, surface that as a question before adding one.
 - Reuse existing Vue components in `src/components/` first. Read before creating.
+- In Vue templates, start with DaisyUI component classes for known controls/surfaces and Tailwind utilities for layout, spacing, sizing, states, and small visual adjustments.
+- Use scoped custom CSS/classes only when the framework utilities cannot achieve the needed quality, when an existing semantic component class should be reused, or when a narrow interaction/layout behavior would be less maintainable as utilities.
+- Keep custom CSS small and local. Avoid broad one-off class taxonomies, parallel style systems, and copying prototype class names into production Vue.
 - Match the exact vocabulary in `project/README.md` ("Quest", "Space", "Focus", "Abandon", etc.). Do not rename product concepts.
 - Sentence case for buttons and labels; uppercase tracked-out only for app-chrome section headers (`SPACES`, `DEVICES`, `VOICE MODEL`).
 

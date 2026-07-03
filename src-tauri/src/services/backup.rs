@@ -9,7 +9,9 @@ use diesel::sql_types::Text;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "ui-plane", test))]
-use tauri::State;
+use tauri::{AppHandle, State};
+#[cfg(any(feature = "ui-plane", test))]
+use tauri_plugin_fs::{FilePath, FsExt};
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
@@ -110,35 +112,85 @@ struct TableNameRow {
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_export(
+    app: AppHandle,
     state: State<AppDbConnection>,
     path: String,
     space_ids: Vec<String>,
 ) -> Result<BackupExportResult, String> {
+    let file_path: FilePath = path.parse().unwrap();
     let mut conn = state.inner().0.lock().unwrap();
-    export_backup(&mut conn, Path::new(&path), &space_ids)
+    match file_path {
+        FilePath::Path(p) => export_backup(&mut conn, &p, &space_ids),
+        FilePath::Url(url) => {
+            let temp = temp_zip_path("export")?;
+            let result = export_backup(&mut conn, &temp, &space_ids)?;
+            let mut opts = tauri_plugin_fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            let mut dst = app.fs().open(FilePath::Url(url.clone()), opts).map_err(|e| e.to_string())?;
+            std::io::copy(&mut File::open(&temp).map_err(|e| e.to_string())?, &mut dst)
+                .map_err(|e| e.to_string())?;
+            fs::remove_file(&temp).ok();
+            Ok(BackupExportResult { path: url.to_string(), manifest: result.manifest })
+        }
+    }
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_preflight_import(
+    app: AppHandle,
     state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
 ) -> Result<BackupImportPreflight, String> {
+    let file_path: FilePath = path.parse().unwrap();
     let mut conn = state.inner().0.lock().unwrap();
-    preflight_import(&mut conn, Path::new(&path), &mappings)
+    match file_path {
+        FilePath::Path(p) => preflight_import(&mut conn, &p, &mappings),
+        FilePath::Url(url) => {
+            let temp = copy_content_uri_to_temp(&app, FilePath::Url(url))?;
+            let result = preflight_import(&mut conn, &temp, &mappings);
+            fs::remove_file(&temp).ok();
+            result
+        }
+    }
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_apply_import(
+    app: AppHandle,
     state: State<AppDbConnection>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
     resolutions: Vec<BackupConflictResolutionInput>,
 ) -> Result<BackupImportResult, String> {
+    let file_path: FilePath = path.parse().unwrap();
     let mut conn = state.inner().0.lock().unwrap();
-    apply_import(&mut conn, Path::new(&path), &mappings, &resolutions)
+    match file_path {
+        FilePath::Path(p) => apply_import(&mut conn, &p, &mappings, &resolutions),
+        FilePath::Url(url) => {
+            let temp = copy_content_uri_to_temp(&app, FilePath::Url(url))?;
+            let result = apply_import(&mut conn, &temp, &mappings, &resolutions);
+            fs::remove_file(&temp).ok();
+            result
+        }
+    }
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+fn copy_content_uri_to_temp(app: &AppHandle, file_path: FilePath) -> Result<PathBuf, String> {
+    let mut opts = tauri_plugin_fs::OpenOptions::new();
+    opts.read(true);
+    let mut src = app.fs().open(file_path, opts).map_err(|e| e.to_string())?;
+    let temp_path = std::env::temp_dir().join(format!("fini-backup-import-{}.zip", Uuid::new_v4()));
+    let mut dest = File::create(&temp_path).map_err(|e| e.to_string())?;
+    std::io::copy(&mut src, &mut dest).map_err(|e| e.to_string())?;
+    Ok(temp_path)
+}
+
+fn temp_zip_path(label: &str) -> Result<PathBuf, String> {
+    Ok(std::env::temp_dir().join(format!("fini-backup-{label}-{}.zip", Uuid::new_v4())))
 }
 
 pub fn export_backup(

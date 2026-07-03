@@ -33,6 +33,28 @@ Prove Android behavior with a complete evidence chain:
 4. Identity verification via backend state is the authoritative proof of Android target.
 5. Webview automation tools (`webview_interact`, `webview_wait_for`, `webview_execute_js`) drive Android navigation successfully.
 
+## Android debug logging (2026-06-26)
+
+Tauri's Kotlin `Logger` gates ALL log levels — verbose, debug, info, warn, **error** — behind `BuildConfig.DEBUG`. When `BuildConfig.DEBUG = false` (release profile), every `Logger.error()` call in a plugin's catch block is silently dropped. This means plugin exceptions, `invoke.reject()` messages, and command routing errors are invisible in the default `make android-debug-deploy` output.
+
+**Rule**: when a Tauri plugin command returns `null` or fails silently on Android with no JS-visible error, always reproduce with `make android-debug-deploy-debug` first to enable Tauri Kotlin logs before investigating the Rust or JS side.
+
+- `make android-debug-deploy` → release profile APK → `BuildConfig.DEBUG=false` → Tauri logs OFF
+- `make android-debug-deploy-debug` → debug profile APK → `BuildConfig.DEBUG=true` → Tauri logs ON
+
+Logcat filter to isolate Tauri plugin traffic:
+```
+adb -s <ANDROID_SERIAL> logcat -s "Tauri" -s "Tauri/Plugin"
+```
+
+## Tauri Android runtime quirk (2026-06-26)
+
+`PluginManager` (Kotlin `object` singleton in `app.tauri.plugin`) has two `lateinit` fields — `activity` and `startActivityForResultLauncher` — that are initialized in `PluginManager.onActivityCreate(activity)`. Tauri's Rust bootstrap (`tauri-2.11.0`) never calls this method via JNI; it only calls `onWebViewCreated`, `load`, and `runCommand`.
+
+Consequence: any plugin command that calls `PluginManager.startActivityForResult` (e.g. file picker, permission requests) throws `UninitializedPropertyAccessException` at runtime, which is caught, logged (only when DEBUG=true), and forwarded as `invoke.reject()` → JS receives `null`.
+
+**Fix**: call `PluginManager.onActivityCreate(this)` in `MainActivity.onCreate` **before** `super.onCreate()`. `registerForActivityResult` must be called before `onStart`, so calling it in `onCreate` is correct and safe.
+
 ## Device automation workflow
 
 ### 1. Start Android runtime

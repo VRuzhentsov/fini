@@ -140,6 +140,13 @@ Use the repo structure as the default map:
 - Domain specs and companion specs: `specs/`, folder `README.md` files, and sidecar `.md` files next to source files.
 - Repo automation: `Makefile` is the primary human execution entrypoint, `npm run` owns JS/TS package tasks, and `xtask/` owns non-trivial automation logic. See `fini-scripting`.
 
+For Vue templates and CSS/class work, prefer the existing UI framework before writing local styles:
+
+- Use DaisyUI component classes first when they express the control or surface.
+- Use Tailwind utilities for layout, spacing, sizing, state, and small visual adjustments.
+- Add scoped custom CSS/classes only when DaisyUI/Tailwind cannot produce a high-quality result, when a reusable semantic component class already exists locally, or when a narrow interaction/layout behavior would be unreadable as utilities.
+- Keep custom CSS concise and justify it through the component/spec context; do not create parallel style systems, broad one-off class taxonomies, or copied prototype class names.
+
 Before changing a significant source file, read its companion `.md` spec when present. Write code to match the spec, or update docs/specs deliberately when the behavior changes.
 
 For product semantics, read wiki context using this order:
@@ -179,7 +186,8 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 | Android Wi-Fi connect | `make android-connect` once after `make android-devices`; if it times out, stop and ask the user to re-authorize wireless debugging or use USB/emulator |
 | Android hot reload | `make android-dev` |
 | Android build | `make android-build` |
-| Android debug deploy | `make android-debug-deploy` |
+| Android debug deploy (release profile, debug keystore) | `make android-debug-deploy` |
+| Android debug deploy (debug profile, Tauri logs enabled) | `make android-debug-deploy-debug` |
 | Android local release deploy | `make android-release-deploy-local` |
 | GitOps release commit + signed tag | `make release VERSION=x.y.z` |
 
@@ -226,7 +234,7 @@ Choose verification based on touched area:
 - Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence.
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
-- Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed.
+- Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-debug-deploy` when an installed APK check is needed. Use `make android-debug-deploy-debug` (debug profile) instead when diagnosing silent plugin failures — this enables Tauri Kotlin logging (`BuildConfig.DEBUG=true`) which is suppressed in the release profile.
 - Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/actors/cli): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
