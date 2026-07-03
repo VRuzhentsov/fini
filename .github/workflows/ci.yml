@@ -48,8 +48,6 @@ jobs:
   snyk:
     name: Snyk Vulnerability Scan
     runs-on: ubuntu-latest
-    env:
-      SNYK_CLI_VERSION: 1.1305.2
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -63,7 +61,7 @@ jobs:
         run: npm ci
 
       - name: Install Snyk CLI
-        run: npm install --global snyk@"$SNYK_CLI_VERSION"
+        run: npm install --global snyk
 
       - name: Run Snyk checks
         run: snyk test --file=package.json --severity-threshold=high
