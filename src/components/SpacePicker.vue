@@ -67,6 +67,7 @@ function colorClass(id: string): string {
   <div class="space-picker dropdown dropdown-end" :class="{ 'dropdown-open': open }">
     <div v-if="currentSpaceId" class="space-chip" :class="selectedClass()">
       <button
+        type="button"
         class="space-chip-open"
         :title="ariaLabel"
         :aria-label="ariaLabel"
@@ -78,12 +79,13 @@ function colorClass(id: string): string {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
       </button>
       <span v-if="allowAll" class="space-chip-divider" />
-      <button v-if="allowAll" class="space-chip-clear" :aria-label="clearLabel" :disabled="disabled" @click.stop="select(null)">
+      <button v-if="allowAll" type="button" class="space-chip-clear" :aria-label="clearLabel" :disabled="disabled" @click.stop="select(null)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
       </button>
     </div>
     <button
       v-else
+      type="button"
       class="space-picker-all"
       :aria-label="ariaLabel"
       :data-testid="testId"
@@ -96,6 +98,7 @@ function colorClass(id: string): string {
     <ul v-if="open" class="space-menu">
       <li v-for="space in spaceStore.spaces" :key="space.id">
         <button
+          type="button"
           class="space-menu-item"
           :class="{ active: currentSpaceId === space.id }"
           :data-space-id="space.id"
@@ -108,7 +111,7 @@ function colorClass(id: string): string {
       </li>
       <li v-if="allowAll" class="space-menu-separator" />
       <li v-if="allowAll">
-        <button class="space-menu-item" :class="{ active: !currentSpaceId }" :disabled="disabled" @click="select(null)">{{ clearLabel }}</button>
+        <button type="button" class="space-menu-item" :class="{ active: !currentSpaceId }" :disabled="disabled" @click="select(null)">{{ clearLabel }}</button>
       </li>
     </ul>
   </div>

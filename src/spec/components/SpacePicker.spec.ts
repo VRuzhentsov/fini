@@ -61,4 +61,23 @@ describe("SpacePicker", () => {
     expect(selectSpace).not.toHaveBeenCalled();
     expect(wrapper.find(".space-chip-clear").exists()).toBe(false);
   });
+
+  it("marks all picker controls as non-submit buttons", async () => {
+    const wrapper = mount(SpacePicker, {
+      props: {
+        modelValue: "1",
+        allowAll: true,
+      },
+    });
+
+    await wrapper.find(".space-chip-open").trigger("click");
+
+    expect(wrapper.find(".space-chip-open").attributes("type")).toBe("button");
+    expect(wrapper.find(".space-chip-clear").attributes("type")).toBe("button");
+    expect(wrapper.find('[data-space-id="2"]').attributes("type")).toBe("button");
+    expect(wrapper.findAll(".space-menu-item")[2].attributes("type")).toBe("button");
+
+    const allWrapper = mount(SpacePicker);
+    expect(allWrapper.find(".space-picker-all").attributes("type")).toBe("button");
+  });
 });
