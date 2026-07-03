@@ -72,6 +72,18 @@ describe("NewQuestForm", () => {
     expect(wrapper.find(".chat-composer-bar").exists()).toBe(true);
   });
 
+  it("opens the bottom composer space menu upward", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    expect(wrapper.findComponent({ name: "SpacePicker" }).props("menuPlacement")).toBe("top");
+  });
+
   it("creates a quest with explicit space, description, and reminder draft fields", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {

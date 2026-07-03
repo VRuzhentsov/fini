@@ -10,12 +10,14 @@ const props = withDefaults(defineProps<{
   testId?: string;
   ariaLabel?: string;
   disabled?: boolean;
+  menuPlacement?: "bottom" | "top";
 }>(), {
   allowAll: true,
   allLabel: "All spaces",
   clearLabel: "Clear space filter",
   ariaLabel: "Switch space",
   disabled: false,
+  menuPlacement: "bottom",
 });
 
 const emit = defineEmits<{
@@ -64,7 +66,7 @@ function colorClass(id: string): string {
 </script>
 
 <template>
-  <div class="space-picker dropdown dropdown-end" :class="{ 'dropdown-open': open }">
+  <div class="space-picker dropdown dropdown-end" :class="{ 'dropdown-open': open, 'space-picker--menu-top': menuPlacement === 'top' }">
     <div v-if="currentSpaceId" class="space-chip" :class="selectedClass()">
       <button
         type="button"
@@ -213,6 +215,12 @@ svg {
   border: 1px solid var(--color-border-soft);
   border-radius: 14px;
   box-shadow: var(--shadow-lg);
+}
+
+.space-picker--menu-top .space-menu {
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
 }
 
 .space-menu-item {

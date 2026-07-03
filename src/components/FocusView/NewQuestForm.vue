@@ -188,6 +188,7 @@ async function onSubmit() {
         <SpacePicker
           v-model="selectedSpaceId"
           class="max-w-[42%] shrink-0"
+          menu-placement="top"
           test-id="new-quest-space"
           aria-label="Quest space"
           :allow-all="false"

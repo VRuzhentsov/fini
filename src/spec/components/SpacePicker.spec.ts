@@ -80,4 +80,17 @@ describe("SpacePicker", () => {
     const allWrapper = mount(SpacePicker);
     expect(allWrapper.find(".space-picker-all").attributes("type")).toBe("button");
   });
+
+  it("can place the menu above the trigger", async () => {
+    const wrapper = mount(SpacePicker, {
+      props: {
+        menuPlacement: "top",
+      },
+    });
+
+    await wrapper.find(".space-picker-all").trigger("click");
+
+    expect(wrapper.find(".space-picker").classes()).toContain("space-picker--menu-top");
+    expect(wrapper.find(".space-menu").exists()).toBe(true);
+  });
 });
