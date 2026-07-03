@@ -92,5 +92,6 @@ describe("SpacePicker", () => {
 
     expect(wrapper.find(".space-picker").classes()).toContain("space-picker--menu-top");
     expect(wrapper.find(".space-menu").exists()).toBe(true);
+    expect(wrapper.find(".space-menu").classes()).toContain("space-menu--constrained");
   });
 });

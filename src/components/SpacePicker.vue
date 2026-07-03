@@ -97,7 +97,7 @@ function colorClass(id: string): string {
       {{ allLabel }}
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
     </button>
-    <ul v-if="open" class="space-menu">
+    <ul v-if="open" class="space-menu" :class="{ 'space-menu--constrained': menuPlacement === 'top' }">
       <li v-for="space in spaceStore.spaces" :key="space.id">
         <button
           type="button"
@@ -221,6 +221,12 @@ svg {
   bottom: 100%;
   margin-top: 0;
   margin-bottom: 0.5rem;
+}
+
+.space-menu--constrained {
+  max-height: min(16rem, calc(100vh - var(--content-bottom-inset, 10rem) - 2rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .space-menu-item {
