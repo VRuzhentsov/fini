@@ -28,6 +28,11 @@ const reminderPayload = {
   repeat_rule: null,
 };
 
+async function chooseSpace(wrapper: ReturnType<typeof mount>, spaceId: string) {
+  await wrapper.find('[data-testid="new-quest-space"]').trigger("click");
+  await wrapper.find(`[data-space-id="${spaceId}"]`).trigger("click");
+}
+
 describe("NewQuestForm", () => {
   let createQuest: jest.Mock;
   let fetchSpaces: jest.Mock;
@@ -55,6 +60,30 @@ describe("NewQuestForm", () => {
     (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreState);
   });
 
+  it("renders as the persistent bottom composer surface", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    expect(wrapper.find(".chat-composer-bar").exists()).toBe(true);
+  });
+
+  it("opens the bottom composer space menu upward", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    expect(wrapper.findComponent({ name: "SpacePicker" }).props("menuPlacement")).toBe("top");
+  });
+
   it("creates a quest with explicit space, description, and reminder draft fields", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
@@ -71,7 +100,7 @@ describe("NewQuestForm", () => {
 
     await wrapper.find('[data-testid="chat-input"]').setValue("Plan the rich composer");
     await wrapper.find('[data-testid="new-quest-description"]').setValue("Capture the extra notes here.");
-    await wrapper.find('[data-testid="new-quest-space"]').setValue("2");
+    await chooseSpace(wrapper, "2");
     await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");
     await wrapper.find('[data-testid="stub-reminder-save"]').trigger("click");
     await wrapper.find("form").trigger("submit");
