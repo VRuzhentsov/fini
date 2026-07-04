@@ -85,9 +85,14 @@ General notes:
 ## Platform notes
 
 - **Linux GUI**: Applies default WebKit startup guards before Tauri initializes:
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` for Wayland/mesa stability and
-  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts. Existing
-  environment values are preserved for explicit local diagnostics.
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` for Wayland/mesa stability,
+  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts, and
+  `WEBKIT_DISABLE_COMPOSITING_MODE=1` to force software compositing when the
+  bundled WebKitGTK's accelerated compositing path is unstable against the
+  host's mesa/DRM/GL stack. Existing environment values are preserved for
+  explicit local diagnostics. The resolved value of each guard is logged to
+  stderr at startup (`[webkit-runtime] KEY=value`) so a packaged AppImage
+  session can confirm which flags actually reached `WebKitWebProcess`.
 - **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`
 - **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
@@ -97,9 +102,32 @@ General notes:
   - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
+## Local AppImage build failures on newer Linux toolchains
+
+`make build` (and `make flatpak-install-local`) default `NO_STRIP=true` (set in the
+root `Makefile`). Without it, local AppImage bundling on newer host toolchains
+(e.g. Fedora 44+, glibc/binutils new enough to emit `.relr.dyn` relocation
+sections) fails with:
+
+```text
+ERROR: Strip call failed: .../usr/bin/strip: <library>: unknown type [0x13] section `.relr.dyn'
+```
+
+`linuxdeploy` vendors its own `strip` binary, which predates RELR section
+support, and aborts bundling before producing an AppImage — the host's own
+(newer) `strip` is not used regardless of `PATH` or a `STRIP` env var, since
+linuxdeploy's bundled AppImage mounts its own `usr/bin/strip`. `NO_STRIP=true`
+skips the strip step entirely, at the cost of larger, unstripped local
+binaries. Override with `NO_STRIP=false` if your toolchain doesn't hit this.
+CI release builds (`.github/workflows/release-tag.yml`,
+`release-dry-run.yml`) call `npm run tauri build` directly on
+`ubuntu-latest`, not through this Makefile target, so this default has no
+effect on published release artifacts.
+
 ## Linux AppImage WebKit crash reports
 
-Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1` and `WEBKIT_DISABLE_SANDBOX=1`.
+Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_SANDBOX=1`, and `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
+Each guard's resolved value is logged to stderr at startup (`[webkit-runtime] KEY=value`) — capture those lines alongside any crash report to confirm the flags reached the AppImage's `WebKitWebProcess`.
 If `WebKitWebProcess` aborts in an AppImage build, capture a sanitized report that keeps the failure actionable without exposing host identifiers.
 
 Report only:
@@ -108,7 +136,7 @@ Report only:
 - Linux distro and session type (`Wayland` or `X11`)
 - The last user action before the abort
 - Whether the crash reproduces in a fresh Fini profile
-- Whether the crash still reproduces with the repo's default Linux WebKit guards in place
+- The `[webkit-runtime]` startup log lines showing the resolved guard values
 - A redacted `coredumpctl info` or journal excerpt that keeps the process name, signal, package/build, and stack summary
 
 Do not publish raw coredumps or any user, host, machine, boot, session, or transient mount identifiers.
@@ -123,7 +151,7 @@ Linux distro:
 Session type:
 Trigger action:
 Fresh profile repro:
-Default Linux guards present:
+webkit-runtime startup log lines:
 Sanitized coredump summary:
 Stack summary:
 ```

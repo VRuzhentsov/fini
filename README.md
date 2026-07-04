@@ -175,6 +175,11 @@ make dev
 make build
 ```
 
+On newer Linux toolchains (e.g. Fedora 44+), local AppImage bundling defaults to
+`NO_STRIP=true` because `linuxdeploy` vendors an older `strip` that cannot parse
+`.relr.dyn` sections emitted by those toolchains; see `src-tauri/README.md` for
+details. This only affects local builds — CI release builds are unaffected.
+
 ### Release
 
 Release workflow is GitOps: pushing a signed annotated `v*` tag starts CI. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit. CI owns tests, builds, signing checks, packaging, and artifacts.

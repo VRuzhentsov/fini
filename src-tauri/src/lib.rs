@@ -166,7 +166,10 @@ pub fn run_cli() -> i32 {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
-    webkit_runtime::apply_startup_guards();
+    {
+        webkit_runtime::apply_startup_guards();
+        webkit_runtime::log_active_guards();
+    }
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
