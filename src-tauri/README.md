@@ -102,6 +102,28 @@ General notes:
   - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
+## Local AppImage build failures on newer Linux toolchains
+
+`make build` (and `make flatpak-install-local`) default `NO_STRIP=true` (set in the
+root `Makefile`). Without it, local AppImage bundling on newer host toolchains
+(e.g. Fedora 44+, glibc/binutils new enough to emit `.relr.dyn` relocation
+sections) fails with:
+
+```text
+ERROR: Strip call failed: .../usr/bin/strip: <library>: unknown type [0x13] section `.relr.dyn'
+```
+
+`linuxdeploy` vendors its own `strip` binary, which predates RELR section
+support, and aborts bundling before producing an AppImage — the host's own
+(newer) `strip` is not used regardless of `PATH` or a `STRIP` env var, since
+linuxdeploy's bundled AppImage mounts its own `usr/bin/strip`. `NO_STRIP=true`
+skips the strip step entirely, at the cost of larger, unstripped local
+binaries. Override with `NO_STRIP=false` if your toolchain doesn't hit this.
+CI release builds (`.github/workflows/release-tag.yml`,
+`release-dry-run.yml`) call `npm run tauri build` directly on
+`ubuntu-latest`, not through this Makefile target, so this default has no
+effect on published release artifacts.
+
 ## Linux AppImage WebKit crash reports
 
 Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_SANDBOX=1`, and `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
