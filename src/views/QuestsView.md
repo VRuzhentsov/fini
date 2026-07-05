@@ -10,6 +10,7 @@ Transitional active-quest browser kept during migration. Final MVP navigation re
 
 - Keep parity while Focus backlog UI is being consolidated
 - Reuse [[QuestList]] behavior for active quest editing
+- Reuse [[NewQuestForm]] for Quest creation so the legacy route supports the same Space, reminder, and Description composer behavior as [[FocusView]]
 
 
 ## Out of scope

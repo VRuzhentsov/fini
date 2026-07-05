@@ -43,7 +43,26 @@ describe("NewQuestForm", () => {
   };
 
   beforeEach(() => {
-    createQuest = jest.fn().mockResolvedValue({});
+    createQuest = jest.fn().mockResolvedValue({
+      id: "quest-1",
+      space_id: "1",
+      title: "Created quest",
+      description: null,
+      status: "active",
+      energy: "medium",
+      priority: 1,
+      pinned: false,
+      due: null,
+      due_time: null,
+      repeat_rule: null,
+      completed_at: null,
+      order_rank: 0,
+      focus_enter_count: 0,
+      created_at: "",
+      updated_at: "",
+      series_id: null,
+      period_key: null,
+    });
     fetchSpaces = jest.fn().mockResolvedValue(undefined);
     spaceStoreState = reactive({
       selectedSpaceId: null,
@@ -84,6 +103,29 @@ describe("NewQuestForm", () => {
     expect(wrapper.findComponent({ name: "SpacePicker" }).props("menuPlacement")).toBe("top");
   });
 
+  it("starts collapsed and expands metadata without losing the title draft", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Capture fast quest");
+
+    expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-focus-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-keep-adding"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+
+    expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="new-quest-focus-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-keep-adding"]').exists()).toBe(false);
+    expect((wrapper.find('[data-testid="chat-input"]').element as HTMLTextAreaElement).value).toBe("Capture fast quest");
+  });
+
   it("creates a quest with explicit space, description, and reminder draft fields", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
@@ -99,6 +141,7 @@ describe("NewQuestForm", () => {
     });
 
     await wrapper.find('[data-testid="chat-input"]').setValue("Plan the rich composer");
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
     await wrapper.find('[data-testid="new-quest-description"]').setValue("Capture the extra notes here.");
     await chooseSpace(wrapper, "2");
     await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");

@@ -2,7 +2,7 @@
 import { computed, onMounted } from "vue";
 import { useQuestStore, type Quest } from "../stores/quest";
 import QuestList from "../components/QuestsView/QuestList.vue";
-import ChatInput from "../components/ChatInput.vue";
+import NewQuestForm from "../components/FocusView/NewQuestForm.vue";
 
 const questStore = useQuestStore();
 
@@ -35,10 +35,6 @@ function sortActiveQuests(a: Quest, b: Quest): number {
 const activeQuests = computed(() =>
   questStore.quests.filter((q) => q.status === "active").sort(sortActiveQuests)
 );
-
-async function onSubmit(text: string) {
-  await questStore.createQuest({ title: text });
-}
 </script>
 
 <template>
@@ -49,5 +45,5 @@ async function onSubmit(text: string) {
     <QuestList v-else :quests="activeQuests" />
   </div>
 
-  <ChatInput @submit="onSubmit" />
+  <NewQuestForm />
 </template>
