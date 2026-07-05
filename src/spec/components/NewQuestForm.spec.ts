@@ -158,6 +158,31 @@ describe("NewQuestForm", () => {
     });
   });
 
+  it("allows non-empty metadata drafts to collapse", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+    await wrapper.find('[data-testid="new-quest-description"]').setValue("Keep this hidden while collapsed");
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+
+    expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-expand"]').text()).toContain("More");
+    expect(wrapper.find('[data-testid="new-quest-expand"]').attributes("aria-expanded")).toBe("false");
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+
+    expect((wrapper.find('[data-testid="new-quest-description"]').element as HTMLTextAreaElement).value).toBe(
+      "Keep this hidden while collapsed",
+    );
+  });
+
   it("drops reminder time when no due date is selected", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {

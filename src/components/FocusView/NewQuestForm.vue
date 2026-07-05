@@ -30,7 +30,7 @@ const hasMetadataDraft = computed(
     !!repeatRule.value,
 );
 
-const isExpanded = computed(() => metadataExpanded.value || hasMetadataDraft.value);
+const isExpanded = computed(() => metadataExpanded.value);
 
 const hasDraftContent = computed(
   () =>
@@ -150,7 +150,7 @@ function clearReminder() {
 }
 
 function toggleExpanded() {
-  metadataExpanded.value = !isExpanded.value;
+  metadataExpanded.value = !metadataExpanded.value;
 }
 
 async function focusTitle() {
