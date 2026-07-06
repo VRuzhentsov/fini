@@ -39,6 +39,31 @@ This compiles the Rust backend for all Android targets (`aarch64`, `armv7`, `i68
 Output:
 - **APK**: `app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk`
 - **AAB**: `app/build/outputs/bundle/universalRelease/app-universal-release.aab`
+- **Native debug symbols**: `app/build/outputs/native-debug-symbols/universalRelease/native-debug-symbols.zip`
+
+## Native debug symbols
+
+The Android bundle contains the Rust `cdylib` from `src-tauri/Cargo.toml` as
+`libfini_lib.so`. Release builds currently target `aarch64`, which Gradle maps
+to the Android `arm64-v8a` ABI; a full local build can also produce
+`armeabi-v7a`, `x86`, and `x86_64` when those targets are requested.
+
+Unstripped Rust libraries are produced under
+`src-tauri/target/<android-rust-target>/release/libfini_lib.so` before Gradle
+packages them into the AAB. The release build type sets
+`ndk.debugSymbolLevel = "FULL"`, so Android Gradle Plugin also writes the
+Play Console-compatible archive at:
+
+```text
+src-tauri/gen/android/app/build/outputs/native-debug-symbols/universalRelease/native-debug-symbols.zip
+```
+
+The release GitHub workflow uploads that archive with the AAB through the
+Google Play action's `debugSymbols` input. If a release is uploaded manually,
+upload the same `native-debug-symbols.zip` file in Play Console so native crash
+and ANR stack traces can be symbolicated. Verify the Play Console release
+candidate no longer shows the native debug symbols warning after the symbols are
+attached.
 
 ## Install on a connected device
 

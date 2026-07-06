@@ -460,6 +460,17 @@ jobs:
             "${ANDROID_KEY_ALIAS}"
           jarsigner -verify "$signed_aab"
 
+      - name: Collect Android native debug symbols
+        run: |
+          set -euo pipefail
+          symbols_zip="$(find src-tauri/gen/android/app/build/outputs/native-debug-symbols -name native-debug-symbols.zip | head -n 1)"
+          if [ -z "$symbols_zip" ]; then
+            echo "Android native debug symbols archive not found" >&2
+            exit 1
+          fi
+          short_sha="${GITHUB_SHA::7}"
+          cp "$symbols_zip" "fini-prep-${short_sha}-android-native-debug-symbols.zip"
+
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
@@ -467,6 +478,7 @@ jobs:
           path: |
             fini-prep-*-android.apk
             fini-prep-*-android.aab
+            fini-prep-*-android-native-debug-symbols.zip
           if-no-files-found: error
           retention-days: 7
 

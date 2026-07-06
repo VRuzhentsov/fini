@@ -595,6 +595,16 @@ jobs:
             "${ANDROID_KEY_ALIAS}"
           jarsigner -verify "$signed_aab"
 
+      - name: Collect Android native debug symbols
+        run: |
+          set -euo pipefail
+          symbols_zip="$(find src-tauri/gen/android/app/build/outputs/native-debug-symbols -name native-debug-symbols.zip | head -n 1)"
+          if [ -z "$symbols_zip" ]; then
+            echo "Android native debug symbols archive not found" >&2
+            exit 1
+          fi
+          cp "$symbols_zip" "fini-${GITHUB_REF_NAME}-android-native-debug-symbols.zip"
+
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
@@ -602,6 +612,7 @@ jobs:
           path: |
             fini-${{ github.ref_name }}-android.apk
             fini-${{ github.ref_name }}-android.aab
+            fini-${{ github.ref_name }}-android-native-debug-symbols.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -744,6 +755,7 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.fini.app
           releaseFiles: release-assets/fini-${{ github.ref_name }}-android.aab
+          debugSymbols: release-assets/fini-${{ github.ref_name }}-android-native-debug-symbols.zip
           tracks: internal
           releaseName: ${{ github.ref_name }}
           status: completed
