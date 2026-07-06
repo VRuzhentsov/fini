@@ -612,7 +612,14 @@ jobs:
           path: |
             fini-${{ github.ref_name }}-android.apk
             fini-${{ github.ref_name }}-android.aab
-            fini-${{ github.ref_name }}-android-native-debug-symbols.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Android native debug symbols artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-native-debug-symbols
+          path: fini-${{ github.ref_name }}-android-native-debug-symbols.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -732,6 +739,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: release-android
+          path: release-assets
+
+      - name: Download Android native debug symbols artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-native-debug-symbols
           path: release-assets
 
       - name: Validate Play publishing secret
