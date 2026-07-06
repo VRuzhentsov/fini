@@ -463,13 +463,36 @@ jobs:
       - name: Collect Android native debug symbols
         run: |
           set -euo pipefail
-          symbols_zip="$(find src-tauri/gen/android/app/build/outputs/native-debug-symbols -name native-debug-symbols.zip | head -n 1)"
-          if [ -z "$symbols_zip" ]; then
-            echo "Android native debug symbols archive not found" >&2
-            exit 1
-          fi
           short_sha="${GITHUB_SHA::7}"
-          cp "$symbols_zip" "fini-prep-${short_sha}-android-native-debug-symbols.zip"
+          ANDROID_SYMBOLS_OUTPUT="fini-prep-${short_sha}-android-native-debug-symbols.zip" python3 <<'PY'
+          import os
+          import pathlib
+          import zipfile
+
+          root = pathlib.Path("src-tauri/target")
+          output = pathlib.Path(os.environ["ANDROID_SYMBOLS_OUTPUT"])
+          targets = {
+              "aarch64-linux-android": "arm64-v8a",
+              "armv7-linux-androideabi": "armeabi-v7a",
+              "i686-linux-android": "x86",
+              "x86_64-linux-android": "x86_64",
+          }
+
+          entries = []
+          for rust_target, abi in targets.items():
+              library = root / rust_target / "release" / "libfini_lib.so"
+              if library.exists():
+                  entries.append((library, f"{abi}/libfini_lib.so"))
+
+          if not entries:
+              raise SystemExit("Android native debug symbol libraries not found")
+
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for library, archive_name in entries:
+                  archive.write(library, archive_name)
+
+          print(f"Wrote {output} with {len(entries)} native debug symbol libraries")
+          PY
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4

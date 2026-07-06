@@ -616,7 +616,7 @@ jobs:
           for rust_target, abi in targets.items():
               library = root / rust_target / "release" / "libfini_lib.so"
               if library.exists():
-                  entries.append((library, f"lib/{abi}/libfini_lib.so"))
+                  entries.append((library, f"{abi}/libfini_lib.so"))
 
           if not entries:
               raise SystemExit("Android native debug symbol libraries not found")
