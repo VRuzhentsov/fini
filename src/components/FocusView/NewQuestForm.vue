@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { CalendarDaysIcon, PaperAirplaneIcon, XMarkIcon } from "@heroicons/vue/24/outline";
+import { CalendarDaysIcon, ChevronDownIcon, ChevronUpIcon, PaperAirplaneIcon, XMarkIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -18,15 +18,24 @@ const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
 const repeatRule = ref<string | null>(null);
 const reminderOpen = ref(false);
+const metadataExpanded = ref(false);
 const isSubmitting = ref(false);
+const titleInput = ref<HTMLTextAreaElement | null>(null);
 
-const hasDraftContent = computed(
+const hasMetadataDraft = computed(
   () =>
-    title.value.trim().length > 0 ||
     description.value.trim().length > 0 ||
     !!due.value ||
     !!dueTime.value ||
     !!repeatRule.value,
+);
+
+const isExpanded = computed(() => metadataExpanded.value);
+
+const hasDraftContent = computed(
+  () =>
+    title.value.trim().length > 0 ||
+    hasMetadataDraft.value,
 );
 
 function defaultSpaceId() {
@@ -140,6 +149,20 @@ function clearReminder() {
   repeatRule.value = null;
 }
 
+function toggleExpanded() {
+  metadataExpanded.value = !metadataExpanded.value;
+}
+
+async function focusTitle() {
+  await nextTick();
+  titleInput.value?.focus();
+}
+
+function onReminderClose() {
+  reminderOpen.value = false;
+  void focusTitle();
+}
+
 function onTitleKeydown(event: KeyboardEvent) {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -166,6 +189,7 @@ async function onSubmit() {
     title.value = "";
     description.value = "";
     clearReminder();
+    metadataExpanded.value = false;
   } finally {
     isSubmitting.value = false;
   }
@@ -177,6 +201,7 @@ async function onSubmit() {
     <form class="flex w-full flex-col gap-2 rounded-lg border border-base-300 bg-base-100 p-3 shadow-sm" @submit.prevent="onSubmit">
       <div class="flex items-start gap-2">
         <textarea
+          ref="titleInput"
           v-model="title"
           data-testid="chat-input"
           class="textarea textarea-ghost min-h-0 flex-1 resize-none overflow-hidden p-0 text-base font-semibold leading-tight focus:outline-none"
@@ -196,17 +221,23 @@ async function onSubmit() {
         />
       </div>
 
-      <textarea
-        v-model="description"
-        data-testid="new-quest-description"
-        class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
-        placeholder="Description"
-        rows="2"
-        :disabled="isSubmitting"
-      />
+      <div v-if="isExpanded" class="flex flex-col gap-2 border-t border-base-300 pt-2">
+        <textarea
+          v-model="description"
+          data-testid="new-quest-description"
+          class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
+          placeholder="Description"
+          rows="2"
+          :disabled="isSubmitting"
+        />
+
+        <div class="flex flex-wrap items-center gap-3 text-xs text-base-content/70">
+          <span class="hidden text-base-content/50 sm:inline">Enter creates · Shift+Enter keeps a newline</span>
+        </div>
+      </div>
 
       <div class="flex items-center justify-between gap-2 pt-1">
-        <div class="flex min-w-0 items-center gap-1">
+        <div class="flex min-w-0 flex-wrap items-center gap-1">
           <button
             type="button"
             data-testid="new-quest-reminder"
@@ -229,6 +260,18 @@ async function onSubmit() {
           >
             <XMarkIcon class="size-4" />
           </button>
+          <button
+            type="button"
+            data-testid="new-quest-expand"
+            class="btn btn-ghost btn-sm gap-1 px-2"
+            :aria-expanded="isExpanded"
+            :disabled="isSubmitting"
+            @click="toggleExpanded"
+          >
+            <ChevronUpIcon v-if="isExpanded" class="size-4" />
+            <ChevronDownIcon v-else class="size-4" />
+            <span>{{ isExpanded ? "Less" : "More" }}</span>
+          </button>
         </div>
 
         <button
@@ -247,7 +290,7 @@ async function onSubmit() {
   <ReminderMenu
     v-if="reminderOpen && !isSubmitting"
     :quest="draftQuest"
-    @close="reminderOpen = false"
+    @close="onReminderClose"
     @save="onReminderSave"
   />
 </template>

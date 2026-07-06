@@ -4,13 +4,23 @@ Rich draft composer for Quest creation. Used in [[FocusView]] as the persistent 
 
 ## Layout
 
+Collapsed quick-create state:
+
 ```
-[ title input                                      ] [ [[SpacePicker]] ▾ ]
-[ description textarea                                      ]
-[ Date / reminder ]                                      [ Send ]
+[ title input                                  ] [ Space ▾ ]
+[ Date ] [ More ]                                        [ Send ]
 ```
 
-The composer uses the same compact card language as [[QuestEditor]], but it keeps the same screen role as [[ChatInput]]: fixed to the bottom edge, above the safe-area/keyboard inset, and outside the quest list flow.
+Expanded metadata state:
+
+```
+[ title input                                  ] [ Space ▾ ]
+[ description textarea                                      ]
+[ shortcut hint                                             ]
+[ Date / reminder ] [ Less ]                            [ Send ]
+```
+
+The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input. Metadata expands in place so the draft still feels like one Quest being completed, not a separate form.
 
 ## Space selector
 
@@ -40,6 +50,7 @@ After a successful create:
 - title is cleared
 - description is cleared
 - reminder fields are cleared
+- composer returns to collapsed quick-create state
 - selected Space resyncs to the current global Space filter for the next empty draft
 
 ## Dependencies
