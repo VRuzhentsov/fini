@@ -142,7 +142,9 @@ Report only:
 Do not publish raw coredumps or any user, host, machine, boot, session, or transient mount identifiers.
 Do not include local core storage paths, AppImage mount paths, or usernames in public reports.
 
-Suggested template:
+For public GitHub reports, use `.github/ISSUE_TEMPLATE/linux-appimage-webkit-crash.yml`; it requires the same sanitized fields and includes a privacy checklist before submission.
+
+Suggested local notes template:
 
 ```text
 Fini version:
@@ -154,6 +156,7 @@ Fresh profile repro:
 webkit-runtime startup log lines:
 Sanitized coredump summary:
 Stack summary:
+Rendering workaround comparison:
 ```
 
 ## Postponed
