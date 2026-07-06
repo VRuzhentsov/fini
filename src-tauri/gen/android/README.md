@@ -39,7 +39,8 @@ This compiles the Rust backend for all Android targets (`aarch64`, `armv7`, `i68
 Output:
 - **APK**: `app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk`
 - **AAB**: `app/build/outputs/bundle/universalRelease/app-universal-release.aab`
-- **Native debug symbols**: `app/build/outputs/native-debug-symbols/universalRelease/native-debug-symbols.zip`
+- **Native debug symbols**: release workflow artifact
+  `fini-<tag>-android-native-debug-symbols.zip`
 
 ## Native debug symbols
 
@@ -50,12 +51,12 @@ to the Android `arm64-v8a` ABI; a full local build can also produce
 
 Unstripped Rust libraries are produced under
 `src-tauri/target/<android-rust-target>/release/libfini_lib.so` before Gradle
-packages them into the AAB. The release build type sets
-`ndk.debugSymbolLevel = "FULL"`, so Android Gradle Plugin also writes the
-Play Console-compatible archive at:
+packages stripped libraries into the AAB. The release workflow zips those
+unstripped libraries separately for Play Console upload instead of enabling
+Android Gradle Plugin debug-symbol metadata on the public release AAB:
 
 ```text
-src-tauri/gen/android/app/build/outputs/native-debug-symbols/universalRelease/native-debug-symbols.zip
+fini-<tag>-android-native-debug-symbols.zip
 ```
 
 The release GitHub workflow uploads that archive with the AAB through the
