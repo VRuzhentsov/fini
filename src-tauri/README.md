@@ -86,13 +86,15 @@ General notes:
 
 - **Linux GUI**: Applies default WebKit startup guards before Tauri initializes:
   `WEBKIT_DISABLE_DMABUF_RENDERER=1` for Wayland/mesa stability,
-  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts, and
+  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts,
   `WEBKIT_DISABLE_COMPOSITING_MODE=1` to force software compositing when the
   bundled WebKitGTK's accelerated compositing path is unstable against the
-  host's mesa/DRM/GL stack. Existing environment values are preserved for
-  explicit local diagnostics. The resolved value of each guard is logged to
-  stderr at startup (`[webkit-runtime] KEY=value`) so a packaged AppImage
-  session can confirm which flags actually reached `WebKitWebProcess`.
+  host's mesa/DRM/GL stack, and `LIBGL_ALWAYS_SOFTWARE=1` as a stronger
+  Mesa-side fallback for repeated AppImage WebKit aborts on host GL drivers.
+  Existing environment values are preserved for explicit local diagnostics.
+  The resolved value of each guard is logged to stderr at startup
+  (`[webkit-runtime] KEY=value`) so a packaged AppImage session can confirm
+  which flags actually reached `WebKitWebProcess`.
 - **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`
 - **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
@@ -126,7 +128,7 @@ effect on published release artifacts.
 
 ## Linux AppImage WebKit crash reports
 
-Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_SANDBOX=1`, and `WEBKIT_DISABLE_COMPOSITING_MODE=1`.
+Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_SANDBOX=1`, `WEBKIT_DISABLE_COMPOSITING_MODE=1`, and `LIBGL_ALWAYS_SOFTWARE=1`.
 Each guard's resolved value is logged to stderr at startup (`[webkit-runtime] KEY=value`) — capture those lines alongside any crash report to confirm the flags reached the AppImage's `WebKitWebProcess`.
 If `WebKitWebProcess` aborts in an AppImage build, capture a sanitized report that keeps the failure actionable without exposing host identifiers.
 

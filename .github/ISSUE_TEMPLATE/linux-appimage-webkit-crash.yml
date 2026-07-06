@@ -63,6 +63,7 @@ body:
         [webkit-runtime] WEBKIT_DISABLE_DMABUF_RENDERER=1
         [webkit-runtime] WEBKIT_DISABLE_SANDBOX=1
         [webkit-runtime] WEBKIT_DISABLE_COMPOSITING_MODE=1
+        [webkit-runtime] LIBGL_ALWAYS_SOFTWARE=1
     validations:
       required: true
   - type: textarea
