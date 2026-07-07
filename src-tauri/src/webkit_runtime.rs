@@ -1,17 +1,20 @@
 const WEBKIT_DISABLE_DMABUF_RENDERER: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 const WEBKIT_DISABLE_SANDBOX: &str = "WEBKIT_DISABLE_SANDBOX";
 const WEBKIT_DISABLE_COMPOSITING_MODE: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
+const LIBGL_ALWAYS_SOFTWARE: &str = "LIBGL_ALWAYS_SOFTWARE";
 
-const GUARD_KEYS: [&str; 3] = [
+const GUARD_KEYS: [&str; 4] = [
     WEBKIT_DISABLE_DMABUF_RENDERER,
     WEBKIT_DISABLE_SANDBOX,
     WEBKIT_DISABLE_COMPOSITING_MODE,
+    LIBGL_ALWAYS_SOFTWARE,
 ];
 
 pub fn apply_startup_guards() {
     set_default_env(WEBKIT_DISABLE_DMABUF_RENDERER, "1");
     set_default_env(WEBKIT_DISABLE_SANDBOX, "1");
     set_default_env(WEBKIT_DISABLE_COMPOSITING_MODE, "1");
+    set_default_env(LIBGL_ALWAYS_SOFTWARE, "1");
 }
 
 fn set_default_env(key: &str, value: &str) {
@@ -79,6 +82,7 @@ mod tests {
             assert_eq!(std::env::var(WEBKIT_DISABLE_DMABUF_RENDERER).unwrap(), "1");
             assert_eq!(std::env::var(WEBKIT_DISABLE_SANDBOX).unwrap(), "1");
             assert_eq!(std::env::var(WEBKIT_DISABLE_COMPOSITING_MODE).unwrap(), "1");
+            assert_eq!(std::env::var(LIBGL_ALWAYS_SOFTWARE).unwrap(), "1");
         });
     }
 
@@ -88,12 +92,14 @@ mod tests {
             std::env::set_var(WEBKIT_DISABLE_DMABUF_RENDERER, "0");
             std::env::set_var(WEBKIT_DISABLE_SANDBOX, "0");
             std::env::set_var(WEBKIT_DISABLE_COMPOSITING_MODE, "0");
+            std::env::set_var(LIBGL_ALWAYS_SOFTWARE, "0");
 
             apply_startup_guards();
 
             assert_eq!(std::env::var(WEBKIT_DISABLE_DMABUF_RENDERER).unwrap(), "0");
             assert_eq!(std::env::var(WEBKIT_DISABLE_SANDBOX).unwrap(), "0");
             assert_eq!(std::env::var(WEBKIT_DISABLE_COMPOSITING_MODE).unwrap(), "0");
+            assert_eq!(std::env::var(LIBGL_ALWAYS_SOFTWARE).unwrap(), "0");
         });
     }
 }
