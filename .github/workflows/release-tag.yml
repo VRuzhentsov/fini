@@ -595,6 +595,39 @@ jobs:
             "${ANDROID_KEY_ALIAS}"
           jarsigner -verify "$signed_aab"
 
+      - name: Collect Android native debug symbols
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import pathlib
+          import zipfile
+
+          root = pathlib.Path("src-tauri/target")
+          output = pathlib.Path(f"fini-{os.environ['GITHUB_REF_NAME']}-android-native-debug-symbols.zip")
+          targets = {
+              "aarch64-linux-android": "arm64-v8a",
+              "armv7-linux-androideabi": "armeabi-v7a",
+              "i686-linux-android": "x86",
+              "x86_64-linux-android": "x86_64",
+          }
+
+          entries = []
+          for rust_target, abi in targets.items():
+              library = root / rust_target / "release" / "libfini_lib.so"
+              if library.exists():
+                  entries.append((library, f"{abi}/libfini_lib.so"))
+
+          if not entries:
+              raise SystemExit("Android native debug symbol libraries not found")
+
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for library, archive_name in entries:
+                  archive.write(library, archive_name)
+
+          print(f"Wrote {output} with {len(entries)} native debug symbol libraries")
+          PY
+
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
@@ -602,6 +635,14 @@ jobs:
           path: |
             fini-${{ github.ref_name }}-android.apk
             fini-${{ github.ref_name }}-android.aab
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Android native debug symbols artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-native-debug-symbols
+          path: fini-${{ github.ref_name }}-android-native-debug-symbols.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -723,6 +764,12 @@ jobs:
           name: release-android
           path: release-assets
 
+      - name: Download Android native debug symbols artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-native-debug-symbols
+          path: release-assets
+
       - name: Validate Play publishing secret
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
@@ -744,6 +791,7 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.fini.app
           releaseFiles: release-assets/fini-${{ github.ref_name }}-android.aab
+          debugSymbols: release-assets/fini-${{ github.ref_name }}-android-native-debug-symbols.zip
           tracks: internal
           releaseName: ${{ github.ref_name }}
           status: completed
