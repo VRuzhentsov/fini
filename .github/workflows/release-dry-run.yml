@@ -40,6 +40,9 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           required=(
@@ -48,6 +51,9 @@ jobs:
             ANDROID_KEYSTORE_PASSWORD
             ANDROID_KEY_ALIAS
             ANDROID_KEY_PASSWORD
+            FINI_TAURI_UPDATER_PUBKEY
+            TAURI_SIGNING_PRIVATE_KEY
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           )
           for key in "${required[@]}"; do
             if [ -z "${!key:-}" ]; then
@@ -196,6 +202,10 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify Linux desktop binary
@@ -316,6 +326,10 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,desktop-updater,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Build Windows CLI
