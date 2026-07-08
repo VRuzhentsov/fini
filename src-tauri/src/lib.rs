@@ -240,6 +240,7 @@ pub fn run() {
                 }
                 Err(error) => match unsupported_schema_startup_recovery(error.clone()) {
                     Some(recovery) => {
+                        services::desktop_update::spawn_startup_auto_update(&app_handle, true);
                         app.manage(StartupRecoveryState(std::sync::Mutex::new(Some(recovery))));
                         return Ok(());
                     }

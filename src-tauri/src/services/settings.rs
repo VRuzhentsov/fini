@@ -3,7 +3,7 @@ use diesel::sqlite::SqliteConnection;
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use std::thread;
 
-use crate::models::UpsertSettingInput;
+use crate::models::{Setting, UpsertSettingInput};
 use crate::schema::settings;
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use crate::services::db::AppDbConnection;
@@ -68,9 +68,10 @@ pub(crate) fn load_setting(
 ) -> Result<Option<String>, String> {
     settings::table
         .filter(settings::key.eq(key))
-        .select(settings::value)
-        .first::<String>(conn)
+        .select(Setting::as_select())
+        .first::<Setting>(conn)
         .optional()
+        .map(|setting| setting.map(|setting| setting.value))
         .map_err(|e| e.to_string())
 }
 
