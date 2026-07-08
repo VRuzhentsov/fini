@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { invoke } from "@tauri-apps/api/core";
 import { ref, onMounted } from "vue";
 import packageJson from "../../package.json";
 import AboutCard from "../components/SettingsView/AboutCard.vue";
@@ -34,13 +35,49 @@ const newSpaceName = ref("");
 const editingId = ref<string | null>(null);
 const editingName = ref("");
 const showBackupExport = ref(false);
+const autoUpdatesEnabled = ref(true);
+const autoUpdatesLoading = ref(false);
+const autoUpdatesSaving = ref(false);
+const autoUpdatesError = ref<string | null>(null);
 const appVersion = packageJson.version;
 const sourceUrl = "https://github.com/VRuzhentsov/fini";
 
 onMounted(() => {
   spaceStore.fetchSpaces();
   void deviceStore.hydrate();
+  void loadAutoUpdatePreference();
 });
+
+async function loadAutoUpdatePreference() {
+  autoUpdatesLoading.value = true;
+  autoUpdatesError.value = null;
+  try {
+    autoUpdatesEnabled.value = await invoke<boolean>("get_auto_update_enabled");
+  } catch (error) {
+    autoUpdatesError.value = String(error);
+  } finally {
+    autoUpdatesLoading.value = false;
+  }
+}
+
+async function setAutoUpdatesEnabled(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const previous = autoUpdatesEnabled.value;
+  const enabled = target.checked;
+
+  autoUpdatesEnabled.value = enabled;
+  autoUpdatesSaving.value = true;
+  autoUpdatesError.value = null;
+
+  try {
+    autoUpdatesEnabled.value = await invoke<boolean>("set_auto_update_enabled", { enabled });
+  } catch (error) {
+    autoUpdatesEnabled.value = previous;
+    autoUpdatesError.value = String(error);
+  } finally {
+    autoUpdatesSaving.value = false;
+  }
+}
 
 async function addSpace() {
   const name = newSpaceName.value.trim();
@@ -169,6 +206,34 @@ function devicePresenceLabel(device: PairedDevice) {
     </section>
 
     <ThemeSelector />
+
+    <section class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Updates</h2>
+      <SettingsListGroup>
+        <SettingsListItem>
+          <template #start>
+            <div>
+              <span class="block font-medium">Automatic updates</span>
+              <span class="block text-xs opacity-60">
+                When this is off, Fini will not install updates automatically on the next restart.
+              </span>
+            </div>
+          </template>
+          <template #end>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              data-testid="automatic-updates-toggle"
+              aria-label="Automatic updates"
+              :checked="autoUpdatesEnabled"
+              :disabled="autoUpdatesLoading || autoUpdatesSaving"
+              @change="setAutoUpdatesEnabled"
+            />
+          </template>
+        </SettingsListItem>
+      </SettingsListGroup>
+      <div v-if="autoUpdatesError" class="mt-2 text-xs text-error">{{ autoUpdatesError }}</div>
+    </section>
 
     <section class="rounded-xl bg-base-200 p-3" data-testid="settings-backup">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Backup</h2>

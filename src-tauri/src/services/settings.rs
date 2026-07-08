@@ -15,6 +15,7 @@ use tauri::{AppHandle, Theme};
 use tauri::{Emitter, Manager};
 
 const THEME_KEY: &str = "theme";
+const AUTO_UPDATE_ENABLED_KEY: &str = "automatic_updates_enabled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -88,6 +89,42 @@ pub fn theme_mode(conn: &mut SqliteConnection) -> Result<ThemeMode, String> {
 pub fn set_theme_mode(conn: &mut SqliteConnection, mode: ThemeMode) -> Result<ThemeMode, String> {
     upsert_setting(conn, THEME_KEY, mode.as_str())?;
     Ok(mode)
+}
+
+fn bool_setting_value(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn parse_bool_setting(value: &str, default: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => default,
+    }
+}
+
+pub fn automatic_updates_enabled(conn: &mut SqliteConnection) -> Result<bool, String> {
+    let value = match load_setting(conn, AUTO_UPDATE_ENABLED_KEY)? {
+        Some(value) => value,
+        None => {
+            upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_setting_value(true))?;
+            bool_setting_value(true).to_string()
+        }
+    };
+
+    Ok(parse_bool_setting(&value, true))
+}
+
+pub fn set_automatic_updates_enabled(
+    conn: &mut SqliteConnection,
+    enabled: bool,
+) -> Result<bool, String> {
+    upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_setting_value(enabled))?;
+    Ok(enabled)
 }
 
 #[cfg(feature = "ui-plane")]
@@ -260,6 +297,22 @@ mod tests {
         assert_eq!(ThemeMode::parse("light"), Some(ThemeMode::Light));
         assert_eq!(ThemeMode::parse("dark"), Some(ThemeMode::Dark));
         assert_eq!(ThemeMode::parse("wat"), None);
+    }
+
+    #[test]
+    fn parses_bool_settings_with_safe_default() {
+        use super::parse_bool_setting;
+
+        for value in ["true", "1", " yes ", "ON"] {
+            assert!(parse_bool_setting(value, false));
+        }
+
+        for value in ["false", "0", " no ", "OFF"] {
+            assert!(!parse_bool_setting(value, true));
+        }
+
+        assert!(parse_bool_setting("unexpected", true));
+        assert!(!parse_bool_setting("unexpected", false));
     }
 
     #[cfg(feature = "ui-plane")]

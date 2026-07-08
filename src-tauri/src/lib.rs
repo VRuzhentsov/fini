@@ -153,6 +153,23 @@ fn theme_hint(db: tauri::State<AppDbConnection>) -> String {
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
+fn get_auto_update_enabled(db: tauri::State<AppDbConnection>) -> Result<bool, String> {
+    let mut conn = db.0.lock().unwrap();
+    settings::automatic_updates_enabled(&mut conn)
+}
+
+#[cfg(feature = "ui-plane")]
+#[tauri::command]
+fn set_auto_update_enabled(
+    db: tauri::State<AppDbConnection>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let mut conn = db.0.lock().unwrap();
+    settings::set_automatic_updates_enabled(&mut conn, enabled)
+}
+
+#[cfg(feature = "ui-plane")]
+#[tauri::command]
 fn sync_native_theme(app: AppHandle, theme: String) {
     settings::apply_native_theme(&app, &theme);
 }
@@ -201,12 +218,19 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle();
 
-            services::desktop_update::spawn_startup_auto_update(&app_handle);
-
             match try_open_db(&app_handle) {
                 Ok(conn) => {
                     app.manage(StartupRecoveryState(std::sync::Mutex::new(None)));
                     app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
+                    let auto_updates_enabled = {
+                        let db = app.state::<AppDbConnection>();
+                        let mut conn = db.0.lock().unwrap();
+                        settings::automatic_updates_enabled(&mut conn).unwrap_or(true)
+                    };
+                    services::desktop_update::spawn_startup_auto_update(
+                        &app_handle,
+                        auto_updates_enabled,
+                    );
                     #[cfg(target_os = "linux")]
                     if let Err(error) =
                         services::appimage_desktop::self_register_appimage_desktop_entry()
@@ -303,6 +327,8 @@ pub fn run() {
             space_sync_tick,
             space_sync_status,
             theme_hint,
+            get_auto_update_enabled,
+            set_auto_update_enabled,
             get_theme_mode,
             set_theme_mode,
             sync_native_theme,

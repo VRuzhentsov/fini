@@ -36,7 +36,12 @@ const DISABLE_AUTO_UPDATE_ENV: &str = "FINI_DISABLE_AUTO_UPDATE";
     any(target_os = "linux", target_os = "macos", target_os = "windows"),
     not(debug_assertions)
 ))]
-pub fn spawn_startup_auto_update(app: &tauri::AppHandle) {
+pub fn spawn_startup_auto_update(app: &tauri::AppHandle, automatic_updates_enabled: bool) {
+    if !automatic_updates_enabled {
+        eprintln!("[desktop-updater] startup auto-update disabled by Settings");
+        return;
+    }
+
     if auto_update_disabled_from_env() {
         eprintln!("[desktop-updater] startup auto-update disabled by {DISABLE_AUTO_UPDATE_ENV}");
         return;
@@ -55,7 +60,7 @@ pub fn spawn_startup_auto_update(app: &tauri::AppHandle) {
     any(target_os = "linux", target_os = "macos", target_os = "windows"),
     not(debug_assertions)
 )))]
-pub fn spawn_startup_auto_update(_app: &tauri::AppHandle) {}
+pub fn spawn_startup_auto_update(_app: &tauri::AppHandle, _automatic_updates_enabled: bool) {}
 
 #[cfg(all(
     feature = "desktop-updater",

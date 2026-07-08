@@ -75,9 +75,11 @@ The manifest publishes desktop bundle targets such as `linux-x86_64-appimage`,
 `linux-x86_64-deb`, `linux-x86_64-rpm`, and `windows-x86_64-nsis`, with generic
 fallbacks for AppImage and NSIS targets. Release builds must provide
 `FINI_TAURI_UPDATER_PUBKEY` plus Tauri signing secrets so the app can verify and
-install updates. `FINI_DISABLE_AUTO_UPDATE=1` disables the startup check for
-diagnostics; `FINI_DESKTOP_UPDATE_ENDPOINT` and `FINI_DESKTOP_UPDATE_PUBKEY`
-override the release channel for staging.
+install updates when Settings -> Updates -> Automatic updates is enabled.
+Turning that setting off skips the next startup auto-update check.
+`FINI_DISABLE_AUTO_UPDATE=1` disables the startup check for diagnostics;
+`FINI_DESKTOP_UPDATE_ENDPOINT` and `FINI_DESKTOP_UPDATE_PUBKEY` override the
+release channel for staging.
 
 ## Verification
 
