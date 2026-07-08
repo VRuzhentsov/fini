@@ -6,6 +6,8 @@ pub mod cli;
 #[cfg(feature = "cli-plane")]
 pub mod cli_update;
 pub mod db;
+#[cfg(feature = "ui-plane")]
+pub mod desktop_update;
 pub mod device_connection;
 pub mod due_time;
 #[cfg(any(feature = "ui-plane", test))]

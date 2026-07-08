@@ -117,6 +117,9 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           required=(
@@ -124,6 +127,9 @@ jobs:
             ANDROID_KEYSTORE_PASSWORD
             ANDROID_KEY_ALIAS
             ANDROID_KEY_PASSWORD
+            FINI_TAURI_UPDATER_PUBKEY
+            TAURI_SIGNING_PRIVATE_KEY
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           )
           for key in "${required[@]}"; do
             if [ -z "${!key:-}" ]; then
@@ -299,6 +305,10 @@ jobs:
         run: npm ci
 
       - name: Build Linux bundles
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify Linux desktop binary
@@ -436,6 +446,10 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,desktop-updater,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Build Windows CLI
@@ -812,12 +826,26 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download built artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+
+      - name: Generate Tauri desktop updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --output release-assets/latest.json
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
@@ -838,10 +866,10 @@ jobs:
           fi
           for file in "${files[@]}"; do
             case "$file" in
-              *.sig) continue ;;
+              *.sig|*.cosign.sig) continue ;;
             esac
             cosign sign-blob --yes \
-              --output-signature "${file}.sig" \
+              --output-signature "${file}.cosign.sig" \
               "$file"
           done
 
@@ -871,12 +899,26 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Download built artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+
+      - name: Generate Tauri desktop updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --output release-assets/latest.json
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
@@ -897,10 +939,10 @@ jobs:
           fi
           for file in "${files[@]}"; do
             case "$file" in
-              *.sig) continue ;;
+              *.sig|*.cosign.sig) continue ;;
             esac
             cosign sign-blob --yes \
-              --output-signature "${file}.sig" \
+              --output-signature "${file}.cosign.sig" \
               "$file"
           done
 
