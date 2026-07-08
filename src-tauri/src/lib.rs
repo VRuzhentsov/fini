@@ -201,6 +201,8 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle();
 
+            services::desktop_update::spawn_startup_auto_update(&app_handle);
+
             match try_open_db(&app_handle) {
                 Ok(conn) => {
                     app.manage(StartupRecoveryState(std::sync::Mutex::new(None)));

@@ -61,6 +61,24 @@ Release builds should embed the Tauri updater public key with
 `FINI_UPDATE_PUBKEY` at runtime. `FINI_UPDATE_ENDPOINT` may override the default
 manifest endpoint for staging channels.
 
+## Desktop Updates
+
+Desktop app updates are automatic at startup for release desktop builds compiled
+with `ui-plane,desktop-updater`. They use Tauri's signed updater artifacts and a
+separate GUI manifest so desktop installers do not share CLI updater targets:
+
+```text
+https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json
+```
+
+The manifest publishes desktop bundle targets such as `linux-x86_64-appimage`,
+`linux-x86_64-deb`, `linux-x86_64-rpm`, and `windows-x86_64-nsis`, with generic
+fallbacks for AppImage and NSIS targets. Release builds must provide
+`FINI_TAURI_UPDATER_PUBKEY` plus Tauri signing secrets so the app can verify and
+install updates. `FINI_DISABLE_AUTO_UPDATE=1` disables the startup check for
+diagnostics; `FINI_DESKTOP_UPDATE_ENDPOINT` and `FINI_DESKTOP_UPDATE_PUBKEY`
+override the release channel for staging.
+
 ## Verification
 
 Use these checks when changing the binary contract:
