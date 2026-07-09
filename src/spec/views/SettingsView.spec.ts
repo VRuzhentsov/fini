@@ -121,12 +121,15 @@ describe("SettingsView automatic updates", () => {
   });
 
   it("renders the automatic updates toggle from persisted settings", async () => {
-    (invoke as jest.Mock).mockResolvedValueOnce(false);
+    (invoke as jest.Mock)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
 
     const wrapper = mountSettingsView();
     await flushUi();
 
     const toggle = wrapper.find('[data-testid="automatic-updates-toggle"]');
+    expect(invoke).toHaveBeenCalledWith("startup_auto_update_supported");
     expect(invoke).toHaveBeenCalledWith("get_auto_update_enabled");
     expect(wrapper.text()).toContain("Automatic updates");
     expect(wrapper.text()).toContain("When this is off, Fini will not install updates automatically on the next restart.");
@@ -135,6 +138,7 @@ describe("SettingsView automatic updates", () => {
 
   it("persists automatic updates toggle changes", async () => {
     (invoke as jest.Mock)
+      .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(false);
 
@@ -149,5 +153,16 @@ describe("SettingsView automatic updates", () => {
 
     expect(invoke).toHaveBeenLastCalledWith("set_auto_update_enabled", { enabled: false });
     expect((toggle.element as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("hides automatic updates settings when startup updates are unsupported", async () => {
+    (invoke as jest.Mock).mockResolvedValueOnce(false);
+
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    expect(wrapper.find('[data-testid="settings-updates"]').exists()).toBe(false);
+    expect(invoke).toHaveBeenCalledWith("startup_auto_update_supported");
+    expect(invoke).not.toHaveBeenCalledWith("get_auto_update_enabled");
   });
 });

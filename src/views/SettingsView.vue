@@ -35,6 +35,7 @@ const newSpaceName = ref("");
 const editingId = ref<string | null>(null);
 const editingName = ref("");
 const showBackupExport = ref(false);
+const autoUpdatesSupported = ref(false);
 const autoUpdatesEnabled = ref(true);
 const autoUpdatesLoading = ref(false);
 const autoUpdatesSaving = ref(false);
@@ -45,19 +46,26 @@ const sourceUrl = "https://github.com/VRuzhentsov/fini";
 onMounted(() => {
   spaceStore.fetchSpaces();
   void deviceStore.hydrate();
-  void loadAutoUpdatePreference();
+  void loadAutoUpdateSettings();
 });
 
-async function loadAutoUpdatePreference() {
+async function loadAutoUpdateSettings() {
   autoUpdatesLoading.value = true;
   autoUpdatesError.value = null;
   try {
-    autoUpdatesEnabled.value = await invoke<boolean>("get_auto_update_enabled");
+    autoUpdatesSupported.value = await invoke<boolean>("startup_auto_update_supported");
+    if (autoUpdatesSupported.value) {
+      await loadAutoUpdatePreference();
+    }
   } catch (error) {
     autoUpdatesError.value = String(error);
   } finally {
     autoUpdatesLoading.value = false;
   }
+}
+
+async function loadAutoUpdatePreference() {
+  autoUpdatesEnabled.value = await invoke<boolean>("get_auto_update_enabled");
 }
 
 async function setAutoUpdatesEnabled(event: Event) {
@@ -207,7 +215,7 @@ function devicePresenceLabel(device: PairedDevice) {
 
     <ThemeSelector />
 
-    <section class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
+    <section v-if="autoUpdatesSupported" class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Updates</h2>
       <SettingsListGroup>
         <SettingsListItem>

@@ -171,6 +171,12 @@ fn set_auto_update_enabled(
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
+fn startup_auto_update_supported() -> bool {
+    services::desktop_update::startup_auto_update_supported()
+}
+
+#[cfg(feature = "ui-plane")]
+#[tauri::command]
 fn sync_native_theme(app: AppHandle, theme: String) {
     settings::apply_native_theme(&app, &theme);
 }
@@ -331,6 +337,7 @@ pub fn run() {
             theme_hint,
             get_auto_update_enabled,
             set_auto_update_enabled,
+            startup_auto_update_supported,
             get_theme_mode,
             set_theme_mode,
             sync_native_theme,

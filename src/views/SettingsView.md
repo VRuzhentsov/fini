@@ -39,7 +39,7 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 
 Desktop automatic update behavior.
 
-- Rendered inline on `/settings` using [[SettingsListGroup]] and [[SettingsListItem]]
+- Rendered inline on `/settings` using [[SettingsListGroup]] and [[SettingsListItem]] only when startup desktop updates are supported by the current build
 - `Automatic updates` toggle is enabled by default to preserve existing startup updater behavior
 - Toggle state persists in the app settings table
 - When disabled, the next app restart skips startup automatic update install/check

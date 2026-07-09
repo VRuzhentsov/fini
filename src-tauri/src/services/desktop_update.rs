@@ -62,6 +62,18 @@ pub fn spawn_startup_auto_update(app: &tauri::AppHandle, automatic_updates_enabl
 )))]
 pub fn spawn_startup_auto_update(_app: &tauri::AppHandle, _automatic_updates_enabled: bool) {}
 
+pub fn startup_auto_update_supported() -> bool {
+    cfg!(all(
+        feature = "desktop-updater",
+        any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ),
+        not(debug_assertions)
+    ))
+}
+
 #[cfg(all(
     feature = "desktop-updater",
     any(target_os = "linux", target_os = "macos", target_os = "windows"),
