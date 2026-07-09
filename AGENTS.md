@@ -2,7 +2,7 @@
 
 ## Structure
 
-- Frontend (Vue 3): `src/` — see `src/README.md` and `skills/fini-frontend/SKILL.md`
+- Frontend (Vue 3): `src/` — see `src/README.md`
 - Backend (Rust + Tauri): `src-tauri/` — see `src-tauri/README.md`
 - Domain and feature specs: `specs/`
 - Repo automation: `Makefile` + `npm run` + `xtask/` — see `fini-scripting` skill

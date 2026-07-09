@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { ref, onMounted } from "vue";
+import { computed, ref, onMounted } from "vue";
 import packageJson from "../../package.json";
 import AboutCard from "../components/SettingsView/AboutCard.vue";
 import ExportSpacesDialog from "../components/SettingsView/ExportSpacesDialog.vue";
@@ -42,6 +42,23 @@ const autoUpdatesSaving = ref(false);
 const autoUpdatesError = ref<string | null>(null);
 const appVersion = packageJson.version;
 const sourceUrl = "https://github.com/VRuzhentsov/fini";
+
+const renderFlags = computed(() => ({
+  spacesError: Boolean(spaceStore.error),
+  spaceEditor: (spaceId: string) => editingId.value === spaceId,
+  emptyPairedDevices: deviceStore.pairedDevices.length === 0,
+  automaticUpdatesSection: autoUpdatesSupported.value,
+  automaticUpdatesError: Boolean(autoUpdatesError.value),
+  backupImportError: Boolean(backupImport.error.value),
+  backupExportDialog: showBackupExport.value,
+  backupImportMappingDialog: Boolean(backupImport.activeMapping.value),
+  backupMergeConflictDialog: Boolean(backupImport.showConflicts.value),
+}));
+
+const renderLists = computed(() => ({
+  spaces: spaceStore.spaces,
+  pairedDevices: deviceStore.pairedDevices,
+}));
 
 onMounted(() => {
   spaceStore.fetchSpaces();
@@ -120,10 +137,10 @@ function devicePresenceLabel(device: PairedDevice) {
     <section class="rounded-xl bg-base-200 p-3">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Spaces</h2>
       <div class="flex flex-col gap-3">
-        <div v-if="spaceStore.error" class="text-error text-sm">{{ spaceStore.error }}</div>
+        <div v-if="renderFlags.spacesError" class="text-error text-sm">{{ spaceStore.error }}</div>
         <SettingsListGroup>
-          <template v-for="space in spaceStore.spaces" :key="space.id">
-            <SettingsListItem v-if="editingId === space.id">
+          <template v-for="space in renderLists.spaces" :key="space.id">
+            <SettingsListItem v-if="renderFlags.spaceEditor(space.id)">
               <template #start>
                 <input
                   v-model="editingName"
@@ -172,7 +189,7 @@ function devicePresenceLabel(device: PairedDevice) {
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Devices</h2>
       <SettingsListGroup>
         <SettingsListItem
-          v-for="device in deviceStore.pairedDevices"
+          v-for="device in renderLists.pairedDevices"
           :key="device.peer_device_id"
           :to="`/settings/device/${device.peer_device_id}`"
           data-testid="paired-device-row"
@@ -195,7 +212,7 @@ function devicePresenceLabel(device: PairedDevice) {
           </template>
         </SettingsListItem>
         <SettingsListItem
-          v-if="deviceStore.pairedDevices.length === 0"
+          v-if="renderFlags.emptyPairedDevices"
         >
           <span class="opacity-70">No paired devices yet.</span>
         </SettingsListItem>
@@ -215,7 +232,7 @@ function devicePresenceLabel(device: PairedDevice) {
 
     <ThemeSelector />
 
-    <section v-if="autoUpdatesSupported" class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
+    <section v-if="renderFlags.automaticUpdatesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Updates</h2>
       <SettingsListGroup>
         <SettingsListItem>
@@ -240,7 +257,7 @@ function devicePresenceLabel(device: PairedDevice) {
           </template>
         </SettingsListItem>
       </SettingsListGroup>
-      <div v-if="autoUpdatesError" class="mt-2 text-xs text-error">{{ autoUpdatesError }}</div>
+      <div v-if="renderFlags.automaticUpdatesError" class="mt-2 text-xs text-error">{{ autoUpdatesError }}</div>
     </section>
 
     <section class="rounded-xl bg-base-200 p-3" data-testid="settings-backup">
@@ -276,16 +293,16 @@ function devicePresenceLabel(device: PairedDevice) {
           </template>
         </SettingsListItem>
       </SettingsListGroup>
-      <div v-if="backupImport.error.value" class="mt-2 text-xs text-error">{{ backupImport.error.value }}</div>
+      <div v-if="renderFlags.backupImportError" class="mt-2 text-xs text-error">{{ backupImport.error.value }}</div>
     </section>
 
     <AboutCard :version="appVersion" :source-url="sourceUrl" />
 
-    <ExportSpacesDialog v-if="showBackupExport" @close="showBackupExport = false" />
+    <ExportSpacesDialog v-if="renderFlags.backupExportDialog" @close="showBackupExport = false" />
 
     <ImportSpaceMappingDialog
-      v-if="backupImport.activeMapping.value"
-      :incoming="backupImport.activeMapping.value"
+      v-if="renderFlags.backupImportMappingDialog"
+      :incoming="backupImport.activeMapping.value!"
       :local-spaces="backupImport.selectableSpaces.value"
       :index="backupImport.mappingIndex.value"
       :total="backupImport.totalMappings.value"
@@ -294,7 +311,7 @@ function devicePresenceLabel(device: PairedDevice) {
     />
 
     <MergeConflictDialog
-      v-if="backupImport.showConflicts.value"
+      v-if="renderFlags.backupMergeConflictDialog"
       :conflicts="backupImport.conflicts.value"
       @cancel="backupImport.cancelImport()"
       @apply="(r) => void backupImport.applyImport(r)"
