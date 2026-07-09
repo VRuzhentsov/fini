@@ -70,10 +70,13 @@ async function reopenFocus(actor: E2EActor): Promise<void> {
 async function submitQuest(actor: E2EActor, title: string): Promise<void> {
   await actor.page.evaluate(`(() => {
     const input = document.querySelector('[data-testid="chat-input"]');
-    if (!(input instanceof HTMLTextAreaElement)) {
-      throw new Error('chat input textarea not found');
+    if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
+      throw new Error('chat input text control not found');
     }
-    input.value = ${JSON.stringify(title)};
+    const prototype = input instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (!setter) throw new Error('chat input setter is unavailable');
+    setter.call(input, ${JSON.stringify(title)});
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
   await actor.page.click('[data-testid="chat-submit"]');
