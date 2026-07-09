@@ -32,8 +32,11 @@ const renderFlags = computed(() => ({
 Rules:
 
 - Every non-trivial `v-if`, `v-show`, or conditional template section should use a named `renderFlags` key.
+- `renderFlags` is not the source of all component state. It is only the template render contract: each key answers whether a specific UI section or element should render.
+- Keep domain state, loading state, form state, selected entities, fetched data, and user input in their normal refs, stores, or computed values outside `renderFlags`.
+- Let `renderFlags` derive from those state sources instead of replacing them.
 - Each key should describe the UI section or element being rendered, not the low-level implementation detail.
-- Keep product/platform logic in the computed flag, not in the template.
+- Keep product/platform render logic in the computed flag, not in the template.
 - Prefer names like `automaticUpdatesSection`, `emptyState`, `deviceList`, or `restoreNotice` over names like `isDesktopAndEnabled`.
 - Simple local DOM-only toggles may stay inline only when the condition is self-evident and not product/platform logic.
 
