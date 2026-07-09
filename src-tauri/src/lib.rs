@@ -1,6 +1,7 @@
 pub mod models;
 mod schema;
 mod services;
+mod utils;
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 mod webkit_runtime;
 // mod voice;       // postponed

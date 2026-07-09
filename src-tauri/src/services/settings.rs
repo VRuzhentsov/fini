@@ -7,6 +7,7 @@ use crate::models::{Setting, UpsertSettingInput};
 use crate::schema::settings;
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use crate::services::db::AppDbConnection;
+use crate::utils::text::{bool_to_str, parse_bool};
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use gtk::prelude::GtkSettingsExt;
 #[cfg(feature = "ui-plane")]
@@ -92,28 +93,16 @@ pub fn set_theme_mode(conn: &mut SqliteConnection, mode: ThemeMode) -> Result<Th
     Ok(mode)
 }
 
-fn bool_setting_value(value: bool) -> &'static str {
-    if value {
-        "true"
-    } else {
-        "false"
-    }
-}
-
 fn parse_bool_setting(value: &str, default: bool) -> bool {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => true,
-        "false" | "0" | "no" | "off" => false,
-        _ => default,
-    }
+    parse_bool(value).unwrap_or(default)
 }
 
 pub fn automatic_updates_enabled(conn: &mut SqliteConnection) -> Result<bool, String> {
     let value = match load_setting(conn, AUTO_UPDATE_ENABLED_KEY)? {
         Some(value) => value,
         None => {
-            upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_setting_value(true))?;
-            bool_setting_value(true).to_string()
+            upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_to_str(true))?;
+            bool_to_str(true).to_string()
         }
     };
 
@@ -124,7 +113,7 @@ pub fn set_automatic_updates_enabled(
     conn: &mut SqliteConnection,
     enabled: bool,
 ) -> Result<bool, String> {
-    upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_setting_value(enabled))?;
+    upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_to_str(enabled))?;
     Ok(enabled)
 }
 
