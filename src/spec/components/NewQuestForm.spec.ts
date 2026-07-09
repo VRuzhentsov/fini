@@ -91,6 +91,22 @@ describe("NewQuestForm", () => {
     expect(wrapper.find(".chat-composer-bar").exists()).toBe(true);
   });
 
+  it("uses a single-line title input for quest creation", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    const titleInput = wrapper.find('[data-testid="chat-input"]');
+
+    expect(titleInput.element.tagName).toBe("INPUT");
+    expect(titleInput.attributes("type")).toBe("text");
+    expect(wrapper.find('[data-testid="chat-input"] textarea').exists()).toBe(false);
+  });
+
   it("opens the bottom composer space menu upward", () => {
     const wrapper = mount(NewQuestForm, {
       global: {
@@ -101,6 +117,28 @@ describe("NewQuestForm", () => {
     });
 
     expect(wrapper.findComponent({ name: "SpacePicker" }).props("menuPlacement")).toBe("top");
+  });
+
+  it("creates a quest when Enter is pressed in the title input", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Submit from keyboard");
+    await wrapper.find('[data-testid="chat-input"]').trigger("keydown", { key: "Enter" });
+
+    expect(createQuest).toHaveBeenCalledWith({
+      title: "Submit from keyboard",
+      description: null,
+      space_id: "1",
+      due: null,
+      due_time: null,
+      repeat_rule: null,
+    });
   });
 
   it("starts collapsed and expands metadata without losing the title draft", async () => {
@@ -123,7 +161,7 @@ describe("NewQuestForm", () => {
     expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="new-quest-focus-toggle"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="new-quest-keep-adding"]').exists()).toBe(false);
-    expect((wrapper.find('[data-testid="chat-input"]').element as HTMLTextAreaElement).value).toBe("Capture fast quest");
+    expect((wrapper.find('[data-testid="chat-input"]').element as HTMLInputElement).value).toBe("Capture fast quest");
   });
 
   it("creates a quest with explicit space, description, and reminder draft fields", async () => {

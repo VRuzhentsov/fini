@@ -7,12 +7,13 @@ async function fillTextarea(
 ): Promise<void> {
   await tauriPage.evaluate(`(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
-    if (!(el instanceof HTMLTextAreaElement)) {
-      throw new Error('textarea not found for selector: ' + ${JSON.stringify(selector)});
+    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) {
+      throw new Error('text control not found for selector: ' + ${JSON.stringify(selector)});
     }
     el.focus();
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-    if (!setter) throw new Error('textarea setter is unavailable');
+    const prototype = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (!setter) throw new Error('text control setter is unavailable');
     setter.call(el, ${JSON.stringify(value)});
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));

@@ -20,7 +20,7 @@ const repeatRule = ref<string | null>(null);
 const reminderOpen = ref(false);
 const metadataExpanded = ref(false);
 const isSubmitting = ref(false);
-const titleInput = ref<HTMLTextAreaElement | null>(null);
+const titleInput = ref<HTMLInputElement | null>(null);
 
 const hasMetadataDraft = computed(
   () =>
@@ -164,7 +164,7 @@ function onReminderClose() {
 }
 
 function onTitleKeydown(event: KeyboardEvent) {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter") {
     event.preventDefault();
     void onSubmit();
   }
@@ -200,13 +200,13 @@ async function onSubmit() {
   <div class="chat-composer-bar fixed inset-x-0 bottom-0 z-50 w-full border-t border-base-300 bg-base-100 p-1">
     <form class="flex w-full flex-col gap-2 rounded-lg border border-base-300 bg-base-100 p-3 shadow-sm" @submit.prevent="onSubmit">
       <div class="flex items-start gap-2">
-        <textarea
+        <input
           ref="titleInput"
           v-model="title"
+          type="text"
           data-testid="chat-input"
-          class="textarea textarea-ghost min-h-0 flex-1 resize-none overflow-hidden p-0 text-base font-semibold leading-tight focus:outline-none"
+          class="input input-ghost min-h-0 flex-1 p-0 text-base font-semibold leading-tight focus:outline-none"
           placeholder="New quest"
-          rows="1"
           :disabled="isSubmitting"
           @keydown="onTitleKeydown"
         />
@@ -231,9 +231,6 @@ async function onSubmit() {
           :disabled="isSubmitting"
         />
 
-        <div class="flex flex-wrap items-center gap-3 text-xs text-base-content/70">
-          <span class="hidden text-base-content/50 sm:inline">Enter creates · Shift+Enter keeps a newline</span>
-        </div>
       </div>
 
       <div class="flex items-center justify-between gap-2 pt-1">
