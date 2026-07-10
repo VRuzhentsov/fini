@@ -96,7 +96,7 @@ General notes:
   (`[webkit-runtime] KEY=value`) so a packaged AppImage session can confirm
   which flags actually reached `WebKitWebProcess`.
 - **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`.
-  Release builds use the public Tauri updater key committed in `tauri.conf.json`,
+  Release builds embed the Tauri updater public key with `FINI_TAURI_UPDATER_PUBKEY`,
   publish the signed desktop updater manifest at
   `https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json`, and
   check it automatically at startup when Settings -> Updates -> Automatic updates
