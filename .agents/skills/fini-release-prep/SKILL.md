@@ -65,7 +65,7 @@ When adding light/dark variants, use explicit suffixes such as `01-focus-light.p
 ## Workflow
 
 1. Read `docs/play-store/listing.md` to keep captions aligned with the store positioning.
-2. Confirm the app state uses curated demo data. If the current runtime may contain personal data, stop and switch to an isolated `FINI_APP_DATA_DIR` under `/var/tmp`.
+2. Confirm the app state uses curated demo data. If the current runtime may contain personal data, stop and switch to an isolated, task-scoped `FINI_APP_DATA_DIR` under the repository's ignored `tmp/` directory.
 3. Drive the normal Fini app/runtime at the target viewport dimensions. Use the web/runtime path unless the user explicitly asks for Android device screenshots.
 4. Capture the core product flow in this order: Focus, History, Settings. Expand only if the user asks for more store panels.
 5. Compose store-ready artwork with stable captions when composition tooling is available. Preserve the product UI as the main visual; captions explain the value prop, not fictional functionality.

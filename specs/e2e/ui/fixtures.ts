@@ -13,6 +13,8 @@
  *   leaves it unset) to keep the xvfb wrapper.
  */
 import { createTauriTest } from '@srsholmes/tauri-playwright';
+import { mkdirSync } from 'fs';
+import { join } from 'path';
 
 function pickRandomPort(envName: string, base: number, span: number): string {
   const fromEnv = process.env[envName];
@@ -20,7 +22,9 @@ function pickRandomPort(envName: string, base: number, span: number): string {
   return String(base + Math.floor(Math.random() * span));
 }
 
-const dataDir = process.env.FINI_APP_DATA_DIR ?? '/var/tmp/fini-e2e-ui';
+export const e2eUiRoot = process.env.FINI_E2E_ROOT ?? join(process.cwd(), 'tmp', 'fini-e2e-ui');
+mkdirSync(e2eUiRoot, { recursive: true });
+const dataDir = process.env.FINI_APP_DATA_DIR ?? e2eUiRoot;
 const discoveryPort = pickRandomPort('FINI_DISCOVERY_PORT', 47000, 500);
 const wsPort = pickRandomPort('FINI_SPACE_SYNC_WS_PORT', 47500, 500);
 const headful = process.env.FINI_E2E_HEADFUL === '1';
@@ -37,6 +41,6 @@ const tauriCommand = process.env.FINI_APP_BINARY
 export const { test, expect } = createTauriTest({
   tauriCommand,
   tauriCwd: process.cwd(),
-  mcpSocket: '/var/tmp/fini-playwright.sock',
+  mcpSocket: join(e2eUiRoot, 'fini-playwright.sock'),
   startTimeout: 240,
 });

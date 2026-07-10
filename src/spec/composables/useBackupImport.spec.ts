@@ -39,7 +39,7 @@ const baseQuestStore = {
   fetchQuests: jest.fn().mockResolvedValue(undefined),
   fetchActiveQuest: jest.fn().mockResolvedValue(undefined),
 };
-const FILE_PATH = "/var/tmp/test-backup.zip";
+const FILE_PATH = "test-backup.zip";
 
 describe("useBackupImport", () => {
   beforeEach(() => {

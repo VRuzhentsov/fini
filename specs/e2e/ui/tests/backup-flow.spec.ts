@@ -1,4 +1,5 @@
-import { test, expect } from '../fixtures.ts';
+import { test, expect, e2eUiRoot } from '../fixtures.ts';
+import { join } from 'path';
 
 interface Space { id: string; name: string }
 interface PreflightResult { required_space_mappings: unknown[]; conflicts: unknown[] }
@@ -59,7 +60,7 @@ test('Settings page renders backup section with export and import rows', async (
 });
 
 test('export: dialog opens, select-all enables Export button, export completes with toast', async ({ tauriPage }) => {
-  const exportPath = '/var/tmp/fini-e2e-export-ui.zip';
+  const exportPath = join(e2eUiRoot, 'fini-e2e-export-ui.zip');
 
   await navigateToSettings(tauriPage);
   await setDialogPath(tauriPage, { save: exportPath });
@@ -110,7 +111,7 @@ test('export: dialog opens, select-all enables Export button, export completes w
 });
 
 test('import: picking a backup with no conflicts auto-applies and shows toast', async ({ tauriPage }) => {
-  const backupPath = '/var/tmp/fini-e2e-import-ui.zip';
+  const backupPath = join(e2eUiRoot, 'fini-e2e-import-ui.zip');
   const spaces = await invokeTauri<Space[]>(tauriPage, 'get_spaces');
   await invokeTauri<void>(tauriPage, 'backup_export', { path: backupPath, spaceIds: spaces.map(s => s.id) });
 

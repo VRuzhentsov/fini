@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn update_config_uses_runtime_options() {
-        let executable_path = PathBuf::from("/var/tmp/fini-test-bin");
+        let executable_path = PathBuf::from("fini-test-bin");
         let config = resolve_update_config(UpdateOptions {
             dry_run: true,
             endpoint: Some("https://example.test/latest-cli.json".to_string()),
@@ -173,7 +173,7 @@ mod tests {
             endpoint: Some("https://example.test/latest-cli.json".to_string()),
             pubkey: Some(" ".to_string()),
             target: Some("cli-linux-x86_64".to_string()),
-            executable_path: Some(PathBuf::from("/var/tmp/fini-test-bin")),
+            executable_path: Some(PathBuf::from("fini-test-bin")),
         });
 
         assert!(result
@@ -195,7 +195,7 @@ mod tests {
             ),
             pubkey: Some("test-public-key".to_string()),
             target: Some("cli-linux-x86_64".to_string()),
-            executable_path: Some(PathBuf::from("/var/tmp/fini-test-bin")),
+            executable_path: Some(PathBuf::from("fini-test-bin")),
         })
         .expect("resolved update config");
 
