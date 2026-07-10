@@ -168,9 +168,9 @@ Conventions:
 
 ## Writing single-actor UI e2e
 
-Layout: `specs/e2e/ui/tests/<feature>.spec.ts`. Fixture: `specs/e2e/ui/fixtures.ts` exports `test` and `expect` from `createTauriTest({ tauriCommand, mcpSocket: '/var/tmp/fini-playwright.sock' })`. The test receives a `tauriPage` that drives the real Fini window.
+Layout: `specs/e2e/ui/tests/<feature>.spec.ts`. Fixture: `specs/e2e/ui/fixtures.ts` exports `test` and `expect` from `createTauriTest` with a socket under the task-scoped E2E root. The test receives a `tauriPage` that drives the real Fini window.
 
-App data is isolated under `FINI_APP_DATA_DIR=/var/tmp/fini-e2e-ui` so the user's normal data directory is untouched. The app is launched with `--features devtools`.
+App data is isolated under the task-scoped `FINI_E2E_ROOT` (default: the repository's ignored `tmp/fini-e2e-ui/`) so the user's normal data directory is untouched. The app is launched with `--features devtools`.
 
 Skeleton from `specs/e2e/ui/tests/context-menu-submenu-hover.spec.ts`:
 

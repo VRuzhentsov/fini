@@ -49,7 +49,7 @@ Before creating a release metadata commit, pushing `main`, or pushing a release 
 make pre-release-check
 ```
 
-Treat this as mandatory release behavior, not optional preflight. The command must log its output to `/var/tmp/fini-pre-release/pre-release-check-*.log` by default so the release has a traceable local evidence artifact.
+Treat this as mandatory release behavior, not optional preflight. The command must log its output under the repository's ignored `tmp/fini-pre-release/` directory by default so the release has a traceable local evidence artifact.
 
 `make pre-release-check` must run the local equivalent of release-tag `Quality Gates` from `.github/workflows/release-tag.yml`. Keep the command list minimal and avoid duplicated expensive work when one target already includes another.
 

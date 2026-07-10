@@ -315,7 +315,7 @@ jobs:
         run: |
           set -euo pipefail
           desktop_binary="src-tauri/target/${{ matrix.rust_target }}/release/fini-app"
-          symbols_file="/var/tmp/fini-app-${{ matrix.arch }}-symbols.txt"
+          symbols_file="$RUNNER_TEMP/fini-app-${{ matrix.arch }}-symbols.txt"
 
           if [ ! -f "$desktop_binary" ]; then
             echo "Expected Linux desktop binary was not produced: $desktop_binary" >&2

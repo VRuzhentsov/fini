@@ -8,7 +8,7 @@ import { resetActorsUi } from './helpers/teardown.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const DEFAULT_APP_BINARY = join(REPO_ROOT, 'src-tauri/target/debug-e2e/debug/fini-app');
-const DEFAULT_RUN_ROOT = '/var/tmp/fini-e2e-actors';
+const DEFAULT_RUN_ROOT = join(REPO_ROOT, 'tmp', 'fini-e2e-actors');
 const DEFAULT_ACTOR_WAIT_SECS = 60;
 const DEFAULT_BASE_DISCOVERY_PORT = 46_000 + Math.floor(Math.random() * 500);
 
