@@ -34,6 +34,7 @@ function openSpaceMenu(e: MouseEvent, spaceId: string, spaceName: string) {
 const newSpaceName = ref("");
 const editingId = ref<string | null>(null);
 const editingName = ref("");
+const settingsSearchQuery = ref("");
 const showBackupExport = ref(false);
 const autoUpdatesSupported = ref(false);
 const autoUpdatesEnabled = ref(true);
@@ -43,21 +44,78 @@ const autoUpdatesError = ref<string | null>(null);
 const appVersion = packageJson.version;
 const sourceUrl = "https://github.com/VRuzhentsov/fini";
 
+const normalizedSettingsSearchQuery = computed(() => settingsSearchQuery.value.trim().toLocaleLowerCase());
+
+function matchesSettingsSearch(parts: Array<string | null | undefined>) {
+  const query = normalizedSettingsSearchQuery.value;
+  if (!query) return true;
+  return parts.some((part) => part?.toLocaleLowerCase().includes(query));
+}
+
+const sectionSearchMatches = computed(() => ({
+  spaces: matchesSettingsSearch(["Spaces", "Manage named contexts", "New space name", "Add"]),
+  devices: matchesSettingsSearch(["Devices", "Device", "No paired devices yet", "Add device"]),
+  theme: matchesSettingsSearch(["Appearance", "Theme", "System", "Light", "Dark"]),
+  updates: matchesSettingsSearch([
+    "Updates",
+    "Automatic updates",
+    "When this is off, Fini will not install updates automatically on the next restart.",
+  ]),
+  backup: matchesSettingsSearch([
+    "Backup",
+    "Save your spaces and quests to a portable file, or restore from one.",
+    "Export backup",
+    "Saves a .zip with quests and quest series for the spaces you pick.",
+    "Import backup",
+    "Restore from a .zip. Conflicts will ask before overwriting.",
+  ]),
+  about: matchesSettingsSearch(["About", "Version", appVersion, "Source code"]),
+}));
+
+const filteredSpaces = computed(() => {
+  if (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.spaces) return spaceStore.spaces;
+  return spaceStore.spaces.filter((space) => matchesSettingsSearch([space.name]));
+});
+
+const filteredPairedDevices = computed(() => {
+  if (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices) return deviceStore.pairedDevices;
+  return deviceStore.pairedDevices.filter((device) => matchesSettingsSearch([
+    device.display_name,
+    devicePresenceLabel(device),
+  ]));
+});
+
 const renderFlags = computed(() => ({
   spacesError: Boolean(spaceStore.error),
+  spacesSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.spaces || filteredSpaces.value.length > 0,
   spaceEditor: (spaceId: string) => editingId.value === spaceId,
-  emptyPairedDevices: deviceStore.pairedDevices.length === 0,
-  automaticUpdatesSection: autoUpdatesSupported.value,
+  addSpaceRow: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.spaces,
+  devicesSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices || filteredPairedDevices.value.length > 0,
+  emptyPairedDevices: deviceStore.pairedDevices.length === 0 && (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices),
+  addDeviceRow: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices,
+  themeSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.theme,
+  automaticUpdatesSection: autoUpdatesSupported.value && (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.updates),
   automaticUpdatesError: Boolean(autoUpdatesError.value),
+  backupSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.backup,
   backupImportError: Boolean(backupImport.error.value),
+  aboutSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.about,
+  settingsSearchEmptyState: Boolean(normalizedSettingsSearchQuery.value)
+    && !sectionSearchMatches.value.spaces
+    && filteredSpaces.value.length === 0
+    && !sectionSearchMatches.value.devices
+    && filteredPairedDevices.value.length === 0
+    && !sectionSearchMatches.value.theme
+    && !(autoUpdatesSupported.value && sectionSearchMatches.value.updates)
+    && !sectionSearchMatches.value.backup
+    && !sectionSearchMatches.value.about,
   backupExportDialog: showBackupExport.value,
   backupImportMappingDialog: Boolean(backupImport.activeMapping.value),
   backupMergeConflictDialog: Boolean(backupImport.showConflicts.value),
 }));
 
 const renderLists = computed(() => ({
-  spaces: spaceStore.spaces,
-  pairedDevices: deviceStore.pairedDevices,
+  spaces: filteredSpaces.value,
+  pairedDevices: filteredPairedDevices.value,
 }));
 
 onMounted(() => {
@@ -134,11 +192,23 @@ function devicePresenceLabel(device: PairedDevice) {
 <template>
   <div class="flex flex-col gap-3 pb-24">
 
-    <section class="rounded-xl bg-base-200 p-3">
+    <label class="input input-bordered flex items-center gap-2 bg-base-100">
+      <span class="text-sm opacity-60">Search</span>
+      <input
+        v-model="settingsSearchQuery"
+        type="search"
+        class="grow"
+        placeholder="Search settings"
+        aria-label="Search settings"
+        data-testid="settings-search-input"
+      />
+    </label>
+
+    <section v-if="renderFlags.spacesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-spaces">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Spaces</h2>
       <div class="flex flex-col gap-3">
         <div v-if="renderFlags.spacesError" class="text-error text-sm">{{ spaceStore.error }}</div>
-        <SettingsListGroup>
+        <SettingsListGroup v-if="renderLists.spaces.length > 0">
           <template v-for="space in renderLists.spaces" :key="space.id">
             <SettingsListItem v-if="renderFlags.spaceEditor(space.id)">
               <template #start>
@@ -170,7 +240,7 @@ function devicePresenceLabel(device: PairedDevice) {
             </SettingsListItem>
           </template>
         </SettingsListGroup>
-        <form @submit.prevent="addSpace">
+        <form v-if="renderFlags.addSpaceRow" @submit.prevent="addSpace">
           <SettingsListGroup>
             <SettingsListItem>
               <template #start>
@@ -185,7 +255,7 @@ function devicePresenceLabel(device: PairedDevice) {
       </div>
     </section>
 
-    <section class="rounded-xl bg-base-200 p-3" data-testid="settings-devices">
+    <section v-if="renderFlags.devicesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-devices">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Devices</h2>
       <SettingsListGroup>
         <SettingsListItem
@@ -216,7 +286,7 @@ function devicePresenceLabel(device: PairedDevice) {
         >
           <span class="opacity-70">No paired devices yet.</span>
         </SettingsListItem>
-        <SettingsListItem to="/settings/add-device" data-testid="add-device-link">
+        <SettingsListItem v-if="renderFlags.addDeviceRow" to="/settings/add-device" data-testid="add-device-link">
           <template #leading>
             <span class="text-base leading-none">+</span>
           </template>
@@ -230,7 +300,7 @@ function devicePresenceLabel(device: PairedDevice) {
       </SettingsListGroup>
     </section>
 
-    <ThemeSelector />
+    <ThemeSelector v-if="renderFlags.themeSection" />
 
     <section v-if="renderFlags.automaticUpdatesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Updates</h2>
@@ -260,7 +330,7 @@ function devicePresenceLabel(device: PairedDevice) {
       <div v-if="renderFlags.automaticUpdatesError" class="mt-2 text-xs text-error">{{ autoUpdatesError }}</div>
     </section>
 
-    <section class="rounded-xl bg-base-200 p-3" data-testid="settings-backup">
+    <section v-if="renderFlags.backupSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-backup">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Backup</h2>
       <p class="mb-2 text-xs opacity-60">Save your spaces and quests to a portable file, or restore from one.</p>
       <SettingsListGroup>
@@ -296,7 +366,12 @@ function devicePresenceLabel(device: PairedDevice) {
       <div v-if="renderFlags.backupImportError" class="mt-2 text-xs text-error">{{ backupImport.error.value }}</div>
     </section>
 
-    <AboutCard :version="appVersion" :source-url="sourceUrl" />
+    <AboutCard v-if="renderFlags.aboutSection" :version="appVersion" :source-url="sourceUrl" />
+
+    <section v-if="renderFlags.settingsSearchEmptyState" class="rounded-xl bg-base-200 p-6 text-center" data-testid="settings-search-empty">
+      <h2 class="text-sm font-semibold">No settings found</h2>
+      <p class="mt-1 text-xs opacity-60">Try a different search term.</p>
+    </section>
 
     <ExportSpacesDialog v-if="renderFlags.backupExportDialog" @close="showBackupExport = false" />
 

@@ -6,6 +6,8 @@ Route: `/settings`. Tab: Settings. See [[App.md]].
 
 Configuration screen with inline sections and drill-down routes for device flows.
 
+Search is client-side and scoped to the Settings overview route. It filters sections/rows in place using visible labels and useful descriptive copy, including Spaces, Devices, Theme/Appearance, Updates when present, Backup, and About. Device search includes display names plus `Online`/`Offline`, but not device UUIDs or storage identities. Empty search restores the full overview; no matches show a clear empty state.
+
 Device routes:
 
 - `/settings/add-device` -> [[AddDeviceView]]
@@ -22,7 +24,7 @@ Manage named contexts that quests can belong to. See `specs/space/README.md`.
 
 Notes:
 - Spaces management lives only in Settings (no dedicated Spaces tab)
-- Settings search is planned later and should index this section
+- Settings search indexes this section by visible section and row text, including space names but not hidden ids
 
 ### Devices
 
