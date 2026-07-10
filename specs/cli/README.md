@@ -56,8 +56,8 @@ The initial built-in updater manifest publishes Linux CLI targets only: Tauri's
 Windows updater install path expects a Windows installer, not a raw standalone
 `fini.exe` replacement.
 
-Release builds should embed the Tauri updater public key with
-`FINI_TAURI_UPDATER_PUBKEY`. Local and test builds may supply
+Release builds should use the Tauri updater public key committed in
+`src-tauri/tauri.conf.json`. Local and test builds may supply
 `FINI_UPDATE_PUBKEY` at runtime. `FINI_UPDATE_ENDPOINT` may override the default
 manifest endpoint for staging channels.
 
@@ -73,8 +73,8 @@ https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json
 
 The manifest publishes desktop bundle targets such as `linux-x86_64-appimage`,
 `linux-x86_64-deb`, `linux-x86_64-rpm`, and `windows-x86_64-nsis`, with generic
-fallbacks for AppImage and NSIS targets. Release builds must provide
-`FINI_TAURI_UPDATER_PUBKEY` plus Tauri signing secrets so the app can verify and
+fallbacks for AppImage and NSIS targets. Release builds must provide the private
+Tauri signing key secrets matching the committed updater public key so the app can verify and
 install updates when Settings -> Updates -> Automatic updates is enabled.
 Turning that setting off skips the next startup auto-update check.
 `FINI_DISABLE_AUTO_UPDATE=1` disables the startup check for diagnostics;

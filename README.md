@@ -200,15 +200,14 @@ gpg --armor --export-secret-keys "$release_key_id" | gh secret set RELEASE_TAG_G
 gpg --armor --export "$release_key_id" | gh secret set RELEASE_TAG_GPG_PUBLIC_KEY
 ```
 
-Desktop release builds also need Tauri updater signing secrets. `FINI_TAURI_UPDATER_PUBKEY` may be either the full Tauri public-key file contents or the bare key line; CI normalizes bare keys before bundling.
+Desktop release builds use the public updater key committed in `src-tauri/tauri.conf.json`. The public key is safe to commit; only the matching private signing key and password belong in GitHub secrets:
 
 ```bash
 npx tauri signer generate --write-keys ~/.tauri/fini-updater.key
-printf '%s' "$(cat ~/.tauri/fini-updater.key.pub)" | gh secret set FINI_TAURI_UPDATER_PUBKEY
 printf '%s' "$(cat ~/.tauri/fini-updater.key)" | gh secret set TAURI_SIGNING_PRIVATE_KEY
 ```
 
-If the Tauri updater signing key has a password, also add it as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+If the Tauri updater signing key has a password, also add it as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep `FINI_TAURI_UPDATER_PUBKEY` aligned with the committed public key only while the desktop/CLI runtime still compiles the updater key from that environment variable.
 
 If the release key has a passphrase, also add it:
 

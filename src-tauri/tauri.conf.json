@@ -38,8 +38,10 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
-      "endpoints": []
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQwMkVFNjQ5QTNCNjRCRUQKUldUdFM3YWpTZVl1MEF4WmlGYm5tc0p2MVNVVWlHaHNSbXAzMDZDblRlRFh5QzhlOTRxeHpQc0gK",
+      "endpoints": [
+        "https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json"
+      ]
     }
   }
 }

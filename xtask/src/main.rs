@@ -23,12 +23,6 @@ fn run() -> Result<(), String> {
             }
             set_release_version(&version)
         }
-        "configure-release-updater" => {
-            if args.next().is_some() {
-                return Err(usage());
-            }
-            configure_release_updater()
-        }
         "play-store-screenshots" => {
             if args.next().is_some() {
                 return Err(usage());
@@ -40,7 +34,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "Usage: cargo run --manifest-path xtask/Cargo.toml -- <release-version x.y.z|configure-release-updater|play-store-screenshots>".to_string()
+    "Usage: cargo run --manifest-path xtask/Cargo.toml -- <release-version x.y.z|play-store-screenshots>".to_string()
 }
 
 struct ScreenshotSpec {
@@ -162,55 +156,6 @@ fn set_release_version(version: &str) -> Result<(), String> {
     update_tauri_conf("src-tauri/tauri.conf.json", version)?;
 
     Ok(())
-}
-
-fn configure_release_updater() -> Result<(), String> {
-    let pubkey = env::var("FINI_TAURI_UPDATER_PUBKEY").map_err(|_| {
-        "FINI_TAURI_UPDATER_PUBKEY is required for desktop updater release builds".to_string()
-    })?;
-    let pubkey = normalize_tauri_updater_pubkey(&pubkey)?;
-
-    let mut json = read_json("src-tauri/tauri.conf.json")?;
-    json["bundle"]["createUpdaterArtifacts"] = serde_json::Value::Bool(true);
-    json["plugins"]["updater"]["pubkey"] = serde_json::Value::String(pubkey);
-    json["plugins"]["updater"]["endpoints"] =
-        serde_json::Value::Array(vec![serde_json::Value::String(
-            "https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json".to_string(),
-        )]);
-    write_json("src-tauri/tauri.conf.json", &json)?;
-    println!("configured Tauri desktop updater release settings");
-    Ok(())
-}
-
-fn normalize_tauri_updater_pubkey(value: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("FINI_TAURI_UPDATER_PUBKEY must not be empty".to_string());
-    }
-
-    if trimmed.starts_with("untrusted comment:") {
-        let mut lines = trimmed.lines();
-        let _comment = lines.next();
-        let key_line = lines
-            .next()
-            .ok_or_else(|| "FINI_TAURI_UPDATER_PUBKEY is missing the key line".to_string())?;
-        if key_line.trim().is_empty() {
-            return Err("FINI_TAURI_UPDATER_PUBKEY key line must not be empty".to_string());
-        }
-        return Ok(trimmed.to_string());
-    }
-
-    if trimmed.lines().count() != 1 {
-        return Err(
-            "FINI_TAURI_UPDATER_PUBKEY must be a Tauri public key or a single bare key line"
-                .to_string(),
-        );
-    }
-
-    Ok(format!(
-        "untrusted comment: fini updater public key\n{}",
-        trimmed
-    ))
 }
 
 fn validate_semver(version: &str) -> Result<(), String> {

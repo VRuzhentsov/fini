@@ -110,6 +110,8 @@ When release metadata already exists because a prior release command was interru
 
 ## Failed CI Tag Re-Push
 
+When diagnosing failed release CI, first separate the smallest source-of-truth fix from automation fallbacks. If a release fails because a required public configuration value is absent or malformed, prefer populating that value in the committed release source/config and documenting the matching secret requirement before adding CI-time mutation, normalization, or helper scripts. When there are multiple viable directions, present the options explicitly and recommend the smallest correct one.
+
 When a release tag exists but the tag-triggered CI failed before completing release artifacts or publication, first inspect whether anything was published. Retargeting or re-pushing an existing release tag is allowed only when no GitHub release, package artifact, Docker image, Play upload, or other external release output was published.
 
 Before re-pushing a failed CI tag:
