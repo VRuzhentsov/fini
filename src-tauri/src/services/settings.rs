@@ -3,10 +3,11 @@ use diesel::sqlite::SqliteConnection;
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use std::thread;
 
-use crate::models::UpsertSettingInput;
+use crate::models::{Setting, UpsertSettingInput};
 use crate::schema::settings;
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use crate::services::db::AppDbConnection;
+use crate::utils::text::{bool_to_str, parse_bool};
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use gtk::prelude::GtkSettingsExt;
 #[cfg(feature = "ui-plane")]
@@ -15,6 +16,7 @@ use tauri::{AppHandle, Theme};
 use tauri::{Emitter, Manager};
 
 const THEME_KEY: &str = "theme";
+const AUTO_UPDATE_ENABLED_KEY: &str = "automatic_updates_enabled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -67,9 +69,10 @@ pub(crate) fn load_setting(
 ) -> Result<Option<String>, String> {
     settings::table
         .filter(settings::key.eq(key))
-        .select(settings::value)
-        .first::<String>(conn)
+        .select(Setting::as_select())
+        .first::<Setting>(conn)
         .optional()
+        .map(|setting| setting.map(|setting| setting.value))
         .map_err(|e| e.to_string())
 }
 
@@ -88,6 +91,30 @@ pub fn theme_mode(conn: &mut SqliteConnection) -> Result<ThemeMode, String> {
 pub fn set_theme_mode(conn: &mut SqliteConnection, mode: ThemeMode) -> Result<ThemeMode, String> {
     upsert_setting(conn, THEME_KEY, mode.as_str())?;
     Ok(mode)
+}
+
+fn parse_bool_setting(value: &str, default: bool) -> bool {
+    parse_bool(value).unwrap_or(default)
+}
+
+pub fn automatic_updates_enabled(conn: &mut SqliteConnection) -> Result<bool, String> {
+    let value = match load_setting(conn, AUTO_UPDATE_ENABLED_KEY)? {
+        Some(value) => value,
+        None => {
+            upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_to_str(true))?;
+            bool_to_str(true).to_string()
+        }
+    };
+
+    Ok(parse_bool_setting(&value, true))
+}
+
+pub fn set_automatic_updates_enabled(
+    conn: &mut SqliteConnection,
+    enabled: bool,
+) -> Result<bool, String> {
+    upsert_setting(conn, AUTO_UPDATE_ENABLED_KEY, bool_to_str(enabled))?;
+    Ok(enabled)
 }
 
 #[cfg(feature = "ui-plane")]
@@ -260,6 +287,22 @@ mod tests {
         assert_eq!(ThemeMode::parse("light"), Some(ThemeMode::Light));
         assert_eq!(ThemeMode::parse("dark"), Some(ThemeMode::Dark));
         assert_eq!(ThemeMode::parse("wat"), None);
+    }
+
+    #[test]
+    fn parses_bool_settings_with_safe_default() {
+        use super::parse_bool_setting;
+
+        for value in ["true", "1", " yes ", "ON"] {
+            assert!(parse_bool_setting(value, false));
+        }
+
+        for value in ["false", "0", " no ", "OFF"] {
+            assert!(!parse_bool_setting(value, true));
+        }
+
+        assert!(parse_bool_setting("unexpected", true));
+        assert!(!parse_bool_setting("unexpected", false));
     }
 
     #[cfg(feature = "ui-plane")]

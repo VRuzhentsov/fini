@@ -35,6 +35,16 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 - Device rows show display name plus `Online`/`Offline`; UUIDs stay out of visible Settings list rows
 - Device detail view owns mapped-space configuration and visible sync status per paired device
 
+### Updates
+
+Desktop automatic update behavior.
+
+- Rendered inline on `/settings` using [[SettingsListGroup]] and [[SettingsListItem]] only when startup desktop updates are supported by the current build
+- `Automatic updates` toggle is enabled by default to preserve existing startup updater behavior
+- Toggle state persists in the app settings table
+- When disabled, the next app restart skips startup automatic update install/check
+- UI copy must say disabling automatic updates prevents automatic install on the next restart
+
 ### Backup
 
 Portable backup import/export. See `specs/backup/README.md`.

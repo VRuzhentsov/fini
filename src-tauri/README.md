@@ -99,9 +99,10 @@ General notes:
   Release builds embed the Tauri updater public key with `FINI_TAURI_UPDATER_PUBKEY`,
   publish the signed desktop updater manifest at
   `https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json`, and
-  check it automatically at startup. Set `FINI_DISABLE_AUTO_UPDATE=1` to skip the
-  startup check, or `FINI_DESKTOP_UPDATE_ENDPOINT` / `FINI_DESKTOP_UPDATE_PUBKEY`
-  for staging channels.
+  check it automatically at startup when Settings -> Updates -> Automatic updates
+  is enabled. Turning that setting off skips the next startup auto-update check;
+  set `FINI_DISABLE_AUTO_UPDATE=1` to skip the startup check for diagnostics, or
+  `FINI_DESKTOP_UPDATE_ENDPOINT` / `FINI_DESKTOP_UPDATE_PUBKEY` for staging channels.
 - **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { computed, ref, onMounted } from "vue";
 import packageJson from "../../package.json";
 import AboutCard from "../components/SettingsView/AboutCard.vue";
 import ExportSpacesDialog from "../components/SettingsView/ExportSpacesDialog.vue";
@@ -34,13 +35,74 @@ const newSpaceName = ref("");
 const editingId = ref<string | null>(null);
 const editingName = ref("");
 const showBackupExport = ref(false);
+const autoUpdatesSupported = ref(false);
+const autoUpdatesEnabled = ref(true);
+const autoUpdatesLoading = ref(false);
+const autoUpdatesSaving = ref(false);
+const autoUpdatesError = ref<string | null>(null);
 const appVersion = packageJson.version;
 const sourceUrl = "https://github.com/VRuzhentsov/fini";
+
+const renderFlags = computed(() => ({
+  spacesError: Boolean(spaceStore.error),
+  spaceEditor: (spaceId: string) => editingId.value === spaceId,
+  emptyPairedDevices: deviceStore.pairedDevices.length === 0,
+  automaticUpdatesSection: autoUpdatesSupported.value,
+  automaticUpdatesError: Boolean(autoUpdatesError.value),
+  backupImportError: Boolean(backupImport.error.value),
+  backupExportDialog: showBackupExport.value,
+  backupImportMappingDialog: Boolean(backupImport.activeMapping.value),
+  backupMergeConflictDialog: Boolean(backupImport.showConflicts.value),
+}));
+
+const renderLists = computed(() => ({
+  spaces: spaceStore.spaces,
+  pairedDevices: deviceStore.pairedDevices,
+}));
 
 onMounted(() => {
   spaceStore.fetchSpaces();
   void deviceStore.hydrate();
+  void loadAutoUpdateSettings();
 });
+
+async function loadAutoUpdateSettings() {
+  autoUpdatesLoading.value = true;
+  autoUpdatesError.value = null;
+  try {
+    autoUpdatesSupported.value = await invoke<boolean>("startup_auto_update_supported");
+    if (autoUpdatesSupported.value) {
+      await loadAutoUpdatePreference();
+    }
+  } catch (error) {
+    autoUpdatesError.value = String(error);
+  } finally {
+    autoUpdatesLoading.value = false;
+  }
+}
+
+async function loadAutoUpdatePreference() {
+  autoUpdatesEnabled.value = await invoke<boolean>("get_auto_update_enabled");
+}
+
+async function setAutoUpdatesEnabled(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const previous = autoUpdatesEnabled.value;
+  const enabled = target.checked;
+
+  autoUpdatesEnabled.value = enabled;
+  autoUpdatesSaving.value = true;
+  autoUpdatesError.value = null;
+
+  try {
+    autoUpdatesEnabled.value = await invoke<boolean>("set_auto_update_enabled", { enabled });
+  } catch (error) {
+    autoUpdatesEnabled.value = previous;
+    autoUpdatesError.value = String(error);
+  } finally {
+    autoUpdatesSaving.value = false;
+  }
+}
 
 async function addSpace() {
   const name = newSpaceName.value.trim();
@@ -75,10 +137,10 @@ function devicePresenceLabel(device: PairedDevice) {
     <section class="rounded-xl bg-base-200 p-3">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Spaces</h2>
       <div class="flex flex-col gap-3">
-        <div v-if="spaceStore.error" class="text-error text-sm">{{ spaceStore.error }}</div>
+        <div v-if="renderFlags.spacesError" class="text-error text-sm">{{ spaceStore.error }}</div>
         <SettingsListGroup>
-          <template v-for="space in spaceStore.spaces" :key="space.id">
-            <SettingsListItem v-if="editingId === space.id">
+          <template v-for="space in renderLists.spaces" :key="space.id">
+            <SettingsListItem v-if="renderFlags.spaceEditor(space.id)">
               <template #start>
                 <input
                   v-model="editingName"
@@ -127,7 +189,7 @@ function devicePresenceLabel(device: PairedDevice) {
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Devices</h2>
       <SettingsListGroup>
         <SettingsListItem
-          v-for="device in deviceStore.pairedDevices"
+          v-for="device in renderLists.pairedDevices"
           :key="device.peer_device_id"
           :to="`/settings/device/${device.peer_device_id}`"
           data-testid="paired-device-row"
@@ -150,7 +212,7 @@ function devicePresenceLabel(device: PairedDevice) {
           </template>
         </SettingsListItem>
         <SettingsListItem
-          v-if="deviceStore.pairedDevices.length === 0"
+          v-if="renderFlags.emptyPairedDevices"
         >
           <span class="opacity-70">No paired devices yet.</span>
         </SettingsListItem>
@@ -169,6 +231,34 @@ function devicePresenceLabel(device: PairedDevice) {
     </section>
 
     <ThemeSelector />
+
+    <section v-if="renderFlags.automaticUpdatesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Updates</h2>
+      <SettingsListGroup>
+        <SettingsListItem>
+          <template #start>
+            <div>
+              <span class="block font-medium">Automatic updates</span>
+              <span class="block text-xs opacity-60">
+                When this is off, Fini will not install updates automatically on the next restart.
+              </span>
+            </div>
+          </template>
+          <template #end>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              data-testid="automatic-updates-toggle"
+              aria-label="Automatic updates"
+              :checked="autoUpdatesEnabled"
+              :disabled="autoUpdatesLoading || autoUpdatesSaving"
+              @change="setAutoUpdatesEnabled"
+            />
+          </template>
+        </SettingsListItem>
+      </SettingsListGroup>
+      <div v-if="renderFlags.automaticUpdatesError" class="mt-2 text-xs text-error">{{ autoUpdatesError }}</div>
+    </section>
 
     <section class="rounded-xl bg-base-200 p-3" data-testid="settings-backup">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Backup</h2>
@@ -203,16 +293,16 @@ function devicePresenceLabel(device: PairedDevice) {
           </template>
         </SettingsListItem>
       </SettingsListGroup>
-      <div v-if="backupImport.error.value" class="mt-2 text-xs text-error">{{ backupImport.error.value }}</div>
+      <div v-if="renderFlags.backupImportError" class="mt-2 text-xs text-error">{{ backupImport.error.value }}</div>
     </section>
 
     <AboutCard :version="appVersion" :source-url="sourceUrl" />
 
-    <ExportSpacesDialog v-if="showBackupExport" @close="showBackupExport = false" />
+    <ExportSpacesDialog v-if="renderFlags.backupExportDialog" @close="showBackupExport = false" />
 
     <ImportSpaceMappingDialog
-      v-if="backupImport.activeMapping.value"
-      :incoming="backupImport.activeMapping.value"
+      v-if="renderFlags.backupImportMappingDialog"
+      :incoming="backupImport.activeMapping.value!"
       :local-spaces="backupImport.selectableSpaces.value"
       :index="backupImport.mappingIndex.value"
       :total="backupImport.totalMappings.value"
@@ -221,7 +311,7 @@ function devicePresenceLabel(device: PairedDevice) {
     />
 
     <MergeConflictDialog
-      v-if="backupImport.showConflicts.value"
+      v-if="renderFlags.backupMergeConflictDialog"
       :conflicts="backupImport.conflicts.value"
       @cancel="backupImport.cancelImport()"
       @apply="(r) => void backupImport.applyImport(r)"
