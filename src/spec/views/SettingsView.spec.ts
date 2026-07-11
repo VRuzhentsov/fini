@@ -292,6 +292,43 @@ describe("SettingsView search", () => {
     expect(wrapper.text()).not.toContain("Hall Phone");
   });
 
+  it("links paired device search results to device details", async () => {
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("kitchen");
+    await flushUi();
+
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Kitchen iPad");
+    expect(results.find('[data-to="/settings/device/peer-kitchen-uuid"]').exists()).toBe(true);
+  });
+
+  it("matches visible section headings in settings search", async () => {
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    const search = wrapper.find('[data-testid="settings-search-input"]');
+    await search.setValue("appearance");
+    await flushUi();
+
+    let results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Appearance");
+    expect(results.text()).toContain("Theme");
+    expect(wrapper.findAll('[data-testid="settings-search-group"]')).toHaveLength(1);
+
+    await search.setValue("about");
+    await flushUi();
+
+    results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("About");
+    expect(results.text()).toContain("Version");
+    expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
+  });
+
   it("includes the static Add device row in device search results", async () => {
     mockSettingsStores();
     const wrapper = mountSettingsView();

@@ -32,7 +32,8 @@ function matchesSettingsSearch(parts: Array<string | null | undefined>) {
 function devicePresenceLabel(device: PairedDevice) {
   return deviceStore.isDeviceOnline(device) ? "Online" : "Offline";
 }
-function visibleSearchResults(results: SettingsSearchResult[]) {
+function visibleSearchResults(groupTitle: string, results: SettingsSearchResult[]) {
+  if (matchesSettingsSearch([groupTitle])) return results;
   return results.filter((result) => matchesSettingsSearch([result.title, result.description]));
 }
 
@@ -46,12 +47,12 @@ const renderLists = computed(() => ({
     { id: "about", component: AboutCard, props: { version: appVersion, sourceUrl } },
   ],
   searchResultGroups: [
-    { id: "spaces", title: "Spaces", results: visibleSearchResults(spaceStore.spaces.map((space) => ({ id: `space-${space.id}`, title: space.name, description: "Manage named contexts", action: "overview" as const }))) },
-    { id: "devices", title: "Devices", results: visibleSearchResults([...deviceStore.pairedDevices.map((device) => ({ id: `device-${device.peer_device_id}`, title: device.display_name, description: devicePresenceLabel(device), action: "overview" as const })), { id: "add-device", title: "Add device", description: "Pair a new device", to: "/settings/add-device" }]) },
-    { id: "appearance", title: "Appearance", results: visibleSearchResults([{ id: "theme", title: "Theme", description: "System, Light, or Dark", action: "overview" }]) },
-    ...(startupAutoUpdateSupported.value ? [{ id: "updates", title: "Updates", results: visibleSearchResults([{ id: "automatic-updates", title: "Automatic updates", description: "Install updates automatically on restart", action: "overview" as const }]) }] : []),
-    { id: "backup", title: "Backup", results: visibleSearchResults([{ id: "export-backup", title: "Export backup", description: "Save spaces and quests to a portable file", action: "overview" }, { id: "import-backup", title: "Import backup", description: "Restore from a portable backup file", action: "overview" }]) },
-    { id: "about", title: "About", results: visibleSearchResults([{ id: "version", title: "Version", description: appVersion, action: "overview" }]) },
+    { id: "spaces", title: "Spaces", results: visibleSearchResults("Spaces", spaceStore.spaces.map((space) => ({ id: `space-${space.id}`, title: space.name, description: "Manage named contexts", action: "overview" as const }))) },
+    { id: "devices", title: "Devices", results: visibleSearchResults("Devices", [...deviceStore.pairedDevices.map((device) => ({ id: `device-${device.peer_device_id}`, title: device.display_name, description: devicePresenceLabel(device), to: `/settings/device/${device.peer_device_id}` })), { id: "add-device", title: "Add device", description: "Pair a new device", to: "/settings/add-device" }]) },
+    { id: "appearance", title: "Appearance", results: visibleSearchResults("Appearance", [{ id: "theme", title: "Theme", description: "System, Light, or Dark", action: "overview" }]) },
+    ...(startupAutoUpdateSupported.value ? [{ id: "updates", title: "Updates", results: visibleSearchResults("Updates", [{ id: "automatic-updates", title: "Automatic updates", description: "Install updates automatically on restart", action: "overview" as const }]) }] : []),
+    { id: "backup", title: "Backup", results: visibleSearchResults("Backup", [{ id: "export-backup", title: "Export backup", description: "Save spaces and quests to a portable file", action: "overview" }, { id: "import-backup", title: "Import backup", description: "Restore from a portable backup file", action: "overview" }]) },
+    { id: "about", title: "About", results: visibleSearchResults("About", [{ id: "version", title: "Version", description: appVersion, action: "overview" }]) },
   ].filter((group): group is SettingsSearchGroup => group.results.length > 0),
 }));
 
