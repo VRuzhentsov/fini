@@ -304,12 +304,25 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Prepare AppImage GTK bundler
+        run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
+
       - name: Build Linux bundles
         env:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
+
+      - name: Verify AppImage host runtime boundary
+        run: |
+          set -euo pipefail
+          appimage="$(find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage" -type f -name '*.AppImage' -print -quit)"
+          if [ -z "$appimage" ]; then
+            echo "Expected AppImage was not produced" >&2
+            exit 1
+          fi
+          scripts/verify-appimage-host-runtime.sh "$appimage"
 
       - name: Verify Linux desktop binary
         run: |

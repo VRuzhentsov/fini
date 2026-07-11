@@ -84,17 +84,6 @@ General notes:
 
 ## Platform notes
 
-- **Linux GUI**: Applies default WebKit startup guards before Tauri initializes:
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` for Wayland/mesa stability,
-  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts,
-  `WEBKIT_DISABLE_COMPOSITING_MODE=1` to force software compositing when the
-  bundled WebKitGTK's accelerated compositing path is unstable against the
-  host's mesa/DRM/GL stack, and `LIBGL_ALWAYS_SOFTWARE=1` as a stronger
-  Mesa-side fallback for repeated AppImage WebKit aborts on host GL drivers.
-  Existing environment values are preserved for explicit local diagnostics.
-  The resolved value of each guard is logged to stderr at startup
-  (`[webkit-runtime] KEY=value`) so a packaged AppImage session can confirm
-  which flags actually reached `WebKitWebProcess`.
 - **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`.
   Release builds embed the Tauri updater public key with `FINI_TAURI_UPDATER_PUBKEY`,
   publish the signed desktop updater manifest at
@@ -135,8 +124,6 @@ effect on published release artifacts.
 
 ## Linux AppImage WebKit crash reports
 
-Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1`, `WEBKIT_DISABLE_SANDBOX=1`, `WEBKIT_DISABLE_COMPOSITING_MODE=1`, and `LIBGL_ALWAYS_SOFTWARE=1`.
-Each guard's resolved value is logged to stderr at startup (`[webkit-runtime] KEY=value`) — capture those lines alongside any crash report to confirm the flags reached the AppImage's `WebKitWebProcess`.
 If `WebKitWebProcess` aborts in an AppImage build, capture a sanitized report that keeps the failure actionable without exposing host identifiers.
 
 Report only:
@@ -145,13 +132,11 @@ Report only:
 - Linux distro and session type (`Wayland` or `X11`)
 - The last user action before the abort
 - Whether the crash reproduces in a fresh Fini profile
-- The `[webkit-runtime]` startup log lines showing the resolved guard values
+- Any explicitly supplied rendering environment variables and their values
 - A redacted `coredumpctl info` or journal excerpt that keeps the process name, signal, package/build, and stack summary
 
 Do not publish raw coredumps or any user, host, machine, boot, session, or transient mount identifiers.
 Do not include local core storage paths, AppImage mount paths, or usernames in public reports.
-
-For public GitHub reports, use `.github/ISSUE_TEMPLATE/linux-appimage-webkit-crash.yml`; it requires the same sanitized fields and includes a privacy checklist before submission.
 
 Suggested local notes template:
 
@@ -162,10 +147,9 @@ Linux distro:
 Session type:
 Trigger action:
 Fresh profile repro:
-webkit-runtime startup log lines:
+Explicit rendering environment variables:
 Sanitized coredump summary:
 Stack summary:
-Rendering workaround comparison:
 ```
 
 ## Postponed
