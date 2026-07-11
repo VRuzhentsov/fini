@@ -173,7 +173,7 @@ describe("SettingsView search", () => {
     (invoke as jest.Mock).mockResolvedValue(false);
   });
 
-  it("filters settings rows by visible labels and restores the overview when cleared", async () => {
+  it("shows Android-style search results grouped by settings section and restores the overview when cleared", async () => {
     const wrapper = mountSettingsView();
     await flushUi();
 
@@ -181,15 +181,19 @@ describe("SettingsView search", () => {
     await search.setValue("family");
     await flushUi();
 
-    expect(wrapper.find('[data-testid="settings-spaces"]').exists()).toBe(true);
-    expect(wrapper.text()).toContain("Family");
-    expect(wrapper.text()).not.toContain("Personal");
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Spaces");
+    expect(results.text()).toContain("Family");
+    expect(results.text()).not.toContain("Personal");
+    expect(wrapper.find('[data-testid="settings-spaces"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="settings-devices"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="settings-backup"]').exists()).toBe(false);
 
     await search.setValue("");
     await flushUi();
 
+    expect(wrapper.find('[data-testid="settings-search-results"]').exists()).toBe(false);
     expect(wrapper.text()).toContain("Personal");
     expect(wrapper.find('[data-testid="settings-devices"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="settings-backup"]').exists()).toBe(true);
@@ -197,14 +201,30 @@ describe("SettingsView search", () => {
     expect(wrapper.find('[data-testid="about-card-stub"]').exists()).toBe(true);
   });
 
-  it("keeps section matches in place without showing unrelated sections", async () => {
+  it("renders each matching action in its section group", async () => {
     const wrapper = mountSettingsView();
     await flushUi();
 
     await wrapper.find('[data-testid="settings-search-input"]').setValue("backup");
     await flushUi();
 
-    expect(wrapper.find('[data-testid="settings-backup"]').exists()).toBe(true);
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Backup");
+    expect(results.text()).toContain("Export backup");
+    expect(results.text()).toContain("Import backup");
+    expect(wrapper.findAll('[data-testid="settings-search-group"]')).toHaveLength(1);
+  });
+
+  it("shows only matching result groups without rendering the overview", async () => {
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("backup");
+    await flushUi();
+
+    expect(wrapper.find('[data-testid="settings-search-results"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-testid="settings-search-group"]')).toHaveLength(1);
     expect(wrapper.text()).toContain("Export backup");
     expect(wrapper.text()).toContain("Import backup");
     expect(wrapper.find('[data-testid="settings-spaces"]').exists()).toBe(false);
@@ -220,10 +240,12 @@ describe("SettingsView search", () => {
     await search.setValue("online");
     await flushUi();
 
-    expect(wrapper.findAll('[data-testid="paired-device-row"]')).toHaveLength(1);
-    expect(wrapper.text()).toContain("Kitchen iPad");
-    expect(wrapper.text()).toContain("Online");
-    expect(wrapper.text()).not.toContain("Hall Phone");
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Devices");
+    expect(results.text()).toContain("Kitchen iPad");
+    expect(results.text()).toContain("Online");
+    expect(results.text()).not.toContain("Hall Phone");
     expect(wrapper.find('[data-testid="add-device-link"]').exists()).toBe(false);
 
     await search.setValue("peer-hall-uuid");

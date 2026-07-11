@@ -44,6 +44,21 @@ const autoUpdatesError = ref<string | null>(null);
 const appVersion = packageJson.version;
 const sourceUrl = "https://github.com/VRuzhentsov/fini";
 
+type SettingsSearchAction = "overview" | "export-backup" | "import-backup";
+
+interface SettingsSearchResult {
+  id: string;
+  title: string;
+  description?: string;
+  action?: SettingsSearchAction;
+}
+
+interface SettingsSearchGroup {
+  id: string;
+  title: string;
+  results: SettingsSearchResult[];
+}
+
 const normalizedSettingsSearchQuery = computed(() => settingsSearchQuery.value.trim().toLocaleLowerCase());
 
 function matchesSettingsSearch(parts: Array<string | null | undefined>) {
@@ -52,70 +67,75 @@ function matchesSettingsSearch(parts: Array<string | null | undefined>) {
   return parts.some((part) => part?.toLocaleLowerCase().includes(query));
 }
 
-const sectionSearchMatches = computed(() => ({
-  spaces: matchesSettingsSearch(["Spaces", "Manage named contexts", "New space name", "Add"]),
-  devices: matchesSettingsSearch(["Devices", "Device", "No paired devices yet", "Add device"]),
-  theme: matchesSettingsSearch(["Appearance", "Theme", "System", "Light", "Dark"]),
-  updates: matchesSettingsSearch([
-    "Updates",
-    "Automatic updates",
-    "When this is off, Fini will not install updates automatically on the next restart.",
-  ]),
-  backup: matchesSettingsSearch([
-    "Backup",
-    "Save your spaces and quests to a portable file, or restore from one.",
-    "Export backup",
-    "Saves a .zip with quests and quest series for the spaces you pick.",
-    "Import backup",
-    "Restore from a .zip. Conflicts will ask before overwriting.",
-  ]),
-  about: matchesSettingsSearch(["About", "Version", appVersion, "Source code"]),
+function visibleSearchResults(results: SettingsSearchResult[]) {
+  return results.filter((result) => matchesSettingsSearch([result.title, result.description]));
+}
+
+const renderLists = computed(() => ({
+  spaces: spaceStore.spaces,
+  pairedDevices: deviceStore.pairedDevices,
+  searchResultGroups: [
+    {
+      id: "spaces",
+      title: "Spaces",
+      results: visibleSearchResults(spaceStore.spaces.map((space) => ({
+        id: `space-${space.id}`,
+        title: space.name,
+        description: "Manage named contexts",
+        action: "overview" as const,
+      }))),
+    },
+    {
+      id: "devices",
+      title: "Devices",
+      results: visibleSearchResults(deviceStore.pairedDevices.map((device) => ({
+        id: `device-${device.peer_device_id}`,
+        title: device.display_name,
+        description: devicePresenceLabel(device),
+        action: "overview" as const,
+      }))),
+    },
+    {
+      id: "appearance",
+      title: "Appearance",
+      results: visibleSearchResults([{ id: "theme", title: "Theme", description: "System, Light, or Dark", action: "overview" }]),
+    },
+    {
+      id: "updates",
+      title: "Updates",
+      results: autoUpdatesSupported.value
+        ? visibleSearchResults([{ id: "automatic-updates", title: "Automatic updates", description: "Install updates automatically on restart", action: "overview" }])
+        : [],
+    },
+    {
+      id: "backup",
+      title: "Backup",
+      results: visibleSearchResults([
+        { id: "export-backup", title: "Export backup", description: "Save spaces and quests to a portable file", action: "export-backup" },
+        { id: "import-backup", title: "Import backup", description: "Restore from a portable backup file", action: "import-backup" },
+      ]),
+    },
+    {
+      id: "about",
+      title: "About",
+      results: visibleSearchResults([{ id: "version", title: "Version", description: appVersion, action: "overview" }]),
+    },
+  ].filter((group): group is SettingsSearchGroup => group.results.length > 0),
 }));
 
-const filteredSpaces = computed(() => {
-  if (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.spaces) return spaceStore.spaces;
-  return spaceStore.spaces.filter((space) => matchesSettingsSearch([space.name]));
-});
-
-const filteredPairedDevices = computed(() => {
-  if (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices) return deviceStore.pairedDevices;
-  return deviceStore.pairedDevices.filter((device) => matchesSettingsSearch([
-    device.display_name,
-    devicePresenceLabel(device),
-  ]));
-});
-
 const renderFlags = computed(() => ({
+  settingsOverview: !normalizedSettingsSearchQuery.value,
+  settingsSearchResults: Boolean(normalizedSettingsSearchQuery.value) && renderLists.value.searchResultGroups.length > 0,
   spacesError: Boolean(spaceStore.error),
-  spacesSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.spaces || filteredSpaces.value.length > 0,
   spaceEditor: (spaceId: string) => editingId.value === spaceId,
-  addSpaceRow: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.spaces,
-  devicesSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices || filteredPairedDevices.value.length > 0,
-  emptyPairedDevices: deviceStore.pairedDevices.length === 0 && (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices),
-  addDeviceRow: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.devices,
-  themeSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.theme,
-  automaticUpdatesSection: autoUpdatesSupported.value && (!normalizedSettingsSearchQuery.value || sectionSearchMatches.value.updates),
+  emptyPairedDevices: deviceStore.pairedDevices.length === 0,
+  automaticUpdatesSection: autoUpdatesSupported.value,
   automaticUpdatesError: Boolean(autoUpdatesError.value),
-  backupSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.backup,
   backupImportError: Boolean(backupImport.error.value),
-  aboutSection: !normalizedSettingsSearchQuery.value || sectionSearchMatches.value.about,
-  settingsSearchEmptyState: Boolean(normalizedSettingsSearchQuery.value)
-    && !sectionSearchMatches.value.spaces
-    && filteredSpaces.value.length === 0
-    && !sectionSearchMatches.value.devices
-    && filteredPairedDevices.value.length === 0
-    && !sectionSearchMatches.value.theme
-    && !(autoUpdatesSupported.value && sectionSearchMatches.value.updates)
-    && !sectionSearchMatches.value.backup
-    && !sectionSearchMatches.value.about,
+  settingsSearchEmptyState: Boolean(normalizedSettingsSearchQuery.value) && renderLists.value.searchResultGroups.length === 0,
   backupExportDialog: showBackupExport.value,
   backupImportMappingDialog: Boolean(backupImport.activeMapping.value),
   backupMergeConflictDialog: Boolean(backupImport.showConflicts.value),
-}));
-
-const renderLists = computed(() => ({
-  spaces: filteredSpaces.value,
-  pairedDevices: filteredPairedDevices.value,
 }));
 
 onMounted(() => {
@@ -187,6 +207,18 @@ function cancelEdit() {
 function devicePresenceLabel(device: PairedDevice) {
   return deviceStore.isDeviceOnline(device) ? "Online" : "Offline";
 }
+
+function openSearchResult(result: SettingsSearchResult) {
+  if (result.action === "export-backup") {
+    showBackupExport.value = true;
+    return;
+  }
+  if (result.action === "import-backup") {
+    void backupImport.startImport();
+    return;
+  }
+  settingsSearchQuery.value = "";
+}
 </script>
 
 <template>
@@ -204,7 +236,36 @@ function devicePresenceLabel(device: PairedDevice) {
       />
     </label>
 
-    <section v-if="renderFlags.spacesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-spaces">
+    <div v-if="renderFlags.settingsSearchResults" class="flex flex-col gap-4" data-testid="settings-search-results">
+      <section
+        v-for="group in renderLists.searchResultGroups"
+        :key="group.id"
+        class="rounded-xl bg-base-200 p-3"
+        data-testid="settings-search-group"
+      >
+        <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">{{ group.title }}</h2>
+        <SettingsListGroup>
+          <SettingsListItem
+            v-for="result in group.results"
+            :key="result.id"
+            button
+            @click="openSearchResult(result)"
+          >
+            <template #start>
+              <div>
+                <span class="block font-medium">{{ result.title }}</span>
+                <span v-if="result.description" class="block text-xs opacity-60">{{ result.description }}</span>
+              </div>
+            </template>
+            <template #trailing>
+              <span class="text-sm opacity-50">›</span>
+            </template>
+          </SettingsListItem>
+        </SettingsListGroup>
+      </section>
+    </div>
+
+    <section v-if="renderFlags.settingsOverview" class="rounded-xl bg-base-200 p-3" data-testid="settings-spaces">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Spaces</h2>
       <div class="flex flex-col gap-3">
         <div v-if="renderFlags.spacesError" class="text-error text-sm">{{ spaceStore.error }}</div>
@@ -240,7 +301,7 @@ function devicePresenceLabel(device: PairedDevice) {
             </SettingsListItem>
           </template>
         </SettingsListGroup>
-        <form v-if="renderFlags.addSpaceRow" @submit.prevent="addSpace">
+        <form @submit.prevent="addSpace">
           <SettingsListGroup>
             <SettingsListItem>
               <template #start>
@@ -255,7 +316,7 @@ function devicePresenceLabel(device: PairedDevice) {
       </div>
     </section>
 
-    <section v-if="renderFlags.devicesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-devices">
+    <section v-if="renderFlags.settingsOverview" class="rounded-xl bg-base-200 p-3" data-testid="settings-devices">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Devices</h2>
       <SettingsListGroup>
         <SettingsListItem
@@ -286,7 +347,7 @@ function devicePresenceLabel(device: PairedDevice) {
         >
           <span class="opacity-70">No paired devices yet.</span>
         </SettingsListItem>
-        <SettingsListItem v-if="renderFlags.addDeviceRow" to="/settings/add-device" data-testid="add-device-link">
+        <SettingsListItem to="/settings/add-device" data-testid="add-device-link">
           <template #leading>
             <span class="text-base leading-none">+</span>
           </template>
@@ -300,9 +361,9 @@ function devicePresenceLabel(device: PairedDevice) {
       </SettingsListGroup>
     </section>
 
-    <ThemeSelector v-if="renderFlags.themeSection" />
+    <ThemeSelector v-if="renderFlags.settingsOverview" />
 
-    <section v-if="renderFlags.automaticUpdatesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
+    <section v-if="renderFlags.settingsOverview && renderFlags.automaticUpdatesSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-updates">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Updates</h2>
       <SettingsListGroup>
         <SettingsListItem>
@@ -330,7 +391,7 @@ function devicePresenceLabel(device: PairedDevice) {
       <div v-if="renderFlags.automaticUpdatesError" class="mt-2 text-xs text-error">{{ autoUpdatesError }}</div>
     </section>
 
-    <section v-if="renderFlags.backupSection" class="rounded-xl bg-base-200 p-3" data-testid="settings-backup">
+    <section v-if="renderFlags.settingsOverview" class="rounded-xl bg-base-200 p-3" data-testid="settings-backup">
       <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">Backup</h2>
       <p class="mb-2 text-xs opacity-60">Save your spaces and quests to a portable file, or restore from one.</p>
       <SettingsListGroup>
@@ -366,7 +427,7 @@ function devicePresenceLabel(device: PairedDevice) {
       <div v-if="renderFlags.backupImportError" class="mt-2 text-xs text-error">{{ backupImport.error.value }}</div>
     </section>
 
-    <AboutCard v-if="renderFlags.aboutSection" :version="appVersion" :source-url="sourceUrl" />
+    <AboutCard v-if="renderFlags.settingsOverview" :version="appVersion" :source-url="sourceUrl" />
 
     <section v-if="renderFlags.settingsSearchEmptyState" class="rounded-xl bg-base-200 p-6 text-center" data-testid="settings-search-empty">
       <h2 class="text-sm font-semibold">No settings found</h2>

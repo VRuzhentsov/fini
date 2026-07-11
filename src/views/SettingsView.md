@@ -6,7 +6,7 @@ Route: `/settings`. Tab: Settings. See [[App.md]].
 
 Configuration screen with inline sections and drill-down routes for device flows.
 
-Search is client-side and scoped to the Settings overview route. It filters sections/rows in place using visible labels and useful descriptive copy, including Spaces, Devices, Theme/Appearance, Updates when present, Backup, and About. Device search includes display names plus `Online`/`Offline`, but not device UUIDs or storage identities. Empty search restores the full overview; no matches show a clear empty state.
+Search is client-side and scoped to the Settings overview route. When a query is present, it replaces the overview with Android-style result cards: matching rows are grouped under their Settings section and show a concise title, descriptive secondary line, and drill-in affordance. The section groups and result rows are rendered from computed lists with `v-for`, so the result layout stays data-driven. It indexes visible labels and useful descriptive copy, including Spaces, Devices, Theme/Appearance, Updates when present, Backup, and About. Device search includes display names plus `Online`/`Offline`, but not device UUIDs or storage identities. Empty search restores the full overview; no matches show a clear empty state.
 
 Device routes:
 
