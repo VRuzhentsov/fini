@@ -19,9 +19,9 @@ trap 'rm -rf "$workspace"' EXIT
 )
 
 appdir="$workspace/squashfs-root"
-web_process="$appdir/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitWebProcess"
-if [[ ! -x "$web_process" ]]; then
-  echo "Expected WebKitWebProcess was not bundled: $web_process" >&2
+web_process=$(find "$appdir/usr/lib" -type f -name WebKitWebProcess -print -quit)
+if [[ -z "$web_process" || ! -x "$web_process" ]]; then
+  echo "Expected WebKitWebProcess was not bundled under $appdir/usr/lib" >&2
   exit 1
 fi
 
