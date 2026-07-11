@@ -15,7 +15,7 @@ AppImage is one distributable file, not a complete operating system. It continue
 
 ## Packaging policy
 
-Fini uses a pinned, minimal Fini-owned patch/fork of Tauri's AppImage bundler until an equivalent upstream Tauri release is adopted.
+Fini uses a minimal, pinned Fini-maintained patch applied in CI to an exact upstream Tauri source revision until an equivalent upstream Tauri release is adopted.
 
 The patch must:
 
