@@ -4,6 +4,10 @@ import { onMounted, ref } from "vue";
 import SettingsListGroup from "./SettingsListGroup.vue";
 import SettingsListItem from "./SettingsListItem.vue";
 
+const props = defineProps<{
+  initialSupported?: boolean;
+}>();
+
 const supported = ref(false);
 const enabled = ref(true);
 const loading = ref(false);
@@ -13,7 +17,7 @@ const error = ref<string | null>(null);
 onMounted(async () => {
   loading.value = true;
   try {
-    supported.value = await invoke<boolean>("startup_auto_update_supported");
+    supported.value = props.initialSupported ?? await invoke<boolean>("startup_auto_update_supported");
     if (supported.value) enabled.value = await invoke<boolean>("get_auto_update_enabled");
   } catch (caught) {
     error.value = String(caught);

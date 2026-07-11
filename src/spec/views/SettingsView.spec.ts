@@ -122,7 +122,7 @@ function mountSettingsView() {
   return mount(SettingsView, {
     global: {
       stubs: {
-        "router-link": { template: "<a><slot /></a>" },
+        "router-link": { props: ["to"], template: "<a :data-to='to'><slot /></a>" },
         ThemeSelector: { template: "<section data-testid='theme-selector-stub' />" },
         AboutCard: { template: "<section data-testid='about-card-stub' />", props: ["version", "sourceUrl"] },
         ExportSpacesDialog: true,
@@ -290,6 +290,50 @@ describe("SettingsView search", () => {
     expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(true);
     expect(wrapper.text()).toContain("No settings found");
     expect(wrapper.text()).not.toContain("Hall Phone");
+  });
+
+  it("includes the static Add device row in device search results", async () => {
+    mockSettingsStores();
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("add device");
+    await flushUi();
+
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Devices");
+    expect(results.text()).toContain("Add device");
+    expect(results.find('[data-to="/settings/add-device"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
+  });
+
+  it("includes automatic updates in search only when startup updates are supported", async () => {
+    (invoke as jest.Mock).mockResolvedValueOnce(true);
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("automatic updates");
+    await flushUi();
+
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Updates");
+    expect(results.text()).toContain("Automatic updates");
+    expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
+  });
+
+  it("omits automatic updates from search when startup updates are unsupported", async () => {
+    (invoke as jest.Mock).mockResolvedValueOnce(false);
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("automatic updates");
+    await flushUi();
+
+    expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("No settings found");
+    expect(wrapper.text()).not.toContain("Automatic updates");
   });
 });
 
