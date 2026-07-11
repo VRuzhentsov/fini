@@ -309,7 +309,19 @@ jobs:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Keep the run host's Wayland ABI aligned with its Mesa/EGL implementation.
+          LINUXDEPLOY_EXCLUDED_LIBRARIES: libwayland-client.so.0;libwayland-cursor.so.0;libwayland-egl.so.1;libwayland-server.so.0
         run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
+
+      - name: Verify AppImage host runtime boundary
+        run: |
+          set -euo pipefail
+          appimage="$(find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage" -type f -name '*.AppImage' -print -quit)"
+          if [ -z "$appimage" ]; then
+            echo "Expected AppImage was not produced" >&2
+            exit 1
+          fi
+          scripts/verify-appimage-host-runtime.sh "$appimage"
 
       - name: Verify Linux desktop binary
         run: |
