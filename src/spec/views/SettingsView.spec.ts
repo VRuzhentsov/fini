@@ -96,6 +96,21 @@ jest.mock("../../components/SettingsView/ThemeSelector.vue", () => ({
   default: { name: "ThemeSelector", template: "<section data-testid='theme-selector-stub' />" },
 }));
 
+jest.mock("../../components/SettingsView/SpacesSettingsSection.vue", () => ({
+  __esModule: true,
+  default: { name: "SpacesSettingsSection", template: "<section data-testid='spaces-settings-section-stub' />" },
+}), { virtual: true });
+
+jest.mock("../../components/SettingsView/DevicesSettingsSection.vue", () => ({
+  __esModule: true,
+  default: { name: "DevicesSettingsSection", template: "<section data-testid='devices-settings-section-stub' />" },
+}), { virtual: true });
+
+jest.mock("../../components/SettingsView/BackupSettingsSection.vue", () => ({
+  __esModule: true,
+  default: { name: "BackupSettingsSection", template: "<section data-testid='backup-settings-section-stub' />" },
+}), { virtual: true });
+
 async function flushUi() {
   for (let i = 0; i < 4; i += 1) {
     await Promise.resolve();
@@ -173,6 +188,17 @@ describe("SettingsView search", () => {
     (invoke as jest.Mock).mockResolvedValue(false);
   });
 
+  it("renders overview sections from the dynamic section registry", async () => {
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    expect(wrapper.find('[data-testid="spaces-settings-section-stub"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="devices-settings-section-stub"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="backup-settings-section-stub"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="theme-selector-stub"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="about-card-stub"]').exists()).toBe(true);
+  });
+
   it("shows Android-style search results grouped by settings section and restores the overview when cleared", async () => {
     const wrapper = mountSettingsView();
     await flushUi();
@@ -194,9 +220,9 @@ describe("SettingsView search", () => {
     await flushUi();
 
     expect(wrapper.find('[data-testid="settings-search-results"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain("Personal");
-    expect(wrapper.find('[data-testid="settings-devices"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="settings-backup"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="spaces-settings-section-stub"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="devices-settings-section-stub"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="backup-settings-section-stub"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="theme-selector-stub"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="about-card-stub"]').exists()).toBe(true);
   });
