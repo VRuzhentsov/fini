@@ -119,7 +119,7 @@ Never write absolute paths containing a username, home directory, or machine-spe
 
 - Use paths relative to the project root for anything inside the repo (`src-tauri/target/debug/fini`, not `/home/<user>/projects/fini/src-tauri/...`).
 - Use `~` for paths relative to the user's home directory (`~/.local/share/fini/fini.db`, not `/home/<user>/.local/...`).
-- Use `/var/tmp` for temporary files, not `/tmp` or any user-specific temp path.
+- Use a task-appropriate scoped scratch path, such as the repository's ignored `tmp/` directory or a platform-provided runtime directory. Do not prescribe a global scratch path.
 - When adding permission entries to `.claude/settings.local.json`, use relative or `~`-anchored paths only. The local config is project-specific and minimal; do not accumulate machine-specific one-off entries there.
 
 ## User-Agnostic Agent Instructions
