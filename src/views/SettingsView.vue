@@ -70,7 +70,7 @@ function openSearchResult() {
 
 <template>
   <div class="flex flex-col gap-3 pb-24">
-    <label class="input input-bordered flex items-center gap-2 bg-base-100"><span class="text-sm opacity-60">Search</span><input v-model="settingsSearchQuery" type="search" class="grow" placeholder="Search settings" aria-label="Search settings" data-testid="settings-search-input" /></label>
+    <label class="input input-bordered flex w-full items-center bg-base-100"><input v-model="settingsSearchQuery" type="search" class="w-full" placeholder="Search settings" aria-label="Search settings" data-testid="settings-search-input" /></label>
 
     <div v-if="renderFlags.settingsSearchResults" class="flex flex-col gap-4" data-testid="settings-search-results">
       <section v-for="group in renderLists.searchResultGroups" :key="group.id" class="rounded-xl bg-base-200 p-3" data-testid="settings-search-group">

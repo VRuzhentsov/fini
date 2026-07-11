@@ -188,6 +188,16 @@ describe("SettingsView search", () => {
     (invoke as jest.Mock).mockResolvedValue(false);
   });
 
+  it("uses the full available width for the Settings search field", async () => {
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    const search = wrapper.find('[data-testid="settings-search-input"]');
+    expect(search.classes()).toContain("w-full");
+    expect(search.attributes("placeholder")).toBe("Search settings");
+    expect(search.element.parentElement?.textContent).toBe("");
+  });
+
   it("renders overview sections from the dynamic section registry", async () => {
     const wrapper = mountSettingsView();
     await flushUi();
