@@ -33,8 +33,10 @@ for library in \
   libwayland-egl.so.1 \
   libwayland-server.so.0
 do
-  if [[ -e "$appdir/usr/lib/$library" ]]; then
-    echo "AppImage must not bundle host Wayland ABI library: $library" >&2
+  bundled_path=$(find "$appdir/usr/lib" \( -type f -o -type l \) \
+    -name "$library" -print -quit)
+  if [[ -n "$bundled_path" ]]; then
+    echo "AppImage must not bundle host Wayland ABI library: $bundled_path" >&2
     exit 1
   fi
 done
