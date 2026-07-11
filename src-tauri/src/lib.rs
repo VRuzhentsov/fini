@@ -2,8 +2,6 @@ pub mod models;
 mod schema;
 mod services;
 mod utils;
-#[cfg(all(feature = "ui-plane", target_os = "linux"))]
-mod webkit_runtime;
 // mod voice;       // postponed
 // mod model_download; // postponed
 
@@ -189,12 +187,6 @@ pub fn run_cli() -> i32 {
 #[cfg(feature = "ui-plane")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(target_os = "linux")]
-    {
-        webkit_runtime::apply_startup_guards();
-        webkit_runtime::log_active_guards();
-    }
-
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

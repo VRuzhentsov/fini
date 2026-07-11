@@ -54,18 +54,16 @@ body:
     validations:
       required: true
   - type: textarea
-    id: startup-guards
+    id: explicit-rendering-environment
     attributes:
-      label: webkit-runtime startup guard lines
-      description: Paste only the `[webkit-runtime] KEY=value` lines from stderr. These lines are intentionally host-agnostic.
+      label: Explicit rendering environment variables
+      description: If you set rendering-related environment variables before launch, list only their names and values. Leave blank otherwise.
       render: text
       placeholder: |
-        [webkit-runtime] WEBKIT_DISABLE_DMABUF_RENDERER=1
-        [webkit-runtime] WEBKIT_DISABLE_SANDBOX=1
-        [webkit-runtime] WEBKIT_DISABLE_COMPOSITING_MODE=1
-        [webkit-runtime] LIBGL_ALWAYS_SOFTWARE=1
+        LIBGL_ALWAYS_SOFTWARE=0
+        WEBKIT_DISABLE_COMPOSITING_MODE=0
     validations:
-      required: true
+      required: false
   - type: textarea
     id: sanitized-coredump-summary
     attributes:
@@ -99,8 +97,8 @@ body:
       label: Rendering workaround comparison
       description: If tested, compare default launch with explicit rendering overrides. Do not include local paths.
       placeholder: |
-        Default guarded launch: reproduces / not reproduced
-        WEBKIT_DISABLE_COMPOSITING_MODE=0 launch: reproduces / not reproduced / not tested
+        Default launch: reproduces / not reproduced
+        Explicit rendering environment: <name=value> → reproduces / not reproduced / not tested
         Notes:
     validations:
       required: false
@@ -111,5 +109,5 @@ body:
       options:
         - label: I removed user names, host names, exact process IDs, boot IDs, machine IDs, coredump storage paths, transient AppImage mount paths, local home-directory paths, and raw coredump data.
           required: true
-        - label: I included only sanitized process, signal, environment, startup guard, and stack-shape details.
+        - label: I included only sanitized process, signal, environment, and stack-shape details.
           required: true
