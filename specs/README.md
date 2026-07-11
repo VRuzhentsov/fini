@@ -10,7 +10,6 @@ These specs are the implementation contract for the main `fini` repo.
 - `space-sync/` - pair-scoped space mapping, bootstrap sync, sync sessions, and sync status
 - `space/` - local space model and space management behavior
 - `backup/` - portable zip import/export for quests and spaces
-- `appimage/` - cross-distribution Linux AppImage compatibility contract
 
 ## Convention
 
