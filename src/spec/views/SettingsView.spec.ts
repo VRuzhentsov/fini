@@ -345,6 +345,37 @@ describe("SettingsView search", () => {
     expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
   });
 
+  it("includes the static Add space row in spaces search results", async () => {
+    mockSettingsStores();
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("new space");
+    await flushUi();
+
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("Spaces");
+    expect(results.text()).toContain("Add space");
+    expect(results.text()).toContain("New space name");
+    expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
+  });
+
+  it("includes the Source code link in about search results", async () => {
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("source code");
+    await flushUi();
+
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.exists()).toBe(true);
+    expect(results.text()).toContain("About");
+    expect(results.text()).toContain("Source code");
+    expect(results.find('a[href="https://github.com/VRuzhentsov/fini"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
+  });
+
   it("includes automatic updates in search only when startup updates are supported", async () => {
     (invoke as jest.Mock).mockResolvedValueOnce(true);
     const wrapper = mountSettingsView();

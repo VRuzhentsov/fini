@@ -21,7 +21,7 @@ const appVersion = packageJson.version;
 const sourceUrl = "https://github.com/VRuzhentsov/fini";
 
 type SettingsSearchAction = "overview";
-interface SettingsSearchResult { id: string; title: string; description?: string; action?: SettingsSearchAction; to?: string; }
+interface SettingsSearchResult { id: string; title: string; description?: string; action?: SettingsSearchAction; to?: string; href?: string; }
 interface SettingsSearchGroup { id: string; title: string; results: SettingsSearchResult[]; }
 
 const normalizedSettingsSearchQuery = computed(() => settingsSearchQuery.value.trim().toLocaleLowerCase());
@@ -47,12 +47,12 @@ const renderLists = computed(() => ({
     { id: "about", component: AboutCard, props: { version: appVersion, sourceUrl } },
   ],
   searchResultGroups: [
-    { id: "spaces", title: "Spaces", results: visibleSearchResults("Spaces", spaceStore.spaces.map((space) => ({ id: `space-${space.id}`, title: space.name, description: "Manage named contexts", action: "overview" as const }))) },
+    { id: "spaces", title: "Spaces", results: visibleSearchResults("Spaces", [...spaceStore.spaces.map((space) => ({ id: `space-${space.id}`, title: space.name, description: "Manage named contexts", action: "overview" as const })), { id: "add-space", title: "Add space", description: "New space name", action: "overview" as const }]) },
     { id: "devices", title: "Devices", results: visibleSearchResults("Devices", [...deviceStore.pairedDevices.map((device) => ({ id: `device-${device.peer_device_id}`, title: device.display_name, description: devicePresenceLabel(device), to: `/settings/device/${device.peer_device_id}` })), { id: "add-device", title: "Add device", description: "Pair a new device", to: "/settings/add-device" }]) },
     { id: "appearance", title: "Appearance", results: visibleSearchResults("Appearance", [{ id: "theme", title: "Theme", description: "System, Light, or Dark", action: "overview" }]) },
     ...(startupAutoUpdateSupported.value ? [{ id: "updates", title: "Updates", results: visibleSearchResults("Updates", [{ id: "automatic-updates", title: "Automatic updates", description: "Install updates automatically on restart", action: "overview" as const }]) }] : []),
     { id: "backup", title: "Backup", results: visibleSearchResults("Backup", [{ id: "export-backup", title: "Export backup", description: "Save spaces and quests to a portable file", action: "overview" }, { id: "import-backup", title: "Import backup", description: "Restore from a portable backup file", action: "overview" }]) },
-    { id: "about", title: "About", results: visibleSearchResults("About", [{ id: "version", title: "Version", description: appVersion, action: "overview" }]) },
+    { id: "about", title: "About", results: visibleSearchResults("About", [{ id: "version", title: "Version", description: appVersion, action: "overview" }, { id: "source-code", title: "Source code", description: "Project source repository", href: sourceUrl }]) },
   ].filter((group): group is SettingsSearchGroup => group.results.length > 0),
 }));
 
@@ -88,7 +88,7 @@ function openSearchResult() {
     <div v-if="renderFlags.settingsSearchResults" class="flex flex-col gap-4" data-testid="settings-search-results">
       <section v-for="group in renderLists.searchResultGroups" :key="group.id" class="rounded-xl bg-base-200 p-3" data-testid="settings-search-group">
         <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">{{ group.title }}</h2>
-        <SettingsListGroup><SettingsListItem v-for="result in group.results" :key="result.id" :to="result.to" :button="!result.to" @click="openSearchResult"><template #start><div><span class="block font-medium">{{ result.title }}</span><span v-if="result.description" class="block text-xs opacity-60">{{ result.description }}</span></div></template><template #trailing><span class="text-sm opacity-50">›</span></template></SettingsListItem></SettingsListGroup>
+        <SettingsListGroup><SettingsListItem v-for="result in group.results" :key="result.id" :to="result.to" :href="result.href" :button="!result.to && !result.href" @click="openSearchResult"><template #start><div><span class="block font-medium">{{ result.title }}</span><span v-if="result.description" class="block text-xs opacity-60">{{ result.description }}</span></div></template><template #trailing><span class="text-sm opacity-50">›</span></template></SettingsListItem></SettingsListGroup>
       </section>
     </div>
 
