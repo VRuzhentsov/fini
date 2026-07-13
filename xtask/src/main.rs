@@ -185,11 +185,32 @@ fn infer_subject_kind(subject: &str) -> &'static str {
 fn parse_conventional_subject(subject: &str) -> Option<(&str, Option<&str>, &str)> {
     let (prefix, text) = subject.split_once(": ")?;
     let (kind, scope) = match prefix.split_once('(') {
-        Some((kind, scoped)) => (kind.trim_end_matches('!'), scoped.strip_suffix(')')),
+        Some((kind, scoped)) => (kind.trim_end_matches('!'), Some(scoped.strip_suffix(')')?)),
         None => (prefix.trim_end_matches('!'), None),
     };
+    if !is_known_conventional_kind(kind) {
+        return None;
+    }
     let text = strip_pr_suffix(text);
     Some((kind, scope, text))
+}
+
+fn is_known_conventional_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "feat"
+            | "fix"
+            | "bugfix"
+            | "perf"
+            | "refactor"
+            | "improvement"
+            | "build"
+            | "chore"
+            | "ci"
+            | "docs"
+            | "release"
+            | "test"
+    )
 }
 
 fn strip_pr_suffix(text: &str) -> &str {
@@ -515,6 +536,15 @@ mod tests {
 
         assert!(notes.contains("## Android\n\n### Improvements\n\n- add offline queue"));
         assert!(!notes.contains("### New"));
+    }
+
+    #[test]
+    fn falls_back_for_non_conventional_colon_titles() {
+        let entry = parse_release_entry("Fix settings: prevent crash (#123)").unwrap();
+
+        assert_eq!(entry.kind, "Bugfixes");
+        assert_eq!(entry.area, ReleaseArea::Desktop);
+        assert_eq!(entry.text, "Fix settings: prevent crash");
     }
 
     #[test]
