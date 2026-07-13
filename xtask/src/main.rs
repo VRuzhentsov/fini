@@ -103,15 +103,36 @@ fn release_note_subjects_from_dir(
     to: &str,
     current_dir: Option<&Path>,
 ) -> Result<String, String> {
-    git_output_in(
+    let log = git_output_in(
         &[
             "log",
             "--first-parent",
-            "--format=%s",
+            "--format=%s%x00%b%x1e",
             &format!("{from}..{to}"),
         ],
         current_dir,
-    )
+    )?;
+    Ok(log
+        .split('\x1e')
+        .filter_map(release_note_subject_from_log_record)
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn release_note_subject_from_log_record(record: &str) -> Option<&str> {
+    let record = record.trim_matches('\n');
+    if record.is_empty() {
+        return None;
+    }
+    let (subject, body) = record.split_once('\0').unwrap_or((record, ""));
+    if subject.starts_with("Merge pull request ") {
+        body.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .or(Some(subject.trim()))
+    } else {
+        Some(subject.trim())
+    }
 }
 
 fn git_output_in(args: &[&str], current_dir: Option<&Path>) -> Result<String, String> {
@@ -689,12 +710,15 @@ mod tests {
                 "feature",
                 "-m",
                 "Merge pull request #123 from feature",
+                "-m",
+                "Fix AppImage release packaging (#123)",
             ],
         );
 
         let subjects = release_note_subjects_from_dir("v0.1.0", "HEAD", Some(&repo)).unwrap();
 
-        assert!(subjects.contains("Merge pull request #123 from feature"));
+        assert!(subjects.contains("Fix AppImage release packaging (#123)"));
+        assert!(!subjects.contains("Merge pull request #123 from feature"));
         assert!(subjects.contains("fix: first-parent fix"));
         assert!(!subjects.contains("WIP branch implementation detail"));
         assert!(!subjects.contains("ci: branch-only fixup"));
