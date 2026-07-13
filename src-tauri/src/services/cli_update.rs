@@ -178,6 +178,15 @@ fn install_verified_cli_payload(
     set_executable_mode(&candidate_path, mode)?;
     validate_candidate_version(&candidate_path, expected_version)?;
 
+    if target.starts_with("cli-windows-") && should_defer_windows_self_replacement(executable_path)
+    {
+        let pending_path = windows_pending_replacement_path(executable_path);
+        fs::copy(&candidate_path, &pending_path)
+            .map_err(|err| format!("failed to stage Windows replacement helper payload: {err}"))?;
+        schedule_windows_self_replacement(&pending_path, executable_path)?;
+        return Ok(());
+    }
+
     let backup_path = parent.join(format!(
         ".{}.fini-update-backup",
         executable_path
@@ -210,9 +219,7 @@ fn install_verified_cli_payload(
         Err(err) => {
             let _ = fs::remove_file(executable_path);
             fs::rename(&backup_path, executable_path).map_err(|restore_err| {
-                format!(
-                    "{err}; additionally failed to restore previous executable: {restore_err}"
-                )
+                format!("{err}; additionally failed to restore previous executable: {restore_err}")
             })?;
             Err(err)
         }
@@ -255,8 +262,8 @@ fn extract_fini_from_tar_gz(payload: &[u8]) -> Result<Vec<u8>, String> {
 
 fn extract_fini_from_zip(payload: &[u8]) -> Result<Vec<u8>, String> {
     let reader = Cursor::new(payload);
-    let mut archive = zip::ZipArchive::new(reader)
-        .map_err(|err| format!("invalid CLI zip artifact: {err}"))?;
+    let mut archive =
+        zip::ZipArchive::new(reader).map_err(|err| format!("invalid CLI zip artifact: {err}"))?;
     for name in ["fini.exe", "fini"] {
         if let Ok(mut file) = archive.by_name(name) {
             let mut bytes = Vec::new();
@@ -288,7 +295,9 @@ fn expected_architecture(target: &str) -> Result<&'static str, String> {
     } else if target.ends_with("-aarch64") {
         Ok("aarch64")
     } else {
-        Err(format!("unsupported CLI update architecture target: {target}"))
+        Err(format!(
+            "unsupported CLI update architecture target: {target}"
+        ))
     }
 }
 
@@ -303,7 +312,8 @@ fn detect_architecture(bytes: &[u8]) -> Option<&'static str> {
     }
 
     if bytes.len() >= 0x40 && bytes.starts_with(b"MZ") {
-        let pe_offset = u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
+        let pe_offset =
+            u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
         if bytes.len() >= pe_offset + 6 && &bytes[pe_offset..pe_offset + 4] == b"PE\0\0" {
             let machine = u16::from_le_bytes([bytes[pe_offset + 4], bytes[pe_offset + 5]]);
             return match machine {
@@ -347,6 +357,66 @@ fn candidate_filename(target: &str) -> &'static str {
     } else {
         "fini"
     }
+}
+
+#[cfg(windows)]
+fn should_defer_windows_self_replacement(executable_path: &Path) -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|current| same_file_path(&current, executable_path).ok())
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn should_defer_windows_self_replacement(_executable_path: &Path) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn same_file_path(left: &Path, right: &Path) -> Result<bool, std::io::Error> {
+    Ok(left.canonicalize()? == right.canonicalize()?)
+}
+
+fn windows_pending_replacement_path(executable_path: &Path) -> PathBuf {
+    let file_name = executable_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("fini.exe");
+    executable_path.with_file_name(format!(".{file_name}.fini-update-pending"))
+}
+
+#[cfg(windows)]
+fn schedule_windows_self_replacement(
+    pending_path: &Path,
+    executable_path: &Path,
+) -> Result<(), String> {
+    let script = windows_self_replacement_script(pending_path, executable_path);
+    Command::new("cmd")
+        .args(["/C", "start", "", "/MIN", "cmd", "/C", &script])
+        .spawn()
+        .map_err(|err| format!("failed to start Windows replacement helper: {err}"))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn schedule_windows_self_replacement(
+    _pending_path: &Path,
+    _executable_path: &Path,
+) -> Result<(), String> {
+    Ok(())
+}
+
+fn windows_self_replacement_script(pending_path: &Path, executable_path: &Path) -> String {
+    let pending = windows_cmd_quote(pending_path);
+    let target = windows_cmd_quote(executable_path);
+    format!(
+        "for /L %i in (1,1,60) do @(move /Y {pending} {target} >NUL 2>NUL && exit /B 0) & ping 127.0.0.1 -n 2 >NUL"
+    )
+}
+
+fn windows_cmd_quote(path: &Path) -> String {
+    let escaped = path.display().to_string().replace('\"', "\"\"");
+    format!("\"{escaped}\"")
 }
 
 #[cfg(unix)]
@@ -495,7 +565,14 @@ mod tests {
             .expect("update installed");
 
         validate_candidate_version(&current, "1.2.0").expect("new binary runs");
-        assert_eq!(fs::metadata(&current).expect("metadata").permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            fs::metadata(&current)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
         assert!(!dir.path().join(".fini.fini-update-backup").exists());
     }
 
@@ -517,6 +594,22 @@ mod tests {
     }
 
     #[test]
+    fn windows_replacement_helper_uses_persistent_pending_payload() {
+        let executable = PathBuf::from("/updates/fini.exe");
+        let pending = windows_pending_replacement_path(&executable);
+        let script = windows_self_replacement_script(&pending, &executable);
+
+        assert_eq!(
+            pending,
+            PathBuf::from("/updates/.fini.exe.fini-update-pending")
+        );
+        assert!(script.contains("move /Y"));
+        assert!(script.contains(".fini.exe.fini-update-pending"));
+        assert!(script.contains("fini.exe"));
+        assert!(script.contains("ping 127.0.0.1"));
+    }
+
+    #[test]
     #[cfg(unix)]
     fn invalid_artifact_keeps_previous_executable() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -526,8 +619,9 @@ mod tests {
         set_executable_mode(&current, 0o755).expect("chmod old");
         let payload = make_tar_gz(&[("not-fini", b"nope")]);
 
-        let err = install_verified_cli_payload(&payload, current_cli_linux_target(), "1.2.0", &current)
-            .expect_err("invalid artifact should fail");
+        let err =
+            install_verified_cli_payload(&payload, current_cli_linux_target(), "1.2.0", &current)
+                .expect_err("invalid artifact should fail");
 
         assert!(err.contains("does not contain fini"));
         validate_candidate_version(&current, "1.0.0").expect("old binary still runs");
@@ -544,8 +638,9 @@ mod tests {
         let bad = compile_version_binary(dir.path(), "bad-version", "9.9.9");
         let payload = make_tar_gz_from_file("fini", &bad);
 
-        let err = install_verified_cli_payload(&payload, current_cli_linux_target(), "1.2.0", &current)
-            .expect_err("version mismatch should fail");
+        let err =
+            install_verified_cli_payload(&payload, current_cli_linux_target(), "1.2.0", &current)
+                .expect_err("version mismatch should fail");
 
         assert!(err.contains("version mismatch"));
         validate_candidate_version(&current, "1.0.0").expect("old binary restored");
