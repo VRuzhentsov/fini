@@ -188,6 +188,7 @@ fn parse_release_entry(subject: &str) -> Option<ReleaseEntry> {
 fn infer_subject_kind(subject: &str) -> &'static str {
     let subject = subject.to_ascii_lowercase();
     if subject.starts_with("fix ")
+        || subject.starts_with("fix:")
         || subject.starts_with("fixed ")
         || subject.starts_with("prevent ")
         || subject.starts_with("correct ")
@@ -630,6 +631,12 @@ mod tests {
         assert_eq!(entry.kind, "Bugfixes");
         assert_eq!(entry.area, ReleaseArea::Desktop);
         assert_eq!(entry.text, "Fix settings: prevent crash");
+
+        let entry = parse_release_entry("Fix: prevent startup crash (#123)").unwrap();
+
+        assert_eq!(entry.kind, "Bugfixes");
+        assert_eq!(entry.area, ReleaseArea::Core);
+        assert_eq!(entry.text, "Fix: prevent startup crash");
     }
 
     #[test]
