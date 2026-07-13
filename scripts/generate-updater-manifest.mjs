@@ -21,8 +21,14 @@ export async function generateUpdaterManifest({
   version,
   notes = '',
   output,
+  surface = 'desktop',
   pubDate = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
 }) {
+  if (!['desktop', 'cli'].includes(surface)) {
+    throw new Error(`unsupported updater manifest surface: ${surface}`);
+  }
+
+  const targetForSurface = surface === 'cli' ? cliPlatformTarget : platformTarget;
   const platforms = {};
   const entries = await readdir(assetsDir, { withFileTypes: true });
 
@@ -31,7 +37,7 @@ export async function generateUpdaterManifest({
       continue;
     }
 
-    const target = platformTarget(entry.name);
+    const target = targetForSurface(entry.name);
     if (!target) {
       continue;
     }
@@ -76,6 +82,20 @@ export async function generateUpdaterManifest({
 
   await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   return manifest;
+}
+
+export function cliPlatformTarget(filename) {
+  for (const [archLabel, arch] of ARCHES) {
+    if (filename.endsWith(`-linux-${archLabel}-cli.tar.gz`)) {
+      return `cli-linux-${arch}`;
+    }
+
+    if (filename.endsWith(`-windows-${archLabel}-cli.zip`)) {
+      return `cli-windows-${arch}`;
+    }
+  }
+
+  return null;
 }
 
 export function platformTarget(filename) {
@@ -131,6 +151,7 @@ function parseCliArgs(argv) {
     version: parsed.version,
     notes: parsed.notes ?? '',
     output: parsed.output,
+    surface: parsed.surface ?? 'desktop',
     pubDate: parsed['pub-date'],
   };
 }

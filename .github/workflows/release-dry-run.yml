@@ -290,6 +290,27 @@ jobs:
           fi
           tar -C "$(dirname "$cli_binary")" -czf "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.arch }}-cli.tar.gz" fini
 
+      - name: Verify staged Linux CLI archive
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          expected_version="$(sed -n -E '/^\[package\]/,/^\[/{s/^version = "([^"]+)"/\1/p}' src-tauri/Cargo.toml | head -n 1)"
+          scripts/verify-linux-cli-archive.sh \
+            "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.arch }}-cli.tar.gz" \
+            "$expected_version" \
+            "${{ matrix.arch }}"
+
+      - name: Sign staged Linux CLI archive for updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          archive="prep/linux/fini-prep-${short_sha}-linux-${{ matrix.arch }}-cli.tar.gz"
+          npm run tauri -- signer sign "$archive"
+          test -s "${archive}.sig"
+
       - name: Upload Linux bundle artifact
         uses: actions/upload-artifact@v4
         with:
@@ -370,6 +391,24 @@ jobs:
             throw "Expected Windows CLI binary was not produced: $cliBinary"
           }
           Compress-Archive -LiteralPath $cliBinary -DestinationPath "prep/windows/fini-prep-$shortSha-windows-${{ matrix.arch }}-cli.zip" -Force
+
+      - name: Verify staged Windows CLI archive
+        shell: pwsh
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $expectedVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^\"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          ./scripts/verify-windows-cli-archive.ps1 -Archive "prep/windows/fini-prep-$shortSha-windows-${{ matrix.arch }}-cli.zip" -ExpectedVersion "$expectedVersion"
+
+      - name: Sign staged Windows CLI archive for updater
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $archive = "prep/windows/fini-prep-$shortSha-windows-${{ matrix.arch }}-cli.zip"
+          npm run tauri -- signer sign "$archive"
+          if (!(Test-Path -LiteralPath "$archive.sig") -or ((Get-Item -LiteralPath "$archive.sig").Length -eq 0)) { throw "Missing CLI updater signature: $archive.sig" }
 
       - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v4

@@ -1,5 +1,10 @@
+use flate2::read::GzDecoder;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::fs;
+use std::io::{Cursor, Read};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
@@ -57,16 +62,7 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
             .map_err(|err| format!("failed to check for updates: {err}"))?;
 
         let Some(update) = update else {
-            return Ok(json!({
-                "current_version": env!("CARGO_PKG_VERSION"),
-                "target_version": env!("CARGO_PKG_VERSION"),
-                "endpoint": config.endpoint,
-                "target": config.target,
-                "executable_path": config.executable_path,
-                "dry_run": options.dry_run,
-                "already_current": true,
-                "updated": false,
-            }));
+            return Ok(already_current_result(&config, options.dry_run));
         };
 
         let result = json!({
@@ -82,10 +78,16 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
         });
 
         if !options.dry_run {
-            update
-                .download_and_install(|_, _| {}, || {})
+            let payload = update
+                .download(|_, _| {}, || {})
                 .await
-                .map_err(|err| format!("failed to install update: {err}"))?;
+                .map_err(|err| format!("failed to download or verify update: {err}"))?;
+            install_verified_cli_payload(
+                &payload,
+                &config.target,
+                &update.version,
+                &config.executable_path,
+            )?;
         }
 
         Ok(result)
@@ -128,11 +130,256 @@ fn default_cli_update_target() -> Result<String, String> {
         .ok_or_else(|| "CLI updates are not supported on this platform".to_string())
 }
 
+fn already_current_result(config: &CliUpdateConfig, dry_run: bool) -> Value {
+    json!({
+        "current_version": env!("CARGO_PKG_VERSION"),
+        "target_version": env!("CARGO_PKG_VERSION"),
+        "endpoint": config.endpoint,
+        "target": config.target,
+        "executable_path": config.executable_path,
+        "dry_run": dry_run,
+        "already_current": true,
+        "updated": false,
+    })
+}
+
+fn install_verified_cli_payload(
+    payload: &[u8],
+    target: &str,
+    expected_version: &str,
+    executable_path: &Path,
+) -> Result<(), String> {
+    let metadata = fs::metadata(executable_path)
+        .map_err(|err| format!("failed to inspect current executable: {err}"))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "current executable is not a regular file: {}",
+            executable_path.display()
+        ));
+    }
+
+    let parent = executable_path.parent().ok_or_else(|| {
+        format!(
+            "failed to resolve executable directory for {}",
+            executable_path.display()
+        )
+    })?;
+    let mode = executable_mode(&metadata);
+    let candidate_bytes = extract_cli_from_archive(payload, target)?;
+    validate_candidate_architecture(&candidate_bytes, target)?;
+
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".fini-update-")
+        .tempdir_in(parent)
+        .map_err(|err| format!("failed to create update staging directory: {err}"))?;
+    let candidate_path = staging_dir.path().join(candidate_filename(target));
+    fs::write(&candidate_path, &candidate_bytes)
+        .map_err(|err| format!("failed to stage update candidate: {err}"))?;
+    set_executable_mode(&candidate_path, mode)?;
+    validate_candidate_version(&candidate_path, expected_version)?;
+
+    let backup_path = parent.join(format!(
+        ".{}.fini-update-backup",
+        executable_path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("fini")
+    ));
+    if backup_path.exists() {
+        fs::remove_file(&backup_path)
+            .map_err(|err| format!("failed to remove stale update backup: {err}"))?;
+    }
+
+    fs::rename(executable_path, &backup_path)
+        .map_err(|err| format!("failed to preserve current executable before update: {err}"))?;
+
+    let replace_result = (|| {
+        fs::rename(&candidate_path, executable_path)
+            .map_err(|err| format!("failed to install update candidate: {err}"))?;
+        set_executable_mode(executable_path, mode)?;
+        validate_candidate_version(executable_path, expected_version)?;
+        Ok::<(), String>(())
+    })();
+
+    match replace_result {
+        Ok(()) => {
+            fs::remove_file(&backup_path)
+                .map_err(|err| format!("updated but failed to remove backup: {err}"))?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = fs::remove_file(executable_path);
+            fs::rename(&backup_path, executable_path).map_err(|restore_err| {
+                format!(
+                    "{err}; additionally failed to restore previous executable: {restore_err}"
+                )
+            })?;
+            Err(err)
+        }
+    }
+}
+
+fn extract_cli_from_archive(payload: &[u8], target: &str) -> Result<Vec<u8>, String> {
+    if target.starts_with("cli-linux-") {
+        return extract_fini_from_tar_gz(payload);
+    }
+    if target.starts_with("cli-windows-") {
+        return extract_fini_from_zip(payload);
+    }
+    Err(format!("unsupported CLI update target: {target}"))
+}
+
+fn extract_fini_from_tar_gz(payload: &[u8]) -> Result<Vec<u8>, String> {
+    let decoder = GzDecoder::new(Cursor::new(payload));
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .map_err(|err| format!("invalid CLI tar.gz artifact: {err}"))?;
+
+    for entry in entries {
+        let mut entry = entry.map_err(|err| format!("invalid CLI tar entry: {err}"))?;
+        let path = entry
+            .path()
+            .map_err(|err| format!("invalid CLI tar entry path: {err}"))?;
+        if path.as_ref() == Path::new("fini") {
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .map_err(|err| format!("failed to read fini from CLI archive: {err}"))?;
+            return Ok(bytes);
+        }
+    }
+
+    Err("CLI archive does not contain fini at the top level".to_string())
+}
+
+fn extract_fini_from_zip(payload: &[u8]) -> Result<Vec<u8>, String> {
+    let reader = Cursor::new(payload);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|err| format!("invalid CLI zip artifact: {err}"))?;
+    for name in ["fini.exe", "fini"] {
+        if let Ok(mut file) = archive.by_name(name) {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|err| format!("failed to read {name} from CLI archive: {err}"))?;
+            return Ok(bytes);
+        }
+    }
+
+    Err("CLI archive does not contain fini.exe at the top level".to_string())
+}
+
+fn validate_candidate_architecture(bytes: &[u8], target: &str) -> Result<(), String> {
+    let expected = expected_architecture(target)?;
+    let actual = detect_architecture(bytes)
+        .ok_or_else(|| "failed to identify CLI candidate architecture".to_string())?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "CLI candidate architecture mismatch: expected {expected}, found {actual}"
+        ))
+    }
+}
+
+fn expected_architecture(target: &str) -> Result<&'static str, String> {
+    if target.ends_with("-x86_64") {
+        Ok("x86_64")
+    } else if target.ends_with("-aarch64") {
+        Ok("aarch64")
+    } else {
+        Err(format!("unsupported CLI update architecture target: {target}"))
+    }
+}
+
+fn detect_architecture(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 20 && bytes.starts_with(b"\x7fELF") {
+        let machine = u16::from_le_bytes([bytes[18], bytes[19]]);
+        return match machine {
+            62 => Some("x86_64"),
+            183 => Some("aarch64"),
+            _ => None,
+        };
+    }
+
+    if bytes.len() >= 0x40 && bytes.starts_with(b"MZ") {
+        let pe_offset = u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
+        if bytes.len() >= pe_offset + 6 && &bytes[pe_offset..pe_offset + 4] == b"PE\0\0" {
+            let machine = u16::from_le_bytes([bytes[pe_offset + 4], bytes[pe_offset + 5]]);
+            return match machine {
+                0x8664 => Some("x86_64"),
+                0xaa64 => Some("aarch64"),
+                _ => None,
+            };
+        }
+    }
+
+    None
+}
+
+fn validate_candidate_version(path: &Path, expected_version: &str) -> Result<(), String> {
+    let output = Command::new(path)
+        .arg("--version")
+        .output()
+        .map_err(|err| format!("failed to run update candidate --version: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "update candidate --version failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let actual = stdout.trim();
+    let expected = format!("fini {expected_version}");
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "update candidate version mismatch: expected '{expected}', got '{actual}'"
+        ))
+    }
+}
+
+fn candidate_filename(target: &str) -> &'static str {
+    if target.starts_with("cli-windows-") {
+        "fini.exe"
+    } else {
+        "fini"
+    }
+}
+
+#[cfg(unix)]
+fn executable_mode(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o777
+}
+
+#[cfg(not(unix))]
+fn executable_mode(_metadata: &fs::Metadata) -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn set_executable_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|err| format!("failed to set executable permissions: {err}"))
+}
+
+#[cfg(not(unix))]
+fn set_executable_mode(_path: &Path, _mode: u32) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn default_cli_target_prefixes_tauri_target() {
@@ -208,5 +455,157 @@ mod tests {
             Some(value) => std::env::set_var("GH_TOKEN", value),
             None => std::env::remove_var("GH_TOKEN"),
         }
+    }
+
+    #[test]
+    fn extracts_only_top_level_fini_from_linux_archive() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let payload = make_tar_gz(&[("nested/fini", b"wrong"), ("fini", b"right")]);
+        let bytes = extract_cli_from_archive(&payload, current_cli_linux_target())
+            .expect("top-level fini extracted");
+
+        assert_eq!(bytes, b"right");
+        assert!(!dir.path().join("nested").exists());
+    }
+
+    #[test]
+    fn rejects_wrong_architecture() {
+        let mut elf = vec![0; 64];
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[18..20].copy_from_slice(&183u16.to_le_bytes());
+
+        let err = validate_candidate_architecture(&elf, "cli-linux-x86_64")
+            .expect_err("wrong arch should fail");
+
+        assert!(err.contains("architecture mismatch"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn installs_valid_linux_archive_atomically_and_preserves_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let current = dir.path().join("fini");
+        let old = compile_version_binary(dir.path(), "old", "1.0.0");
+        fs::copy(&old, &current).expect("copy old binary");
+        set_executable_mode(&current, 0o755).expect("chmod old");
+        let new = compile_version_binary(dir.path(), "new", "1.2.0");
+        let payload = make_tar_gz_from_file("fini", &new);
+
+        install_verified_cli_payload(&payload, current_cli_linux_target(), "1.2.0", &current)
+            .expect("update installed");
+
+        validate_candidate_version(&current, "1.2.0").expect("new binary runs");
+        assert_eq!(fs::metadata(&current).expect("metadata").permissions().mode() & 0o777, 0o755);
+        assert!(!dir.path().join(".fini.fini-update-backup").exists());
+    }
+
+    #[test]
+    fn already_current_result_reports_noop_without_installing() {
+        let config = CliUpdateConfig {
+            endpoint: "https://example.test/latest-cli.json".parse().expect("url"),
+            pubkey: "test-public-key".to_string(),
+            target: "cli-linux-x86_64".to_string(),
+            executable_path: PathBuf::from("/tmp/fini-current"),
+        };
+
+        let value = already_current_result(&config, false);
+
+        assert_eq!(value["already_current"], true);
+        assert_eq!(value["updated"], false);
+        assert_eq!(value["target_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["executable_path"], "/tmp/fini-current");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn invalid_artifact_keeps_previous_executable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let current = dir.path().join("fini");
+        let old = compile_version_binary(dir.path(), "old-invalid", "1.0.0");
+        fs::copy(&old, &current).expect("copy old binary");
+        set_executable_mode(&current, 0o755).expect("chmod old");
+        let payload = make_tar_gz(&[("not-fini", b"nope")]);
+
+        let err = install_verified_cli_payload(&payload, current_cli_linux_target(), "1.2.0", &current)
+            .expect_err("invalid artifact should fail");
+
+        assert!(err.contains("does not contain fini"));
+        validate_candidate_version(&current, "1.0.0").expect("old binary still runs");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_post_download_validation_restores_previous_executable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let current = dir.path().join("fini");
+        let old = compile_version_binary(dir.path(), "old-rollback", "1.0.0");
+        fs::copy(&old, &current).expect("copy old binary");
+        set_executable_mode(&current, 0o755).expect("chmod old");
+        let bad = compile_version_binary(dir.path(), "bad-version", "9.9.9");
+        let payload = make_tar_gz_from_file("fini", &bad);
+
+        let err = install_verified_cli_payload(&payload, current_cli_linux_target(), "1.2.0", &current)
+            .expect_err("version mismatch should fail");
+
+        assert!(err.contains("version mismatch"));
+        validate_candidate_version(&current, "1.0.0").expect("old binary restored");
+    }
+
+    fn current_cli_linux_target() -> &'static str {
+        #[cfg(target_arch = "x86_64")]
+        {
+            "cli-linux-x86_64"
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            "cli-linux-aarch64"
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            "cli-linux-x86_64"
+        }
+    }
+
+    fn compile_version_binary(dir: &Path, name: &str, version: &str) -> PathBuf {
+        let source = dir.join(format!("{name}.rs"));
+        let binary = dir.join(name);
+        fs::write(
+            &source,
+            format!(
+                "fn main() {{ if std::env::args().nth(1).as_deref() == Some(\"--version\") {{ println!(\"fini {version}\"); }} }}"
+            ),
+        )
+        .expect("write fixture source");
+        let status = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .status()
+            .expect("run rustc");
+        assert!(status.success(), "fixture rustc failed");
+        binary
+    }
+
+    fn make_tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        {
+            let mut archive = tar::Builder::new(&mut gz);
+            for (path, bytes) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, *path, Cursor::new(*bytes))
+                    .expect("append tar entry");
+            }
+            archive.finish().expect("finish tar");
+        }
+        gz.finish().expect("finish gzip")
+    }
+
+    fn make_tar_gz_from_file(path: &str, source: &Path) -> Vec<u8> {
+        let bytes = fs::read(source).expect("read source binary");
+        make_tar_gz(&[(path, bytes.as_slice())])
     }
 }

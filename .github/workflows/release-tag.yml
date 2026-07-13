@@ -397,6 +397,24 @@ jobs:
           fi
           tar -C "$(dirname "$cli_binary")" -czf "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz" fini
 
+      - name: Verify staged Linux CLI archive
+        run: |
+          set -euo pipefail
+          scripts/verify-linux-cli-archive.sh \
+            "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz" \
+            "${GITHUB_REF_NAME#v}" \
+            "${{ matrix.arch }}"
+
+      - name: Sign staged Linux CLI archive for updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          archive="release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz"
+          npm run tauri -- signer sign "$archive"
+          test -s "${archive}.sig"
+
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
@@ -493,6 +511,22 @@ jobs:
             throw "Expected Windows CLI binary was not produced: $cliBinary"
           }
           Compress-Archive -LiteralPath $cliBinary -DestinationPath "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip" -Force
+
+      - name: Verify staged Windows CLI archive
+        shell: pwsh
+        run: |
+          $expectedVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          ./scripts/verify-windows-cli-archive.ps1 -Archive "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip" -ExpectedVersion "$expectedVersion"
+
+      - name: Sign staged Windows CLI archive for updater
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $archive = "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip"
+          npm run tauri -- signer sign "$archive"
+          if (!(Test-Path -LiteralPath "$archive.sig") -or ((Get-Item -LiteralPath "$archive.sig").Length -eq 0)) { throw "Missing CLI updater signature: $archive.sig" }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -860,6 +894,18 @@ jobs:
             --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
             --output release-assets/latest.json
 
+      - name: Generate Tauri CLI updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --surface cli \
+            --output release-assets/latest-cli.json
+
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
         with:
@@ -932,6 +978,18 @@ jobs:
             --version "${GITHUB_REF_NAME#v}" \
             --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
             --output release-assets/latest.json
+
+      - name: Generate Tauri CLI updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --surface cli \
+            --output release-assets/latest-cli.json
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
