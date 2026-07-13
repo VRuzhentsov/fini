@@ -220,28 +220,35 @@ fn strip_pr_suffix(text: &str) -> &str {
 }
 
 fn area_for_subject(scope: Option<&str>, text: &str) -> ReleaseArea {
-    let scope = format!("{} {}", scope.unwrap_or_default(), text).to_ascii_lowercase();
-    if scope.contains("android") {
+    let subject = format!("{} {}", scope.unwrap_or_default(), text).to_ascii_lowercase();
+    let has_word = |word: &str| subject_words(&subject).any(|subject_word| subject_word == word);
+    if has_word("android") {
         ReleaseArea::Android
-    } else if scope.contains("cli") {
+    } else if has_word("cli") {
         ReleaseArea::Cli
-    } else if scope.contains("release")
-        || scope.contains("package")
-        || scope.contains("appimage")
-        || scope.contains("linux")
-        || scope.contains("windows")
+    } else if has_word("release")
+        || has_word("package")
+        || has_word("appimage")
+        || has_word("linux")
+        || has_word("windows")
     {
         ReleaseArea::Distribution
-    } else if scope.contains("desktop")
-        || scope.contains("app")
-        || scope.contains("settings")
-        || scope.contains("ui")
-        || scope.contains("updater")
+    } else if has_word("desktop")
+        || has_word("app")
+        || has_word("settings")
+        || has_word("ui")
+        || has_word("updater")
     {
         ReleaseArea::Desktop
     } else {
         ReleaseArea::Core
     }
+}
+
+fn subject_words(subject: &str) -> impl Iterator<Item = &str> {
+    subject
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
 }
 
 fn render_release_notes(release_kind: &str, entries: &[ReleaseEntry]) -> String {
@@ -545,6 +552,26 @@ mod tests {
         assert_eq!(entry.kind, "Bugfixes");
         assert_eq!(entry.area, ReleaseArea::Desktop);
         assert_eq!(entry.text, "Fix settings: prevent crash");
+    }
+
+    #[test]
+    fn matches_release_note_areas_by_words() {
+        assert_eq!(
+            parse_release_entry("feat: add quick capture").unwrap().area,
+            ReleaseArea::Core
+        );
+        assert_eq!(
+            parse_release_entry("fix: apply defaults").unwrap().area,
+            ReleaseArea::Core
+        );
+        assert_eq!(
+            parse_release_entry("fix: click target").unwrap().area,
+            ReleaseArea::Core
+        );
+        assert_eq!(
+            parse_release_entry("fix(cli): click target").unwrap().area,
+            ReleaseArea::Cli
+        );
     }
 
     #[test]

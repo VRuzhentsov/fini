@@ -895,7 +895,7 @@ jobs:
         run: |
           set -euo pipefail
           release_parent="${GITHUB_REF_NAME}^"
-          previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$release_parent")"
+          previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$release_parent")"
           cargo run --manifest-path xtask/Cargo.toml -- \
             release-notes "$previous_tag" "$GITHUB_REF_NAME" release-notes.md
 
