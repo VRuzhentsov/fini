@@ -185,7 +185,10 @@ fn infer_subject_kind(subject: &str) -> &'static str {
 fn parse_conventional_subject(subject: &str) -> Option<(&str, Option<&str>, &str)> {
     let (prefix, text) = subject.split_once(": ")?;
     let (kind, scope) = match prefix.split_once('(') {
-        Some((kind, scoped)) => (kind.trim_end_matches('!'), Some(scoped.strip_suffix(')')?)),
+        Some((kind, scoped)) => {
+            let scoped = scoped.trim_end_matches('!');
+            (kind, Some(scoped.strip_suffix(')')?))
+        }
         None => (prefix.trim_end_matches('!'), None),
     };
     if !is_known_conventional_kind(kind) {
@@ -543,6 +546,15 @@ mod tests {
 
         assert!(notes.contains("## Android\n\n### Improvements\n\n- add offline queue"));
         assert!(!notes.contains("### New"));
+    }
+
+    #[test]
+    fn parses_scoped_breaking_conventional_subjects() {
+        let entry = parse_release_entry("feat(cli)!: add export").unwrap();
+
+        assert_eq!(entry.kind, "New");
+        assert_eq!(entry.area, ReleaseArea::Cli);
+        assert_eq!(entry.text, "add export");
     }
 
     #[test]
