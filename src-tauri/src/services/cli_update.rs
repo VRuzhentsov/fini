@@ -410,7 +410,7 @@ fn windows_self_replacement_script(pending_path: &Path, executable_path: &Path) 
     let pending = windows_cmd_quote(pending_path);
     let target = windows_cmd_quote(executable_path);
     format!(
-        "for /L %i in (1,1,60) do @(move /Y {pending} {target} >NUL 2>NUL && exit /B 0) & ping 127.0.0.1 -n 2 >NUL"
+        "for /L %i in (1,1,60) do @(move /Y {pending} {target} >NUL 2>NUL && exit /B 0 || ping 127.0.0.1 -n 2 >NUL)"
     )
 }
 
@@ -606,7 +606,8 @@ mod tests {
         assert!(script.contains("move /Y"));
         assert!(script.contains(".fini.exe.fini-update-pending"));
         assert!(script.contains("fini.exe"));
-        assert!(script.contains("ping 127.0.0.1"));
+        assert!(script.contains(" || ping 127.0.0.1 -n 2 >NUL)"));
+        assert!(!script.contains(") & ping 127.0.0.1"));
     }
 
     #[test]
