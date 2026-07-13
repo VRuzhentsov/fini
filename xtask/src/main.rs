@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use toml_edit::{DocumentMut, Item, Value};
 
@@ -29,12 +31,239 @@ fn run() -> Result<(), String> {
             }
             prepare_play_store_screenshots()
         }
+        "release-notes" => {
+            let from = args.next().ok_or_else(usage)?;
+            let to = args.next().ok_or_else(usage)?;
+            let output = args.next().ok_or_else(usage)?;
+            if args.next().is_some() {
+                return Err(usage());
+            }
+            generate_release_notes(&from, &to, Path::new(&output))
+        }
         _ => Err(usage()),
     }
 }
 
 fn usage() -> String {
-    "Usage: cargo run --manifest-path xtask/Cargo.toml -- <release-version x.y.z|play-store-screenshots>".to_string()
+    "Usage: cargo run --manifest-path xtask/Cargo.toml -- <release-version x.y.z|play-store-screenshots|release-notes <from-tag> <to-tag> <output-file>>".to_string()
+}
+
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ReleaseArea {
+    Android,
+    Cli,
+    Core,
+    Desktop,
+    Distribution,
+}
+
+impl ReleaseArea {
+    fn heading(&self) -> &'static str {
+        match self {
+            Self::Android => "Android",
+            Self::Cli => "CLI",
+            Self::Core => "Core",
+            Self::Desktop => "Desktop",
+            Self::Distribution => "Distribution",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ReleaseEntry {
+    area: ReleaseArea,
+    kind: &'static str,
+    text: String,
+}
+
+fn generate_release_notes(from: &str, to: &str, output: &Path) -> Result<(), String> {
+    let commits = git_output(&["log", "--format=%s", &format!("{from}..{to}")])?;
+    let release_kind = release_kind(from, to)?;
+    let entries = commits
+        .lines()
+        .filter_map(parse_release_entry)
+        .collect::<Vec<_>>();
+    let notes = render_release_notes(release_kind, &entries);
+
+    fs::write(output, notes).map_err(|error| format!("write {}: {error}", output.display()))?;
+    println!(
+        "wrote {} release-note entries to {}",
+        entries.len(),
+        output.display()
+    );
+    Ok(())
+}
+
+fn git_output(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|error| format!("run git {}: {error}", args.join(" ")))?;
+    if output.status.success() {
+        String::from_utf8(output.stdout).map_err(|error| format!("read git output: {error}"))
+    } else {
+        Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+fn release_kind(from: &str, to: &str) -> Result<&'static str, String> {
+    let from = parse_tag_version(from)?;
+    let to = parse_tag_version(to)?;
+    if to.0 > from.0 || to.1 > from.1 {
+        Ok("minor")
+    } else {
+        Ok("patch")
+    }
+}
+
+fn parse_tag_version(tag: &str) -> Result<(u64, u64, u64), String> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let version = version
+        .split_once('-')
+        .map_or(version, |(stable, _)| stable);
+    let parts = version.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err(format!("release tag must be vMAJOR.MINOR.PATCH, got {tag}"));
+    }
+    let parse = |part: &str| {
+        part.parse::<u64>()
+            .map_err(|_| format!("invalid release tag {tag}"))
+    };
+    Ok((parse(parts[0])?, parse(parts[1])?, parse(parts[2])?))
+}
+
+fn parse_release_entry(subject: &str) -> Option<ReleaseEntry> {
+    let (kind, scope, text) = match parse_conventional_subject(subject) {
+        Some((kind, _scope, _text))
+            if matches!(kind, "build" | "chore" | "ci" | "docs" | "release" | "test") =>
+        {
+            return None
+        }
+        Some((kind, scope, text)) => (kind, scope, text),
+        None if subject.starts_with("Release ") || subject.starts_with("Merge ") => return None,
+        None => (infer_subject_kind(subject), None, strip_pr_suffix(subject)),
+    };
+
+    let kind = match kind {
+        "feat" | "new" => "New",
+        "fix" | "bugfix" => "Bugfixes",
+        "perf" | "refactor" | "improvement" => "Improvements",
+        _ => "Improvements",
+    };
+    Some(ReleaseEntry {
+        area: area_for_subject(scope, text),
+        kind,
+        text: text.to_string(),
+    })
+}
+
+fn infer_subject_kind(subject: &str) -> &'static str {
+    let subject = subject.to_ascii_lowercase();
+    if subject.starts_with("fix ")
+        || subject.starts_with("fixed ")
+        || subject.starts_with("prevent ")
+        || subject.starts_with("correct ")
+        || subject.starts_with("repair ")
+    {
+        "bugfix"
+    } else if subject.starts_with("add ")
+        || subject.starts_with("enable ")
+        || subject.starts_with("support ")
+        || subject.starts_with("introduce ")
+        || subject.starts_with("search ")
+    {
+        "new"
+    } else {
+        "improvement"
+    }
+}
+
+fn parse_conventional_subject(subject: &str) -> Option<(&str, Option<&str>, &str)> {
+    let (prefix, text) = subject.split_once(": ")?;
+    let (kind, scope) = match prefix.split_once('(') {
+        Some((kind, scoped)) => (kind.trim_end_matches('!'), scoped.strip_suffix(')')),
+        None => (prefix.trim_end_matches('!'), None),
+    };
+    let text = strip_pr_suffix(text);
+    Some((kind, scope, text))
+}
+
+fn strip_pr_suffix(text: &str) -> &str {
+    text.strip_suffix(')')
+        .and_then(|text| text.rsplit_once(" (#").map(|(text, _)| text))
+        .unwrap_or(text)
+}
+
+fn area_for_subject(scope: Option<&str>, text: &str) -> ReleaseArea {
+    let scope = format!("{} {}", scope.unwrap_or_default(), text).to_ascii_lowercase();
+    if scope.contains("android") {
+        ReleaseArea::Android
+    } else if scope.contains("cli") {
+        ReleaseArea::Cli
+    } else if scope.contains("release")
+        || scope.contains("package")
+        || scope.contains("appimage")
+        || scope.contains("linux")
+        || scope.contains("windows")
+    {
+        ReleaseArea::Distribution
+    } else if scope.contains("desktop")
+        || scope.contains("app")
+        || scope.contains("settings")
+        || scope.contains("ui")
+        || scope.contains("updater")
+    {
+        ReleaseArea::Desktop
+    } else {
+        ReleaseArea::Core
+    }
+}
+
+fn render_release_notes(release_kind: &str, entries: &[ReleaseEntry]) -> String {
+    let mut grouped: BTreeMap<&ReleaseArea, BTreeMap<&str, Vec<&str>>> = BTreeMap::new();
+    for entry in entries {
+        let kind = if release_kind == "patch" && entry.kind == "New" {
+            "Improvements"
+        } else {
+            entry.kind
+        };
+        grouped
+            .entry(&entry.area)
+            .or_default()
+            .entry(kind)
+            .or_default()
+            .push(&entry.text);
+    }
+
+    let mut output = String::from("<!-- Generated from conventional commit subjects. Edit only by changing the source PR title/commit before tagging. -->\n\n");
+    if entries.is_empty() {
+        output.push_str("## Improvements\n\n- Maintenance release with no user-facing changes.\n");
+        return output;
+    }
+
+    let kinds = if release_kind == "minor" {
+        ["New", "Improvements", "Bugfixes"]
+    } else {
+        ["Bugfixes", "Improvements", "New"]
+    };
+    for (area, changes) in grouped {
+        output.push_str(&format!("## {}\n\n", area.heading()));
+        for kind in kinds {
+            let Some(items) = changes.get(kind) else {
+                continue;
+            };
+            output.push_str(&format!("### {kind}\n\n"));
+            for item in items {
+                output.push_str(&format!("- {item}\n"));
+            }
+            output.push('\n');
+        }
+    }
+    output
 }
 
 struct ScreenshotSpec {
@@ -256,4 +485,41 @@ fn read_toml(path: &str) -> Result<DocumentMut, String> {
 
 fn write_toml(path: &str, doc: &DocumentMut) -> Result<(), String> {
     fs::write(path, doc.to_string()).map_err(|error| format!("write {path}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_minor_notes_from_conventional_and_pr_titles() {
+        let entries = [
+            parse_release_entry("feat(cli): add export command (#12)"),
+            parse_release_entry("Fix AppImage Wayland runtime compatibility"),
+            parse_release_entry("chore: release v0.2.0"),
+        ];
+        let entries = entries.into_iter().flatten().collect::<Vec<_>>();
+        let notes = render_release_notes("minor", &entries);
+
+        assert!(notes.contains("## CLI\n\n### New\n\n- add export command"));
+        assert!(notes.contains(
+            "## Distribution\n\n### Bugfixes\n\n- Fix AppImage Wayland runtime compatibility"
+        ));
+        assert!(!notes.contains("release v0.2.0"));
+    }
+
+    #[test]
+    fn treats_new_work_in_patch_releases_as_an_improvement() {
+        let entries = vec![parse_release_entry("feat(android): add offline queue").unwrap()];
+        let notes = render_release_notes("patch", &entries);
+
+        assert!(notes.contains("## Android\n\n### Improvements\n\n- add offline queue"));
+        assert!(!notes.contains("### New"));
+    }
+
+    #[test]
+    fn parses_prerelease_tags_as_semver() {
+        assert_eq!(release_kind("v0.2.4", "v0.3.0-rc.1").unwrap(), "minor");
+        assert_eq!(release_kind("v0.2.4", "v0.2.5").unwrap(), "patch");
+    }
 }
