@@ -896,6 +896,7 @@ jobs:
           set -euo pipefail
           release_parent="${GITHUB_REF_NAME}^"
           previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$release_parent")"
+          echo "RELEASE_NOTES_START_TAG=${previous_tag}" >> "$GITHUB_ENV"
           cargo run --manifest-path xtask/Cargo.toml -- \
             release-notes "$previous_tag" "$GITHUB_REF_NAME" release-notes.md
 
@@ -909,6 +910,7 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --verify-tag \
             --notes-file release-notes.md \
+            --notes-start-tag "${RELEASE_NOTES_START_TAG}" \
             --generate-notes
 
   publish-prerelease:
