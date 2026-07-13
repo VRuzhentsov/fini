@@ -77,7 +77,7 @@ struct ReleaseEntry {
 }
 
 fn generate_release_notes(from: &str, to: &str, output: &Path) -> Result<(), String> {
-    let commits = git_output(&["log", "--format=%s", &format!("{from}..{to}")])?;
+    let commits = release_note_subjects(from, to)?;
     let release_kind = release_kind(from, to)?;
     let entries = commits
         .lines()
@@ -94,9 +94,33 @@ fn generate_release_notes(from: &str, to: &str, output: &Path) -> Result<(), Str
     Ok(())
 }
 
-fn git_output(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .args(args)
+fn release_note_subjects(from: &str, to: &str) -> Result<String, String> {
+    release_note_subjects_from_dir(from, to, None)
+}
+
+fn release_note_subjects_from_dir(
+    from: &str,
+    to: &str,
+    current_dir: Option<&Path>,
+) -> Result<String, String> {
+    git_output_in(
+        &[
+            "log",
+            "--first-parent",
+            "--format=%s",
+            &format!("{from}..{to}"),
+        ],
+        current_dir,
+    )
+}
+
+fn git_output_in(args: &[&str], current_dir: Option<&Path>) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command.args(args);
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    let output = command
         .output()
         .map_err(|error| format!("run git {}: {error}", args.join(" ")))?;
     if output.status.success() {
@@ -521,6 +545,48 @@ fn write_toml(path: &str, doc: &DocumentMut) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn write_file(repo: &Path, path: &str, contents: &str) {
+        let path = repo.join(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("test parent directory should be created");
+        }
+        fs::write(path, contents).expect("test file should be written");
+    }
+
+    fn commit(repo: &Path, path: &str, contents: &str, subject: &str) {
+        write_file(repo, path, contents);
+        run_git(repo, &["add", path]);
+        run_git(repo, &["commit", "-m", subject]);
+    }
+
+    fn temp_repo() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let repo = env::temp_dir().join(format!("fini-xtask-release-notes-{unique}"));
+        fs::create_dir_all(&repo).expect("test repo should be created");
+        run_git(&repo, &["init", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Release Notes Test"]);
+        repo
+    }
 
     #[test]
     fn creates_minor_notes_from_conventional_and_pr_titles() {
@@ -590,5 +656,42 @@ mod tests {
     fn parses_prerelease_tags_as_semver() {
         assert_eq!(release_kind("v0.2.4", "v0.3.0-rc.1").unwrap(), "minor");
         assert_eq!(release_kind("v0.2.4", "v0.2.5").unwrap(), "patch");
+    }
+
+    #[test]
+    fn release_note_subjects_follow_first_parent_history() {
+        let repo = temp_repo();
+
+        commit(&repo, "file.txt", "base\n", "chore: base");
+        run_git(&repo, &["tag", "v0.1.0"]);
+        run_git(&repo, &["checkout", "-b", "feature"]);
+        commit(
+            &repo,
+            "feature.txt",
+            "wip\n",
+            "WIP branch implementation detail",
+        );
+        commit(&repo, "feature.txt", "ci\n", "ci: branch-only fixup");
+        run_git(&repo, &["checkout", "main"]);
+        commit(&repo, "main.txt", "main\n", "fix: first-parent fix");
+        run_git(
+            &repo,
+            &[
+                "merge",
+                "--no-ff",
+                "feature",
+                "-m",
+                "Merge pull request #123 from feature",
+            ],
+        );
+
+        let subjects = release_note_subjects_from_dir("v0.1.0", "HEAD", Some(&repo)).unwrap();
+
+        assert!(subjects.contains("Merge pull request #123 from feature"));
+        assert!(subjects.contains("fix: first-parent fix"));
+        assert!(!subjects.contains("WIP branch implementation detail"));
+        assert!(!subjects.contains("ci: branch-only fixup"));
+
+        fs::remove_dir_all(repo).expect("test repo should be removed");
     }
 }
