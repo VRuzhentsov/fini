@@ -397,25 +397,29 @@ jobs:
             echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
             exit 1
           fi
-          tar -C "$(dirname "$cli_binary")" -czf "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz" fini
+          tar -C "$(dirname "$cli_binary")" -czf "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.rust_target }}-cli.tar.gz" fini
 
       - name: Verify staged Linux CLI archive
         run: |
           set -euo pipefail
           scripts/verify-linux-cli-archive.sh \
-            "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz" \
+            "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.rust_target }}-cli.tar.gz" \
             "${GITHUB_REF_NAME#v}" \
             "${{ matrix.arch }}"
 
-      - name: Sign staged Linux CLI archive for updater
+      - name: Sign staged Linux CLI archive for standalone updater
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          archive="release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz"
-          npm run tauri -- signer sign "$archive"
-          test -s "${archive}.sig"
+          archive="release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.rust_target }}-cli.tar.gz"
+          key_file="${RUNNER_TEMP}/fini-cli-zipsign.key"
+          printf '%s' "$FINI_CLI_ZIPSIGN_PRIVATE_KEY" | base64 --decode > "$key_file"
+          chmod 600 "$key_file"
+          cargo install zipsign --locked
+          zipsign sign tar "$archive" "$key_file"
+          rm -f "$key_file"
+          zipsign verify tar "$archive" src-tauri/keys/fini-cli-zipsign.pub
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -514,23 +518,27 @@ jobs:
           if (!(Test-Path -LiteralPath $cliBinary)) {
             throw "Expected Windows CLI binary was not produced: $cliBinary"
           }
-          Compress-Archive -LiteralPath $cliBinary -DestinationPath "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip" -Force
+          Compress-Archive -LiteralPath $cliBinary -DestinationPath "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.rust_target }}-cli.zip" -Force
 
       - name: Verify staged Windows CLI archive
         shell: pwsh
         run: |
           $expectedVersion = $env:GITHUB_REF_NAME -replace '^v', ''
-          ./scripts/verify-windows-cli-archive.ps1 -Archive "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip" -ExpectedVersion "$expectedVersion"
+          ./scripts/verify-windows-cli-archive.ps1 -Archive "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.rust_target }}-cli.zip" -ExpectedVersion "$expectedVersion"
 
-      - name: Sign staged Windows CLI archive for updater
+      - name: Sign staged Windows CLI archive for standalone updater
         shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
         run: |
-          $archive = "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip"
-          npm run tauri -- signer sign "$archive"
-          if (!(Test-Path -LiteralPath "$archive.sig") -or ((Get-Item -LiteralPath "$archive.sig").Length -eq 0)) { throw "Missing CLI updater signature: $archive.sig" }
+          $archive = "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.rust_target }}-cli.zip"
+          $keyFile = Join-Path $env:RUNNER_TEMP "fini-cli-zipsign.key"
+          [IO.File]::WriteAllBytes($keyFile, [Convert]::FromBase64String($env:FINI_CLI_ZIPSIGN_PRIVATE_KEY))
+          cargo install zipsign --locked
+          & "$env:USERPROFILE\.cargo\bin\zipsign.exe" sign zip $archive $keyFile
+          Remove-Item -Force $keyFile
+          & "$env:USERPROFILE\.cargo\bin\zipsign.exe" verify zip $archive src-tauri/keys/fini-cli-zipsign.pub
+          if ($LASTEXITCODE -ne 0) { throw "CLI zipsign verification failed" }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
