@@ -48,6 +48,7 @@ COPY src-tauri/src ./src-tauri/src
 COPY src-tauri/capabilities ./src-tauri/capabilities
 COPY src-tauri/devtools-capabilities ./src-tauri/devtools-capabilities
 COPY src-tauri/icons ./src-tauri/icons
+COPY src-tauri/keys ./src-tauri/keys
 COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 
 FROM rust-builder-base AS be-test-compile
