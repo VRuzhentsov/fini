@@ -8,7 +8,7 @@ use crate::models::{
 };
 use crate::schema::quests;
 use crate::services::backup;
-use crate::services::cli_update::{run_update, UpdateOptions};
+use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
 use crate::services::db::{db_default_path, try_open_db_at_path, utc_now};
 use crate::services::device_connection::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
@@ -537,6 +537,8 @@ fn execute(cli: Cli) -> CliResult<i32> {
         print_output(&value, cli.json).map_err(CliError::runtime)?;
         return Ok(EXIT_SUCCESS);
     }
+
+    maybe_auto_update();
 
     let ctx = CliContext::new()?;
     let value = match cli.command {

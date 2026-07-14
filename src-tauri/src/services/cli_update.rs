@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 const CLI_UPDATE_OWNER: &str = "VRuzhentsov";
 const CLI_UPDATE_REPOSITORY: &str = "fini";
@@ -83,6 +84,44 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
         "already_current": status.version() == env!("CARGO_PKG_VERSION"),
         "updated": status.version() != env!("CARGO_PKG_VERSION"),
     }))
+}
+
+pub fn maybe_auto_update() {
+    if std::env::var("FINI_DISABLE_AUTO_UPDATE").ok().as_deref() == Some("1") {
+        return;
+    }
+
+    let Some(state_dir) = dirs::state_dir().or_else(dirs::data_local_dir) else {
+        return;
+    };
+    let stamp = state_dir.join("fini").join("cli-update-last-check");
+    let due = fs::metadata(&stamp)
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| {
+            SystemTime::now()
+                .duration_since(modified)
+                .map_err(std::io::Error::other)
+        })
+        .map(|elapsed| elapsed >= Duration::from_secs(24 * 60 * 60))
+        .unwrap_or(true);
+    if !due {
+        return;
+    }
+
+    if run_update(UpdateOptions {
+        dry_run: false,
+        endpoint: None,
+        pubkey: None,
+        target: None,
+        executable_path: None,
+    })
+    .is_ok()
+    {
+        if let Some(parent) = stamp.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(stamp, b"checked\n");
+    }
 }
 
 fn install_verified_cli_payload(
