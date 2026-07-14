@@ -906,7 +906,7 @@ jobs:
             --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
             --output release-assets/latest.json
 
-      - name: Generate Tauri CLI updater manifest
+      - name: Generate standalone CLI updater manifest
         run: |
           set -euo pipefail
           node scripts/generate-updater-manifest.mjs \
@@ -991,7 +991,7 @@ jobs:
             --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
             --output release-assets/latest.json
 
-      - name: Generate Tauri CLI updater manifest
+      - name: Generate standalone CLI updater manifest
         run: |
           set -euo pipefail
           node scripts/generate-updater-manifest.mjs \

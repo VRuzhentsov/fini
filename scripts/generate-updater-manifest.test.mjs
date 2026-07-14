@@ -14,7 +14,9 @@ async function withAssets(files, fn) {
   try {
     for (const [name, signature] of Object.entries(files)) {
       await writeFile(join(dir, name), 'artifact', 'utf8');
-      await writeFile(join(dir, `${name}.sig`), signature, 'utf8');
+      if (signature !== null) {
+        await writeFile(join(dir, `${name}.sig`), signature, 'utf8');
+      }
     }
     return await fn(dir);
   } finally {
@@ -106,12 +108,12 @@ test('recognizes standalone CLI archive targets separately from desktop installe
   assert.equal(cliPlatformTarget('fini-v1.2.3-linux-x64.AppImage'), null);
 });
 
-test('generates a CLI-only updater manifest from signed CLI archives', async () => {
+test('generates a CLI-only updater manifest from zipsign-signed archives without sidecar signatures', async () => {
   await withAssets(
     {
       'fini-v1.2.3-linux-x64.AppImage': 'desktop-signature',
-      'fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz': 'cli-linux-signature',
-      'fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip': 'cli-windows-signature',
+      'fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz': null,
+      'fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip': null,
     },
     async (assetsDir) => {
       const output = join(assetsDir, 'latest-cli.json');
@@ -127,11 +129,9 @@ test('generates a CLI-only updater manifest from signed CLI archives', async () 
 
       assert.deepEqual(manifest.platforms, {
         'cli-linux-x86_64': {
-          signature: 'cli-linux-signature',
           url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz',
         },
         'cli-windows-aarch64': {
-          signature: 'cli-windows-signature',
           url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip',
         },
       });

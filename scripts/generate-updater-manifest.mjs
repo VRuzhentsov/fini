@@ -50,25 +50,28 @@ export async function generateUpdaterManifest({
       continue;
     }
 
-    const sigPath = join(assetsDir, `${entry.name}.sig`);
-    let signature;
-    try {
-      signature = (await readFile(sigPath, 'utf8')).trim();
-    } catch (error) {
-      if (error?.code === 'ENOENT') {
-        throw new Error(`missing Tauri updater signature for ${entry.name}: expected ${basename(sigPath)}`);
-      }
-      throw error;
-    }
-
-    if (!signature) {
-      throw new Error(`empty Tauri updater signature for ${entry.name}: ${basename(sigPath)}`);
-    }
-
     const manifestEntry = {
-      signature,
       url: githubReleaseDownloadUrl(repo, tag, entry.name),
     };
+
+    if (surface === 'desktop') {
+      const sigPath = join(assetsDir, `${entry.name}.sig`);
+      let signature;
+      try {
+        signature = (await readFile(sigPath, 'utf8')).trim();
+      } catch (error) {
+        if (error?.code === 'ENOENT') {
+          throw new Error(`missing Tauri updater signature for ${entry.name}: expected ${basename(sigPath)}`);
+        }
+        throw error;
+      }
+
+      if (!signature) {
+        throw new Error(`empty Tauri updater signature for ${entry.name}: ${basename(sigPath)}`);
+      }
+
+      manifestEntry.signature = signature;
+    }
     platforms[target] = manifestEntry;
 
     const fallback = fallbackTarget(target);
@@ -78,7 +81,7 @@ export async function generateUpdaterManifest({
   }
 
   if (Object.keys(platforms).length === 0) {
-    throw new Error(`no supported signed desktop updater artifacts found in ${assetsDir}`);
+    throw new Error(`no supported ${surface} updater artifacts found in ${assetsDir}`);
   }
 
   const manifest = {
