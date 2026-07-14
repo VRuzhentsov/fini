@@ -284,6 +284,7 @@ fn cli_asset_for_release(
         .iter()
         .find(|asset| {
             asset.name.contains(CLI_UPDATE_IDENTIFIER)
+                && is_cli_update_archive_asset_for_target(&asset.name, target)
                 && target_substrings
                     .iter()
                     .any(|candidate| asset.name.contains(candidate))
@@ -293,7 +294,9 @@ fn cli_asset_for_release(
             if explicit_cli_label {
                 None
             } else {
-                release.asset_for(target, Some(CLI_UPDATE_IDENTIFIER))
+                release
+                    .asset_for(target, Some(CLI_UPDATE_IDENTIFIER))
+                    .filter(|asset| is_cli_update_archive_asset_for_target(&asset.name, target))
             }
         })
 }
@@ -306,6 +309,17 @@ fn cli_asset_target_substrings(target: &str) -> Vec<String> {
         "cli-windows-aarch64" => vec!["aarch64-pc-windows-msvc".to_string(), target.to_string()],
         _ => vec![target.to_string()],
     }
+}
+
+fn is_cli_update_archive_asset_for_target(asset_name: &str, target: &str) -> bool {
+    if is_cli_linux_target(target) {
+        return asset_name.ends_with(".tar.gz");
+    }
+    if is_cli_windows_target(target) {
+        return asset_name.ends_with(".zip");
+    }
+
+    asset_name.ends_with(".tar.gz") || asset_name.ends_with(".zip")
 }
 
 fn download_cli_asset(download_url: &str) -> Result<Vec<u8>, String> {
@@ -971,6 +985,25 @@ mod tests {
     }
 
     #[test]
+    fn cli_asset_selection_skips_detached_signature_assets() {
+        let release = release_with_assets(
+            "0.1.47",
+            &[
+                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz.cosign.sig",
+                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ],
+        );
+
+        let asset = cli_asset_for_release(&release, "cli-linux-x86_64")
+            .expect("archive asset selected instead of detached signature");
+
+        assert_eq!(
+            asset.name,
+            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz"
+        );
+    }
+
+    #[test]
     fn compatible_release_selection_skips_releases_without_matching_cli_asset() {
         let releases = vec![
             release_with_asset("0.1.47", "fini-0.1.47-x86_64.AppImage"),
@@ -1075,12 +1108,19 @@ mod tests {
     }
 
     fn release_with_asset(version: &str, asset_name: &str) -> self_update::update::Release {
+        release_with_assets(version, &[asset_name])
+    }
+
+    fn release_with_assets(version: &str, asset_names: &[&str]) -> self_update::update::Release {
         self_update::update::Release {
             version: version.to_string(),
-            assets: vec![self_update::update::ReleaseAsset {
-                download_url: format!("https://example.test/{asset_name}"),
-                name: asset_name.to_string(),
-            }],
+            assets: asset_names
+                .iter()
+                .map(|asset_name| self_update::update::ReleaseAsset {
+                    download_url: format!("https://example.test/{asset_name}"),
+                    name: (*asset_name).to_string(),
+                })
+                .collect(),
             ..Default::default()
         }
     }
