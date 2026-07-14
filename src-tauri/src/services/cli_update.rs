@@ -858,26 +858,22 @@ mod tests {
 
     #[test]
     fn compatible_release_selection_skips_older_releases() {
-        let releases = vec![release_with_cli_asset(
-            "0.1.45",
-            "fini-0.1.45-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-        )];
+        let current_version = current_package_version();
+        let releases = vec![release_with_versioned_cli_asset(&current_version)];
 
         assert!(compatible_cli_release(&releases, "cli-linux-x86_64").is_none());
     }
 
     #[test]
     fn compatible_release_selection_keeps_newer_releases() {
-        let releases = vec![release_with_cli_asset(
-            "0.1.47",
-            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-        )];
+        let next_patch = next_patch_version();
+        let releases = vec![release_with_versioned_cli_asset(&next_patch)];
 
         assert_eq!(
             compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("newer release selected")
                 .version,
-            "0.1.47"
+            next_patch
         );
     }
 
@@ -896,15 +892,11 @@ mod tests {
 
     #[test]
     fn compatible_release_selection_skips_prereleases_for_stable_updates() {
+        let current_version = current_package_version();
+        let next_patch_prerelease = format!("{}-rc.1", next_patch_version());
         let releases = vec![
-            release_with_cli_asset(
-                "0.1.47-rc.1",
-                "fini-0.1.47-rc.1-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ),
-            release_with_cli_asset(
-                "0.1.46",
-                "fini-0.1.46-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ),
+            release_with_versioned_cli_asset(&next_patch_prerelease),
+            release_with_versioned_cli_asset(&current_version),
         ];
 
         assert!(compatible_cli_release(&releases, "cli-linux-x86_64").is_none());
@@ -912,67 +904,55 @@ mod tests {
 
     #[test]
     fn compatible_release_selection_prefers_stable_release_over_newer_prerelease() {
+        let next_patch = next_patch_version();
+        let next_minor_prerelease = format!("{}-rc.1", next_minor_version());
         let releases = vec![
-            release_with_cli_asset(
-                "0.1.48-rc.1",
-                "fini-0.1.48-rc.1-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ),
-            release_with_cli_asset(
-                "0.1.47",
-                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ),
+            release_with_versioned_cli_asset(&next_minor_prerelease),
+            release_with_versioned_cli_asset(&next_patch),
         ];
 
         assert_eq!(
             compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("stable release selected")
                 .version,
-            "0.1.47"
+            next_patch
         );
     }
 
     #[test]
     fn compatible_release_selection_falls_back_to_newer_incompatible_releases() {
-        let releases = vec![release_with_cli_asset(
-            "0.2.0",
-            "fini-0.2.0-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-        )];
+        let next_minor = next_minor_version();
+        let releases = vec![release_with_versioned_cli_asset(&next_minor)];
 
         assert_eq!(
             compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("future incompatible release selected")
                 .version,
-            "0.2.0"
+            next_minor
         );
     }
 
     #[test]
     fn compatible_release_selection_prefers_compatible_newer_release() {
+        let next_patch = next_patch_version();
+        let next_minor = next_minor_version();
         let releases = vec![
-            release_with_cli_asset(
-                "0.2.0",
-                "fini-0.2.0-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ),
-            release_with_cli_asset(
-                "0.1.47",
-                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ),
+            release_with_versioned_cli_asset(&next_minor),
+            release_with_versioned_cli_asset(&next_patch),
         ];
 
         assert_eq!(
             compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("compatible newer release selected first")
                 .version,
-            "0.1.47"
+            next_patch
         );
     }
 
     #[test]
     fn compatible_release_selection_accepts_cli_label_for_rust_target_asset() {
-        let release = release_with_cli_asset(
-            "0.1.47",
-            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-        );
+        let next_patch = next_patch_version();
+        let release = release_with_versioned_cli_asset(&next_patch);
         let releases = vec![release.clone()];
 
         let selected =
@@ -980,53 +960,43 @@ mod tests {
         let asset = cli_asset_for_release(&selected, "cli-linux-x86_64")
             .expect("Rust-targeted CLI asset selected for CLI label");
 
-        assert_eq!(selected.version, "0.1.47");
+        assert_eq!(selected.version, next_patch);
         assert_eq!(asset.name, release.assets[0].name);
     }
 
     #[test]
     fn cli_asset_selection_skips_detached_signature_assets() {
-        let release = release_with_assets(
-            "0.1.47",
-            &[
-                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz.cosign.sig",
-                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ],
-        );
+        let next_patch = next_patch_version();
+        let archive = versioned_cli_asset_name(&next_patch);
+        let signature = format!("{archive}.cosign.sig");
+        let release = release_with_assets(&next_patch, &[signature.as_str(), archive.as_str()]);
 
         let asset = cli_asset_for_release(&release, "cli-linux-x86_64")
             .expect("archive asset selected instead of detached signature");
 
-        assert_eq!(
-            asset.name,
-            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz"
-        );
+        assert_eq!(asset.name, archive);
     }
 
     #[test]
     fn compatible_release_selection_skips_releases_without_matching_cli_asset() {
+        let next_patch = next_patch_version();
+        let next_minor = next_minor_version();
         let releases = vec![
-            release_with_asset("0.1.47", "fini-0.1.47-x86_64.AppImage"),
-            release_with_cli_asset(
-                "0.1.48",
-                "fini-0.1.48-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-            ),
+            release_with_asset(&next_patch, &format!("fini-{next_patch}-x86_64.AppImage")),
+            release_with_versioned_cli_asset(&next_minor),
         ];
 
         assert_eq!(
             compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("CLI release selected")
                 .version,
-            "0.1.48"
+            next_minor
         );
     }
 
     #[test]
     fn cli_label_asset_selection_does_not_fall_back_to_host_asset() {
-        let release = release_with_cli_asset(
-            "0.1.47",
-            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
-        );
+        let release = release_with_versioned_cli_asset(&next_patch_version());
 
         assert!(cli_asset_for_release(&release, "cli-windows-x86_64").is_none());
     }
@@ -1105,6 +1075,32 @@ mod tests {
 
     fn release_with_cli_asset(version: &str, asset_name: &str) -> self_update::update::Release {
         release_with_asset(version, asset_name)
+    }
+
+    fn release_with_versioned_cli_asset(version: &str) -> self_update::update::Release {
+        release_with_cli_asset(version, &versioned_cli_asset_name(version))
+    }
+
+    fn versioned_cli_asset_name(version: &str) -> String {
+        format!("fini-{version}-linux-x86_64-unknown-linux-gnu-cli.tar.gz")
+    }
+
+    fn current_package_version() -> String {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+
+    fn next_patch_version() -> String {
+        let version = package_semver();
+        format!("{}.{}.{}", version.major, version.minor, version.patch + 1)
+    }
+
+    fn next_minor_version() -> String {
+        let version = package_semver();
+        format!("{}.{}.0", version.major, version.minor + 1)
+    }
+
+    fn package_semver() -> CliSemver {
+        parse_cli_semver(env!("CARGO_PKG_VERSION")).expect("package version is semver")
     }
 
     fn release_with_asset(version: &str, asset_name: &str) -> self_update::update::Release {
