@@ -130,14 +130,42 @@ fn compatible_cli_release(
     releases: &[self_update::update::Release],
     target: &str,
 ) -> Option<self_update::update::Release> {
-    releases
+    let newer_releases = releases
         .iter()
+        .filter(|release| is_newer_cli_release(env!("CARGO_PKG_VERSION"), &release.version))
+        .filter(|release| cli_asset_for_release(release, target).is_some());
+
+    newer_releases
+        .clone()
         .find(|release| {
             self_update::version::bump_is_compatible(env!("CARGO_PKG_VERSION"), &release.version)
                 .unwrap_or(false)
-                && cli_asset_for_release(release, target).is_some()
         })
+        .or_else(|| newer_releases.into_iter().next())
         .cloned()
+}
+
+fn is_newer_cli_release(current_version: &str, candidate_version: &str) -> bool {
+    let Some(current) = parse_cli_semver(current_version) else {
+        return false;
+    };
+    let Some(candidate) = parse_cli_semver(candidate_version) else {
+        return false;
+    };
+    candidate > current
+}
+
+fn parse_cli_semver(version: &str) -> Option<(u64, u64, u64)> {
+    let version = version.trim_start_matches('v');
+    let version = version.split(['-', '+']).next()?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 fn cli_asset_for_release(
@@ -715,6 +743,42 @@ mod tests {
         assert_eq!(
             compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("newer release selected")
+                .version,
+            "0.1.47"
+        );
+    }
+
+    #[test]
+    fn compatible_release_selection_falls_back_to_newer_incompatible_releases() {
+        let releases = vec![release_with_cli_asset(
+            "0.2.0",
+            "fini-0.2.0-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+        )];
+
+        assert_eq!(
+            compatible_cli_release(&releases, "cli-linux-x86_64")
+                .expect("future incompatible release selected")
+                .version,
+            "0.2.0"
+        );
+    }
+
+    #[test]
+    fn compatible_release_selection_prefers_compatible_newer_release() {
+        let releases = vec![
+            release_with_cli_asset(
+                "0.2.0",
+                "fini-0.2.0-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ),
+            release_with_cli_asset(
+                "0.1.47",
+                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ),
+        ];
+
+        assert_eq!(
+            compatible_cli_release(&releases, "cli-linux-x86_64")
+                .expect("compatible newer release selected first")
                 .version,
             "0.1.47"
         );
