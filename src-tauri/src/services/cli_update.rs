@@ -46,13 +46,13 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
         let releases = self_update::backends::github::ReleaseList::configure()
             .repo_owner(owner)
             .repo_name(repository)
-            .with_target(&target)
             .build()
             .map_err(|err| format!("failed to configure standalone CLI release check: {err}"))?
             .fetch()
             .map_err(|err| format!("failed to check standalone CLI releases: {err}"))?;
         let release = releases
-            .first()
+            .iter()
+            .find(|release| cli_asset_for_release(release, &target).is_some())
             .ok_or_else(|| format!("no standalone CLI release asset found for {target}"))?;
         let target_version = release.version.trim_start_matches('v');
         return Ok(json!({
@@ -90,8 +90,7 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
         }));
     }
 
-    let asset = release
-        .asset_for(&target, Some(CLI_UPDATE_IDENTIFIER))
+    let asset = cli_asset_for_release(&release, &target)
         .ok_or_else(|| format!("no standalone CLI release asset found for {target}"))?;
     let payload = download_cli_asset(&asset.download_url)?;
     verify_cli_payload_signature(&payload, &asset.name, &target)?;
@@ -113,7 +112,6 @@ fn latest_cli_release(target: &str) -> Result<Option<self_update::update::Releas
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner(owner)
         .repo_name(repository)
-        .with_target(target)
         .build()
         .map_err(|err| format!("failed to configure standalone CLI release check: {err}"))?
         .fetch()
@@ -125,19 +123,56 @@ fn latest_cli_release(target: &str) -> Result<Option<self_update::update::Releas
         ));
     }
 
-    Ok(compatible_cli_release(&releases))
+    Ok(compatible_cli_release(&releases, target))
 }
 
 fn compatible_cli_release(
     releases: &[self_update::update::Release],
+    target: &str,
 ) -> Option<self_update::update::Release> {
     releases
         .iter()
         .find(|release| {
             self_update::version::bump_is_compatible(env!("CARGO_PKG_VERSION"), &release.version)
                 .unwrap_or(false)
+                && cli_asset_for_release(release, target).is_some()
         })
         .cloned()
+}
+
+fn cli_asset_for_release(
+    release: &self_update::update::Release,
+    target: &str,
+) -> Option<self_update::update::ReleaseAsset> {
+    let target_substrings = cli_asset_target_substrings(target);
+    let explicit_cli_label = target.starts_with("cli-linux-") || target.starts_with("cli-windows-");
+    release
+        .assets
+        .iter()
+        .find(|asset| {
+            asset.name.contains(CLI_UPDATE_IDENTIFIER)
+                && target_substrings
+                    .iter()
+                    .any(|candidate| asset.name.contains(candidate))
+        })
+        .cloned()
+        .or_else(|| {
+            if explicit_cli_label {
+                None
+            } else {
+                release.asset_for(target, Some(CLI_UPDATE_IDENTIFIER))
+            }
+        })
+}
+
+fn cli_asset_target_substrings(target: &str) -> Vec<String> {
+    match target {
+        "cli-linux-x86_64" => vec!["x86_64-unknown-linux-gnu".to_string(), target.to_string()],
+        "cli-linux-aarch64" => vec!["aarch64-unknown-linux-gnu".to_string(), target.to_string()],
+        "cli-windows-x86_64" => vec!["x86_64-pc-windows-msvc".to_string(), target.to_string()],
+        "cli-windows-aarch64" => vec!["aarch64-pc-windows-msvc".to_string(), target.to_string()],
+        _ => vec![target.to_string()],
+    }
 }
 
 fn download_cli_asset(download_url: &str) -> Result<Vec<u8>, String> {
@@ -662,21 +697,72 @@ mod tests {
 
     #[test]
     fn compatible_release_selection_skips_older_releases() {
-        let releases = vec![release_with_version("0.1.45")];
+        let releases = vec![release_with_cli_asset(
+            "0.1.45",
+            "fini-0.1.45-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+        )];
 
-        assert!(compatible_cli_release(&releases).is_none());
+        assert!(compatible_cli_release(&releases, "cli-linux-x86_64").is_none());
     }
 
     #[test]
     fn compatible_release_selection_keeps_newer_releases() {
-        let releases = vec![release_with_version("0.1.47")];
+        let releases = vec![release_with_cli_asset(
+            "0.1.47",
+            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+        )];
 
         assert_eq!(
-            compatible_cli_release(&releases)
+            compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("newer release selected")
                 .version,
             "0.1.47"
         );
+    }
+
+    #[test]
+    fn compatible_release_selection_accepts_cli_label_for_rust_target_asset() {
+        let release = release_with_cli_asset(
+            "0.1.47",
+            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+        );
+        let releases = vec![release.clone()];
+
+        let selected =
+            compatible_cli_release(&releases, "cli-linux-x86_64").expect("release selected");
+        let asset = cli_asset_for_release(&selected, "cli-linux-x86_64")
+            .expect("Rust-targeted CLI asset selected for CLI label");
+
+        assert_eq!(selected.version, "0.1.47");
+        assert_eq!(asset.name, release.assets[0].name);
+    }
+
+    #[test]
+    fn compatible_release_selection_skips_releases_without_matching_cli_asset() {
+        let releases = vec![
+            release_with_asset("0.1.47", "fini-0.1.47-x86_64.AppImage"),
+            release_with_cli_asset(
+                "0.1.48",
+                "fini-0.1.48-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ),
+        ];
+
+        assert_eq!(
+            compatible_cli_release(&releases, "cli-linux-x86_64")
+                .expect("CLI release selected")
+                .version,
+            "0.1.48"
+        );
+    }
+
+    #[test]
+    fn cli_label_asset_selection_does_not_fall_back_to_host_asset() {
+        let release = release_with_cli_asset(
+            "0.1.47",
+            "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+        );
+
+        assert!(cli_asset_for_release(&release, "cli-windows-x86_64").is_none());
     }
 
     #[test]
@@ -751,9 +837,17 @@ mod tests {
         binary
     }
 
-    fn release_with_version(version: &str) -> self_update::update::Release {
+    fn release_with_cli_asset(version: &str, asset_name: &str) -> self_update::update::Release {
+        release_with_asset(version, asset_name)
+    }
+
+    fn release_with_asset(version: &str, asset_name: &str) -> self_update::update::Release {
         self_update::update::Release {
             version: version.to_string(),
+            assets: vec![self_update::update::ReleaseAsset {
+                download_url: format!("https://example.test/{asset_name}"),
+                name: asset_name.to_string(),
+            }],
             ..Default::default()
         }
     }
