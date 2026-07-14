@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 
 const CLI_UPDATE_IDENTIFIER: &str = "cli";
 const CLI_UPDATE_VERIFYING_KEY: [u8; 32] = *include_bytes!("../../keys/fini-cli-zipsign.pub");
+const DEFAULT_CLI_UPDATE_REPOSITORY: &str = "VRuzhentsov/fini";
 
 #[derive(Debug, Clone)]
 pub struct UpdateOptions {
@@ -21,8 +22,8 @@ pub struct UpdateOptions {
 }
 
 fn cli_update_repository() -> Result<(&'static str, &'static str), String> {
-    let repository = option_env!("FINI_CLI_UPDATE_REPOSITORY")
-        .ok_or_else(|| "CLI update repository was not configured at build time".to_string())?;
+    let repository =
+        option_env!("FINI_CLI_UPDATE_REPOSITORY").unwrap_or(DEFAULT_CLI_UPDATE_REPOSITORY);
     repository
         .split_once('/')
         .ok_or_else(|| "CLI update repository must use the owner/repository form".to_string())
@@ -706,6 +707,20 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn cli_update_repository_has_build_default() {
+        let repository = option_env!("FINI_CLI_UPDATE_REPOSITORY")
+            .unwrap_or(DEFAULT_CLI_UPDATE_REPOSITORY)
+            .split_once('/')
+            .expect("repository owner/name");
+
+        assert_eq!(
+            cli_update_repository().expect("repository configured"),
+            repository
+        );
+    }
+
     #[test]
     fn extracts_only_top_level_fini_from_linux_archive() {
         let dir = tempfile::tempdir().expect("tempdir");
