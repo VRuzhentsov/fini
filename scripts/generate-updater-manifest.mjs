@@ -8,6 +8,14 @@ const ARCHES = new Map([
   ['arm64', 'aarch64'],
 ]);
 
+const CLI_ARCHES = new Map([
+  ...ARCHES,
+  ['x86_64-unknown-linux-gnu', 'x86_64'],
+  ['aarch64-unknown-linux-gnu', 'aarch64'],
+  ['x86_64-pc-windows-msvc', 'x86_64'],
+  ['aarch64-pc-windows-msvc', 'aarch64'],
+]);
+
 const LINUX_SUFFIXES = new Map([
   ['.AppImage', 'appimage'],
   ['.deb', 'deb'],
@@ -21,8 +29,14 @@ export async function generateUpdaterManifest({
   version,
   notes = '',
   output,
+  surface = 'desktop',
   pubDate = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
 }) {
+  if (!['desktop', 'cli'].includes(surface)) {
+    throw new Error(`unsupported updater manifest surface: ${surface}`);
+  }
+
+  const targetForSurface = surface === 'cli' ? cliPlatformTarget : platformTarget;
   const platforms = {};
   const entries = await readdir(assetsDir, { withFileTypes: true });
 
@@ -31,30 +45,33 @@ export async function generateUpdaterManifest({
       continue;
     }
 
-    const target = platformTarget(entry.name);
+    const target = targetForSurface(entry.name);
     if (!target) {
       continue;
     }
 
-    const sigPath = join(assetsDir, `${entry.name}.sig`);
-    let signature;
-    try {
-      signature = (await readFile(sigPath, 'utf8')).trim();
-    } catch (error) {
-      if (error?.code === 'ENOENT') {
-        throw new Error(`missing Tauri updater signature for ${entry.name}: expected ${basename(sigPath)}`);
-      }
-      throw error;
-    }
-
-    if (!signature) {
-      throw new Error(`empty Tauri updater signature for ${entry.name}: ${basename(sigPath)}`);
-    }
-
     const manifestEntry = {
-      signature,
       url: githubReleaseDownloadUrl(repo, tag, entry.name),
     };
+
+    if (surface === 'desktop') {
+      const sigPath = join(assetsDir, `${entry.name}.sig`);
+      let signature;
+      try {
+        signature = (await readFile(sigPath, 'utf8')).trim();
+      } catch (error) {
+        if (error?.code === 'ENOENT') {
+          throw new Error(`missing Tauri updater signature for ${entry.name}: expected ${basename(sigPath)}`);
+        }
+        throw error;
+      }
+
+      if (!signature) {
+        throw new Error(`empty Tauri updater signature for ${entry.name}: ${basename(sigPath)}`);
+      }
+
+      manifestEntry.signature = signature;
+    }
     platforms[target] = manifestEntry;
 
     const fallback = fallbackTarget(target);
@@ -64,7 +81,7 @@ export async function generateUpdaterManifest({
   }
 
   if (Object.keys(platforms).length === 0) {
-    throw new Error(`no supported signed desktop updater artifacts found in ${assetsDir}`);
+    throw new Error(`no supported ${surface} updater artifacts found in ${assetsDir}`);
   }
 
   const manifest = {
@@ -76,6 +93,20 @@ export async function generateUpdaterManifest({
 
   await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   return manifest;
+}
+
+export function cliPlatformTarget(filename) {
+  for (const [archLabel, arch] of CLI_ARCHES) {
+    if (filename.endsWith(`-linux-${archLabel}-cli.tar.gz`)) {
+      return `cli-linux-${arch}`;
+    }
+
+    if (filename.endsWith(`-windows-${archLabel}-cli.zip`)) {
+      return `cli-windows-${arch}`;
+    }
+  }
+
+  return null;
 }
 
 export function platformTarget(filename) {
@@ -131,6 +162,7 @@ function parseCliArgs(argv) {
     version: parsed.version,
     notes: parsed.notes ?? '',
     output: parsed.output,
+    surface: parsed.surface ?? 'desktop',
     pubDate: parsed['pub-date'],
   };
 }

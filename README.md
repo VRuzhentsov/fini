@@ -124,14 +124,22 @@ cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane
 npm run tauri build -- --features ui-plane
 ```
 
-CLI release artifacts are named by platform and architecture:
+CLI release artifacts include their Rust target so the updater cannot select an
+archive for the wrong ABI:
 
 | Platform | CLI artifact |
 |---|---|
-| Linux x64 | `fini-vX.Y.Z-linux-x64-cli.tar.gz` |
-| Linux arm64 | `fini-vX.Y.Z-linux-arm64-cli.tar.gz` |
-| Windows x64 | `fini-vX.Y.Z-windows-x64-cli.zip` |
-| Windows arm64 | `fini-vX.Y.Z-windows-arm64-cli.zip` |
+| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-gnu-cli.tar.gz` |
+| Linux arm64 | `fini-vX.Y.Z-linux-aarch64-unknown-linux-gnu-cli.tar.gz` |
+| Windows x64 | `fini-vX.Y.Z-windows-x86_64-pc-windows-msvc-cli.zip` |
+| Windows arm64 | `fini-vX.Y.Z-windows-aarch64-pc-windows-msvc-cli.zip` |
+
+`fini update` explicitly downloads, zipsign-verifies, validates, and installs the
+matching standalone archive. `fini update --dry-run` checks the matching release
+without replacing the binary. Normal CLI invocations check at most once per 24
+hours; `FINI_DISABLE_AUTO_UPDATE=1` disables only that automatic path. The CLI
+uses its embedded zipsign public key, which is separate from the Tauri desktop
+updater key and `latest.json` desktop manifest.
 
 ## Tech Stack
 

@@ -1,3 +1,4 @@
 fn main() {
-    tauri_build::build()
+    #[cfg(feature = "ui-plane")]
+    tauri_build::build();
 }

@@ -92,7 +92,13 @@ General notes:
   is enabled. Turning that setting off skips the next startup auto-update check;
   set `FINI_DISABLE_AUTO_UPDATE=1` to skip the startup check for diagnostics, or
   `FINI_DESKTOP_UPDATE_ENDPOINT` / `FINI_DESKTOP_UPDATE_PUBKEY` for staging channels.
-- **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
+- **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`.
+  `fini update` downloads a Rust-targeted CLI release, verifies its zipsign
+  signature using the embedded CLI public key, then validates and replaces the
+  executable. `fini update --dry-run` does not replace it. Normal CLI calls
+  check at most once per 24 hours; `FINI_DISABLE_AUTO_UPDATE=1` disables only
+  that automatic path. This zipsign trust root is separate from the desktop
+  Tauri updater key and manifest.
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle
   - `make android-debug-deploy` builds, signs, installs, and launches a local debug-keystore APK using git-derived `versionName` and `versionCode`

@@ -3,14 +3,20 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { generateUpdaterManifest, platformTarget } from './generate-updater-manifest.mjs';
+import {
+  cliPlatformTarget,
+  generateUpdaterManifest,
+  platformTarget,
+} from './generate-updater-manifest.mjs';
 
 async function withAssets(files, fn) {
   const dir = await mkdtemp(join(tmpdir(), 'fini-updater-manifest-'));
   try {
     for (const [name, signature] of Object.entries(files)) {
       await writeFile(join(dir, name), 'artifact', 'utf8');
-      await writeFile(join(dir, `${name}.sig`), signature, 'utf8');
+      if (signature !== null) {
+        await writeFile(join(dir, `${name}.sig`), signature, 'utf8');
+      }
     }
     return await fn(dir);
   } finally {
@@ -88,4 +94,47 @@ test('recognizes only GUI installer artifacts as updater platforms', () => {
   assert.equal(platformTarget('fini-v1.2.3-linux-x64.AppImage'), 'linux-x86_64-appimage');
   assert.equal(platformTarget('fini-v1.2.3-linux-x64-cli.tar.gz'), null);
   assert.equal(platformTarget('fini-v1.2.3-android.apk'), null);
+});
+
+test('recognizes standalone CLI archive targets separately from desktop installers', () => {
+  assert.equal(cliPlatformTarget('fini-v1.2.3-linux-x64-cli.tar.gz'), 'cli-linux-x86_64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-linux-arm64-cli.tar.gz'), 'cli-linux-aarch64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz'), 'cli-linux-x86_64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-linux-aarch64-unknown-linux-gnu-cli.tar.gz'), 'cli-linux-aarch64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-windows-x64-cli.zip'), 'cli-windows-x86_64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-windows-arm64-cli.zip'), 'cli-windows-aarch64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-windows-x86_64-pc-windows-msvc-cli.zip'), 'cli-windows-x86_64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip'), 'cli-windows-aarch64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-linux-x64.AppImage'), null);
+});
+
+test('generates a CLI-only updater manifest from zipsign-signed archives without sidecar signatures', async () => {
+  await withAssets(
+    {
+      'fini-v1.2.3-linux-x64.AppImage': 'desktop-signature',
+      'fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz': null,
+      'fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip': null,
+    },
+    async (assetsDir) => {
+      const output = join(assetsDir, 'latest-cli.json');
+      const manifest = await generateUpdaterManifest({
+        assetsDir,
+        repo: 'VRuzhentsov/fini',
+        tag: 'v1.2.3',
+        version: '1.2.3',
+        output,
+        pubDate: '2026-07-07T00:00:00Z',
+        surface: 'cli',
+      });
+
+      assert.deepEqual(manifest.platforms, {
+        'cli-linux-x86_64': {
+          url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz',
+        },
+        'cli-windows-aarch64': {
+          url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip',
+        },
+      });
+    },
+  );
 });
