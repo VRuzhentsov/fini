@@ -50,10 +50,17 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
             .map_err(|err| format!("failed to configure standalone CLI release check: {err}"))?
             .fetch()
             .map_err(|err| format!("failed to check standalone CLI releases: {err}"))?;
-        let release = releases
-            .iter()
-            .find(|release| cli_asset_for_release(release, &target).is_some())
-            .ok_or_else(|| format!("no standalone CLI release asset found for {target}"))?;
+        let Some(release) = compatible_cli_release(&releases, &target) else {
+            return Ok(json!({
+                "current_version": env!("CARGO_PKG_VERSION"),
+                "target_version": env!("CARGO_PKG_VERSION"),
+                "target": target,
+                "executable_path": executable_path,
+                "dry_run": true,
+                "already_current": true,
+                "updated": false,
+            }));
+        };
         let target_version = release.version.trim_start_matches('v');
         return Ok(json!({
             "current_version": env!("CARGO_PKG_VERSION"),
@@ -132,6 +139,7 @@ fn compatible_cli_release(
 ) -> Option<self_update::update::Release> {
     let newer_releases = releases
         .iter()
+        .filter(|release| is_stable_cli_release(&release.version))
         .filter(|release| is_newer_cli_release(env!("CARGO_PKG_VERSION"), &release.version))
         .filter(|release| cli_asset_for_release(release, target).is_some());
 
@@ -143,6 +151,15 @@ fn compatible_cli_release(
         })
         .or_else(|| newer_releases.into_iter().next())
         .cloned()
+}
+
+fn is_stable_cli_release(version: &str) -> bool {
+    !version
+        .trim_start_matches('v')
+        .split('+')
+        .next()
+        .unwrap_or(version)
+        .contains('-')
 }
 
 fn is_newer_cli_release(current_version: &str, candidate_version: &str) -> bool {
@@ -743,6 +760,43 @@ mod tests {
         assert_eq!(
             compatible_cli_release(&releases, "cli-linux-x86_64")
                 .expect("newer release selected")
+                .version,
+            "0.1.47"
+        );
+    }
+
+    #[test]
+    fn compatible_release_selection_skips_prereleases_for_stable_updates() {
+        let releases = vec![
+            release_with_cli_asset(
+                "0.1.47-rc.1",
+                "fini-0.1.47-rc.1-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ),
+            release_with_cli_asset(
+                "0.1.46",
+                "fini-0.1.46-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ),
+        ];
+
+        assert!(compatible_cli_release(&releases, "cli-linux-x86_64").is_none());
+    }
+
+    #[test]
+    fn compatible_release_selection_prefers_stable_release_over_newer_prerelease() {
+        let releases = vec![
+            release_with_cli_asset(
+                "0.1.48-rc.1",
+                "fini-0.1.48-rc.1-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ),
+            release_with_cli_asset(
+                "0.1.47",
+                "fini-0.1.47-linux-x86_64-unknown-linux-gnu-cli.tar.gz",
+            ),
+        ];
+
+        assert_eq!(
+            compatible_cli_release(&releases, "cli-linux-x86_64")
+                .expect("stable release selected")
                 .version,
             "0.1.47"
         );
