@@ -891,6 +891,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Download built artifacts
         uses: actions/download-artifact@v4
@@ -948,6 +953,15 @@ jobs:
               "$file"
           done
 
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          release_parent="${GITHUB_REF_NAME}^"
+          previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$release_parent")"
+          echo "RELEASE_NOTES_START_TAG=${previous_tag}" >> "$GITHUB_ENV"
+          cargo run --manifest-path xtask/Cargo.toml -- \
+            release-notes "$previous_tag" "$GITHUB_REF_NAME" release-notes.md
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -957,6 +971,8 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             --verify-tag \
+            --notes-file release-notes.md \
+            --notes-start-tag "${RELEASE_NOTES_START_TAG}" \
             --generate-notes
 
   publish-prerelease:
@@ -976,6 +992,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Download built artifacts
         uses: actions/download-artifact@v4
@@ -1033,6 +1054,14 @@ jobs:
               "$file"
           done
 
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          release_parent="${GITHUB_REF_NAME}^"
+          previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$release_parent")"
+          cargo run --manifest-path xtask/Cargo.toml -- \
+            release-notes "$previous_tag" "$GITHUB_REF_NAME" release-notes.md
+
       - name: Publish GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1043,4 +1072,5 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --verify-tag \
             --prerelease \
+            --notes-file release-notes.md \
             --generate-notes
