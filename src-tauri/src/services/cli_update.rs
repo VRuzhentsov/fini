@@ -20,9 +20,8 @@ pub struct UpdateOptions {
 }
 
 fn cli_update_repository() -> Result<(&'static str, &'static str), String> {
-    let repository = option_env!("FINI_CLI_UPDATE_REPOSITORY").ok_or_else(|| {
-        "CLI update repository was not configured at build time".to_string()
-    })?;
+    let repository = option_env!("FINI_CLI_UPDATE_REPOSITORY")
+        .ok_or_else(|| "CLI update repository was not configured at build time".to_string())?;
     repository
         .split_once('/')
         .ok_or_else(|| "CLI update repository must use the owner/repository form".to_string())
@@ -67,7 +66,17 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
         }));
     }
 
-    let release = latest_cli_release(&target)?;
+    let Some(release) = latest_cli_release(&target)? else {
+        return Ok(json!({
+            "current_version": env!("CARGO_PKG_VERSION"),
+            "target_version": env!("CARGO_PKG_VERSION"),
+            "target": target,
+            "executable_path": executable_path,
+            "dry_run": false,
+            "already_current": true,
+            "updated": false,
+        }));
+    };
     let target_version = release.version.trim_start_matches('v');
     if target_version == env!("CARGO_PKG_VERSION") {
         return Ok(json!({
@@ -99,7 +108,7 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
     }))
 }
 
-fn latest_cli_release(target: &str) -> Result<self_update::update::Release, String> {
+fn latest_cli_release(target: &str) -> Result<Option<self_update::update::Release>, String> {
     let (owner, repository) = cli_update_repository()?;
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner(owner)
@@ -110,21 +119,25 @@ fn latest_cli_release(target: &str) -> Result<self_update::update::Release, Stri
         .fetch()
         .map_err(|err| format!("failed to check standalone CLI releases: {err}"))?;
 
-    if let Some(release) = releases
+    if releases.is_empty() {
+        return Err(format!(
+            "no standalone CLI release asset found for {target}"
+        ));
+    }
+
+    Ok(compatible_cli_release(&releases))
+}
+
+fn compatible_cli_release(
+    releases: &[self_update::update::Release],
+) -> Option<self_update::update::Release> {
+    releases
         .iter()
         .find(|release| {
             self_update::version::bump_is_compatible(env!("CARGO_PKG_VERSION"), &release.version)
                 .unwrap_or(false)
         })
         .cloned()
-    {
-        return Ok(release);
-    }
-
-    releases
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("no standalone CLI release asset found for {target}"))
 }
 
 fn download_cli_asset(download_url: &str) -> Result<Vec<u8>, String> {
@@ -648,6 +661,25 @@ mod tests {
     }
 
     #[test]
+    fn compatible_release_selection_skips_older_releases() {
+        let releases = vec![release_with_version("0.1.45")];
+
+        assert!(compatible_cli_release(&releases).is_none());
+    }
+
+    #[test]
+    fn compatible_release_selection_keeps_newer_releases() {
+        let releases = vec![release_with_version("0.1.47")];
+
+        assert_eq!(
+            compatible_cli_release(&releases)
+                .expect("newer release selected")
+                .version,
+            "0.1.47"
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn invalid_artifact_keeps_previous_executable() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -717,6 +749,13 @@ mod tests {
             .expect("run rustc");
         assert!(status.success(), "fixture rustc failed");
         binary
+    }
+
+    fn release_with_version(version: &str) -> self_update::update::Release {
+        self_update::update::Release {
+            version: version.to_string(),
+            ..Default::default()
+        }
     }
 
     fn make_tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
