@@ -20,11 +20,12 @@ pub struct UpdateOptions {
 }
 
 fn cli_update_repository() -> Result<(&'static str, &'static str), String> {
-    let owner = option_env!("FINI_CLI_UPDATE_OWNER")
-        .ok_or_else(|| "CLI update repository owner was not configured at build time".to_string())?;
-    let repository = option_env!("FINI_CLI_UPDATE_REPOSITORY")
-        .ok_or_else(|| "CLI update repository name was not configured at build time".to_string())?;
-    Ok((owner, repository))
+    let repository = option_env!("FINI_CLI_UPDATE_REPOSITORY").ok_or_else(|| {
+        "CLI update repository was not configured at build time".to_string()
+    })?;
+    repository
+        .split_once('/')
+        .ok_or_else(|| "CLI update repository must use the owner/repository form".to_string())
 }
 
 pub fn run_update(options: UpdateOptions) -> Result<Value, String> {

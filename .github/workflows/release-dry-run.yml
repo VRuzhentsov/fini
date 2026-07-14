@@ -248,8 +248,7 @@ jobs:
       - name: Build Linux CLI
         env:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
-          FINI_CLI_UPDATE_OWNER: ${{ github.repository_owner }}
-          FINI_CLI_UPDATE_REPOSITORY: ${{ github.event.repository.name }}
+          FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Linux release files
@@ -379,8 +378,7 @@ jobs:
       - name: Build Windows CLI
         env:
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
-          FINI_CLI_UPDATE_OWNER: ${{ github.repository_owner }}
-          FINI_CLI_UPDATE_REPOSITORY: ${{ github.event.repository.name }}
+          FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Windows release files
