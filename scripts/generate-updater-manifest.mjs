@@ -8,6 +8,14 @@ const ARCHES = new Map([
   ['arm64', 'aarch64'],
 ]);
 
+const CLI_ARCHES = new Map([
+  ...ARCHES,
+  ['x86_64-unknown-linux-gnu', 'x86_64'],
+  ['aarch64-unknown-linux-gnu', 'aarch64'],
+  ['x86_64-pc-windows-msvc', 'x86_64'],
+  ['aarch64-pc-windows-msvc', 'aarch64'],
+]);
+
 const LINUX_SUFFIXES = new Map([
   ['.AppImage', 'appimage'],
   ['.deb', 'deb'],
@@ -85,7 +93,7 @@ export async function generateUpdaterManifest({
 }
 
 export function cliPlatformTarget(filename) {
-  for (const [archLabel, arch] of ARCHES) {
+  for (const [archLabel, arch] of CLI_ARCHES) {
     if (filename.endsWith(`-linux-${archLabel}-cli.tar.gz`)) {
       return `cli-linux-${arch}`;
     }

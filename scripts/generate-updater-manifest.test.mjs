@@ -97,8 +97,12 @@ test('recognizes only GUI installer artifacts as updater platforms', () => {
 test('recognizes standalone CLI archive targets separately from desktop installers', () => {
   assert.equal(cliPlatformTarget('fini-v1.2.3-linux-x64-cli.tar.gz'), 'cli-linux-x86_64');
   assert.equal(cliPlatformTarget('fini-v1.2.3-linux-arm64-cli.tar.gz'), 'cli-linux-aarch64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz'), 'cli-linux-x86_64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-linux-aarch64-unknown-linux-gnu-cli.tar.gz'), 'cli-linux-aarch64');
   assert.equal(cliPlatformTarget('fini-v1.2.3-windows-x64-cli.zip'), 'cli-windows-x86_64');
   assert.equal(cliPlatformTarget('fini-v1.2.3-windows-arm64-cli.zip'), 'cli-windows-aarch64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-windows-x86_64-pc-windows-msvc-cli.zip'), 'cli-windows-x86_64');
+  assert.equal(cliPlatformTarget('fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip'), 'cli-windows-aarch64');
   assert.equal(cliPlatformTarget('fini-v1.2.3-linux-x64.AppImage'), null);
 });
 
@@ -106,8 +110,8 @@ test('generates a CLI-only updater manifest from signed CLI archives', async () 
   await withAssets(
     {
       'fini-v1.2.3-linux-x64.AppImage': 'desktop-signature',
-      'fini-v1.2.3-linux-x64-cli.tar.gz': 'cli-linux-signature',
-      'fini-v1.2.3-windows-arm64-cli.zip': 'cli-windows-signature',
+      'fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz': 'cli-linux-signature',
+      'fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip': 'cli-windows-signature',
     },
     async (assetsDir) => {
       const output = join(assetsDir, 'latest-cli.json');
@@ -124,11 +128,11 @@ test('generates a CLI-only updater manifest from signed CLI archives', async () 
       assert.deepEqual(manifest.platforms, {
         'cli-linux-x86_64': {
           signature: 'cli-linux-signature',
-          url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-linux-x64-cli.tar.gz',
+          url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-linux-x86_64-unknown-linux-gnu-cli.tar.gz',
         },
         'cli-windows-aarch64': {
           signature: 'cli-windows-signature',
-          url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-windows-arm64-cli.zip',
+          url: 'https://github.com/VRuzhentsov/fini/releases/download/v1.2.3/fini-v1.2.3-windows-aarch64-pc-windows-msvc-cli.zip',
         },
       });
     },
