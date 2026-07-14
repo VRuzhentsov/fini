@@ -7,8 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-const CLI_UPDATE_OWNER: &str = "VRuzhentsov";
-const CLI_UPDATE_REPOSITORY: &str = "fini";
 const CLI_UPDATE_IDENTIFIER: &str = "cli";
 const CLI_UPDATE_VERIFYING_KEY: [u8; 32] = *include_bytes!("../../keys/fini-cli-zipsign.pub");
 
@@ -19,6 +17,14 @@ pub struct UpdateOptions {
     pub pubkey: Option<String>,
     pub target: Option<String>,
     pub executable_path: Option<PathBuf>,
+}
+
+fn cli_update_repository() -> Result<(&'static str, &'static str), String> {
+    let owner = option_env!("FINI_CLI_UPDATE_OWNER")
+        .ok_or_else(|| "CLI update repository owner was not configured at build time".to_string())?;
+    let repository = option_env!("FINI_CLI_UPDATE_REPOSITORY")
+        .ok_or_else(|| "CLI update repository name was not configured at build time".to_string())?;
+    Ok((owner, repository))
 }
 
 pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
@@ -36,9 +42,10 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
         .map_err(|err| format!("failed to resolve current CLI executable: {err}"))?;
 
     if options.dry_run {
+        let (owner, repository) = cli_update_repository()?;
         let releases = self_update::backends::github::ReleaseList::configure()
-            .repo_owner(CLI_UPDATE_OWNER)
-            .repo_name(CLI_UPDATE_REPOSITORY)
+            .repo_owner(owner)
+            .repo_name(repository)
             .with_target(&target)
             .build()
             .map_err(|err| format!("failed to configure standalone CLI release check: {err}"))?
@@ -92,9 +99,10 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
 }
 
 fn latest_cli_release(target: &str) -> Result<self_update::update::Release, String> {
+    let (owner, repository) = cli_update_repository()?;
     let releases = self_update::backends::github::ReleaseList::configure()
-        .repo_owner(CLI_UPDATE_OWNER)
-        .repo_name(CLI_UPDATE_REPOSITORY)
+        .repo_owner(owner)
+        .repo_name(repository)
         .with_target(target)
         .build()
         .map_err(|err| format!("failed to configure standalone CLI release check: {err}"))?
