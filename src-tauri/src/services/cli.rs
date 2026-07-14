@@ -538,7 +538,9 @@ fn execute(cli: Cli) -> CliResult<i32> {
         return Ok(EXIT_SUCCESS);
     }
 
-    maybe_auto_update();
+    if should_run_auto_update() {
+        maybe_auto_update();
+    }
 
     let ctx = CliContext::new()?;
     let value = match cli.command {
@@ -555,6 +557,10 @@ fn execute(cli: Cli) -> CliResult<i32> {
     };
     print_output(&value, cli.json).map_err(CliError::runtime)?;
     Ok(EXIT_SUCCESS)
+}
+
+fn should_run_auto_update() -> bool {
+    !cfg!(debug_assertions) && std::env::var_os("FINI_DISABLE_AUTO_UPDATE").is_none()
 }
 
 fn emit_quest_sync(
@@ -1239,6 +1245,24 @@ mod tests {
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn cli_auto_update_is_disabled_for_debug_test_builds() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        std::env::remove_var("FINI_DISABLE_AUTO_UPDATE");
+
+        assert!(!should_run_auto_update());
+    }
+
+    #[test]
+    fn cli_auto_update_respects_disable_env() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        std::env::set_var("FINI_DISABLE_AUTO_UPDATE", "1");
+
+        assert!(!should_run_auto_update());
+
+        std::env::remove_var("FINI_DISABLE_AUTO_UPDATE");
+    }
 
     #[test]
     fn cli_execute_rejects_unknown_schema_migration_before_device_state_creation() {
