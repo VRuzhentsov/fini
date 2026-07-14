@@ -140,12 +140,12 @@ fn verify_cli_payload_signature(
     let context = Some(asset_name.as_bytes());
     let mut reader = Cursor::new(payload);
 
-    if target.starts_with("cli-linux-") {
+    if is_cli_linux_target(target) {
         zipsign_api::verify::verify_tar(&mut reader, &keys, context)
             .map_err(|err| format!("failed to verify CLI update signature: {err}"))?;
         return Ok(());
     }
-    if target.starts_with("cli-windows-") {
+    if is_cli_windows_target(target) {
         zipsign_api::verify::verify_zip(&mut reader, &keys, context)
             .map_err(|err| format!("failed to verify CLI update signature: {err}"))?;
         return Ok(());
@@ -231,8 +231,7 @@ fn install_verified_cli_payload(
     set_executable_mode(&candidate_path, mode)?;
     validate_candidate_version(&candidate_path, expected_version)?;
 
-    if target.starts_with("cli-windows-") && should_defer_windows_self_replacement(executable_path)
-    {
+    if is_cli_windows_target(target) && should_defer_windows_self_replacement(executable_path) {
         let pending_path = windows_pending_replacement_path(executable_path);
         fs::copy(&candidate_path, &pending_path)
             .map_err(|err| format!("failed to stage Windows replacement helper payload: {err}"))?;
@@ -280,10 +279,10 @@ fn install_verified_cli_payload(
 }
 
 fn extract_cli_from_archive(payload: &[u8], target: &str) -> Result<Vec<u8>, String> {
-    if target.starts_with("cli-linux-") {
+    if is_cli_linux_target(target) {
         return extract_fini_from_tar_gz(payload);
     }
-    if target.starts_with("cli-windows-") {
+    if is_cli_windows_target(target) {
         return extract_fini_from_zip(payload);
     }
     Err(format!("unsupported CLI update target: {target}"))
@@ -343,9 +342,9 @@ fn validate_candidate_architecture(bytes: &[u8], target: &str) -> Result<(), Str
 }
 
 fn expected_architecture(target: &str) -> Result<&'static str, String> {
-    if target.ends_with("-x86_64") {
+    if target_architecture(target) == Some("x86_64") {
         Ok("x86_64")
-    } else if target.ends_with("-aarch64") {
+    } else if target_architecture(target) == Some("aarch64") {
         Ok("aarch64")
     } else {
         Err(format!(
@@ -405,10 +404,28 @@ fn validate_candidate_version(path: &Path, expected_version: &str) -> Result<(),
 }
 
 fn candidate_filename(target: &str) -> &'static str {
-    if target.starts_with("cli-windows-") {
+    if is_cli_windows_target(target) {
         "fini.exe"
     } else {
         "fini"
+    }
+}
+
+fn is_cli_linux_target(target: &str) -> bool {
+    target.starts_with("cli-linux-") || target.ends_with("-unknown-linux-gnu")
+}
+
+fn is_cli_windows_target(target: &str) -> bool {
+    target.starts_with("cli-windows-") || target.ends_with("-pc-windows-msvc")
+}
+
+fn target_architecture(target: &str) -> Option<&'static str> {
+    if target.ends_with("-x86_64") || target.starts_with("x86_64-") {
+        Some("x86_64")
+    } else if target.ends_with("-aarch64") || target.starts_with("aarch64-") {
+        Some("aarch64")
+    } else {
+        None
     }
 }
 
@@ -521,6 +538,39 @@ mod tests {
             .expect_err("wrong arch should fail");
 
         assert!(err.contains("architecture mismatch"));
+    }
+
+    #[test]
+    fn accepts_self_update_rust_targets_for_cli_installation() {
+        let linux_payload = make_tar_gz(&[("fini", b"linux")]);
+        let linux_bytes = extract_cli_from_archive(&linux_payload, "x86_64-unknown-linux-gnu")
+            .expect("Rust Linux target extracts tar.gz CLI payload");
+        assert_eq!(linux_bytes, b"linux");
+        assert_eq!(
+            expected_architecture("x86_64-unknown-linux-gnu").expect("linux architecture"),
+            "x86_64"
+        );
+
+        let windows_payload = make_zip(&[("fini.exe", b"windows")]);
+        let windows_bytes = extract_cli_from_archive(&windows_payload, "x86_64-pc-windows-msvc")
+            .expect("Rust Windows target extracts zip CLI payload");
+        assert_eq!(windows_bytes, b"windows");
+        assert_eq!(
+            expected_architecture("x86_64-pc-windows-msvc").expect("windows architecture"),
+            "x86_64"
+        );
+        assert_eq!(candidate_filename("x86_64-pc-windows-msvc"), "fini.exe");
+    }
+
+    #[test]
+    fn keeps_cli_target_labels_supported_for_cli_installation() {
+        assert!(is_cli_linux_target("cli-linux-x86_64"));
+        assert!(is_cli_windows_target("cli-windows-aarch64"));
+        assert_eq!(
+            expected_architecture("cli-windows-aarch64").expect("cli architecture"),
+            "aarch64"
+        );
+        assert_eq!(candidate_filename("cli-windows-aarch64"), "fini.exe");
     }
 
     #[test]
@@ -681,5 +731,16 @@ mod tests {
     fn make_tar_gz_from_file(path: &str, source: &Path) -> Vec<u8> {
         let bytes = fs::read(source).expect("read source binary");
         make_tar_gz(&[(path, bytes.as_slice())])
+    }
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut archive = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+        for (path, bytes) in entries {
+            archive.start_file(*path, options).expect("start zip file");
+            std::io::Write::write_all(&mut archive, bytes).expect("write zip file");
+        }
+        archive.finish().expect("finish zip").into_inner()
     }
 }
