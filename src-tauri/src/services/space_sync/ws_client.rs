@@ -32,21 +32,8 @@ pub fn ensure_peer_sessions(
         let state = state.clone();
         let db_path = db_path.clone();
         let peer_id_clone = peer_id.clone();
-        std::thread::spawn(move || {
-            let runtime = match tokio::runtime::Runtime::new() {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    eprintln!("[space-sync] create websocket runtime failed: {error}");
-                    return;
-                }
-            };
-            runtime.block_on(dial_with_backoff(
-                state,
-                db_path,
-                peer_id_clone,
-                addr,
-                ws_port,
-            ));
+        tauri::async_runtime::spawn(async move {
+            dial_with_backoff(state, db_path, peer_id_clone, addr, ws_port).await;
         });
     }
 }

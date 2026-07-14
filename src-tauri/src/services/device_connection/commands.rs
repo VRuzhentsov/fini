@@ -32,21 +32,19 @@ fn ws_url(addr: IpAddr, port: u16) -> String {
 }
 
 fn send_pair_ws(addr: IpAddr, port: u16, msg: WsMessage) -> Result<(), String> {
-    tokio::runtime::Runtime::new()
-        .map_err(|err| format!("create pair websocket runtime failed: {err}"))?
-        .block_on(async move {
-            let url = ws_url(addr, port);
-            let (mut ws, _) = connect_async(&url)
-                .await
-                .map_err(|err| format!("connect pair websocket {url} failed: {err}"))?;
-            let text = serde_json::to_string(&msg)
-                .map_err(|err| format!("serialize pair websocket message failed: {err}"))?;
-            ws.send(Message::Text(text.into()))
-                .await
-                .map_err(|err| format!("send pair websocket message failed: {err}"))?;
-            let _ = ws.close(None).await;
-            Ok(())
-        })
+    tauri::async_runtime::block_on(async move {
+        let url = ws_url(addr, port);
+        let (mut ws, _) = connect_async(&url)
+            .await
+            .map_err(|err| format!("connect pair websocket {url} failed: {err}"))?;
+        let text = serde_json::to_string(&msg)
+            .map_err(|err| format!("serialize pair websocket message failed: {err}"))?;
+        ws.send(Message::Text(text.into()))
+            .await
+            .map_err(|err| format!("send pair websocket message failed: {err}"))?;
+        let _ = ws.close(None).await;
+        Ok(())
+    })
 }
 
 pub fn device_connection_get_identity_impl(
