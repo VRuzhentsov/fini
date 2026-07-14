@@ -163,7 +163,14 @@ pub fn maybe_auto_update() {
         return;
     };
     let stamp = state_dir.join("fini").join("cli-update-last-check");
-    let due = fs::metadata(&stamp)
+    maybe_auto_update_with_stamp(&stamp, run_update);
+}
+
+fn maybe_auto_update_with_stamp(
+    stamp: &Path,
+    run_update: impl FnOnce(UpdateOptions) -> Result<Value, String>,
+) {
+    let due = fs::metadata(stamp)
         .and_then(|metadata| metadata.modified())
         .and_then(|modified| {
             SystemTime::now()
@@ -176,20 +183,17 @@ pub fn maybe_auto_update() {
         return;
     }
 
-    if run_update(UpdateOptions {
+    let _ = run_update(UpdateOptions {
         dry_run: false,
         endpoint: None,
         pubkey: None,
         target: None,
         executable_path: None,
-    })
-    .is_ok()
-    {
-        if let Some(parent) = stamp.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(stamp, b"checked\n");
+    });
+    if let Some(parent) = stamp.parent() {
+        let _ = fs::create_dir_all(parent);
     }
+    let _ = fs::write(stamp, b"checked\n");
 }
 
 fn install_verified_cli_payload(
@@ -560,6 +564,28 @@ mod tests {
         assert!(script.contains("fini.exe"));
         assert!(script.contains(" || ping 127.0.0.1 -n 2 >NUL)"));
         assert!(!script.contains(") & ping 127.0.0.1"));
+    }
+
+    #[test]
+    fn automatic_update_stamps_failed_attempts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stamp = dir.path().join("state").join("cli-update-last-check");
+
+        maybe_auto_update_with_stamp(&stamp, |_| Err("offline".to_string()));
+
+        assert_eq!(
+            fs::read_to_string(&stamp).expect("stamp written"),
+            "checked\n"
+        );
+    }
+
+    #[test]
+    fn automatic_update_skips_recent_stamp() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stamp = dir.path().join("cli-update-last-check");
+        fs::write(&stamp, b"checked\n").expect("write stamp");
+
+        maybe_auto_update_with_stamp(&stamp, |_| panic!("recent stamp should skip update check"));
     }
 
     #[test]
