@@ -1,5 +1,6 @@
 use flate2::read::GzDecoder;
 use serde_json::{json, Value};
+use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -172,9 +173,69 @@ fn is_newer_cli_release(current_version: &str, candidate_version: &str) -> bool 
     candidate > current
 }
 
-fn parse_cli_semver(version: &str) -> Option<(u64, u64, u64)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CliSemver {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    prerelease: Vec<PrereleaseIdentifier>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrereleaseIdentifier {
+    Numeric(u64),
+    Text(String),
+}
+
+impl Ord for CliSemver {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| compare_prerelease(&self.prerelease, &other.prerelease))
+    }
+}
+
+impl PartialOrd for CliSemver {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn compare_prerelease(left: &[PrereleaseIdentifier], right: &[PrereleaseIdentifier]) -> Ordering {
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => {
+            for (left_part, right_part) in left.iter().zip(right.iter()) {
+                let ordering = compare_prerelease_identifier(left_part, right_part);
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            left.len().cmp(&right.len())
+        }
+    }
+}
+
+fn compare_prerelease_identifier(
+    left: &PrereleaseIdentifier,
+    right: &PrereleaseIdentifier,
+) -> Ordering {
+    match (left, right) {
+        (PrereleaseIdentifier::Numeric(left), PrereleaseIdentifier::Numeric(right)) => {
+            left.cmp(right)
+        }
+        (PrereleaseIdentifier::Numeric(_), PrereleaseIdentifier::Text(_)) => Ordering::Less,
+        (PrereleaseIdentifier::Text(_), PrereleaseIdentifier::Numeric(_)) => Ordering::Greater,
+        (PrereleaseIdentifier::Text(left), PrereleaseIdentifier::Text(right)) => left.cmp(right),
+    }
+}
+
+fn parse_cli_semver(version: &str) -> Option<CliSemver> {
     let version = version.trim_start_matches('v');
-    let version = version.split(['-', '+']).next()?;
+    let version = version.split('+').next()?;
+    let (version, prerelease) = version.split_once('-').unwrap_or((version, ""));
     let mut parts = version.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -182,7 +243,33 @@ fn parse_cli_semver(version: &str) -> Option<(u64, u64, u64)> {
     if parts.next().is_some() {
         return None;
     }
-    Some((major, minor, patch))
+    let prerelease = if prerelease.is_empty() {
+        Vec::new()
+    } else {
+        prerelease
+            .split('.')
+            .map(parse_prerelease_identifier)
+            .collect::<Option<Vec<_>>>()?
+    };
+    Some(CliSemver {
+        major,
+        minor,
+        patch,
+        prerelease,
+    })
+}
+
+fn parse_prerelease_identifier(identifier: &str) -> Option<PrereleaseIdentifier> {
+    if identifier.is_empty() {
+        return None;
+    }
+    if identifier
+        .chars()
+        .all(|character| character.is_ascii_digit())
+    {
+        return identifier.parse().ok().map(PrereleaseIdentifier::Numeric);
+    }
+    Some(PrereleaseIdentifier::Text(identifier.to_string()))
 }
 
 fn cli_asset_for_release(
@@ -763,6 +850,19 @@ mod tests {
                 .version,
             "0.1.47"
         );
+    }
+
+    #[test]
+    fn version_comparison_orders_stable_after_matching_prerelease() {
+        assert!(is_newer_cli_release("0.1.47-rc.1", "0.1.47"));
+        assert!(!is_newer_cli_release("0.1.47", "0.1.47-rc.1"));
+    }
+
+    #[test]
+    fn version_comparison_orders_prerelease_identifiers() {
+        assert!(is_newer_cli_release("0.1.47-rc.1", "0.1.47-rc.2"));
+        assert!(is_newer_cli_release("0.1.47-1", "0.1.47-rc.1"));
+        assert!(!is_newer_cli_release("0.1.47-rc.2", "0.1.47-rc.1"));
     }
 
     #[test]
