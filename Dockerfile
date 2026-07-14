@@ -53,11 +53,11 @@ COPY src-tauri/tauri.conf.json ./src-tauri/tauri.conf.json
 
 FROM rust-builder-base AS be-test-compile
 
-RUN cargo test --manifest-path src-tauri/Cargo.toml --no-run --features ui-plane,desktop-updater
+RUN cargo test --manifest-path src-tauri/Cargo.toml --no-run --features cli-plane,ui-plane,desktop-updater
 
 FROM be-test-compile AS be-unit-test
 
-RUN cargo test --manifest-path src-tauri/Cargo.toml --features ui-plane,desktop-updater
+RUN cargo test --manifest-path src-tauri/Cargo.toml --features cli-plane,ui-plane,desktop-updater
 
 FROM rust-builder-base AS app-build-cli-prod
 
