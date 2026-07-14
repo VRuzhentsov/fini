@@ -56,7 +56,7 @@ RUN cargo test --manifest-path src-tauri/Cargo.toml --no-run --features ui-plane
 
 FROM be-test-compile AS be-unit-test
 
-RUN cargo test --manifest-path src-tauri/Cargo.toml
+RUN cargo test --manifest-path src-tauri/Cargo.toml --features ui-plane,desktop-updater
 
 FROM rust-builder-base AS app-build-cli-prod
 
