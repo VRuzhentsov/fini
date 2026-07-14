@@ -1572,6 +1572,7 @@ dependencies = [
  "uuid",
  "zbus",
  "zip 2.4.2",
+ "zipsign-api",
  "zvariant",
 ]
 

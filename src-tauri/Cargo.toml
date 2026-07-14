@@ -52,6 +52,7 @@ dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"], optional = true }
 self_update = { version = "0.44.0", default-features = false, features = ["reqwest", "rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "signatures"], optional = true }
+zipsign-api = { version = "0.1", default-features = false, features = ["verify-tar", "verify-zip"], optional = true }
 tauri-plugin-updater = { version = "2.10.1", optional = true }
 tauri-plugin-notification = { version = "2.3.3", optional = true }
 tauri-plugin-autostart = { version = "2.5.1", optional = true }
@@ -77,7 +78,7 @@ notify-rust = { version = "4", optional = true }
 default = []
 ui-plane = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-notification", "dep:tauri-plugin-autostart", "dep:tauri-plugin-dialog", "dep:tauri-plugin-fs", "dep:gtk", "dep:notify-rust"]
 desktop-updater = ["ui-plane", "dep:tauri-plugin-updater", "dep:url"]
-cli-plane = ["dep:clap", "dep:self_update", "dep:url"]
+cli-plane = ["dep:clap", "dep:self_update", "dep:url", "dep:zipsign-api"]
 # Enable developer/test control-plane hooks. Off by default; production builds
 # must not ship this because it exposes an in-process Playwright socket bridge.
 devtools = ["dep:tauri-plugin-playwright"]

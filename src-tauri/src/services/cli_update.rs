@@ -59,31 +59,99 @@ pub fn run_update(options: UpdateOptions) -> Result<Value, String> {
         }));
     }
 
-    let status = self_update::backends::github::Update::configure()
-        .repo_owner(CLI_UPDATE_OWNER)
-        .repo_name(CLI_UPDATE_REPOSITORY)
-        .target(&target)
-        .identifier(CLI_UPDATE_IDENTIFIER)
-        .bin_name("fini")
-        .bin_install_path(&executable_path)
-        .current_version(env!("CARGO_PKG_VERSION"))
-        .verifying_keys([CLI_UPDATE_VERIFYING_KEY])
-        .no_confirm(true)
-        .show_output(false)
-        .build()
-        .map_err(|err| format!("failed to configure standalone CLI updater: {err}"))?
-        .update()
-        .map_err(|err| format!("failed to download, verify, or install CLI update: {err}"))?;
+    let release = latest_cli_release(&target)?;
+    let target_version = release.version.trim_start_matches('v');
+    if target_version == env!("CARGO_PKG_VERSION") {
+        return Ok(json!({
+            "current_version": env!("CARGO_PKG_VERSION"),
+            "target_version": target_version,
+            "target": target,
+            "executable_path": executable_path,
+            "dry_run": false,
+            "already_current": true,
+            "updated": false,
+        }));
+    }
+
+    let asset = release
+        .asset_for(&target, Some(CLI_UPDATE_IDENTIFIER))
+        .ok_or_else(|| format!("no standalone CLI release asset found for {target}"))?;
+    let payload = download_cli_asset(&asset.download_url)?;
+    verify_cli_payload_signature(&payload, &asset.name, &target)?;
+    install_verified_cli_payload(&payload, &target, target_version, &executable_path)?;
 
     Ok(json!({
         "current_version": env!("CARGO_PKG_VERSION"),
-        "target_version": status.version(),
+        "target_version": target_version,
         "target": target,
         "executable_path": executable_path,
         "dry_run": false,
-        "already_current": status.version() == env!("CARGO_PKG_VERSION"),
-        "updated": status.version() != env!("CARGO_PKG_VERSION"),
+        "already_current": false,
+        "updated": true,
     }))
+}
+
+fn latest_cli_release(target: &str) -> Result<self_update::update::Release, String> {
+    let releases = self_update::backends::github::ReleaseList::configure()
+        .repo_owner(CLI_UPDATE_OWNER)
+        .repo_name(CLI_UPDATE_REPOSITORY)
+        .with_target(target)
+        .build()
+        .map_err(|err| format!("failed to configure standalone CLI release check: {err}"))?
+        .fetch()
+        .map_err(|err| format!("failed to check standalone CLI releases: {err}"))?;
+
+    if let Some(release) = releases
+        .iter()
+        .find(|release| {
+            self_update::version::bump_is_compatible(env!("CARGO_PKG_VERSION"), &release.version)
+                .unwrap_or(false)
+        })
+        .cloned()
+    {
+        return Ok(release);
+    }
+
+    releases
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("no standalone CLI release asset found for {target}"))
+}
+
+fn download_cli_asset(download_url: &str) -> Result<Vec<u8>, String> {
+    let mut payload = Vec::new();
+    self_update::Download::from_url(download_url)
+        .set_header(
+            reqwest::header::ACCEPT,
+            "application/octet-stream".parse().unwrap(),
+        )
+        .download_to(&mut payload)
+        .map_err(|err| format!("failed to download CLI update: {err}"))?;
+    Ok(payload)
+}
+
+fn verify_cli_payload_signature(
+    payload: &[u8],
+    asset_name: &str,
+    target: &str,
+) -> Result<(), String> {
+    let keys = zipsign_api::verify::collect_keys([Ok(CLI_UPDATE_VERIFYING_KEY)])
+        .map_err(|err| format!("failed to load CLI update signing key: {err}"))?;
+    let context = Some(asset_name.as_bytes());
+    let mut reader = Cursor::new(payload);
+
+    if target.starts_with("cli-linux-") {
+        zipsign_api::verify::verify_tar(&mut reader, &keys, context)
+            .map_err(|err| format!("failed to verify CLI update signature: {err}"))?;
+        return Ok(());
+    }
+    if target.starts_with("cli-windows-") {
+        zipsign_api::verify::verify_zip(&mut reader, &keys, context)
+            .map_err(|err| format!("failed to verify CLI update signature: {err}"))?;
+        return Ok(());
+    }
+
+    Err(format!("unsupported CLI update target: {target}"))
 }
 
 pub fn maybe_auto_update() {
