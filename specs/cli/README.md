@@ -28,38 +28,41 @@ GUI and CLI distribution are separate release surfaces.
 |---|---|
 | Linux GUI | `.deb`, `.rpm`, `.AppImage` |
 | Windows GUI | NSIS setup `.exe` |
-| Linux CLI | `fini-vX.Y.Z-linux-ARCH-cli.tar.gz` containing `fini` |
-| Windows CLI | `fini-vX.Y.Z-windows-ARCH-cli.zip` containing `fini.exe` |
+| Linux CLI | `fini-vX.Y.Z-linux-RUST_TARGET-cli.tar.gz` containing `fini` |
+| Windows CLI | `fini-vX.Y.Z-windows-RUST_TARGET-cli.zip` containing `fini.exe` |
 | Docker runtime | Image entrypoint `/usr/local/bin/fini` |
 
 Desktop installers must not be required to expose the CLI on `PATH`. Users who want CLI-only automation should install the standalone CLI artifact or use the Docker runtime image.
 
 ## CLI Updates
 
-`fini update` is the manual update entrypoint for the CLI plane. It must use
-Tauri's updater package for update discovery, signature verification, download,
-and installation rather than scraping GitHub releases or hand-rolling archive
-replacement.
+`fini update` is the explicit update entrypoint for the standalone CLI. It uses
+`self_update` with Rustls transport and an embedded zipsign Ed25519 verification
+key; it does not initialize Tauri or use the desktop updater manifest.
 
-The default CLI update endpoint is the signed static manifest published with
-GitHub releases:
+CLI updater archives are selected from GitHub Releases by Rust target plus the
+`cli` identifier, for example:
 
 ```text
-https://github.com/VRuzhentsov/fini/releases/latest/download/latest-cli.json
+fini-vX.Y.Z-linux-x86_64-unknown-linux-gnu-cli.tar.gz
+fini-vX.Y.Z-windows-x86_64-pc-windows-msvc-cli.zip
 ```
 
-The CLI updater uses a custom Tauri updater target named
-`cli-<platform>-<arch>`, such as `cli-linux-x86_64`, so CLI artifacts do not
-share platform keys with GUI app updater bundles. The manifest must contain a
-valid SemVer version and a Tauri updater signature for each exposed CLI target.
-The initial built-in updater manifest publishes Linux CLI targets only: Tauri's
-Windows updater install path expects a Windows installer, not a raw standalone
-`fini.exe` replacement.
+Each CLI updater archive is zipsign-signed in the release workflow with the
+private `FINI_CLI_ZIPSIGN_PRIVATE_KEY` Actions secret. The standalone CLI embeds
+only the corresponding public key at `src-tauri/keys/fini-cli-zipsign.pub`.
+This trust root is intentionally separate from the Tauri/Minisign desktop updater
+key and `latest.json` manifest.
 
-Release builds should embed the Tauri updater public key with
-`FINI_TAURI_UPDATER_PUBKEY`. Local and test builds may supply
-`FINI_UPDATE_PUBKEY` at runtime. `FINI_UPDATE_ENDPOINT` may override the default
-manifest endpoint for staging channels.
+`fini update --dry-run` discovers the newest matching CLI release without
+installing it. Explicit updates bypass the automatic-check interval. Ordinary CLI
+invocations perform a quiet automatic update check at most once per 24 hours;
+set `FINI_DISABLE_AUTO_UPDATE=1` to disable only that automatic path. Update
+failures in the automatic path do not change the normal command result.
+
+On Windows, `self_update` owns the post-exit replacement behavior. Windows
+archive/replacement validation runs in GitHub Actions; it cannot be proven by a
+Linux-only local test.
 
 ## Desktop Updates
 

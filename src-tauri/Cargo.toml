@@ -30,11 +30,11 @@ required-features = ["ui-plane"]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
+tauri = { version = "2", features = [], optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
 diesel = { version = "2", features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
 diesel_migrations = "2"
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
@@ -51,9 +51,11 @@ tokio = { version = "1", features = ["full"] }
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"], optional = true }
+self_update = { version = "0.44.0", default-features = false, features = ["reqwest", "rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "signatures"], optional = true }
+zipsign-api = { version = "0.1", default-features = false, features = ["verify-tar", "verify-zip"], optional = true }
 tauri-plugin-updater = { version = "2.10.1", optional = true }
-tauri-plugin-notification = "2.3.3"
-tauri-plugin-autostart = "2.5.1"
+tauri-plugin-notification = { version = "2.3.3", optional = true }
+tauri-plugin-autostart = { version = "2.5.1", optional = true }
 time = { version = "0.3.47", features = ["parsing", "formatting"] }
 tauri-plugin-playwright = { version = "0.2", optional = true }
 socket2 = "0.6"
@@ -61,19 +63,22 @@ mdns-sd = "0.13"
 zbus = { version = "5.14.0", features = ["blocking-api"] }
 zvariant = "5.10.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
+tar = "0.4"
+flate2 = "1"
+tempfile = "3"
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-fs = { version = "2", optional = true }
 url = { version = "2", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk = "0.18.2"
-notify-rust = "4"
+gtk = { version = "0.18.2", optional = true }
+notify-rust = { version = "4", optional = true }
 
 [features]
 default = []
-ui-plane = []
-desktop-updater = ["dep:tauri-plugin-updater", "dep:url"]
-cli-plane = ["dep:clap", "dep:tauri-plugin-updater", "dep:url"]
+ui-plane = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-notification", "dep:tauri-plugin-autostart", "dep:tauri-plugin-dialog", "dep:tauri-plugin-fs", "dep:gtk", "dep:notify-rust"]
+desktop-updater = ["ui-plane", "dep:tauri-plugin-updater", "dep:url"]
+cli-plane = ["dep:clap", "dep:self_update", "dep:url", "dep:zipsign-api"]
 # Enable developer/test control-plane hooks. Off by default; production builds
 # must not ship this because it exposes an in-process Playwright socket bridge.
 devtools = ["dep:tauri-plugin-playwright"]

@@ -40,6 +40,7 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
           FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -51,6 +52,7 @@ jobs:
             ANDROID_KEYSTORE_PASSWORD
             ANDROID_KEY_ALIAS
             ANDROID_KEY_PASSWORD
+            FINI_CLI_ZIPSIGN_PRIVATE_KEY
             FINI_TAURI_UPDATER_PUBKEY
             TAURI_SIGNING_PRIVATE_KEY
             TAURI_SIGNING_PRIVATE_KEY_PASSWORD
@@ -244,6 +246,9 @@ jobs:
           fi
 
       - name: Build Linux CLI
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Linux release files
@@ -288,7 +293,32 @@ jobs:
             echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
             exit 1
           fi
-          tar -C "$(dirname "$cli_binary")" -czf "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.arch }}-cli.tar.gz" fini
+          tar -C "$(dirname "$cli_binary")" -czf "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.rust_target }}-cli.tar.gz" fini
+
+      - name: Verify staged Linux CLI archive
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          expected_version="$(sed -n -E '/^\[package\]/,/^\[/{s/^version = "([^"]+)"/\1/p}' src-tauri/Cargo.toml | head -n 1)"
+          scripts/verify-linux-cli-archive.sh \
+            "prep/linux/fini-prep-${short_sha}-linux-${{ matrix.rust_target }}-cli.tar.gz" \
+            "$expected_version" \
+            "${{ matrix.arch }}"
+
+      - name: Sign staged Linux CLI archive for standalone updater
+        env:
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          archive="prep/linux/fini-prep-${short_sha}-linux-${{ matrix.rust_target }}-cli.tar.gz"
+          key_file="${RUNNER_TEMP}/fini-cli-zipsign.key"
+          printf '%s' "$FINI_CLI_ZIPSIGN_PRIVATE_KEY" | base64 --decode > "$key_file"
+          chmod 600 "$key_file"
+          cargo install zipsign --locked
+          zipsign sign tar "$archive" "$key_file"
+          rm -f "$key_file"
+          zipsign verify tar "$archive" src-tauri/keys/fini-cli-zipsign.pub
 
       - name: Upload Linux bundle artifact
         uses: actions/upload-artifact@v4
@@ -346,6 +376,9 @@ jobs:
         run: npm run tauri build -- --features ui-plane,desktop-updater,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Build Windows CLI
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Windows release files
@@ -369,7 +402,29 @@ jobs:
           if (!(Test-Path -LiteralPath $cliBinary)) {
             throw "Expected Windows CLI binary was not produced: $cliBinary"
           }
-          Compress-Archive -LiteralPath $cliBinary -DestinationPath "prep/windows/fini-prep-$shortSha-windows-${{ matrix.arch }}-cli.zip" -Force
+          Compress-Archive -LiteralPath $cliBinary -DestinationPath "prep/windows/fini-prep-$shortSha-windows-${{ matrix.rust_target }}-cli.zip" -Force
+
+      - name: Verify staged Windows CLI archive
+        shell: pwsh
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $expectedVersion = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^\"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          ./scripts/verify-windows-cli-archive.ps1 -Archive "prep/windows/fini-prep-$shortSha-windows-${{ matrix.rust_target }}-cli.zip" -ExpectedVersion "$expectedVersion"
+
+      - name: Sign staged Windows CLI archive for standalone updater
+        shell: pwsh
+        env:
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
+        run: |
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $archive = "prep/windows/fini-prep-$shortSha-windows-${{ matrix.rust_target }}-cli.zip"
+          $keyFile = Join-Path $env:RUNNER_TEMP "fini-cli-zipsign.key"
+          [IO.File]::WriteAllBytes($keyFile, [Convert]::FromBase64String($env:FINI_CLI_ZIPSIGN_PRIVATE_KEY))
+          cargo install zipsign --locked
+          & "$env:USERPROFILE\.cargo\bin\zipsign.exe" sign zip $archive $keyFile
+          Remove-Item -Force $keyFile
+          & "$env:USERPROFILE\.cargo\bin\zipsign.exe" verify zip $archive src-tauri/keys/fini-cli-zipsign.pub
+          if ($LASTEXITCODE -ne 0) { throw "CLI zipsign verification failed" }
 
       - name: Upload Windows bundle artifact
         uses: actions/upload-artifact@v4
