@@ -189,7 +189,7 @@ fn parse_release_entry(subject: &str) -> Option<ReleaseEntry> {
             return None
         }
         Some((kind, scope, text)) => (kind, scope, text),
-        None if subject.starts_with("Release ") || subject.starts_with("Merge ") => return None,
+        None if is_metadata_subject(subject) => return None,
         None => (infer_subject_kind(subject), None, strip_pr_suffix(subject)),
     };
 
@@ -204,6 +204,14 @@ fn parse_release_entry(subject: &str) -> Option<ReleaseEntry> {
         kind,
         text: text.to_string(),
     })
+}
+
+fn is_metadata_subject(subject: &str) -> bool {
+    subject.starts_with("Merge pull request ")
+        || subject.starts_with("Merge branch ")
+        || subject
+            .strip_prefix("Release ")
+            .is_some_and(|release| parse_tag_version(release).is_ok())
 }
 
 fn infer_subject_kind(subject: &str) -> &'static str {
@@ -658,6 +666,25 @@ mod tests {
         assert_eq!(entry.kind, "Bugfixes");
         assert_eq!(entry.area, ReleaseArea::Core);
         assert_eq!(entry.text, "Fix: prevent startup crash");
+    }
+
+    #[test]
+    fn preserves_plain_merge_and_release_titles() {
+        let entry = parse_release_entry("Merge duplicate quests (#123)").unwrap();
+
+        assert_eq!(entry.kind, "Improvements");
+        assert_eq!(entry.area, ReleaseArea::Core);
+        assert_eq!(entry.text, "Merge duplicate quests");
+
+        let entry = parse_release_entry("Release Android beta fixes (#124)").unwrap();
+
+        assert_eq!(entry.kind, "Improvements");
+        assert_eq!(entry.area, ReleaseArea::Android);
+        assert_eq!(entry.text, "Release Android beta fixes");
+
+        assert!(parse_release_entry("Merge pull request #123 from feature").is_none());
+        assert!(parse_release_entry("Merge branch 'main' into feature").is_none());
+        assert!(parse_release_entry("Release v0.2.0").is_none());
     }
 
     #[test]
