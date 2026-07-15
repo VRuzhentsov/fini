@@ -77,11 +77,14 @@ diesel::table! {
 
 diesel::table! {
     paired_devices (peer_device_id) {
-        peer_device_id -> Text,
-        display_name   -> Text,
-        paired_at      -> Text,
-        last_seen_at   -> Nullable<Text>,
-        pair_state     -> Text,
+        peer_device_id             -> Text,
+        display_name               -> Text,
+        paired_at                  -> Text,
+        last_seen_at               -> Nullable<Text>,
+        pair_state                 -> Text,
+        bluetooth_enabled          -> Bool,
+        bluetooth_address          -> Nullable<Text>,
+        bluetooth_last_verified_at -> Nullable<Text>,
     }
 }
 

@@ -8,7 +8,7 @@ Per-pair space mapping lifecycle, sync session establishment, bootstrap transfer
 
 - Maintain symmetric mapped-space lifecycle state for each paired peer
 - Send one-space sync request, acceptance, and end-of-sync events over the authenticated sync channel
-- Establish websocket sync sessions for paired peers
+- Establish sync sessions for paired peers over the selected authenticated transport
 - Bootstrap newly mapped spaces
 - Replicate sync events and acknowledgements
 - Track `last_synced_at` per peer and per mapped space
@@ -25,7 +25,10 @@ Per-pair space mapping lifecycle, sync session establishment, bootstrap transfer
 - Built-in spaces resolve by stable IDs; custom spaces may need approval/resolution to create or map the one incoming space
 - Removing a mapping sends an end-of-sync event, writes `end_of_sync_at` on both devices, and stops future sync for that space
 - Quest create/update/delete events for active mapped spaces sync silently in the background without additional dialogs
-- Sync transport uses authenticated websocket sessions, not discovery metadata
+- Sync transport uses authenticated Fini pair sessions, not discovery or Bluetooth metadata
+- Transport selection is peer-scoped and deterministic: network first, Bluetooth fallback only when explicitly enabled for that Fini pair and OS Bluetooth pairing is verified
+- SpaceSync consent is peer-and-space scoped; changing between network and Bluetooth must not create a new consent prompt for an already approved space
+- Network recovery after Bluetooth fallback keeps the current authenticated session until reconnect; the next session selection returns to network-first order
 - Visible sync status should converge for both peers after successful bootstrap/event transfer
 
 ## Primary UI Surfaces

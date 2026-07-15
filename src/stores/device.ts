@@ -9,6 +9,17 @@ export interface PairedDevice {
   paired_at: string;
   last_seen_at: string | null;
   pair_state: string;
+  bluetooth_enabled: boolean;
+  bluetooth_address: string | null;
+  bluetooth_last_verified_at: string | null;
+}
+
+export interface DeviceTransportStatus {
+  kind: "network" | "bluetooth";
+  enabled: boolean;
+  available: boolean;
+  preferred: boolean;
+  detail: string;
 }
 
 export interface DiscoveredDevice {
@@ -183,6 +194,7 @@ export const useDeviceStore = defineStore("device", () => {
   const lastSyncedAtByPeer = ref<Record<string, string | null>>({});
   const lastSyncedAtByPeerSpace = ref<Record<string, Record<string, string | null>>>({});
   const syncingByPeer = ref<Record<string, boolean>>({});
+  const transportStatusesByPeer = ref<Record<string, DeviceTransportStatus[]>>({});
   const lastAppliedSyncAt = ref<string | null>(null);
   const incomingExpectedCode = ref<Record<string, string>>({});
   const incomingAttemptCount = ref<Record<string, number>>({});
@@ -264,6 +276,10 @@ export const useDeviceStore = defineStore("device", () => {
 
   function getLastSyncedAtForSpace(peerDeviceId: string, spaceId: string): string | null {
     return getLastSyncedAtBySpace(peerDeviceId)[spaceId] ?? null;
+  }
+
+  function getTransportStatuses(peerDeviceId: string): DeviceTransportStatus[] {
+    return transportStatusesByPeer.value[peerDeviceId] ?? [];
   }
 
   function isSyncingPeer(peerDeviceId: string): boolean {
@@ -412,6 +428,42 @@ export const useDeviceStore = defineStore("device", () => {
       syncStatusByPeer.value[peerDeviceId] = null;
       return null;
     }
+  }
+
+  async function refreshTransportStatuses(peerDeviceId: string): Promise<DeviceTransportStatus[]> {
+    try {
+      const statuses = await invoke<DeviceTransportStatus[]>("device_connection_transport_statuses", {
+        peerDeviceId,
+      });
+      transportStatusesByPeer.value[peerDeviceId] = statuses;
+      return statuses;
+    } catch (error) {
+      console.warn("[device-connection] failed to load transport statuses", error);
+      transportStatusesByPeer.value[peerDeviceId] = [];
+      return [];
+    }
+  }
+
+  async function setBluetoothTransport(
+    peerDeviceId: string,
+    enabled: boolean,
+    bluetoothAddress?: string | null,
+  ): Promise<PairedDevice> {
+    const updated = await invoke<PairedDevice>("device_connection_set_bluetooth_transport", {
+      input: {
+        peer_device_id: peerDeviceId,
+        enabled,
+        bluetooth_address: bluetoothAddress ?? null,
+      },
+    });
+    const index = pairedDevices.value.findIndex((device) => device.peer_device_id === peerDeviceId);
+    if (index >= 0) {
+      pairedDevices.value[index] = updated;
+    } else {
+      pairedDevices.value = [updated, ...pairedDevices.value];
+    }
+    await refreshTransportStatuses(peerDeviceId);
+    return updated;
   }
 
   async function runSpaceSyncTick() {
@@ -579,6 +631,7 @@ export const useDeviceStore = defineStore("device", () => {
           console.warn("[device-connection] failed to update last_seen", error);
         }
       }
+      void refreshTransportStatuses(device.peer_device_id);
     }
 
     await loadPairedDevices();
@@ -886,6 +939,7 @@ export const useDeviceStore = defineStore("device", () => {
     delete lastSyncedAtByPeer.value[deviceId];
     delete lastSyncedAtByPeerSpace.value[deviceId];
     delete syncingByPeer.value[deviceId];
+    delete transportStatusesByPeer.value[deviceId];
     await loadPairedDevices();
   }
 
@@ -921,6 +975,7 @@ export const useDeviceStore = defineStore("device", () => {
     lastSyncedAtByPeer,
     lastSyncedAtByPeerSpace,
     syncingByPeer,
+    transportStatusesByPeer,
     lastAppliedSyncAt,
     hydrate,
     refreshDiscovery,
@@ -938,6 +993,9 @@ export const useDeviceStore = defineStore("device", () => {
     getLastSyncedAt,
     getLastSyncedAtBySpace,
     getLastSyncedAtForSpace,
+    getTransportStatuses,
+    refreshTransportStatuses,
+    setBluetoothTransport,
     isSyncingPeer,
     runSpaceSyncTick,
     enterAddMode,

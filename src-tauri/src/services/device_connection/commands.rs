@@ -17,11 +17,13 @@ use crate::services::device_connection::runtime::{
     generate_passcode, prune_expired_incoming_requests, utc_now,
 };
 use crate::services::device_connection::types::{
-    DeviceConnectionDebugStatus, DeviceIdentity, DevicePairRequestAckInput, DevicePairRequestInput,
-    DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairAcceptPayload,
-    PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
+    DeviceBluetoothTransportInput, DeviceConnectionDebugStatus, DeviceIdentity,
+    DevicePairRequestAckInput, DevicePairRequestInput, DiscoveredDevice, IncomingPairRequest,
+    IncomingSpaceMappingUpdate, PairAcceptPayload, PairCodeUpdate, PairCompletePayload,
+    PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::device_connection::DeviceConnectionState;
+use crate::services::device_connection::{build_transport_statuses, TransportStatus};
 use crate::services::space_sync::types::WsMessage;
 
 fn ws_url(addr: IpAddr, port: u16) -> String {
@@ -29,6 +31,44 @@ fn ws_url(addr: IpAddr, port: u16) -> String {
         IpAddr::V4(_) => format!("ws://{addr}:{port}"),
         IpAddr::V6(_) => format!("ws://[{addr}]:{port}"),
     }
+}
+
+fn normalize_bluetooth_address(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_ascii_uppercase())
+}
+
+fn bluetooth_address_is_os_paired(address: &str) -> bool {
+    if let Ok(allowed) = std::env::var("FINI_BLUETOOTH_PAIRED_ADDRESSES") {
+        return allowed
+            .split(',')
+            .filter_map(normalize_bluetooth_address)
+            .any(|item| item == address);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return std::process::Command::new("bluetoothctl")
+            .arg("info")
+            .arg(address)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|stdout| stdout.lines().any(|line| line.trim() == "Paired: yes"))
+            .unwrap_or(false);
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        return true;
+    }
+
+    #[allow(unreachable_code)]
+    false
 }
 
 fn send_pair_ws(addr: IpAddr, port: u16, msg: WsMessage) -> Result<(), String> {
@@ -611,6 +651,112 @@ pub fn device_connection_save_paired_device(
     device_connection_save_paired_device_impl(&mut conn, peer_device_id, display_name)
 }
 
+pub fn device_connection_set_bluetooth_transport_impl(
+    conn: &mut SqliteConnection,
+    input: DeviceBluetoothTransportInput,
+) -> Result<PairedDevice, String> {
+    let existing: Option<PairedDevice> = paired_devices::table
+        .find(&input.peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if existing.is_none() {
+        return Err("paired device not found".to_string());
+    }
+
+    let normalized_address = input
+        .bluetooth_address
+        .as_deref()
+        .and_then(normalize_bluetooth_address);
+
+    if input.enabled {
+        let Some(address) = normalized_address else {
+            return Err("bluetooth address is required to enable Bluetooth transport".to_string());
+        };
+        if !bluetooth_address_is_os_paired(&address) {
+            return Err(
+                "OS Bluetooth pairing is required before enabling Bluetooth transport".to_string(),
+            );
+        }
+
+        diesel::update(paired_devices::table.find(&input.peer_device_id))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some(address)),
+                paired_devices::bluetooth_last_verified_at.eq(Some(utc_now())),
+            ))
+            .execute(&mut *conn)
+            .map_err(|e| e.to_string())?;
+    } else {
+        diesel::update(paired_devices::table.find(&input.peer_device_id))
+            .set((
+                paired_devices::bluetooth_enabled.eq(false),
+                paired_devices::bluetooth_address.eq(Option::<String>::None),
+                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
+            ))
+            .execute(&mut *conn)
+            .map_err(|e| e.to_string())?;
+    }
+
+    paired_devices::table
+        .find(&input.peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_set_bluetooth_transport(
+    db: State<AppDbConnection>,
+    input: DeviceBluetoothTransportInput,
+) -> Result<PairedDevice, String> {
+    let mut conn = db.0.lock().unwrap();
+    device_connection_set_bluetooth_transport_impl(&mut conn, input)
+}
+
+pub fn device_connection_transport_statuses_impl(
+    conn: &mut SqliteConnection,
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+) -> Result<Vec<TransportStatus>, String> {
+    let paired: PairedDevice = paired_devices::table
+        .find(&peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())?;
+    let bluetooth_has_metadata = paired
+        .bluetooth_address
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let bluetooth_os_paired = paired
+        .bluetooth_address
+        .as_deref()
+        .and_then(normalize_bluetooth_address)
+        .map(|address| bluetooth_address_is_os_paired(&address))
+        .unwrap_or(false);
+
+    Ok(build_transport_statuses(
+        state.network_peer_available(&peer_device_id),
+        paired.bluetooth_enabled,
+        bluetooth_has_metadata,
+        bluetooth_os_paired,
+    ))
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_transport_statuses(
+    db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+) -> Result<Vec<TransportStatus>, String> {
+    let mut conn = db.0.lock().unwrap();
+    device_connection_transport_statuses_impl(&mut conn, &state, peer_device_id)
+}
+
 pub fn device_connection_unpair_impl(
     conn: &mut SqliteConnection,
     peer_device_id: String,
@@ -652,4 +798,90 @@ pub fn device_connection_update_last_seen(
 ) -> Result<(), String> {
     let mut conn = db.0.lock().unwrap();
     device_connection_update_last_seen_impl(&mut conn, peer_device_id, last_seen_at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::db;
+
+    fn paired_device_input(enabled: bool, address: Option<&str>) -> DeviceBluetoothTransportInput {
+        DeviceBluetoothTransportInput {
+            peer_device_id: "peer-a".to_string(),
+            enabled,
+            bluetooth_address: address.map(ToString::to_string),
+        }
+    }
+
+    fn test_conn() -> SqliteConnection {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = db::open_db_at_path(&db_path);
+        std::mem::forget(dir);
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .expect("insert paired device");
+        conn
+    }
+
+    #[test]
+    fn enabling_bluetooth_transport_requires_os_paired_address() {
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+        let mut conn = test_conn();
+
+        let missing = device_connection_set_bluetooth_transport_impl(
+            &mut conn,
+            paired_device_input(true, None),
+        )
+        .expect_err("address is required");
+        assert!(missing.contains("address is required"));
+
+        let unpaired = device_connection_set_bluetooth_transport_impl(
+            &mut conn,
+            paired_device_input(true, Some("11:22:33:44:55:66")),
+        )
+        .expect_err("OS pairing is required");
+        assert!(unpaired.contains("OS Bluetooth pairing is required"));
+
+        let paired = device_connection_set_bluetooth_transport_impl(
+            &mut conn,
+            paired_device_input(true, Some("aa:bb:cc:dd:ee:ff")),
+        )
+        .expect("paired address should enable");
+        assert!(paired.bluetooth_enabled);
+        assert_eq!(
+            paired.bluetooth_address.as_deref(),
+            Some("AA:BB:CC:DD:EE:FF")
+        );
+        assert!(paired.bluetooth_last_verified_at.is_some());
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    #[test]
+    fn disabling_bluetooth_transport_clears_reconnect_metadata() {
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+        let mut conn = test_conn();
+        device_connection_set_bluetooth_transport_impl(
+            &mut conn,
+            paired_device_input(true, Some("AA:BB:CC:DD:EE:FF")),
+        )
+        .expect("enable bluetooth");
+
+        let disabled = device_connection_set_bluetooth_transport_impl(
+            &mut conn,
+            paired_device_input(false, None),
+        )
+        .expect("disable bluetooth");
+        assert!(!disabled.bluetooth_enabled);
+        assert_eq!(disabled.bluetooth_address, None);
+        assert_eq!(disabled.bluetooth_last_verified_at, None);
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
 }

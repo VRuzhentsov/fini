@@ -1,5 +1,6 @@
 mod commands;
 mod runtime;
+mod transport;
 pub(crate) mod types;
 
 use std::net::Ipv4Addr;
@@ -18,6 +19,7 @@ pub use commands::{
     device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_save_paired_device, device_connection_send_pair_request,
+    device_connection_set_bluetooth_transport, device_connection_transport_statuses,
     device_connection_unpair, device_connection_update_last_seen,
 };
 #[cfg(feature = "cli-plane")]
@@ -30,10 +32,12 @@ pub use commands::{
     device_connection_pair_incoming_requests_impl,
     device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
-    device_connection_send_pair_request_impl, device_connection_unpair_impl,
+    device_connection_send_pair_request_impl, device_connection_set_bluetooth_transport_impl,
+    device_connection_transport_statuses_impl, device_connection_unpair_impl,
     device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
+pub use transport::{build_transport_statuses, TransportStatus};
 use types::DiscoveryRuntime;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
@@ -343,5 +347,12 @@ impl DeviceConnectionState {
                 )
             })
             .collect()
+    }
+
+    pub fn network_peer_available(&self, peer_device_id: &str) -> bool {
+        let Ok(guard) = self.runtime.lock() else {
+            return false;
+        };
+        guard.presence.contains_key(peer_device_id)
     }
 }

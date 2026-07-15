@@ -104,6 +104,13 @@ pub struct DevicePairRequestAckInput {
     pub request_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceBluetoothTransportInput {
+    pub peer_device_id: String,
+    pub enabled: bool,
+    pub bluetooth_address: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct DiscoveryBeacon {
     pub protocol: String,

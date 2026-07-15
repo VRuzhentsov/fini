@@ -13,9 +13,12 @@ const deviceStore = useDeviceStore();
 const spaceStore = useSpaceStore();
 const unpairDialog = ref<HTMLDialogElement | null>(null);
 const mappedSelection = ref<string[]>([]);
+const bluetoothAddressInput = ref("");
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
+const savingBluetoothTransport = ref(false);
 const mappingError = ref<string | null>(null);
+const bluetoothTransportError = ref<string | null>(null);
 const mappingsDirty = ref(false);
 
 const deviceId = computed(() => String(route.params.id ?? ""));
@@ -27,6 +30,10 @@ const syncStatus = computed(() => {
 });
 const hasPendingSync = computed(() => (syncStatus.value?.pending_event_count ?? 0) > 0);
 const presenceLabel = computed(() => (online.value ? "Online" : "Offline"));
+const transportStatuses = computed(() => {
+  if (!deviceId.value) return [];
+  return deviceStore.getTransportStatuses(deviceId.value);
+});
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() => {
   if (!deviceId.value) return {};
   return deviceStore.getLastSyncedAtBySpace(deviceId.value);
@@ -95,6 +102,8 @@ async function loadMappings() {
   try {
     mappedSelection.value = await deviceStore.loadMappedSpaces(deviceId.value);
     await deviceStore.refreshSpaceSyncStatus(deviceId.value);
+    await deviceStore.refreshTransportStatuses(deviceId.value);
+    bluetoothAddressInput.value = device.value?.bluetooth_address ?? "";
     mappingsDirty.value = false;
   } catch (error) {
     mappingError.value = String(error);
@@ -116,6 +125,24 @@ async function saveMappings() {
     mappingError.value = String(error);
   } finally {
     savingMappings.value = false;
+  }
+}
+
+async function saveBluetoothTransport(enabled: boolean) {
+  if (!deviceId.value) return;
+  savingBluetoothTransport.value = true;
+  bluetoothTransportError.value = null;
+
+  try {
+    await deviceStore.setBluetoothTransport(
+      deviceId.value,
+      enabled,
+      enabled ? bluetoothAddressInput.value : null,
+    );
+  } catch (error) {
+    bluetoothTransportError.value = String(error);
+  } finally {
+    savingBluetoothTransport.value = false;
   }
 }
 
@@ -177,6 +204,61 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           </template>
         </SettingsListItem>
       </SettingsListGroup>
+    </section>
+
+    <section v-if="device" class="rounded-xl bg-base-200 p-3">
+      <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Transports</h2>
+      <SettingsListGroup>
+        <SettingsListItem
+          v-for="status in transportStatuses"
+          :key="status.kind"
+          data-testid="transport-status-row"
+          :data-transport-kind="status.kind"
+        >
+          <template #leading>
+            <span
+              class="h-2.5 w-2.5 rounded-full"
+              :class="status.available ? 'bg-green-500' : 'bg-gray-400'"
+            />
+          </template>
+          <template #start>
+            <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
+            <span v-if="status.preferred" class="ml-2 text-[11px] opacity-60">preferred</span>
+          </template>
+          <template #end>
+            <span class="text-xs opacity-60">{{ status.detail }}</span>
+          </template>
+        </SettingsListItem>
+      </SettingsListGroup>
+      <div class="mt-3 flex flex-col gap-2">
+        <label class="text-xs font-medium opacity-70" for="bluetooth-address">Bluetooth address</label>
+        <input
+          id="bluetooth-address"
+          v-model="bluetoothAddressInput"
+          class="input input-sm input-bordered"
+          data-testid="bluetooth-address-input"
+          placeholder="AA:BB:CC:DD:EE:FF"
+          :disabled="savingBluetoothTransport"
+        />
+        <p class="text-xs opacity-60">
+          Enable only after this device is already paired in the OS Bluetooth settings.
+        </p>
+        <div v-if="bluetoothTransportError" class="text-error text-xs">{{ bluetoothTransportError }}</div>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn btn-sm btn-primary"
+            data-testid="enable-bluetooth-transport"
+            :disabled="savingBluetoothTransport"
+            @click="void saveBluetoothTransport(true)"
+          >Enable Bluetooth</button>
+          <button
+            class="btn btn-sm btn-ghost"
+            data-testid="disable-bluetooth-transport"
+            :disabled="savingBluetoothTransport || !device.bluetooth_enabled"
+            @click="void saveBluetoothTransport(false)"
+          >Disable</button>
+        </div>
+      </div>
     </section>
 
     <section v-if="device" class="rounded-xl bg-base-200 p-3">

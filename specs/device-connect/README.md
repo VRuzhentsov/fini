@@ -12,6 +12,7 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 - Persist paired devices locally
 - Track online/offline presence for paired peers
 - Provide peer endpoint metadata needed by `space-sync`
+- Maintain independent per-pair Network and Bluetooth transport state
 
 ## Behavior
 
@@ -21,6 +22,12 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 - Pairing completion persists both peers as paired devices
 - Presence is refreshed independently from pairing state
 - Discovery metadata is untrusted and only used to find candidate peers/endpoints
+- Network and Bluetooth are independent transport providers; network remains preferred when both are available
+- Bluetooth is disabled by default for every Fini pair and can only be enabled explicitly per paired device
+- Bluetooth enablement stores only the peer Bluetooth address and the local verification time after the user action succeeds
+- OS Bluetooth pairing is a transport precondition only; Fini app pairing remains the trust boundary for pairing/control/sync messages
+- Bluetooth discovery/connection metadata is untrusted until the existing Fini pair-auth session succeeds
+- Disabling or unpairing a device prevents future Bluetooth use for that Fini pair and clears stored Bluetooth reconnect metadata
 - Local device identity is stored as scalar settings rows: `device.id` for immutable UUID and `device.name` for the current local broadcast name
 - Deprecated `device_identity.json` is migration input only; after settings identity is valid, stale JSON is deleted
 - Paired-device `display_name` is captured at pairing time and does not auto-update from later discovery name changes
