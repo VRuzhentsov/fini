@@ -1,4 +1,5 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
+use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde_json::{json, Value};
@@ -254,14 +255,28 @@ struct BackupImportArgs {
 
 #[derive(Args)]
 struct BackupInspectArgs {
-    #[arg(long, help = "Backup archive path to inspect")]
+    #[arg(long, help = "Backup archive path to inspect or verify")]
     path: String,
     #[arg(
         long,
         action = ArgAction::SetTrue,
+        conflicts_with = "verify",
         help = "Validate the archive and print its contents as JSON"
     )]
     inspect: bool,
+    #[arg(
+        long,
+        action = ArgAction::SetTrue,
+        conflicts_with = "inspect",
+        help = "Compare the archive with the local database without changing either"
+    )]
+    verify: bool,
+    #[arg(
+        long = "map-space",
+        requires = "verify",
+        help = "Backup space mapping BACKUP_ID=create_new or BACKUP_ID=use_existing:LOCAL_ID; repeat for multiple spaces"
+    )]
+    map_space: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -914,16 +929,95 @@ fn handle_export(ctx: &CliContext, args: BackupExportArgs, command_name: &str) -
 }
 
 fn handle_import(args: &BackupInspectArgs) -> CliResult<Value> {
-    if !args.inspect {
-        return Err(CliError::from_string(
-            "import requires --inspect; mutation modes are not available yet".to_string(),
-        ));
+    if args.inspect {
+        return serde_json::to_value(
+            backup::inspect_backup(std::path::Path::new(&args.path))
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()));
     }
 
-    serde_json::to_value(
-        backup::inspect_backup(std::path::Path::new(&args.path)).map_err(CliError::from_string)?,
-    )
-    .map_err(|e| CliError::runtime(e.to_string()))
+    if args.verify {
+        let db_path = db_default_path();
+        if !db_path.is_file() {
+            return Err(CliError::runtime(format!(
+                "local database does not exist: {}",
+                db_path.display()
+            )));
+        }
+        let mut conn = SqliteConnection::establish(
+            db_path
+                .to_str()
+                .ok_or_else(|| CliError::runtime("database path is not UTF-8"))?,
+        )
+        .map_err(|err| CliError::runtime(format!("failed to open local database: {err}")))?;
+        conn.batch_execute("PRAGMA query_only = ON;")
+            .map_err(|err| {
+                CliError::runtime(format!("failed to make local database read-only: {err}"))
+            })?;
+        let mappings = parse_backup_space_mappings(&args.map_space)?;
+        return serde_json::to_value(
+            backup::preflight_import(&mut conn, std::path::Path::new(&args.path), &mappings)
+                .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string()));
+    }
+
+    Err(CliError::from_string(
+        "import requires --inspect or --verify; mutation modes are not available yet".to_string(),
+    ))
+}
+
+fn parse_backup_space_mappings(
+    values: &[String],
+) -> CliResult<Vec<backup::BackupSpaceMappingInput>> {
+    let mut backup_space_ids = std::collections::HashSet::new();
+    let mut mappings = Vec::with_capacity(values.len());
+
+    for value in values {
+        let (backup_space_id, mapping) = value.split_once('=').ok_or_else(|| {
+            CliError::from_string(
+                "--map-space must be BACKUP_ID=create_new or BACKUP_ID=use_existing:LOCAL_ID"
+                    .to_string(),
+            )
+        })?;
+        if backup_space_id.is_empty() {
+            return Err(CliError::from_string(
+                "--map-space backup space ID must not be empty".to_string(),
+            ));
+        }
+        if !backup_space_ids.insert(backup_space_id) {
+            return Err(CliError::from_string(format!(
+                "--map-space backup space ID is duplicated: {backup_space_id}"
+            )));
+        }
+        if mapping == "create_new" {
+            mappings.push(backup::BackupSpaceMappingInput {
+                backup_space_id: backup_space_id.to_string(),
+                mode: mapping.to_string(),
+                local_space_id: None,
+            });
+            continue;
+        }
+        let local_space_id = mapping.strip_prefix("use_existing:").ok_or_else(|| {
+            CliError::from_string(
+                "--map-space must be BACKUP_ID=create_new or BACKUP_ID=use_existing:LOCAL_ID"
+                    .to_string(),
+            )
+        })?;
+        if local_space_id.is_empty() {
+            return Err(CliError::from_string(
+                "--map-space existing local space ID must not be empty".to_string(),
+            ));
+        }
+        mappings.push(backup::BackupSpaceMappingInput {
+            backup_space_id: backup_space_id.to_string(),
+            mode: "use_existing".to_string(),
+            local_space_id: Some(local_space_id.to_string()),
+        });
+    }
+
+    Ok(mappings)
 }
 
 fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Value> {
@@ -1376,6 +1470,8 @@ mod tests {
         let inspection = handle_import(&BackupInspectArgs {
             path: backup_path.to_string_lossy().into_owned(),
             inspect: true,
+            verify: false,
+            map_space: vec![],
         })
         .unwrap_or_else(|err| panic!("inspect backup without a local database: {}", err.message));
         let execute_result = execute(Cli {
@@ -1383,6 +1479,8 @@ mod tests {
             command: Some(Command::Import(BackupInspectArgs {
                 path: backup_path.to_string_lossy().into_owned(),
                 inspect: true,
+                verify: false,
+                map_space: vec![],
             })),
         });
         std::env::remove_var("FINI_DB_PATH");
@@ -1409,14 +1507,129 @@ mod tests {
     }
 
     #[test]
-    fn top_level_import_requires_inspect_and_rejects_unsupported_flags() {
+    fn top_level_import_verify_parses_repeated_space_mappings() {
+        let cli = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--verify",
+            "--map-space",
+            "backup-new=create_new",
+            "--map-space",
+            "backup-existing=use_existing:local-space",
+        ])
+        .expect("parse top-level verify mappings");
+        let args = match cli.command {
+            Some(Command::Import(args)) => args,
+            _ => panic!("expected top-level import command"),
+        };
+        let mappings = match parse_backup_space_mappings(&args.map_space) {
+            Ok(mappings) => mappings,
+            Err(err) => panic!("parse repeated space mapping values: {}", err.message),
+        };
+
+        assert!(args.verify);
+        assert_eq!(mappings.len(), 2);
+        assert_eq!(mappings[0].backup_space_id, "backup-new");
+        assert_eq!(mappings[0].mode, "create_new");
+        assert_eq!(mappings[1].backup_space_id, "backup-existing");
+        assert_eq!(mappings[1].mode, "use_existing");
+        assert_eq!(mappings[1].local_space_id.as_deref(), Some("local-space"));
+    }
+
+    #[test]
+    fn top_level_import_verify_rejects_duplicate_backup_space_mappings() {
+        let mappings = vec![
+            "backup-space=create_new".to_string(),
+            "backup-space=use_existing:local-space".to_string(),
+        ];
+
+        let err = parse_backup_space_mappings(&mappings)
+            .expect_err("duplicate backup space mappings must be rejected");
+
+        assert_eq!(
+            err.message,
+            "--map-space backup space ID is duplicated: backup-space"
+        );
+    }
+
+    #[test]
+    fn top_level_import_verify_reports_missing_custom_space_mapping_without_mutating_target_db() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-verify-source");
+        let target_db_path = temp_db_path("cli-import-verify-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("custom-verify-space"),
+                crate::schema::spaces::name.eq("Custom verify space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(
+            &mut source,
+            &backup_path,
+            &["custom-verify-space".to_string()],
+        )
+        .expect("create backup archive");
+        drop(source);
+
+        let mut target = crate::services::db::open_db_at_path(&target_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("target-space"),
+                crate::schema::spaces::name.eq("Untouched target space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut target)
+            .expect("seed target database");
+        drop(target);
+        let target_before =
+            std::fs::read(&target_db_path).expect("read target database before verify");
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let verification = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: false,
+            verify: true,
+            map_space: vec![],
+        })
+        .unwrap_or_else(|err| panic!("verify backup: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(
+            verification["manifest"]["spaces"][0]["id"],
+            "custom-verify-space"
+        );
+        assert_eq!(
+            verification["required_space_mappings"][0]["backup_space_id"],
+            "custom-verify-space"
+        );
+        assert_eq!(verification["conflicts"], json!([]));
+        let target_after =
+            std::fs::read(&target_db_path).expect("read target database after verify");
+        assert_eq!(
+            target_after, target_before,
+            "verification must not mutate the target database"
+        );
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn top_level_import_requires_read_only_mode_and_rejects_incompatible_or_unsupported_flags() {
         let path_only = Cli::try_parse_from(["fini", "import", "--path", "backup.zip"]).expect(
             "path-only import parses so execution can explain the unavailable mutation mode",
         );
         let err = execute(path_only).expect_err("path-only import must be rejected");
         assert_eq!(
             err.message,
-            "import requires --inspect; mutation modes are not available yet"
+            "import requires --inspect or --verify; mutation modes are not available yet"
         );
 
         let incompatible = Cli::try_parse_from([
@@ -1425,10 +1638,23 @@ mod tests {
             "--path",
             "backup.zip",
             "--inspect",
-            "--force",
+            "--verify",
         ]);
         assert!(
             incompatible.is_err(),
+            "import must reject combining inspect with verify"
+        );
+
+        let unsupported = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--verify",
+            "--force",
+        ]);
+        assert!(
+            unsupported.is_err(),
             "import must reject unsupported mutation flags"
         );
     }
