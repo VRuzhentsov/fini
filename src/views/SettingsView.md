@@ -4,7 +4,9 @@ Route: `/settings`. Tab: Settings. See [[App.md]].
 
 ## Concept
 
-Configuration screen with inline sections and drill-down routes for device flows.
+Configuration screen with inline sections and drill-down routes for device flows. The overview is a computed `renderLists.settingsSections` registry rendered with `<component :is>`; each entry owns one Settings section component.
+
+Search is client-side and scoped to the Settings overview route. When a query is present, it replaces the overview with Android-style result cards: matching rows are grouped under their Settings section and show a concise title, descriptive secondary line, and drill-in affordance. The section groups and result rows are rendered from computed lists with `v-for`, so the result layout stays data-driven. It indexes visible labels and useful descriptive copy, including Spaces, Devices, Theme/Appearance, Updates when present, Backup, and About. Device search includes display names plus `Online`/`Offline`, but not device UUIDs or storage identities. Empty search restores the full overview; no matches show a clear empty state.
 
 Device routes:
 
@@ -22,7 +24,7 @@ Manage named contexts that quests can belong to. See `specs/space/README.md`.
 
 Notes:
 - Spaces management lives only in Settings (no dedicated Spaces tab)
-- Settings search is planned later and should index this section
+- Settings search indexes this section by visible section and row text, including space names but not hidden ids
 
 ### Devices
 
@@ -34,6 +36,16 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 - Device status uses green/gray presence indicator
 - Device rows show display name plus `Online`/`Offline`; UUIDs stay out of visible Settings list rows
 - Device detail view owns mapped-space configuration and visible sync status per paired device
+
+### Updates
+
+Desktop automatic update behavior.
+
+- Rendered inline on `/settings` using [[SettingsListGroup]] and [[SettingsListItem]] only when startup desktop updates are supported by the current build
+- `Automatic updates` toggle is enabled by default to preserve existing startup updater behavior
+- Toggle state persists in the app settings table
+- When disabled, the next app restart skips startup automatic update install/check
+- UI copy must say disabling automatic updates prevents automatic install on the next restart
 
 ### Backup
 

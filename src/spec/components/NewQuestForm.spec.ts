@@ -28,6 +28,11 @@ const reminderPayload = {
   repeat_rule: null,
 };
 
+async function chooseSpace(wrapper: ReturnType<typeof mount>, spaceId: string) {
+  await wrapper.find('[data-testid="new-quest-space"]').trigger("click");
+  await wrapper.find(`[data-space-id="${spaceId}"]`).trigger("click");
+}
+
 describe("NewQuestForm", () => {
   let createQuest: jest.Mock;
   let fetchSpaces: jest.Mock;
@@ -38,7 +43,26 @@ describe("NewQuestForm", () => {
   };
 
   beforeEach(() => {
-    createQuest = jest.fn().mockResolvedValue({});
+    createQuest = jest.fn().mockResolvedValue({
+      id: "quest-1",
+      space_id: "1",
+      title: "Created quest",
+      description: null,
+      status: "active",
+      energy: "medium",
+      priority: 1,
+      pinned: false,
+      due: null,
+      due_time: null,
+      repeat_rule: null,
+      completed_at: null,
+      order_rank: 0,
+      focus_enter_count: 0,
+      created_at: "",
+      updated_at: "",
+      series_id: null,
+      period_key: null,
+    });
     fetchSpaces = jest.fn().mockResolvedValue(undefined);
     spaceStoreState = reactive({
       selectedSpaceId: null,
@@ -53,6 +77,91 @@ describe("NewQuestForm", () => {
       createQuest,
     });
     (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreState);
+  });
+
+  it("renders as the persistent bottom composer surface", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    expect(wrapper.find(".chat-composer-bar").exists()).toBe(true);
+  });
+
+  it("uses a single-line title input for quest creation", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    const titleInput = wrapper.find('[data-testid="chat-input"]');
+
+    expect(titleInput.element.tagName).toBe("INPUT");
+    expect(titleInput.attributes("type")).toBe("text");
+    expect(wrapper.find('[data-testid="chat-input"] textarea').exists()).toBe(false);
+  });
+
+  it("opens the bottom composer space menu upward", () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    expect(wrapper.findComponent({ name: "SpacePicker" }).props("menuPlacement")).toBe("top");
+  });
+
+  it("creates a quest when Enter is pressed in the title input", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Submit from keyboard");
+    await wrapper.find('[data-testid="chat-input"]').trigger("keydown", { key: "Enter" });
+
+    expect(createQuest).toHaveBeenCalledWith({
+      title: "Submit from keyboard",
+      description: null,
+      space_id: "1",
+      due: null,
+      due_time: null,
+      repeat_rule: null,
+    });
+  });
+
+  it("starts collapsed and expands metadata without losing the title draft", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Capture fast quest");
+
+    expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-focus-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-keep-adding"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+
+    expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="new-quest-focus-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-keep-adding"]').exists()).toBe(false);
+    expect((wrapper.find('[data-testid="chat-input"]').element as HTMLInputElement).value).toBe("Capture fast quest");
   });
 
   it("creates a quest with explicit space, description, and reminder draft fields", async () => {
@@ -70,8 +179,9 @@ describe("NewQuestForm", () => {
     });
 
     await wrapper.find('[data-testid="chat-input"]').setValue("Plan the rich composer");
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
     await wrapper.find('[data-testid="new-quest-description"]').setValue("Capture the extra notes here.");
-    await wrapper.find('[data-testid="new-quest-space"]').setValue("2");
+    await chooseSpace(wrapper, "2");
     await wrapper.find('[data-testid="new-quest-reminder"]').trigger("click");
     await wrapper.find('[data-testid="stub-reminder-save"]').trigger("click");
     await wrapper.find("form").trigger("submit");
@@ -84,6 +194,31 @@ describe("NewQuestForm", () => {
       due_time: "14:30",
       repeat_rule: null,
     });
+  });
+
+  it("allows non-empty metadata drafts to collapse", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+    await wrapper.find('[data-testid="new-quest-description"]').setValue("Keep this hidden while collapsed");
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+
+    expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="new-quest-expand"]').text()).toContain("More");
+    expect(wrapper.find('[data-testid="new-quest-expand"]').attributes("aria-expanded")).toBe("false");
+
+    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
+
+    expect((wrapper.find('[data-testid="new-quest-description"]').element as HTMLTextAreaElement).value).toBe(
+      "Keep this hidden while collapsed",
+    );
   });
 
   it("drops reminder time when no due date is selected", async () => {

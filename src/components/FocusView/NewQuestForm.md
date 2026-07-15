@@ -1,20 +1,30 @@
 # NewQuestForm
 
-Rich draft composer for Quest creation. Used in [[FocusView]].
+Rich draft composer for Quest creation. Used in [[FocusView]] as the persistent bottom quick-capture bar.
 
 ## Layout
 
+Collapsed quick-create state:
+
 ```
-[ checkbox affordance ] [ title input                    ] [ Space ▾ ]
-[ description textarea                                      ]
-[ Date / reminder ]                                      [ Send ]
+[ title input                                  ] [ Space ▾ ]
+[ Date ] [ More ]                                        [ Send ]
 ```
 
-The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input.
+Expanded metadata state:
+
+```
+[ title input                                  ] [ Space ▾ ]
+[ description textarea                                      ]
+[ shortcut hint                                             ]
+[ Date / reminder ] [ Less ]                            [ Send ]
+```
+
+The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input. Metadata expands in place so the draft still feels like one Quest being completed, not a separate form.
 
 ## Space selector
 
-- Inline `select` listing all spaces from `spaces` store.
+- Controlled [[SpacePicker]] listing concrete spaces from `spaces` store.
 - Default: the current global selected space when present; otherwise built-in Personal (`id = "1"`); otherwise the first loaded space.
 - Selection is local to the draft and does not mutate the global Space filter.
 - Empty drafts follow changes to the global Space filter so quick-capture creates into the visible filtered Space.
@@ -40,6 +50,7 @@ After a successful create:
 - title is cleared
 - description is cleared
 - reminder fields are cleared
+- composer returns to collapsed quick-create state
 - selected Space resyncs to the current global Space filter for the next empty draft
 
 ## Dependencies
@@ -47,5 +58,6 @@ After a successful create:
 | Dep              | Role                                    |
 | ---------------- | --------------------------------------- |
 | [[quest.ts]]     | `createQuest` and draft Quest typing    |
-| [[spaces.ts]]    | Space list and color classes            |
+| [[spaces.ts]]    | Space list and default draft space      |
+| [[SpacePicker]]  | Local draft Space dropdown              |
 | [[ReminderMenu]] | Date/time/repeat picker for draft state |

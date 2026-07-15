@@ -117,6 +117,10 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           required=(
@@ -124,6 +128,10 @@ jobs:
             ANDROID_KEYSTORE_PASSWORD
             ANDROID_KEY_ALIAS
             ANDROID_KEY_PASSWORD
+            FINI_CLI_ZIPSIGN_PRIVATE_KEY
+            FINI_TAURI_UPDATER_PUBKEY
+            TAURI_SIGNING_PRIVATE_KEY
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           )
           for key in "${required[@]}"; do
             if [ -z "${!key:-}" ]; then
@@ -298,14 +306,31 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Prepare AppImage GTK bundler
+        run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
+
       - name: Build Linux bundles
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,desktop-updater --target ${{ matrix.rust_target }} --bundles appimage,deb,rpm -- --bin fini-app
+
+      - name: Verify AppImage host runtime boundary
+        run: |
+          set -euo pipefail
+          appimage="$(find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/appimage" -type f -name '*.AppImage' -print -quit)"
+          if [ -z "$appimage" ]; then
+            echo "Expected AppImage was not produced" >&2
+            exit 1
+          fi
+          scripts/verify-appimage-host-runtime.sh "$appimage"
 
       - name: Verify Linux desktop binary
         run: |
           set -euo pipefail
           desktop_binary="src-tauri/target/${{ matrix.rust_target }}/release/fini-app"
-          symbols_file="/var/tmp/fini-app-${{ matrix.arch }}-symbols.txt"
+          symbols_file="$RUNNER_TEMP/fini-app-${{ matrix.arch }}-symbols.txt"
 
           if [ ! -f "$desktop_binary" ]; then
             echo "Expected Linux desktop binary was not produced: $desktop_binary" >&2
@@ -324,6 +349,9 @@ jobs:
           fi
 
       - name: Build Linux CLI
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Linux release files
@@ -372,7 +400,29 @@ jobs:
             echo "Expected Linux CLI binary was not produced: $cli_binary" >&2
             exit 1
           fi
-          tar -C "$(dirname "$cli_binary")" -czf "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}-cli.tar.gz" fini
+          tar -C "$(dirname "$cli_binary")" -czf "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.rust_target }}-cli.tar.gz" fini
+
+      - name: Verify staged Linux CLI archive
+        run: |
+          set -euo pipefail
+          scripts/verify-linux-cli-archive.sh \
+            "release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.rust_target }}-cli.tar.gz" \
+            "${GITHUB_REF_NAME#v}" \
+            "${{ matrix.arch }}"
+
+      - name: Sign staged Linux CLI archive for standalone updater
+        env:
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          archive="release/linux/fini-${GITHUB_REF_NAME}-linux-${{ matrix.rust_target }}-cli.tar.gz"
+          key_file="${RUNNER_TEMP}/fini-cli-zipsign.key"
+          printf '%s' "$FINI_CLI_ZIPSIGN_PRIVATE_KEY" | base64 --decode > "$key_file"
+          chmod 600 "$key_file"
+          cargo install zipsign --locked
+          zipsign sign tar "$archive" "$key_file"
+          rm -f "$key_file"
+          zipsign verify tar "$archive" src-tauri/keys/fini-cli-zipsign.pub
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -436,9 +486,16 @@ jobs:
         run: npm ci
 
       - name: Build Windows bundles
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --features ui-plane,desktop-updater,cli-plane --target ${{ matrix.rust_target }} --bundles nsis
 
       - name: Build Windows CLI
+        env:
+          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
+          FINI_CLI_UPDATE_REPOSITORY: ${{ github.repository }}
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target ${{ matrix.rust_target }}
 
       - name: Collect Windows release files
@@ -465,7 +522,27 @@ jobs:
           if (!(Test-Path -LiteralPath $cliBinary)) {
             throw "Expected Windows CLI binary was not produced: $cliBinary"
           }
-          Compress-Archive -LiteralPath $cliBinary -DestinationPath "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.arch }}-cli.zip" -Force
+          Compress-Archive -LiteralPath $cliBinary -DestinationPath "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.rust_target }}-cli.zip" -Force
+
+      - name: Verify staged Windows CLI archive
+        shell: pwsh
+        run: |
+          $expectedVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          ./scripts/verify-windows-cli-archive.ps1 -Archive "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.rust_target }}-cli.zip" -ExpectedVersion "$expectedVersion"
+
+      - name: Sign staged Windows CLI archive for standalone updater
+        shell: pwsh
+        env:
+          FINI_CLI_ZIPSIGN_PRIVATE_KEY: ${{ secrets.FINI_CLI_ZIPSIGN_PRIVATE_KEY }}
+        run: |
+          $archive = "release/windows/fini-${env:GITHUB_REF_NAME}-windows-${{ matrix.rust_target }}-cli.zip"
+          $keyFile = Join-Path $env:RUNNER_TEMP "fini-cli-zipsign.key"
+          [IO.File]::WriteAllBytes($keyFile, [Convert]::FromBase64String($env:FINI_CLI_ZIPSIGN_PRIVATE_KEY))
+          cargo install zipsign --locked
+          & "$env:USERPROFILE\.cargo\bin\zipsign.exe" sign zip $archive $keyFile
+          Remove-Item -Force $keyFile
+          & "$env:USERPROFILE\.cargo\bin\zipsign.exe" verify zip $archive src-tauri/keys/fini-cli-zipsign.pub
+          if ($LASTEXITCODE -ne 0) { throw "CLI zipsign verification failed" }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -595,6 +672,39 @@ jobs:
             "${ANDROID_KEY_ALIAS}"
           jarsigner -verify "$signed_aab"
 
+      - name: Collect Android native debug symbols
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import pathlib
+          import zipfile
+
+          root = pathlib.Path("src-tauri/target")
+          output = pathlib.Path(f"fini-{os.environ['GITHUB_REF_NAME']}-android-native-debug-symbols.zip")
+          targets = {
+              "aarch64-linux-android": "arm64-v8a",
+              "armv7-linux-androideabi": "armeabi-v7a",
+              "i686-linux-android": "x86",
+              "x86_64-linux-android": "x86_64",
+          }
+
+          entries = []
+          for rust_target, abi in targets.items():
+              library = root / rust_target / "release" / "libfini_lib.so"
+              if library.exists():
+                  entries.append((library, f"{abi}/libfini_lib.so"))
+
+          if not entries:
+              raise SystemExit("Android native debug symbol libraries not found")
+
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for library, archive_name in entries:
+                  archive.write(library, archive_name)
+
+          print(f"Wrote {output} with {len(entries)} native debug symbol libraries")
+          PY
+
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
@@ -602,6 +712,14 @@ jobs:
           path: |
             fini-${{ github.ref_name }}-android.apk
             fini-${{ github.ref_name }}-android.aab
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Android native debug symbols artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-native-debug-symbols
+          path: fini-${{ github.ref_name }}-android-native-debug-symbols.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -723,6 +841,12 @@ jobs:
           name: release-android
           path: release-assets
 
+      - name: Download Android native debug symbols artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-native-debug-symbols
+          path: release-assets
+
       - name: Validate Play publishing secret
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
@@ -744,6 +868,7 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: com.fini.app
           releaseFiles: release-assets/fini-${{ github.ref_name }}-android.aab
+          debugSymbols: release-assets/fini-${{ github.ref_name }}-android-native-debug-symbols.zip
           tracks: internal
           releaseName: ${{ github.ref_name }}
           status: completed
@@ -764,12 +889,43 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Download built artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+
+      - name: Generate Tauri desktop updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --output release-assets/latest.json
+
+      - name: Generate standalone CLI updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --surface cli \
+            --output release-assets/latest-cli.json
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
@@ -790,12 +946,21 @@ jobs:
           fi
           for file in "${files[@]}"; do
             case "$file" in
-              *.sig) continue ;;
+              *.sig|*.cosign.sig) continue ;;
             esac
             cosign sign-blob --yes \
-              --output-signature "${file}.sig" \
+              --output-signature "${file}.cosign.sig" \
               "$file"
           done
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          release_parent="${GITHUB_REF_NAME}^"
+          previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-rc.*' "$release_parent")"
+          echo "RELEASE_NOTES_START_TAG=${previous_tag}" >> "$GITHUB_ENV"
+          cargo run --manifest-path xtask/Cargo.toml -- \
+            release-notes "$previous_tag" "$GITHUB_REF_NAME" release-notes.md
 
       - name: Publish GitHub release
         env:
@@ -806,6 +971,8 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             --verify-tag \
+            --notes-file release-notes.md \
+            --notes-start-tag "${RELEASE_NOTES_START_TAG}" \
             --generate-notes
 
   publish-prerelease:
@@ -823,12 +990,43 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Download built artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+
+      - name: Generate Tauri desktop updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --output release-assets/latest.json
+
+      - name: Generate standalone CLI updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/generate-updater-manifest.mjs \
+            --assets-dir release-assets \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${GITHUB_REF_NAME#v}" \
+            --notes "See GitHub release notes for ${GITHUB_REF_NAME}." \
+            --surface cli \
+            --output release-assets/latest-cli.json
 
       - name: Create build provenance attestation
         uses: actions/attest-build-provenance@v2
@@ -849,12 +1047,20 @@ jobs:
           fi
           for file in "${files[@]}"; do
             case "$file" in
-              *.sig) continue ;;
+              *.sig|*.cosign.sig) continue ;;
             esac
             cosign sign-blob --yes \
-              --output-signature "${file}.sig" \
+              --output-signature "${file}.cosign.sig" \
               "$file"
           done
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          release_parent="${GITHUB_REF_NAME}^"
+          previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$release_parent")"
+          cargo run --manifest-path xtask/Cargo.toml -- \
+            release-notes "$previous_tag" "$GITHUB_REF_NAME" release-notes.md
 
       - name: Publish GitHub prerelease
         env:
@@ -866,4 +1072,5 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --verify-tag \
             --prerelease \
+            --notes-file release-notes.md \
             --generate-notes

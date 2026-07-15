@@ -84,12 +84,21 @@ General notes:
 
 ## Platform notes
 
-- **Linux GUI**: Applies default WebKit startup guards before Tauri initializes:
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` for Wayland/mesa stability and
-  `WEBKIT_DISABLE_SANDBOX=1` for SELinux-enforcing AppImage hosts. Existing
-  environment values are preserved for explicit local diagnostics.
-- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`
-- **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`
+- **Desktop GUI**: `fini-app` is the bundled GUI binary and is built with `ui-plane,desktop-updater`.
+  Release builds embed the Tauri updater public key with `FINI_TAURI_UPDATER_PUBKEY`,
+  publish the signed desktop updater manifest at
+  `https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json`, and
+  check it automatically at startup when Settings -> Updates -> Automatic updates
+  is enabled. Turning that setting off skips the next startup auto-update check;
+  set `FINI_DISABLE_AUTO_UPDATE=1` to skip the startup check for diagnostics, or
+  `FINI_DESKTOP_UPDATE_ENDPOINT` / `FINI_DESKTOP_UPDATE_PUBKEY` for staging channels.
+- **CLI/runtime**: `fini` is the CLI-only binary and is built with `cli-plane`.
+  `fini update` downloads a Rust-targeted CLI release, verifies its zipsign
+  signature using the embedded CLI public key, then validates and replaces the
+  executable. `fini update --dry-run` does not replace it. Normal CLI calls
+  check at most once per 24 hours; `FINI_DISABLE_AUTO_UPDATE=1` disables only
+  that automatic path. This zipsign trust root is separate from the desktop
+  Tauri updater key and manifest.
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle
   - `make android-debug-deploy` builds, signs, installs, and launches a local debug-keystore APK using git-derived `versionName` and `versionCode`
@@ -97,9 +106,30 @@ General notes:
   - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
+## Local AppImage build failures on newer Linux toolchains
+
+`make build` (and `make flatpak-install-local`) default `NO_STRIP=true` (set in the
+root `Makefile`). Without it, local AppImage bundling on newer host toolchains
+(e.g. Fedora 44+, glibc/binutils new enough to emit `.relr.dyn` relocation
+sections) fails with:
+
+```text
+ERROR: Strip call failed: .../usr/bin/strip: <library>: unknown type [0x13] section `.relr.dyn'
+```
+
+`linuxdeploy` vendors its own `strip` binary, which predates RELR section
+support, and aborts bundling before producing an AppImage — the host's own
+(newer) `strip` is not used regardless of `PATH` or a `STRIP` env var, since
+linuxdeploy's bundled AppImage mounts its own `usr/bin/strip`. `NO_STRIP=true`
+skips the strip step entirely, at the cost of larger, unstripped local
+binaries. Override with `NO_STRIP=false` if your toolchain doesn't hit this.
+CI release builds (`.github/workflows/release-tag.yml`,
+`release-dry-run.yml`) call `npm run tauri build` directly on
+`ubuntu-latest`, not through this Makefile target, so this default has no
+effect on published release artifacts.
+
 ## Linux AppImage WebKit crash reports
 
-Fini starts Linux WebKit with default guards from `src-tauri/src/webkit_runtime.rs`: `WEBKIT_DISABLE_DMABUF_RENDERER=1` and `WEBKIT_DISABLE_SANDBOX=1`.
 If `WebKitWebProcess` aborts in an AppImage build, capture a sanitized report that keeps the failure actionable without exposing host identifiers.
 
 Report only:
@@ -108,13 +138,13 @@ Report only:
 - Linux distro and session type (`Wayland` or `X11`)
 - The last user action before the abort
 - Whether the crash reproduces in a fresh Fini profile
-- Whether the crash still reproduces with the repo's default Linux WebKit guards in place
+- Any explicitly supplied rendering environment variables and their values
 - A redacted `coredumpctl info` or journal excerpt that keeps the process name, signal, package/build, and stack summary
 
 Do not publish raw coredumps or any user, host, machine, boot, session, or transient mount identifiers.
 Do not include local core storage paths, AppImage mount paths, or usernames in public reports.
 
-Suggested template:
+Suggested local notes template:
 
 ```text
 Fini version:
@@ -123,7 +153,7 @@ Linux distro:
 Session type:
 Trigger action:
 Fresh profile repro:
-Default Linux guards present:
+Explicit rendering environment variables:
 Sanitized coredump summary:
 Stack summary:
 ```

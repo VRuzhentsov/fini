@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Fini",
   "mainBinaryName": "fini-app",
-  "version": "0.1.37",
+  "version": "0.1.46",
   "identifier": "fini",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -25,7 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/icon.png",
@@ -38,8 +38,10 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
-      "endpoints": []
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQwMkVFNjQ5QTNCNjRCRUQKUldUdFM3YWpTZVl1MEF4WmlGYm5tc0p2MVNVVWlHaHNSbXAzMDZDblRlRFh5QzhlOTRxeHpQc0gK",
+      "endpoints": [
+        "https://github.com/VRuzhentsov/fini/releases/latest/download/latest.json"
+      ]
     }
   }
 }

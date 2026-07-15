@@ -90,6 +90,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
 | Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
+| Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
 | First-run setup, bootstrap, install, or verification of required sibling project context such as `../fini-wiki/` | `fini-dev-install` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Make a release, bump a release version for shipping, push a release tag, inspect release readiness, fix release automation, or verify release CI | `fini-release`; also load `fini-versioning` for metadata semantics and `fini-scripting` when automation changes are needed |
@@ -100,7 +101,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | QA a web/app flow and fix bugs found | `qa` |
 | QA report only, without fixes | `qa-only` |
 | Browser dogfooding, screenshots, forms, responsive checks, or live site interaction | `browse` or `gstack` |
-| Frontend UI construction or visual polish in code | `frontend-design`, then preserve existing Fini patterns |
+| Frontend UI construction or visual polish in code | `fini-frontend`, then `frontend-design` when visual design-system work is needed |
 | Code review or pre-landing diff review | `review` |
 | Ship, push, create PR, or prepare code for landing | `ship` |
 | Merge, deploy, or production verification | `land-and-deploy` or `canary` |
@@ -118,7 +119,7 @@ Never write absolute paths containing a username, home directory, or machine-spe
 
 - Use paths relative to the project root for anything inside the repo (`src-tauri/target/debug/fini`, not `/home/<user>/projects/fini/src-tauri/...`).
 - Use `~` for paths relative to the user's home directory (`~/.local/share/fini/fini.db`, not `/home/<user>/.local/...`).
-- Use `/var/tmp` for temporary files, not `/tmp` or any user-specific temp path.
+- Use a task-appropriate scoped scratch path, such as the repository's ignored `tmp/` directory or a platform-provided runtime directory. Do not prescribe a global scratch path.
 - When adding permission entries to `.claude/settings.local.json`, use relative or `~`-anchored paths only. The local config is project-specific and minimal; do not accumulate machine-specific one-off entries there.
 
 ## User-Agnostic Agent Instructions

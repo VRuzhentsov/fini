@@ -33,6 +33,17 @@ Fini replaces the todo list with a quest system inspired by RPG games like Skyri
 
 Quests are organized into **Spaces** — named contexts like Personal, Work, or any project. A Space is a lightweight container; every quest belongs to exactly one space.
 
+### Core Action Framework (Target — not all implemented yet)
+
+Fini should help users move work out of their head and into one concrete next action inside a Quest, with Focus, Spaces, and reminders helping them start, continue, and finish without guilt.
+
+- **Keep the work out of memory.** The app should hold the task so the user does not have to.
+- **Make the next action visible.** An active Quest should show the next concrete step.
+- **Keep the step small enough to start and finish.** If a Quest is too large, break it down until it is finishable.
+- **Define done before starting.** The finish line should be clear before work begins.
+- **Turn blockers into follow-up actions.** A blocker should become a separate action instead of freezing the current Quest.
+- **Let the environment help.** Focus should reduce start friction, Spaces should provide context, and reminders should bring the right work back at the right time.
+
 ### Core Principles (Target — not all implemented yet)
 
 - **One quest at a time.** No overwhelming lists. Just your current mission.
@@ -113,14 +124,22 @@ cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane
 npm run tauri build -- --features ui-plane
 ```
 
-CLI release artifacts are named by platform and architecture:
+CLI release artifacts include their Rust target so the updater cannot select an
+archive for the wrong ABI:
 
 | Platform | CLI artifact |
 |---|---|
-| Linux x64 | `fini-vX.Y.Z-linux-x64-cli.tar.gz` |
-| Linux arm64 | `fini-vX.Y.Z-linux-arm64-cli.tar.gz` |
-| Windows x64 | `fini-vX.Y.Z-windows-x64-cli.zip` |
-| Windows arm64 | `fini-vX.Y.Z-windows-arm64-cli.zip` |
+| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-gnu-cli.tar.gz` |
+| Linux arm64 | `fini-vX.Y.Z-linux-aarch64-unknown-linux-gnu-cli.tar.gz` |
+| Windows x64 | `fini-vX.Y.Z-windows-x86_64-pc-windows-msvc-cli.zip` |
+| Windows arm64 | `fini-vX.Y.Z-windows-aarch64-pc-windows-msvc-cli.zip` |
+
+`fini update` explicitly downloads, zipsign-verifies, validates, and installs the
+matching standalone archive. `fini update --dry-run` checks the matching release
+without replacing the binary. Normal CLI invocations check at most once per 24
+hours; `FINI_DISABLE_AUTO_UPDATE=1` disables only that automatic path. The CLI
+uses its embedded zipsign public key, which is separate from the Tauri desktop
+updater key and `latest.json` desktop manifest.
 
 ## Tech Stack
 
@@ -163,6 +182,11 @@ make dev
 ```bash
 make build
 ```
+
+On newer Linux toolchains (e.g. Fedora 44+), local AppImage bundling defaults to
+`NO_STRIP=true` because `linuxdeploy` vendors an older `strip` that cannot parse
+`.relr.dyn` sections emitted by those toolchains; see `src-tauri/README.md` for
+details. This only affects local builds — CI release builds are unaffected.
 
 ### Release
 

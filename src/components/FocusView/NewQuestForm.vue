@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
-import { SPACE_COLOR_CLASS, useSpaceStore } from "../../stores/space";
+import { useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { CalendarDaysIcon, PaperAirplaneIcon, XMarkIcon } from "@heroicons/vue/24/outline";
+import { CalendarDaysIcon, ChevronDownIcon, ChevronUpIcon, PaperAirplaneIcon, XMarkIcon } from "@heroicons/vue/24/outline";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
+import SpacePicker from "../SpacePicker.vue";
 
 const questStore = useQuestStore();
 const spaceStore = useSpaceStore();
@@ -17,15 +18,24 @@ const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
 const repeatRule = ref<string | null>(null);
 const reminderOpen = ref(false);
+const metadataExpanded = ref(false);
 const isSubmitting = ref(false);
+const titleInput = ref<HTMLInputElement | null>(null);
 
-const hasDraftContent = computed(
+const hasMetadataDraft = computed(
   () =>
-    title.value.trim().length > 0 ||
     description.value.trim().length > 0 ||
     !!due.value ||
     !!dueTime.value ||
     !!repeatRule.value,
+);
+
+const isExpanded = computed(() => metadataExpanded.value);
+
+const hasDraftContent = computed(
+  () =>
+    title.value.trim().length > 0 ||
+    hasMetadataDraft.value,
 );
 
 function defaultSpaceId() {
@@ -72,10 +82,6 @@ const draftQuest = computed<Quest>(() => ({
 }));
 
 const canSubmit = computed(() => title.value.trim().length > 0 && !isSubmitting.value);
-
-function spaceCss(spaceId: string): string {
-  return SPACE_COLOR_CLASS[spaceId] ?? "";
-}
 
 function formatDate(value: string): string {
   const date = new Date(value + "T00:00:00");
@@ -143,8 +149,22 @@ function clearReminder() {
   repeatRule.value = null;
 }
 
+function toggleExpanded() {
+  metadataExpanded.value = !metadataExpanded.value;
+}
+
+async function focusTitle() {
+  await nextTick();
+  titleInput.value?.focus();
+}
+
+function onReminderClose() {
+  reminderOpen.value = false;
+  void focusTitle();
+}
+
 function onTitleKeydown(event: KeyboardEvent) {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter") {
     event.preventDefault();
     void onSubmit();
   }
@@ -169,6 +189,7 @@ async function onSubmit() {
     title.value = "";
     description.value = "";
     clearReminder();
+    metadataExpanded.value = false;
   } finally {
     isSubmitting.value = false;
   }
@@ -176,309 +197,103 @@ async function onSubmit() {
 </script>
 
 <template>
-  <form class="new-quest-composer" @submit.prevent="onSubmit">
-    <div class="new-quest-title-row">
-      <span class="new-quest-check" aria-hidden="true" />
-      <textarea
-        v-model="title"
-        data-testid="chat-input"
-        class="new-quest-title"
-        placeholder="New quest"
-        rows="1"
-        :disabled="isSubmitting"
-        @keydown="onTitleKeydown"
-      />
-      <select
-        v-model="selectedSpaceId"
-        data-testid="new-quest-space"
-        class="new-quest-space"
-        :class="spaceCss(selectedSpaceId)"
-        aria-label="Quest space"
-        :disabled="isSubmitting"
-      >
-        <option v-for="space in spaceStore.spaces" :key="space.id" :value="space.id">
-          {{ space.name }}
-        </option>
-      </select>
-    </div>
-
-    <textarea
-      v-model="description"
-      data-testid="new-quest-description"
-      class="new-quest-description"
-      placeholder="Description"
-      rows="2"
-      :disabled="isSubmitting"
-    />
-
-    <div class="new-quest-footer">
-      <div class="new-quest-date-wrap">
-        <button
-          type="button"
-          data-testid="new-quest-reminder"
-          class="new-quest-date"
-          :class="{ set: reminderText }"
+  <div class="chat-composer-bar fixed inset-x-0 bottom-0 z-50 w-full border-t border-base-300 bg-base-100 p-1">
+    <form class="flex w-full flex-col gap-2 rounded-lg border border-base-300 bg-base-100 p-3 shadow-sm" @submit.prevent="onSubmit">
+      <div class="flex items-start gap-2">
+        <input
+          ref="titleInput"
+          v-model="title"
+          type="text"
+          data-testid="chat-input"
+          class="input input-ghost min-h-0 flex-1 p-0 text-base font-semibold leading-tight focus:outline-none"
+          placeholder="New quest"
           :disabled="isSubmitting"
-          @click.stop="reminderOpen = true"
-        >
-          <CalendarDaysIcon />
-          <span>{{ reminderText || "Date" }}</span>
-        </button>
-        <button
-          v-if="reminderText"
-          type="button"
-          data-testid="new-quest-clear-reminder"
-          class="new-quest-clear-date"
-          aria-label="Clear date"
+          @keydown="onTitleKeydown"
+        />
+        <SpacePicker
+          v-model="selectedSpaceId"
+          class="max-w-[42%] shrink-0"
+          menu-placement="top"
+          test-id="new-quest-space"
+          aria-label="Quest space"
+          :allow-all="false"
           :disabled="isSubmitting"
-          @click.stop="clearReminder"
-        >
-          <XMarkIcon />
-        </button>
+        />
       </div>
 
-      <button
-        type="submit"
-        data-testid="chat-submit"
-        class="new-quest-submit"
-        :disabled="!canSubmit"
-        aria-label="Create quest"
-      >
-        <PaperAirplaneIcon />
-      </button>
-    </div>
-  </form>
+      <div v-if="isExpanded" class="flex flex-col gap-2 border-t border-base-300 pt-2">
+        <textarea
+          v-model="description"
+          data-testid="new-quest-description"
+          class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
+          placeholder="Description"
+          rows="2"
+          :disabled="isSubmitting"
+        />
+
+      </div>
+
+      <div class="flex items-center justify-between gap-2 pt-1">
+        <div class="flex min-w-0 flex-wrap items-center gap-1">
+          <button
+            type="button"
+            data-testid="new-quest-reminder"
+            class="btn btn-ghost btn-sm min-w-0 gap-2 px-2"
+            :class="{ 'text-success': reminderText }"
+            :disabled="isSubmitting"
+            @click.stop="reminderOpen = true"
+          >
+            <CalendarDaysIcon class="size-5 shrink-0" />
+            <span class="truncate">{{ reminderText || "Date" }}</span>
+          </button>
+          <button
+            v-if="reminderText"
+            type="button"
+            data-testid="new-quest-clear-reminder"
+            class="btn btn-ghost btn-xs btn-square"
+            aria-label="Clear date"
+            :disabled="isSubmitting"
+            @click.stop="clearReminder"
+          >
+            <XMarkIcon class="size-4" />
+          </button>
+          <button
+            type="button"
+            data-testid="new-quest-expand"
+            class="btn btn-ghost btn-sm gap-1 px-2"
+            :aria-expanded="isExpanded"
+            :disabled="isSubmitting"
+            @click="toggleExpanded"
+          >
+            <ChevronUpIcon v-if="isExpanded" class="size-4" />
+            <ChevronDownIcon v-else class="size-4" />
+            <span>{{ isExpanded ? "Less" : "More" }}</span>
+          </button>
+        </div>
+
+        <button
+          type="submit"
+          data-testid="chat-submit"
+          class="btn btn-primary btn-sm btn-square shrink-0"
+          :disabled="!canSubmit"
+          aria-label="Create quest"
+        >
+          <PaperAirplaneIcon class="size-5" />
+        </button>
+      </div>
+    </form>
+  </div>
 
   <ReminderMenu
     v-if="reminderOpen && !isSubmitting"
     :quest="draftQuest"
-    @close="reminderOpen = false"
+    @close="onReminderClose"
     @save="onReminderSave"
   />
 </template>
 
 <style scoped>
-.new-quest-composer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.75rem 0.875rem 0.625rem;
-  color: var(--fg-1);
-  background: var(--color-base-100);
-  border: 1px solid var(--color-border-soft);
-  border-radius: 14px;
-  box-shadow: var(--shadow-sm);
-}
-
-.new-quest-title-row {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-}
-
-.new-quest-check {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  border: 1.5px solid var(--fg-5);
-  border-radius: 4px;
-}
-
-.new-quest-title {
-  min-width: 0;
-  flex: 1;
-  padding: 0.125rem 0;
-  color: var(--fg-1);
-  font: 600 15px/1.3 Inter, Avenir, Helvetica, Arial, sans-serif;
-  letter-spacing: -0.01em;
-  background: transparent;
-  border: 0;
-  outline: none;
-}
-
-.new-quest-title::placeholder {
-  color: var(--fg-5);
-}
-
-.new-quest-description {
-  min-height: 2.75rem;
-  padding: 0.125rem 0 0.125rem calc(18px + 0.625rem);
-  color: var(--fg-2);
-  font: 400 13px/1.35 Inter, Avenir, Helvetica, Arial, sans-serif;
-  resize: vertical;
-  background: transparent;
-  border: 0;
-  outline: none;
-}
-
-.new-quest-description::placeholder {
-  color: var(--fg-5);
-}
-
-.new-quest-space {
-  max-width: 42%;
-  min-width: 6.5rem;
-  height: 1.375rem;
-  flex-shrink: 0;
-  padding: 0 1.5rem 0 0.5rem;
-  overflow: hidden;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  line-height: 1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border: 0;
-  border-radius: 5px;
-  outline: 0;
-}
-
-.new-quest-space.space-color-personal,
-.new-quest-space.space-color-work {
-  color: #fff;
-}
-
-.new-quest-space.space-color-family {
-  color: #1a1a1a;
-}
-
-.new-quest-space.space-color-personal {
-  background: var(--space-color-personal);
-}
-
-.new-quest-space.space-color-family {
-  background: var(--space-color-family);
-}
-
-.new-quest-space.space-color-work {
-  background: var(--space-color-work);
-}
-
-.new-quest-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding-top: 0.5rem;
-}
-
-.new-quest-date-wrap {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.new-quest-date {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.375rem 0.625rem 0.375rem 0.25rem;
-  color: var(--fg-1);
-  font: 600 13px/1 Inter, Avenir, Helvetica, Arial, sans-serif;
-  cursor: pointer;
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-}
-
-.new-quest-date:hover {
-  background: var(--color-base-200);
-}
-
-.new-quest-date:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.new-quest-date:disabled:hover {
-  background: transparent;
-}
-
-.new-quest-date svg {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  color: var(--fg-3);
-  stroke-width: 1.7;
-}
-
-.new-quest-date span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.new-quest-date.set,
-.new-quest-date.set svg {
-  color: var(--color-success);
-}
-
-.new-quest-clear-date,
-.new-quest-submit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  padding: 0;
-  cursor: pointer;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-}
-
-.new-quest-clear-date {
-  color: var(--fg-4);
-}
-
-.new-quest-clear-date:hover {
-  color: var(--fg-1);
-  background: var(--color-base-200);
-}
-
-.new-quest-clear-date:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.new-quest-clear-date:disabled:hover {
-  color: var(--fg-4);
-  background: transparent;
-}
-
-.new-quest-submit {
-  color: var(--color-primary-content);
-  background: var(--color-primary);
-}
-
-.new-quest-submit:hover:not(:disabled) {
-  filter: brightness(0.92);
-}
-
-.new-quest-submit:disabled {
-  cursor: not-allowed;
-  opacity: 0.3;
-}
-
-.new-quest-clear-date svg,
-.new-quest-submit svg {
-  width: 18px;
-  height: 18px;
-  stroke-width: 1.7;
-}
-
-@media (max-width: 420px) {
-  .new-quest-title-row {
-    flex-wrap: wrap;
-  }
-
-  .new-quest-space {
-    max-width: none;
-    margin-left: calc(18px + 0.625rem);
-  }
+.chat-composer-bar {
+  padding-bottom: calc(0.25rem + env(safe-area-inset-bottom));
 }
 </style>

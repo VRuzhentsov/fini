@@ -150,9 +150,9 @@ mod tests {
 
     #[test]
     fn desktop_entry_quotes_appimage_path() {
-        let entry = desktop_entry_for(Path::new("/var/tmp/Fini Folder/Fini.AppImage"));
+        let entry = desktop_entry_for(Path::new("Fini Folder/Fini.AppImage"));
 
-        assert!(entry.contains("Exec=\"/var/tmp/Fini Folder/Fini.AppImage\" %U"));
+        assert!(entry.contains("Exec=\"Fini Folder/Fini.AppImage\" %U"));
         assert!(entry.contains("Icon=fini-app"));
         assert!(entry.contains("StartupWMClass=fini-app"));
         assert!(entry.contains("Categories=Utility;"));
@@ -160,9 +160,9 @@ mod tests {
 
     #[test]
     fn desktop_entry_escapes_percent_in_appimage_path() {
-        let entry = desktop_entry_for(Path::new("/var/tmp/Fini%20Folder/Fini.AppImage"));
+        let entry = desktop_entry_for(Path::new("Fini%20Folder/Fini.AppImage"));
 
-        assert!(entry.contains("Exec=\"/var/tmp/Fini%%20Folder/Fini.AppImage\" %U"));
+        assert!(entry.contains("Exec=\"Fini%%20Folder/Fini.AppImage\" %U"));
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
     }
 
     fn test_dir(name: &str) -> PathBuf {
-        let path = PathBuf::from("/var/tmp").join(format!(
+        let path = std::env::temp_dir().join(format!(
             "fini-appimage-desktop-{}-{name}",
             std::process::id()
         ));

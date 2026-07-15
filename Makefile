@@ -8,7 +8,8 @@ FINI_BE_UNIT_IMAGE ?= fini-be-unit-test
 FINI_BE_CACHE_IMAGE_PREFIX ?=
 FINI_BE_CACHE_PUSH ?= 0
 FINI_E2E_CI_RUN_ID ?= pr-gate
-FINI_E2E_CI_RUN_DIR ?= /var/tmp/fini-e2e-$(FINI_E2E_CI_RUN_ID)
+FINI_SCRATCH_DIR ?= $(CURDIR)/tmp
+FINI_E2E_CI_RUN_DIR ?= $(FINI_SCRATCH_DIR)/fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
 FINI_E2E_CI_ACTORS ?= actor-a,actor-b
 FINI_E2E_CI_ACTOR_WAIT_SECS ?= 180
@@ -16,6 +17,13 @@ FINI_DEV_RUNNER_IMAGE ?= fini-dev-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
 RELEASE_BUNDLES ?= deb,rpm
+# linuxdeploy vendors an older `strip` that cannot parse `.relr.dyn` sections
+# emitted by newer host toolchains (e.g. Fedora 44+), which aborts local Linux
+# bundling before it produces an AppImage. Skip stripping by default for local
+# builds; override with NO_STRIP=false if your toolchain doesn't need this.
+# CI release builds run `npm run tauri build` directly, not this target, so
+# this default has no effect on published release artifacts.
+NO_STRIP ?= true
 
 .PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-devices android-debug-deploy android-debug-deploy-debug android-release-deploy-local flatpak-install-local
 
@@ -66,7 +74,8 @@ require-container:
 
 dev:
 	@set -eu; \
-	capability_backup="$$(mktemp /var/tmp/fini-default-capability.XXXXXX)"; \
+	mkdir -p "$(FINI_SCRATCH_DIR)"; \
+	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
 	cp src-tauri/capabilities/default.json "$$capability_backup"; \
 	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
 	trap restore_capability EXIT INT TERM; \
@@ -271,11 +280,12 @@ e2e-build:
 # Builds the local binaries, then lets the Playwright fixtures spawn the real app processes.
 e2e-headed:
 	@set -eu; \
-	run_root="$${FINI_E2E_ROOT:-/var/tmp/fini-e2e-headed}"; \
+	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-headed}"; \
 	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
 	app_bin_path="$$e2e_target_dir/debug/fini-app"; \
 	cli_bin_path="$$e2e_target_dir/debug/fini"; \
-	capability_backup="$$(mktemp /var/tmp/fini-default-capability.XXXXXX)"; \
+	mkdir -p "$(FINI_SCRATCH_DIR)"; \
+	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
 	cp src-tauri/capabilities/default.json "$$capability_backup"; \
 	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
 	trap restore_capability EXIT INT TERM; \
@@ -300,7 +310,7 @@ runtime-smoke:
 
 pre-release-check:
 	@set -eu; \
-	log_dir="$${PRE_RELEASE_LOG_DIR:-/var/tmp/fini-pre-release}"; \
+	log_dir="$${PRE_RELEASE_LOG_DIR:-$(FINI_SCRATCH_DIR)/fini-pre-release}"; \
 	mkdir -p "$$log_dir"; \
 	log_file="$$log_dir/pre-release-check-$$(date -u +%Y%m%dT%H%M%SZ).log"; \
 	printf 'Writing pre-release log: %s\n' "$$log_file"; \
@@ -408,7 +418,8 @@ android-sign-release-local:
 	    echo "Set ANDROID_KEYSTORE_PATH or ANDROID_KEYSTORE_BASE64 for local release signing"; \
 	    exit 1; \
 	  fi; \
-	  keystore_path="/var/tmp/fini-release.keystore"; \
+	  mkdir -p "$(FINI_SCRATCH_DIR)"; \
+	  keystore_path="$(FINI_SCRATCH_DIR)/fini-release.keystore"; \
 	  printf '%s' "$$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$$keystore_path"; \
 	fi; \
 	test -f "$$keystore_path" || (echo "Release keystore not found: $$keystore_path" && exit 1); \
