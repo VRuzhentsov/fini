@@ -4,12 +4,13 @@ use diesel::sqlite::SqliteConnection;
 use serde_json::{json, Value};
 
 use crate::models::{
-    CreateQuestInput, CreateReminderInput, CreateSpaceInput, UpdateQuestInput, UpdateSpaceInput,
+    CreateQuestInput, CreateReminderInput, CreateSpaceInput, QuestUpdatePatch, UpdateQuestInput,
+    UpdateSpaceInput,
 };
-use crate::schema::quests;
+
 use crate::services::backup;
 use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
-use crate::services::db::{db_default_path, try_open_db_at_path, utc_now};
+use crate::services::db::{db_default_path, try_open_db_at_path};
 use crate::services::device_connection::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
 };
@@ -26,9 +27,9 @@ use crate::services::device_connection::{
     device_connection_update_last_seen_impl, DeviceConnectionState,
 };
 use crate::services::quest::{
-    append_focus_history, record_focus_enter, resolve_active_quest, QuestRepository,
+    append_focus_history, record_focus_enter, resolve_active_quest, QuestService,
 };
-use crate::services::reminder::ReminderRepository;
+use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
 use crate::services::space_sync::outbox::emit_sync_event;
@@ -160,13 +161,13 @@ struct QuestCreateArgs {
     title: String,
     #[arg(long)]
     space_id: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     description: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due_time: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     repeat_rule: Option<String>,
 }
 
@@ -176,7 +177,7 @@ struct QuestUpdateArgs {
     id: String,
     #[arg(long)]
     title: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     description: Option<String>,
     #[arg(long)]
     status: Option<String>,
@@ -184,11 +185,11 @@ struct QuestUpdateArgs {
     space_id: Option<String>,
     #[arg(long)]
     pinned: Option<bool>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due_time: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     repeat_rule: Option<String>,
     #[arg(long)]
     order_rank: Option<f64>,
@@ -619,29 +620,14 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
                 .map(|value| value.unwrap_or(Value::Null))
         }
         FocusCommand::Set(args) => {
-            let quest = quests::table
-                .find(&args.quest_id)
-                .filter(quests::status.eq("active"))
-                .select(crate::models::Quest::as_select())
-                .first(&mut conn)
-                .optional()
-                .map_err(|e| CliError::runtime(e.to_string()))?
-                .ok_or_else(|| {
-                    CliError::from_string("cannot set Focus on non-active quest".to_string())
-                })?;
-            diesel::update(quests::table.find(&quest.id))
-                .set(quests::updated_at.eq(utc_now()))
-                .execute(&mut conn)
-                .map_err(|e| CliError::runtime(e.to_string()))?;
             let trigger = if args.trigger.as_deref() == Some("reminder") {
                 "reminder"
             } else {
                 "manual"
             };
-            append_focus_history(&mut conn, &quest.id, &quest.space_id, trigger)
+            let quest = QuestService::new(&mut conn)
+                .set_focus(&args.quest_id, trigger)
                 .map_err(CliError::from_string)?;
-            let quest = record_focus_enter(&mut conn, &quest)
-                .map_err(|e| CliError::runtime(e.to_string()))?;
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
     }
@@ -652,7 +638,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
     match command {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
-            let quests: Vec<_> = QuestRepository::new(&mut conn)
+            let quests: Vec<_> = QuestService::new(&mut conn)
                 .list_for_ui()
                 .map_err(CliError::from_string)?
                 .into_iter()
@@ -667,7 +653,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quests": quests }))
         }
         QuestCommand::Get(args) => serde_json::to_value(
-            QuestRepository::new(&mut conn)
+            QuestService::new(&mut conn)
                 .get(&args.id)
                 .map_err(CliError::from_string)?,
         )
@@ -684,14 +670,14 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 repeat_rule: args.repeat_rule,
                 order_rank: None,
             };
-            let created = QuestRepository::new(&mut conn)
+            let created = QuestService::new(&mut conn)
                 .create(input)
                 .map_err(CliError::from_string)?;
             if let Some(series) = &created.series {
                 emit_series_sync(ctx, &mut conn, series);
             }
             if created.quest.status == "active" && created.quest.due.is_some() {
-                let _ = ReminderRepository::new(&mut conn).upsert_for_quest(&created.quest);
+                let _ = ReminderService::new(&mut conn).upsert_for_quest(&created.quest);
             }
             emit_quest_sync(ctx, &mut conn, &created.quest, "upsert");
             serde_json::to_value(created.quest).map_err(|e| CliError::runtime(e.to_string()))
@@ -700,15 +686,15 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         QuestCommand::Complete(args) => update_quest_status(ctx, &mut conn, args.id, "completed"),
         QuestCommand::Abandon(args) => update_quest_status(ctx, &mut conn, args.id, "abandoned"),
         QuestCommand::Delete(args) => {
-            let quest = QuestRepository::new(&mut conn)
+            let quest = QuestService::new(&mut conn)
                 .delete(&args.id)
                 .map_err(CliError::from_string)?;
-            let _ = ReminderRepository::new(&mut conn).delete_for_quest(&quest.id);
+            let _ = ReminderService::new(&mut conn).delete_for_quest(&quest.id);
             emit_quest_sync(ctx, &mut conn, &quest, "delete");
             Ok(json!({ "deleted": true, "id": args.id }))
         }
         QuestCommand::History => {
-            let mut quests: Vec<_> = QuestRepository::new(&mut conn)
+            let mut quests: Vec<_> = QuestService::new(&mut conn)
                 .list_for_ui()
                 .map_err(CliError::from_string)?
                 .into_iter()
@@ -724,43 +710,63 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
     }
 }
 
+fn parse_nullable_quest_patch(value: Option<String>) -> crate::models::QuestFieldPatch<String> {
+    match value {
+        None => crate::models::QuestFieldPatch::Unchanged,
+        Some(value) if value == "null" => crate::models::QuestFieldPatch::Clear,
+        Some(value) => crate::models::QuestFieldPatch::Set(value),
+    }
+}
+
 fn update_quest_from_cli(
     ctx: &CliContext,
     conn: &mut diesel::sqlite::SqliteConnection,
     args: QuestUpdateArgs,
 ) -> CliResult<Value> {
+    let description = parse_nullable_quest_patch(args.description);
+    let due = parse_nullable_quest_patch(args.due);
+    let due_time = parse_nullable_quest_patch(args.due_time);
+    let repeat_rule = parse_nullable_quest_patch(args.repeat_rule);
     let input = UpdateQuestInput {
         space_id: args.space_id,
         title: args.title,
-        description: args.description,
+        description: None,
         status: args.status.clone(),
         energy: None,
         priority: None,
         pinned: args.pinned,
-        due: args.due,
-        due_time: args.due_time,
-        repeat_rule: args.repeat_rule,
+        due: None,
+        due_time: None,
+        repeat_rule: None,
         order_rank: args.order_rank,
     };
-    let result = QuestRepository::new(conn)
-        .update(&args.id, input)
+    let patch = QuestUpdatePatch {
+        input,
+        description,
+        due,
+        due_time,
+        repeat_rule,
+    };
+    let result = QuestService::new(conn)
+        .update_patch(&args.id, patch)
         .map_err(CliError::from_string)?;
+    let quest = result.quest;
     if args.trigger_reminder_focus {
-        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "reminder")
+        append_focus_history(conn, &quest.id, &quest.space_id, "reminder")
             .map_err(CliError::from_string)?;
     } else if args.set_focus
         || args.status.as_deref() == Some("active")
         || result.restore_should_focus
     {
-        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "manual")
+        append_focus_history(conn, &quest.id, &quest.space_id, "manual")
             .map_err(CliError::from_string)?;
     }
-    sync_reminder_rows(conn, &result.quest);
+    sync_reminder_rows(conn, &quest);
     if let Some(ref occurrence) = result.next_occurrence {
         sync_reminder_rows(conn, occurrence);
     }
-    emit_quest_sync(ctx, conn, &result.quest, "upsert");
-    serde_json::to_value(result.quest).map_err(|e| CliError::runtime(e.to_string()))
+    emit_quest_sync(ctx, conn, &quest, "upsert");
+    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
 }
 
 fn update_quest_status(
@@ -790,11 +796,7 @@ fn update_quest_status(
 }
 
 fn sync_reminder_rows(conn: &mut diesel::sqlite::SqliteConnection, quest: &crate::models::Quest) {
-    if quest.status == "active" && quest.due.is_some() {
-        let _ = ReminderRepository::new(conn).upsert_for_quest(quest);
-    } else {
-        let _ = ReminderRepository::new(conn).delete_for_quest(&quest.id);
-    }
+    let _ = ReminderService::new(conn).reconcile(quest);
 }
 
 fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
@@ -879,13 +881,13 @@ fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Valu
     let mut conn = ctx.open_db()?;
     match command {
         ReminderCommand::List(args) => serde_json::to_value(
-            ReminderRepository::new(&mut conn)
+            ReminderService::new(&mut conn)
                 .list_for_quest(&args.quest_id)
                 .map_err(CliError::from_string)?,
         )
         .map_err(|e| CliError::runtime(e.to_string())),
         ReminderCommand::Create(args) => serde_json::to_value(
-            ReminderRepository::new(&mut conn)
+            ReminderService::new(&mut conn)
                 .create(CreateReminderInput {
                     quest_id: args.quest_id,
                     kind: args.kind,
@@ -896,7 +898,7 @@ fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Valu
         )
         .map_err(|e| CliError::runtime(e.to_string())),
         ReminderCommand::Delete(args) => {
-            ReminderRepository::new(&mut conn)
+            ReminderService::new(&mut conn)
                 .delete(&args.id)
                 .map_err(CliError::from_string)?;
             Ok(json!({ "deleted": true, "id": args.id }))
@@ -1245,6 +1247,25 @@ mod tests {
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn nullable_update_argument_distinguishes_omitted_text_empty_and_literal_null() {
+        use crate::models::QuestFieldPatch;
+
+        assert_eq!(parse_nullable_quest_patch(None), QuestFieldPatch::Unchanged);
+        assert_eq!(
+            parse_nullable_quest_patch(Some("notes".to_string())),
+            QuestFieldPatch::Set("notes".to_string())
+        );
+        assert_eq!(
+            parse_nullable_quest_patch(Some(String::new())),
+            QuestFieldPatch::Set(String::new())
+        );
+        assert_eq!(
+            parse_nullable_quest_patch(Some("null".to_string())),
+            QuestFieldPatch::Clear
+        );
+    }
 
     #[test]
     fn cli_auto_update_is_disabled_for_debug_test_builds() {
