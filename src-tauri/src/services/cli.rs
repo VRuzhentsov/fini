@@ -73,6 +73,8 @@ enum Command {
         #[command(subcommand)]
         command: BackupCommand,
     },
+    #[command(about = "Export selected spaces to a backup archive")]
+    Export(BackupExportArgs),
     Reminder {
         #[command(subcommand)]
         command: ReminderCommand,
@@ -229,11 +231,14 @@ enum BackupCommand {
 
 #[derive(Args)]
 struct BackupExportArgs {
-    #[arg(long)]
+    #[arg(long, help = "Destination backup archive path")]
     path: String,
-    #[arg(long = "space-id")]
+    #[arg(
+        long = "space-id",
+        help = "Space ID to export; repeat for multiple spaces"
+    )]
     space_id: Vec<String>,
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, action = ArgAction::SetTrue, help = "Export every space")]
     all_spaces: bool,
 }
 
@@ -551,6 +556,7 @@ fn execute(cli: Cli) -> CliResult<i32> {
         Some(Command::Quest { command }) => handle_quest(&ctx, command)?,
         Some(Command::Space { command }) => handle_space(&ctx, command)?,
         Some(Command::Backup { command }) => handle_backup(&ctx, command)?,
+        Some(Command::Export(args)) => handle_export(&ctx, args, "export")?,
         Some(Command::Reminder { command }) => handle_reminder(&ctx, command)?,
         Some(Command::Device { command }) => handle_device(&ctx, command)?,
         Some(Command::Sync { command }) => handle_sync(&ctx, command)?,
@@ -842,39 +848,46 @@ fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
 }
 
 fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
-    let mut conn = ctx.open_db()?;
-    let value = match command {
-        BackupCommand::Export(args) => {
-            if args.all_spaces && !args.space_id.is_empty() {
-                return Err(CliError::from_string(
-                    "cannot combine --all-spaces with --space-id".to_string(),
-                ));
-            }
-            let space_ids = if args.all_spaces {
-                crate::schema::spaces::table
-                    .select(crate::schema::spaces::id)
-                    .load::<String>(&mut conn)
-                    .map_err(|e| CliError::runtime(e.to_string()))?
-            } else if args.space_id.is_empty() {
-                return Err(CliError::from_string(
-                    "backup export requires --space-id or --all-spaces".to_string(),
-                ));
-            } else {
-                args.space_id
-            };
-            serde_json::to_value(
-                backup::export_backup(&mut conn, std::path::Path::new(&args.path), &space_ids)
-                    .map_err(CliError::from_string)?,
-            )
-            .map_err(|e| CliError::runtime(e.to_string()))?
-        }
+    match command {
+        BackupCommand::Export(args) => handle_export(ctx, args, "backup export"),
         BackupCommand::Import(args) => serde_json::to_value(
-            backup::import_cli(&mut conn, std::path::Path::new(&args.path), args.force)
-                .map_err(CliError::from_string)?,
+            backup::import_cli(
+                &mut ctx.open_db()?,
+                std::path::Path::new(&args.path),
+                args.force,
+            )
+            .map_err(CliError::from_string)?,
         )
-        .map_err(|e| CliError::runtime(e.to_string()))?,
+        .map_err(|e| CliError::runtime(e.to_string())),
+    }
+}
+
+fn handle_export(ctx: &CliContext, args: BackupExportArgs, command_name: &str) -> CliResult<Value> {
+    if args.all_spaces && !args.space_id.is_empty() {
+        return Err(CliError::from_string(
+            "cannot combine --all-spaces with --space-id".to_string(),
+        ));
+    }
+
+    let mut conn = ctx.open_db()?;
+    let space_ids = if args.all_spaces {
+        crate::schema::spaces::table
+            .select(crate::schema::spaces::id)
+            .load::<String>(&mut conn)
+            .map_err(|e| CliError::runtime(e.to_string()))?
+    } else if args.space_id.is_empty() {
+        return Err(CliError::from_string(format!(
+            "{command_name} requires --space-id or --all-spaces"
+        )));
+    } else {
+        args.space_id
     };
-    Ok(value)
+
+    serde_json::to_value(
+        backup::export_backup(&mut conn, std::path::Path::new(&args.path), &space_ids)
+            .map_err(CliError::from_string)?,
+    )
+    .map_err(|e| CliError::runtime(e.to_string()))
 }
 
 fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Value> {
@@ -1265,6 +1278,92 @@ mod tests {
             parse_nullable_quest_patch(Some("null".to_string())),
             QuestFieldPatch::Clear
         );
+    }
+
+    #[test]
+    fn export_parser_preserves_repeated_space_ids() {
+        let cli = Cli::try_parse_from([
+            "fini",
+            "export",
+            "--path",
+            "backup.zip",
+            "--space-id",
+            "space-a",
+            "--space-id",
+            "space-b",
+        ])
+        .expect("parse top-level export");
+
+        let args = match cli.command {
+            Some(Command::Export(args)) => args,
+            _ => panic!("expected top-level export command"),
+        };
+
+        assert_eq!(args.path, "backup.zip");
+        assert_eq!(args.space_id, ["space-a", "space-b"]);
+        assert!(!args.all_spaces);
+    }
+
+    #[test]
+    fn top_level_export_rejects_missing_scope() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-export-requires-scope");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let result = execute(Cli {
+            json: true,
+            command: Some(Command::Export(BackupExportArgs {
+                path: db_path.with_extension("zip").to_string_lossy().into_owned(),
+                space_id: vec![],
+                all_spaces: false,
+            })),
+        });
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(&db_path);
+
+        let err = result.expect_err("export without a scope must fail");
+        assert_eq!(err.code, EXIT_RUNTIME);
+        assert_eq!(err.message, "export requires --space-id or --all-spaces");
+    }
+
+    #[test]
+    fn top_level_export_accepts_all_spaces_and_writes_json_result() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-export-all-spaces");
+        let export_path = db_path.with_extension("zip");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = match CliContext::new() {
+            Ok(ctx) => ctx,
+            Err(err) => panic!("initialize isolated CLI database: {}", err.message),
+        };
+        handle_space(
+            &ctx,
+            SpaceCommand::Create(SpaceCreateArgs {
+                name: "Exported space".to_string(),
+            }),
+        )
+        .unwrap_or_else(|err| panic!("seed isolated database with a space: {}", err.message));
+
+        let result = execute(Cli {
+            json: true,
+            command: Some(Command::Export(BackupExportArgs {
+                path: export_path.to_string_lossy().into_owned(),
+                space_id: vec![],
+                all_spaces: true,
+            })),
+        });
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(&db_path);
+
+        assert_eq!(
+            result.unwrap_or_else(|err| panic!("export all spaces: {}", err.message)),
+            EXIT_SUCCESS
+        );
+        assert!(export_path.exists(), "export should write a backup archive");
+        let _ = std::fs::remove_file(export_path);
     }
 
     #[test]
