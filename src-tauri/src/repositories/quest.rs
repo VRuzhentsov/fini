@@ -388,7 +388,10 @@ impl<'a> QuestRepository<'a> {
 
     fn clear_due(&mut self, id: &str) -> Result<(), String> {
         diesel::update(quests::table.find(id))
-            .set(quests::due.eq::<Option<String>>(None))
+            .set((
+                quests::due.eq::<Option<String>>(None),
+                quests::period_key.eq::<Option<String>>(None),
+            ))
             .execute(self.conn)
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -487,6 +490,57 @@ mod tests {
         assert_eq!(updated.due.as_deref(), Some("2026-04-01"));
         assert_eq!(updated.due_time.as_deref(), Some("10:30"));
         assert_eq!(updated.repeat_rule.as_deref(), Some("weekly"));
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn update_patch_clear_due_clears_series_period_key() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let (created, series) = QuestRepository::new(&mut conn)
+            .create_series_and_quest(crate::models::CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "nullable series patch".to_string(),
+                description: None,
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some("weekly".to_string()),
+                order_rank: None,
+            })
+            .expect("create series quest");
+
+        let (_, updated) = QuestRepository::new(&mut conn)
+            .update_patch(
+                &created.id,
+                QuestUpdatePatch {
+                    input: UpdateQuestInput {
+                        space_id: None,
+                        title: None,
+                        description: None,
+                        status: None,
+                        energy: None,
+                        priority: None,
+                        pinned: None,
+                        due: None,
+                        due_time: None,
+                        repeat_rule: None,
+                        order_rank: None,
+                    },
+                    description: QuestFieldPatch::Unchanged,
+                    due: QuestFieldPatch::Clear,
+                    due_time: QuestFieldPatch::Unchanged,
+                    repeat_rule: QuestFieldPatch::Unchanged,
+                },
+            )
+            .expect("clear nullable due patch");
+
+        assert_eq!(updated.due, None);
+        assert_eq!(updated.period_key, None);
+        assert!(!QuestRepository::new(&mut conn)
+            .series_has_occurrence(&series.id, "2026-04-01")
+            .expect("check old period key"));
         let _ = std::fs::remove_file(db_path);
     }
 }
