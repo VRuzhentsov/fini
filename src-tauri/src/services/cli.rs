@@ -1223,6 +1223,7 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::services::db::temp_db_path;
+    use clap::CommandFactory;
     use std::path::Path;
 
     fn seed_unknown_schema_migration_db(db_path: &Path) {
@@ -1245,6 +1246,24 @@ mod tests {
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn cli_help_does_not_expose_mcp_command() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(!help.contains("mcp"));
+        assert!(!help.contains("MCP"));
+    }
+
+    #[test]
+    fn cli_rejects_mcp_command() {
+        let err = match Cli::try_parse_from(["fini", "mcp"]) {
+            Ok(_) => panic!("mcp is not a CLI command"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
 
     #[test]
     fn cli_auto_update_is_disabled_for_debug_test_builds() {

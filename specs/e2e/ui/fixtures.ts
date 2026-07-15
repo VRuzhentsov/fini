@@ -41,6 +41,7 @@ const tauriCommand = process.env.FINI_APP_BINARY
 export const { test, expect } = createTauriTest({
   tauriCommand,
   tauriCwd: process.cwd(),
+  // Third-party tauri-playwright runtime-control terminology; not a supported Fini MCP surface.
   mcpSocket: join(e2eUiRoot, 'fini-playwright.sock'),
   startTimeout: 240,
 });

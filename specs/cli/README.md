@@ -1,6 +1,8 @@
 # CLI Binary Contract
 
-Fini exposes a CLI-only binary named `fini` for synchronous automation.
+Fini exposes a CLI-only binary named `fini` for synchronous automation. The CLI
+is the supported Fini automation interface; Fini does not expose a supported
+app-facing MCP command or server surface.
 
 ## Entry Points
 
@@ -19,6 +21,11 @@ Fini exposes a CLI-only binary named `fini` for synchronous automation.
 - Desktop app builds enable only `ui-plane`; local automation uses the separate `fini` CLI binary.
 - Docker runtime builds enable only `cli-plane` and expose the CLI binary by default.
 - Mobile builds enable only `ui-plane`; adding `cli-plane` to mobile builds violates this contract.
+
+Tauri runtime-control hooks used by the E2E harness, including third-party
+Playwright socket terminology such as `mcpSocket`, are test tooling only. They
+are separate from Fini's supported CLI automation boundary and must not be
+documented as a user-facing Fini MCP interface.
 
 ## Release Artifacts
 

@@ -282,7 +282,7 @@ podman run --rm fini-runtime
 
 # explicit CLI commands
 podman run --rm fini-runtime --help
-podman run --rm -v fini-data:/data fini-runtime app
+podman run --rm -v fini-data:/data fini-runtime space list
 ```
 
 The published container image is CLI-first and uses the release binary. The e2e image is built from a separate `test` target and is not published as the runtime artifact.
