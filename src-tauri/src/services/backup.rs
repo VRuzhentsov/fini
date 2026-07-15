@@ -58,6 +58,19 @@ pub struct BackupExportResult {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct BackupArchiveInspection {
+    pub valid: bool,
+    pub manifest: BackupManifest,
+    pub contents: BackupArchiveContents,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupArchiveContents {
+    pub spaces: Vec<ManifestSpace>,
+    pub counts: ManifestCounts,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BackupImportPreflight {
     pub manifest: BackupManifest,
     pub required_space_mappings: Vec<BackupSpaceMappingRequest>,
@@ -296,6 +309,41 @@ pub fn preflight_import(
         required_space_mappings,
         conflicts,
     })
+}
+
+/// Read and validate a backup archive without accessing a local Fini database.
+pub fn inspect_backup(path: &Path) -> Result<BackupArchiveInspection, String> {
+    let extracted = extract_backup(path)?;
+    let result = (|| {
+        let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
+            .map_err(|e| format!("failed to open backup database: {e}"))?;
+        validate_backup_schema(&mut backup_conn)?;
+        validate_manifest(&extracted.manifest)?;
+
+        let spaces = load_backup_spaces(&mut backup_conn)?;
+        let quest_series = load_backup_series(&mut backup_conn)?;
+        let quests = load_backup_quests(&mut backup_conn)?;
+        Ok(BackupArchiveInspection {
+            valid: true,
+            manifest: extracted.manifest,
+            contents: BackupArchiveContents {
+                spaces: spaces
+                    .iter()
+                    .map(|space| ManifestSpace {
+                        id: space.id.clone(),
+                        name: space.name.clone(),
+                    })
+                    .collect(),
+                counts: ManifestCounts {
+                    spaces: spaces.len(),
+                    quest_series: quest_series.len(),
+                    quests: quests.len(),
+                },
+            },
+        })
+    })();
+    let _ = fs::remove_dir_all(&extracted.temp_dir);
+    result
 }
 
 pub fn apply_import(
@@ -552,9 +600,16 @@ fn extract_backup(path: &Path) -> Result<ExtractedBackup, String> {
 
     let temp_dir = create_temp_dir("import")?;
     let db_path = temp_dir.join(BACKUP_DB_NAME);
-    let mut db_file = archive.by_name(BACKUP_DB_NAME).map_err(|e| e.to_string())?;
-    let mut out = File::create(&db_path).map_err(|e| e.to_string())?;
-    std::io::copy(&mut db_file, &mut out).map_err(|e| e.to_string())?;
+    let extraction: Result<(), String> = (|| {
+        let mut db_file = archive.by_name(BACKUP_DB_NAME).map_err(|e| e.to_string())?;
+        let mut out = File::create(&db_path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut db_file, &mut out).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if extraction.is_err() {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+    extraction?;
 
     Ok(ExtractedBackup {
         temp_dir,
@@ -1016,5 +1071,81 @@ mod tests {
         let _ = fs::remove_file(out_path);
         let _ = fs::remove_file(source_db_path);
         let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn extract_backup_removes_temp_dir_when_database_copy_fails() {
+        let backup_path = backup_path("backup-corrupt-database");
+        let manifest = BackupManifest {
+            format: BACKUP_FORMAT.to_string(),
+            version: BACKUP_VERSION,
+            app_version: "test".to_string(),
+            exported_at: "2026-01-01T00:00:00Z".to_string(),
+            domains: vec![],
+            spaces: vec![],
+            counts: ManifestCounts {
+                spaces: 0,
+                quest_series: 0,
+                quests: 0,
+            },
+        };
+        let file = File::create(&backup_path).expect("create corrupt backup archive");
+        let mut archive = zip::ZipWriter::new(file);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        archive
+            .start_file(MANIFEST_NAME, options)
+            .expect("add manifest to archive");
+        archive
+            .write_all(&serde_json::to_vec(&manifest).expect("serialize manifest"))
+            .expect("write manifest to archive");
+        archive
+            .start_file(BACKUP_DB_NAME, options)
+            .expect("add database to archive");
+        archive
+            .write_all(b"database bytes that will fail CRC validation")
+            .expect("write database to archive");
+        archive.finish().expect("finish archive");
+
+        let mut bytes = fs::read(&backup_path).expect("read backup archive");
+        let database_offset = bytes
+            .windows(b"database bytes that will fail CRC validation".len())
+            .position(|window| window == b"database bytes that will fail CRC validation")
+            .expect("find stored database bytes");
+        bytes[database_offset] ^= 1;
+        fs::write(&backup_path, bytes).expect("corrupt database bytes");
+
+        let before: HashSet<PathBuf> = fs::read_dir(std::env::temp_dir())
+            .expect("read temp directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("fini-backup-import-"))
+            })
+            .collect();
+
+        assert!(
+            extract_backup(&backup_path).is_err(),
+            "copy must fail on bad CRC"
+        );
+
+        let after: HashSet<PathBuf> = fs::read_dir(std::env::temp_dir())
+            .expect("read temp directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("fini-backup-import-"))
+            })
+            .collect();
+        assert!(
+            after.is_subset(&before),
+            "failed extraction must not leave a new import temp directory"
+        );
+
+        let _ = fs::remove_file(backup_path);
     }
 }

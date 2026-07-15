@@ -75,6 +75,8 @@ enum Command {
     },
     #[command(about = "Export selected spaces to a backup archive")]
     Export(BackupExportArgs),
+    #[command(about = "Inspect a backup archive without changing local data")]
+    Import(BackupInspectArgs),
     Reminder {
         #[command(subcommand)]
         command: ReminderCommand,
@@ -248,6 +250,18 @@ struct BackupImportArgs {
     path: String,
     #[arg(long, action = ArgAction::SetTrue)]
     force: bool,
+}
+
+#[derive(Args)]
+struct BackupInspectArgs {
+    #[arg(long, help = "Backup archive path to inspect")]
+    path: String,
+    #[arg(
+        long,
+        action = ArgAction::SetTrue,
+        help = "Validate the archive and print its contents as JSON"
+    )]
+    inspect: bool,
 }
 
 #[derive(Subcommand)]
@@ -544,6 +558,12 @@ fn execute(cli: Cli) -> CliResult<i32> {
         return Ok(EXIT_SUCCESS);
     }
 
+    if let Some(Command::Import(args)) = &cli.command {
+        let value = handle_import(args)?;
+        print_output(&value, cli.json).map_err(CliError::runtime)?;
+        return Ok(EXIT_SUCCESS);
+    }
+
     if should_run_auto_update() {
         maybe_auto_update();
     }
@@ -557,6 +577,9 @@ fn execute(cli: Cli) -> CliResult<i32> {
         Some(Command::Space { command }) => handle_space(&ctx, command)?,
         Some(Command::Backup { command }) => handle_backup(&ctx, command)?,
         Some(Command::Export(args)) => handle_export(&ctx, args, "export")?,
+        Some(Command::Import(_)) => {
+            unreachable!("import inspection is handled before DB initialization")
+        }
         Some(Command::Reminder { command }) => handle_reminder(&ctx, command)?,
         Some(Command::Device { command }) => handle_device(&ctx, command)?,
         Some(Command::Sync { command }) => handle_sync(&ctx, command)?,
@@ -886,6 +909,19 @@ fn handle_export(ctx: &CliContext, args: BackupExportArgs, command_name: &str) -
     serde_json::to_value(
         backup::export_backup(&mut conn, std::path::Path::new(&args.path), &space_ids)
             .map_err(CliError::from_string)?,
+    )
+    .map_err(|e| CliError::runtime(e.to_string()))
+}
+
+fn handle_import(args: &BackupInspectArgs) -> CliResult<Value> {
+    if !args.inspect {
+        return Err(CliError::from_string(
+            "import requires --inspect; mutation modes are not available yet".to_string(),
+        ));
+    }
+
+    serde_json::to_value(
+        backup::inspect_backup(std::path::Path::new(&args.path)).map_err(CliError::from_string)?,
     )
     .map_err(|e| CliError::runtime(e.to_string()))
 }
@@ -1302,6 +1338,99 @@ mod tests {
         assert_eq!(args.path, "backup.zip");
         assert_eq!(args.space_id, ["space-a", "space-b"]);
         assert!(!args.all_spaces);
+    }
+
+    #[test]
+    fn top_level_import_inspect_emits_manifest_json_without_mutating_target_db() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-inspect-source");
+        let target_db_path = temp_db_path("cli-import-inspect-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("inspect-space"),
+                crate::schema::spaces::name.eq("Inspectable space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(&mut source, &backup_path, &["inspect-space".to_string()])
+            .expect("create backup archive");
+        drop(source);
+
+        let mut target = crate::services::db::open_db_at_path(&target_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("target-space"),
+                crate::schema::spaces::name.eq("Untouched target space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut target)
+            .expect("seed target database");
+        drop(target);
+        let target_before =
+            std::fs::read(&target_db_path).expect("read target database before inspect");
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let inspection = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: true,
+        })
+        .unwrap_or_else(|err| panic!("inspect backup without a local database: {}", err.message));
+        let execute_result = execute(Cli {
+            json: true,
+            command: Some(Command::Import(BackupInspectArgs {
+                path: backup_path.to_string_lossy().into_owned(),
+                inspect: true,
+            })),
+        });
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(
+            execute_result.unwrap_or_else(|err| panic!("execute import inspect: {}", err.message)),
+            EXIT_SUCCESS
+        );
+        let output = serde_json::to_string(&inspection).expect("serialize inspection as JSON");
+        let parsed: Value = serde_json::from_str(&output).expect("inspection output is valid JSON");
+        assert_eq!(parsed["valid"], true);
+        assert_eq!(parsed["manifest"]["counts"]["spaces"], 1);
+        assert_eq!(parsed["manifest"]["spaces"][0]["id"], "inspect-space");
+        let target_after =
+            std::fs::read(&target_db_path).expect("read target database after inspect");
+        assert_eq!(
+            target_after, target_before,
+            "inspection must not mutate the target database"
+        );
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn top_level_import_requires_inspect_and_rejects_unsupported_flags() {
+        let path_only = Cli::try_parse_from(["fini", "import", "--path", "backup.zip"]).expect(
+            "path-only import parses so execution can explain the unavailable mutation mode",
+        );
+        let err = execute(path_only).expect_err("path-only import must be rejected");
+        assert_eq!(
+            err.message,
+            "import requires --inspect; mutation modes are not available yet"
+        );
+
+        let incompatible = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--inspect",
+            "--force",
+        ]);
+        assert!(
+            incompatible.is_err(),
+            "import must reject unsupported mutation flags"
+        );
     }
 
     #[test]
