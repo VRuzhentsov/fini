@@ -1,4 +1,4 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
@@ -254,26 +254,38 @@ struct BackupImportArgs {
 }
 
 #[derive(Args)]
+#[command(group(
+    ArgGroup::new("preflight_mode")
+        .args(["verify", "dry_run"])
+        .multiple(false)
+))]
 struct BackupInspectArgs {
     #[arg(long, help = "Backup archive path to inspect or verify")]
     path: String,
     #[arg(
         long,
         action = ArgAction::SetTrue,
-        conflicts_with = "verify",
+        conflicts_with_all = ["verify", "dry_run"],
         help = "Validate the archive and print its contents as JSON"
     )]
     inspect: bool,
     #[arg(
         long,
         action = ArgAction::SetTrue,
-        conflicts_with = "inspect",
+        conflicts_with_all = ["inspect", "dry_run"],
         help = "Compare the archive with the local database without changing either"
     )]
     verify: bool,
     #[arg(
+        long,
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["inspect", "verify"],
+        help = "Create a read-only archive import plan without applying or recovering data"
+    )]
+    dry_run: bool,
+    #[arg(
         long = "map-space",
-        requires = "verify",
+        requires = "preflight_mode",
         help = "Backup space mapping BACKUP_ID=create_new or BACKUP_ID=use_existing:LOCAL_ID; repeat for multiple spaces"
     )]
     map_space: Vec<String>,
@@ -929,6 +941,12 @@ fn handle_export(ctx: &CliContext, args: BackupExportArgs, command_name: &str) -
 }
 
 fn handle_import(args: &BackupInspectArgs) -> CliResult<Value> {
+    if !args.map_space.is_empty() && !args.verify && !args.dry_run {
+        return Err(CliError::from_string(
+            "--map-space requires --verify or --dry-run".to_string(),
+        ));
+    }
+
     if args.inspect {
         return serde_json::to_value(
             backup::inspect_backup(std::path::Path::new(&args.path))
@@ -937,7 +955,7 @@ fn handle_import(args: &BackupInspectArgs) -> CliResult<Value> {
         .map_err(|e| CliError::runtime(e.to_string()));
     }
 
-    if args.verify {
+    if args.verify || args.dry_run {
         let db_path = db_default_path();
         if !db_path.is_file() {
             return Err(CliError::runtime(format!(
@@ -956,15 +974,20 @@ fn handle_import(args: &BackupInspectArgs) -> CliResult<Value> {
                 CliError::runtime(format!("failed to make local database read-only: {err}"))
             })?;
         let mappings = parse_backup_space_mappings(&args.map_space)?;
-        return serde_json::to_value(
+        let preflight =
             backup::preflight_import(&mut conn, std::path::Path::new(&args.path), &mappings)
-                .map_err(CliError::from_string)?,
-        )
-        .map_err(|e| CliError::runtime(e.to_string()));
+                .map_err(CliError::from_string)?;
+        let output = if args.dry_run {
+            serde_json::to_value(backup::BackupImportDryRunPlan::from_preflight(preflight))
+        } else {
+            serde_json::to_value(preflight)
+        };
+        return output.map_err(|e| CliError::runtime(e.to_string()));
     }
 
     Err(CliError::from_string(
-        "import requires --inspect or --verify; mutation modes are not available yet".to_string(),
+        "import requires --inspect, --verify, or --dry-run; mutation modes are not available yet"
+            .to_string(),
     ))
 }
 
@@ -1471,6 +1494,7 @@ mod tests {
             path: backup_path.to_string_lossy().into_owned(),
             inspect: true,
             verify: false,
+            dry_run: false,
             map_space: vec![],
         })
         .unwrap_or_else(|err| panic!("inspect backup without a local database: {}", err.message));
@@ -1480,6 +1504,7 @@ mod tests {
                 path: backup_path.to_string_lossy().into_owned(),
                 inspect: true,
                 verify: false,
+                dry_run: false,
                 map_space: vec![],
             })),
         });
@@ -1595,6 +1620,7 @@ mod tests {
             path: backup_path.to_string_lossy().into_owned(),
             inspect: false,
             verify: true,
+            dry_run: false,
             map_space: vec![],
         })
         .unwrap_or_else(|err| panic!("verify backup: {}", err.message));
@@ -1622,6 +1648,123 @@ mod tests {
     }
 
     #[test]
+    fn top_level_import_dry_run_emits_a_non_mutating_ready_plan() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-dry-run-source");
+        let target_db_path = temp_db_path("cli-import-dry-run-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("dry-run-space"),
+                crate::schema::spaces::name.eq("Dry run space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(&mut source, &backup_path, &["dry-run-space".to_string()])
+            .expect("create backup archive");
+        drop(source);
+
+        let target = crate::services::db::open_db_at_path(&target_db_path);
+        drop(target);
+        let target_before =
+            std::fs::read(&target_db_path).expect("read target database before dry run");
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let plan = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: false,
+            verify: false,
+            dry_run: true,
+            map_space: vec!["dry-run-space=create_new".to_string()],
+        })
+        .unwrap_or_else(|err| panic!("dry run backup: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(plan["dry_run"], true);
+        assert_eq!(plan["ready_to_apply"], true);
+        assert_eq!(plan["no_apply_or_recovery_action_occurred"], true);
+        assert_eq!(plan["manifest"]["spaces"][0]["id"], "dry-run-space");
+        assert_eq!(plan["required_space_mappings"], json!([]));
+        assert_eq!(plan["conflicts"], json!([]));
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let exit_code = execute(Cli {
+            json: true,
+            command: Some(Command::Import(BackupInspectArgs {
+                path: backup_path.to_string_lossy().into_owned(),
+                inspect: false,
+                verify: false,
+                dry_run: true,
+                map_space: vec!["dry-run-space=create_new".to_string()],
+            })),
+        })
+        .unwrap_or_else(|err| panic!("execute dry run: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            std::fs::read(&target_db_path).expect("read target database after dry run"),
+            target_before,
+            "dry run must not mutate the target database"
+        );
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn top_level_import_dry_run_reports_unresolved_mapping_as_not_ready() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-dry-run-unresolved-source");
+        let target_db_path = temp_db_path("cli-import-dry-run-unresolved-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("unmapped-dry-run-space"),
+                crate::schema::spaces::name.eq("Unmapped dry run space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(
+            &mut source,
+            &backup_path,
+            &["unmapped-dry-run-space".to_string()],
+        )
+        .expect("create backup archive");
+        drop(source);
+        let target = crate::services::db::open_db_at_path(&target_db_path);
+        drop(target);
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let plan = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: false,
+            verify: false,
+            dry_run: true,
+            map_space: vec![],
+        })
+        .unwrap_or_else(|err| panic!("dry run backup: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(plan["dry_run"], true);
+        assert_eq!(plan["ready_to_apply"], false);
+        assert_eq!(plan["no_apply_or_recovery_action_occurred"], true);
+        assert_eq!(
+            plan["required_space_mappings"][0]["backup_space_id"],
+            "unmapped-dry-run-space"
+        );
+        assert_eq!(plan["conflicts"], json!([]));
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
     fn top_level_import_requires_read_only_mode_and_rejects_incompatible_or_unsupported_flags() {
         let path_only = Cli::try_parse_from(["fini", "import", "--path", "backup.zip"]).expect(
             "path-only import parses so execution can explain the unavailable mutation mode",
@@ -1629,7 +1772,7 @@ mod tests {
         let err = execute(path_only).expect_err("path-only import must be rejected");
         assert_eq!(
             err.message,
-            "import requires --inspect or --verify; mutation modes are not available yet"
+            "import requires --inspect, --verify, or --dry-run; mutation modes are not available yet"
         );
 
         let incompatible = Cli::try_parse_from([
@@ -1643,6 +1786,36 @@ mod tests {
         assert!(
             incompatible.is_err(),
             "import must reject combining inspect with verify"
+        );
+
+        let dry_run_with_mappings = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--dry-run",
+            "--map-space",
+            "backup-one=create_new",
+            "--map-space",
+            "backup-two=use_existing:local-space",
+        ]);
+        assert!(
+            dry_run_with_mappings.is_ok(),
+            "dry run must allow repeated space mappings"
+        );
+
+        let inspect_with_mappings = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--inspect",
+            "--map-space",
+            "backup-one=create_new",
+        ]);
+        assert!(
+            inspect_with_mappings.is_err(),
+            "space mappings must only be accepted for verify or dry run"
         );
 
         let unsupported = Cli::try_parse_from([

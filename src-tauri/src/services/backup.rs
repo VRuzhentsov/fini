@@ -77,6 +77,33 @@ pub struct BackupImportPreflight {
     pub conflicts: Vec<BackupConflict>,
 }
 
+/// A read-only archive recovery plan. This describes whether a later import could proceed;
+/// it never applies an archive or starts recovery.
+#[derive(Debug, Serialize)]
+pub struct BackupImportDryRunPlan {
+    pub dry_run: bool,
+    pub ready_to_apply: bool,
+    pub no_apply_or_recovery_action_occurred: bool,
+    pub manifest: BackupManifest,
+    pub required_space_mappings: Vec<BackupSpaceMappingRequest>,
+    pub conflicts: Vec<BackupConflict>,
+}
+
+impl BackupImportDryRunPlan {
+    pub fn from_preflight(preflight: BackupImportPreflight) -> Self {
+        let ready_to_apply =
+            preflight.required_space_mappings.is_empty() && preflight.conflicts.is_empty();
+        Self {
+            dry_run: true,
+            ready_to_apply,
+            no_apply_or_recovery_action_occurred: true,
+            manifest: preflight.manifest,
+            required_space_mappings: preflight.required_space_mappings,
+            conflicts: preflight.conflicts,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupSpaceMappingRequest {
     pub backup_space_id: String,
@@ -1018,6 +1045,45 @@ mod tests {
             ))
             .execute(conn)
             .expect("insert custom space");
+    }
+
+    #[test]
+    fn dry_run_plan_reports_unresolved_conflicts_without_selecting_a_resolution() {
+        let plan = BackupImportDryRunPlan::from_preflight(BackupImportPreflight {
+            manifest: BackupManifest {
+                format: BACKUP_FORMAT.to_string(),
+                version: BACKUP_VERSION,
+                app_version: "test".to_string(),
+                exported_at: "2026-01-01T00:00:00Z".to_string(),
+                domains: vec!["quests".to_string()],
+                spaces: vec![],
+                counts: ManifestCounts {
+                    spaces: 0,
+                    quest_series: 0,
+                    quests: 1,
+                },
+            },
+            required_space_mappings: vec![],
+            conflicts: vec![BackupConflict {
+                entity_type: "quest".to_string(),
+                id: "conflicting-quest".to_string(),
+                title: "Conflicting quest".to_string(),
+                local_summary: "Local title (active)".to_string(),
+                backup_summary: "Backup title (active)".to_string(),
+                local: serde_json::json!({ "title": "Local title" }),
+                backup: serde_json::json!({ "title": "Backup title" }),
+            }],
+        });
+
+        let value = serde_json::to_value(plan).expect("serialize dry run plan");
+        assert_eq!(value["dry_run"], true);
+        assert_eq!(value["ready_to_apply"], false);
+        assert_eq!(value["no_apply_or_recovery_action_occurred"], true);
+        assert_eq!(value["conflicts"][0]["id"], "conflicting-quest");
+        assert!(
+            value["conflicts"][0].get("resolution").is_none(),
+            "a dry run must report conflicts without choosing a resolution"
+        );
     }
 
     #[test]
