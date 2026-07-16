@@ -166,13 +166,13 @@ struct QuestCreateArgs {
     title: String,
     #[arg(long)]
     space_id: Option<String>,
-    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
+    #[arg(long)]
     description: Option<String>,
-    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
+    #[arg(long)]
     due: Option<String>,
-    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
+    #[arg(long)]
     due_time: Option<String>,
-    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
+    #[arg(long)]
     repeat_rule: Option<String>,
 }
 

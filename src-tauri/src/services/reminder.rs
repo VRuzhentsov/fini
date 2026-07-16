@@ -90,6 +90,9 @@ impl<'a> ReminderService<'a> {
         quest: &Quest,
         space: &Space,
     ) -> Result<(), String> {
+        if quest.status != "active" || quest.due.is_none() {
+            return Ok(());
+        }
         if let Some(existing) = self.repository.get_for_quest(&quest.id)? {
             self.cancel_scheduled(app, &existing);
         }
