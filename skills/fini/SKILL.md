@@ -89,6 +89,26 @@ fini --json import --path /path/to/backup.zip --dry-run
 - For custom-space mappings, repeat `--map-space BACKUP_ID=create_new` or `--map-space BACKUP_ID=use_existing:LOCAL_ID`. Each backup ID may appear only once.
 - Root import application and JSON migration persistence are still under implementation. Do not present inspection, verification, or dry-run as a completed recovery.
 
+## Quick Start
+
+```bash
+# Recurring routine task
+fini quest create --title "Pay rent" --repeat monthly
+
+# Non-mutating archive inspection
+fini import --path backup.zip --inspect --json
+```
+
+## Command Discovery
+
+For arguments, accepted values, defaults, and workflows beyond these basic examples, use the built-in help surface:
+
+```bash
+fini --help
+fini quest update --help
+fini import --help
+```
+
 ## Focus and App Entry Behavior
 
 - `fini` with no args returns current Focus quest.

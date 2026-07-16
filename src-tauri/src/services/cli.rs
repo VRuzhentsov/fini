@@ -174,6 +174,13 @@ struct QuestCreateArgs {
     due_time: Option<String>,
     #[arg(long)]
     repeat_rule: Option<String>,
+    #[arg(
+        long,
+        value_parser = ["daily", "weekdays", "weekly", "monthly", "yearly", "null"],
+        conflicts_with = "repeat_rule",
+        help = "Recurring preset, or literal null"
+    )]
+    repeat: Option<String>,
 }
 
 #[derive(Args)]
@@ -196,6 +203,13 @@ struct QuestUpdateArgs {
     due_time: Option<String>,
     #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     repeat_rule: Option<String>,
+    #[arg(
+        long,
+        value_parser = ["daily", "weekdays", "weekly", "monthly", "yearly", "null"],
+        conflicts_with = "repeat_rule",
+        help = "Recurring preset, or literal null to clear; omit to preserve"
+    )]
+    repeat: Option<String>,
     #[arg(long)]
     order_rank: Option<f64>,
     #[arg(long, action = ArgAction::SetTrue)]
@@ -723,7 +737,12 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 priority: 1,
                 due: args.due,
                 due_time: args.due_time,
-                repeat_rule: args.repeat_rule,
+                repeat_rule: args
+                    .repeat
+                    .as_deref()
+                    .filter(|repeat| *repeat != "null")
+                    .map(normalize_repeat_alias)
+                    .or(args.repeat_rule),
                 order_rank: None,
             };
             let created = QuestService::new(&mut conn)
@@ -774,6 +793,16 @@ fn parse_nullable_quest_patch(value: Option<String>) -> crate::models::QuestFiel
     }
 }
 
+fn normalize_repeat_alias(value: &str) -> String {
+    match value {
+        preset @ ("daily" | "weekdays" | "weekly" | "monthly" | "yearly") => {
+            json!({ "preset": preset }).to_string()
+        }
+        "null" => "null".to_string(),
+        _ => unreachable!("clap restricts --repeat to supported aliases"),
+    }
+}
+
 fn update_quest_from_cli(
     ctx: &CliContext,
     conn: &mut diesel::sqlite::SqliteConnection,
@@ -782,7 +811,12 @@ fn update_quest_from_cli(
     let description = parse_nullable_quest_patch(args.description);
     let due = parse_nullable_quest_patch(args.due);
     let due_time = parse_nullable_quest_patch(args.due_time);
-    let repeat_rule = parse_nullable_quest_patch(args.repeat_rule);
+    let repeat_rule = parse_nullable_quest_patch(
+        args.repeat
+            .as_deref()
+            .map(normalize_repeat_alias)
+            .or(args.repeat_rule),
+    );
     let input = UpdateQuestInput {
         space_id: args.space_id,
         title: args.title,
@@ -844,6 +878,7 @@ fn update_quest_status(
             due: None,
             due_time: None,
             repeat_rule: None,
+            repeat: None,
             order_rank: None,
             set_focus: false,
             trigger_reminder_focus: false,
@@ -1430,6 +1465,130 @@ mod tests {
         assert_eq!(
             parse_nullable_quest_patch(Some("null".to_string())),
             QuestFieldPatch::Clear
+        );
+    }
+
+    #[test]
+    fn repeat_alias_parser_accepts_only_supported_presets_for_create_and_update() {
+        for command in [
+            vec!["fini", "quest", "create", "--title", "Pay rent"],
+            vec!["fini", "quest", "update", "--id", "quest-1"],
+        ] {
+            for repeat in ["daily", "weekdays", "weekly", "monthly", "yearly", "null"] {
+                let mut args = command.clone();
+                args.extend(["--repeat", repeat]);
+                Cli::try_parse_from(args).unwrap_or_else(|err| {
+                    panic!("parse --repeat {repeat} for {}: {err}", command[2])
+                });
+            }
+
+            let mut invalid = command;
+            invalid.extend(["--repeat", "hourly"]);
+            assert!(
+                Cli::try_parse_from(invalid).is_err(),
+                "unsupported repeat aliases must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn repeat_alias_normalizes_presets_to_canonical_repeat_rules() {
+        for (alias, expected) in [
+            ("daily", r#"{"preset":"daily"}"#),
+            ("weekdays", r#"{"preset":"weekdays"}"#),
+            ("weekly", r#"{"preset":"weekly"}"#),
+            ("monthly", r#"{"preset":"monthly"}"#),
+            ("yearly", r#"{"preset":"yearly"}"#),
+        ] {
+            assert_eq!(normalize_repeat_alias(alias), expected);
+        }
+        assert_eq!(normalize_repeat_alias("null"), "null");
+    }
+
+    #[test]
+    fn create_repeat_null_creates_a_non_repeating_quest_without_a_series() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-create-repeat-null");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = CliContext::new()
+            .unwrap_or_else(|err| panic!("initialize isolated CLI database: {}", err.message));
+        let cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "One-time task",
+            "--repeat",
+            "null",
+        ])
+        .expect("parse quest create --repeat null");
+        let command = match cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest create command"),
+        };
+
+        let created = handle_quest(&ctx, command)
+            .unwrap_or_else(|err| panic!("create non-repeating quest: {}", err.message));
+        assert_eq!(created["repeat_rule"], Value::Null);
+        assert_eq!(created["series_id"], Value::Null);
+
+        let mut conn = ctx
+            .open_db()
+            .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
+        let series_count: i64 = crate::schema::quest_series::table
+            .count()
+            .get_result(&mut conn)
+            .expect("count quest series");
+        assert_eq!(
+            series_count, 0,
+            "--repeat null must not create a quest series"
+        );
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn repeat_alias_conflicts_with_legacy_repeat_rule_and_preserves_update_null_clear() {
+        let legacy = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Pay rent",
+            "--repeat-rule",
+            r#"{"preset":"weekly"}"#,
+        ])
+        .expect("legacy --repeat-rule remains accepted");
+        let legacy_rule = match legacy.command {
+            Some(Command::Quest {
+                command: QuestCommand::Create(args),
+            }) => args.repeat_rule,
+            _ => panic!("expected quest create command"),
+        };
+        assert_eq!(legacy_rule.as_deref(), Some(r#"{"preset":"weekly"}"#));
+
+        let conflict = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Pay rent",
+            "--repeat",
+            "monthly",
+            "--repeat-rule",
+            r#"{"preset":"weekly"}"#,
+        ]);
+        assert!(
+            conflict.is_err(),
+            "--repeat and --repeat-rule cannot be combined"
+        );
+
+        assert_eq!(
+            parse_nullable_quest_patch(Some(normalize_repeat_alias("null"))),
+            crate::models::QuestFieldPatch::Clear,
+            "--repeat null must retain update clear semantics"
         );
     }
 
