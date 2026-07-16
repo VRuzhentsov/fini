@@ -27,7 +27,7 @@ const BACKUP_FORMAT: &str = "fini-backup";
 const BACKUP_VERSION: u32 = 2;
 const BUILTIN_SPACE_IDS: [&str; 3] = ["1", "2", "3"];
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupManifest {
     pub format: String,
     pub version: u32,
@@ -38,13 +38,13 @@ pub struct BackupManifest {
     pub counts: ManifestCounts,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestSpace {
     pub id: String,
     pub name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestCounts {
     pub spaces: usize,
     pub quest_series: usize,
@@ -319,22 +319,22 @@ pub fn preflight_import(
     path: &Path,
     mappings: &[BackupSpaceMappingInput],
 ) -> Result<BackupImportPreflight, String> {
-    let extracted = extract_backup(path)?;
-    let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
-        .map_err(|e| format!("failed to open backup database: {e}"))?;
-    validate_backup_schema(&mut backup_conn)?;
-    validate_manifest(&extracted.manifest)?;
+    with_extracted_backup(path, |extracted| {
+        let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
+            .map_err(|e| format!("failed to open backup database: {e}"))?;
+        validate_backup_schema(&mut backup_conn)?;
+        validate_manifest(&extracted.manifest)?;
 
-    let backup_spaces = load_backup_spaces(&mut backup_conn)?;
-    let space_map = resolve_space_map(conn, &backup_spaces, mappings)?;
-    let required_space_mappings = required_space_mappings(conn, &backup_spaces, mappings)?;
-    let conflicts = collect_conflicts(conn, &mut backup_conn, &space_map)?;
-    let _ = fs::remove_dir_all(&extracted.temp_dir);
+        let backup_spaces = load_backup_spaces(&mut backup_conn)?;
+        let space_map = resolve_space_map(conn, &backup_spaces, mappings)?;
+        let required_space_mappings = required_space_mappings(conn, &backup_spaces, mappings)?;
+        let conflicts = collect_conflicts(conn, &mut backup_conn, &space_map)?;
 
-    Ok(BackupImportPreflight {
-        manifest: extracted.manifest,
-        required_space_mappings,
-        conflicts,
+        Ok(BackupImportPreflight {
+            manifest: extracted.manifest.clone(),
+            required_space_mappings,
+            conflicts,
+        })
     })
 }
 
@@ -403,51 +403,50 @@ pub fn apply_import(
         }
     }
 
-    let extracted = extract_backup(path)?;
-    let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
-        .map_err(|e| format!("failed to open backup database: {e}"))?;
-    validate_backup_schema(&mut backup_conn)?;
-    validate_manifest(&extracted.manifest)?;
+    with_extracted_backup(path, |extracted| {
+        let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
+            .map_err(|e| format!("failed to open backup database: {e}"))?;
+        validate_backup_schema(&mut backup_conn)?;
+        validate_manifest(&extracted.manifest)?;
 
-    let backup_spaces = load_backup_spaces(&mut backup_conn)?;
-    let backup_series = load_backup_series(&mut backup_conn)?;
-    let backup_quests = load_backup_quests(&mut backup_conn)?;
-    let space_map = resolve_space_map(conn, &backup_spaces, mappings)?;
-    let backup_space_by_id: HashMap<&str, &Space> = backup_spaces
-        .iter()
-        .map(|space| (space.id.as_str(), space))
-        .collect();
+        let backup_spaces = load_backup_spaces(&mut backup_conn)?;
+        let backup_series = load_backup_series(&mut backup_conn)?;
+        let backup_quests = load_backup_quests(&mut backup_conn)?;
+        let space_map = resolve_space_map(conn, &backup_spaces, mappings)?;
+        let backup_space_by_id: HashMap<&str, &Space> = backup_spaces
+            .iter()
+            .map(|space| (space.id.as_str(), space))
+            .collect();
 
-    conn.transaction::<_, diesel::result::Error, _>(|tx| {
-        for (backup_space_id, local_space_id) in &space_map {
-            if backup_space_id != local_space_id {
-                continue;
-            }
-            let exists = local_space_exists(tx, local_space_id)?;
-            if !exists {
-                if let Some(space) = backup_space_by_id.get(backup_space_id.as_str()) {
-                    insert_space(tx, space)?;
+        conn.transaction::<_, diesel::result::Error, _>(|tx| {
+            for (backup_space_id, local_space_id) in &space_map {
+                if backup_space_id != local_space_id {
+                    continue;
+                }
+                let exists = local_space_exists(tx, local_space_id)?;
+                if !exists {
+                    if let Some(space) = backup_space_by_id.get(backup_space_id.as_str()) {
+                        insert_space(tx, space)?;
+                    }
                 }
             }
-        }
 
-        for series in &backup_series {
-            let mapped = mapped_series(series, &space_map);
-            let action = conflict_action(&resolution_map, "quest_series", &mapped.id);
-            upsert_series_for_import(tx, &mapped, action)?;
-        }
+            for series in &backup_series {
+                let mapped = mapped_series(series, &space_map);
+                let action = conflict_action(&resolution_map, "quest_series", &mapped.id);
+                upsert_series_for_import(tx, &mapped, action)?;
+            }
 
-        for quest in &backup_quests {
-            let mapped = mapped_quest(quest, &space_map);
-            let action = conflict_action(&resolution_map, "quest", &mapped.id);
-            upsert_quest_for_import(tx, &mapped, action)?;
-        }
+            for quest in &backup_quests {
+                let mapped = mapped_quest(quest, &space_map);
+                let action = conflict_action(&resolution_map, "quest", &mapped.id);
+                upsert_quest_for_import(tx, &mapped, action)?;
+            }
 
-        Ok(())
-    })
-    .map_err(|e| e.to_string())?;
-
-    let _ = fs::remove_dir_all(&extracted.temp_dir);
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
+    })?;
     Ok(BackupImportResult {
         imported: true,
         spaces: preflight.manifest.counts.spaces,
@@ -495,6 +494,16 @@ struct ExtractedBackup {
     temp_dir: PathBuf,
     db_path: PathBuf,
     manifest: BackupManifest,
+}
+
+fn with_extracted_backup<T>(
+    path: &Path,
+    operation: impl FnOnce(&ExtractedBackup) -> Result<T, String>,
+) -> Result<T, String> {
+    let extracted = extract_backup(path)?;
+    let result = operation(&extracted);
+    let _ = fs::remove_dir_all(&extracted.temp_dir);
+    result
 }
 
 fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
@@ -1136,6 +1145,66 @@ mod tests {
 
         let _ = fs::remove_file(out_path);
         let _ = fs::remove_file(source_db_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn import_preflight_removes_temp_dir_when_schema_validation_fails() {
+        let backup_database_path = temp_db_path("backup-invalid-schema");
+        let backup_conn =
+            SqliteConnection::establish(path_str(&backup_database_path).expect("path"))
+                .expect("create empty backup database");
+        drop(backup_conn);
+        let backup_path = backup_path("backup-invalid-schema");
+        let manifest = BackupManifest {
+            format: BACKUP_FORMAT.to_string(),
+            version: BACKUP_VERSION,
+            app_version: "test".to_string(),
+            exported_at: "2026-01-01T00:00:00Z".to_string(),
+            domains: vec![],
+            spaces: vec![],
+            counts: ManifestCounts {
+                spaces: 0,
+                quest_series: 0,
+                quests: 0,
+            },
+        };
+        write_zip(&backup_path, &manifest, &backup_database_path).expect("write backup archive");
+
+        let target_db_path = temp_db_path("backup-invalid-schema-target");
+        let mut target = open_db_at_path(&target_db_path);
+        let before: HashSet<PathBuf> = fs::read_dir(std::env::temp_dir())
+            .expect("read temp directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("fini-backup-import-"))
+            })
+            .collect();
+
+        let error = preflight_import(&mut target, &backup_path, &[])
+            .expect_err("an empty database must fail schema validation");
+        assert_eq!(error, "backup database is missing required table spaces");
+
+        let after: HashSet<PathBuf> = fs::read_dir(std::env::temp_dir())
+            .expect("read temp directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("fini-backup-import-"))
+            })
+            .collect();
+        assert!(
+            after.is_subset(&before),
+            "failed preflight must not leave a new import temp directory"
+        );
+
+        let _ = fs::remove_file(backup_path);
+        let _ = fs::remove_file(backup_database_path);
         let _ = fs::remove_file(target_db_path);
     }
 
