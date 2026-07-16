@@ -67,6 +67,28 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 - Set `repeat_rule` for recurring quests (e.g. `daily`, `weekly`, `monthly`)
 - Repeating quests track `series_id` and `period_key` automatically
 
+### Nullable Quest Updates
+
+For `fini quest update`, omit a field to preserve it, pass ordinary text (including an empty string) to store it, and pass literal `null` to clear nullable values such as `description`, `due`, `due_time`, and `repeat_rule`.
+
+### Archive Export and Recovery Planning
+
+Use structured JSON for archive workflows:
+
+```bash
+fini --json export --path /path/to/backup.zip --space-id <ID>
+fini --json export --path /path/to/backup.zip --all-spaces
+fini --json import --path /path/to/backup.zip --inspect
+fini --json import --path /path/to/backup.zip --verify
+fini --json import --path /path/to/backup.zip --dry-run
+```
+
+- `export` requires either one or more repeatable `--space-id` values or `--all-spaces`; never combine them.
+- `import --inspect` validates and summarizes the archive without opening the local database.
+- `import --verify` and `import --dry-run` preflight against the local database in read-only mode. `--dry-run` reports `ready_to_apply` and never applies recovery.
+- For custom-space mappings, repeat `--map-space BACKUP_ID=create_new` or `--map-space BACKUP_ID=use_existing:LOCAL_ID`. Each backup ID may appear only once.
+- Root import application and JSON migration persistence are still under implementation. Do not present inspection, verification, or dry-run as a completed recovery.
+
 ## Focus and App Entry Behavior
 
 - `fini` with no args returns current Focus quest.
