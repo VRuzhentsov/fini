@@ -1,15 +1,17 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
+use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde_json::{json, Value};
 
 use crate::models::{
-    CreateQuestInput, CreateReminderInput, CreateSpaceInput, UpdateQuestInput, UpdateSpaceInput,
+    CreateQuestInput, CreateReminderInput, CreateSpaceInput, QuestUpdatePatch, UpdateQuestInput,
+    UpdateSpaceInput,
 };
-use crate::schema::quests;
+
 use crate::services::backup;
 use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
-use crate::services::db::{db_default_path, try_open_db_at_path, utc_now};
+use crate::services::db::{db_default_path, try_open_db_at_path};
 use crate::services::device_connection::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
 };
@@ -26,9 +28,9 @@ use crate::services::device_connection::{
     device_connection_update_last_seen_impl, DeviceConnectionState,
 };
 use crate::services::quest::{
-    append_focus_history, record_focus_enter, resolve_active_quest, QuestRepository,
+    append_focus_history, record_focus_enter, resolve_active_quest, QuestService,
 };
-use crate::services::reminder::ReminderRepository;
+use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
 use crate::services::space_sync::outbox::emit_sync_event;
@@ -72,6 +74,10 @@ enum Command {
         #[command(subcommand)]
         command: BackupCommand,
     },
+    #[command(about = "Export selected spaces to a backup archive")]
+    Export(BackupExportArgs),
+    #[command(about = "Inspect a backup archive without changing local data")]
+    Import(BackupInspectArgs),
     Reminder {
         #[command(subcommand)]
         command: ReminderCommand,
@@ -168,6 +174,13 @@ struct QuestCreateArgs {
     due_time: Option<String>,
     #[arg(long)]
     repeat_rule: Option<String>,
+    #[arg(
+        long,
+        value_parser = ["daily", "weekdays", "weekly", "monthly", "yearly", "null"],
+        conflicts_with = "repeat_rule",
+        help = "Recurring preset, or literal null"
+    )]
+    repeat: Option<String>,
 }
 
 #[derive(Args)]
@@ -176,7 +189,7 @@ struct QuestUpdateArgs {
     id: String,
     #[arg(long)]
     title: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     description: Option<String>,
     #[arg(long)]
     status: Option<String>,
@@ -184,12 +197,19 @@ struct QuestUpdateArgs {
     space_id: Option<String>,
     #[arg(long)]
     pinned: Option<bool>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due_time: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     repeat_rule: Option<String>,
+    #[arg(
+        long,
+        value_parser = ["daily", "weekdays", "weekly", "monthly", "yearly", "null"],
+        conflicts_with = "repeat_rule",
+        help = "Recurring preset, or literal null to clear; omit to preserve"
+    )]
+    repeat: Option<String>,
     #[arg(long)]
     order_rank: Option<f64>,
     #[arg(long, action = ArgAction::SetTrue)]
@@ -228,11 +248,14 @@ enum BackupCommand {
 
 #[derive(Args)]
 struct BackupExportArgs {
-    #[arg(long)]
+    #[arg(long, help = "Destination backup archive path")]
     path: String,
-    #[arg(long = "space-id")]
+    #[arg(
+        long = "space-id",
+        help = "Space ID to export; repeat for multiple spaces"
+    )]
     space_id: Vec<String>,
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, action = ArgAction::SetTrue, help = "Export every space")]
     all_spaces: bool,
 }
 
@@ -242,6 +265,44 @@ struct BackupImportArgs {
     path: String,
     #[arg(long, action = ArgAction::SetTrue)]
     force: bool,
+}
+
+#[derive(Args)]
+#[command(group(
+    ArgGroup::new("preflight_mode")
+        .args(["verify", "dry_run"])
+        .multiple(false)
+))]
+struct BackupInspectArgs {
+    #[arg(long, help = "Backup archive path to inspect or verify")]
+    path: String,
+    #[arg(
+        long,
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["verify", "dry_run"],
+        help = "Validate the archive and print its contents as JSON"
+    )]
+    inspect: bool,
+    #[arg(
+        long,
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["inspect", "dry_run"],
+        help = "Compare the archive with the local database without changing either"
+    )]
+    verify: bool,
+    #[arg(
+        long,
+        action = ArgAction::SetTrue,
+        conflicts_with_all = ["inspect", "verify"],
+        help = "Create a read-only archive import plan without applying or recovering data"
+    )]
+    dry_run: bool,
+    #[arg(
+        long = "map-space",
+        requires = "preflight_mode",
+        help = "Backup space mapping BACKUP_ID=create_new or BACKUP_ID=use_existing:LOCAL_ID; repeat for multiple spaces"
+    )]
+    map_space: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -538,6 +599,12 @@ fn execute(cli: Cli) -> CliResult<i32> {
         return Ok(EXIT_SUCCESS);
     }
 
+    if let Some(Command::Import(args)) = &cli.command {
+        let value = handle_import(args)?;
+        print_output(&value, cli.json).map_err(CliError::runtime)?;
+        return Ok(EXIT_SUCCESS);
+    }
+
     if should_run_auto_update() {
         maybe_auto_update();
     }
@@ -550,6 +617,10 @@ fn execute(cli: Cli) -> CliResult<i32> {
         Some(Command::Quest { command }) => handle_quest(&ctx, command)?,
         Some(Command::Space { command }) => handle_space(&ctx, command)?,
         Some(Command::Backup { command }) => handle_backup(&ctx, command)?,
+        Some(Command::Export(args)) => handle_export(&ctx, args, "export")?,
+        Some(Command::Import(_)) => {
+            unreachable!("import inspection is handled before DB initialization")
+        }
         Some(Command::Reminder { command }) => handle_reminder(&ctx, command)?,
         Some(Command::Device { command }) => handle_device(&ctx, command)?,
         Some(Command::Sync { command }) => handle_sync(&ctx, command)?,
@@ -619,29 +690,14 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
                 .map(|value| value.unwrap_or(Value::Null))
         }
         FocusCommand::Set(args) => {
-            let quest = quests::table
-                .find(&args.quest_id)
-                .filter(quests::status.eq("active"))
-                .select(crate::models::Quest::as_select())
-                .first(&mut conn)
-                .optional()
-                .map_err(|e| CliError::runtime(e.to_string()))?
-                .ok_or_else(|| {
-                    CliError::from_string("cannot set Focus on non-active quest".to_string())
-                })?;
-            diesel::update(quests::table.find(&quest.id))
-                .set(quests::updated_at.eq(utc_now()))
-                .execute(&mut conn)
-                .map_err(|e| CliError::runtime(e.to_string()))?;
             let trigger = if args.trigger.as_deref() == Some("reminder") {
                 "reminder"
             } else {
                 "manual"
             };
-            append_focus_history(&mut conn, &quest.id, &quest.space_id, trigger)
+            let quest = QuestService::new(&mut conn)
+                .set_focus(&args.quest_id, trigger)
                 .map_err(CliError::from_string)?;
-            let quest = record_focus_enter(&mut conn, &quest)
-                .map_err(|e| CliError::runtime(e.to_string()))?;
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
     }
@@ -652,7 +708,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
     match command {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
-            let quests: Vec<_> = QuestRepository::new(&mut conn)
+            let quests: Vec<_> = QuestService::new(&mut conn)
                 .list_for_ui()
                 .map_err(CliError::from_string)?
                 .into_iter()
@@ -667,7 +723,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quests": quests }))
         }
         QuestCommand::Get(args) => serde_json::to_value(
-            QuestRepository::new(&mut conn)
+            QuestService::new(&mut conn)
                 .get(&args.id)
                 .map_err(CliError::from_string)?,
         )
@@ -681,17 +737,22 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 priority: 1,
                 due: args.due,
                 due_time: args.due_time,
-                repeat_rule: args.repeat_rule,
+                repeat_rule: args
+                    .repeat
+                    .as_deref()
+                    .filter(|repeat| *repeat != "null")
+                    .map(normalize_repeat_alias)
+                    .or(args.repeat_rule),
                 order_rank: None,
             };
-            let created = QuestRepository::new(&mut conn)
+            let created = QuestService::new(&mut conn)
                 .create(input)
                 .map_err(CliError::from_string)?;
             if let Some(series) = &created.series {
                 emit_series_sync(ctx, &mut conn, series);
             }
             if created.quest.status == "active" && created.quest.due.is_some() {
-                let _ = ReminderRepository::new(&mut conn).upsert_for_quest(&created.quest);
+                let _ = ReminderService::new(&mut conn).upsert_for_quest(&created.quest);
             }
             emit_quest_sync(ctx, &mut conn, &created.quest, "upsert");
             serde_json::to_value(created.quest).map_err(|e| CliError::runtime(e.to_string()))
@@ -700,15 +761,15 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         QuestCommand::Complete(args) => update_quest_status(ctx, &mut conn, args.id, "completed"),
         QuestCommand::Abandon(args) => update_quest_status(ctx, &mut conn, args.id, "abandoned"),
         QuestCommand::Delete(args) => {
-            let quest = QuestRepository::new(&mut conn)
+            let quest = QuestService::new(&mut conn)
                 .delete(&args.id)
                 .map_err(CliError::from_string)?;
-            let _ = ReminderRepository::new(&mut conn).delete_for_quest(&quest.id);
+            let _ = ReminderService::new(&mut conn).delete_for_quest(&quest.id);
             emit_quest_sync(ctx, &mut conn, &quest, "delete");
             Ok(json!({ "deleted": true, "id": args.id }))
         }
         QuestCommand::History => {
-            let mut quests: Vec<_> = QuestRepository::new(&mut conn)
+            let mut quests: Vec<_> = QuestService::new(&mut conn)
                 .list_for_ui()
                 .map_err(CliError::from_string)?
                 .into_iter()
@@ -724,43 +785,78 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
     }
 }
 
+fn parse_nullable_quest_patch(value: Option<String>) -> crate::models::QuestFieldPatch<String> {
+    match value {
+        None => crate::models::QuestFieldPatch::Unchanged,
+        Some(value) if value == "null" => crate::models::QuestFieldPatch::Clear,
+        Some(value) => crate::models::QuestFieldPatch::Set(value),
+    }
+}
+
+fn normalize_repeat_alias(value: &str) -> String {
+    match value {
+        preset @ ("daily" | "weekdays" | "weekly" | "monthly" | "yearly") => {
+            json!({ "preset": preset }).to_string()
+        }
+        "null" => "null".to_string(),
+        _ => unreachable!("clap restricts --repeat to supported aliases"),
+    }
+}
+
 fn update_quest_from_cli(
     ctx: &CliContext,
     conn: &mut diesel::sqlite::SqliteConnection,
     args: QuestUpdateArgs,
 ) -> CliResult<Value> {
+    let description = parse_nullable_quest_patch(args.description);
+    let due = parse_nullable_quest_patch(args.due);
+    let due_time = parse_nullable_quest_patch(args.due_time);
+    let repeat_rule = parse_nullable_quest_patch(
+        args.repeat
+            .as_deref()
+            .map(normalize_repeat_alias)
+            .or(args.repeat_rule),
+    );
     let input = UpdateQuestInput {
         space_id: args.space_id,
         title: args.title,
-        description: args.description,
+        description: None,
         status: args.status.clone(),
         energy: None,
         priority: None,
         pinned: args.pinned,
-        due: args.due,
-        due_time: args.due_time,
-        repeat_rule: args.repeat_rule,
+        due: None,
+        due_time: None,
+        repeat_rule: None,
         order_rank: args.order_rank,
     };
-    let result = QuestRepository::new(conn)
-        .update(&args.id, input)
+    let patch = QuestUpdatePatch {
+        input,
+        description,
+        due,
+        due_time,
+        repeat_rule,
+    };
+    let result = QuestService::new(conn)
+        .update_patch(&args.id, patch)
         .map_err(CliError::from_string)?;
+    let quest = result.quest;
     if args.trigger_reminder_focus {
-        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "reminder")
+        append_focus_history(conn, &quest.id, &quest.space_id, "reminder")
             .map_err(CliError::from_string)?;
     } else if args.set_focus
         || args.status.as_deref() == Some("active")
         || result.restore_should_focus
     {
-        append_focus_history(conn, &result.quest.id, &result.quest.space_id, "manual")
+        append_focus_history(conn, &quest.id, &quest.space_id, "manual")
             .map_err(CliError::from_string)?;
     }
-    sync_reminder_rows(conn, &result.quest);
+    sync_reminder_rows(conn, &quest);
     if let Some(ref occurrence) = result.next_occurrence {
         sync_reminder_rows(conn, occurrence);
     }
-    emit_quest_sync(ctx, conn, &result.quest, "upsert");
-    serde_json::to_value(result.quest).map_err(|e| CliError::runtime(e.to_string()))
+    emit_quest_sync(ctx, conn, &quest, "upsert");
+    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
 }
 
 fn update_quest_status(
@@ -782,6 +878,7 @@ fn update_quest_status(
             due: None,
             due_time: None,
             repeat_rule: None,
+            repeat: None,
             order_rank: None,
             set_focus: false,
             trigger_reminder_focus: false,
@@ -790,11 +887,7 @@ fn update_quest_status(
 }
 
 fn sync_reminder_rows(conn: &mut diesel::sqlite::SqliteConnection, quest: &crate::models::Quest) {
-    if quest.status == "active" && quest.due.is_some() {
-        let _ = ReminderRepository::new(conn).upsert_for_quest(quest);
-    } else {
-        let _ = ReminderRepository::new(conn).delete_for_quest(&quest.id);
-    }
+    let _ = ReminderService::new(conn).reconcile(quest);
 }
 
 fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
@@ -840,52 +933,162 @@ fn handle_space(ctx: &CliContext, command: SpaceCommand) -> CliResult<Value> {
 }
 
 fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
-    let mut conn = ctx.open_db()?;
-    let value = match command {
-        BackupCommand::Export(args) => {
-            if args.all_spaces && !args.space_id.is_empty() {
-                return Err(CliError::from_string(
-                    "cannot combine --all-spaces with --space-id".to_string(),
-                ));
-            }
-            let space_ids = if args.all_spaces {
-                crate::schema::spaces::table
-                    .select(crate::schema::spaces::id)
-                    .load::<String>(&mut conn)
-                    .map_err(|e| CliError::runtime(e.to_string()))?
-            } else if args.space_id.is_empty() {
-                return Err(CliError::from_string(
-                    "backup export requires --space-id or --all-spaces".to_string(),
-                ));
-            } else {
-                args.space_id
-            };
-            serde_json::to_value(
-                backup::export_backup(&mut conn, std::path::Path::new(&args.path), &space_ids)
-                    .map_err(CliError::from_string)?,
-            )
-            .map_err(|e| CliError::runtime(e.to_string()))?
-        }
+    match command {
+        BackupCommand::Export(args) => handle_export(ctx, args, "backup export"),
         BackupCommand::Import(args) => serde_json::to_value(
-            backup::import_cli(&mut conn, std::path::Path::new(&args.path), args.force)
+            backup::import_cli(
+                &mut ctx.open_db()?,
+                std::path::Path::new(&args.path),
+                args.force,
+            )
+            .map_err(CliError::from_string)?,
+        )
+        .map_err(|e| CliError::runtime(e.to_string())),
+    }
+}
+
+fn handle_export(ctx: &CliContext, args: BackupExportArgs, command_name: &str) -> CliResult<Value> {
+    if args.all_spaces && !args.space_id.is_empty() {
+        return Err(CliError::from_string(
+            "cannot combine --all-spaces with --space-id".to_string(),
+        ));
+    }
+
+    let mut conn = ctx.open_db()?;
+    let space_ids = if args.all_spaces {
+        crate::schema::spaces::table
+            .select(crate::schema::spaces::id)
+            .load::<String>(&mut conn)
+            .map_err(|e| CliError::runtime(e.to_string()))?
+    } else if args.space_id.is_empty() {
+        return Err(CliError::from_string(format!(
+            "{command_name} requires --space-id or --all-spaces"
+        )));
+    } else {
+        args.space_id
+    };
+
+    serde_json::to_value(
+        backup::export_backup(&mut conn, std::path::Path::new(&args.path), &space_ids)
+            .map_err(CliError::from_string)?,
+    )
+    .map_err(|e| CliError::runtime(e.to_string()))
+}
+
+fn handle_import(args: &BackupInspectArgs) -> CliResult<Value> {
+    if !args.map_space.is_empty() && !args.verify && !args.dry_run {
+        return Err(CliError::from_string(
+            "--map-space requires --verify or --dry-run".to_string(),
+        ));
+    }
+
+    if args.inspect {
+        return serde_json::to_value(
+            backup::inspect_backup(std::path::Path::new(&args.path))
                 .map_err(CliError::from_string)?,
         )
-        .map_err(|e| CliError::runtime(e.to_string()))?,
-    };
-    Ok(value)
+        .map_err(|e| CliError::runtime(e.to_string()));
+    }
+
+    if args.verify || args.dry_run {
+        let db_path = db_default_path();
+        if !db_path.is_file() {
+            return Err(CliError::runtime(format!(
+                "local database does not exist: {}",
+                db_path.display()
+            )));
+        }
+        let mut conn = SqliteConnection::establish(
+            db_path
+                .to_str()
+                .ok_or_else(|| CliError::runtime("database path is not UTF-8"))?,
+        )
+        .map_err(|err| CliError::runtime(format!("failed to open local database: {err}")))?;
+        conn.batch_execute("PRAGMA query_only = ON;")
+            .map_err(|err| {
+                CliError::runtime(format!("failed to make local database read-only: {err}"))
+            })?;
+        let mappings = parse_backup_space_mappings(&args.map_space)?;
+        let preflight =
+            backup::preflight_import(&mut conn, std::path::Path::new(&args.path), &mappings)
+                .map_err(CliError::from_string)?;
+        let output = if args.dry_run {
+            serde_json::to_value(backup::BackupImportDryRunPlan::from_preflight(preflight))
+        } else {
+            serde_json::to_value(preflight)
+        };
+        return output.map_err(|e| CliError::runtime(e.to_string()));
+    }
+
+    Err(CliError::from_string(
+        "import requires --inspect, --verify, or --dry-run; mutation modes are not available yet"
+            .to_string(),
+    ))
+}
+
+fn parse_backup_space_mappings(
+    values: &[String],
+) -> CliResult<Vec<backup::BackupSpaceMappingInput>> {
+    let mut backup_space_ids = std::collections::HashSet::new();
+    let mut mappings = Vec::with_capacity(values.len());
+
+    for value in values {
+        let (backup_space_id, mapping) = value.split_once('=').ok_or_else(|| {
+            CliError::from_string(
+                "--map-space must be BACKUP_ID=create_new or BACKUP_ID=use_existing:LOCAL_ID"
+                    .to_string(),
+            )
+        })?;
+        if backup_space_id.is_empty() {
+            return Err(CliError::from_string(
+                "--map-space backup space ID must not be empty".to_string(),
+            ));
+        }
+        if !backup_space_ids.insert(backup_space_id) {
+            return Err(CliError::from_string(format!(
+                "--map-space backup space ID is duplicated: {backup_space_id}"
+            )));
+        }
+        if mapping == "create_new" {
+            mappings.push(backup::BackupSpaceMappingInput {
+                backup_space_id: backup_space_id.to_string(),
+                mode: mapping.to_string(),
+                local_space_id: None,
+            });
+            continue;
+        }
+        let local_space_id = mapping.strip_prefix("use_existing:").ok_or_else(|| {
+            CliError::from_string(
+                "--map-space must be BACKUP_ID=create_new or BACKUP_ID=use_existing:LOCAL_ID"
+                    .to_string(),
+            )
+        })?;
+        if local_space_id.is_empty() {
+            return Err(CliError::from_string(
+                "--map-space existing local space ID must not be empty".to_string(),
+            ));
+        }
+        mappings.push(backup::BackupSpaceMappingInput {
+            backup_space_id: backup_space_id.to_string(),
+            mode: "use_existing".to_string(),
+            local_space_id: Some(local_space_id.to_string()),
+        });
+    }
+
+    Ok(mappings)
 }
 
 fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Value> {
     let mut conn = ctx.open_db()?;
     match command {
         ReminderCommand::List(args) => serde_json::to_value(
-            ReminderRepository::new(&mut conn)
+            ReminderService::new(&mut conn)
                 .list_for_quest(&args.quest_id)
                 .map_err(CliError::from_string)?,
         )
         .map_err(|e| CliError::runtime(e.to_string())),
         ReminderCommand::Create(args) => serde_json::to_value(
-            ReminderRepository::new(&mut conn)
+            ReminderService::new(&mut conn)
                 .create(CreateReminderInput {
                     quest_id: args.quest_id,
                     kind: args.kind,
@@ -896,7 +1099,7 @@ fn handle_reminder(ctx: &CliContext, command: ReminderCommand) -> CliResult<Valu
         )
         .map_err(|e| CliError::runtime(e.to_string())),
         ReminderCommand::Delete(args) => {
-            ReminderRepository::new(&mut conn)
+            ReminderService::new(&mut conn)
                 .delete(&args.id)
                 .map_err(CliError::from_string)?;
             Ok(json!({ "deleted": true, "id": args.id }))
@@ -1245,6 +1448,610 @@ mod tests {
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn nullable_update_argument_distinguishes_omitted_text_empty_and_literal_null() {
+        use crate::models::QuestFieldPatch;
+
+        assert_eq!(parse_nullable_quest_patch(None), QuestFieldPatch::Unchanged);
+        assert_eq!(
+            parse_nullable_quest_patch(Some("notes".to_string())),
+            QuestFieldPatch::Set("notes".to_string())
+        );
+        assert_eq!(
+            parse_nullable_quest_patch(Some(String::new())),
+            QuestFieldPatch::Set(String::new())
+        );
+        assert_eq!(
+            parse_nullable_quest_patch(Some("null".to_string())),
+            QuestFieldPatch::Clear
+        );
+    }
+
+    #[test]
+    fn repeat_alias_parser_accepts_only_supported_presets_for_create_and_update() {
+        for command in [
+            vec!["fini", "quest", "create", "--title", "Pay rent"],
+            vec!["fini", "quest", "update", "--id", "quest-1"],
+        ] {
+            for repeat in ["daily", "weekdays", "weekly", "monthly", "yearly", "null"] {
+                let mut args = command.clone();
+                args.extend(["--repeat", repeat]);
+                Cli::try_parse_from(args).unwrap_or_else(|err| {
+                    panic!("parse --repeat {repeat} for {}: {err}", command[2])
+                });
+            }
+
+            let mut invalid = command;
+            invalid.extend(["--repeat", "hourly"]);
+            assert!(
+                Cli::try_parse_from(invalid).is_err(),
+                "unsupported repeat aliases must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn repeat_alias_normalizes_presets_to_canonical_repeat_rules() {
+        for (alias, expected) in [
+            ("daily", r#"{"preset":"daily"}"#),
+            ("weekdays", r#"{"preset":"weekdays"}"#),
+            ("weekly", r#"{"preset":"weekly"}"#),
+            ("monthly", r#"{"preset":"monthly"}"#),
+            ("yearly", r#"{"preset":"yearly"}"#),
+        ] {
+            assert_eq!(normalize_repeat_alias(alias), expected);
+        }
+        assert_eq!(normalize_repeat_alias("null"), "null");
+    }
+
+    #[test]
+    fn create_repeat_null_creates_a_non_repeating_quest_without_a_series() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-create-repeat-null");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = CliContext::new()
+            .unwrap_or_else(|err| panic!("initialize isolated CLI database: {}", err.message));
+        let cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "One-time task",
+            "--repeat",
+            "null",
+        ])
+        .expect("parse quest create --repeat null");
+        let command = match cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest create command"),
+        };
+
+        let created = handle_quest(&ctx, command)
+            .unwrap_or_else(|err| panic!("create non-repeating quest: {}", err.message));
+        assert_eq!(created["repeat_rule"], Value::Null);
+        assert_eq!(created["series_id"], Value::Null);
+
+        let mut conn = ctx
+            .open_db()
+            .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
+        let series_count: i64 = crate::schema::quest_series::table
+            .count()
+            .get_result(&mut conn)
+            .expect("count quest series");
+        assert_eq!(
+            series_count, 0,
+            "--repeat null must not create a quest series"
+        );
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn repeat_alias_conflicts_with_legacy_repeat_rule_and_preserves_update_null_clear() {
+        let legacy = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Pay rent",
+            "--repeat-rule",
+            r#"{"preset":"weekly"}"#,
+        ])
+        .expect("legacy --repeat-rule remains accepted");
+        let legacy_rule = match legacy.command {
+            Some(Command::Quest {
+                command: QuestCommand::Create(args),
+            }) => args.repeat_rule,
+            _ => panic!("expected quest create command"),
+        };
+        assert_eq!(legacy_rule.as_deref(), Some(r#"{"preset":"weekly"}"#));
+
+        let conflict = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Pay rent",
+            "--repeat",
+            "monthly",
+            "--repeat-rule",
+            r#"{"preset":"weekly"}"#,
+        ]);
+        assert!(
+            conflict.is_err(),
+            "--repeat and --repeat-rule cannot be combined"
+        );
+
+        assert_eq!(
+            parse_nullable_quest_patch(Some(normalize_repeat_alias("null"))),
+            crate::models::QuestFieldPatch::Clear,
+            "--repeat null must retain update clear semantics"
+        );
+    }
+
+    #[test]
+    fn export_parser_preserves_repeated_space_ids() {
+        let cli = Cli::try_parse_from([
+            "fini",
+            "export",
+            "--path",
+            "backup.zip",
+            "--space-id",
+            "space-a",
+            "--space-id",
+            "space-b",
+        ])
+        .expect("parse top-level export");
+
+        let args = match cli.command {
+            Some(Command::Export(args)) => args,
+            _ => panic!("expected top-level export command"),
+        };
+
+        assert_eq!(args.path, "backup.zip");
+        assert_eq!(args.space_id, ["space-a", "space-b"]);
+        assert!(!args.all_spaces);
+    }
+
+    #[test]
+    fn top_level_import_inspect_emits_manifest_json_without_mutating_target_db() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-inspect-source");
+        let target_db_path = temp_db_path("cli-import-inspect-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("inspect-space"),
+                crate::schema::spaces::name.eq("Inspectable space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(&mut source, &backup_path, &["inspect-space".to_string()])
+            .expect("create backup archive");
+        drop(source);
+
+        let mut target = crate::services::db::open_db_at_path(&target_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("target-space"),
+                crate::schema::spaces::name.eq("Untouched target space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut target)
+            .expect("seed target database");
+        drop(target);
+        let target_before =
+            std::fs::read(&target_db_path).expect("read target database before inspect");
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let inspection = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: true,
+            verify: false,
+            dry_run: false,
+            map_space: vec![],
+        })
+        .unwrap_or_else(|err| panic!("inspect backup without a local database: {}", err.message));
+        let execute_result = execute(Cli {
+            json: true,
+            command: Some(Command::Import(BackupInspectArgs {
+                path: backup_path.to_string_lossy().into_owned(),
+                inspect: true,
+                verify: false,
+                dry_run: false,
+                map_space: vec![],
+            })),
+        });
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(
+            execute_result.unwrap_or_else(|err| panic!("execute import inspect: {}", err.message)),
+            EXIT_SUCCESS
+        );
+        let output = serde_json::to_string(&inspection).expect("serialize inspection as JSON");
+        let parsed: Value = serde_json::from_str(&output).expect("inspection output is valid JSON");
+        assert_eq!(parsed["valid"], true);
+        assert_eq!(parsed["manifest"]["counts"]["spaces"], 1);
+        assert_eq!(parsed["manifest"]["spaces"][0]["id"], "inspect-space");
+        let target_after =
+            std::fs::read(&target_db_path).expect("read target database after inspect");
+        assert_eq!(
+            target_after, target_before,
+            "inspection must not mutate the target database"
+        );
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn top_level_import_verify_parses_repeated_space_mappings() {
+        let cli = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--verify",
+            "--map-space",
+            "backup-new=create_new",
+            "--map-space",
+            "backup-existing=use_existing:local-space",
+        ])
+        .expect("parse top-level verify mappings");
+        let args = match cli.command {
+            Some(Command::Import(args)) => args,
+            _ => panic!("expected top-level import command"),
+        };
+        let mappings = match parse_backup_space_mappings(&args.map_space) {
+            Ok(mappings) => mappings,
+            Err(err) => panic!("parse repeated space mapping values: {}", err.message),
+        };
+
+        assert!(args.verify);
+        assert_eq!(mappings.len(), 2);
+        assert_eq!(mappings[0].backup_space_id, "backup-new");
+        assert_eq!(mappings[0].mode, "create_new");
+        assert_eq!(mappings[1].backup_space_id, "backup-existing");
+        assert_eq!(mappings[1].mode, "use_existing");
+        assert_eq!(mappings[1].local_space_id.as_deref(), Some("local-space"));
+    }
+
+    #[test]
+    fn top_level_import_verify_rejects_duplicate_backup_space_mappings() {
+        let mappings = vec![
+            "backup-space=create_new".to_string(),
+            "backup-space=use_existing:local-space".to_string(),
+        ];
+
+        let err = parse_backup_space_mappings(&mappings)
+            .expect_err("duplicate backup space mappings must be rejected");
+
+        assert_eq!(
+            err.message,
+            "--map-space backup space ID is duplicated: backup-space"
+        );
+    }
+
+    #[test]
+    fn top_level_import_verify_reports_missing_custom_space_mapping_without_mutating_target_db() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-verify-source");
+        let target_db_path = temp_db_path("cli-import-verify-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("custom-verify-space"),
+                crate::schema::spaces::name.eq("Custom verify space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(
+            &mut source,
+            &backup_path,
+            &["custom-verify-space".to_string()],
+        )
+        .expect("create backup archive");
+        drop(source);
+
+        let mut target = crate::services::db::open_db_at_path(&target_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("target-space"),
+                crate::schema::spaces::name.eq("Untouched target space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut target)
+            .expect("seed target database");
+        drop(target);
+        let target_before =
+            std::fs::read(&target_db_path).expect("read target database before verify");
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let verification = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: false,
+            verify: true,
+            dry_run: false,
+            map_space: vec![],
+        })
+        .unwrap_or_else(|err| panic!("verify backup: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(
+            verification["manifest"]["spaces"][0]["id"],
+            "custom-verify-space"
+        );
+        assert_eq!(
+            verification["required_space_mappings"][0]["backup_space_id"],
+            "custom-verify-space"
+        );
+        assert_eq!(verification["conflicts"], json!([]));
+        let target_after =
+            std::fs::read(&target_db_path).expect("read target database after verify");
+        assert_eq!(
+            target_after, target_before,
+            "verification must not mutate the target database"
+        );
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn top_level_import_dry_run_emits_a_non_mutating_ready_plan() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-dry-run-source");
+        let target_db_path = temp_db_path("cli-import-dry-run-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("dry-run-space"),
+                crate::schema::spaces::name.eq("Dry run space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(&mut source, &backup_path, &["dry-run-space".to_string()])
+            .expect("create backup archive");
+        drop(source);
+
+        let target = crate::services::db::open_db_at_path(&target_db_path);
+        drop(target);
+        let target_before =
+            std::fs::read(&target_db_path).expect("read target database before dry run");
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let plan = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: false,
+            verify: false,
+            dry_run: true,
+            map_space: vec!["dry-run-space=create_new".to_string()],
+        })
+        .unwrap_or_else(|err| panic!("dry run backup: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(plan["dry_run"], true);
+        assert_eq!(plan["ready_to_apply"], true);
+        assert_eq!(plan["no_apply_or_recovery_action_occurred"], true);
+        assert_eq!(plan["manifest"]["spaces"][0]["id"], "dry-run-space");
+        assert_eq!(plan["required_space_mappings"], json!([]));
+        assert_eq!(plan["conflicts"], json!([]));
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let exit_code = execute(Cli {
+            json: true,
+            command: Some(Command::Import(BackupInspectArgs {
+                path: backup_path.to_string_lossy().into_owned(),
+                inspect: false,
+                verify: false,
+                dry_run: true,
+                map_space: vec!["dry-run-space=create_new".to_string()],
+            })),
+        })
+        .unwrap_or_else(|err| panic!("execute dry run: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+        assert_eq!(exit_code, EXIT_SUCCESS);
+        assert_eq!(
+            std::fs::read(&target_db_path).expect("read target database after dry run"),
+            target_before,
+            "dry run must not mutate the target database"
+        );
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn top_level_import_dry_run_reports_unresolved_mapping_as_not_ready() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let source_db_path = temp_db_path("cli-import-dry-run-unresolved-source");
+        let target_db_path = temp_db_path("cli-import-dry-run-unresolved-target");
+        let backup_path = source_db_path.with_extension("zip");
+        let mut source = crate::services::db::open_db_at_path(&source_db_path);
+        diesel::insert_into(crate::schema::spaces::table)
+            .values((
+                crate::schema::spaces::id.eq("unmapped-dry-run-space"),
+                crate::schema::spaces::name.eq("Unmapped dry run space"),
+                crate::schema::spaces::item_order.eq(10_i64),
+            ))
+            .execute(&mut source)
+            .expect("seed source database");
+        backup::export_backup(
+            &mut source,
+            &backup_path,
+            &["unmapped-dry-run-space".to_string()],
+        )
+        .expect("create backup archive");
+        drop(source);
+        let target = crate::services::db::open_db_at_path(&target_db_path);
+        drop(target);
+
+        std::env::set_var("FINI_DB_PATH", &target_db_path);
+        let plan = handle_import(&BackupInspectArgs {
+            path: backup_path.to_string_lossy().into_owned(),
+            inspect: false,
+            verify: false,
+            dry_run: true,
+            map_space: vec![],
+        })
+        .unwrap_or_else(|err| panic!("dry run backup: {}", err.message));
+        std::env::remove_var("FINI_DB_PATH");
+
+        assert_eq!(plan["dry_run"], true);
+        assert_eq!(plan["ready_to_apply"], false);
+        assert_eq!(plan["no_apply_or_recovery_action_occurred"], true);
+        assert_eq!(
+            plan["required_space_mappings"][0]["backup_space_id"],
+            "unmapped-dry-run-space"
+        );
+        assert_eq!(plan["conflicts"], json!([]));
+
+        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::remove_file(source_db_path);
+        let _ = std::fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn top_level_import_requires_read_only_mode_and_rejects_incompatible_or_unsupported_flags() {
+        let path_only = Cli::try_parse_from(["fini", "import", "--path", "backup.zip"]).expect(
+            "path-only import parses so execution can explain the unavailable mutation mode",
+        );
+        let err = execute(path_only).expect_err("path-only import must be rejected");
+        assert_eq!(
+            err.message,
+            "import requires --inspect, --verify, or --dry-run; mutation modes are not available yet"
+        );
+
+        let incompatible = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--inspect",
+            "--verify",
+        ]);
+        assert!(
+            incompatible.is_err(),
+            "import must reject combining inspect with verify"
+        );
+
+        let dry_run_with_mappings = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--dry-run",
+            "--map-space",
+            "backup-one=create_new",
+            "--map-space",
+            "backup-two=use_existing:local-space",
+        ]);
+        assert!(
+            dry_run_with_mappings.is_ok(),
+            "dry run must allow repeated space mappings"
+        );
+
+        let inspect_with_mappings = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--inspect",
+            "--map-space",
+            "backup-one=create_new",
+        ]);
+        assert!(
+            inspect_with_mappings.is_err(),
+            "space mappings must only be accepted for verify or dry run"
+        );
+
+        let unsupported = Cli::try_parse_from([
+            "fini",
+            "import",
+            "--path",
+            "backup.zip",
+            "--verify",
+            "--force",
+        ]);
+        assert!(
+            unsupported.is_err(),
+            "import must reject unsupported mutation flags"
+        );
+    }
+
+    #[test]
+    fn top_level_export_rejects_missing_scope() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-export-requires-scope");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let result = execute(Cli {
+            json: true,
+            command: Some(Command::Export(BackupExportArgs {
+                path: db_path.with_extension("zip").to_string_lossy().into_owned(),
+                space_id: vec![],
+                all_spaces: false,
+            })),
+        });
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(&db_path);
+
+        let err = result.expect_err("export without a scope must fail");
+        assert_eq!(err.code, EXIT_RUNTIME);
+        assert_eq!(err.message, "export requires --space-id or --all-spaces");
+    }
+
+    #[test]
+    fn top_level_export_accepts_all_spaces_and_writes_json_result() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-export-all-spaces");
+        let export_path = db_path.with_extension("zip");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = match CliContext::new() {
+            Ok(ctx) => ctx,
+            Err(err) => panic!("initialize isolated CLI database: {}", err.message),
+        };
+        handle_space(
+            &ctx,
+            SpaceCommand::Create(SpaceCreateArgs {
+                name: "Exported space".to_string(),
+            }),
+        )
+        .unwrap_or_else(|err| panic!("seed isolated database with a space: {}", err.message));
+
+        let result = execute(Cli {
+            json: true,
+            command: Some(Command::Export(BackupExportArgs {
+                path: export_path.to_string_lossy().into_owned(),
+                space_id: vec![],
+                all_spaces: true,
+            })),
+        });
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(&db_path);
+
+        assert_eq!(
+            result.unwrap_or_else(|err| panic!("export all spaces: {}", err.message)),
+            EXIT_SUCCESS
+        );
+        assert!(export_path.exists(), "export should write a backup archive");
+        let _ = std::fs::remove_file(export_path);
+    }
 
     #[test]
     fn cli_auto_update_is_disabled_for_debug_test_builds() {

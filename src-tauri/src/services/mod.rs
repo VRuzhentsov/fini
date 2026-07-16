@@ -10,6 +10,7 @@ pub mod db;
 pub mod desktop_update;
 pub mod device_connection;
 pub mod due_time;
+pub mod migration_import;
 #[cfg(any(feature = "ui-plane", test))]
 pub mod notification;
 pub mod quest;
