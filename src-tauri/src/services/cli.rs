@@ -1178,7 +1178,7 @@ fn format_human_output_lines(value: &Value) -> Vec<String> {
         Value::Object(map) if map.get("ok").and_then(Value::as_bool) == Some(true) => {
             vec!["OK.".to_string()]
         }
-        Value::Object(map) if map.contains_key("quests") => {
+        Value::Object(map) if map.get("quests").and_then(Value::as_array).is_some() => {
             let items = map
                 .get("quests")
                 .and_then(Value::as_array)
@@ -1193,7 +1193,7 @@ fn format_human_output_lines(value: &Value) -> Vec<String> {
                     .collect()
             }
         }
-        Value::Object(map) if map.contains_key("spaces") => {
+        Value::Object(map) if map.get("spaces").and_then(Value::as_array).is_some() => {
             let items = map
                 .get("spaces")
                 .and_then(Value::as_array)
@@ -1408,6 +1408,24 @@ mod tests {
                 "must not print pretty JSON: {output}"
             );
         }
+    }
+
+    #[test]
+    fn scalar_quest_and_space_counts_use_generic_human_summary() {
+        let import_result = format_human_output(&json!({
+            "imported": true,
+            "spaces": 2,
+            "quest_series": 3,
+            "quests": 5
+        }));
+
+        assert!(import_result.contains("Result:"));
+        assert!(import_result.contains("imported=true"));
+        assert!(import_result.contains("spaces=2"));
+        assert!(import_result.contains("quests=5"));
+        assert!(!import_result.contains("No quests."));
+        assert!(!import_result.contains("No spaces."));
+        assert_not_raw_json(&import_result);
     }
 
     #[test]
