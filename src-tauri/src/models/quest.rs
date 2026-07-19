@@ -48,6 +48,42 @@ pub struct CreateQuestInput {
     pub order_rank: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestFieldPatch<T> {
+    Unchanged,
+    Set(T),
+    Clear,
+}
+
+impl<T> Default for QuestFieldPatch<T> {
+    fn default() -> Self {
+        Self::Unchanged
+    }
+}
+
+/// Explicit nullable update contract. Transport adapters map omitted values,
+/// ordinary text (including empty text), and literal null to these variants.
+pub struct QuestUpdatePatch {
+    pub input: UpdateQuestInput,
+    pub description: QuestFieldPatch<String>,
+    pub due: QuestFieldPatch<String>,
+    pub due_time: QuestFieldPatch<String>,
+    pub repeat_rule: QuestFieldPatch<String>,
+}
+
+impl QuestUpdatePatch {
+    #[cfg(test)]
+    pub fn unchanged(input: UpdateQuestInput) -> Self {
+        Self {
+            input,
+            description: QuestFieldPatch::Unchanged,
+            due: QuestFieldPatch::Unchanged,
+            due_time: QuestFieldPatch::Unchanged,
+            repeat_rule: QuestFieldPatch::Unchanged,
+        }
+    }
+}
+
 #[derive(Deserialize, AsChangeset)]
 #[diesel(table_name = quests)]
 pub struct UpdateQuestInput {

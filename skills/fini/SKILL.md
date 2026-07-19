@@ -67,6 +67,58 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 - Set `repeat_rule` for recurring quests (e.g. `daily`, `weekly`, `monthly`)
 - Repeating quests track `series_id` and `period_key` automatically
 
+### Quest Mutation Safety
+
+Apply this workflow before every quest mutation: create, update, complete, abandon, restore, or delete.
+
+1. Determine the normalized title: use the proposed title for create or title updates; otherwise fetch the target quest by ID and use its current title. Normalize by trimming leading and trailing whitespace and comparing case-insensitively.
+2. Query all retained quests—active, completed, and abandoned—with that exact normalized title. For an existing target, exclude that target from the candidate set. Do not treat quests with the same non-empty `series_id` as duplicates; they are intentional recurring occurrences.
+3. If duplicate candidates remain, stop the mutation and show their IDs, statuses, and `created_at` values. Require an explicit resolution: retain the oldest record and delete others, target an existing record by ID, proceed intentionally with the requested mutation, or cancel.
+4. When recommending consolidation, recommend retaining the oldest record by `created_at`. Preserve it unchanged unless the user explicitly chooses fields to copy from another record; never delete a duplicate automatically.
+5. After the user approves a mutation, read the target record back and rerun the exact-title duplicate query to verify the intended result. Report the verification outcome.
+
+### Nullable Quest Updates
+
+For `fini quest update`, omit a field to preserve it, pass ordinary text (including an empty string) to store it, and pass literal `null` to clear nullable values such as `description`, `due`, `due_time`, and `repeat_rule`.
+
+### Archive Export and Recovery Planning
+
+Use structured JSON for archive workflows:
+
+```bash
+fini --json export --path /path/to/backup.zip --space-id <ID>
+fini --json export --path /path/to/backup.zip --all-spaces
+fini --json import --path /path/to/backup.zip --inspect
+fini --json import --path /path/to/backup.zip --verify
+fini --json import --path /path/to/backup.zip --dry-run
+```
+
+- `export` requires either one or more repeatable `--space-id` values or `--all-spaces`; never combine them.
+- `import --inspect` validates and summarizes the archive without opening the local database.
+- `import --verify` and `import --dry-run` preflight against the local database in read-only mode. `--dry-run` reports `ready_to_apply` and never applies recovery.
+- For custom-space mappings, repeat `--map-space BACKUP_ID=create_new` or `--map-space BACKUP_ID=use_existing:LOCAL_ID`. Each backup ID may appear only once.
+- Root import application and JSON migration persistence are still under implementation. Do not present inspection, verification, or dry-run as a completed recovery.
+
+## Quick Start
+
+```bash
+# Recurring routine task
+fini quest create --title "Pay rent" --repeat monthly
+
+# Non-mutating archive inspection
+fini import --path backup.zip --inspect --json
+```
+
+## Command Discovery
+
+For arguments, accepted values, defaults, and workflows beyond these basic examples, use the built-in help surface:
+
+```bash
+fini --help
+fini quest update --help
+fini import --help
+```
+
 ## Focus and App Entry Behavior
 
 - `fini` with no args returns current Focus quest.

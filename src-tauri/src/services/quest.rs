@@ -6,9 +6,17 @@ use std::collections::HashMap;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::{Manager, State};
 
-use crate::models::{clamp_order_rank, CreateQuestInput, UpdateQuestInput};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::models::Space;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::models::UpdateQuestInput;
 use crate::models::{CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries};
-use crate::schema::{focus_history, quest_series, quests, settings};
+use crate::models::{CreateQuestInput, QuestUpdatePatch};
+use crate::repositories::quest::QuestRepository;
+use crate::schema::{focus_history, settings};
+#[cfg(test)]
+use crate::schema::{quest_series, quests};
+#[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
@@ -94,7 +102,7 @@ fn is_series_end_reached(rule: &RepeatRule, next_due: &NaiveDate, completed_coun
 fn ensure_series(
     conn: &mut SqliteConnection,
     quest: &Quest,
-) -> Result<Option<(String, RepeatRule)>, diesel::result::Error> {
+) -> Result<Option<(String, RepeatRule)>, String> {
     let repeat_rule_str = match quest.repeat_rule.as_deref() {
         Some(r) if !r.is_empty() => r,
         _ => return Ok(None),
@@ -106,11 +114,7 @@ fn ensure_series(
     };
 
     if let Some(ref sid) = quest.series_id {
-        let active: bool = quest_series::table
-            .find(sid)
-            .select(quest_series::active)
-            .first(conn)
-            .unwrap_or(true);
+        let active = QuestRepository::new(conn).is_series_active(sid)?;
         if !active {
             return Ok(None);
         }
@@ -127,10 +131,7 @@ fn ensure_series(
         energy: quest.energy.clone(),
     };
 
-    let series = diesel::insert_into(quest_series::table)
-        .values(&series_input)
-        .returning(QuestSeries::as_returning())
-        .get_result::<QuestSeries>(conn)?;
+    let series = QuestRepository::new(conn).create_series(&series_input)?;
 
     let period_key = quest
         .due
@@ -138,12 +139,7 @@ fn ensure_series(
         .unwrap_or(&quest.created_at[..10])
         .to_string();
 
-    diesel::update(quests::table.find(&quest.id))
-        .set((
-            quests::series_id.eq(&series.id),
-            quests::period_key.eq(&period_key),
-        ))
-        .execute(conn)?;
+    QuestRepository::new(conn).link_to_series(&quest.id, &series.id, &period_key)?;
 
     Ok(Some((series.id, rule)))
 }
@@ -151,7 +147,7 @@ fn ensure_series(
 pub fn generate_next_occurrence(
     conn: &mut SqliteConnection,
     quest: &Quest,
-) -> Result<Option<Quest>, diesel::result::Error> {
+) -> Result<Option<Quest>, String> {
     let (series_id, rule) = match ensure_series(conn, quest)? {
         Some(pair) => pair,
         None => return Ok(None),
@@ -168,62 +164,20 @@ pub fn generate_next_occurrence(
         None => return Ok(None),
     };
 
-    let completed_count: i64 = quests::table
-        .filter(quests::series_id.eq(&series_id))
-        .filter(quests::status.ne("active"))
-        .count()
-        .get_result(conn)?;
+    let completed_count =
+        QuestRepository::new(conn).count_completed_series_occurrences(&series_id)?;
 
     if is_series_end_reached(&rule, &next_due, completed_count) {
-        diesel::update(quest_series::table.find(&series_id))
-            .set(quest_series::active.eq(false))
-            .execute(conn)?;
+        QuestRepository::new(conn).deactivate_series(&series_id)?;
         return Ok(None);
     }
 
     let period_key = next_due.format("%Y-%m-%d").to_string();
 
-    let existing = quests::table
-        .filter(quests::series_id.eq(&series_id))
-        .filter(quests::period_key.eq(&period_key))
-        .count()
-        .get_result::<i64>(conn)?;
-
-    if existing > 0 {
+    if QuestRepository::new(conn).series_has_occurrence(&series_id, &period_key)? {
         return Ok(None);
     }
-
-    let now = utc_now();
-    let max_rank = quests::table
-        .select(diesel::dsl::max(quests::order_rank))
-        .first::<Option<f64>>(conn)?
-        .unwrap_or(0.0);
-
-    diesel::insert_into(quests::table)
-        .values((
-            quests::space_id.eq(&quest.space_id),
-            quests::title.eq(&quest.title),
-            quests::description.eq(&quest.description.as_deref()),
-            quests::status.eq("active"),
-            quests::energy.eq(&quest.energy),
-            quests::priority.eq(quest.priority),
-            quests::due.eq(&period_key),
-            quests::due_time.eq(quest.due_time.as_deref()),
-            quests::repeat_rule.eq(quest.repeat_rule.as_deref()),
-            quests::order_rank.eq(max_rank + 1.0),
-            quests::series_id.eq(&series_id),
-            quests::period_key.eq(&period_key),
-            quests::created_at.eq(&now),
-            quests::updated_at.eq(&now),
-        ))
-        .execute(conn)?;
-
-    quests::table
-        .filter(quests::series_id.eq(&series_id))
-        .filter(quests::period_key.eq(&period_key))
-        .select(Quest::as_select())
-        .first(conn)
-        .optional()
+    QuestRepository::new(conn).create_next_occurrence(quest, &series_id, &period_key)
 }
 
 // ── Focus resolution ─────────────────────────────────────────────────────────
@@ -306,8 +260,8 @@ fn resolve_active_fallback(active: Vec<&Quest>) -> Option<Quest> {
 fn resolve_active_quest_at(
     conn: &mut SqliteConnection,
     now: DateTime<Utc>,
-) -> Result<Option<Quest>, diesel::result::Error> {
-    let all_quests: Vec<Quest> = quests::table.select(Quest::as_select()).load(conn)?;
+) -> Result<Option<Quest>, String> {
+    let all_quests = QuestRepository::new(conn).load_all()?;
     let active_by_id: std::collections::HashMap<&str, &Quest> = all_quests
         .iter()
         .filter(|q| q.status == "active")
@@ -324,7 +278,8 @@ fn resolve_active_quest_at(
     let history: Vec<crate::models::FocusHistoryEntry> = focus_history::table
         .order(focus_history::created_at.desc())
         .select(crate::models::FocusHistoryEntry::as_select())
-        .load(conn)?;
+        .load(conn)
+        .map_err(|error| error.to_string())?;
 
     for entry in &history {
         if let Some(&quest) = active_by_id.get(entry.quest_id.as_str()) {
@@ -363,9 +318,7 @@ fn resolve_active_quest_at(
     ))
 }
 
-pub fn resolve_active_quest(
-    conn: &mut SqliteConnection,
-) -> Result<Option<Quest>, diesel::result::Error> {
+pub fn resolve_active_quest(conn: &mut SqliteConnection) -> Result<Option<Quest>, String> {
     resolve_active_quest_at(conn, Utc::now())
 }
 
@@ -394,31 +347,25 @@ fn save_active_focus_quest_id(
 pub(crate) fn record_focus_enter(
     conn: &mut SqliteConnection,
     quest: &Quest,
-) -> Result<Quest, diesel::result::Error> {
+) -> Result<Quest, String> {
     let previous_focus_id = settings::table
         .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
         .select(settings::value)
         .first::<String>(conn)
-        .optional()?;
+        .optional()
+        .map_err(|error| error.to_string())?;
 
     if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
-        diesel::update(quests::table.find(&quest.id))
-            .set(quests::focus_enter_count.eq(quests::focus_enter_count + 1))
-            .execute(conn)?;
-        save_active_focus_quest_id(conn, Some(&quest.id))?;
+        let quest = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
+        save_active_focus_quest_id(conn, Some(&quest.id)).map_err(|error| error.to_string())?;
+        return Ok(quest);
     }
-
-    quests::table
-        .find(&quest.id)
-        .select(Quest::as_select())
-        .first(conn)
+    QuestRepository::new(conn).get(&quest.id)
 }
 
-fn resolve_and_record_active_quest(
-    conn: &mut SqliteConnection,
-) -> Result<Option<Quest>, diesel::result::Error> {
+fn resolve_and_record_active_quest(conn: &mut SqliteConnection) -> Result<Option<Quest>, String> {
     let Some(quest) = resolve_active_quest(conn)? else {
-        save_active_focus_quest_id(conn, None)?;
+        save_active_focus_quest_id(conn, None).map_err(|error| error.to_string())?;
         return Ok(None);
     };
 
@@ -508,240 +455,181 @@ fn emit_quest_sync_events(
     Ok(())
 }
 
-pub struct CreateQuestResult {
+pub(crate) struct CreateQuestResult {
     pub quest: Quest,
     pub series: Option<QuestSeries>,
 }
 
-pub struct UpdateQuestResult {
+pub(crate) struct UpdateQuestResult {
     pub quest: Quest,
     pub restore_should_focus: bool,
     pub next_occurrence: Option<Quest>,
 }
 
-pub struct QuestRepository<'a> {
-    conn: &'a mut SqliteConnection,
+/// Application boundary for quest lifecycle. Adapters call this, never repositories.
+pub struct QuestService<'a> {
+    repository: QuestRepository<'a>,
 }
 
-impl<'a> QuestRepository<'a> {
+impl<'a> QuestService<'a> {
     pub fn new(conn: &'a mut SqliteConnection) -> Self {
-        Self { conn }
+        Self {
+            repository: QuestRepository::new(conn),
+        }
     }
 
     pub fn list_for_ui(&mut self) -> Result<Vec<Quest>, String> {
-        load_quests_for_list(self.conn).map_err(|e| e.to_string())
+        self.repository.load_all().map(sort_quests_for_list)
     }
 
     pub fn get(&mut self, id: &str) -> Result<Quest, String> {
-        quests::table
-            .find(id)
-            .select(Quest::as_select())
-            .first(self.conn)
-            .map_err(|e| e.to_string())
+        self.repository.get(id)
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn get_with_space(&mut self, id: &str) -> Result<(Quest, Space), String> {
+        self.repository.load_quest_and_space(id)
+    }
+
+    pub fn set_focus(&mut self, id: &str, trigger: &str) -> Result<Quest, String> {
+        let quest = self
+            .repository
+            .get_active(id)?
+            .ok_or_else(|| "cannot set Focus on non-active quest".to_string())?;
+        self.repository.touch(id)?;
+        append_focus_history(self.repository.conn, &quest.id, &quest.space_id, trigger)?;
+        record_focus_enter(self.repository.conn, &quest)
     }
 
     pub fn create(&mut self, input: CreateQuestInput) -> Result<CreateQuestResult, String> {
-        create_quest_in_db(self.conn, input)
+        let repeats = input
+            .repeat_rule
+            .as_deref()
+            .map(|rule| !rule.is_empty())
+            .unwrap_or(false);
+        if repeats {
+            let (quest, series) = self.repository.create_series_and_quest(input)?;
+            Ok(CreateQuestResult {
+                quest,
+                series: Some(series),
+            })
+        } else {
+            Ok(CreateQuestResult {
+                quest: self.repository.create(input)?,
+                series: None,
+            })
+        }
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn update(
         &mut self,
         id: &str,
         input: UpdateQuestInput,
     ) -> Result<UpdateQuestResult, String> {
-        update_quest_result_in_db(self.conn, id, input)
+        let requested_status = input.status.clone();
+        let (previous, quest) = self.repository.update(id, input)?;
+        self.finish_update(previous, quest, requested_status)
+    }
+
+    pub fn update_patch(
+        &mut self,
+        id: &str,
+        patch: QuestUpdatePatch,
+    ) -> Result<UpdateQuestResult, String> {
+        let requested_status = patch.input.status.clone();
+        let (previous, quest) = self.repository.update_patch(id, patch)?;
+        self.finish_update(previous, quest, requested_status)
+    }
+
+    fn finish_update(
+        &mut self,
+        previous: Quest,
+        quest: Quest,
+        requested_status: Option<String>,
+    ) -> Result<UpdateQuestResult, String> {
+        let restore_should_focus = previous.status != "active"
+            && quest.status == "active"
+            && should_set_focus_now_for_restore(quest.due.as_deref(), Utc::now());
+        let next_occurrence = if matches!(
+            requested_status.as_deref(),
+            Some("completed") | Some("abandoned")
+        ) && (quest.repeat_rule.is_some() || quest.series_id.is_some())
+        {
+            generate_next_occurrence(self.repository.conn, &quest).unwrap_or(None)
+        } else {
+            None
+        };
+        Ok(UpdateQuestResult {
+            quest,
+            restore_should_focus,
+            next_occurrence,
+        })
     }
 
     pub fn delete(&mut self, id: &str) -> Result<Quest, String> {
-        delete_quest_in_db(self.conn, id)
-    }
-}
-
-fn create_quest_in_db(
-    conn: &mut SqliteConnection,
-    input: CreateQuestInput,
-) -> Result<CreateQuestResult, String> {
-    let max_rank = quests::table
-        .select(diesel::dsl::max(quests::order_rank))
-        .first::<Option<f64>>(conn)
-        .map_err(|e| e.to_string())?
-        .unwrap_or(0.0);
-
-    let has_repeat = input
-        .repeat_rule
-        .as_deref()
-        .map(|r| !r.is_empty())
-        .unwrap_or(false);
-
-    if has_repeat {
-        let repeat_rule_str = input.repeat_rule.clone().unwrap();
-        let series_input = CreateSeriesInput {
-            space_id: input.space_id.clone(),
-            title: input.title.clone(),
-            description: input.description.clone(),
-            repeat_rule: repeat_rule_str,
-            priority: input.priority,
-            energy: input.energy.clone(),
-        };
-
-        let series = diesel::insert_into(quest_series::table)
-            .values(&series_input)
-            .returning(QuestSeries::as_returning())
-            .get_result::<QuestSeries>(conn)
-            .map_err(|e| e.to_string())?;
-
-        let period_key = input
-            .due
-            .as_deref()
-            .unwrap_or(&Utc::now().format("%Y-%m-%d").to_string())
-            .to_string();
-
-        let now = utc_now();
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq(&input.space_id),
-                quests::title.eq(&input.title),
-                quests::description.eq(&input.description),
-                quests::status.eq("active"),
-                quests::energy.eq(&input.energy),
-                quests::priority.eq(input.priority),
-                quests::due.eq(&input.due),
-                quests::due_time.eq(&input.due_time),
-                quests::repeat_rule.eq(&input.repeat_rule),
-                quests::order_rank.eq(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
-                quests::series_id.eq(&series.id),
-                quests::period_key.eq(&period_key),
-                quests::created_at.eq(&now),
-                quests::updated_at.eq(&now),
-            ))
-            .execute(conn)
-            .map_err(|e| e.to_string())?;
-
-        let quest = quests::table
-            .filter(quests::series_id.eq(&series.id))
-            .filter(quests::period_key.eq(&period_key))
-            .select(Quest::as_select())
-            .first(conn)
-            .map_err(|e| e.to_string())?;
-
-        return Ok(CreateQuestResult {
-            quest,
-            series: Some(series),
-        });
+        self.repository.delete(id)
     }
 
-    let input = CreateQuestInput {
-        order_rank: Some(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
-        ..input
-    };
-
-    let quest = diesel::insert_into(quests::table)
-        .values(&input)
-        .returning(Quest::as_returning())
-        .get_result(conn)
-        .map_err(|e| e.to_string())?;
-
-    Ok(CreateQuestResult {
-        quest,
-        series: None,
-    })
-}
-
-fn update_quest_result_in_db(
-    conn: &mut SqliteConnection,
-    id: &str,
-    input: UpdateQuestInput,
-) -> Result<UpdateQuestResult, String> {
-    let now = utc_now();
-    let now_dt = Utc::now();
-
-    let existing: Quest = quests::table
-        .find(id)
-        .select(Quest::as_select())
-        .first(conn)
-        .map_err(|e| e.to_string())?;
-
-    let mut patch = input;
-    let status = patch.status.clone();
-    let mut restore_should_focus = false;
-    let mut period_key_to_sync: Option<String> = None;
-
-    if let Some(rank) = patch.order_rank {
-        patch.order_rank = Some(clamp_order_rank(rank));
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn series_quest_ids(&mut self, series_id: &str) -> Result<Vec<String>, String> {
+        self.repository
+            .list_for_series(series_id)
+            .map(|quests| quests.into_iter().map(|quest| quest.id).collect())
     }
 
-    if let (Some(series_id), Some(new_due)) = (existing.series_id.as_deref(), patch.due.as_deref())
-    {
-        let conflict_count = quests::table
-            .filter(quests::series_id.eq(series_id))
-            .filter(quests::period_key.eq(new_due))
-            .filter(quests::id.ne(id))
-            .count()
-            .get_result::<i64>(conn)
-            .map_err(|e| e.to_string())?;
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn delete_series_with_sync(
+        &mut self,
+        device_id: &str,
+        series_id: &str,
+    ) -> Result<(), diesel::result::Error> {
+        self.repository.conn.transaction(|conn| {
+            let (series_space_id, series_quests) = {
+                let mut repository = QuestRepository::new(conn);
+                let series_space_id = repository
+                    .series_space_id(series_id)
+                    .map_err(|_| diesel::result::Error::RollbackTransaction)?;
+                let series_quests = repository
+                    .list_for_series(series_id)
+                    .map_err(|_| diesel::result::Error::RollbackTransaction)?;
+                (series_space_id, series_quests)
+            };
 
-        if conflict_count > 0 {
-            return Err("occurrence for this date already exists in the series".to_string());
-        }
+            for quest in &series_quests {
+                emit_sync_event(
+                    conn,
+                    device_id,
+                    "quest",
+                    &quest.id,
+                    &quest.space_id,
+                    "delete",
+                    None,
+                )
+                .map_err(|_| diesel::result::Error::RollbackTransaction)?;
 
-        period_key_to_sync = Some(new_due.to_string());
+                QuestRepository::new(conn)
+                    .delete_series_quest(&quest.id)
+                    .map_err(|_| diesel::result::Error::RollbackTransaction)?;
+            }
+
+            emit_sync_event(
+                conn,
+                device_id,
+                "quest_series",
+                series_id,
+                &series_space_id,
+                "delete",
+                None,
+            )
+            .map_err(|_| diesel::result::Error::RollbackTransaction)?;
+
+            QuestRepository::new(conn)
+                .delete_series(series_id)
+                .map_err(|_| diesel::result::Error::RollbackTransaction)?;
+            Ok(())
+        })
     }
-
-    if status.as_deref() == Some("active") {
-        let restoring_from_history = existing.status != "active";
-        if restoring_from_history {
-            let effective_due = patch.due.as_deref().or(existing.due.as_deref());
-            restore_should_focus = should_set_focus_now_for_restore(effective_due, now_dt);
-        }
-    }
-
-    diesel::update(quests::table.find(id))
-        .set((&patch, quests::updated_at.eq(&now)))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-
-    if let Some(period_key) = period_key_to_sync {
-        diesel::update(quests::table.find(id))
-            .set(quests::period_key.eq(Some(period_key)))
-            .execute(conn)
-            .map_err(|e| e.to_string())?;
-    }
-
-    let completed_at_update = match status.as_deref() {
-        Some("completed") => Some(Some(now.clone())),
-        Some("active") | Some("abandoned") => Some(None),
-        _ => None,
-    };
-
-    if let Some(val) = completed_at_update {
-        diesel::update(quests::table.find(id))
-            .set(quests::completed_at.eq(val))
-            .execute(conn)
-            .map_err(|e| e.to_string())?;
-    }
-
-    let updated_quest: Quest = quests::table
-        .find(id)
-        .select(Quest::as_select())
-        .first(conn)
-        .map_err(|e| e.to_string())?;
-
-    // Auto-generate next occurrence when a repeating quest is completed or abandoned
-    let next_occurrence = if matches!(status.as_deref(), Some("completed") | Some("abandoned")) {
-        if updated_quest.repeat_rule.is_some() || updated_quest.series_id.is_some() {
-            generate_next_occurrence(conn, &updated_quest).unwrap_or(None)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    Ok(UpdateQuestResult {
-        quest: updated_quest,
-        restore_should_focus,
-        next_occurrence,
-    })
 }
 
 #[cfg(test)]
@@ -750,7 +638,7 @@ pub fn update_quest_in_db(
     id: &str,
     input: UpdateQuestInput,
 ) -> Result<(Quest, bool, Option<Quest>), String> {
-    let result = update_quest_result_in_db(conn, id, input)?;
+    let result = QuestService::new(conn).update(id, input)?;
     Ok((
         result.quest,
         result.restore_should_focus,
@@ -804,10 +692,15 @@ fn collapse_active_series_occurrences(loaded: Vec<Quest>) -> Vec<Quest> {
     passthrough
 }
 
-pub fn load_quests_for_list(
+#[cfg(test)]
+pub(crate) fn load_quests_for_list(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<Quest>, diesel::result::Error> {
     let loaded: Vec<Quest> = quests::table.select(Quest::as_select()).load(conn)?;
+    Ok(sort_quests_for_list(loaded))
+}
+
+fn sort_quests_for_list(loaded: Vec<Quest>) -> Vec<Quest> {
     let mut loaded = collapse_active_series_occurrences(loaded);
 
     let now = Utc::now();
@@ -863,19 +756,7 @@ pub fn load_quests_for_list(
         .then_with(|| a.id.cmp(&b.id))
     });
 
-    Ok(loaded)
-}
-
-pub fn delete_quest_in_db(conn: &mut SqliteConnection, id: &str) -> Result<Quest, String> {
-    let quest: Quest = quests::table
-        .find(id)
-        .select(Quest::as_select())
-        .first(conn)
-        .map_err(|e| e.to_string())?;
-    diesel::delete(quests::table.find(id))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-    Ok(quest)
+    loaded
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -884,7 +765,7 @@ pub fn delete_quest_in_db(conn: &mut SqliteConnection, id: &str) -> Result<Quest
 #[tauri::command]
 pub fn get_quests(state: State<AppDbConnection>) -> Result<Vec<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    QuestRepository::new(&mut conn).list_for_ui()
+    QuestService::new(&mut conn).list_for_ui()
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -896,7 +777,7 @@ pub fn create_quest(
     input: CreateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let created = QuestRepository::new(&mut conn).create(input)?;
+    let created = QuestService::new(&mut conn).create(input)?;
 
     if let Some(series) = &created.series {
         let series_payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
@@ -956,14 +837,8 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
 
     let mut conn = db.0.lock().unwrap();
 
-    let quest: Quest = match quests::table
-        .find(quest_id)
-        .select(Quest::as_select())
-        .first(&mut *conn)
-        .optional()
-    {
-        Ok(Some(q)) => q,
-        Ok(None) => return,
+    let quest: Quest = match QuestService::new(&mut conn).get(quest_id) {
+        Ok(q) => q,
         Err(e) => {
             eprintln!("[notification] complete: quest not found {quest_id}: {e}");
             return;
@@ -985,7 +860,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
         order_rank: None,
     };
 
-    match QuestRepository::new(&mut conn).update(quest_id, input) {
+    match QuestService::new(&mut conn).update(quest_id, input) {
         Ok(result) => {
             let updated_quest = result.quest;
             if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, app, quest_id) {
@@ -1012,25 +887,7 @@ pub fn get_active_focus(state: State<AppDbConnection>) -> Result<Option<Quest>, 
 #[tauri::command]
 pub fn set_focus(state: State<AppDbConnection>, id: String) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let now = utc_now();
-
-    let quest: Quest = quests::table
-        .find(&id)
-        .filter(quests::status.eq("active"))
-        .select(Quest::as_select())
-        .first(&mut *conn)
-        .optional()
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "cannot set Focus on non-active quest".to_string())?;
-
-    diesel::update(quests::table.find(&id))
-        .set(quests::updated_at.eq(&now))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
-
-    append_focus_history(&mut conn, &quest.id, &quest.space_id, "manual")?;
-
-    record_focus_enter(&mut conn, &quest).map_err(|e| e.to_string())
+    QuestService::new(&mut conn).set_focus(&id, "manual")
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1043,15 +900,11 @@ pub fn update_quest(
     input: UpdateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let previous: Quest = quests::table
-        .find(&id)
-        .select(Quest::as_select())
-        .first(&mut *conn)
-        .map_err(|e| e.to_string())?;
+    let previous = QuestService::new(&mut conn).get(&id)?;
     let previous_status = previous.status.clone();
     let previous_space_id = previous.space_id.clone();
 
-    let update_result = QuestRepository::new(&mut conn).update(&id, input)?;
+    let update_result = QuestService::new(&mut conn).update(&id, input)?;
     let mut quest = update_result.quest;
 
     if previous_status != "active" && quest.status == "active" && update_result.restore_should_focus
@@ -1099,7 +952,7 @@ pub fn delete_quest(
 ) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
 
-    let quest = QuestRepository::new(&mut conn).get(&id)?;
+    let quest = QuestService::new(&mut conn).get(&id)?;
 
     // Cancel notifications before cascade delete removes the reminder rows
     if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, &app, &id) {
@@ -1116,56 +969,8 @@ pub fn delete_quest(
         None,
     )?;
 
-    QuestRepository::new(&mut conn).delete(&id)?;
+    QuestService::new(&mut conn).delete(&id)?;
     Ok(())
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-fn delete_quest_series_in_db(
-    conn: &mut SqliteConnection,
-    device_id: &str,
-    series_id: &str,
-) -> Result<(), diesel::result::Error> {
-    conn.transaction(|conn| {
-        let series_space_id: String = quest_series::table
-            .find(series_id)
-            .select(quest_series::space_id)
-            .first(conn)?;
-
-        let series_quests: Vec<Quest> = quests::table
-            .filter(quests::series_id.eq(series_id))
-            .select(Quest::as_select())
-            .load(conn)?;
-
-        for quest in &series_quests {
-            emit_sync_event(
-                conn,
-                device_id,
-                "quest",
-                &quest.id,
-                &quest.space_id,
-                "delete",
-                None,
-            )
-            .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-
-            diesel::delete(quests::table.find(&quest.id)).execute(conn)?;
-        }
-
-        emit_sync_event(
-            conn,
-            device_id,
-            "quest_series",
-            series_id,
-            &series_space_id,
-            "delete",
-            None,
-        )
-        .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-
-        diesel::delete(quest_series::table.find(series_id)).execute(conn)?;
-        Ok(())
-    })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1182,11 +987,7 @@ pub fn delete_quest_series(
     // Cancel OS notifications before the DB transaction. Reminder cancellation is
     // best-effort: notification cancel is non-transactional and will not be undone
     // if the DB transaction below rolls back.
-    let quest_ids: Vec<String> = quests::table
-        .filter(quests::series_id.eq(&series_id))
-        .select(quests::id)
-        .load(&mut *conn)
-        .map_err(|e| e.to_string())?;
+    let quest_ids = QuestService::new(&mut conn).series_quest_ids(&series_id)?;
 
     for quest_id in &quest_ids {
         if let Err(e) = reminder::delete_reminder_for_quest(&mut *conn, &app, quest_id) {
@@ -1194,7 +995,9 @@ pub fn delete_quest_series(
         }
     }
 
-    delete_quest_series_in_db(&mut *conn, &origin_device_id, &series_id).map_err(|e| e.to_string())
+    QuestService::new(&mut conn)
+        .delete_series_with_sync(&origin_device_id, &series_id)
+        .map_err(|e| e.to_string())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1202,6 +1005,7 @@ pub fn delete_quest_series(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{clamp_order_rank, QuestFieldPatch};
     use crate::schema::sync_outbox;
     use crate::services::db::open_db_at_path;
     use std::path::PathBuf;
@@ -1299,6 +1103,106 @@ mod tests {
             repeat_rule: None,
             order_rank: None,
         }
+    }
+
+    #[test]
+    fn nullable_patch_clears_each_quest_field_and_omission_preserves_values() {
+        let db_path = temp_db_path("quest-nullable-patch");
+        let mut conn = open_db_at_path(&db_path);
+        let id = insert_active_quest(
+            &mut conn,
+            "nullable patch",
+            1,
+            "2026-03-28T10:00:00Z",
+            Some("2026-04-01"),
+            Some("10:30"),
+        );
+        diesel::update(quests::table.find(&id))
+            .set((
+                quests::description.eq(Some("keep or clear")),
+                quests::repeat_rule.eq(Some(r#"{"preset":"weekly"}"#)),
+            ))
+            .execute(&mut conn)
+            .expect("seed nullable fields");
+
+        let patch = QuestUpdatePatch {
+            input: status_patch("active"),
+            description: QuestFieldPatch::Clear,
+            due: QuestFieldPatch::Clear,
+            due_time: QuestFieldPatch::Clear,
+            repeat_rule: QuestFieldPatch::Clear,
+        };
+        let cleared = QuestService::new(&mut conn)
+            .update_patch(&id, patch)
+            .expect("clear nullable fields");
+        assert_eq!(cleared.quest.description, None);
+        assert_eq!(cleared.quest.due, None);
+        assert_eq!(cleared.quest.due_time, None);
+        assert_eq!(cleared.quest.repeat_rule, None);
+
+        diesel::update(quests::table.find(&id))
+            .set((
+                quests::description.eq(Some("preserved")),
+                quests::due.eq(Some("2026-05-01")),
+                quests::due_time.eq(Some("08:00")),
+                quests::repeat_rule.eq(Some("weekly")),
+            ))
+            .execute(&mut conn)
+            .expect("reseed nullable fields");
+        let preserved = QuestService::new(&mut conn)
+            .update_patch(&id, QuestUpdatePatch::unchanged(status_patch("active")))
+            .expect("omit nullable fields");
+        assert_eq!(preserved.quest.description.as_deref(), Some("preserved"));
+        assert_eq!(preserved.quest.due.as_deref(), Some("2026-05-01"));
+        assert_eq!(preserved.quest.due_time.as_deref(), Some("08:00"));
+        assert_eq!(preserved.quest.repeat_rule.as_deref(), Some("weekly"));
+
+        let empty = QuestService::new(&mut conn)
+            .update_patch(
+                &id,
+                QuestUpdatePatch {
+                    input: status_patch("active"),
+                    description: QuestFieldPatch::Set(String::new()),
+                    due: QuestFieldPatch::Unchanged,
+                    due_time: QuestFieldPatch::Unchanged,
+                    repeat_rule: QuestFieldPatch::Unchanged,
+                },
+            )
+            .expect("set an empty nullable field");
+        assert_eq!(empty.quest.description.as_deref(), Some(""));
+        assert_eq!(empty.quest.due.as_deref(), Some("2026-05-01"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn set_focus_records_manual_history_touches_and_counts_first_entry() {
+        let db_path = temp_db_path("set-focus-service");
+        let mut conn = open_db_at_path(&db_path);
+        let id = insert_active_quest(
+            &mut conn,
+            "focus through service",
+            1,
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+        );
+
+        let focused = QuestService::new(&mut conn)
+            .set_focus(&id, "manual")
+            .expect("set active quest as focus");
+
+        assert_eq!(focused.id, id);
+        assert_eq!(focused.focus_enter_count, 1);
+        assert_ne!(focused.updated_at, "2020-01-01T00:00:00Z");
+        let triggers: Vec<String> = focus_history::table
+            .filter(focus_history::quest_id.eq(&id))
+            .select(focus_history::trigger)
+            .load(&mut conn)
+            .expect("load focus history");
+        assert_eq!(triggers, vec!["manual"]);
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
@@ -2252,7 +2156,9 @@ mod tests {
             .expect("count before");
         assert_eq!(count_before, 3, "expected 3 occurrences before delete");
 
-        delete_quest_series_in_db(&mut conn, "device-test", &series.id).expect("delete series");
+        QuestService::new(&mut conn)
+            .delete_series_with_sync("device-test", &series.id)
+            .expect("delete series");
 
         let count_after: i64 = quests::table
             .filter(quests::series_id.eq(&series.id))
@@ -2309,7 +2215,9 @@ mod tests {
                 .expect("insert occurrence");
         }
 
-        delete_quest_series_in_db(&mut conn, "device-test", &series.id).expect("delete series");
+        QuestService::new(&mut conn)
+            .delete_series_with_sync("device-test", &series.id)
+            .expect("delete series");
 
         let events: Vec<(String, String)> = sync_outbox::table
             .select((sync_outbox::entity_type, sync_outbox::op_type))

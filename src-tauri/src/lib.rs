@@ -3,6 +3,7 @@ pub mod models;
 extern crate self as tauri;
 #[cfg(not(feature = "ui-plane"))]
 pub mod async_runtime;
+pub mod repositories;
 mod schema;
 mod services;
 mod utils;
