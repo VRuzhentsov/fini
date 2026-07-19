@@ -1427,6 +1427,13 @@ fn format_human_output_lines(value: &Value) -> Vec<String> {
                 .unwrap_or_else(|| "unknown".to_string());
             vec![format!("Theme hint: {theme}")]
         }
+        Value::Object(map)
+            if map.get("dry_run").and_then(Value::as_bool).is_some()
+                && map.contains_key("target_version")
+                && map.contains_key("target") =>
+        {
+            vec![format_cli_update_summary(map)]
+        }
         Value::Array(items) => {
             if items.is_empty() {
                 vec!["No results.".to_string()]
@@ -1463,6 +1470,42 @@ fn format_space_summary(value: &Value, prefix: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("(unnamed)");
     format!("{prefix} {name} ({id})")
+}
+
+fn format_cli_update_summary(map: &serde_json::Map<String, Value>) -> String {
+    let action = if map.get("dry_run").and_then(Value::as_bool) == Some(true) {
+        "Update dry run"
+    } else {
+        "Update"
+    };
+    let current_version = map
+        .get("current_version")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+    let target_version = map
+        .get("target_version")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+    let target = map
+        .get("target")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+    let executable_path = map
+        .get("executable_path")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+    let already_current = map
+        .get("already_current")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+    let updated = map
+        .get("updated")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    format!(
+        "{action}: current_version={current_version}, target_version={target_version}, target={target}, executable_path={executable_path}, already_current={already_current}, updated={updated}."
+    )
 }
 
 fn format_generic_summary(value: &Value) -> String {
@@ -1629,6 +1672,27 @@ mod tests {
         assert!(!import_result.contains("No quests."));
         assert!(!import_result.contains("No spaces."));
         assert_not_raw_json(&import_result);
+    }
+
+    #[test]
+    fn update_dry_run_human_output_preserves_release_and_target() {
+        let output = format_human_output(&json!({
+            "already_current": false,
+            "current_version": "0.8.0",
+            "dry_run": true,
+            "executable_path": "/usr/local/bin/fini",
+            "target": "x86_64-unknown-linux-gnu",
+            "target_version": "0.9.0",
+            "updated": false
+        }));
+
+        assert_eq!(
+            output,
+            "Update dry run: current_version=0.8.0, target_version=0.9.0, target=x86_64-unknown-linux-gnu, executable_path=/usr/local/bin/fini, already_current=false, updated=false."
+        );
+        assert!(output.contains("target_version=0.9.0"));
+        assert!(output.contains("target=x86_64-unknown-linux-gnu"));
+        assert_not_raw_json(&output);
     }
 
     #[test]
