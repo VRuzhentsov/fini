@@ -1,6 +1,7 @@
 name: Security Check
 
 on:
+  workflow_call:
   push:
     branches:
       - main
