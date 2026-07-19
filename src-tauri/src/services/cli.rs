@@ -1514,19 +1514,25 @@ fn format_generic_summary(value: &Value) -> String {
         Value::Bool(_) | Value::Number(_) | Value::String(_) => format_scalar(value),
         Value::Array(items) => format_count("result", items.len()),
         Value::Object(map) => {
-            let fields: Vec<_> = map
-                .iter()
-                .filter_map(|(key, value)| match value {
-                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-                        Some(format!("{key}={}", format_scalar(value)))
-                    }
-                    Value::Array(items) => {
-                        Some(format!("{key}={}", format_count("item", items.len())))
-                    }
-                    Value::Object(nested) => Some(format!("{key}={} fields", nested.len())),
-                })
-                .take(4)
-                .collect();
+            let mut fields = map
+                .get("request_id")
+                .map(|value| format!("request_id={}", format_scalar(value)))
+                .into_iter()
+                .collect::<Vec<_>>();
+            fields.extend(
+                map.iter()
+                    .filter(|(key, _)| key.as_str() != "request_id")
+                    .filter_map(|(key, value)| match value {
+                        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                            Some(format!("{key}={}", format_scalar(value)))
+                        }
+                        Value::Array(items) => {
+                            Some(format!("{key}={}", format_count("item", items.len())))
+                        }
+                        Value::Object(nested) => Some(format!("{key}={} fields", nested.len())),
+                    })
+                    .take(4usize.saturating_sub(fields.len())),
+            );
 
             if fields.is_empty() {
                 format!("Result: {} fields.", map.len())
@@ -1654,6 +1660,22 @@ mod tests {
                 "must not print pretty JSON: {output}"
             );
         }
+    }
+
+    #[test]
+    fn generic_pair_request_summary_preserves_request_id() {
+        let output = format_human_output(&json!([{
+            "attempts": 1,
+            "cooldown_until": null,
+            "created_at": "2026-07-19T08:00:00Z",
+            "expires_at": "2026-07-19T08:10:00Z",
+            "from_device_id": "device-1",
+            "from_hostname": "phone",
+            "request_id": "request-1"
+        }]));
+
+        assert!(output.contains("request_id=request-1"));
+        assert_not_raw_json(&output);
     }
 
     #[test]
