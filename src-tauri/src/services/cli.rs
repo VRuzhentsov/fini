@@ -48,7 +48,11 @@ const EXIT_RUNTIME: i32 = 5;
 #[derive(Parser)]
 #[command(name = "fini", version, about = "Fini CLI")]
 pub struct Cli {
-    #[arg(long, global = true, help = "Print structured JSON output")]
+    #[arg(
+        long,
+        global = true,
+        help = "Opt into structured JSON output for automation"
+    )]
     json: bool,
     #[command(subcommand)]
     command: Option<Command>,
@@ -1359,11 +1363,23 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
         return Ok(());
     }
 
+    println!("{}", format_human_output(value));
+    Ok(())
+}
+
+fn format_human_output(value: &Value) -> String {
+    format_human_output_lines(value).join("\n")
+}
+
+fn format_human_output_lines(value: &Value) -> Vec<String> {
     match value {
-        Value::Null => println!("No active Focus quest."),
+        Value::Null => vec!["No active Focus quest.".to_string()],
         Value::Object(map) if map.contains_key("deleted") => {
             let id = map.get("id").and_then(Value::as_str).unwrap_or("unknown");
-            println!("Deleted: {id}");
+            vec![format!("Deleted: {id}")]
+        }
+        Value::Object(map) if map.get("ok").and_then(Value::as_bool) == Some(true) => {
+            vec!["OK.".to_string()]
         }
         Value::Object(map) if map.contains_key("quests") => {
             let items = map
@@ -1372,17 +1388,12 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
                 .cloned()
                 .unwrap_or_default();
             if items.is_empty() {
-                println!("No quests.");
+                vec!["No quests.".to_string()]
             } else {
-                for item in items {
-                    let id = item.get("id").and_then(Value::as_str).unwrap_or("?");
-                    let title = item
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(untitled)");
-                    let status = item.get("status").and_then(Value::as_str).unwrap_or("?");
-                    println!("- [{status}] {title} ({id})");
-                }
+                items
+                    .iter()
+                    .map(|item| format_quest_summary(item, "-"))
+                    .collect()
             }
         }
         Value::Object(map) if map.contains_key("spaces") => {
@@ -1392,41 +1403,131 @@ fn print_output(value: &Value, json: bool) -> Result<(), String> {
                 .cloned()
                 .unwrap_or_default();
             if items.is_empty() {
-                println!("No spaces.");
+                vec!["No spaces.".to_string()]
             } else {
-                for item in items {
-                    let id = item.get("id").and_then(Value::as_str).unwrap_or("?");
-                    let name = item
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("(unnamed)");
-                    println!("- {name} ({id})");
-                }
+                items
+                    .iter()
+                    .map(|item| format_space_summary(item, "-"))
+                    .collect()
             }
+        }
+        Value::Object(map) if is_quest_object(map) => vec![format_quest_summary(value, "Quest:")],
+        Value::Object(map) if is_space_object(map) => vec![format_space_summary(value, "Space:")],
+        Value::Object(map) if map.contains_key("mode") => {
+            let mode = map
+                .get("mode")
+                .map(format_scalar)
+                .unwrap_or_else(|| "unknown".to_string());
+            vec![format!("Theme mode: {mode}")]
+        }
+        Value::Object(map) if map.contains_key("theme") => {
+            let theme = map
+                .get("theme")
+                .map(format_scalar)
+                .unwrap_or_else(|| "unknown".to_string());
+            vec![format!("Theme hint: {theme}")]
         }
         Value::Array(items) => {
             if items.is_empty() {
-                println!("No results.");
+                vec!["No results.".to_string()]
             } else {
-                for item in items {
-                    let text = serde_json::to_string_pretty(item).map_err(|e| e.to_string())?;
-                    println!("{text}");
-                }
+                items.iter().map(format_generic_summary).collect()
             }
         }
-        _ => {
-            let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
-            println!("{text}");
+        _ => vec![format_generic_summary(value)],
+    }
+}
+
+fn is_quest_object(map: &serde_json::Map<String, Value>) -> bool {
+    map.contains_key("id") && map.contains_key("title") && map.contains_key("status")
+}
+
+fn is_space_object(map: &serde_json::Map<String, Value>) -> bool {
+    map.contains_key("id") && map.contains_key("name") && map.contains_key("item_order")
+}
+
+fn format_quest_summary(value: &Value, prefix: &str) -> String {
+    let id = value.get("id").and_then(Value::as_str).unwrap_or("?");
+    let title = value
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("(untitled)");
+    let status = value.get("status").and_then(Value::as_str).unwrap_or("?");
+    format!("{prefix} [{status}] {title} ({id})")
+}
+
+fn format_space_summary(value: &Value, prefix: &str) -> String {
+    let id = value.get("id").and_then(Value::as_str).unwrap_or("?");
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("(unnamed)");
+    format!("{prefix} {name} ({id})")
+}
+
+fn format_generic_summary(value: &Value) -> String {
+    match value {
+        Value::Null => "No result.".to_string(),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => format_scalar(value),
+        Value::Array(items) => format_count("result", items.len()),
+        Value::Object(map) => {
+            let fields: Vec<_> = map
+                .iter()
+                .filter_map(|(key, value)| match value {
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                        Some(format!("{key}={}", format_scalar(value)))
+                    }
+                    Value::Array(items) => {
+                        Some(format!("{key}={}", format_count("item", items.len())))
+                    }
+                    Value::Object(nested) => Some(format!("{key}={} fields", nested.len())),
+                })
+                .take(4)
+                .collect();
+
+            if fields.is_empty() {
+                format!("Result: {} fields.", map.len())
+            } else {
+                format!("Result: {}.", fields.join(", "))
+            }
         }
     }
-    Ok(())
+}
+
+fn format_count(noun: &str, count: usize) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+fn format_scalar(value: &Value) -> String {
+    match value {
+        Value::Null => "none".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) if value.is_empty() => "(empty)".to_string(),
+        Value::String(value) => value.clone(),
+        Value::Array(items) => format_count("item", items.len()),
+        Value::Object(map) => format!("{} fields", map.len()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::db::temp_db_path;
+    use clap::CommandFactory;
     use std::path::Path;
+
+    fn assert_not_raw_json(text: &str) {
+        let trimmed = text.trim_start();
+        assert!(
+            !trimmed.starts_with('{') && !trimmed.starts_with('['),
+            "default CLI output must be human-readable, got: {text}"
+        );
+    }
 
     fn seed_unknown_schema_migration_db(db_path: &Path) {
         let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
@@ -2051,6 +2152,84 @@ mod tests {
         );
         assert!(export_path.exists(), "export should write a backup archive");
         let _ = std::fs::remove_file(export_path);
+    }
+
+    #[test]
+    fn cli_help_describes_json_as_structured_opt_in() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains("--json"));
+        assert!(help.contains("Opt into structured JSON output for automation"));
+    }
+
+    #[test]
+    fn default_focus_output_is_human_readable_when_no_quest_is_active() {
+        let output = format_human_output(&Value::Null);
+
+        assert_eq!(output, "No active Focus quest.");
+        assert_not_raw_json(&output);
+    }
+
+    #[test]
+    fn representative_default_outputs_are_human_readable() {
+        let quest_list = format_human_output(&json!({
+            "quests": [{
+                "id": "quest-1",
+                "title": "Write issue regression",
+                "status": "active"
+            }]
+        }));
+        let space_list = format_human_output(&json!({
+            "spaces": [{
+                "id": "1",
+                "name": "Personal",
+                "item_order": 0
+            }]
+        }));
+        let generic_object_fallback = format_human_output(&json!({
+            "sent_events": 1,
+            "applied_events": 0,
+            "received_acks": 2,
+            "peers": [{ "peer_device_id": "peer-1" }],
+            "nested": { "ok": true }
+        }));
+        let generic_array_fallback = format_human_output(&json!([{
+            "request_id": "request-1",
+            "from_device_id": "device-1",
+            "payload": { "code": "123456" }
+        }]));
+
+        assert_eq!(quest_list, "- [active] Write issue regression (quest-1)");
+        assert_eq!(space_list, "- Personal (1)");
+        assert!(generic_object_fallback.contains("Result:"));
+        assert!(generic_array_fallback.contains("Result:"));
+        for output in [
+            quest_list,
+            space_list,
+            generic_object_fallback,
+            generic_array_fallback,
+        ] {
+            assert_not_raw_json(&output);
+            assert!(
+                !output.contains("\n{"),
+                "must not print pretty JSON: {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_output_path_still_serializes_structured_json() {
+        let value = json!({
+            "quests": [{
+                "id": "quest-1",
+                "title": "Keep automation structured",
+                "status": "active"
+            }]
+        });
+        let text = serde_json::to_string_pretty(&value).expect("serialize JSON output");
+
+        assert!(serde_json::from_str::<Value>(&text).is_ok());
+        assert!(text.trim_start().starts_with('{'));
     }
 
     #[test]
