@@ -1429,6 +1429,13 @@ fn format_human_output_lines(value: &Value) -> Vec<String> {
         }
         Value::Object(map)
             if map.get("dry_run").and_then(Value::as_bool).is_some()
+                && map.contains_key("ready_to_apply")
+                && map.contains_key("required_space_mappings") =>
+        {
+            vec![format_backup_dry_run_summary(map)]
+        }
+        Value::Object(map)
+            if map.get("dry_run").and_then(Value::as_bool).is_some()
                 && map.contains_key("target_version")
                 && map.contains_key("target") =>
         {
@@ -1505,6 +1512,45 @@ fn format_cli_update_summary(map: &serde_json::Map<String, Value>) -> String {
 
     format!(
         "{action}: current_version={current_version}, target_version={target_version}, target={target}, executable_path={executable_path}, already_current={already_current}, updated={updated}."
+    )
+}
+
+fn format_backup_dry_run_summary(map: &serde_json::Map<String, Value>) -> String {
+    let ready_to_apply = map
+        .get("ready_to_apply")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+    let required_space_mappings = match map.get("required_space_mappings").and_then(Value::as_array)
+    {
+        Some(items) if items.is_empty() => "none".to_string(),
+        Some(items) => items
+            .iter()
+            .map(|item| {
+                let id = item
+                    .get("backup_space_id")
+                    .map(format_scalar)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let name = item
+                    .get("backup_space_name")
+                    .map(format_scalar)
+                    .unwrap_or_else(|| "unnamed".to_string());
+                format!("{name} ({id})")
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        None => "unknown".to_string(),
+    };
+    let conflict_count = map.get("conflicts").and_then(Value::as_array).map_or_else(
+        || "unknown".to_string(),
+        |items| format_count("conflict", items.len()),
+    );
+    let no_apply_or_recovery_action_occurred = map
+        .get("no_apply_or_recovery_action_occurred")
+        .map(format_scalar)
+        .unwrap_or_else(|| "unknown".to_string());
+
+    format!(
+        "Backup import dry run: ready_to_apply={ready_to_apply}, required_space_mappings={required_space_mappings}, conflicts={conflict_count}, no_apply_or_recovery_action_occurred={no_apply_or_recovery_action_occurred}."
     )
 }
 
@@ -1694,6 +1740,25 @@ mod tests {
         assert!(!import_result.contains("No quests."));
         assert!(!import_result.contains("No spaces."));
         assert_not_raw_json(&import_result);
+    }
+
+    #[test]
+    fn backup_dry_run_human_output_preserves_readiness_and_mapping_requirements() {
+        let output = format_human_output(&json!({
+            "conflicts": [],
+            "dry_run": true,
+            "manifest": { "version": 1 },
+            "no_apply_or_recovery_action_occurred": true,
+            "ready_to_apply": false,
+            "required_space_mappings": [{
+                "backup_space_id": "space-7",
+                "backup_space_name": "Work"
+            }]
+        }));
+
+        assert!(output.contains("ready_to_apply=false"));
+        assert!(output.contains("required_space_mappings=Work (space-7)"));
+        assert_not_raw_json(&output);
     }
 
     #[test]
