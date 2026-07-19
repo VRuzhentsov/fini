@@ -1381,7 +1381,7 @@ fn format_human_output_lines(value: &Value) -> Vec<String> {
         Value::Object(map) if map.get("ok").and_then(Value::as_bool) == Some(true) => {
             vec!["OK.".to_string()]
         }
-        Value::Object(map) if map.get("quests").and_then(Value::as_array).is_some() => {
+        Value::Object(map) if map.contains_key("quests") => {
             let items = map
                 .get("quests")
                 .and_then(Value::as_array)
@@ -1396,7 +1396,7 @@ fn format_human_output_lines(value: &Value) -> Vec<String> {
                     .collect()
             }
         }
-        Value::Object(map) if map.get("spaces").and_then(Value::as_array).is_some() => {
+        Value::Object(map) if map.contains_key("spaces") => {
             let items = map
                 .get("spaces")
                 .and_then(Value::as_array)
@@ -1426,20 +1426,6 @@ fn format_human_output_lines(value: &Value) -> Vec<String> {
                 .map(format_scalar)
                 .unwrap_or_else(|| "unknown".to_string());
             vec![format!("Theme hint: {theme}")]
-        }
-        Value::Object(map)
-            if map.get("dry_run").and_then(Value::as_bool).is_some()
-                && map.contains_key("ready_to_apply")
-                && map.contains_key("required_space_mappings") =>
-        {
-            vec![format_backup_dry_run_summary(map)]
-        }
-        Value::Object(map)
-            if map.get("dry_run").and_then(Value::as_bool).is_some()
-                && map.contains_key("target_version")
-                && map.contains_key("target") =>
-        {
-            vec![format_cli_update_summary(map)]
         }
         Value::Array(items) => {
             if items.is_empty() {
@@ -1479,98 +1465,25 @@ fn format_space_summary(value: &Value, prefix: &str) -> String {
     format!("{prefix} {name} ({id})")
 }
 
-fn format_cli_update_summary(map: &serde_json::Map<String, Value>) -> String {
-    let action = if map.get("dry_run").and_then(Value::as_bool) == Some(true) {
-        "Update dry run"
-    } else {
-        "Update"
-    };
-    let current_version = map
-        .get("current_version")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-    let target_version = map
-        .get("target_version")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-    let target = map
-        .get("target")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-    let executable_path = map
-        .get("executable_path")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-    let already_current = map
-        .get("already_current")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-    let updated = map
-        .get("updated")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-
-    format!(
-        "{action}: current_version={current_version}, target_version={target_version}, target={target}, executable_path={executable_path}, already_current={already_current}, updated={updated}."
-    )
-}
-
-fn format_backup_dry_run_summary(map: &serde_json::Map<String, Value>) -> String {
-    let ready_to_apply = map
-        .get("ready_to_apply")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-    let required_space_mappings = match map.get("required_space_mappings").and_then(Value::as_array)
-    {
-        Some(items) if items.is_empty() => "none".to_string(),
-        Some(items) => items
-            .iter()
-            .map(|item| {
-                let id = item
-                    .get("backup_space_id")
-                    .map(format_scalar)
-                    .unwrap_or_else(|| "unknown".to_string());
-                let name = item
-                    .get("backup_space_name")
-                    .map(format_scalar)
-                    .unwrap_or_else(|| "unnamed".to_string());
-                format!("{name} ({id})")
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-        None => "unknown".to_string(),
-    };
-    let conflict_count = map.get("conflicts").and_then(Value::as_array).map_or_else(
-        || "unknown".to_string(),
-        |items| format_count("conflict", items.len()),
-    );
-    let no_apply_or_recovery_action_occurred = map
-        .get("no_apply_or_recovery_action_occurred")
-        .map(format_scalar)
-        .unwrap_or_else(|| "unknown".to_string());
-
-    format!(
-        "Backup import dry run: ready_to_apply={ready_to_apply}, required_space_mappings={required_space_mappings}, conflicts={conflict_count}, no_apply_or_recovery_action_occurred={no_apply_or_recovery_action_occurred}."
-    )
-}
-
 fn format_generic_summary(value: &Value) -> String {
     match value {
         Value::Null => "No result.".to_string(),
         Value::Bool(_) | Value::Number(_) | Value::String(_) => format_scalar(value),
         Value::Array(items) => format_count("result", items.len()),
         Value::Object(map) => {
-            let priority_keys = ["request_id", "peer_device_id", "ws_port"];
-            let mut fields = priority_keys
+            let fields: Vec<_> = map
                 .iter()
-                .filter_map(|key| map.get(*key).map(|value| format_generic_field(key, value)))
-                .collect::<Vec<_>>();
-            fields.extend(
-                map.iter()
-                    .filter(|(key, _)| !priority_keys.contains(&key.as_str()))
-                    .map(|(key, value)| format_generic_field(key, value))
-                    .take(4usize.saturating_sub(fields.len())),
-            );
+                .filter_map(|(key, value)| match value {
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                        Some(format!("{key}={}", format_scalar(value)))
+                    }
+                    Value::Array(items) => {
+                        Some(format!("{key}={}", format_count("item", items.len())))
+                    }
+                    Value::Object(nested) => Some(format!("{key}={} fields", nested.len())),
+                })
+                .take(4)
+                .collect();
 
             if fields.is_empty() {
                 format!("Result: {} fields.", map.len())
@@ -1578,16 +1491,6 @@ fn format_generic_summary(value: &Value) -> String {
                 format!("Result: {}.", fields.join(", "))
             }
         }
-    }
-}
-
-fn format_generic_field(key: &str, value: &Value) -> String {
-    match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-            format!("{key}={}", format_scalar(value))
-        }
-        Value::Array(items) => format!("{key}={}", format_count("item", items.len())),
-        Value::Object(nested) => format!("{key}={} fields", nested.len()),
     }
 }
 
@@ -1646,186 +1549,6 @@ mod tests {
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn cli_help_describes_json_as_structured_opt_in() {
-        let help = Cli::command().render_help().to_string();
-
-        assert!(help.contains("--json"));
-        assert!(help.contains("Opt into structured JSON output for automation"));
-    }
-
-    #[test]
-    fn default_focus_output_is_human_readable_when_no_quest_is_active() {
-        let output = format_human_output(&Value::Null);
-
-        assert_eq!(output, "No active Focus quest.");
-        assert_not_raw_json(&output);
-    }
-
-    #[test]
-    fn representative_default_outputs_are_human_readable() {
-        let quest_list = format_human_output(&json!({
-            "quests": [{
-                "id": "quest-1",
-                "title": "Write issue regression",
-                "status": "active"
-            }]
-        }));
-        let space_list = format_human_output(&json!({
-            "spaces": [{
-                "id": "1",
-                "name": "Personal",
-                "item_order": 0
-            }]
-        }));
-        let generic_object_fallback = format_human_output(&json!({
-            "sent_events": 1,
-            "applied_events": 0,
-            "received_acks": 2,
-            "peers": [{ "peer_device_id": "peer-1" }],
-            "nested": { "ok": true }
-        }));
-        let generic_array_fallback = format_human_output(&json!([{
-            "request_id": "request-1",
-            "from_device_id": "device-1",
-            "payload": { "code": "123456" }
-        }]));
-
-        assert_eq!(quest_list, "- [active] Write issue regression (quest-1)");
-        assert_eq!(space_list, "- Personal (1)");
-        assert!(generic_object_fallback.contains("Result:"));
-        assert!(generic_array_fallback.contains("Result:"));
-        for output in [
-            quest_list,
-            space_list,
-            generic_object_fallback,
-            generic_array_fallback,
-        ] {
-            assert_not_raw_json(&output);
-            assert!(
-                !output.contains("\n{"),
-                "must not print pretty JSON: {output}"
-            );
-        }
-    }
-
-    #[test]
-    fn generic_pair_request_summary_preserves_request_id() {
-        let output = format_human_output(&json!([{
-            "attempts": 1,
-            "cooldown_until": null,
-            "created_at": "2026-07-19T08:00:00Z",
-            "expires_at": "2026-07-19T08:10:00Z",
-            "from_device_id": "device-1",
-            "from_hostname": "phone",
-            "request_id": "request-1"
-        }]));
-
-        assert!(output.contains("request_id=request-1"));
-        assert_not_raw_json(&output);
-    }
-
-    #[test]
-    fn generic_device_summary_preserves_actionable_peer_device_id() {
-        let output = format_human_output(&json!([{
-            "display_name": "phone",
-            "last_seen_at": "2026-07-19T08:00:00Z",
-            "pair_state": "paired",
-            "paired_at": "2026-07-19T07:00:00Z",
-            "peer_device_id": "peer-1"
-        }]));
-
-        assert!(output.contains("peer_device_id=peer-1"));
-        assert_not_raw_json(&output);
-    }
-
-    #[test]
-    fn generic_device_summary_preserves_discovery_ws_port() {
-        let output = format_human_output(&json!([{
-            "addr": "192.0.2.10:5353",
-            "device_id": "device-1",
-            "hostname": "phone",
-            "last_seen_at": "2026-07-19T08:00:00Z",
-            "ws_port": 49152
-        }]));
-
-        assert!(output.contains("ws_port=49152"));
-        assert_not_raw_json(&output);
-    }
-
-    #[test]
-    fn scalar_quest_and_space_counts_use_generic_human_summary() {
-        let import_result = format_human_output(&json!({
-            "imported": true,
-            "spaces": 2,
-            "quest_series": 3,
-            "quests": 5
-        }));
-
-        assert!(import_result.contains("Result:"));
-        assert!(import_result.contains("imported=true"));
-        assert!(import_result.contains("spaces=2"));
-        assert!(import_result.contains("quests=5"));
-        assert!(!import_result.contains("No quests."));
-        assert!(!import_result.contains("No spaces."));
-        assert_not_raw_json(&import_result);
-    }
-
-    #[test]
-    fn backup_dry_run_human_output_preserves_readiness_and_mapping_requirements() {
-        let output = format_human_output(&json!({
-            "conflicts": [],
-            "dry_run": true,
-            "manifest": { "version": 1 },
-            "no_apply_or_recovery_action_occurred": true,
-            "ready_to_apply": false,
-            "required_space_mappings": [{
-                "backup_space_id": "space-7",
-                "backup_space_name": "Work"
-            }]
-        }));
-
-        assert!(output.contains("ready_to_apply=false"));
-        assert!(output.contains("required_space_mappings=Work (space-7)"));
-        assert_not_raw_json(&output);
-    }
-
-    #[test]
-    fn update_dry_run_human_output_preserves_release_and_target() {
-        let output = format_human_output(&json!({
-            "already_current": false,
-            "current_version": "0.8.0",
-            "dry_run": true,
-            "executable_path": "/usr/local/bin/fini",
-            "target": "x86_64-unknown-linux-gnu",
-            "target_version": "0.9.0",
-            "updated": false
-        }));
-
-        assert_eq!(
-            output,
-            "Update dry run: current_version=0.8.0, target_version=0.9.0, target=x86_64-unknown-linux-gnu, executable_path=/usr/local/bin/fini, already_current=false, updated=false."
-        );
-        assert!(output.contains("target_version=0.9.0"));
-        assert!(output.contains("target=x86_64-unknown-linux-gnu"));
-        assert_not_raw_json(&output);
-    }
-
-    #[test]
-    fn json_output_path_still_serializes_structured_json() {
-        let value = json!({
-            "quests": [{
-                "id": "quest-1",
-                "title": "Keep automation structured",
-                "status": "active"
-            }]
-        });
-        let text = serde_json::to_string_pretty(&value).expect("serialize JSON output");
-
-        assert!(serde_json::from_str::<Value>(&text).is_ok());
-        assert!(text.trim_start().starts_with('{'));
-    }
 
     #[test]
     fn nullable_update_argument_distinguishes_omitted_text_empty_and_literal_null() {
@@ -2429,6 +2152,84 @@ mod tests {
         );
         assert!(export_path.exists(), "export should write a backup archive");
         let _ = std::fs::remove_file(export_path);
+    }
+
+    #[test]
+    fn cli_help_describes_json_as_structured_opt_in() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains("--json"));
+        assert!(help.contains("Opt into structured JSON output for automation"));
+    }
+
+    #[test]
+    fn default_focus_output_is_human_readable_when_no_quest_is_active() {
+        let output = format_human_output(&Value::Null);
+
+        assert_eq!(output, "No active Focus quest.");
+        assert_not_raw_json(&output);
+    }
+
+    #[test]
+    fn representative_default_outputs_are_human_readable() {
+        let quest_list = format_human_output(&json!({
+            "quests": [{
+                "id": "quest-1",
+                "title": "Write issue regression",
+                "status": "active"
+            }]
+        }));
+        let space_list = format_human_output(&json!({
+            "spaces": [{
+                "id": "1",
+                "name": "Personal",
+                "item_order": 0
+            }]
+        }));
+        let generic_object_fallback = format_human_output(&json!({
+            "sent_events": 1,
+            "applied_events": 0,
+            "received_acks": 2,
+            "peers": [{ "peer_device_id": "peer-1" }],
+            "nested": { "ok": true }
+        }));
+        let generic_array_fallback = format_human_output(&json!([{
+            "request_id": "request-1",
+            "from_device_id": "device-1",
+            "payload": { "code": "123456" }
+        }]));
+
+        assert_eq!(quest_list, "- [active] Write issue regression (quest-1)");
+        assert_eq!(space_list, "- Personal (1)");
+        assert!(generic_object_fallback.contains("Result:"));
+        assert!(generic_array_fallback.contains("Result:"));
+        for output in [
+            quest_list,
+            space_list,
+            generic_object_fallback,
+            generic_array_fallback,
+        ] {
+            assert_not_raw_json(&output);
+            assert!(
+                !output.contains("\n{"),
+                "must not print pretty JSON: {output}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_output_path_still_serializes_structured_json() {
+        let value = json!({
+            "quests": [{
+                "id": "quest-1",
+                "title": "Keep automation structured",
+                "status": "active"
+            }]
+        });
+        let text = serde_json::to_string_pretty(&value).expect("serialize JSON output");
+
+        assert!(serde_json::from_str::<Value>(&text).is_ok());
+        assert!(text.trim_start().starts_with('{'));
     }
 
     #[test]

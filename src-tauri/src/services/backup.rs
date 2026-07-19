@@ -166,17 +166,11 @@ pub fn backup_export(
             let result = export_backup(&mut conn, &temp, &space_ids)?;
             let mut opts = tauri_plugin_fs::OpenOptions::new();
             opts.write(true).create(true).truncate(true);
-            let mut dst = app
-                .fs()
-                .open(FilePath::Url(url.clone()), opts)
-                .map_err(|e| e.to_string())?;
+            let mut dst = app.fs().open(FilePath::Url(url.clone()), opts).map_err(|e| e.to_string())?;
             std::io::copy(&mut File::open(&temp).map_err(|e| e.to_string())?, &mut dst)
                 .map_err(|e| e.to_string())?;
             fs::remove_file(&temp).ok();
-            Ok(BackupExportResult {
-                path: url.to_string(),
-                manifest: result.manifest,
-            })
+            Ok(BackupExportResult { path: url.to_string(), manifest: result.manifest })
         }
     }
 }
