@@ -1560,23 +1560,15 @@ fn format_generic_summary(value: &Value) -> String {
         Value::Bool(_) | Value::Number(_) | Value::String(_) => format_scalar(value),
         Value::Array(items) => format_count("result", items.len()),
         Value::Object(map) => {
-            let mut fields = map
-                .get("request_id")
-                .map(|value| format!("request_id={}", format_scalar(value)))
-                .into_iter()
+            let priority_keys = ["request_id", "peer_device_id", "ws_port"];
+            let mut fields = priority_keys
+                .iter()
+                .filter_map(|key| map.get(*key).map(|value| format_generic_field(key, value)))
                 .collect::<Vec<_>>();
             fields.extend(
                 map.iter()
-                    .filter(|(key, _)| key.as_str() != "request_id")
-                    .filter_map(|(key, value)| match value {
-                        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
-                            Some(format!("{key}={}", format_scalar(value)))
-                        }
-                        Value::Array(items) => {
-                            Some(format!("{key}={}", format_count("item", items.len())))
-                        }
-                        Value::Object(nested) => Some(format!("{key}={} fields", nested.len())),
-                    })
+                    .filter(|(key, _)| !priority_keys.contains(&key.as_str()))
+                    .map(|(key, value)| format_generic_field(key, value))
                     .take(4usize.saturating_sub(fields.len())),
             );
 
@@ -1586,6 +1578,16 @@ fn format_generic_summary(value: &Value) -> String {
                 format!("Result: {}.", fields.join(", "))
             }
         }
+    }
+}
+
+fn format_generic_field(key: &str, value: &Value) -> String {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            format!("{key}={}", format_scalar(value))
+        }
+        Value::Array(items) => format!("{key}={}", format_count("item", items.len())),
+        Value::Object(nested) => format!("{key}={} fields", nested.len()),
     }
 }
 
@@ -1721,6 +1723,34 @@ mod tests {
         }]));
 
         assert!(output.contains("request_id=request-1"));
+        assert_not_raw_json(&output);
+    }
+
+    #[test]
+    fn generic_device_summary_preserves_actionable_peer_device_id() {
+        let output = format_human_output(&json!([{
+            "display_name": "phone",
+            "last_seen_at": "2026-07-19T08:00:00Z",
+            "pair_state": "paired",
+            "paired_at": "2026-07-19T07:00:00Z",
+            "peer_device_id": "peer-1"
+        }]));
+
+        assert!(output.contains("peer_device_id=peer-1"));
+        assert_not_raw_json(&output);
+    }
+
+    #[test]
+    fn generic_device_summary_preserves_discovery_ws_port() {
+        let output = format_human_output(&json!([{
+            "addr": "192.0.2.10:5353",
+            "device_id": "device-1",
+            "hostname": "phone",
+            "last_seen_at": "2026-07-19T08:00:00Z",
+            "ws_port": 49152
+        }]));
+
+        assert!(output.contains("ws_port=49152"));
         assert_not_raw_json(&output);
     }
 
