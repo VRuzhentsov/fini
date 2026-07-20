@@ -37,9 +37,10 @@ Before drafting, preparing, delegating, or mutating anything based on that quest
 
 1. Run the Fini CLI preflight.
 2. Fetch the exact named quest by ID, or locate the exact normalized title across active, completed, and abandoned quests.
-3. If no exact match exists, or more than one retained non-recurring match exists, stop and ask the user to identify the intended quest. Do not infer it from the current Focus quest or semantic similarity.
-4. Use the fetched quest title and description as the source context for the user’s original request.
-5. Do not mutate the quest unless the user separately and explicitly asks for the mutation; apply Quest Mutation Safety when they do.
+3. If no exact match exists, stop and ask the user to identify the intended quest. Do not infer it from the current Focus quest or semantic similarity.
+4. If more than one retained quest has the exact normalized title, stop and ask the user to identify the intended quest by ID, status, or recurring period. This includes recurring series where active, completed, or abandoned occurrences share the same title and `series_id`; exact retrieval still needs the intended occurrence.
+5. Use the fetched quest title and description as the source context for the user’s original request.
+6. Do not mutate the quest unless the user separately and explicitly asks for the mutation; apply Quest Mutation Safety when they do.
 
 ### Links in a named quest
 
