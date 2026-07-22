@@ -479,6 +479,17 @@ pub fn apply_import(
                 upsert_quest_for_import(tx, &mapped, action)?;
             }
 
+            for quest in &backup_quests {
+                let mapped = mapped_quest(quest, &space_map);
+                if matches!(
+                    quest_import_action_by_id.get(&mapped.id),
+                    Some(ConflictAction::KeepLocal)
+                ) {
+                    continue;
+                }
+                delete_checklist_activity_for_quest(tx, &mapped.id)?;
+            }
+
             for activity in &backup_checklist_activity {
                 if matches!(
                     quest_import_action_by_id.get(&activity.quest_id),
@@ -1019,6 +1030,14 @@ fn insert_checklist_activity_for_import(
     Ok(())
 }
 
+fn delete_checklist_activity_for_quest(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+) -> Result<usize, diesel::result::Error> {
+    diesel::delete(checklist_activity::table.filter(checklist_activity::quest_id.eq(quest_id)))
+        .execute(conn)
+}
+
 fn upsert_series_for_import(
     conn: &mut SqliteConnection,
     series: &QuestSeries,
@@ -1505,6 +1524,97 @@ mod tests {
         assert_eq!(
             imported_activity[1].origin_device_id.as_deref(),
             Some("peer-device")
+        );
+
+        let _ = fs::remove_file(out_path);
+        let _ = fs::remove_file(source_db_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn import_backup_resolution_replaces_local_checklist_activity() {
+        let source_db_path = temp_db_path("backup-source-replace-checklist-activity");
+        let mut source = open_db_at_path(&source_db_path);
+        source
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'replace-activity-quest', '1', 'Backup title',
+                    '- [x] Backup item <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '- [x] Backup item <!--k=item-1-->'
+                );
+                INSERT INTO checklist_activity (
+                    id, quest_id, kind, detail, created_at, origin_device_id
+                ) VALUES (
+                    'shared-activity', 'replace-activity-quest', 'completed_snapshot',
+                    'Backup snapshot', '2026-01-02T00:00:00Z', 'backup-device'
+                );
+                "#,
+            )
+            .expect("seed backup checklist activity");
+
+        let out_path = backup_path("backup-replace-checklist-activity");
+        export_backup(&mut source, &out_path, &["1".to_string()]).expect("export");
+
+        let target_db_path = temp_db_path("backup-target-replace-checklist-activity");
+        let mut target = open_db_at_path(&target_db_path);
+        target
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'replace-activity-quest', '1', 'Local title',
+                    '- [x] Local item <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z', NULL, NULL, 1,
+                    '- [x] Local item <!--k=item-1-->'
+                );
+                INSERT INTO checklist_activity (
+                    id, quest_id, kind, detail, created_at, origin_device_id
+                ) VALUES (
+                    'shared-activity', 'replace-activity-quest', 'completed_snapshot',
+                    'Stale local snapshot', '2026-01-02T00:00:00Z', 'local-device'
+                ), (
+                    'local-only-activity', 'replace-activity-quest', 'post_completion_edit',
+                    'Local-only edit', '2026-01-03T00:00:00Z', 'local-device'
+                );
+                "#,
+            )
+            .expect("seed target stale checklist activity");
+
+        apply_import(
+            &mut target,
+            &out_path,
+            &[],
+            &[BackupConflictResolutionInput {
+                entity_type: "quest".to_string(),
+                id: "replace-activity-quest".to_string(),
+                resolution: "backup".to_string(),
+            }],
+        )
+        .expect("import backup version");
+
+        let imported_activity = checklist_activity::table
+            .filter(checklist_activity::quest_id.eq("replace-activity-quest"))
+            .order(checklist_activity::created_at.asc())
+            .select(ChecklistActivity::as_select())
+            .load::<ChecklistActivity>(&mut target)
+            .expect("load replaced checklist activity");
+        assert_eq!(imported_activity.len(), 1);
+        assert_eq!(imported_activity[0].id, "shared-activity");
+        assert_eq!(imported_activity[0].detail, "Backup snapshot");
+        assert_eq!(
+            imported_activity[0].origin_device_id.as_deref(),
+            Some("backup-device")
         );
 
         let _ = fs::remove_file(out_path);
