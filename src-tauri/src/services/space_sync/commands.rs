@@ -768,6 +768,7 @@ fn apply_sync_event(
 
                 if whole_entity_wins {
                     quest.description = merged_description;
+                    quest.is_checklist = true;
                     upsert_quest(conn, &quest)?;
                 } else {
                     mark_event_seen(conn, &event.event_id)?;
@@ -1832,6 +1833,60 @@ mod tests {
             merged.checklist_base.as_deref(),
             Some(base_md.as_str()),
             "merging local-only content must not advance the shared checklist base before the peer adopts it"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_preserves_local_checklist_mode_for_legacy_payloads() {
+        let db_path = temp_db_path("legacy-checklist-mode");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist_md = crate::services::checklist_md::serialize(&[
+            crate::services::checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+        ]);
+
+        let mut local_quest = test_quest("q-legacy", "Pack", "2026-03-01T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(checklist_md.clone());
+        local_quest.checklist_base = Some(checklist_md.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let mut remote_quest = test_quest("q-legacy", "Pack for office", "2026-03-02T00:00:00Z");
+        remote_quest.description = Some(checklist_md.clone());
+        let mut legacy_payload = serde_json::to_value(&remote_quest).unwrap();
+        legacy_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("is_checklist");
+        let event = test_envelope(
+            "evt-legacy-checklist",
+            "dev-remote",
+            "quest",
+            "q-legacy",
+            "upsert",
+            Some(serde_json::to_string(&legacy_payload).unwrap()),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let after: Quest = quests::table
+            .find("q-legacy")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(after.title, "Pack for office");
+        assert_eq!(after.description.as_deref(), Some(checklist_md.as_str()));
+        assert!(
+            after.is_checklist,
+            "legacy payloads without is_checklist must not demote locally-known checklists"
         );
 
         let _ = std::fs::remove_file(db_path);
