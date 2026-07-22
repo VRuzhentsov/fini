@@ -725,6 +725,61 @@ impl<'a> QuestService<'a> {
         }
     }
 
+    fn log_checklist_replacement_activity(
+        conn: &mut SqliteConnection,
+        quest: &Quest,
+        old_md: Option<&str>,
+        new_md: Option<&str>,
+        origin_device_id: Option<&str>,
+    ) -> Result<(), String> {
+        use std::collections::HashMap;
+
+        let old_items = checklist_md::parse_opt(old_md);
+        let new_items = checklist_md::parse_opt(new_md);
+        let old_by_id: HashMap<&str, &checklist_md::ChecklistItem> = old_items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
+        let new_by_id: HashMap<&str, &checklist_md::ChecklistItem> = new_items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
+
+        for item in &new_items {
+            match old_by_id.get(item.id.as_str()) {
+                Some(old_item) if old_item.text != item.text => log_checklist_activity(
+                    conn,
+                    &quest.id,
+                    Self::checklist_audit_kind(quest, "edited"),
+                    &format!("Renamed item to \"{}\"", item.text),
+                    origin_device_id,
+                )?,
+                None => log_checklist_activity(
+                    conn,
+                    &quest.id,
+                    Self::checklist_audit_kind(quest, "added"),
+                    &format!("Added \"{}\"", item.text),
+                    origin_device_id,
+                )?,
+                _ => {}
+            }
+        }
+
+        for item in &old_items {
+            if !new_by_id.contains_key(item.id.as_str()) {
+                log_checklist_activity(
+                    conn,
+                    &quest.id,
+                    Self::checklist_audit_kind(quest, "removed"),
+                    &format!("Removed \"{}\"", item.text),
+                    origin_device_id,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn add_checklist_item(
         &mut self,
         quest_id: &str,
@@ -838,6 +893,7 @@ impl<'a> QuestService<'a> {
         current_occurrence_id: &str,
         new_checklist_md: &str,
         scope: &str,
+        origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
         let current = self.repository.get(current_occurrence_id)?;
         Self::ensure_checklist_quest(&current)?;
@@ -846,11 +902,21 @@ impl<'a> QuestService<'a> {
         }
 
         match scope {
-            "future" => self.repository.update_series_checklist_template(
-                series_id,
-                new_checklist_md,
-                current_occurrence_id,
-            ),
+            "future" => {
+                let updated = self.repository.update_series_checklist_template(
+                    series_id,
+                    new_checklist_md,
+                    current_occurrence_id,
+                )?;
+                Self::log_checklist_replacement_activity(
+                    self.repository.conn,
+                    &current,
+                    current.description.as_deref(),
+                    updated.description.as_deref(),
+                    origin_device_id,
+                )?;
+                Ok(updated)
+            }
             _ => self
                 .repository
                 .set_checklist_description(current_occurrence_id, new_checklist_md),
@@ -1359,6 +1425,7 @@ pub fn update_series_checklist(
         &current_occurrence_id,
         &checklist_md,
         &scope,
+        Some(&device_id),
     )?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
     if scope == "future" {
@@ -3044,6 +3111,7 @@ mod tests {
                 &prose_quest.id,
                 "- [ ] checklist item <!--k=a1-->",
                 scope,
+                None,
             );
             assert!(matches!(
                 result,
@@ -3099,6 +3167,7 @@ mod tests {
             &second_quest.id,
             "- [ ] wrong series <!--k=x1-->",
             "this",
+            None,
         );
         assert!(matches!(
             result,
@@ -3195,7 +3264,7 @@ mod tests {
 
         let occurrence_only_md = checklist_md::add_item(Some(&template), "extra for today only");
         QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &occurrence_only_md, "this")
+            .update_series_checklist(&series.id, &quest.id, &occurrence_only_md, "this", None)
             .expect("this-occurrence scoped update");
 
         let stored_series: QuestSeries = crate::schema::quest_series::table
@@ -3256,7 +3325,7 @@ mod tests {
             checklist_md::ChecklistItem { id: "a3".into(), text: "badge".into(), checked: false },
         ]);
         QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &new_template, "future")
+            .update_series_checklist(&series.id, &quest.id, &new_template, "future", None)
             .expect("future-scoped update");
 
         let stored_series: QuestSeries = crate::schema::quest_series::table
@@ -3283,6 +3352,22 @@ mod tests {
         assert!(
             items.iter().find(|it| it.id == "a2").is_none(),
             "template-removed item must be dropped from the active occurrence"
+        );
+
+        let activity = QuestService::new(&mut conn)
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        assert!(
+            activity
+                .iter()
+                .any(|row| row.kind == "added" && row.detail == "Added \"badge\""),
+            "future-scope reconciliation must audit the item added to the current occurrence"
+        );
+        assert!(
+            activity
+                .iter()
+                .any(|row| row.kind == "removed" && row.detail == "Removed \"key fob\""),
+            "future-scope reconciliation must audit the item removed from the current occurrence"
         );
 
         let _ = std::fs::remove_file(db_path);

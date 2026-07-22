@@ -1002,6 +1002,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                     &args.quest_id,
                     &normalized_checklist,
                     &args.scope,
+                    Some(&ctx.device_state.identity.device_id),
                 )
                 .map_err(CliError::from_string)?;
             emit_quest_sync(ctx, &mut conn, &quest, "upsert");
