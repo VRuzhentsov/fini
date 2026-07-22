@@ -149,6 +149,12 @@ struct TableNameRow {
     name: String,
 }
 
+#[derive(QueryableByName)]
+struct ColumnNameRow {
+    #[diesel(sql_type = Text)]
+    name: String,
+}
+
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_export(
@@ -323,6 +329,7 @@ pub fn preflight_import(
         let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
             .map_err(|e| format!("failed to open backup database: {e}"))?;
         validate_backup_schema(&mut backup_conn)?;
+        migrate_backup_schema(&mut backup_conn)?;
         validate_manifest(&extracted.manifest)?;
 
         let backup_spaces = load_backup_spaces(&mut backup_conn)?;
@@ -345,6 +352,7 @@ pub fn inspect_backup(path: &Path) -> Result<BackupArchiveInspection, String> {
         let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
             .map_err(|e| format!("failed to open backup database: {e}"))?;
         validate_backup_schema(&mut backup_conn)?;
+        migrate_backup_schema(&mut backup_conn)?;
         validate_manifest(&extracted.manifest)?;
 
         let spaces = load_backup_spaces(&mut backup_conn)?;
@@ -407,6 +415,7 @@ pub fn apply_import(
         let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
             .map_err(|e| format!("failed to open backup database: {e}"))?;
         validate_backup_schema(&mut backup_conn)?;
+        migrate_backup_schema(&mut backup_conn)?;
         validate_manifest(&extracted.manifest)?;
 
         let backup_spaces = load_backup_spaces(&mut backup_conn)?;
@@ -571,6 +580,43 @@ fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn migrate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
+    ensure_backup_column(
+        conn,
+        "quest_series",
+        "is_checklist",
+        "ALTER TABLE quest_series ADD COLUMN is_checklist BOOLEAN NOT NULL DEFAULT 0",
+    )?;
+    ensure_backup_column(
+        conn,
+        "quests",
+        "is_checklist",
+        "ALTER TABLE quests ADD COLUMN is_checklist BOOLEAN NOT NULL DEFAULT 0",
+    )?;
+    ensure_backup_column(
+        conn,
+        "quests",
+        "checklist_base",
+        "ALTER TABLE quests ADD COLUMN checklist_base TEXT",
+    )
+}
+
+fn ensure_backup_column(
+    conn: &mut SqliteConnection,
+    table: &str,
+    column: &str,
+    migration: &str,
+) -> Result<(), String> {
+    let rows = diesel::sql_query(format!("SELECT name FROM pragma_table_info('{table}')"))
+        .load::<ColumnNameRow>(conn)
+        .map_err(|e| format!("failed to inspect backup schema columns for {table}: {e}"))?;
+    if rows.iter().any(|row| row.name == column) {
+        return Ok(());
+    }
+    conn.batch_execute(migration)
+        .map_err(|e| format!("failed to migrate backup schema for {table}.{column}: {e}"))
 }
 
 fn validate_manifest(manifest: &BackupManifest) -> Result<(), String> {
@@ -1068,6 +1114,112 @@ mod tests {
             .expect("insert custom space");
     }
 
+    fn create_legacy_v2_backup_schema(conn: &mut SqliteConnection) {
+        conn.batch_execute(
+            "
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE spaces (
+                id TEXT PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                item_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE quest_series (
+                id TEXT PRIMARY KEY NOT NULL,
+                space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
+                title TEXT NOT NULL,
+                description TEXT,
+                repeat_rule TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 1,
+                energy TEXT NOT NULL DEFAULT 'medium',
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE quests (
+                id TEXT PRIMARY KEY NOT NULL,
+                space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                energy TEXT NOT NULL DEFAULT 'medium',
+                priority INTEGER NOT NULL DEFAULT 1,
+                pinned BOOLEAN NOT NULL DEFAULT 0,
+                due TEXT,
+                due_time TEXT,
+                repeat_rule TEXT,
+                completed_at TEXT,
+                order_rank REAL NOT NULL DEFAULT 0,
+                focus_enter_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
+                period_key TEXT
+            );
+            ",
+        )
+        .expect("create legacy backup schema");
+    }
+
+    fn write_legacy_v2_backup_archive(label: &str) -> (PathBuf, PathBuf) {
+        let backup_database_path = temp_db_path(&format!("{label}-db"));
+        let mut backup_conn =
+            SqliteConnection::establish(path_str(&backup_database_path).expect("path"))
+                .expect("create legacy backup database");
+        create_legacy_v2_backup_schema(&mut backup_conn);
+        backup_conn
+            .batch_execute(
+                "
+                INSERT INTO spaces (id, name, item_order, created_at)
+                VALUES ('1', 'Inbox', 0, '2026-01-01T00:00:00Z');
+                INSERT INTO quest_series (
+                    id, space_id, title, description, repeat_rule, priority, energy,
+                    active, created_at, updated_at
+                ) VALUES (
+                    'legacy-series', '1', 'Legacy series', '- [ ] Template item',
+                    '{\"type\":\"daily\"}', 2, 'medium', 1,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                );
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key
+                ) VALUES (
+                    'legacy-quest', '1', 'Legacy quest', '- [ ] Existing item', 'active',
+                    'medium', 2, 0, NULL, NULL, NULL, NULL, 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                    'legacy-series', '2026-01-01'
+                );
+                ",
+            )
+            .expect("seed legacy backup database");
+        drop(backup_conn);
+
+        let archive_path = backup_path(label);
+        let manifest = BackupManifest {
+            format: BACKUP_FORMAT.to_string(),
+            version: BACKUP_VERSION,
+            app_version: "0.2.1".to_string(),
+            exported_at: "2026-01-01T00:00:00Z".to_string(),
+            domains: vec![
+                "spaces".to_string(),
+                "quest_series".to_string(),
+                "quests".to_string(),
+            ],
+            spaces: vec![ManifestSpace {
+                id: "1".to_string(),
+                name: "Inbox".to_string(),
+            }],
+            counts: ManifestCounts {
+                spaces: 1,
+                quest_series: 1,
+                quests: 1,
+            },
+        };
+        write_zip(&archive_path, &manifest, &backup_database_path).expect("write legacy archive");
+        (archive_path, backup_database_path)
+    }
+
     #[test]
     fn dry_run_plan_reports_unresolved_conflicts_without_selecting_a_resolution() {
         let plan = BackupImportDryRunPlan::from_preflight(BackupImportPreflight {
@@ -1157,6 +1309,41 @@ mod tests {
 
         let _ = fs::remove_file(out_path);
         let _ = fs::remove_file(source_db_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn import_accepts_legacy_v2_backups_without_checklist_columns() {
+        let (archive_path, backup_database_path) =
+            write_legacy_v2_backup_archive("backup-legacy-v2-checklist-columns");
+
+        let inspection = inspect_backup(&archive_path).expect("inspect legacy backup");
+        assert_eq!(inspection.contents.counts.quest_series, 1);
+        assert_eq!(inspection.contents.counts.quests, 1);
+
+        let target_db_path = temp_db_path("backup-legacy-v2-target");
+        let mut target = open_db_at_path(&target_db_path);
+        let preflight = preflight_import(&mut target, &archive_path, &[]).expect("preflight");
+        assert!(preflight.required_space_mappings.is_empty());
+        assert!(preflight.conflicts.is_empty());
+
+        apply_import(&mut target, &archive_path, &[], &[]).expect("import legacy backup");
+        let imported_series: QuestSeries = quest_series::table
+            .find("legacy-series")
+            .select(QuestSeries::as_select())
+            .first(&mut target)
+            .expect("load imported series");
+        let imported_quest: Quest = quests::table
+            .find("legacy-quest")
+            .select(Quest::as_select())
+            .first(&mut target)
+            .expect("load imported quest");
+        assert!(!imported_series.is_checklist);
+        assert!(!imported_quest.is_checklist);
+        assert_eq!(imported_quest.checklist_base, None);
+
+        let _ = fs::remove_file(archive_path);
+        let _ = fs::remove_file(backup_database_path);
         let _ = fs::remove_file(target_db_path);
     }
 
