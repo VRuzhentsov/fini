@@ -872,7 +872,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 }
                 (md, true)
             } else if let Some(checklist) = args.checklist {
-                (Some(checklist), true)
+                (Some(normalize_cli_checklist_markdown(&checklist)), true)
             } else {
                 (args.description, false)
             };
@@ -1879,6 +1879,81 @@ mod tests {
             series_count, 0,
             "--repeat null must not create a quest series"
         );
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn quest_create_normalizes_raw_cli_checklist_markdown_before_saving() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-create-normalizes-raw-checklist-markdown");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = CliContext::new()
+            .unwrap_or_else(|err| panic!("initialize isolated CLI database: {}", err.message));
+        let create_cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Pack bag",
+            "--checklist=- [ ] headphones",
+        ])
+        .expect("parse checklist create");
+        let create_command = match create_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest create command"),
+        };
+        let created = handle_quest(&ctx, create_command)
+            .unwrap_or_else(|err| panic!("create checklist quest: {}", err.message));
+        let quest_id = created["id"]
+            .as_str()
+            .expect("created quest id")
+            .to_string();
+
+        let mut conn = ctx
+            .open_db()
+            .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
+        let stored_quest = QuestService::new(&mut conn)
+            .get(&quest_id)
+            .expect("load created checklist quest");
+        let stored_md = stored_quest
+            .description
+            .as_deref()
+            .expect("created checklist markdown");
+        let items = crate::services::checklist_md::parse(stored_md);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "headphones");
+        assert!(
+            stored_md.contains("<!--k=") && stored_md.ends_with("-->"),
+            "stored checklist markdown must persist hidden item ids, got: {stored_md}"
+        );
+
+        let listed_item_id = items[0].id.clone();
+        let check_cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "checklist-check",
+            "--quest-id",
+            &quest_id,
+            "--item-id",
+            &listed_item_id,
+        ])
+        .expect("parse checklist check");
+        let check_command = match check_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected checklist-check command"),
+        };
+        let checked = handle_quest(&ctx, check_command)
+            .unwrap_or_else(|err| panic!("check listed checklist item: {}", err.message));
+        let checked_items = crate::services::checklist_md::parse(
+            checked["description"]
+                .as_str()
+                .expect("checked checklist markdown"),
+        );
+        assert_eq!(checked_items[0].id, listed_item_id);
+        assert!(checked_items[0].checked);
 
         std::env::remove_var("FINI_DB_PATH");
         let _ = std::fs::remove_file(db_path);
