@@ -213,14 +213,34 @@ pub fn merge_3way(base: Option<&str>, local: &str, remote: &str) -> (String, boo
                         l.text.clone()
                     }
                 };
+                let checked = match b.map(|b| b.checked) {
+                    Some(base_checked) if l.checked == base_checked && r.checked != base_checked => r.checked,
+                    Some(base_checked) if r.checked == base_checked && l.checked != base_checked => l.checked,
+                    _ if l.checked == r.checked => l.checked,
+                    _ => l.checked || r.checked,
+                };
                 ChecklistItem {
                     id: l.id.clone(),
                     text,
-                    checked: l.checked || r.checked,
+                    checked,
                 }
             }
-            (Some(l), None) => l.clone(),
-            (None, Some(r)) => r.clone(),
+            (Some(l), None) => match b {
+                Some(b) if l == b => continue,
+                Some(_) => {
+                    had_conflict = true;
+                    l.clone()
+                }
+                None => l.clone(),
+            },
+            (None, Some(r)) => match b {
+                Some(b) if r == b => continue,
+                Some(_) => {
+                    had_conflict = true;
+                    r.clone()
+                }
+                None => r.clone(),
+            },
             (None, None) => continue,
         };
         merged.push(resolved);
@@ -313,6 +333,29 @@ mod tests {
         assert!(!had_conflict);
         assert!(merged.iter().find(|it| it.id == "a1").unwrap().checked);
         assert!(merged.iter().find(|it| it.id == "a2").unwrap().checked);
+    }
+
+    #[test]
+    fn merge_one_sided_uncheck_wins_against_unchanged_peer() {
+        let base = serialize(&[ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: true }]);
+        let local = serialize(&[ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false }]);
+        let remote = base.clone();
+
+        let (merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let merged = parse(&merged_md);
+        assert!(!had_conflict);
+        assert!(!merged[0].checked);
+    }
+
+    #[test]
+    fn merge_one_sided_remove_wins_against_unchanged_peer() {
+        let base = serialize(&[ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false }]);
+        let local = String::new();
+        let remote = base.clone();
+
+        let (merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        assert!(!had_conflict);
+        assert!(parse(&merged_md).is_empty());
     }
 
     #[test]
