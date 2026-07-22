@@ -1328,6 +1328,30 @@ fn emit_quest_checklist_sync(
 }
 
 #[cfg(any(feature = "ui-plane", test))]
+fn emit_series_checklist_template_sync(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    series_id: &str,
+    outbox_space_id: &str,
+) -> Result<(), String> {
+    let series: QuestSeries = crate::schema::quest_series::table
+        .find(series_id)
+        .select(QuestSeries::as_select())
+        .first(&mut *conn)
+        .map_err(|e: diesel::result::Error| e.to_string())?;
+    let payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
+    emit_sync_event(
+        conn,
+        device_id,
+        "quest_series",
+        series_id,
+        outbox_space_id,
+        "upsert",
+        Some(payload),
+    )
+}
+
+#[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn add_checklist_item(
     state: State<AppDbConnection>,
@@ -1432,21 +1456,7 @@ pub fn update_series_checklist(
     )?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
     if scope == "future" {
-        let series: QuestSeries = crate::schema::quest_series::table
-            .find(&series_id)
-            .select(QuestSeries::as_select())
-            .first(&mut *conn)
-            .map_err(|e: diesel::result::Error| e.to_string())?;
-        let payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
-        emit_sync_event(
-            &mut conn,
-            &device_id,
-            "quest_series",
-            &series_id,
-            &series.space_id,
-            "upsert",
-            Some(payload),
-        )?;
+        emit_series_checklist_template_sync(&mut conn, &device_id, &series_id, &quest.space_id)?;
     }
     Ok(quest)
 }
@@ -2705,6 +2715,109 @@ mod tests {
                 ),
             ],
             "space move must re-emit checklist activity under the destination space"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn future_series_checklist_sync_uses_current_occurrence_space() {
+        let db_path = temp_db_path("future-series-checklist-sync-occurrence-space");
+        let mut conn = open_db_at_path(&db_path);
+
+        let repeat_rule = r#"{"preset":"weekly"}"#;
+        let series = diesel::insert_into(quest_series::table)
+            .values(&CreateSeriesInput {
+                space_id: "1".to_string(),
+                title: "Moved checklist".to_string(),
+                description: Some("- [ ] old <!--k=a1-->".to_string()),
+                repeat_rule: repeat_rule.to_string(),
+                priority: 1,
+                energy: "medium".to_string(),
+                is_checklist: true,
+            })
+            .returning(QuestSeries::as_returning())
+            .get_result::<QuestSeries>(&mut conn)
+            .expect("insert series");
+
+        diesel::insert_into(quests::table)
+            .values((
+                quests::space_id.eq("2"),
+                quests::title.eq("Moved checklist"),
+                quests::description.eq(Some("- [ ] old <!--k=a1-->")),
+                quests::status.eq("active"),
+                quests::due.eq("2026-05-15"),
+                quests::repeat_rule.eq(repeat_rule),
+                quests::series_id.eq(&series.id),
+                quests::period_key.eq("2026-05-15"),
+                quests::is_checklist.eq(true),
+                quests::created_at.eq("2026-05-15T10:00:00Z"),
+                quests::updated_at.eq("2026-05-15T10:00:00Z"),
+            ))
+            .execute(&mut conn)
+            .expect("insert moved occurrence");
+
+        let occurrence_id: String = quests::table
+            .filter(quests::series_id.eq(&series.id))
+            .select(quests::id)
+            .first(&mut conn)
+            .expect("load occurrence id");
+
+        let updated = QuestService::new(&mut conn)
+            .update_series_checklist(
+                &series.id,
+                &occurrence_id,
+                "- [ ] new <!--k=a1-->",
+                "future",
+                Some("device-local"),
+            )
+            .expect("update future checklist");
+
+        assert_eq!(updated.space_id, "2", "occurrence stays in its moved space");
+        assert_eq!(
+            QuestRepository::new(&mut conn)
+                .series_space_id(&series.id)
+                .expect("load series space"),
+            "1",
+            "series row can still retain the original space"
+        );
+
+        emit_quest_checklist_sync(&mut conn, "device-local", &updated)
+            .expect("emit occurrence checklist sync");
+        emit_series_checklist_template_sync(
+            &mut conn,
+            "device-local",
+            &series.id,
+            &updated.space_id,
+        )
+        .expect("emit series template sync");
+
+        let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((
+                sync_outbox::entity_type,
+                sync_outbox::op_type,
+                sync_outbox::space_id,
+                sync_outbox::payload,
+            ))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        let series_row = rows
+            .iter()
+            .find(|(entity_type, op_type, _, _)| {
+                entity_type == "quest_series" && op_type == "upsert"
+            })
+            .expect("series template sync row");
+        assert_eq!(
+            series_row.2, "2",
+            "series template update must route through the moved occurrence space"
+        );
+        let payload = series_row.3.as_ref().expect("series payload");
+        let payload: QuestSeries = serde_json::from_str(payload).expect("deserialize series payload");
+        assert_eq!(
+            payload.space_id, "1",
+            "outbox routing space must not require mutating the series row"
         );
 
         let _ = std::fs::remove_file(db_path);
