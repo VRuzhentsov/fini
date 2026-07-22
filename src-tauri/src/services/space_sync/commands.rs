@@ -653,6 +653,9 @@ fn merge_and_persist_quest_checklist(
         Some(merged_raw)
     };
 
+    let checklist_base_before = local.checklist_base.clone();
+    let base_advanced = checklist_base_before.as_deref() != merged.as_deref();
+
     if merged != local.description {
         diesel::update(quests::table.find(entity_id))
             .set((
@@ -661,16 +664,18 @@ fn merge_and_persist_quest_checklist(
             ))
             .execute(conn)
             .map_err(|e| e.to_string())?;
-    } else if local.checklist_base.as_deref() != merged.as_deref() {
+    } else if base_advanced {
         diesel::update(quests::table.find(entity_id))
             .set(quests::checklist_base.eq(&merged))
             .execute(conn)
             .map_err(|e| e.to_string())?;
     }
 
-    // Merge changed something relative to what the remote peer sent — push it back so they
-    // converge too, using OUR device id as origin (not the remote's).
-    if merged.as_deref() != incoming_description {
+    // Merge changed something relative to what the remote peer sent, or advanced our retained
+    // checklist base after cleanly adopting the peer's state. Push a convergence event back so
+    // the origin can advance its own retained base too; otherwise a later negative edit from the
+    // adopter can be merged against the origin's stale pre-edit base and be reverted.
+    if merged.as_deref() != incoming_description || base_advanced {
         if let Some(own_device_id) = local_device_id(conn) {
             if own_device_id != remote_origin_device_id {
                 if let Ok(refreshed) = quests::table
@@ -710,14 +715,11 @@ fn apply_sync_event(
             delete_entity(conn, event)?;
         }
         "upsert" => {
-            let whole_entity_wins = match load_latest_event_for_entity(
-                conn,
-                &event.entity_type,
-                &event.entity_id,
-            )? {
-                Some(local_event) => incoming_wins(event, &local_event),
-                None => true,
-            };
+            let whole_entity_wins =
+                match load_latest_event_for_entity(conn, &event.entity_type, &event.entity_id)? {
+                    Some(local_event) => incoming_wins(event, &local_event),
+                    None => true,
+                };
 
             let payload = event
                 .payload
@@ -1822,7 +1824,10 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut conn)
             .unwrap();
-        assert_eq!(after.title, "Go to office", "losing event must not overwrite other fields");
+        assert_eq!(
+            after.title, "Go to office",
+            "losing event must not overwrite other fields"
+        );
         let items = crate::services::checklist_md::parse(after.description.as_deref().unwrap());
         assert!(
             items.iter().find(|it| it.id == "a1").unwrap().checked,
@@ -1832,6 +1837,78 @@ mod tests {
             items.iter().find(|it| it.id == "a2").unwrap().checked,
             "remote's independent pack of item a2 must still merge in, despite losing whole-entity LWW"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_emits_convergence_event_when_checklist_base_advances_only() {
+        let db_path = temp_db_path("checklist-base-ack");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
+            .expect("seed local device id");
+
+        let base_md = crate::services::checklist_md::serialize(&[
+            crate::services::checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist_md::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        let adopted_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
+
+        let mut local_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(adopted_md.clone());
+        local_quest.checklist_base = Some(base_md);
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let mut incoming_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
+        incoming_quest.is_checklist = true;
+        incoming_quest.description = Some(adopted_md.clone());
+        let event = test_envelope(
+            "evt-clean-adoption",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&incoming_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let after: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(after.description.as_deref(), Some(adopted_md.as_str()));
+        assert_eq!(after.checklist_base.as_deref(), Some(adopted_md.as_str()));
+
+        let emitted: Vec<(String, String, String, Option<String>)> = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest"))
+            .filter(sync_outbox::entity_id.eq("q1"))
+            .select((
+                sync_outbox::origin_device_id,
+                sync_outbox::op_type,
+                sync_outbox::space_id,
+                sync_outbox::payload,
+            ))
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].0, "dev-local");
+        assert_eq!(emitted[0].1, "upsert");
+        assert_eq!(emitted[0].2, "1");
+        let payload: Quest = serde_json::from_str(emitted[0].3.as_deref().unwrap()).unwrap();
+        assert_eq!(payload.description.as_deref(), Some(adopted_md.as_str()));
 
         let _ = std::fs::remove_file(db_path);
     }
