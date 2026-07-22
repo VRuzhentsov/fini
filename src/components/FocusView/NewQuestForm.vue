@@ -79,6 +79,7 @@ const draftQuest = computed<Quest>(() => ({
   updated_at: "",
   series_id: null,
   period_key: null,
+  is_checklist: false,
 }));
 
 const canSubmit = computed(() => title.value.trim().length > 0 && !isSubmitting.value);

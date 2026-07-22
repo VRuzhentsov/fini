@@ -28,6 +28,9 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-lg: 0 10px 24px rgba(0, 0, 0, 0.12);
   --dur-normal: 150ms;
+
+  --font-sans: Inter, Avenir, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
