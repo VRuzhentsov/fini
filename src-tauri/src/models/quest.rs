@@ -29,12 +29,17 @@ pub struct Quest {
     pub updated_at: String,
     pub series_id: Option<String>,
     pub period_key: Option<String>,
-    /// Task-list markdown (`- [ ] text <!--k=id-->` lines), or null. Separate from `description`.
-    pub checklist_md: Option<String>,
-    /// Device-local convergence bookkeeping for the checklist per-item merge — the last
-    /// checklist_md value both sides last agreed on. Never included in sync payloads.
+    /// When true, `description` is authored/rendered as a checklist (task-list markdown,
+    /// `- [ ] text <!--k=id-->` lines) instead of prose — issue #128. There is no separate
+    /// checklist content column: the description field already is markdown-compatible, and a
+    /// checklist quest simply parses/renders that same field as a task list.
+    #[serde(default)]
+    pub is_checklist: bool,
+    /// Device-local convergence bookkeeping for the per-item checklist merge when
+    /// `is_checklist` — the last `description` value both sides last agreed on. Never included
+    /// in sync payloads.
     #[serde(skip_serializing, default)]
-    pub checklist_md_base: Option<String>,
+    pub checklist_base: Option<String>,
 }
 
 #[derive(Deserialize, Insertable)]
@@ -52,8 +57,9 @@ pub struct CreateQuestInput {
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
     pub order_rank: Option<f64>,
-    /// Initial checklist authored at creation time (task-list markdown), or null.
-    pub checklist_md: Option<String>,
+    /// Marks this quest as a checklist quest — `description` is authored as task-list markdown.
+    #[serde(default)]
+    pub is_checklist: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +112,7 @@ pub struct UpdateQuestInput {
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
     pub order_rank: Option<f64>,
+    pub is_checklist: Option<bool>,
 }
 
 pub fn default_priority() -> i64 {

@@ -1,5 +1,6 @@
 DROP TABLE checklist_activity;
 
-ALTER TABLE quest_series DROP COLUMN checklist_template_md;
-ALTER TABLE quests DROP COLUMN checklist_md_base;
-ALTER TABLE quests DROP COLUMN checklist_md;
+ALTER TABLE quest_series DROP COLUMN is_checklist;
+
+ALTER TABLE quests DROP COLUMN checklist_base;
+ALTER TABLE quests DROP COLUMN is_checklist;

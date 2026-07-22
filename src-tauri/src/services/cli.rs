@@ -154,6 +154,24 @@ enum QuestCommand {
     Abandon(IdArg),
     Delete(IdArg),
     History,
+    #[command(about = "List a quest's checklist items (issue #128)")]
+    ChecklistList(QuestIdArg),
+    #[command(about = "Add an unchecked checklist item to this occurrence")]
+    ChecklistAdd(ChecklistAddArgs),
+    #[command(about = "Check a checklist item")]
+    ChecklistCheck(ChecklistItemArgs),
+    #[command(about = "Uncheck a checklist item")]
+    ChecklistUncheck(ChecklistItemArgs),
+    #[command(about = "Rename a checklist item")]
+    ChecklistEdit(ChecklistEditArgs),
+    #[command(about = "Remove a checklist item from this occurrence")]
+    ChecklistRemove(ChecklistItemArgs),
+    #[command(about = "List a quest's checklist audit activity")]
+    ChecklistActivity(QuestIdArg),
+    #[command(
+        about = "Replace a recurring quest's checklist. --scope this edits only this occurrence; --scope future edits the series template and reconciles this occurrence (issue #128)"
+    )]
+    ChecklistSetTemplate(ChecklistSetTemplateArgs),
 }
 
 #[derive(Args)]
@@ -187,14 +205,15 @@ struct QuestCreateArgs {
     repeat: Option<String>,
     #[arg(
         long,
-        help = "Raw task-list markdown for the initial checklist (e.g. '- [ ] headphones'); conflicts with --item"
+        conflicts_with = "description",
+        help = "Raw task-list markdown for the initial checklist (e.g. '- [ ] headphones'); stored in the same field as --description, so the two are exclusive. Conflicts with --item"
     )]
     checklist: Option<String>,
     #[arg(
         long = "item",
         action = ArgAction::Append,
-        conflicts_with = "checklist",
-        help = "Add one unchecked checklist item; repeat --item for each item"
+        conflicts_with_all = ["checklist", "description"],
+        help = "Add one unchecked checklist item; repeat --item for each item. Conflicts with --description"
     )]
     items: Vec<String>,
 }
@@ -510,6 +529,49 @@ struct QuestIdArg {
 }
 
 #[derive(Args)]
+struct ChecklistAddArgs {
+    #[arg(long)]
+    quest_id: String,
+    #[arg(long)]
+    text: String,
+}
+
+#[derive(Args)]
+struct ChecklistItemArgs {
+    #[arg(long)]
+    quest_id: String,
+    #[arg(long)]
+    item_id: String,
+}
+
+#[derive(Args)]
+struct ChecklistEditArgs {
+    #[arg(long)]
+    quest_id: String,
+    #[arg(long)]
+    item_id: String,
+    #[arg(long)]
+    text: String,
+}
+
+#[derive(Args)]
+struct ChecklistSetTemplateArgs {
+    #[arg(long)]
+    series_id: String,
+    #[arg(long)]
+    quest_id: String,
+    #[arg(long, help = "Full replacement task-list markdown, e.g. '- [ ] headphones\\n- [ ] key fob'")]
+    checklist: String,
+    #[arg(
+        long,
+        value_parser = ["this", "future"],
+        default_value = "this",
+        help = "'this' edits only this occurrence; 'future' also updates the series template (issue #128)"
+    )]
+    scope: String,
+}
+
+#[derive(Args)]
 struct RequestIdArg {
     #[arg(long)]
     request_id: String,
@@ -745,19 +807,25 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         )
         .map_err(|e| CliError::runtime(e.to_string())),
         QuestCommand::Create(args) => {
-            let checklist_md = if !args.items.is_empty() {
+            // A checklist quest stores its checklist in the same `description` field as prose
+            // quests — `is_checklist` just tells the app to parse/render it as a task list
+            // instead of free text (issue #128; --checklist and --item are exclusive with
+            // --description at the arg level, see QuestCreateArgs).
+            let (description, is_checklist) = if !args.items.is_empty() {
                 let mut md: Option<String> = None;
                 for item in &args.items {
                     md = Some(crate::services::checklist_md::add_item(md.as_deref(), item));
                 }
-                md
+                (md, true)
+            } else if let Some(checklist) = args.checklist {
+                (Some(checklist), true)
             } else {
-                args.checklist
+                (args.description, false)
             };
             let input = CreateQuestInput {
                 space_id: args.space_id.unwrap_or_else(|| "1".to_string()),
                 title: args.title,
-                description: args.description,
+                description,
                 energy: "medium".to_string(),
                 priority: 1,
                 due: args.due,
@@ -769,7 +837,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                     .map(normalize_repeat_alias)
                     .or(args.repeat_rule),
                 order_rank: None,
-                checklist_md,
+                is_checklist,
             };
             let created = QuestService::new(&mut conn)
                 .create(input)
@@ -807,6 +875,88 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                     .then_with(|| a.id.cmp(&b.id))
             });
             Ok(json!({ "quests": quests }))
+        }
+        QuestCommand::ChecklistList(args) => {
+            let quest = QuestService::new(&mut conn)
+                .get(&args.quest_id)
+                .map_err(CliError::from_string)?;
+            let items = crate::services::checklist_md::parse_opt(quest.description.as_deref());
+            Ok(json!({ "quest_id": args.quest_id, "is_checklist": quest.is_checklist, "items": items }))
+        }
+        QuestCommand::ChecklistAdd(args) => {
+            let quest = QuestService::new(&mut conn)
+                .add_checklist_item(
+                    &args.quest_id,
+                    &args.text,
+                    Some(&ctx.device_state.identity.device_id),
+                )
+                .map_err(CliError::from_string)?;
+            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+        }
+        QuestCommand::ChecklistCheck(args) => {
+            let quest = QuestService::new(&mut conn)
+                .toggle_checklist_item(&args.quest_id, &args.item_id, true)
+                .map_err(CliError::from_string)?;
+            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+        }
+        QuestCommand::ChecklistUncheck(args) => {
+            let quest = QuestService::new(&mut conn)
+                .toggle_checklist_item(&args.quest_id, &args.item_id, false)
+                .map_err(CliError::from_string)?;
+            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+        }
+        QuestCommand::ChecklistEdit(args) => {
+            let quest = QuestService::new(&mut conn)
+                .edit_checklist_item_text(
+                    &args.quest_id,
+                    &args.item_id,
+                    &args.text,
+                    Some(&ctx.device_state.identity.device_id),
+                )
+                .map_err(CliError::from_string)?;
+            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+        }
+        QuestCommand::ChecklistRemove(args) => {
+            let quest = QuestService::new(&mut conn)
+                .remove_checklist_item(
+                    &args.quest_id,
+                    &args.item_id,
+                    Some(&ctx.device_state.identity.device_id),
+                )
+                .map_err(CliError::from_string)?;
+            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+        }
+        QuestCommand::ChecklistActivity(args) => {
+            let activity = QuestService::new(&mut conn)
+                .get_checklist_activity(&args.quest_id)
+                .map_err(CliError::from_string)?;
+            Ok(json!({ "quest_id": args.quest_id, "activity": activity }))
+        }
+        QuestCommand::ChecklistSetTemplate(args) => {
+            let quest = QuestService::new(&mut conn)
+                .update_series_checklist(
+                    &args.series_id,
+                    &args.quest_id,
+                    &args.checklist,
+                    &args.scope,
+                )
+                .map_err(CliError::from_string)?;
+            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            if args.scope == "future" {
+                if let Ok(series) = crate::schema::quest_series::table
+                    .find(&args.series_id)
+                    .select(crate::models::QuestSeries::as_select())
+                    .first::<crate::models::QuestSeries>(&mut conn)
+                {
+                    emit_series_sync(ctx, &mut conn, &series);
+                }
+            }
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
     }
 }
@@ -855,6 +1005,7 @@ fn update_quest_from_cli(
         due_time: None,
         repeat_rule: None,
         order_rank: args.order_rank,
+        is_checklist: None,
     };
     let patch = QuestUpdatePatch {
         input,

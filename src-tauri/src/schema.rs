@@ -26,7 +26,7 @@ diesel::table! {
         active      -> Bool,
         created_at  -> Text,
         updated_at  -> Text,
-        checklist_template_md -> Nullable<Text>,
+        is_checklist -> Bool,
     }
 }
 
@@ -50,8 +50,8 @@ diesel::table! {
         updated_at  -> Text,
         series_id   -> Nullable<Text>,
         period_key  -> Nullable<Text>,
-        checklist_md -> Nullable<Text>,
-        checklist_md_base -> Nullable<Text>,
+        is_checklist -> Bool,
+        checklist_base -> Nullable<Text>,
     }
 }
 

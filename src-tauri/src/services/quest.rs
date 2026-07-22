@@ -16,7 +16,7 @@ use crate::repositories::quest::QuestRepository;
 use crate::schema::{focus_history, settings};
 #[cfg(test)]
 use crate::schema::{quest_series, quests};
-#[cfg(any(feature = "ui-plane", test))]
+use crate::services::checklist_md;
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
@@ -129,7 +129,7 @@ fn ensure_series(
         repeat_rule: repeat_rule_str.to_string(),
         priority: quest.priority,
         energy: quest.energy.clone(),
-        checklist_template_md: quest.checklist_md.clone(),
+        is_checklist: quest.is_checklist,
     };
 
     let series = QuestRepository::new(conn).create_series(&series_input)?;
@@ -561,6 +561,25 @@ impl<'a> QuestService<'a> {
         } else {
             None
         };
+
+        // Issue #128: the completed-history checklist snapshot is preserved as-is (the
+        // occurrence's description at completion time), but we also record an explicit audit
+        // entry marking the moment of completion — guarded so it only fires on the actual
+        // active -> completed/abandoned transition, not on every subsequent update.
+        if previous.status == "active"
+            && matches!(quest.status.as_str(), "completed" | "abandoned")
+            && quest.is_checklist
+        {
+            let (done, total) = checklist_md::counts(quest.description.as_deref());
+            let _ = log_checklist_activity(
+                self.repository.conn,
+                &quest.id,
+                "completed_snapshot",
+                &format!("Checklist at completion: {done}/{total} checked"),
+                None,
+            );
+        }
+
         Ok(UpdateQuestResult {
             quest,
             restore_should_focus,
@@ -631,6 +650,177 @@ impl<'a> QuestService<'a> {
             Ok(())
         })
     }
+
+    // ── Checklist (issue #128) ──────────────────────────────────────────────
+
+    fn checklist_audit_kind(quest: &Quest, base_kind: &str) -> &'static str {
+        // Every edit made after a quest has left "active" status is recorded distinctly so the
+        // completed-history record stays auditable (#128: "Every post-completion edit is
+        // recorded as historical activity").
+        if quest.status != "active" {
+            "post_completion_edit"
+        } else {
+            match base_kind {
+                "added" => "added",
+                "removed" => "removed",
+                _ => "edited",
+            }
+        }
+    }
+
+    pub fn add_checklist_item(
+        &mut self,
+        quest_id: &str,
+        text: &str,
+        origin_device_id: Option<&str>,
+    ) -> Result<Quest, String> {
+        let quest = self.repository.get(quest_id)?;
+        let new_md = checklist_md::add_item(quest.description.as_deref(), text);
+        let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
+        log_checklist_activity(
+            self.repository.conn,
+            quest_id,
+            Self::checklist_audit_kind(&quest, "added"),
+            &format!("Added \"{text}\""),
+            origin_device_id,
+        )?;
+        Ok(updated)
+    }
+
+    pub fn toggle_checklist_item(
+        &mut self,
+        quest_id: &str,
+        item_id: &str,
+        checked: bool,
+    ) -> Result<Quest, String> {
+        let quest = self.repository.get(quest_id)?;
+        let md = quest.description.clone().unwrap_or_default();
+        let new_md = checklist_md::set_checked(&md, item_id, checked);
+        // Individual check/uncheck toggles are not written to the audit log by design (#128's
+        // audit requirement targets add/remove/edit and completion, not every toggle) — the
+        // checklist's own checked state is itself the record of what was packed.
+        self.repository.set_checklist_description(quest_id, &new_md)
+    }
+
+    pub fn edit_checklist_item_text(
+        &mut self,
+        quest_id: &str,
+        item_id: &str,
+        text: &str,
+        origin_device_id: Option<&str>,
+    ) -> Result<Quest, String> {
+        let quest = self.repository.get(quest_id)?;
+        let md = quest.description.clone().unwrap_or_default();
+        let new_md = checklist_md::set_text(&md, item_id, text);
+        let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
+        log_checklist_activity(
+            self.repository.conn,
+            quest_id,
+            Self::checklist_audit_kind(&quest, "edited"),
+            &format!("Renamed item to \"{text}\""),
+            origin_device_id,
+        )?;
+        Ok(updated)
+    }
+
+    pub fn remove_checklist_item(
+        &mut self,
+        quest_id: &str,
+        item_id: &str,
+        origin_device_id: Option<&str>,
+    ) -> Result<Quest, String> {
+        let quest = self.repository.get(quest_id)?;
+        let md = quest.description.clone().unwrap_or_default();
+        let removed_text = checklist_md::parse(&md)
+            .into_iter()
+            .find(|it| it.id == item_id)
+            .map(|it| it.text);
+        let new_md = checklist_md::remove_item(&md, item_id);
+        let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
+        let detail = match removed_text {
+            Some(text) => format!("Removed \"{text}\""),
+            None => "Removed an item".to_string(),
+        };
+        log_checklist_activity(
+            self.repository.conn,
+            quest_id,
+            Self::checklist_audit_kind(&quest, "removed"),
+            &detail,
+            origin_device_id,
+        )?;
+        Ok(updated)
+    }
+
+    pub fn reorder_checklist(
+        &mut self,
+        quest_id: &str,
+        ordered_ids: &[String],
+    ) -> Result<Quest, String> {
+        let quest = self.repository.get(quest_id)?;
+        let md = quest.description.clone().unwrap_or_default();
+        let new_md = checklist_md::reorder(&md, ordered_ids);
+        self.repository.set_checklist_description(quest_id, &new_md)
+    }
+
+    /// `scope` is `"this"` (mutate only this occurrence's checklist) or `"future"` (mutate the
+    /// series template and reconcile the current occurrence — #128's "This and future
+    /// occurrences"). `new_checklist_md` is the fully-edited checklist for "this", or the fully
+    /// -edited template for "future".
+    pub fn update_series_checklist(
+        &mut self,
+        series_id: &str,
+        current_occurrence_id: &str,
+        new_checklist_md: &str,
+        scope: &str,
+    ) -> Result<Quest, String> {
+        match scope {
+            "future" => self.repository.update_series_checklist_template(
+                series_id,
+                new_checklist_md,
+                current_occurrence_id,
+            ),
+            _ => self
+                .repository
+                .set_checklist_description(current_occurrence_id, new_checklist_md),
+        }
+    }
+
+    pub fn get_checklist_activity(
+        &mut self,
+        quest_id: &str,
+    ) -> Result<Vec<crate::models::ChecklistActivity>, String> {
+        use crate::schema::checklist_activity;
+        checklist_activity::table
+            .filter(checklist_activity::quest_id.eq(quest_id))
+            .order(checklist_activity::created_at.asc())
+            .select(crate::models::ChecklistActivity::as_select())
+            .load(self.repository.conn)
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn log_checklist_activity(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+    kind: &str,
+    detail: &str,
+    origin_device_id: Option<&str>,
+) -> Result<(), String> {
+    use crate::models::CreateChecklistActivityInput;
+    use crate::schema::checklist_activity;
+
+    let input = CreateChecklistActivityInput {
+        quest_id: quest_id.to_string(),
+        kind: kind.to_string(),
+        detail: detail.to_string(),
+        created_at: utc_now(),
+        origin_device_id: origin_device_id.map(|s| s.to_string()),
+    };
+    diesel::insert_into(checklist_activity::table)
+        .values(&input)
+        .execute(conn)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -859,6 +1049,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
         due_time: None,
         repeat_rule: None,
         order_rank: None,
+        is_checklist: None,
     };
 
     match QuestService::new(&mut conn).update(quest_id, input) {
@@ -974,6 +1165,159 @@ pub fn delete_quest(
     Ok(())
 }
 
+// ── Checklist commands (issue #128) ─────────────────────────────────────────
+
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_quest_checklist_sync(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    quest: &Quest,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
+    emit_sync_event(
+        conn,
+        device_id,
+        "quest",
+        &quest.id,
+        &quest.space_id,
+        "upsert",
+        Some(payload),
+    )
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn add_checklist_item(
+    state: State<AppDbConnection>,
+    device_connection: State<DeviceConnectionState>,
+    quest_id: String,
+    text: String,
+) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let device_id = device_connection.identity.device_id.clone();
+    let quest = QuestService::new(&mut conn).add_checklist_item(&quest_id, &text, Some(&device_id))?;
+    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    Ok(quest)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn toggle_checklist_item(
+    state: State<AppDbConnection>,
+    device_connection: State<DeviceConnectionState>,
+    quest_id: String,
+    item_id: String,
+    checked: bool,
+) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let device_id = device_connection.identity.device_id.clone();
+    let quest = QuestService::new(&mut conn).toggle_checklist_item(&quest_id, &item_id, checked)?;
+    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    Ok(quest)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn edit_checklist_item(
+    state: State<AppDbConnection>,
+    device_connection: State<DeviceConnectionState>,
+    quest_id: String,
+    item_id: String,
+    text: String,
+) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let device_id = device_connection.identity.device_id.clone();
+    let quest = QuestService::new(&mut conn).edit_checklist_item_text(
+        &quest_id,
+        &item_id,
+        &text,
+        Some(&device_id),
+    )?;
+    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    Ok(quest)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn remove_checklist_item(
+    state: State<AppDbConnection>,
+    device_connection: State<DeviceConnectionState>,
+    quest_id: String,
+    item_id: String,
+) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let device_id = device_connection.identity.device_id.clone();
+    let quest =
+        QuestService::new(&mut conn).remove_checklist_item(&quest_id, &item_id, Some(&device_id))?;
+    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    Ok(quest)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn reorder_checklist(
+    state: State<AppDbConnection>,
+    device_connection: State<DeviceConnectionState>,
+    quest_id: String,
+    ordered_item_ids: Vec<String>,
+) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let device_id = device_connection.identity.device_id.clone();
+    let quest = QuestService::new(&mut conn).reorder_checklist(&quest_id, &ordered_item_ids)?;
+    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    Ok(quest)
+}
+
+/// `scope` is `"this"` or `"future"` — see issue #128's recurrence edit-scope contract.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn update_series_checklist(
+    state: State<AppDbConnection>,
+    device_connection: State<DeviceConnectionState>,
+    series_id: String,
+    current_occurrence_id: String,
+    checklist_md: String,
+    scope: String,
+) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let device_id = device_connection.identity.device_id.clone();
+    let quest = QuestService::new(&mut conn).update_series_checklist(
+        &series_id,
+        &current_occurrence_id,
+        &checklist_md,
+        &scope,
+    )?;
+    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    if scope == "future" {
+        let series: QuestSeries = crate::schema::quest_series::table
+            .find(&series_id)
+            .select(QuestSeries::as_select())
+            .first(&mut *conn)
+            .map_err(|e: diesel::result::Error| e.to_string())?;
+        let payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
+        emit_sync_event(
+            &mut conn,
+            &device_id,
+            "quest_series",
+            &series_id,
+            &series.space_id,
+            "upsert",
+            Some(payload),
+        )?;
+    }
+    Ok(quest)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn get_checklist_activity(
+    state: State<AppDbConnection>,
+    quest_id: String,
+) -> Result<Vec<crate::models::ChecklistActivity>, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    QuestService::new(&mut conn).get_checklist_activity(&quest_id)
+}
+
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn delete_quest_series(
@@ -1071,6 +1415,7 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             order_rank: None,
+            is_checklist: None,
         }
     }
 
@@ -1087,6 +1432,7 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             order_rank: None,
+            is_checklist: None,
         }
     }
 
@@ -1103,6 +1449,7 @@ mod tests {
             due_time: None,
             repeat_rule: None,
             order_rank: None,
+            is_checklist: None,
         }
     }
 
@@ -1939,7 +2286,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
-                checklist_template_md: None,
+                is_checklist: false,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)
@@ -2048,7 +2395,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
-                checklist_template_md: None,
+                is_checklist: false,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)
@@ -2128,7 +2475,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
-                checklist_template_md: None,
+                is_checklist: false,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)
@@ -2195,7 +2542,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
-                checklist_template_md: None,
+                is_checklist: false,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)
@@ -2246,6 +2593,297 @@ mod tests {
             series_deletes, 1,
             "must emit one delete event for quest_series"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    // ── Checklist (issue #128) ──────────────────────────────────────────────
+    //
+    // Checklist content lives in the existing `description` field, parsed/rendered as task-list
+    // markdown when `is_checklist` is set — there is no dedicated checklist content column.
+
+    fn create_active_quest_with_checklist(conn: &mut SqliteConnection, checklist_md: &str) -> Quest {
+        let result = QuestService::new(conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Go to office".to_string(),
+                description: Some(checklist_md.to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create quest with checklist");
+        result.quest
+    }
+
+    #[test]
+    fn checklist_item_crud_logs_activity_but_toggles_do_not() {
+        let db_path = temp_db_path("checklist-crud");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = create_active_quest_with_checklist(&mut conn, "");
+        let mut service = QuestService::new(&mut conn);
+
+        let quest = service
+            .add_checklist_item(&quest.id, "headphones", Some("dev-a"))
+            .expect("add item");
+        let item_id = checklist_md::parse(quest.description.as_deref().unwrap())[0]
+            .id
+            .clone();
+
+        let quest = service
+            .toggle_checklist_item(&quest.id, &item_id, true)
+            .expect("toggle item");
+        assert!(checklist_md::parse(quest.description.as_deref().unwrap())[0].checked);
+
+        let quest = service
+            .edit_checklist_item_text(&quest.id, &item_id, "over-ear headphones", Some("dev-a"))
+            .expect("edit item text");
+        assert_eq!(
+            checklist_md::parse(quest.description.as_deref().unwrap())[0].text,
+            "over-ear headphones"
+        );
+
+        let quest = service
+            .remove_checklist_item(&quest.id, &item_id, Some("dev-a"))
+            .expect("remove item");
+        assert!(checklist_md::parse(quest.description.as_deref().unwrap()).is_empty());
+
+        let activity = service
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        let kinds: Vec<&str> = activity.iter().map(|a| a.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["added", "edited", "removed"],
+            "toggling checked state must not write an activity row"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn completing_quest_with_checklist_logs_completed_snapshot() {
+        let db_path = temp_db_path("checklist-completion-snapshot");
+        let mut conn = open_db_at_path(&db_path);
+
+        let template = checklist_md::serialize(&[
+            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: true },
+            checklist_md::ChecklistItem { id: "a2".into(), text: "lunch".into(), checked: false },
+        ]);
+        let quest = create_active_quest_with_checklist(&mut conn, &template);
+
+        let mut service = QuestService::new(&mut conn);
+        service
+            .update(&quest.id, status_patch("completed"))
+            .expect("complete quest");
+
+        let activity = service
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        let snapshot = activity
+            .iter()
+            .find(|a| a.kind == "completed_snapshot")
+            .expect("completed_snapshot activity row must exist");
+        assert_eq!(snapshot.detail, "Checklist at completion: 1/2 checked");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn editing_checklist_after_completion_logs_post_completion_edit() {
+        let db_path = temp_db_path("checklist-post-completion-edit");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = create_active_quest_with_checklist(&mut conn, "");
+        let mut service = QuestService::new(&mut conn);
+        service
+            .update(&quest.id, status_patch("completed"))
+            .expect("complete quest");
+
+        service
+            .add_checklist_item(&quest.id, "late addition", Some("dev-a"))
+            .expect("add item after completion");
+
+        let activity = service
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        assert!(
+            activity.iter().any(|a| a.kind == "post_completion_edit"),
+            "post-completion checklist edits must be recorded as historical activity, per #128"
+        );
+        assert!(
+            !activity.iter().any(|a| a.kind == "added"),
+            "post-completion edits use the distinct kind, not the normal 'added' kind"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn update_series_checklist_this_scope_leaves_template_untouched() {
+        let db_path = temp_db_path("checklist-scope-this");
+        let mut conn = open_db_at_path(&db_path);
+
+        let template = checklist_md::serialize(&[
+            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+        ]);
+        let result = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Go to office".to_string(),
+                description: Some(template.clone()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create repeating quest with checklist");
+        let quest = result.quest;
+        let series = result.series.expect("repeating quest must create a series");
+
+        let occurrence_only_md = checklist_md::add_item(Some(&template), "extra for today only");
+        QuestService::new(&mut conn)
+            .update_series_checklist(&series.id, &quest.id, &occurrence_only_md, "this")
+            .expect("this-occurrence scoped update");
+
+        let stored_series: QuestSeries = crate::schema::quest_series::table
+            .find(&series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(
+            stored_series.description.as_deref(),
+            Some(template.as_str()),
+            "'this occurrence' scope must not touch the series template"
+        );
+
+        let stored_quest = QuestService::new(&mut conn).get(&quest.id).unwrap();
+        assert_eq!(
+            checklist_md::parse(stored_quest.description.as_deref().unwrap()).len(),
+            2,
+            "the occurrence itself must reflect the this-scoped edit"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn update_series_checklist_future_scope_updates_template_and_reconciles_occurrence() {
+        let db_path = temp_db_path("checklist-scope-future");
+        let mut conn = open_db_at_path(&db_path);
+
+        let template = checklist_md::serialize(&[
+            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+            checklist_md::ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: false },
+        ]);
+        let result = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Go to office".to_string(),
+                description: Some(template),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create repeating quest with checklist");
+        let quest = result.quest;
+        let series = result.series.expect("repeating quest must create a series");
+
+        // User checks headphones on today's occurrence before editing the template.
+        QuestService::new(&mut conn)
+            .toggle_checklist_item(&quest.id, "a1", true)
+            .expect("toggle item");
+
+        // "This and future occurrences": drop the key fob, add a badge, keep headphones.
+        let new_template = checklist_md::serialize(&[
+            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+            checklist_md::ChecklistItem { id: "a3".into(), text: "badge".into(), checked: false },
+        ]);
+        QuestService::new(&mut conn)
+            .update_series_checklist(&series.id, &quest.id, &new_template, "future")
+            .expect("future-scoped update");
+
+        let stored_series: QuestSeries = crate::schema::quest_series::table
+            .find(&series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(
+            stored_series.description.as_deref(),
+            Some(new_template.as_str()),
+            "'this and future' scope must update the series template"
+        );
+
+        let stored_quest = QuestService::new(&mut conn).get(&quest.id).unwrap();
+        let items = checklist_md::parse(stored_quest.description.as_deref().unwrap());
+        assert!(
+            items.iter().find(|it| it.id == "a1").unwrap().checked,
+            "unchanged current-occurrence item must keep its check"
+        );
+        assert!(
+            !items.iter().find(|it| it.id == "a3").unwrap().checked,
+            "newly added template item must be unchecked"
+        );
+        assert!(
+            items.iter().find(|it| it.id == "a2").is_none(),
+            "template-removed item must be dropped from the active occurrence"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn recurring_occurrence_copies_checklist_template_fresh_and_unchecked() {
+        let db_path = temp_db_path("checklist-recurrence-copy");
+        let mut conn = open_db_at_path(&db_path);
+
+        let template = checklist_md::serialize(&[
+            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+        ]);
+        let result = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Go to office".to_string(),
+                description: Some(template),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create repeating quest with checklist");
+        let quest = result.quest;
+
+        // Check the item, then complete the occurrence — completion must generate the next
+        // occurrence with a fresh, unchecked copy of the series template (#128).
+        QuestService::new(&mut conn)
+            .toggle_checklist_item(&quest.id, "a1", true)
+            .expect("toggle item");
+
+        let update_result = QuestService::new(&mut conn)
+            .update(&quest.id, status_patch("completed"))
+            .expect("complete occurrence");
+        let next = update_result
+            .next_occurrence
+            .expect("completing a recurring quest must generate the next occurrence");
+
+        let next_items = checklist_md::parse(next.description.as_deref().unwrap());
+        assert_eq!(next_items.len(), 1);
+        assert!(!next_items[0].checked, "next occurrence's checklist must start fully unchecked");
 
         let _ = std::fs::remove_file(db_path);
     }

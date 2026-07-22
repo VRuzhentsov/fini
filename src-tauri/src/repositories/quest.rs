@@ -132,21 +132,26 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())?
             .unwrap_or(0.0);
         // Fresh occurrence gets a fresh, unchecked copy of the series checklist template
-        // (issue #128: "a fresh, unchecked checklist copied from its checklist template").
-        let template_md: Option<String> = quest_series::table
+        // (issue #128: "a fresh, unchecked checklist copied from its checklist template"). The
+        // template lives in quest_series.description (same reuse as the occurrence itself).
+        let (template_description, is_checklist): (Option<String>, bool) = quest_series::table
             .find(series_id)
-            .select(quest_series::checklist_template_md)
+            .select((quest_series::description, quest_series::is_checklist))
             .first(self.conn)
             .map_err(|error| error.to_string())?;
-        let checklist_md = template_md
-            .as_deref()
-            .map(crate::services::checklist_md::reset_unchecked);
+        let description = if is_checklist {
+            template_description
+                .as_deref()
+                .map(crate::services::checklist_md::reset_unchecked)
+        } else {
+            template_description
+        };
         let now = utc_now();
         diesel::insert_into(quests::table)
             .values((
                 quests::space_id.eq(&quest.space_id),
                 quests::title.eq(&quest.title),
-                quests::description.eq(quest.description.as_deref()),
+                quests::description.eq(&description),
                 quests::status.eq("active"),
                 quests::energy.eq(&quest.energy),
                 quests::priority.eq(quest.priority),
@@ -156,8 +161,8 @@ impl<'a> QuestRepository<'a> {
                 quests::order_rank.eq(max_rank + 1.0),
                 quests::series_id.eq(series_id),
                 quests::period_key.eq(period_key),
-                quests::checklist_md.eq(&checklist_md),
-                quests::checklist_md_base.eq(&checklist_md),
+                quests::is_checklist.eq(is_checklist),
+                quests::checklist_base.eq(if is_checklist { &description } else { &None }),
                 quests::created_at.eq(&now),
                 quests::updated_at.eq(&now),
             ))
@@ -172,18 +177,10 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
-    pub fn series_checklist_template(&mut self, series_id: &str) -> Result<Option<String>, String> {
-        quest_series::table
-            .find(series_id)
-            .select(quest_series::checklist_template_md)
-            .first(self.conn)
-            .map_err(|error| error.to_string())
-    }
-
-    /// "This and future occurrences": update the series template and reconcile the current
-    /// occurrence against it (preserve checks on unchanged items, add new items unchecked, drop
-    /// removed items). Completed history is untouched — callers must not invoke this for a
-    /// non-active occurrence.
+    /// "This and future occurrences": update the series checklist template (stored in
+    /// `quest_series.description`) and reconcile the current occurrence against it (preserve
+    /// checks on unchanged items, add new items unchecked, drop removed items). Completed
+    /// history is untouched — callers must not invoke this for a non-active occurrence.
     pub fn update_series_checklist_template(
         &mut self,
         series_id: &str,
@@ -192,7 +189,8 @@ impl<'a> QuestRepository<'a> {
     ) -> Result<Quest, String> {
         diesel::update(quest_series::table.find(series_id))
             .set((
-                quest_series::checklist_template_md.eq(new_template_md),
+                quest_series::description.eq(new_template_md),
+                quest_series::is_checklist.eq(true),
                 quest_series::updated_at.eq(utc_now()),
             ))
             .execute(self.conn)
@@ -200,20 +198,26 @@ impl<'a> QuestRepository<'a> {
 
         let current = self.get(current_occurrence_id)?;
         let reconciled = crate::services::checklist_md::reconcile_future_scope(
-            current.checklist_md.as_deref(),
+            current.description.as_deref(),
             new_template_md,
         );
-        self.set_checklist_md(current_occurrence_id, &reconciled)
+        self.set_checklist_description(current_occurrence_id, &reconciled)
     }
 
-    /// Sets `checklist_md` for a local edit (not a sync-merge apply). `checklist_md_base` is
-    /// deliberately left untouched here — it only advances when a sync merge completes (see
+    /// Sets `description` (as checklist markdown) for a local edit — not a sync-merge apply.
+    /// Marks the quest `is_checklist` if it wasn't already. `checklist_base` is deliberately
+    /// left untouched here — it only advances when a sync merge completes (see
     /// `space_sync::commands::apply_sync_event`), so the next merge can still tell that this
     /// device has diverged from the last mutually-agreed state.
-    pub fn set_checklist_md(&mut self, quest_id: &str, checklist_md: &str) -> Result<Quest, String> {
+    pub fn set_checklist_description(
+        &mut self,
+        quest_id: &str,
+        checklist_md: &str,
+    ) -> Result<Quest, String> {
         diesel::update(quests::table.find(quest_id))
             .set((
-                quests::checklist_md.eq(checklist_md),
+                quests::description.eq(checklist_md),
+                quests::is_checklist.eq(true),
                 quests::updated_at.eq(utc_now()),
             ))
             .execute(self.conn)
@@ -282,13 +286,13 @@ impl<'a> QuestRepository<'a> {
             .returning(Quest::as_returning())
             .get_result(self.conn)
             .map_err(|error| error.to_string())?;
-        // checklist_md_base is device-local convergence bookkeeping (never part of the
-        // Insertable input) — seed it to match the freshly-created checklist so the first
-        // sync exchange has a real base to diff against instead of treating any incoming
-        // edit as unconditionally authoritative.
-        if quest.checklist_md.is_some() {
+        // checklist_base is device-local convergence bookkeeping (never part of the Insertable
+        // input) — seed it to match the freshly-created description so the first sync exchange
+        // has a real base to diff against instead of treating any incoming edit as
+        // unconditionally authoritative.
+        if quest.is_checklist {
             diesel::update(quests::table.find(&quest.id))
-                .set(quests::checklist_md_base.eq(&quest.checklist_md))
+                .set(quests::checklist_base.eq(&quest.description))
                 .execute(self.conn)
                 .map_err(|error| error.to_string())?;
             return self.get(&quest.id);
@@ -317,7 +321,7 @@ impl<'a> QuestRepository<'a> {
                 repeat_rule,
                 priority: input.priority,
                 energy: input.energy.clone(),
-                checklist_template_md: input.checklist_md.clone(),
+                is_checklist: input.is_checklist,
             })
             .returning(QuestSeries::as_returning())
             .get_result(self.conn)
@@ -341,8 +345,12 @@ impl<'a> QuestRepository<'a> {
                 quests::order_rank.eq(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
                 quests::series_id.eq(&series.id),
                 quests::period_key.eq(&period_key),
-                quests::checklist_md.eq(&input.checklist_md),
-                quests::checklist_md_base.eq(&input.checklist_md),
+                quests::is_checklist.eq(input.is_checklist),
+                quests::checklist_base.eq(if input.is_checklist {
+                    &input.description
+                } else {
+                    &None
+                }),
                 quests::created_at.eq(&now),
                 quests::updated_at.eq(&now),
             ))
@@ -534,7 +542,7 @@ mod tests {
                 due_time: Some("10:30".to_string()),
                 repeat_rule: Some("weekly".to_string()),
                 order_rank: None,
-                checklist_md: None,
+                is_checklist: false,
             })
             .expect("create quest");
 
@@ -554,6 +562,7 @@ mod tests {
                         due_time: None,
                         repeat_rule: None,
                         order_rank: None,
+                        is_checklist: None,
                     },
                     description: QuestFieldPatch::Clear,
                     due: QuestFieldPatch::Unchanged,
@@ -585,7 +594,7 @@ mod tests {
                 due_time: None,
                 repeat_rule: Some("weekly".to_string()),
                 order_rank: None,
-                checklist_md: None,
+                is_checklist: false,
             })
             .expect("create series quest");
 
@@ -605,6 +614,7 @@ mod tests {
                         due_time: None,
                         repeat_rule: None,
                         order_rank: None,
+                        is_checklist: None,
                     },
                     description: QuestFieldPatch::Unchanged,
                     due: QuestFieldPatch::Clear,

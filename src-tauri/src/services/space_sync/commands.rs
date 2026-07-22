@@ -462,6 +462,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
             quests::period_key.eq(&quest.period_key),
+            quests::is_checklist.eq(quest.is_checklist),
         ))
         .on_conflict(quests::id)
         .do_update()
@@ -483,6 +484,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
             quests::period_key.eq(&quest.period_key),
+            quests::is_checklist.eq(quest.is_checklist),
         ))
         .execute(conn)
         .map_err(|e| e.to_string())?;
@@ -611,18 +613,21 @@ fn local_device_id(conn: &mut SqliteConnection) -> Option<String> {
         .flatten()
 }
 
-/// Merges an incoming quest's `checklist_md` against local state and persists the result,
-/// regardless of whether the incoming event wins the whole-entity LWW comparison for the quest's
-/// other fields. Issue #128 explicitly forbids whole-quest LWW for checklist item state — this is
-/// the retained-base 3-way merge from the storage spike (`services::checklist_md::merge_3way`).
-/// Pushes the merged result back out to the origin peer when it differs from what they sent, so
-/// both sides converge. Returns the merged checklist for the caller to fold into `upsert_quest`.
+/// Merges an incoming checklist quest's `description` (task-list markdown) against local state
+/// and persists the result, regardless of whether the incoming event wins the whole-entity LWW
+/// comparison for the quest's other fields. Issue #128 explicitly forbids whole-quest LWW for
+/// checklist item state — this is the retained-base 3-way merge from the storage spike
+/// (`services::checklist_md::merge_3way`). Only called when the local quest is a checklist quest
+/// (`is_checklist`); plain prose quests never enter this path and follow normal whole-entity LWW
+/// on `description` like any other field. Pushes the merged result back out to the origin peer
+/// when it differs from what they sent, so both sides converge. Returns the merged description
+/// for the caller to fold into `upsert_quest`.
 fn merge_and_persist_quest_checklist(
     conn: &mut SqliteConnection,
     remote_origin_device_id: &str,
     entity_id: &str,
     entity_space_id: &str,
-    incoming_checklist_md: Option<&str>,
+    incoming_description: Option<&str>,
 ) -> Result<Option<String>, String> {
     let local = quests::table
         .find(entity_id)
@@ -633,14 +638,14 @@ fn merge_and_persist_quest_checklist(
 
     let local = match local {
         // Brand-new quest arriving via sync: nothing to merge against yet, adopt incoming as-is.
-        None => return Ok(incoming_checklist_md.map(|s| s.to_string())),
+        None => return Ok(incoming_description.map(|s| s.to_string())),
         Some(local) => local,
     };
 
     let (merged_raw, _had_text_conflict) = crate::services::checklist_md::merge_3way(
-        local.checklist_md_base.as_deref(),
-        local.checklist_md.as_deref().unwrap_or(""),
-        incoming_checklist_md.unwrap_or(""),
+        local.checklist_base.as_deref(),
+        local.description.as_deref().unwrap_or(""),
+        incoming_description.unwrap_or(""),
     );
     let merged = if merged_raw.is_empty() {
         None
@@ -648,24 +653,24 @@ fn merge_and_persist_quest_checklist(
         Some(merged_raw)
     };
 
-    if merged != local.checklist_md {
+    if merged != local.description {
         diesel::update(quests::table.find(entity_id))
             .set((
-                quests::checklist_md.eq(&merged),
-                quests::checklist_md_base.eq(&merged),
+                quests::description.eq(&merged),
+                quests::checklist_base.eq(&merged),
             ))
             .execute(conn)
             .map_err(|e| e.to_string())?;
-    } else if local.checklist_md_base.as_deref() != merged.as_deref() {
+    } else if local.checklist_base.as_deref() != merged.as_deref() {
         diesel::update(quests::table.find(entity_id))
-            .set(quests::checklist_md_base.eq(&merged))
+            .set(quests::checklist_base.eq(&merged))
             .execute(conn)
             .map_err(|e| e.to_string())?;
     }
 
     // Merge changed something relative to what the remote peer sent — push it back so they
     // converge too, using OUR device id as origin (not the remote's).
-    if merged.as_deref() != incoming_checklist_md {
+    if merged.as_deref() != incoming_description {
         if let Some(own_device_id) = local_device_id(conn) {
             if own_device_id != remote_origin_device_id {
                 if let Ok(refreshed) = quests::table
@@ -720,19 +725,34 @@ fn apply_sync_event(
                 .ok_or_else(|| "missing payload for upsert event".to_string())?;
 
             // Checklist items get a per-item merge instead of following whole-quest LWW (#128),
-            // so the "quest" entity is handled before the generic win/lose gate below.
-            if event.entity_type == "quest" {
+            // so a locally-known checklist quest is handled before the generic win/lose gate
+            // below. A quest that isn't (yet) known locally as a checklist quest — including a
+            // brand-new quest arriving for the first time — falls through to the normal
+            // whole-entity path; its `description` is treated like any other field.
+            let local_is_checklist = if event.entity_type == "quest" {
+                quests::table
+                    .find(&event.entity_id)
+                    .select(quests::is_checklist)
+                    .first::<bool>(conn)
+                    .optional()
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            if local_is_checklist {
                 let mut quest: Quest = serde_json::from_str(payload).map_err(|e| e.to_string())?;
-                let merged_checklist_md = merge_and_persist_quest_checklist(
+                let merged_description = merge_and_persist_quest_checklist(
                     conn,
                     &event.origin_device_id,
                     &event.entity_id,
                     &event.space_id,
-                    quest.checklist_md.as_deref(),
+                    quest.description.as_deref(),
                 )?;
 
                 if whole_entity_wins {
-                    quest.checklist_md = merged_checklist_md;
+                    quest.description = merged_description;
                     upsert_quest(conn, &quest)?;
                 } else {
                     mark_event_seen(conn, &event.event_id)?;
@@ -747,6 +767,13 @@ fn apply_sync_event(
                         let space: Space =
                             serde_json::from_str(payload).map_err(|e| e.to_string())?;
                         upsert_space(conn, &space)?;
+                    }
+                    "quest" => {
+                        // Not a (locally-known) checklist quest — normal whole-entity upsert,
+                        // description included, exactly as before #128.
+                        let quest: Quest =
+                            serde_json::from_str(payload).map_err(|e| e.to_string())?;
+                        upsert_quest(conn, &quest)?;
                     }
                     "quest_series" => {
                         let series: QuestSeries =
@@ -1482,8 +1509,8 @@ mod tests {
             updated_at: updated_at.to_string(),
             series_id: None,
             period_key: None,
-            checklist_md: None,
-            checklist_md_base: None,
+            is_checklist: false,
+            checklist_base: None,
         }
     }
 
@@ -1658,8 +1685,8 @@ mod tests {
                 quests::updated_at.eq(&quest.updated_at),
                 quests::series_id.eq(&quest.series_id),
                 quests::period_key.eq(&quest.period_key),
-                quests::checklist_md.eq(&quest.checklist_md),
-                quests::checklist_md_base.eq(&quest.checklist_md_base),
+                quests::is_checklist.eq(quest.is_checklist),
+                quests::checklist_base.eq(&quest.checklist_base),
             ))
             .execute(conn)
             .unwrap();
@@ -1691,15 +1718,17 @@ mod tests {
         let local_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
 
         let mut local_quest = test_quest("q1", "Go to office", "2026-03-01T00:00:00Z");
-        local_quest.checklist_md = Some(local_md.clone());
-        local_quest.checklist_md_base = Some(base_md.clone());
+        local_quest.is_checklist = true;
+        local_quest.description = Some(local_md.clone());
+        local_quest.checklist_base = Some(base_md.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
         // Remote device independently packed the key fob (item a2) after the same base, and its
         // event is newer, so it wins the whole-entity comparison.
         let remote_md = crate::services::checklist_md::set_checked(&base_md, "a2", true);
         let mut remote_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
-        remote_quest.checklist_md = Some(remote_md);
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(remote_md);
         let event = test_envelope(
             "evt-remote",
             "dev-remote",
@@ -1717,7 +1746,7 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut conn)
             .unwrap();
-        let items = crate::services::checklist_md::parse(merged.checklist_md.as_deref().unwrap());
+        let items = crate::services::checklist_md::parse(merged.description.as_deref().unwrap());
         assert!(
             items.iter().find(|it| it.id == "a1").unwrap().checked,
             "local's independent pack of item a1 must survive"
@@ -1764,13 +1793,15 @@ mod tests {
             None,
         );
         let mut local_quest = test_quest("q1", "Go to office", "2026-03-05T00:00:00Z");
-        local_quest.checklist_md = Some(local_md.clone());
-        local_quest.checklist_md_base = Some(base_md.clone());
+        local_quest.is_checklist = true;
+        local_quest.description = Some(local_md.clone());
+        local_quest.checklist_base = Some(base_md.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
         let remote_md = crate::services::checklist_md::set_checked(&base_md, "a2", true);
         let mut remote_quest = test_quest("q1", "Stale remote title", "2026-03-01T00:00:00Z");
-        remote_quest.checklist_md = Some(remote_md);
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(remote_md);
         let event = test_envelope(
             "evt-remote-old",
             "dev-remote",
@@ -1792,7 +1823,7 @@ mod tests {
             .first(&mut conn)
             .unwrap();
         assert_eq!(after.title, "Go to office", "losing event must not overwrite other fields");
-        let items = crate::services::checklist_md::parse(after.checklist_md.as_deref().unwrap());
+        let items = crate::services::checklist_md::parse(after.description.as_deref().unwrap());
         assert!(
             items.iter().find(|it| it.id == "a1").unwrap().checked,
             "local's own pack of item a1 must remain"

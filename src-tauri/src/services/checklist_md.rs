@@ -1,8 +1,11 @@
 //! Checklist storage codec for issue #128 (Track A — Markdown task-list, chosen after the
-//! spike documented in `space_sync` history / issue #128 / fini-wiki). A quest's checklist is
-//! stored as GitHub-style task-list markdown (`- [ ] text <!--k=id-->`) in `quests.checklist_md`,
-//! separate from the free-text `description` field. `quest_series.checklist_template_md` holds
-//! the recurring template in the same format.
+//! spike documented in `space_sync` history / issue #128 / fini-wiki, then refined so the
+//! checklist reuses the existing `description` field instead of a dedicated column). A checklist
+//! quest's `description` holds GitHub-style task-list markdown (`- [ ] text <!--k=id-->`) instead
+//! of prose — the same textarea, just parsed/rendered differently when `quests.is_checklist` is
+//! set. `quest_series.description` holds the recurring template in the same format, gated by
+//! `quest_series.is_checklist`. `quests.checklist_base` is separate, device-local bookkeeping for
+//! the sync merge below — never the checklist content itself.
 //!
 //! The embedded `<!--k=id-->` token gives each line stable identity across edits, which is what
 //! makes the per-item sync merge (`merge_3way`, used by `space_sync::commands::apply_sync_event`)
@@ -160,7 +163,7 @@ pub fn reconcile_future_scope(current_occurrence_md: Option<&str>, new_template_
 }
 
 /// 3-way merge for the per-item sync path (`space_sync::commands::apply_sync_event`). `base` is
-/// the device-local `checklist_md_base` — the last value both sides last agreed on. Returns the
+/// the device-local `checklist_base` — the last value both sides last agreed on. Returns the
 /// merged markdown and whether an irreconcilable same-item conflict was hit (logged, not fatal —
 /// see module docs / issue #128 spike write-up for why this is a narrow, accepted deviation from
 /// per-item deterministic LWW for same-item *text* edits specifically).
