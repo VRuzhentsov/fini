@@ -751,6 +751,7 @@ fn emit_checklist_activity_sync(
     let emitted_activity_ids = crate::schema::sync_outbox::table
         .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
         .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+        .filter(crate::schema::sync_outbox::space_id.eq(&quest.space_id))
         .select(crate::schema::sync_outbox::entity_id)
         .load::<String>(conn);
 
@@ -2043,7 +2044,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_checklist_toggle_does_not_reemit_existing_activity_sync_events() {
+    fn cli_checklist_activity_sync_dedupes_per_space() {
         let _guard = ENV_LOCK.lock().expect("lock env");
         let db_path = temp_db_path("cli-checklist-toggle-dedupes-activity-sync");
         std::env::set_var("FINI_DB_PATH", &db_path);
@@ -2127,6 +2128,55 @@ mod tests {
             activity_events.len(),
             1,
             "later CLI checklist toggles must not re-emit old checklist_activity rows"
+        );
+
+        let space_cli = Cli::try_parse_from(["fini", "space", "create", "--name", "Work"])
+            .expect("parse space create");
+        let space_command = match space_cli.command {
+            Some(Command::Space { command }) => command,
+            _ => panic!("expected space create command"),
+        };
+        let created_space = handle_space(&ctx, space_command)
+            .unwrap_or_else(|err| panic!("create destination space: {}", err.message));
+        let destination_space_id = created_space["id"]
+            .as_str()
+            .expect("created space id")
+            .to_string();
+
+        let update_cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "update",
+            "--id",
+            &quest_id,
+            "--space-id",
+            &destination_space_id,
+        ])
+        .expect("parse checklist space move");
+        let update_command = match update_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest update command"),
+        };
+        handle_quest(&ctx, update_command)
+            .unwrap_or_else(|err| panic!("move checklist quest: {}", err.message));
+
+        let activity_events_by_space: Vec<(String, String)> = crate::schema::sync_outbox::table
+            .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+            .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+            .select((
+                crate::schema::sync_outbox::entity_id,
+                crate::schema::sync_outbox::space_id,
+            ))
+            .load(&mut conn)
+            .expect("load checklist activity sync event spaces");
+
+        assert_eq!(
+            activity_events_by_space,
+            vec![
+                (activity_events[0].clone(), "1".to_string()),
+                (activity_events[0].clone(), destination_space_id),
+            ],
+            "moving a checklist via the CLI must re-emit prior activity under the destination space"
         );
 
         std::env::remove_var("FINI_DB_PATH");
