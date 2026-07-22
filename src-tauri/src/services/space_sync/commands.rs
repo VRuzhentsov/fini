@@ -1371,6 +1371,8 @@ mod tests {
             updated_at: updated_at.to_string(),
             series_id: None,
             period_key: None,
+            checklist_md: None,
+            checklist_md_base: None,
         }
     }
 

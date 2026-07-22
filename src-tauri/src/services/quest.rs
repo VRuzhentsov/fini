@@ -129,6 +129,7 @@ fn ensure_series(
         repeat_rule: repeat_rule_str.to_string(),
         priority: quest.priority,
         energy: quest.energy.clone(),
+        checklist_template_md: quest.checklist_md.clone(),
     };
 
     let series = QuestRepository::new(conn).create_series(&series_input)?;
@@ -1938,6 +1939,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
+                checklist_template_md: None,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)
@@ -2046,6 +2048,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
+                checklist_template_md: None,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)
@@ -2125,6 +2128,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
+                checklist_template_md: None,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)
@@ -2191,6 +2195,7 @@ mod tests {
                 repeat_rule: repeat_rule.to_string(),
                 priority: 1,
                 energy: "medium".to_string(),
+                checklist_template_md: None,
             })
             .returning(QuestSeries::as_returning())
             .get_result::<QuestSeries>(&mut conn)

@@ -29,6 +29,12 @@ pub struct Quest {
     pub updated_at: String,
     pub series_id: Option<String>,
     pub period_key: Option<String>,
+    /// Task-list markdown (`- [ ] text <!--k=id-->` lines), or null. Separate from `description`.
+    pub checklist_md: Option<String>,
+    /// Device-local convergence bookkeeping for the checklist per-item merge — the last
+    /// checklist_md value both sides last agreed on. Never included in sync payloads.
+    #[serde(skip_serializing, default)]
+    pub checklist_md_base: Option<String>,
 }
 
 #[derive(Deserialize, Insertable)]
@@ -46,6 +52,8 @@ pub struct CreateQuestInput {
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
     pub order_rank: Option<f64>,
+    /// Initial checklist authored at creation time (task-list markdown), or null.
+    pub checklist_md: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

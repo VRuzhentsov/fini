@@ -17,6 +17,8 @@ pub struct QuestSeries {
     pub active: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Template task-list markdown copied (fresh/unchecked) onto every new occurrence.
+    pub checklist_template_md: Option<String>,
 }
 
 #[derive(Deserialize, Insertable)]
@@ -28,4 +30,5 @@ pub struct CreateSeriesInput {
     pub repeat_rule: String,
     pub priority: i64,
     pub energy: String,
+    pub checklist_template_md: Option<String>,
 }

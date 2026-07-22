@@ -185,6 +185,18 @@ struct QuestCreateArgs {
         help = "Recurring preset, or literal null"
     )]
     repeat: Option<String>,
+    #[arg(
+        long,
+        help = "Raw task-list markdown for the initial checklist (e.g. '- [ ] headphones'); conflicts with --item"
+    )]
+    checklist: Option<String>,
+    #[arg(
+        long = "item",
+        action = ArgAction::Append,
+        conflicts_with = "checklist",
+        help = "Add one unchecked checklist item; repeat --item for each item"
+    )]
+    items: Vec<String>,
 }
 
 #[derive(Args)]
@@ -733,6 +745,15 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         )
         .map_err(|e| CliError::runtime(e.to_string())),
         QuestCommand::Create(args) => {
+            let checklist_md = if !args.items.is_empty() {
+                let mut md: Option<String> = None;
+                for item in &args.items {
+                    md = Some(crate::services::checklist_md::add_item(md.as_deref(), item));
+                }
+                md
+            } else {
+                args.checklist
+            };
             let input = CreateQuestInput {
                 space_id: args.space_id.unwrap_or_else(|| "1".to_string()),
                 title: args.title,
@@ -748,6 +769,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                     .map(normalize_repeat_alias)
                     .or(args.repeat_rule),
                 order_rank: None,
+                checklist_md,
             };
             let created = QuestService::new(&mut conn)
                 .create(input)

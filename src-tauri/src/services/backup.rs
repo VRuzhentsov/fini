@@ -526,7 +526,8 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             energy TEXT NOT NULL DEFAULT 'medium',
             active BOOLEAN NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            checklist_template_md TEXT
         );
         CREATE TABLE quests (
             id TEXT PRIMARY KEY NOT NULL,
@@ -546,7 +547,9 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
-            period_key TEXT
+            period_key TEXT,
+            checklist_md TEXT,
+            checklist_md_base TEXT
         );
         ",
     )
@@ -829,6 +832,7 @@ fn insert_series(
             quest_series::active.eq(series.active),
             quest_series::created_at.eq(&series.created_at),
             quest_series::updated_at.eq(&series.updated_at),
+            quest_series::checklist_template_md.eq(&series.checklist_template_md),
         ))
         .execute(conn)
 }
@@ -857,6 +861,8 @@ fn insert_quest(
             quests::updated_at.eq(&quest.updated_at),
             quests::series_id.eq(&quest.series_id),
             quests::period_key.eq(&quest.period_key),
+            quests::checklist_md.eq(&quest.checklist_md),
+            quests::checklist_md_base.eq(&quest.checklist_md_base),
         ))
         .execute(conn)
 }
@@ -887,6 +893,7 @@ fn upsert_series_for_import(
                 quest_series::active.eq(series.active),
                 quest_series::created_at.eq(&series.created_at),
                 quest_series::updated_at.eq(&series.updated_at),
+                quest_series::checklist_template_md.eq(&series.checklist_template_md),
             ))
             .execute(conn)?;
     } else {
@@ -929,6 +936,8 @@ fn upsert_quest_for_import(
                 quests::updated_at.eq(&quest.updated_at),
                 quests::series_id.eq(&quest.series_id),
                 quests::period_key.eq(&quest.period_key),
+                quests::checklist_md.eq(&quest.checklist_md),
+                quests::checklist_md_base.eq(&quest.checklist_md_base),
             ))
             .execute(conn)?;
     } else {
@@ -984,6 +993,7 @@ fn mapped_series(series: &QuestSeries, space_map: &HashMap<String, String>) -> Q
         active: series.active,
         created_at: series.created_at.clone(),
         updated_at: series.updated_at.clone(),
+        checklist_template_md: series.checklist_template_md.clone(),
     }
 }
 
@@ -1010,6 +1020,8 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         updated_at: quest.updated_at.clone(),
         series_id: quest.series_id.clone(),
         period_key: quest.period_key.clone(),
+        checklist_md: quest.checklist_md.clone(),
+        checklist_md_base: quest.checklist_md_base.clone(),
     }
 }
 
