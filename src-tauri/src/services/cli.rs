@@ -732,6 +732,40 @@ fn emit_quest_sync(
         op_type,
         payload,
     );
+
+    if op_type == "upsert" && quest.is_checklist {
+        emit_checklist_activity_sync(ctx, conn, quest);
+    }
+}
+
+fn emit_checklist_activity_sync(
+    ctx: &CliContext,
+    conn: &mut diesel::sqlite::SqliteConnection,
+    quest: &crate::models::Quest,
+) {
+    use diesel::prelude::*;
+
+    let activities = crate::schema::checklist_activity::table
+        .filter(crate::schema::checklist_activity::quest_id.eq(&quest.id))
+        .select(crate::models::ChecklistActivity::as_select())
+        .load::<crate::models::ChecklistActivity>(conn);
+
+    let Ok(activities) = activities else {
+        return;
+    };
+
+    for activity in activities {
+        let payload = serde_json::to_string(&activity).ok();
+        let _ = emit_sync_event(
+            conn,
+            &ctx.device_state.identity.device_id,
+            "checklist_activity",
+            &activity.id,
+            &quest.space_id,
+            "upsert",
+            payload,
+        );
+    }
 }
 
 fn emit_series_sync(

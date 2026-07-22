@@ -13,7 +13,7 @@ use crate::models::UpdateQuestInput;
 use crate::models::{CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries};
 use crate::models::{CreateQuestInput, QuestUpdatePatch};
 use crate::repositories::quest::QuestRepository;
-use crate::schema::{focus_history, settings};
+use crate::schema::{checklist_activity, focus_history, settings};
 #[cfg(test)]
 use crate::schema::{quest_series, quests};
 use crate::services::checklist_md;
@@ -415,7 +415,7 @@ fn emit_quest_sync_events(
     let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
 
     if previous_space_id == quest.space_id {
-        return emit_sync_event(
+        emit_sync_event(
             conn,
             origin_device_id,
             "quest",
@@ -423,7 +423,8 @@ fn emit_quest_sync_events(
             &quest.space_id,
             "upsert",
             Some(payload),
-        );
+        )?;
+        return emit_checklist_activity_sync_events(conn, origin_device_id, quest);
     }
 
     let delete_updated_at = utc_now();
@@ -452,6 +453,40 @@ fn emit_quest_sync_events(
         Some(payload),
         upsert_updated_at,
     )?;
+
+    emit_checklist_activity_sync_events(conn, origin_device_id, quest)?;
+
+    Ok(())
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_checklist_activity_sync_events(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    quest: &Quest,
+) -> Result<(), String> {
+    if !quest.is_checklist {
+        return Ok(());
+    }
+
+    let activities: Vec<crate::models::ChecklistActivity> = checklist_activity::table
+        .filter(checklist_activity::quest_id.eq(&quest.id))
+        .select(crate::models::ChecklistActivity::as_select())
+        .load(conn)
+        .map_err(|e| e.to_string())?;
+
+    for activity in activities {
+        let payload = serde_json::to_string(&activity).map_err(|e| e.to_string())?;
+        emit_sync_event(
+            conn,
+            origin_device_id,
+            "checklist_activity",
+            &activity.id,
+            &quest.space_id,
+            "upsert",
+            Some(payload),
+        )?;
+    }
 
     Ok(())
 }
@@ -1201,7 +1236,8 @@ fn emit_quest_checklist_sync(
         &quest.space_id,
         "upsert",
         Some(payload),
-    )
+    )?;
+    emit_checklist_activity_sync_events(conn, device_id, quest)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -2396,6 +2432,65 @@ mod tests {
             rows[1].2 > rows[0].2,
             "upsert event must be newer than delete event"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn checklist_activity_is_emitted_with_checklist_sync() {
+        let db_path = temp_db_path("checklist-activity-sync-outbox");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Pack".to_string(),
+                description: Some("- [ ] headphones <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create checklist quest")
+            .quest;
+
+        log_checklist_activity(
+            &mut conn,
+            &quest.id,
+            "added",
+            "Added \"headphones\"",
+            Some("device-local"),
+        )
+        .expect("log checklist activity");
+
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+            .expect("emit quest sync with checklist activity");
+
+        let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((
+                sync_outbox::entity_type,
+                sync_outbox::entity_id,
+                sync_outbox::op_type,
+                sync_outbox::payload,
+            ))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        assert_eq!(rows.len(), 2, "quest and activity events should be emitted");
+        assert_eq!(rows[0].0, "quest");
+        assert_eq!(rows[0].1, quest.id);
+        assert_eq!(rows[0].2, "upsert");
+        assert_eq!(rows[1].0, "checklist_activity");
+        assert_eq!(rows[1].2, "upsert");
+        let payload = rows[1].3.as_ref().expect("activity payload");
+        let activity: crate::models::ChecklistActivity = serde_json::from_str(payload).unwrap();
+        assert_eq!(activity.quest_id, quest.id);
+        assert_eq!(activity.kind, "added");
+        assert_eq!(activity.detail, "Added \"headphones\"");
 
         let _ = std::fs::remove_file(db_path);
     }

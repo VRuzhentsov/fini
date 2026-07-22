@@ -10,10 +10,12 @@ use super::outbox::{load_latest_event_for_entity, load_unacked_events_for_peer};
 use super::replay::{is_event_seen, mark_event_seen, record_ack};
 use super::types::{SyncEventEnvelope, WsMessage};
 use super::ws_client::ensure_peer_sessions;
-use crate::models::{CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space};
+use crate::models::{
+    ChecklistActivity, CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space,
+};
 use crate::schema::{
-    focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces, sync_acks,
-    sync_outbox, sync_seen, tombstones,
+    checklist_activity, focus_history, pair_space_mappings, paired_devices, quest_series, quests,
+    spaces, sync_acks, sync_outbox, sync_seen, tombstones,
 };
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
@@ -584,6 +586,11 @@ fn delete_entity(conn: &mut SqliteConnection, event: &SyncEventEnvelope) -> Resu
                 .execute(conn)
                 .map_err(|e| e.to_string())?;
         }
+        "checklist_activity" => {
+            diesel::delete(checklist_activity::table.find(&event.entity_id))
+                .execute(conn)
+                .map_err(|e| e.to_string())?;
+        }
         _ => {}
     }
 
@@ -786,6 +793,21 @@ fn apply_sync_event(
                         let focus: FocusHistoryEntry =
                             serde_json::from_str(payload).map_err(|e| e.to_string())?;
                         upsert_focus_history(conn, &focus)?;
+                    }
+                    "checklist_activity" => {
+                        let activity: ChecklistActivity =
+                            serde_json::from_str(payload).map_err(|e| e.to_string())?;
+                        diesel::insert_or_ignore_into(checklist_activity::table)
+                            .values((
+                                checklist_activity::id.eq(&activity.id),
+                                checklist_activity::quest_id.eq(&activity.quest_id),
+                                checklist_activity::kind.eq(&activity.kind),
+                                checklist_activity::detail.eq(&activity.detail),
+                                checklist_activity::created_at.eq(&activity.created_at),
+                                checklist_activity::origin_device_id.eq(&activity.origin_device_id),
+                            ))
+                            .execute(conn)
+                            .map_err(|e| e.to_string())?;
                     }
                     _ => {}
                 }
@@ -1609,6 +1631,49 @@ mod tests {
 
         assert!(apply_sync_event(&mut conn, &event).unwrap());
         assert!(!apply_sync_event(&mut conn, &event).unwrap());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_preserves_checklist_activity_rows() {
+        let db_path = temp_db_path("checklist-activity-sync");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let mut quest = test_quest("q-activity", "Packed", "2026-03-01T00:00:00Z");
+        quest.is_checklist = true;
+        insert_local_quest_row(&mut conn, &quest);
+
+        let activity = ChecklistActivity {
+            id: "activity-1".to_string(),
+            quest_id: quest.id.clone(),
+            kind: "completed_snapshot".to_string(),
+            detail: "Checklist at completion: 1/2 checked".to_string(),
+            created_at: "2026-03-01T01:00:00Z".to_string(),
+            origin_device_id: Some("dev-remote".to_string()),
+        };
+        let event = test_envelope(
+            "evt-activity",
+            "dev-remote",
+            "checklist_activity",
+            &activity.id,
+            "upsert",
+            Some(serde_json::to_string(&activity).unwrap()),
+            "2026-03-01T01:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: ChecklistActivity = checklist_activity::table
+            .find(&activity.id)
+            .select(ChecklistActivity::as_select())
+            .first(&mut conn)
+            .expect("synced activity should be stored");
+        assert_eq!(stored.quest_id, quest.id);
+        assert_eq!(stored.kind, "completed_snapshot");
+        assert_eq!(stored.detail, "Checklist at completion: 1/2 checked");
+        assert_eq!(stored.origin_device_id.as_deref(), Some("dev-remote"));
 
         let _ = std::fs::remove_file(db_path);
     }
