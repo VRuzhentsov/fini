@@ -469,8 +469,21 @@ fn emit_checklist_activity_sync_events(
         return Ok(());
     }
 
+    let emitted_activity_ids: Vec<String> = crate::schema::sync_outbox::table
+        .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+        .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+        .select(crate::schema::sync_outbox::entity_id)
+        .load(conn)
+        .map_err(|e| e.to_string())?;
+
     let activities: Vec<crate::models::ChecklistActivity> = checklist_activity::table
         .filter(checklist_activity::quest_id.eq(&quest.id))
+        .filter(
+            checklist_activity::origin_device_id
+                .is_null()
+                .or(checklist_activity::origin_device_id.eq(origin_device_id)),
+        )
+        .filter(checklist_activity::id.ne_all(emitted_activity_ids))
         .select(crate::models::ChecklistActivity::as_select())
         .load(conn)
         .map_err(|e| e.to_string())?;
@@ -2495,6 +2508,62 @@ mod tests {
         assert_eq!(activity.quest_id, quest.id);
         assert_eq!(activity.kind, "added");
         assert_eq!(activity.detail, "Added \"headphones\"");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn checklist_sync_does_not_reemit_existing_activity_on_toggle() {
+        let db_path = temp_db_path("checklist-activity-sync-no-reemit");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Pack".to_string(),
+                description: Some("- [ ] headphones <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create checklist quest")
+            .quest;
+
+        log_checklist_activity(
+            &mut conn,
+            &quest.id,
+            "added",
+            "Added \"headphones\"",
+            Some("device-local"),
+        )
+        .expect("log checklist activity");
+
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+            .expect("emit initial quest sync with checklist activity");
+
+        let toggled = QuestService::new(&mut conn)
+            .toggle_checklist_item(&quest.id, "a1", true)
+            .expect("toggle checklist item");
+        emit_quest_sync_events(&mut conn, "device-local", &toggled.space_id, &toggled)
+            .expect("emit toggle quest sync without duplicate activity");
+
+        let rows: Vec<(String, String)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((sync_outbox::entity_type, sync_outbox::op_type))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        assert_eq!(rows.len(), 3, "initial quest/activity plus toggle quest only");
+        assert_eq!(rows[0], ("quest".to_string(), "upsert".to_string()));
+        assert_eq!(
+            rows[1],
+            ("checklist_activity".to_string(), "upsert".to_string())
+        );
+        assert_eq!(rows[2], ("quest".to_string(), "upsert".to_string()));
 
         let _ = std::fs::remove_file(db_path);
     }
