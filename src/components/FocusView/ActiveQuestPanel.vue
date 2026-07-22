@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
+import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklistMarkdown";
+import { CheckIcon } from "@heroicons/vue/24/outline";
 import QuestEditor from "../QuestEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
+import RecurrenceScopeSheet from "../QuestsView/RecurrenceScopeSheet.vue";
 
 const props = defineProps<{ quest: Quest }>();
 const store = useQuestStore();
@@ -18,6 +21,57 @@ const reminderOpen = ref(false);
 const HOLD_MS = 900;
 let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
+
+const renderFlags = computed(() => ({
+  checklist: props.quest.is_checklist,
+}));
+const checklistItems = computed(() => parseChecklist(props.quest.description));
+
+function onToggleChecklistItem(itemId: string, checked: boolean) {
+  store.toggleChecklistItem(props.quest.id, itemId, checked);
+}
+
+const pendingScopeAction = ref<{ kind: "add" | "remove"; payload: string } | null>(null);
+
+function onAddChecklistItem(text: string) {
+  if (props.quest.series_id) {
+    pendingScopeAction.value = { kind: "add", payload: text };
+    return;
+  }
+  store.addChecklistItem(props.quest.id, text);
+}
+
+function onRemoveChecklistItem(itemId: string) {
+  if (props.quest.series_id) {
+    pendingScopeAction.value = { kind: "remove", payload: itemId };
+    return;
+  }
+  store.removeChecklistItem(props.quest.id, itemId);
+}
+
+async function onScopeChosen(scope: "this" | "future") {
+  const action = pendingScopeAction.value;
+  pendingScopeAction.value = null;
+  if (!action) return;
+
+  if (scope === "this") {
+    if (action.kind === "add") await store.addChecklistItem(props.quest.id, action.payload);
+    else await store.removeChecklistItem(props.quest.id, action.payload);
+    return;
+  }
+
+  const items = parseChecklist(props.quest.description);
+  const nextItems =
+    action.kind === "add"
+      ? [...items, { id: newChecklistItemId(), text: action.payload, checked: false }]
+      : items.filter((it) => it.id !== action.payload);
+  await store.updateSeriesChecklist(
+    props.quest.series_id!,
+    props.quest.id,
+    serializeChecklist(nextItems),
+    "future",
+  );
+}
 
 function onContextMenu(e: MouseEvent) {
   const items = buildQuestMenu(props.quest, {
@@ -112,6 +166,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     :priority-color="'oklch(var(--color-warning))'"
     :priority-label="'Priority'"
     :reminder-text="quest.due ? 'Date set' : 'Date'"
+    :is-recurring="!!quest.series_id"
     @contextmenu="onContextMenu"
     @update="store.updateQuest(quest.id, $event)"
     @complete="completeQuest"
@@ -121,6 +176,9 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     @open-reminder="reminderOpen = true"
     @cycle-priority="store.updateQuest(quest.id, { priority: quest.priority >= 4 ? 1 : quest.priority + 1 })"
     @more="onContextMenu"
+    @toggle-checklist-item="onToggleChecklistItem"
+    @add-checklist-item="onAddChecklistItem"
+    @remove-checklist-item="onRemoveChecklistItem"
   />
 
   <div v-else class="active-quest-card" @contextmenu="onContextMenu">
@@ -145,6 +203,25 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
           </svg>
           <span class="kebab-glyph"><span /></span>
         </button>
+      </div>
+    </div>
+
+    <!-- Checklist (issue #128): checkable directly from the collapsed hero card. -->
+    <div v-if="renderFlags.checklist" class="active-quest-checklist">
+      <div
+        v-for="item in checklistItems"
+        :key="item.id"
+        class="active-quest-checklist-item"
+      >
+        <button
+          class="active-quest-checklist-box"
+          :class="{ checked: item.checked }"
+          :aria-label="item.checked ? 'Uncheck item' : 'Check item'"
+          @click.stop="onToggleChecklistItem(item.id, !item.checked)"
+        >
+          <CheckIcon v-if="item.checked" />
+        </button>
+        <span class="active-quest-checklist-text" :class="{ checked: item.checked }">{{ item.text }}</span>
       </div>
     </div>
 
@@ -175,6 +252,13 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     :quest="quest"
     @close="reminderOpen = false"
     @save="onReminderSave"
+  />
+
+  <RecurrenceScopeSheet
+    v-if="pendingScopeAction"
+    :quest-title="quest.title"
+    @close="pendingScopeAction = null"
+    @choose="onScopeChosen"
   />
 </template>
 
@@ -309,6 +393,58 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
 .kebab-glyph::before { content: ""; top: -7px; left: 0; }
 .kebab-glyph::after { content: ""; top: 7px; left: 0; }
 .kebab-glyph span { top: 0; left: 0; }
+
+.active-quest-checklist {
+  display: flex;
+  flex-direction: column;
+  max-height: 172px;
+  margin-top: 0.75rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.active-quest-checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-height: 36px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.active-quest-checklist-item:hover { background: var(--color-base-200); }
+
+.active-quest-checklist-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  border: 1.5px solid var(--fg-5);
+  border-radius: 4px;
+}
+
+.active-quest-checklist-box:hover { border-color: var(--fg-3); }
+.active-quest-checklist-box.checked { background: var(--color-success); border-color: var(--color-success); }
+.active-quest-checklist-box svg { width: 11px; height: 11px; color: #fff; stroke-width: 3; }
+
+.active-quest-checklist-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  color: var(--fg-1);
+  overflow-wrap: break-word;
+}
+
+.active-quest-checklist-text.checked {
+  color: var(--fg-4);
+  text-decoration: line-through;
+}
 
 .active-quest-actions {
   display: grid;

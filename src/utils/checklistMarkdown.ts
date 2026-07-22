@@ -4,6 +4,15 @@ export interface ChecklistItem {
   checked: boolean;
 }
 
+/** New checklist item id. Falls back when `crypto.randomUUID` is unavailable (e.g. jsdom in
+ * tests) — mirrors the same guard already used in src/stores/device.ts. */
+export function newChecklistItemId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 /**
  * Parses task-list lines (`- [ ] text` / `- [x] text`) with an optional trailing hidden id token
  * (`<!--k=id-->`) out of a quest's `description`. Mirrors src-tauri/src/services/checklist_md.rs
@@ -34,7 +43,7 @@ export function parseChecklist(src: string | null | undefined): ChecklistItem[] 
         checked,
       });
     } else {
-      items.push({ id: crypto.randomUUID(), text: rest, checked });
+      items.push({ id: newChecklistItemId(), text: rest, checked });
     }
   }
   return items;

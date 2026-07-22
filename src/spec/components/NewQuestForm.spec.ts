@@ -134,6 +134,7 @@ describe("NewQuestForm", () => {
     expect(createQuest).toHaveBeenCalledWith({
       title: "Submit from keyboard",
       description: null,
+      is_checklist: false,
       space_id: "1",
       due: null,
       due_time: null,
@@ -189,11 +190,35 @@ describe("NewQuestForm", () => {
     expect(createQuest).toHaveBeenCalledWith({
       title: "Plan the rich composer",
       description: "Capture the extra notes here.",
+      is_checklist: false,
       space_id: "2",
       due: "2099-06-15",
       due_time: "14:30",
       repeat_rule: null,
     });
+  });
+
+  it("converts each description line into a checklist item when checklist mode is on", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Go to office");
+    await wrapper.find('[data-testid="new-quest-checklist-toggle"]').trigger("click");
+    await wrapper
+      .find('[data-testid="new-quest-description"]')
+      .setValue("headphones\nkey fob\n\nlunch");
+    await wrapper.find("form").trigger("submit");
+
+    expect(createQuest).toHaveBeenCalledTimes(1);
+    const call = createQuest.mock.calls[0][0];
+    expect(call.title).toBe("Go to office");
+    expect(call.is_checklist).toBe(true);
+    expect(call.description).toMatch(/^- \[ \] headphones <!--k=.+-->\n- \[ \] key fob <!--k=.+-->\n- \[ \] lunch <!--k=.+-->$/);
   });
 
   it("allows non-empty metadata drafts to collapse", async () => {
@@ -243,6 +268,7 @@ describe("NewQuestForm", () => {
     expect(createQuest).toHaveBeenCalledWith({
       title: "Do not keep invisible reminder time",
       description: null,
+      is_checklist: false,
       space_id: "1",
       due: null,
       due_time: null,
@@ -340,6 +366,7 @@ describe("NewQuestForm", () => {
     expect(createQuest).toHaveBeenCalledWith({
       title: "Create in filtered space",
       description: null,
+      is_checklist: false,
       space_id: "2",
       due: null,
       due_time: null,
@@ -367,6 +394,7 @@ describe("NewQuestForm", () => {
     expect(createQuest).toHaveBeenCalledWith({
       title: "Create in refreshed filter",
       description: null,
+      is_checklist: false,
       space_id: "2",
       due: null,
       due_time: null,

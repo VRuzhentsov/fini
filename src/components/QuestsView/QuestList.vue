@@ -1,16 +1,28 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { useQuestStore, type Quest, type UpdateQuestInput } from "../../stores/quest";
+import {
+  useQuestStore,
+  type ChecklistActivity,
+  type Quest,
+  type UpdateQuestInput,
+} from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { ArrowPathIcon } from "@heroicons/vue/24/outline";
+import { ArrowPathIcon, CheckCircleIcon } from "@heroicons/vue/24/outline";
+import {
+  checklistCounts,
+  newChecklistItemId,
+  parseChecklist,
+  serializeChecklist,
+} from "../../utils/checklistMarkdown";
 import ReminderMenu from "./ReminderMenu.vue";
+import RecurrenceScopeSheet from "./RecurrenceScopeSheet.vue";
 import QuestEditor from "../QuestEditor.vue";
 
-defineProps<{
+const props = defineProps<{
   quests: Quest[];
 }>();
 const store = useQuestStore();
@@ -46,9 +58,79 @@ function onContextMenu(e: MouseEvent, quest: Quest) {
 // ── Expand / collapse ─────────────────────────────────────────────────────────
 
 const expandedId = ref<string | null>(null);
+const checklistActivityByQuest = ref<Record<string, ChecklistActivity[]>>({});
 
 function toggle(id: string) {
-  expandedId.value = expandedId.value === id ? null : id;
+  const wasExpanded = expandedId.value === id;
+  expandedId.value = wasExpanded ? null : id;
+  if (!wasExpanded) {
+    const quest = props.quests.find((q) => q.id === id);
+    // History rows show the completion-time audit trail; active rows have nothing to audit yet.
+    if (quest?.is_checklist && quest.status !== "active" && !checklistActivityByQuest.value[id]) {
+      store.fetchChecklistActivity(id).then((activity) => {
+        checklistActivityByQuest.value[id] = activity;
+      });
+    }
+  }
+}
+
+// ── Checklist (issue #128) ──────────────────────────────────────────────────
+
+function checklistBadgeText(quest: Quest): string {
+  const [done, total] = checklistCounts(quest.description);
+  return `${done}/${total}`;
+}
+
+function onToggleChecklistItem(quest: Quest, itemId: string, checked: boolean) {
+  // Checking off "today's" packing is always this-occurrence-only — future occurrences always
+  // start fresh and unchecked regardless (see recurring template copy), so there's nothing to
+  // ask the user about scope here.
+  store.toggleChecklistItem(quest.id, itemId, checked);
+}
+
+// A structural edit (add/remove item) on a recurring quest needs the user's scope choice
+// (#128: "This occurrence" vs "This and future occurrences") before it's applied.
+const pendingScopeAction = ref<{ quest: Quest; kind: "add" | "remove"; payload: string } | null>(
+  null,
+);
+
+function onAddChecklistItem(quest: Quest, text: string) {
+  if (quest.series_id) {
+    pendingScopeAction.value = { quest, kind: "add", payload: text };
+    return;
+  }
+  store.addChecklistItem(quest.id, text);
+}
+
+function onRemoveChecklistItem(quest: Quest, itemId: string) {
+  if (quest.series_id) {
+    pendingScopeAction.value = { quest, kind: "remove", payload: itemId };
+    return;
+  }
+  store.removeChecklistItem(quest.id, itemId);
+}
+
+async function onScopeChosen(scope: "this" | "future") {
+  const action = pendingScopeAction.value;
+  pendingScopeAction.value = null;
+  if (!action) return;
+  const { quest, kind, payload } = action;
+
+  if (scope === "this") {
+    if (kind === "add") await store.addChecklistItem(quest.id, payload);
+    else await store.removeChecklistItem(quest.id, payload);
+    return;
+  }
+
+  // "This and future occurrences": compute the full edited checklist and push it as the new
+  // series template — the backend reconciles this occurrence against it (preserving checks on
+  // unchanged items, per #128).
+  const items = parseChecklist(quest.description);
+  const nextItems =
+    kind === "add"
+      ? [...items, { id: newChecklistItemId(), text: payload, checked: false }]
+      : items.filter((it) => it.id !== payload);
+  await store.updateSeriesChecklist(quest.series_id!, quest.id, serializeChecklist(nextItems), "future");
 }
 
 // ── Active actions ────────────────────────────────────────────────────────────
@@ -226,6 +308,10 @@ function formatTimestamp(quest: Quest): string {
           {{ formatRepeat(quest.repeat_rule) }}
         </span>
         <span class="quest-title" :class="quest.status !== 'active' ? quest.status : ''">{{ quest.title }}</span>
+        <span v-if="quest.is_checklist" class="quest-checklist-badge">
+          <CheckCircleIcon class="size-3" />
+          {{ checklistBadgeText(quest) }}
+        </span>
         <span class="quest-space-badge badge badge-xs" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
       </div>
 
@@ -239,6 +325,8 @@ function formatTimestamp(quest: Quest): string {
         :priority-label="PRIORITY_LABELS[quest.priority]"
         :reminder-text="pillText(quest)"
         :timestamp-text="quest.status !== 'active' ? formatTimestamp(quest) : ''"
+        :is-recurring="!!quest.series_id"
+        :checklist-activity="checklistActivityByQuest[quest.id]"
         @contextmenu="onContextMenu($event, quest)"
         @update="updateQuest(quest, $event)"
         @complete="completeQuest(quest.id)"
@@ -248,6 +336,9 @@ function formatTimestamp(quest: Quest): string {
         @open-reminder="reminderQuestId = quest.id"
         @cycle-priority="cyclePriority(quest)"
         @more="openMore($event, quest)"
+        @toggle-checklist-item="(itemId, checked) => onToggleChecklistItem(quest, itemId, checked)"
+        @add-checklist-item="onAddChecklistItem(quest, $event)"
+        @remove-checklist-item="onRemoveChecklistItem(quest, $event)"
       />
 
     </li>
@@ -259,6 +350,14 @@ function formatTimestamp(quest: Quest): string {
     :quest="quests.find(q => q.id === reminderQuestId)!"
     @close="reminderQuestId = null"
     @save="onReminderSave(quests.find(q => q.id === reminderQuestId)!, $event)"
+  />
+
+  <!-- Recurrence checklist edit-scope prompt (issue #128) -->
+  <RecurrenceScopeSheet
+    v-if="pendingScopeAction"
+    :quest-title="pendingScopeAction.quest.title"
+    @close="pendingScopeAction = null"
+    @choose="onScopeChosen"
   />
 </template>
 
@@ -380,4 +479,17 @@ function formatTimestamp(quest: Quest): string {
 }
 
 .quest-space-badge { flex-shrink: 0; border-radius: 5px; }
+
+.quest-checklist-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding: 0.125rem 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  color: var(--fg-3);
+  background: var(--color-base-200);
+  border-radius: 6px;
+}
 </style>

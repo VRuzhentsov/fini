@@ -3,7 +3,15 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { CalendarDaysIcon, ChevronDownIcon, ChevronUpIcon, PaperAirplaneIcon, XMarkIcon } from "@heroicons/vue/24/outline";
+import {
+  CalendarDaysIcon,
+  CheckCircleIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  PaperAirplaneIcon,
+  XMarkIcon,
+} from "@heroicons/vue/24/outline";
+import { newChecklistItemId, serializeChecklist } from "../../utils/checklistMarkdown";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -13,6 +21,9 @@ const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 
 const title = ref("");
 const description = ref("");
+// Issue #128: a checklist quest reuses this same field — when on, each non-empty line typed
+// here becomes one unchecked checklist item instead of a paragraph of prose.
+const isChecklistMode = ref(false);
 const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
@@ -79,7 +90,7 @@ const draftQuest = computed<Quest>(() => ({
   updated_at: "",
   series_id: null,
   period_key: null,
-  is_checklist: false,
+  is_checklist: isChecklistMode.value,
 }));
 
 const canSubmit = computed(() => title.value.trim().length > 0 && !isSubmitting.value);
@@ -171,16 +182,36 @@ function onTitleKeydown(event: KeyboardEvent) {
   }
 }
 
+function toggleChecklistMode() {
+  isChecklistMode.value = !isChecklistMode.value;
+  if (isChecklistMode.value) metadataExpanded.value = true;
+}
+
+/** Each non-empty line typed while checklist mode is on becomes one unchecked item. */
+function checklistDescriptionFromDraft(): string | null {
+  const lines = description.value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return null;
+  return serializeChecklist(
+    lines.map((text) => ({ id: newChecklistItemId(), text, checked: false })),
+  );
+}
+
 async function onSubmit() {
   const value = title.value.trim();
   if (!value || isSubmitting.value) return;
-  const descriptionValue = description.value.trim() || null;
+  const descriptionValue = isChecklistMode.value
+    ? checklistDescriptionFromDraft()
+    : description.value.trim() || null;
 
   isSubmitting.value = true;
   try {
     await questStore.createQuest({
       title: value,
       description: descriptionValue,
+      is_checklist: isChecklistMode.value && descriptionValue !== null,
       space_id: selectedSpaceId.value,
       due: due.value,
       due_time: dueTime.value,
@@ -189,6 +220,7 @@ async function onSubmit() {
 
     title.value = "";
     description.value = "";
+    isChecklistMode.value = false;
     clearReminder();
     metadataExpanded.value = false;
   } finally {
@@ -227,11 +259,10 @@ async function onSubmit() {
           v-model="description"
           data-testid="new-quest-description"
           class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
-          placeholder="Description"
+          :placeholder="isChecklistMode ? 'One item per line' : 'Description'"
           rows="2"
           :disabled="isSubmitting"
         />
-
       </div>
 
       <div class="flex items-center justify-between gap-2 pt-1">
@@ -257,6 +288,19 @@ async function onSubmit() {
             @click.stop="clearReminder"
           >
             <XMarkIcon class="size-4" />
+          </button>
+          <button
+            type="button"
+            data-testid="new-quest-checklist-toggle"
+            class="btn btn-ghost btn-sm gap-1 px-2"
+            :class="{ 'text-success': isChecklistMode }"
+            :aria-pressed="isChecklistMode"
+            title="Checklist"
+            :disabled="isSubmitting"
+            @click="toggleChecklistMode"
+          >
+            <CheckCircleIcon class="size-5" />
+            <span>Checklist</span>
           </button>
           <button
             type="button"
