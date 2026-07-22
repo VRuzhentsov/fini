@@ -972,11 +972,12 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quest_id": args.quest_id, "activity": activity }))
         }
         QuestCommand::ChecklistSetTemplate(args) => {
+            let normalized_checklist = normalize_cli_checklist_markdown(&args.checklist);
             let quest = QuestService::new(&mut conn)
                 .update_series_checklist(
                     &args.series_id,
                     &args.quest_id,
-                    &args.checklist,
+                    &normalized_checklist,
                     &args.scope,
                 )
                 .map_err(CliError::from_string)?;
@@ -1011,6 +1012,10 @@ fn normalize_repeat_alias(value: &str) -> String {
         "null" => "null".to_string(),
         _ => unreachable!("clap restricts --repeat to supported aliases"),
     }
+}
+
+fn normalize_cli_checklist_markdown(value: &str) -> String {
+    crate::services::checklist_md::serialize(&crate::services::checklist_md::parse(value))
 }
 
 fn update_quest_from_cli(
@@ -1852,6 +1857,89 @@ mod tests {
             series_count, 0,
             "--repeat null must not create a quest series"
         );
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn checklist_set_template_normalizes_raw_cli_markdown_before_saving() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-checklist-set-template-normalizes-raw-markdown");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = CliContext::new()
+            .unwrap_or_else(|err| panic!("initialize isolated CLI database: {}", err.message));
+        let create_cli = Cli::try_parse_from([
+            "fini", "quest", "create", "--title", "Pack bag", "--repeat", "daily", "--item",
+            "old item",
+        ])
+        .expect("parse recurring checklist create");
+        let create_command = match create_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest create command"),
+        };
+        let created = handle_quest(&ctx, create_command)
+            .unwrap_or_else(|err| panic!("create recurring checklist: {}", err.message));
+        let quest_id = created["id"]
+            .as_str()
+            .expect("created quest id")
+            .to_string();
+        let series_id = created["series_id"]
+            .as_str()
+            .expect("created series id")
+            .to_string();
+
+        let set_template_cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "checklist-set-template",
+            "--series-id",
+            &series_id,
+            "--quest-id",
+            &quest_id,
+            "--checklist=- [ ] headphones",
+            "--scope",
+            "future",
+        ])
+        .expect("parse checklist-set-template");
+        let set_template_command = match set_template_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected checklist-set-template command"),
+        };
+        handle_quest(&ctx, set_template_command)
+            .unwrap_or_else(|err| panic!("set checklist template: {}", err.message));
+
+        let mut conn = ctx
+            .open_db()
+            .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
+        let stored_quest = QuestService::new(&mut conn)
+            .get(&quest_id)
+            .expect("load updated occurrence");
+        let stored_series: crate::models::QuestSeries = crate::schema::quest_series::table
+            .find(&series_id)
+            .select(crate::models::QuestSeries::as_select())
+            .first(&mut conn)
+            .expect("load updated series");
+
+        for stored_md in [
+            stored_quest
+                .description
+                .as_deref()
+                .expect("quest checklist md"),
+            stored_series
+                .description
+                .as_deref()
+                .expect("series checklist md"),
+        ] {
+            let items = crate::services::checklist_md::parse(stored_md);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].text, "headphones");
+            assert!(
+                stored_md.contains("<!--k=") && stored_md.ends_with("-->"),
+                "stored checklist markdown must persist hidden item ids, got: {stored_md}"
+            );
+        }
 
         std::env::remove_var("FINI_DB_PATH");
         let _ = std::fs::remove_file(db_path);
