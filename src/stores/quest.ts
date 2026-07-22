@@ -141,14 +141,22 @@ export const useQuestStore = defineStore("quest", () => {
   }
 
   async function toggleChecklistItem(questId: string, itemId: string, checked: boolean) {
-    const current = quests.value.find((q) => q.id === questId) ?? activeQuest.value;
+    const current =
+      quests.value.find((q) => q.id === questId) ??
+      (activeQuest.value?.id === questId ? activeQuest.value : null);
     if (current) {
       const items = parseChecklist(current.description).map((it) =>
         it.id === itemId ? { ...it, checked } : it,
       );
       applyLocalQuest({ ...current, description: serializeChecklist(items) });
     }
-    const quest = await invoke<Quest>("toggle_checklist_item", { questId, itemId, checked });
+    let quest: Quest;
+    try {
+      quest = await invoke<Quest>("toggle_checklist_item", { questId, itemId, checked });
+    } catch (e) {
+      if (current) applyLocalQuest(current);
+      throw e;
+    }
     applyLocalQuest(quest);
     return quest;
   }
