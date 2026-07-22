@@ -808,6 +808,9 @@ impl<'a> QuestService<'a> {
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
         Self::ensure_checklist_quest(&quest)?;
+        if quest.status != "active" {
+            return Err("checklist toggles are only available for active quests".to_string());
+        }
         let md = quest.description.clone().unwrap_or_default();
         let items = checklist_md::parse(&md);
         if !items.iter().any(|it| it.id == item_id) {
@@ -3048,6 +3051,50 @@ mod tests {
         assert!(activity.is_empty(), "rejected toggle must not log activity");
 
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn toggling_non_active_checklist_item_is_rejected_without_writing() {
+        for status in ["completed", "abandoned"] {
+            let db_path = temp_db_path(&format!("checklist-toggle-non-active-{status}"));
+            let mut conn = open_db_at_path(&db_path);
+
+            let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            }]);
+            let quest = create_active_quest_with_checklist(&mut conn, &template);
+            let mut service = QuestService::new(&mut conn);
+            service
+                .update(&quest.id, status_patch(status))
+                .expect("move quest out of active status");
+            let before = service.get(&quest.id).expect("load non-active checklist quest");
+            let before_activity = service
+                .get_checklist_activity(&quest.id)
+                .expect("load activity before rejected toggle");
+
+            let result = service.toggle_checklist_item(&quest.id, "a1", true);
+            assert!(matches!(
+                result,
+                Err(ref error) if error == "checklist toggles are only available for active quests"
+            ));
+
+            let after = service.get(&quest.id).expect("reload non-active checklist quest");
+            assert_eq!(after.description, before.description);
+            assert_eq!(after.updated_at, before.updated_at);
+
+            let after_activity = service
+                .get_checklist_activity(&quest.id)
+                .expect("load activity after rejected toggle");
+            assert_eq!(
+                after_activity.len(),
+                before_activity.len(),
+                "rejected non-active toggle must not add audit rows"
+            );
+
+            let _ = std::fs::remove_file(db_path);
+        }
     }
 
     #[test]
