@@ -443,6 +443,11 @@ fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String
 
 fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
     ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
+    let insert_checklist_base = if quest.is_checklist {
+        quest.description.as_ref()
+    } else {
+        None
+    };
 
     diesel::insert_into(quests::table)
         .values((
@@ -465,6 +470,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::series_id.eq(&quest.series_id),
             quests::period_key.eq(&quest.period_key),
             quests::is_checklist.eq(quest.is_checklist),
+            quests::checklist_base.eq(insert_checklist_base),
         ))
         .on_conflict(quests::id)
         .do_update()
@@ -1903,6 +1909,56 @@ mod tests {
         assert!(
             after.is_checklist,
             "legacy payloads without is_checklist must not demote locally-known checklists"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_seeds_checklist_base_for_new_synced_checklist() {
+        let db_path = temp_db_path("synced-checklist-base");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist_md = crate::services::checklist_md::serialize(&[
+            crate::services::checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist_md::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+
+        let mut remote_quest = test_quest("q-synced-checklist", "Pack", "2026-03-02T00:00:00Z");
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(checklist_md.clone());
+        let event = test_envelope(
+            "evt-synced-checklist",
+            "dev-remote",
+            "quest",
+            "q-synced-checklist",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: Quest = quests::table
+            .find("q-synced-checklist")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(stored.is_checklist);
+        assert_eq!(stored.description.as_deref(), Some(checklist_md.as_str()));
+        assert_eq!(
+            stored.checklist_base.as_deref(),
+            Some(checklist_md.as_str()),
+            "a first synced checklist insert must establish the shared base for later negative edits"
         );
 
         let _ = std::fs::remove_file(db_path);
