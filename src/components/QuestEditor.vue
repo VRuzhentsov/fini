@@ -211,6 +211,7 @@ const renderFlags = computed(() => ({
             class="quest-editor-checklist-box"
             :class="{ checked: item.checked }"
             :aria-label="item.checked ? 'Uncheck item' : 'Check item'"
+            :disabled="!renderFlags.checklistEditable"
             @click.stop="emit('toggleChecklistItem', item.id, !item.checked)"
           >
             <CheckIcon v-if="item.checked" />

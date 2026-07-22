@@ -124,6 +124,25 @@ describe("QuestEditor checklist rendering", () => {
     expect(wrapper.find(".quest-editor-checklist-text").text()).toBe("headphones");
   });
 
+  it("disables checklist item toggles for completed checklist quests", async () => {
+    const wrapper = mount(QuestEditor, {
+      props: {
+        ...defaultProps,
+        quest: baseQuest({
+          status: "completed",
+          is_checklist: true,
+          description: "- [x] headphones <!--k=a1-->",
+        }),
+      },
+    });
+
+    const checkbox = wrapper.find<HTMLButtonElement>(".quest-editor-checklist-box");
+
+    expect(checkbox.element.disabled).toBe(true);
+    await checkbox.trigger("click");
+    expect(wrapper.emitted("toggleChecklistItem")).toBeUndefined();
+  });
+
   it("hides remove buttons and the add-item row for a completed (readonly) checklist quest", () => {
     const wrapper = mount(QuestEditor, {
       props: {
