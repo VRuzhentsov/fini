@@ -472,6 +472,7 @@ fn emit_checklist_activity_sync_events(
     let emitted_activity_ids: Vec<String> = crate::schema::sync_outbox::table
         .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
         .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+        .filter(crate::schema::sync_outbox::space_id.eq(&quest.space_id))
         .select(crate::schema::sync_outbox::entity_id)
         .load(conn)
         .map_err(|e| e.to_string())?;
@@ -2564,6 +2565,77 @@ mod tests {
             ("checklist_activity".to_string(), "upsert".to_string())
         );
         assert_eq!(rows[2], ("quest".to_string(), "upsert".to_string()));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn moving_checklist_to_new_space_reemits_activity_for_destination_space() {
+        let db_path = temp_db_path("checklist-activity-sync-space-move-reemit");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Pack".to_string(),
+                description: Some("- [ ] headphones <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create checklist quest")
+            .quest;
+
+        log_checklist_activity(
+            &mut conn,
+            &quest.id,
+            "added",
+            "Added \"headphones\"",
+            Some("device-local"),
+        )
+        .expect("log checklist activity");
+
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+            .expect("emit initial quest sync with checklist activity");
+
+        let (moved, _, _) = update_quest_in_db(&mut conn, &quest.id, space_patch("2"))
+            .expect("move checklist to space 2");
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &moved)
+            .expect("emit move sync with checklist activity in destination space");
+
+        let rows: Vec<(String, String, String)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((
+                sync_outbox::entity_type,
+                sync_outbox::op_type,
+                sync_outbox::space_id,
+            ))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        assert_eq!(
+            rows,
+            vec![
+                ("quest".to_string(), "upsert".to_string(), "1".to_string()),
+                (
+                    "checklist_activity".to_string(),
+                    "upsert".to_string(),
+                    "1".to_string()
+                ),
+                ("quest".to_string(), "delete".to_string(), "1".to_string()),
+                ("quest".to_string(), "upsert".to_string(), "2".to_string()),
+                (
+                    "checklist_activity".to_string(),
+                    "upsert".to_string(),
+                    "2".to_string()
+                ),
+            ],
+            "space move must re-emit checklist activity under the destination space"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
