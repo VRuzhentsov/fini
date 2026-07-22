@@ -740,6 +740,10 @@ impl<'a> QuestService<'a> {
         let quest = self.repository.get(quest_id)?;
         Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
+        let items = checklist_md::parse(&md);
+        if !items.iter().any(|it| it.id == item_id) {
+            return Err("checklist item not found".to_string());
+        }
         let new_md = checklist_md::set_checked(&md, item_id, checked);
         // Individual check/uncheck toggles are not written to the audit log by design (#128's
         // audit requirement targets add/remove/edit and completion, not every toggle) — the
@@ -2794,6 +2798,46 @@ mod tests {
             vec!["added", "edited", "removed"],
             "toggling checked state must not write an activity row"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn toggling_missing_checklist_item_is_rejected_without_writing() {
+        let db_path = temp_db_path("checklist-toggle-missing-item");
+        let mut conn = open_db_at_path(&db_path);
+
+        let template = checklist_md::serialize(&[
+            checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            checklist_md::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: true,
+            },
+        ]);
+        let quest = create_active_quest_with_checklist(&mut conn, &template);
+        let original_description = quest.description.clone();
+        let original_updated_at = quest.updated_at.clone();
+
+        let result = QuestService::new(&mut conn).toggle_checklist_item(&quest.id, "missing", true);
+        assert!(matches!(
+            result,
+            Err(ref error) if error == "checklist item not found"
+        ));
+
+        let mut service = QuestService::new(&mut conn);
+        let stored = service.get(&quest.id).expect("load checklist quest");
+        assert_eq!(stored.description, original_description);
+        assert_eq!(stored.updated_at, original_updated_at);
+
+        let activity = service
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        assert!(activity.is_empty(), "rejected toggle must not log activity");
 
         let _ = std::fs::remove_file(db_path);
     }
