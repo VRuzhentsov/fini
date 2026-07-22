@@ -786,6 +786,12 @@ impl<'a> QuestService<'a> {
         new_checklist_md: &str,
         scope: &str,
     ) -> Result<Quest, String> {
+        let current = self.repository.get(current_occurrence_id)?;
+        Self::ensure_checklist_quest(&current)?;
+        if current.series_id.as_deref() != Some(series_id) {
+            return Err("quest is not an occurrence in this series".to_string());
+        }
+
         match scope {
             "future" => self.repository.update_series_checklist_template(
                 series_id,
@@ -2726,6 +2732,100 @@ mod tests {
             .get_checklist_activity(&quest.id)
             .expect("load activity");
         assert!(activity.is_empty(), "rejected mutations must not log activity");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn update_series_checklist_rejects_prose_and_mismatched_occurrences() {
+        let db_path = temp_db_path("checklist-series-reject-invalid");
+        let mut conn = open_db_at_path(&db_path);
+
+        let prose_result = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Recurring notes".to_string(),
+                description: Some("meeting notes".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create repeating prose quest");
+        let prose_quest = prose_result.quest;
+        let prose_series = prose_result.series.expect("repeating prose quest must create a series");
+
+        for scope in ["this", "future"] {
+            let result = QuestService::new(&mut conn).update_series_checklist(
+                &prose_series.id,
+                &prose_quest.id,
+                "- [ ] checklist item <!--k=a1-->",
+                scope,
+            );
+            assert!(matches!(
+                result,
+                Err(ref error) if error == "quest is not a checklist"
+            ));
+        }
+
+        let stored_prose = QuestService::new(&mut conn).get(&prose_quest.id).unwrap();
+        assert!(!stored_prose.is_checklist, "set-template must not convert prose quests");
+        assert_eq!(stored_prose.description.as_deref(), Some("meeting notes"));
+
+        let stored_prose_series: QuestSeries = crate::schema::quest_series::table
+            .find(&prose_series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(!stored_prose_series.is_checklist, "rejected future scope must not convert series");
+        assert_eq!(stored_prose_series.description.as_deref(), Some("meeting notes"));
+
+        let first_checklist = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Checklist one".to_string(),
+                description: Some("- [ ] one <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-02".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create first checklist series");
+        let first_series = first_checklist.series.expect("first checklist series");
+        let second_checklist = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Checklist two".to_string(),
+                description: Some("- [ ] two <!--k=b1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-03".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create second checklist series");
+        let second_quest = second_checklist.quest;
+
+        let result = QuestService::new(&mut conn).update_series_checklist(
+            &first_series.id,
+            &second_quest.id,
+            "- [ ] wrong series <!--k=x1-->",
+            "this",
+        );
+        assert!(matches!(
+            result,
+            Err(ref error) if error == "quest is not an occurrence in this series"
+        ));
+        let stored_second = QuestService::new(&mut conn).get(&second_quest.id).unwrap();
+        assert_eq!(stored_second.description.as_deref(), Some("- [ ] two <!--k=b1-->"));
 
         let _ = std::fs::remove_file(db_path);
     }
