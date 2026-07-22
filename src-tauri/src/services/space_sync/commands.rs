@@ -443,10 +443,21 @@ fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String
 
 fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
     ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
+    let existing_checklist_state = quests::table
+        .find(&quest.id)
+        .select((quests::is_checklist, quests::checklist_base))
+        .first::<(bool, Option<String>)>(conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
     let insert_checklist_base = if quest.is_checklist {
-        quest.description.as_ref()
+        quest.description.clone()
     } else {
         None
+    };
+    let update_checklist_base = match &existing_checklist_state {
+        Some((false, _)) if quest.is_checklist => quest.description.clone(),
+        Some((_, checklist_base)) => checklist_base.clone(),
+        None => insert_checklist_base.clone(),
     };
 
     diesel::insert_into(quests::table)
@@ -470,7 +481,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::series_id.eq(&quest.series_id),
             quests::period_key.eq(&quest.period_key),
             quests::is_checklist.eq(quest.is_checklist),
-            quests::checklist_base.eq(insert_checklist_base),
+            quests::checklist_base.eq(&insert_checklist_base),
         ))
         .on_conflict(quests::id)
         .do_update()
@@ -493,6 +504,7 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
             quests::series_id.eq(&quest.series_id),
             quests::period_key.eq(&quest.period_key),
             quests::is_checklist.eq(quest.is_checklist),
+            quests::checklist_base.eq(&update_checklist_base),
         ))
         .execute(conn)
         .map_err(|e| e.to_string())?;
@@ -2047,6 +2059,61 @@ mod tests {
             stored.checklist_base.as_deref(),
             Some(checklist_md.as_str()),
             "a first synced checklist insert must establish the shared base for later negative edits"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_seeds_checklist_base_when_existing_row_adopts_checklist_mode() {
+        let db_path = temp_db_path("synced-checklist-conversion-base");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist_md = crate::services::checklist_md::serialize(&[
+            crate::services::checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist_md::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+
+        let mut local_quest = test_quest("q-converted-checklist", "Pack", "2026-03-01T00:00:00Z");
+        local_quest.description = Some(checklist_md.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let mut remote_quest = local_quest.clone();
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(checklist_md.clone());
+        remote_quest.updated_at = "2026-03-02T00:00:00Z".to_string();
+        let event = test_envelope(
+            "evt-synced-checklist-conversion",
+            "dev-remote",
+            "quest",
+            "q-converted-checklist",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: Quest = quests::table
+            .find("q-converted-checklist")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(stored.is_checklist);
+        assert_eq!(stored.description.as_deref(), Some(checklist_md.as_str()));
+        assert_eq!(
+            stored.checklist_base.as_deref(),
+            Some(checklist_md.as_str()),
+            "a synced conversion to checklist mode must seed the shared base for later negative edits"
         );
 
         let _ = std::fs::remove_file(db_path);
