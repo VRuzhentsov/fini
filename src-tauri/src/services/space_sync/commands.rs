@@ -620,6 +620,34 @@ fn local_device_id(conn: &mut SqliteConnection) -> Option<String> {
         .flatten()
 }
 
+fn emit_checklist_convergence_event(
+    conn: &mut SqliteConnection,
+    remote_origin_device_id: &str,
+    entity_id: &str,
+    entity_space_id: &str,
+) -> Result<(), String> {
+    if let Some(own_device_id) = local_device_id(conn) {
+        if own_device_id != remote_origin_device_id {
+            let refreshed = quests::table
+                .find(entity_id)
+                .select(Quest::as_select())
+                .first::<Quest>(conn)
+                .map_err(|e| e.to_string())?;
+            let payload = serde_json::to_string(&refreshed).map_err(|e| e.to_string())?;
+            super::outbox::emit_sync_event(
+                conn,
+                &own_device_id,
+                "quest",
+                entity_id,
+                entity_space_id,
+                "upsert",
+                Some(payload),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Merges an incoming checklist quest's `description` (task-list markdown) against local state
 /// and persists the result, regardless of whether the incoming event wins the whole-entity LWW
 /// comparison for the quest's other fields. Issue #128 explicitly forbids whole-quest LWW for
@@ -631,11 +659,9 @@ fn local_device_id(conn: &mut SqliteConnection) -> Option<String> {
 /// for the caller to fold into `upsert_quest`.
 fn merge_and_persist_quest_checklist(
     conn: &mut SqliteConnection,
-    remote_origin_device_id: &str,
     entity_id: &str,
-    entity_space_id: &str,
     incoming_description: Option<&str>,
-) -> Result<Option<String>, String> {
+) -> Result<(Option<String>, bool), String> {
     let local = quests::table
         .find(entity_id)
         .select(Quest::as_select())
@@ -645,7 +671,7 @@ fn merge_and_persist_quest_checklist(
 
     let local = match local {
         // Brand-new quest arriving via sync: nothing to merge against yet, adopt incoming as-is.
-        None => return Ok(incoming_description.map(|s| s.to_string())),
+        None => return Ok((incoming_description.map(|s| s.to_string()), false)),
         Some(local) => local,
     };
 
@@ -685,34 +711,12 @@ fn merge_and_persist_quest_checklist(
     }
 
     // Merge changed something relative to what the remote peer sent, or advanced our retained
-    // checklist base after cleanly adopting the peer's state. Push a convergence event back so
-    // the origin can advance its own retained base too; otherwise a later negative edit from the
-    // adopter can be merged against the origin's stale pre-edit base and be reverted.
-    if merged.as_deref() != incoming_description || base_advanced {
-        if let Some(own_device_id) = local_device_id(conn) {
-            if own_device_id != remote_origin_device_id {
-                if let Ok(refreshed) = quests::table
-                    .find(entity_id)
-                    .select(Quest::as_select())
-                    .first::<Quest>(conn)
-                {
-                    if let Ok(payload) = serde_json::to_string(&refreshed) {
-                        let _ = super::outbox::emit_sync_event(
-                            conn,
-                            &own_device_id,
-                            "quest",
-                            entity_id,
-                            entity_space_id,
-                            "upsert",
-                            Some(payload),
-                        );
-                    }
-                }
-            }
-        }
-    }
+    // checklist base after cleanly adopting the peer's state. The caller emits the convergence
+    // event after any winning whole-quest payload is applied, so the outgoing event cannot carry
+    // stale title/status/space metadata from the pre-upsert local row.
+    let should_emit_convergence = merged.as_deref() != incoming_description || base_advanced;
 
-    Ok(merged)
+    Ok((merged, should_emit_convergence))
 }
 
 fn apply_sync_event(
@@ -758,19 +762,34 @@ fn apply_sync_event(
 
             if local_is_checklist {
                 let mut quest: Quest = serde_json::from_str(payload).map_err(|e| e.to_string())?;
-                let merged_description = merge_and_persist_quest_checklist(
-                    conn,
-                    &event.origin_device_id,
-                    &event.entity_id,
-                    &event.space_id,
-                    quest.description.as_deref(),
-                )?;
+                let (merged_description, should_emit_convergence) =
+                    merge_and_persist_quest_checklist(
+                        conn,
+                        &event.entity_id,
+                        quest.description.as_deref(),
+                    )?;
 
                 if whole_entity_wins {
                     quest.description = merged_description;
                     quest.is_checklist = true;
                     upsert_quest(conn, &quest)?;
+                    if should_emit_convergence {
+                        emit_checklist_convergence_event(
+                            conn,
+                            &event.origin_device_id,
+                            &event.entity_id,
+                            &event.space_id,
+                        )?;
+                    }
                 } else {
+                    if should_emit_convergence {
+                        emit_checklist_convergence_event(
+                            conn,
+                            &event.origin_device_id,
+                            &event.entity_id,
+                            &event.space_id,
+                        )?;
+                    }
                     mark_event_seen(conn, &event.event_id)?;
                     return Ok(false);
                 }
@@ -2040,6 +2059,98 @@ mod tests {
         assert_eq!(emitted[0].2, "1");
         let payload: Quest = serde_json::from_str(emitted[0].3.as_deref().unwrap()).unwrap();
         assert_eq!(payload.description.as_deref(), Some(adopted_md.as_str()));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_convergence_payload_keeps_winning_quest_metadata() {
+        let db_path = temp_db_path("checklist-convergence-winning-metadata");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string(), "2".to_string()]).unwrap();
+        crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
+            .expect("seed local device id");
+
+        let base_md = crate::services::checklist_md::serialize(&[
+            crate::services::checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist_md::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        let local_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
+
+        let mut local_quest = test_quest("q1", "Local stale title", "2026-03-01T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(local_md.clone());
+        local_quest.checklist_base = Some(base_md.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let remote_md = crate::services::checklist_md::set_checked(&base_md, "a2", true);
+        let mut remote_quest = test_quest("q1", "Remote winning title", "2026-03-02T00:00:00Z");
+        remote_quest.space_id = "2".to_string();
+        remote_quest.status = "completed".to_string();
+        remote_quest.completed_at = Some("2026-03-02T00:00:00Z".to_string());
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(remote_md);
+        let event = test_envelope(
+            "evt-winning-metadata",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(stored.title, "Remote winning title");
+        assert_eq!(stored.space_id, "2");
+        assert_eq!(stored.status, "completed");
+
+        let emitted_payload: String = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest"))
+            .filter(sync_outbox::entity_id.eq("q1"))
+            .select(sync_outbox::payload)
+            .first::<Option<String>>(&mut conn)
+            .unwrap()
+            .expect("convergence payload should be present");
+        let emitted: Quest = serde_json::from_str(&emitted_payload).unwrap();
+        assert_eq!(emitted.title, "Remote winning title");
+        assert_eq!(emitted.space_id, "2");
+        assert_eq!(emitted.status, "completed");
+        assert_eq!(
+            emitted.completed_at.as_deref(),
+            Some("2026-03-02T00:00:00Z")
+        );
+
+        let emitted_items =
+            crate::services::checklist_md::parse(emitted.description.as_deref().unwrap());
+        assert!(
+            emitted_items
+                .iter()
+                .find(|it| it.id == "a1")
+                .unwrap()
+                .checked
+        );
+        assert!(
+            emitted_items
+                .iter()
+                .find(|it| it.id == "a2")
+                .unwrap()
+                .checked
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
