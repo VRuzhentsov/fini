@@ -661,19 +661,25 @@ fn merge_and_persist_quest_checklist(
     };
 
     let checklist_base_before = local.checklist_base.clone();
-    let base_advanced = checklist_base_before.as_deref() != merged.as_deref();
+    let incoming_matches_merged = incoming_description == merged.as_deref();
+    let next_checklist_base = if incoming_matches_merged {
+        merged.clone()
+    } else {
+        checklist_base_before.clone()
+    };
+    let base_advanced = checklist_base_before.as_deref() != next_checklist_base.as_deref();
 
     if merged != local.description {
         diesel::update(quests::table.find(entity_id))
             .set((
                 quests::description.eq(&merged),
-                quests::checklist_base.eq(&merged),
+                quests::checklist_base.eq(&next_checklist_base),
             ))
             .execute(conn)
             .map_err(|e| e.to_string())?;
     } else if base_advanced {
         diesel::update(quests::table.find(entity_id))
-            .set(quests::checklist_base.eq(&merged))
+            .set(quests::checklist_base.eq(&next_checklist_base))
             .execute(conn)
             .map_err(|e| e.to_string())?;
     }
@@ -1821,6 +1827,11 @@ mod tests {
         assert!(
             items.iter().find(|it| it.id == "a2").unwrap().checked,
             "remote's independent pack of item a2 must survive"
+        );
+        assert_eq!(
+            merged.checklist_base.as_deref(),
+            Some(base_md.as_str()),
+            "merging local-only content must not advance the shared checklist base before the peer adopts it"
         );
 
         let _ = std::fs::remove_file(db_path);
