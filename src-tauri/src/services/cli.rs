@@ -560,7 +560,10 @@ struct ChecklistSetTemplateArgs {
     series_id: String,
     #[arg(long)]
     quest_id: String,
-    #[arg(long, help = "Full replacement task-list markdown, e.g. '- [ ] headphones\\n- [ ] key fob'")]
+    #[arg(
+        long,
+        help = "Full replacement task-list markdown, e.g. '- [ ] headphones\\n- [ ] key fob'"
+    )]
     checklist: String,
     #[arg(
         long,
@@ -745,8 +748,25 @@ fn emit_checklist_activity_sync(
 ) {
     use diesel::prelude::*;
 
+    let emitted_activity_ids = crate::schema::sync_outbox::table
+        .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+        .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+        .select(crate::schema::sync_outbox::entity_id)
+        .load::<String>(conn);
+
+    let Ok(emitted_activity_ids) = emitted_activity_ids else {
+        return;
+    };
+
     let activities = crate::schema::checklist_activity::table
         .filter(crate::schema::checklist_activity::quest_id.eq(&quest.id))
+        .filter(
+            crate::schema::checklist_activity::origin_device_id
+                .is_null()
+                .or(crate::schema::checklist_activity::origin_device_id
+                    .eq(&ctx.device_state.identity.device_id)),
+        )
+        .filter(crate::schema::checklist_activity::id.ne_all(emitted_activity_ids))
         .select(crate::models::ChecklistActivity::as_select())
         .load::<crate::models::ChecklistActivity>(conn);
 
@@ -915,7 +935,9 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 .get(&args.quest_id)
                 .map_err(CliError::from_string)?;
             let items = crate::services::checklist_md::parse_opt(quest.description.as_deref());
-            Ok(json!({ "quest_id": args.quest_id, "is_checklist": quest.is_checklist, "items": items }))
+            Ok(
+                json!({ "quest_id": args.quest_id, "is_checklist": quest.is_checklist, "items": items }),
+            )
         }
         QuestCommand::ChecklistAdd(args) => {
             let quest = QuestService::new(&mut conn)
@@ -1940,6 +1962,97 @@ mod tests {
                 "stored checklist markdown must persist hidden item ids, got: {stored_md}"
             );
         }
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn cli_checklist_toggle_does_not_reemit_existing_activity_sync_events() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-checklist-toggle-dedupes-activity-sync");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = CliContext::new()
+            .unwrap_or_else(|err| panic!("initialize isolated CLI database: {}", err.message));
+        let create_cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Pack bag",
+            "--item",
+            "water bottle",
+        ])
+        .expect("parse checklist create");
+        let create_command = match create_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest create command"),
+        };
+        let created = handle_quest(&ctx, create_command)
+            .unwrap_or_else(|err| panic!("create checklist quest: {}", err.message));
+        let quest_id = created["id"]
+            .as_str()
+            .expect("created quest id")
+            .to_string();
+
+        let add_cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "checklist-add",
+            "--quest-id",
+            &quest_id,
+            "--text",
+            "headphones",
+        ])
+        .expect("parse checklist add");
+        let add_command = match add_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected checklist-add command"),
+        };
+        let added = handle_quest(&ctx, add_command)
+            .unwrap_or_else(|err| panic!("add checklist item: {}", err.message));
+        let added_description = added["description"]
+            .as_str()
+            .expect("updated checklist markdown");
+        let added_item_id = crate::services::checklist_md::parse(added_description)
+            .into_iter()
+            .find(|item| item.text == "headphones")
+            .expect("added checklist item")
+            .id;
+
+        let check_cli = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "checklist-check",
+            "--quest-id",
+            &quest_id,
+            "--item-id",
+            &added_item_id,
+        ])
+        .expect("parse checklist check");
+        let check_command = match check_cli.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected checklist-check command"),
+        };
+        handle_quest(&ctx, check_command)
+            .unwrap_or_else(|err| panic!("check checklist item: {}", err.message));
+
+        let mut conn = ctx
+            .open_db()
+            .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
+        let activity_events: Vec<String> = crate::schema::sync_outbox::table
+            .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+            .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+            .select(crate::schema::sync_outbox::entity_id)
+            .load(&mut conn)
+            .expect("load checklist activity sync events");
+
+        assert_eq!(
+            activity_events.len(),
+            1,
+            "later CLI checklist toggles must not re-emit old checklist_activity rows"
+        );
 
         std::env::remove_var("FINI_DB_PATH");
         let _ = std::fs::remove_file(db_path);
