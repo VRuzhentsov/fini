@@ -668,6 +668,14 @@ impl<'a> QuestService<'a> {
         }
     }
 
+    fn ensure_checklist_quest(quest: &Quest) -> Result<(), String> {
+        if quest.is_checklist {
+            Ok(())
+        } else {
+            Err("quest is not a checklist".to_string())
+        }
+    }
+
     pub fn add_checklist_item(
         &mut self,
         quest_id: &str,
@@ -675,6 +683,7 @@ impl<'a> QuestService<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let new_md = checklist_md::add_item(quest.description.as_deref(), text);
         let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
         log_checklist_activity(
@@ -694,6 +703,7 @@ impl<'a> QuestService<'a> {
         checked: bool,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
         let new_md = checklist_md::set_checked(&md, item_id, checked);
         // Individual check/uncheck toggles are not written to the audit log by design (#128's
@@ -710,6 +720,7 @@ impl<'a> QuestService<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
         let new_md = checklist_md::set_text(&md, item_id, text);
         let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
@@ -730,6 +741,7 @@ impl<'a> QuestService<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
         let removed_text = checklist_md::parse(&md)
             .into_iter()
@@ -757,6 +769,7 @@ impl<'a> QuestService<'a> {
         ordered_ids: &[String],
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
         let new_md = checklist_md::reorder(&md, ordered_ids);
         self.repository.set_checklist_description(quest_id, &new_md)
@@ -2620,6 +2633,24 @@ mod tests {
         result.quest
     }
 
+    fn create_active_quest_with_prose(conn: &mut SqliteConnection, description: &str) -> Quest {
+        let result = QuestService::new(conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Meeting notes".to_string(),
+                description: Some(description.to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create quest with prose");
+        result.quest
+    }
+
     #[test]
     fn checklist_item_crud_logs_activity_but_toggles_do_not() {
         let db_path = temp_db_path("checklist-crud");
@@ -2662,6 +2693,39 @@ mod tests {
             vec!["added", "edited", "removed"],
             "toggling checked state must not write an activity row"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn checklist_mutations_reject_prose_quests_without_conversion() {
+        let db_path = temp_db_path("checklist-reject-prose");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = create_active_quest_with_prose(&mut conn, "meeting notes");
+        let mut service = QuestService::new(&mut conn);
+
+        for result in [
+            service.add_checklist_item(&quest.id, "headphones", Some("dev-a")),
+            service.toggle_checklist_item(&quest.id, "a1", true),
+            service.edit_checklist_item_text(&quest.id, "a1", "headphones", Some("dev-a")),
+            service.remove_checklist_item(&quest.id, "a1", Some("dev-a")),
+            service.reorder_checklist(&quest.id, &["a1".to_string()]),
+        ] {
+            assert!(matches!(
+                result,
+                Err(ref error) if error == "quest is not a checklist"
+            ));
+        }
+
+        let stored = service.get(&quest.id).expect("load prose quest");
+        assert!(!stored.is_checklist, "mutation must not convert prose quests");
+        assert_eq!(stored.description.as_deref(), Some("meeting notes"));
+
+        let activity = service
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        assert!(activity.is_empty(), "rejected mutations must not log activity");
 
         let _ = std::fs::remove_file(db_path);
     }
