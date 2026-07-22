@@ -88,6 +88,10 @@ function onToggleChecklistItem(quest: Quest, itemId: string, checked: boolean) {
   store.toggleChecklistItem(quest.id, itemId, checked);
 }
 
+function onEditChecklistItemText(quest: Quest, itemId: string, text: string) {
+  store.editChecklistItemText(quest.id, itemId, text);
+}
+
 // A structural edit (add/remove item) on a recurring quest needs the user's scope choice
 // (#128: "This occurrence" vs "This and future occurrences") before it's applied.
 const pendingScopeAction = ref<{ quest: Quest; kind: "add" | "remove"; payload: string } | null>(
@@ -338,6 +342,7 @@ function formatTimestamp(quest: Quest): string {
         @more="openMore($event, quest)"
         @toggle-checklist-item="(itemId, checked) => onToggleChecklistItem(quest, itemId, checked)"
         @add-checklist-item="onAddChecklistItem(quest, $event)"
+        @edit-checklist-item-text="(itemId, text) => onEditChecklistItemText(quest, itemId, text)"
         @remove-checklist-item="onRemoveChecklistItem(quest, $event)"
       />
 

@@ -42,6 +42,7 @@ const emit = defineEmits<{
   more: [event: MouseEvent];
   toggleChecklistItem: [itemId: string, checked: boolean];
   addChecklistItem: [text: string];
+  editChecklistItemText: [itemId: string, text: string];
   removeChecklistItem: [itemId: string];
 }>();
 
@@ -99,6 +100,22 @@ function onAddItemKeydown(event: KeyboardEvent) {
   if (event.key !== "Enter") return;
   event.preventDefault();
   onAddItem();
+}
+
+function onItemTextBlur(itemId: string, currentText: string, event: FocusEvent) {
+  const input = event.target as HTMLInputElement;
+  const value = input.value.trim();
+  if (!value) {
+    input.value = currentText;
+    return;
+  }
+  if (value !== currentText) emit("editChecklistItemText", itemId, value);
+}
+
+function onItemTextKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  (event.target as HTMLInputElement).blur();
 }
 
 function formatActivityTime(iso: string): string {
@@ -198,7 +215,18 @@ const renderFlags = computed(() => ({
           >
             <CheckIcon v-if="item.checked" />
           </button>
-          <span class="quest-editor-checklist-text" :class="{ checked: item.checked }">{{ item.text }}</span>
+          <input
+            v-if="renderFlags.checklistEditable"
+            class="quest-editor-checklist-text-input"
+            :class="{ checked: item.checked }"
+            :value="item.text"
+            type="text"
+            aria-label="Checklist item text"
+            @click.stop
+            @blur="onItemTextBlur(item.id, item.text, $event)"
+            @keydown="onItemTextKeydown"
+          />
+          <span v-else class="quest-editor-checklist-text" :class="{ checked: item.checked }">{{ item.text }}</span>
           <button
             v-if="renderFlags.checklistEditable"
             class="quest-editor-checklist-remove"
@@ -535,7 +563,27 @@ const renderFlags = computed(() => ({
   overflow-wrap: break-word;
 }
 
+.quest-editor-checklist-text-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  font-size: 14px;
+  color: var(--fg-1);
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.quest-editor-checklist-text-input:focus {
+  box-shadow: inset 0 -1px 0 var(--color-border-soft);
+}
+
 .quest-editor-checklist-text.checked {
+  color: var(--fg-4);
+  text-decoration: line-through;
+}
+
+.quest-editor-checklist-text-input.checked {
   color: var(--fg-4);
   text-decoration: line-through;
 }

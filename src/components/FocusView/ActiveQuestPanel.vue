@@ -31,6 +31,10 @@ function onToggleChecklistItem(itemId: string, checked: boolean) {
   store.toggleChecklistItem(props.quest.id, itemId, checked);
 }
 
+function onEditChecklistItemText(itemId: string, text: string) {
+  store.editChecklistItemText(props.quest.id, itemId, text);
+}
+
 const pendingScopeAction = ref<{ kind: "add" | "remove"; payload: string } | null>(null);
 
 function onAddChecklistItem(text: string) {
@@ -178,6 +182,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     @more="onContextMenu"
     @toggle-checklist-item="onToggleChecklistItem"
     @add-checklist-item="onAddChecklistItem"
+    @edit-checklist-item-text="onEditChecklistItemText"
     @remove-checklist-item="onRemoveChecklistItem"
   />
 
