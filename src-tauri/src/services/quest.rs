@@ -577,9 +577,19 @@ impl<'a> QuestService<'a> {
         id: &str,
         input: UpdateQuestInput,
     ) -> Result<UpdateQuestResult, String> {
+        self.update_with_origin(id, input, None)
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn update_with_origin(
+        &mut self,
+        id: &str,
+        input: UpdateQuestInput,
+        origin_device_id: Option<&str>,
+    ) -> Result<UpdateQuestResult, String> {
         let requested_status = input.status.clone();
         let (previous, quest) = self.repository.update(id, input)?;
-        self.finish_update(previous, quest, requested_status)
+        self.finish_update(previous, quest, requested_status, origin_device_id)
     }
 
     pub fn update_patch(
@@ -587,9 +597,18 @@ impl<'a> QuestService<'a> {
         id: &str,
         patch: QuestUpdatePatch,
     ) -> Result<UpdateQuestResult, String> {
+        self.update_patch_with_origin(id, patch, None)
+    }
+
+    pub fn update_patch_with_origin(
+        &mut self,
+        id: &str,
+        patch: QuestUpdatePatch,
+        origin_device_id: Option<&str>,
+    ) -> Result<UpdateQuestResult, String> {
         let requested_status = patch.input.status.clone();
         let (previous, quest) = self.repository.update_patch(id, patch)?;
-        self.finish_update(previous, quest, requested_status)
+        self.finish_update(previous, quest, requested_status, origin_device_id)
     }
 
     fn finish_update(
@@ -597,6 +616,7 @@ impl<'a> QuestService<'a> {
         previous: Quest,
         quest: Quest,
         requested_status: Option<String>,
+        origin_device_id: Option<&str>,
     ) -> Result<UpdateQuestResult, String> {
         let restore_should_focus = previous.status != "active"
             && quest.status == "active"
@@ -625,7 +645,7 @@ impl<'a> QuestService<'a> {
                 &quest.id,
                 "completed_snapshot",
                 &format!("Checklist at completion: {done}/{total} checked"),
-                None,
+                origin_device_id,
             );
         }
 
@@ -1193,7 +1213,11 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
         is_checklist: None,
     };
 
-    match QuestService::new(&mut conn).update(quest_id, input) {
+    match QuestService::new(&mut conn).update_with_origin(
+        quest_id,
+        input,
+        Some(&dc.identity.device_id),
+    ) {
         Ok(result) => {
             let updated_quest = result.quest;
             if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, app, quest_id) {
@@ -1237,7 +1261,11 @@ pub fn update_quest(
     let previous_status = previous.status.clone();
     let previous_space_id = previous.space_id.clone();
 
-    let update_result = QuestService::new(&mut conn).update(&id, input)?;
+    let update_result = QuestService::new(&mut conn).update_with_origin(
+        &id,
+        input,
+        Some(&device_connection.identity.device_id),
+    )?;
     let mut quest = update_result.quest;
 
     if previous_status != "active" && quest.status == "active" && update_result.restore_should_focus
@@ -3352,7 +3380,7 @@ mod tests {
 
         let mut service = QuestService::new(&mut conn);
         service
-            .update(&quest.id, status_patch("completed"))
+            .update_with_origin(&quest.id, status_patch("completed"), Some("dev-a"))
             .expect("complete quest");
 
         let activity = service
@@ -3363,6 +3391,7 @@ mod tests {
             .find(|a| a.kind == "completed_snapshot")
             .expect("completed_snapshot activity row must exist");
         assert_eq!(snapshot.detail, "Checklist at completion: 1/2 checked");
+        assert_eq!(snapshot.origin_device_id.as_deref(), Some("dev-a"));
 
         let _ = std::fs::remove_file(db_path);
     }

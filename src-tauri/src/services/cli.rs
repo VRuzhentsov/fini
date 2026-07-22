@@ -1078,7 +1078,7 @@ fn update_quest_from_cli(
         repeat_rule,
     };
     let result = QuestService::new(conn)
-        .update_patch(&args.id, patch)
+        .update_patch_with_origin(&args.id, patch, Some(&ctx.device_state.identity.device_id))
         .map_err(CliError::from_string)?;
     let quest = result.quest;
     if args.trigger_reminder_focus {
