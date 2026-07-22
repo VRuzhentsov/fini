@@ -514,6 +514,7 @@ fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Res
             quest_series::active.eq(series.active),
             quest_series::created_at.eq(&series.created_at),
             quest_series::updated_at.eq(&series.updated_at),
+            quest_series::is_checklist.eq(series.is_checklist),
         ))
         .on_conflict(quest_series::id)
         .do_update()
@@ -527,6 +528,7 @@ fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Res
             quest_series::active.eq(series.active),
             quest_series::created_at.eq(&series.created_at),
             quest_series::updated_at.eq(&series.updated_at),
+            quest_series::is_checklist.eq(series.is_checklist),
         ))
         .execute(conn)
         .map_err(|e| e.to_string())?;
@@ -1594,6 +1596,22 @@ mod tests {
         serde_json::to_string(quest).unwrap()
     }
 
+    fn test_series(id: &str, title: &str, updated_at: &str) -> QuestSeries {
+        QuestSeries {
+            id: id.to_string(),
+            space_id: "1".to_string(),
+            title: title.to_string(),
+            description: None,
+            repeat_rule: r#"{"preset":"daily"}"#.to_string(),
+            priority: 1,
+            energy: "medium".to_string(),
+            active: true,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: updated_at.to_string(),
+            is_checklist: false,
+        }
+    }
+
     fn insert_outbox_entry_for_space(
         conn: &mut SqliteConnection,
         origin_device_id: &str,
@@ -1660,6 +1678,76 @@ mod tests {
 
         assert!(apply_sync_event(&mut conn, &event).unwrap());
         assert!(!apply_sync_event(&mut conn, &event).unwrap());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_persists_synced_series_checklist_flag() {
+        let db_path = temp_db_path("series-checklist-flag");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist_template = crate::services::checklist_md::serialize(&[
+            crate::services::checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: true,
+            },
+        ]);
+        let mut remote_series = test_series("series-checklist", "Pack", "2026-03-02T00:00:00Z");
+        remote_series.description = Some(checklist_template.clone());
+        remote_series.is_checklist = true;
+
+        let event = test_envelope(
+            "evt-series-checklist",
+            "dev-remote",
+            "quest_series",
+            &remote_series.id,
+            "upsert",
+            Some(serde_json::to_string(&remote_series).unwrap()),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: QuestSeries = quest_series::table
+            .find(&remote_series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(
+            stored.is_checklist,
+            "synced recurring checklist series must not fall back to the DB default prose flag"
+        );
+        assert_eq!(
+            stored.description.as_deref(),
+            Some(checklist_template.as_str())
+        );
+
+        remote_series.is_checklist = false;
+        remote_series.updated_at = "2026-03-03T00:00:00Z".to_string();
+        let update_event = test_envelope(
+            "evt-series-prose",
+            "dev-remote",
+            "quest_series",
+            &remote_series.id,
+            "upsert",
+            Some(serde_json::to_string(&remote_series).unwrap()),
+            "2026-03-03T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &update_event).unwrap());
+
+        let updated_is_checklist: bool = quest_series::table
+            .find(&remote_series.id)
+            .select(quest_series::is_checklist)
+            .first(&mut conn)
+            .unwrap();
+        assert!(
+            !updated_is_checklist,
+            "synced quest_series upserts must also update checklist mode changes"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
