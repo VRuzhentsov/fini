@@ -3146,4 +3146,71 @@ mod tests {
 
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[test]
+    fn recurring_non_checklist_occurrence_copies_current_prose_description() {
+        let db_path = temp_db_path("non-checklist-recurrence-current-description");
+        let mut conn = open_db_at_path(&db_path);
+
+        let result = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Write journal".to_string(),
+                description: Some("Original notes".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create repeating prose quest");
+        let quest = result.quest;
+        let series = result.series.expect("repeating quest must create a series");
+
+        QuestService::new(&mut conn)
+            .update_patch(
+                &quest.id,
+                QuestUpdatePatch {
+                    input: UpdateQuestInput {
+                        description: Some("Edited occurrence notes".to_string()),
+                        ..status_patch("active")
+                    },
+                    description: QuestFieldPatch::Set("Edited occurrence notes".to_string()),
+                    due: QuestFieldPatch::Unchanged,
+                    due_time: QuestFieldPatch::Unchanged,
+                    repeat_rule: QuestFieldPatch::Unchanged,
+                },
+            )
+            .expect("edit current occurrence prose");
+
+        let stored_series: QuestSeries = crate::schema::quest_series::table
+            .find(&series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(
+            stored_series.description.as_deref(),
+            Some("Original notes"),
+            "normal prose edits must not rewrite the series row"
+        );
+
+        let update_result = QuestService::new(&mut conn)
+            .update(&quest.id, status_patch("completed"))
+            .expect("complete occurrence");
+        let next = update_result
+            .next_occurrence
+            .expect("completing a recurring quest must generate the next occurrence");
+
+        assert_eq!(
+            next.description.as_deref(),
+            Some("Edited occurrence notes"),
+            "non-checklist recurrence should carry current prose notes forward"
+        );
+        assert!(!next.is_checklist);
+        assert!(next.checklist_base.is_none());
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }

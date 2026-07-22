@@ -131,9 +131,10 @@ impl<'a> QuestRepository<'a> {
             .first::<Option<f64>>(self.conn)
             .map_err(|error| error.to_string())?
             .unwrap_or(0.0);
-        // Fresh occurrence gets a fresh, unchecked copy of the series checklist template
-        // (issue #128: "a fresh, unchecked checklist copied from its checklist template"). The
-        // template lives in quest_series.description (same reuse as the occurrence itself).
+        // Checklist occurrences get a fresh, unchecked copy of the series template (issue #128:
+        // "a fresh, unchecked checklist copied from its checklist template"). Plain prose
+        // descriptions keep following the completed occurrence, because normal prose edits only
+        // update `quests.description` and should carry into the next occurrence.
         let (template_description, is_checklist): (Option<String>, bool) = quest_series::table
             .find(series_id)
             .select((quest_series::description, quest_series::is_checklist))
@@ -144,7 +145,7 @@ impl<'a> QuestRepository<'a> {
                 .as_deref()
                 .map(crate::services::checklist_md::reset_unchecked)
         } else {
-            template_description
+            quest.description.clone()
         };
         let now = utc_now();
         diesel::insert_into(quests::table)
