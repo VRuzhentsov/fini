@@ -230,7 +230,8 @@ async function onSubmit() {
     await questStore.createQuest({
       title: value,
       description: descriptionValue,
-      is_checklist: isChecklistMode.value && descriptionValue !== null,
+      // An empty checklist is still a checklist: its first item may be added later.
+      is_checklist: isChecklistMode.value,
       space_id: selectedSpaceId.value,
       due: due.value,
       due_time: dueTime.value,

@@ -88,11 +88,22 @@ function onToggleChecklistItem(quest: Quest, itemId: string, checked: boolean) {
   store.toggleChecklistItem(quest.id, itemId, checked);
 }
 
-// A structural edit (add/remove item) on a recurring quest needs the user's scope choice
+function onEditChecklistItemText(quest: Quest, itemId: string, text: string) {
+  if (quest.series_id) {
+    pendingScopeAction.value = { quest, kind: "edit", payload: { itemId, text } };
+    return;
+  }
+  store.editChecklistItemText(quest.id, itemId, text);
+}
+
+// A structural or text edit on a recurring quest needs the user's scope choice
 // (#128: "This occurrence" vs "This and future occurrences") before it's applied.
-const pendingScopeAction = ref<{ quest: Quest; kind: "add" | "remove"; payload: string } | null>(
-  null,
-);
+type PendingScopeAction =
+  | { quest: Quest; kind: "add"; payload: string }
+  | { quest: Quest; kind: "remove"; payload: string }
+  | { quest: Quest; kind: "edit"; payload: { itemId: string; text: string } };
+
+const pendingScopeAction = ref<PendingScopeAction | null>(null);
 
 function onAddChecklistItem(quest: Quest, text: string) {
   if (quest.series_id) {
@@ -118,7 +129,8 @@ async function onScopeChosen(scope: "this" | "future") {
 
   if (scope === "this") {
     if (kind === "add") await store.addChecklistItem(quest.id, payload);
-    else await store.removeChecklistItem(quest.id, payload);
+    else if (kind === "remove") await store.removeChecklistItem(quest.id, payload);
+    else await store.editChecklistItemText(quest.id, payload.itemId, payload.text);
     return;
   }
 
@@ -129,7 +141,9 @@ async function onScopeChosen(scope: "this" | "future") {
   const nextItems =
     kind === "add"
       ? [...items, { id: newChecklistItemId(), text: payload, checked: false }]
-      : items.filter((it) => it.id !== payload);
+      : kind === "remove"
+        ? items.filter((it) => it.id !== payload)
+        : items.map((it) => (it.id === payload.itemId ? { ...it, text: payload.text } : it));
   await store.updateSeriesChecklist(quest.series_id!, quest.id, serializeChecklist(nextItems), "future");
 }
 
@@ -338,6 +352,7 @@ function formatTimestamp(quest: Quest): string {
         @more="openMore($event, quest)"
         @toggle-checklist-item="(itemId, checked) => onToggleChecklistItem(quest, itemId, checked)"
         @add-checklist-item="onAddChecklistItem(quest, $event)"
+        @edit-checklist-item-text="(itemId, text) => onEditChecklistItemText(quest, itemId, text)"
         @remove-checklist-item="onRemoveChecklistItem(quest, $event)"
       />
 

@@ -90,6 +90,59 @@ describe("QuestEditor checklist rendering", () => {
     expect(wrapper.emitted("addChecklistItem")).toEqual([["lunch"]]);
   });
 
+  it("lets active checklist item text edits emit the existing item id and new text", async () => {
+    const wrapper = mount(QuestEditor, {
+      props: {
+        ...defaultProps,
+        quest: baseQuest({
+          is_checklist: true,
+          description: "- [ ] headpones <!--k=a1-->",
+        }),
+      },
+    });
+
+    const input = wrapper.find(".quest-editor-checklist-text-input");
+    await input.setValue("headphones");
+    await input.trigger("blur");
+
+    expect(wrapper.emitted("editChecklistItemText")).toEqual([["a1", "headphones"]]);
+  });
+
+  it("keeps completed checklist item text readonly", () => {
+    const wrapper = mount(QuestEditor, {
+      props: {
+        ...defaultProps,
+        quest: baseQuest({
+          status: "completed",
+          is_checklist: true,
+          description: "- [x] headphones <!--k=a1-->",
+        }),
+      },
+    });
+
+    expect(wrapper.find(".quest-editor-checklist-text-input").exists()).toBe(false);
+    expect(wrapper.find(".quest-editor-checklist-text").text()).toBe("headphones");
+  });
+
+  it("disables checklist item toggles for completed checklist quests", async () => {
+    const wrapper = mount(QuestEditor, {
+      props: {
+        ...defaultProps,
+        quest: baseQuest({
+          status: "completed",
+          is_checklist: true,
+          description: "- [x] headphones <!--k=a1-->",
+        }),
+      },
+    });
+
+    const checkbox = wrapper.find<HTMLButtonElement>(".quest-editor-checklist-box");
+
+    expect(checkbox.element.disabled).toBe(true);
+    await checkbox.trigger("click");
+    expect(wrapper.emitted("toggleChecklistItem")).toBeUndefined();
+  });
+
   it("hides remove buttons and the add-item row for a completed (readonly) checklist quest", () => {
     const wrapper = mount(QuestEditor, {
       props: {

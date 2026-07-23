@@ -15,8 +15,8 @@ use tauri_plugin_fs::{FilePath, FsExt};
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
-use crate::models::{Quest, QuestSeries, Space};
-use crate::schema::{quest_series, quests, spaces};
+use crate::models::{ChecklistActivity, Quest, QuestSeries, Space};
+use crate::schema::{checklist_activity, quest_series, quests, spaces};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
@@ -149,6 +149,12 @@ struct TableNameRow {
     name: String,
 }
 
+#[derive(QueryableByName)]
+struct ColumnNameRow {
+    #[diesel(sql_type = Text)]
+    name: String,
+}
+
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_export(
@@ -166,11 +172,17 @@ pub fn backup_export(
             let result = export_backup(&mut conn, &temp, &space_ids)?;
             let mut opts = tauri_plugin_fs::OpenOptions::new();
             opts.write(true).create(true).truncate(true);
-            let mut dst = app.fs().open(FilePath::Url(url.clone()), opts).map_err(|e| e.to_string())?;
+            let mut dst = app
+                .fs()
+                .open(FilePath::Url(url.clone()), opts)
+                .map_err(|e| e.to_string())?;
             std::io::copy(&mut File::open(&temp).map_err(|e| e.to_string())?, &mut dst)
                 .map_err(|e| e.to_string())?;
             fs::remove_file(&temp).ok();
-            Ok(BackupExportResult { path: url.to_string(), manifest: result.manifest })
+            Ok(BackupExportResult {
+                path: url.to_string(),
+                manifest: result.manifest,
+            })
         }
     }
 }
@@ -264,6 +276,15 @@ pub fn export_backup(
         .select(Quest::as_select())
         .load::<Quest>(conn)
         .map_err(|e| e.to_string())?;
+    let selected_quest_ids = selected_quests
+        .iter()
+        .map(|quest| quest.id.clone())
+        .collect::<Vec<_>>();
+    let selected_checklist_activity = checklist_activity::table
+        .filter(checklist_activity::quest_id.eq_any(&selected_quest_ids))
+        .select(ChecklistActivity::as_select())
+        .load::<ChecklistActivity>(conn)
+        .map_err(|e| e.to_string())?;
 
     let manifest = BackupManifest {
         format: BACKUP_FORMAT.to_string(),
@@ -304,6 +325,9 @@ pub fn export_backup(
     for quest in &selected_quests {
         insert_quest(&mut backup_conn, quest).map_err(|e| e.to_string())?;
     }
+    for activity in &selected_checklist_activity {
+        insert_checklist_activity(&mut backup_conn, activity).map_err(|e| e.to_string())?;
+    }
 
     write_zip(output_path, &manifest, &backup_db_path)?;
     let _ = fs::remove_dir_all(&temp_dir);
@@ -323,6 +347,7 @@ pub fn preflight_import(
         let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
             .map_err(|e| format!("failed to open backup database: {e}"))?;
         validate_backup_schema(&mut backup_conn)?;
+        migrate_backup_schema(&mut backup_conn)?;
         validate_manifest(&extracted.manifest)?;
 
         let backup_spaces = load_backup_spaces(&mut backup_conn)?;
@@ -345,6 +370,7 @@ pub fn inspect_backup(path: &Path) -> Result<BackupArchiveInspection, String> {
         let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
             .map_err(|e| format!("failed to open backup database: {e}"))?;
         validate_backup_schema(&mut backup_conn)?;
+        migrate_backup_schema(&mut backup_conn)?;
         validate_manifest(&extracted.manifest)?;
 
         let spaces = load_backup_spaces(&mut backup_conn)?;
@@ -407,16 +433,26 @@ pub fn apply_import(
         let mut backup_conn = SqliteConnection::establish(path_str(&extracted.db_path)?)
             .map_err(|e| format!("failed to open backup database: {e}"))?;
         validate_backup_schema(&mut backup_conn)?;
+        migrate_backup_schema(&mut backup_conn)?;
         validate_manifest(&extracted.manifest)?;
 
         let backup_spaces = load_backup_spaces(&mut backup_conn)?;
         let backup_series = load_backup_series(&mut backup_conn)?;
         let backup_quests = load_backup_quests(&mut backup_conn)?;
+        let backup_checklist_activity = load_backup_checklist_activity(&mut backup_conn)?;
         let space_map = resolve_space_map(conn, &backup_spaces, mappings)?;
         let backup_space_by_id: HashMap<&str, &Space> = backup_spaces
             .iter()
             .map(|space| (space.id.as_str(), space))
             .collect();
+        let quest_import_action_by_id = backup_quests
+            .iter()
+            .map(|quest| {
+                let mapped = mapped_quest(quest, &space_map);
+                let action = conflict_action(&resolution_map, "quest", &mapped.id);
+                (mapped.id, action)
+            })
+            .collect::<HashMap<_, _>>();
 
         conn.transaction::<_, diesel::result::Error, _>(|tx| {
             for (backup_space_id, local_space_id) in &space_map {
@@ -441,6 +477,27 @@ pub fn apply_import(
                 let mapped = mapped_quest(quest, &space_map);
                 let action = conflict_action(&resolution_map, "quest", &mapped.id);
                 upsert_quest_for_import(tx, &mapped, action)?;
+            }
+
+            for quest in &backup_quests {
+                let mapped = mapped_quest(quest, &space_map);
+                if matches!(
+                    quest_import_action_by_id.get(&mapped.id),
+                    Some(ConflictAction::KeepLocal)
+                ) {
+                    continue;
+                }
+                delete_checklist_activity_for_quest(tx, &mapped.id)?;
+            }
+
+            for activity in &backup_checklist_activity {
+                if matches!(
+                    quest_import_action_by_id.get(&activity.quest_id),
+                    Some(ConflictAction::KeepLocal)
+                ) {
+                    continue;
+                }
+                insert_checklist_activity_for_import(tx, activity)?;
             }
 
             Ok(())
@@ -551,6 +608,15 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             is_checklist BOOLEAN NOT NULL DEFAULT 0,
             checklist_base TEXT
         );
+        CREATE TABLE checklist_activity (
+            id TEXT PRIMARY KEY NOT NULL,
+            quest_id TEXT NOT NULL REFERENCES quests(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            origin_device_id TEXT
+        );
+        CREATE INDEX idx_checklist_activity_quest_id ON checklist_activity (quest_id);
         ",
     )
     .map_err(|e| e.to_string())
@@ -571,6 +637,61 @@ fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn migrate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
+    ensure_backup_column(
+        conn,
+        "quest_series",
+        "is_checklist",
+        "ALTER TABLE quest_series ADD COLUMN is_checklist BOOLEAN NOT NULL DEFAULT 0",
+    )?;
+    ensure_backup_column(
+        conn,
+        "quests",
+        "is_checklist",
+        "ALTER TABLE quests ADD COLUMN is_checklist BOOLEAN NOT NULL DEFAULT 0",
+    )?;
+    ensure_backup_column(
+        conn,
+        "quests",
+        "checklist_base",
+        "ALTER TABLE quests ADD COLUMN checklist_base TEXT",
+    )?;
+    ensure_checklist_activity_table(conn)
+}
+
+fn ensure_checklist_activity_table(conn: &mut SqliteConnection) -> Result<(), String> {
+    conn.batch_execute(
+        "
+        CREATE TABLE IF NOT EXISTS checklist_activity (
+            id TEXT PRIMARY KEY NOT NULL,
+            quest_id TEXT NOT NULL REFERENCES quests(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            origin_device_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_checklist_activity_quest_id ON checklist_activity (quest_id);
+        ",
+    )
+    .map_err(|e| format!("failed to migrate backup schema for checklist_activity: {e}"))
+}
+
+fn ensure_backup_column(
+    conn: &mut SqliteConnection,
+    table: &str,
+    column: &str,
+    migration: &str,
+) -> Result<(), String> {
+    let rows = diesel::sql_query(format!("SELECT name FROM pragma_table_info('{table}')"))
+        .load::<ColumnNameRow>(conn)
+        .map_err(|e| format!("failed to inspect backup schema columns for {table}: {e}"))?;
+    if rows.iter().any(|row| row.name == column) {
+        return Ok(());
+    }
+    conn.batch_execute(migration)
+        .map_err(|e| format!("failed to migrate backup schema for {table}.{column}: {e}"))
 }
 
 fn validate_manifest(manifest: &BackupManifest) -> Result<(), String> {
@@ -679,6 +800,34 @@ fn load_backup_quests(conn: &mut SqliteConnection) -> Result<Vec<Quest>, String>
         .map_err(|e| e.to_string())
 }
 
+fn load_backup_checklist_activity(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<ChecklistActivity>, String> {
+    checklist_activity::table
+        .select(ChecklistActivity::as_select())
+        .load(conn)
+        .map_err(|e| e.to_string())
+}
+
+fn load_checklist_activity_for_quest(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+) -> Result<Vec<ChecklistActivity>, String> {
+    checklist_activity::table
+        .filter(checklist_activity::quest_id.eq(quest_id))
+        .order(checklist_activity::id.asc())
+        .select(ChecklistActivity::as_select())
+        .load(conn)
+        .map_err(|e| e.to_string())
+}
+
+fn load_backup_checklist_activity_for_quest(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+) -> Result<Vec<ChecklistActivity>, String> {
+    load_checklist_activity_for_quest(conn, quest_id)
+}
+
 fn required_space_mappings(
     conn: &mut SqliteConnection,
     backup_spaces: &[Space],
@@ -778,6 +927,8 @@ fn collect_conflicts(
 
     for backup in load_backup_quests(backup_conn)? {
         let mapped = mapped_quest(&backup, space_map);
+        let backup_checklist_activity =
+            load_backup_checklist_activity_for_quest(backup_conn, &backup.id)?;
         if let Some(local) = quests::table
             .find(&mapped.id)
             .select(Quest::as_select())
@@ -785,6 +936,7 @@ fn collect_conflicts(
             .optional()
             .map_err(|e| e.to_string())?
         {
+            let local_checklist_activity = load_checklist_activity_for_quest(conn, &mapped.id)?;
             if quest_value(&local)? != quest_value(&mapped)? {
                 conflicts.push(BackupConflict {
                     entity_type: "quest".to_string(),
@@ -794,6 +946,24 @@ fn collect_conflicts(
                     backup_summary: format!("{} ({})", mapped.title, mapped.status),
                     local: quest_value(&local)?,
                     backup: quest_value(&mapped)?,
+                });
+            } else if checklist_activity_value(&local_checklist_activity)?
+                != checklist_activity_value(&backup_checklist_activity)?
+            {
+                conflicts.push(BackupConflict {
+                    entity_type: "quest".to_string(),
+                    id: mapped.id.clone(),
+                    title: mapped.title.clone(),
+                    local_summary: format!(
+                        "{} checklist activity row(s)",
+                        local_checklist_activity.len()
+                    ),
+                    backup_summary: format!(
+                        "{} checklist activity row(s)",
+                        backup_checklist_activity.len()
+                    ),
+                    local: checklist_activity_value(&local_checklist_activity)?,
+                    backup: checklist_activity_value(&backup_checklist_activity)?,
                 });
             }
         }
@@ -864,6 +1034,47 @@ fn insert_quest(
             quests::is_checklist.eq(quest.is_checklist),
             quests::checklist_base.eq(&quest.checklist_base),
         ))
+        .execute(conn)
+}
+
+fn insert_checklist_activity(
+    conn: &mut SqliteConnection,
+    activity: &ChecklistActivity,
+) -> Result<usize, diesel::result::Error> {
+    diesel::insert_into(checklist_activity::table)
+        .values((
+            checklist_activity::id.eq(&activity.id),
+            checklist_activity::quest_id.eq(&activity.quest_id),
+            checklist_activity::kind.eq(&activity.kind),
+            checklist_activity::detail.eq(&activity.detail),
+            checklist_activity::created_at.eq(&activity.created_at),
+            checklist_activity::origin_device_id.eq(&activity.origin_device_id),
+        ))
+        .execute(conn)
+}
+
+fn insert_checklist_activity_for_import(
+    conn: &mut SqliteConnection,
+    activity: &ChecklistActivity,
+) -> Result<(), diesel::result::Error> {
+    diesel::insert_or_ignore_into(checklist_activity::table)
+        .values((
+            checklist_activity::id.eq(&activity.id),
+            checklist_activity::quest_id.eq(&activity.quest_id),
+            checklist_activity::kind.eq(&activity.kind),
+            checklist_activity::detail.eq(&activity.detail),
+            checklist_activity::created_at.eq(&activity.created_at),
+            checklist_activity::origin_device_id.eq(&activity.origin_device_id),
+        ))
+        .execute(conn)?;
+    Ok(())
+}
+
+fn delete_checklist_activity_for_quest(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+) -> Result<usize, diesel::result::Error> {
+    diesel::delete(checklist_activity::table.filter(checklist_activity::quest_id.eq(quest_id)))
         .execute(conn)
 }
 
@@ -1033,6 +1244,10 @@ fn quest_value(quest: &Quest) -> Result<serde_json::Value, String> {
     serde_json::to_value(quest).map_err(|e| e.to_string())
 }
 
+fn checklist_activity_value(activity: &[ChecklistActivity]) -> Result<serde_json::Value, String> {
+    serde_json::to_value(activity).map_err(|e| e.to_string())
+}
+
 fn is_builtin_space(id: &str) -> bool {
     BUILTIN_SPACE_IDS.contains(&id)
 }
@@ -1066,6 +1281,112 @@ mod tests {
             ))
             .execute(conn)
             .expect("insert custom space");
+    }
+
+    fn create_legacy_v2_backup_schema(conn: &mut SqliteConnection) {
+        conn.batch_execute(
+            "
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE spaces (
+                id TEXT PRIMARY KEY NOT NULL,
+                name TEXT NOT NULL,
+                item_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE quest_series (
+                id TEXT PRIMARY KEY NOT NULL,
+                space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
+                title TEXT NOT NULL,
+                description TEXT,
+                repeat_rule TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 1,
+                energy TEXT NOT NULL DEFAULT 'medium',
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE quests (
+                id TEXT PRIMARY KEY NOT NULL,
+                space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                energy TEXT NOT NULL DEFAULT 'medium',
+                priority INTEGER NOT NULL DEFAULT 1,
+                pinned BOOLEAN NOT NULL DEFAULT 0,
+                due TEXT,
+                due_time TEXT,
+                repeat_rule TEXT,
+                completed_at TEXT,
+                order_rank REAL NOT NULL DEFAULT 0,
+                focus_enter_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
+                period_key TEXT
+            );
+            ",
+        )
+        .expect("create legacy backup schema");
+    }
+
+    fn write_legacy_v2_backup_archive(label: &str) -> (PathBuf, PathBuf) {
+        let backup_database_path = temp_db_path(&format!("{label}-db"));
+        let mut backup_conn =
+            SqliteConnection::establish(path_str(&backup_database_path).expect("path"))
+                .expect("create legacy backup database");
+        create_legacy_v2_backup_schema(&mut backup_conn);
+        backup_conn
+            .batch_execute(
+                "
+                INSERT INTO spaces (id, name, item_order, created_at)
+                VALUES ('1', 'Inbox', 0, '2026-01-01T00:00:00Z');
+                INSERT INTO quest_series (
+                    id, space_id, title, description, repeat_rule, priority, energy,
+                    active, created_at, updated_at
+                ) VALUES (
+                    'legacy-series', '1', 'Legacy series', '- [ ] Template item',
+                    '{\"type\":\"daily\"}', 2, 'medium', 1,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+                );
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key
+                ) VALUES (
+                    'legacy-quest', '1', 'Legacy quest', '- [ ] Existing item', 'active',
+                    'medium', 2, 0, NULL, NULL, NULL, NULL, 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                    'legacy-series', '2026-01-01'
+                );
+                ",
+            )
+            .expect("seed legacy backup database");
+        drop(backup_conn);
+
+        let archive_path = backup_path(label);
+        let manifest = BackupManifest {
+            format: BACKUP_FORMAT.to_string(),
+            version: BACKUP_VERSION,
+            app_version: "0.2.1".to_string(),
+            exported_at: "2026-01-01T00:00:00Z".to_string(),
+            domains: vec![
+                "spaces".to_string(),
+                "quest_series".to_string(),
+                "quests".to_string(),
+            ],
+            spaces: vec![ManifestSpace {
+                id: "1".to_string(),
+                name: "Inbox".to_string(),
+            }],
+            counts: ManifestCounts {
+                spaces: 1,
+                quest_series: 1,
+                quests: 1,
+            },
+        };
+        write_zip(&archive_path, &manifest, &backup_database_path).expect("write legacy archive");
+        (archive_path, backup_database_path)
     }
 
     #[test]
@@ -1154,6 +1475,285 @@ mod tests {
             preflight.required_space_mappings[0].backup_space_id,
             "space-custom"
         );
+
+        let _ = fs::remove_file(out_path);
+        let _ = fs::remove_file(source_db_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn import_accepts_legacy_v2_backups_without_checklist_columns() {
+        let (archive_path, backup_database_path) =
+            write_legacy_v2_backup_archive("backup-legacy-v2-checklist-columns");
+
+        let inspection = inspect_backup(&archive_path).expect("inspect legacy backup");
+        assert_eq!(inspection.contents.counts.quest_series, 1);
+        assert_eq!(inspection.contents.counts.quests, 1);
+
+        let target_db_path = temp_db_path("backup-legacy-v2-target");
+        let mut target = open_db_at_path(&target_db_path);
+        let preflight = preflight_import(&mut target, &archive_path, &[]).expect("preflight");
+        assert!(preflight.required_space_mappings.is_empty());
+        assert!(preflight.conflicts.is_empty());
+
+        apply_import(&mut target, &archive_path, &[], &[]).expect("import legacy backup");
+        let imported_series: QuestSeries = quest_series::table
+            .find("legacy-series")
+            .select(QuestSeries::as_select())
+            .first(&mut target)
+            .expect("load imported series");
+        let imported_quest: Quest = quests::table
+            .find("legacy-quest")
+            .select(Quest::as_select())
+            .first(&mut target)
+            .expect("load imported quest");
+        assert!(!imported_series.is_checklist);
+        assert!(!imported_quest.is_checklist);
+        assert_eq!(imported_quest.checklist_base, None);
+
+        let _ = fs::remove_file(archive_path);
+        let _ = fs::remove_file(backup_database_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn backup_roundtrip_preserves_checklist_activity() {
+        let source_db_path = temp_db_path("backup-source-checklist-activity");
+        let mut source = open_db_at_path(&source_db_path);
+        source
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'checklist-quest', '1', 'Packed list',
+                    '- [x] Charger <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '- [x] Charger <!--k=item-1-->'
+                );
+                INSERT INTO checklist_activity (
+                    id, quest_id, kind, detail, created_at, origin_device_id
+                ) VALUES (
+                    'activity-completed', 'checklist-quest', 'completed_snapshot',
+                    'Checklist at completion: 1/1 checked', '2026-01-02T00:00:00Z', NULL
+                ), (
+                    'activity-edit', 'checklist-quest', 'post_completion_edit',
+                    'Renamed item to "USB-C charger"', '2026-01-03T00:00:00Z', 'peer-device'
+                );
+                "#,
+            )
+            .expect("seed source checklist activity");
+
+        let out_path = backup_path("backup-checklist-activity");
+        export_backup(&mut source, &out_path, &["1".to_string()]).expect("export");
+
+        let target_db_path = temp_db_path("backup-target-checklist-activity");
+        let mut target = open_db_at_path(&target_db_path);
+        apply_import(&mut target, &out_path, &[], &[]).expect("import");
+
+        let imported_activity = checklist_activity::table
+            .filter(checklist_activity::quest_id.eq("checklist-quest"))
+            .order(checklist_activity::created_at.asc())
+            .select(ChecklistActivity::as_select())
+            .load::<ChecklistActivity>(&mut target)
+            .expect("load imported checklist activity");
+        assert_eq!(imported_activity.len(), 2);
+        assert_eq!(imported_activity[0].id, "activity-completed");
+        assert_eq!(imported_activity[0].kind, "completed_snapshot");
+        assert_eq!(imported_activity[1].id, "activity-edit");
+        assert_eq!(imported_activity[1].kind, "post_completion_edit");
+        assert_eq!(
+            imported_activity[1].origin_device_id.as_deref(),
+            Some("peer-device")
+        );
+
+        let _ = fs::remove_file(out_path);
+        let _ = fs::remove_file(source_db_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn import_backup_resolution_replaces_local_checklist_activity() {
+        let source_db_path = temp_db_path("backup-source-replace-checklist-activity");
+        let mut source = open_db_at_path(&source_db_path);
+        source
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'replace-activity-quest', '1', 'Backup title',
+                    '- [x] Backup item <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '- [x] Backup item <!--k=item-1-->'
+                );
+                INSERT INTO checklist_activity (
+                    id, quest_id, kind, detail, created_at, origin_device_id
+                ) VALUES (
+                    'shared-activity', 'replace-activity-quest', 'completed_snapshot',
+                    'Backup snapshot', '2026-01-02T00:00:00Z', 'backup-device'
+                );
+                "#,
+            )
+            .expect("seed backup checklist activity");
+
+        let out_path = backup_path("backup-replace-checklist-activity");
+        export_backup(&mut source, &out_path, &["1".to_string()]).expect("export");
+
+        let target_db_path = temp_db_path("backup-target-replace-checklist-activity");
+        let mut target = open_db_at_path(&target_db_path);
+        target
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'replace-activity-quest', '1', 'Local title',
+                    '- [x] Local item <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z', NULL, NULL, 1,
+                    '- [x] Local item <!--k=item-1-->'
+                );
+                INSERT INTO checklist_activity (
+                    id, quest_id, kind, detail, created_at, origin_device_id
+                ) VALUES (
+                    'shared-activity', 'replace-activity-quest', 'completed_snapshot',
+                    'Stale local snapshot', '2026-01-02T00:00:00Z', 'local-device'
+                ), (
+                    'local-only-activity', 'replace-activity-quest', 'post_completion_edit',
+                    'Local-only edit', '2026-01-03T00:00:00Z', 'local-device'
+                );
+                "#,
+            )
+            .expect("seed target stale checklist activity");
+
+        apply_import(
+            &mut target,
+            &out_path,
+            &[],
+            &[BackupConflictResolutionInput {
+                entity_type: "quest".to_string(),
+                id: "replace-activity-quest".to_string(),
+                resolution: "backup".to_string(),
+            }],
+        )
+        .expect("import backup version");
+
+        let imported_activity = checklist_activity::table
+            .filter(checklist_activity::quest_id.eq("replace-activity-quest"))
+            .order(checklist_activity::created_at.asc())
+            .select(ChecklistActivity::as_select())
+            .load::<ChecklistActivity>(&mut target)
+            .expect("load replaced checklist activity");
+        assert_eq!(imported_activity.len(), 1);
+        assert_eq!(imported_activity[0].id, "shared-activity");
+        assert_eq!(imported_activity[0].detail, "Backup snapshot");
+        assert_eq!(
+            imported_activity[0].origin_device_id.as_deref(),
+            Some("backup-device")
+        );
+
+        let _ = fs::remove_file(out_path);
+        let _ = fs::remove_file(source_db_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn preflight_reports_checklist_activity_conflicts_before_import() {
+        let source_db_path = temp_db_path("backup-source-activity-conflict");
+        let mut source = open_db_at_path(&source_db_path);
+        source
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'activity-conflict-quest', '1', 'Packed list',
+                    '- [x] Charger <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '- [x] Charger <!--k=item-1-->'
+                );
+                INSERT INTO checklist_activity (
+                    id, quest_id, kind, detail, created_at, origin_device_id
+                ) VALUES (
+                    'backup-activity', 'activity-conflict-quest', 'completed_snapshot',
+                    'Backup snapshot', '2026-01-02T00:00:00Z', 'backup-device'
+                );
+                "#,
+            )
+            .expect("seed backup checklist activity");
+
+        let out_path = backup_path("backup-activity-conflict");
+        export_backup(&mut source, &out_path, &["1".to_string()]).expect("export");
+
+        let target_db_path = temp_db_path("backup-target-activity-conflict");
+        let mut target = open_db_at_path(&target_db_path);
+        target
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'activity-conflict-quest', '1', 'Packed list',
+                    '- [x] Charger <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '- [x] Charger <!--k=item-1-->'
+                );
+                INSERT INTO checklist_activity (
+                    id, quest_id, kind, detail, created_at, origin_device_id
+                ) VALUES (
+                    'local-activity', 'activity-conflict-quest', 'completed_snapshot',
+                    'Local snapshot', '2026-01-02T00:00:00Z', 'local-device'
+                );
+                "#,
+            )
+            .expect("seed local checklist activity");
+
+        let preflight = preflight_import(&mut target, &out_path, &[]).expect("preflight");
+        assert_eq!(preflight.conflicts.len(), 1);
+        assert_eq!(preflight.conflicts[0].entity_type, "quest");
+        assert_eq!(preflight.conflicts[0].id, "activity-conflict-quest");
+        assert_eq!(preflight.conflicts[0].local[0]["id"], "local-activity");
+        assert_eq!(preflight.conflicts[0].backup[0]["id"], "backup-activity");
+
+        let error = apply_import(&mut target, &out_path, &[], &[])
+            .expect_err("activity conflict must require explicit resolution");
+        assert_eq!(error, "resolve every backup conflict before import");
+
+        apply_import(
+            &mut target,
+            &out_path,
+            &[],
+            &[BackupConflictResolutionInput {
+                entity_type: "quest".to_string(),
+                id: "activity-conflict-quest".to_string(),
+                resolution: "local".to_string(),
+            }],
+        )
+        .expect("keep local activity");
+
+        let retained_activity = checklist_activity::table
+            .filter(checklist_activity::quest_id.eq("activity-conflict-quest"))
+            .select(ChecklistActivity::as_select())
+            .load::<ChecklistActivity>(&mut target)
+            .expect("load retained checklist activity");
+        assert_eq!(retained_activity.len(), 1);
+        assert_eq!(retained_activity[0].id, "local-activity");
+        assert_eq!(retained_activity[0].detail, "Local snapshot");
 
         let _ = fs::remove_file(out_path);
         let _ = fs::remove_file(source_db_path);

@@ -116,7 +116,10 @@ pub fn set_text(src: &str, item_id: &str, text: &str) -> String {
 }
 
 pub fn remove_item(src: &str, item_id: &str) -> String {
-    let items: Vec<ChecklistItem> = parse(src).into_iter().filter(|it| it.id != item_id).collect();
+    let items: Vec<ChecklistItem> = parse(src)
+        .into_iter()
+        .filter(|it| it.id != item_id)
+        .collect();
     serialize(&items)
 }
 
@@ -141,10 +144,15 @@ pub fn reorder(src: &str, ordered_ids: &[String]) -> String {
 /// occurrence's checklist against the new template — matched ids keep their `checked` state
 /// (per #128: "preserve checks on unchanged current-occurrence items"), new template items are
 /// added unchecked, and template-removed items are dropped from the occurrence.
-pub fn reconcile_future_scope(current_occurrence_md: Option<&str>, new_template_md: &str) -> String {
+pub fn reconcile_future_scope(
+    current_occurrence_md: Option<&str>,
+    new_template_md: &str,
+) -> String {
     let current = parse_opt(current_occurrence_md);
-    let checked_by_id: std::collections::HashMap<&str, bool> =
-        current.iter().map(|it| (it.id.as_str(), it.checked)).collect();
+    let checked_by_id: std::collections::HashMap<&str, bool> = current
+        .iter()
+        .map(|it| (it.id.as_str(), it.checked))
+        .collect();
 
     let reconciled: Vec<ChecklistItem> = parse(new_template_md)
         .into_iter()
@@ -208,19 +216,53 @@ pub fn merge_3way(base: Option<&str>, local: &str, remote: &str) -> (String, boo
                     _ => {
                         // Genuine same-item text divergence: no per-item updated_at/device_id is
                         // available on a single markdown field, so Fini's deterministic LWW rule
-                        // cannot be applied here. Fall back to local winning and flag it.
+                        // cannot be applied here. Choose the same lexical winner on every peer
+                        // instead of keeping whichever side is local, so conflict convergence
+                        // events eventually settle on one value.
                         had_conflict = true;
-                        l.text.clone()
+                        if l.text <= r.text {
+                            l.text.clone()
+                        } else {
+                            r.text.clone()
+                        }
                     }
+                };
+                let checked = match b.map(|b| b.checked) {
+                    Some(base_checked)
+                        if l.checked == base_checked && r.checked != base_checked =>
+                    {
+                        r.checked
+                    }
+                    Some(base_checked)
+                        if r.checked == base_checked && l.checked != base_checked =>
+                    {
+                        l.checked
+                    }
+                    _ if l.checked == r.checked => l.checked,
+                    _ => l.checked || r.checked,
                 };
                 ChecklistItem {
                     id: l.id.clone(),
                     text,
-                    checked: l.checked || r.checked,
+                    checked,
                 }
             }
-            (Some(l), None) => l.clone(),
-            (None, Some(r)) => r.clone(),
+            (Some(l), None) => match b {
+                Some(b) if l == b => continue,
+                Some(_) => {
+                    had_conflict = true;
+                    l.clone()
+                }
+                None => l.clone(),
+            },
+            (None, Some(r)) => match b {
+                Some(b) if r == b => continue,
+                Some(_) => {
+                    had_conflict = true;
+                    r.clone()
+                }
+                None => r.clone(),
+            },
             (None, None) => continue,
         };
         merged.push(resolved);
@@ -236,8 +278,16 @@ mod tests {
     #[test]
     fn round_trip() {
         let items = vec![
-            ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
-            ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: true },
+            ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: true,
+            },
         ];
         let md = serialize(&items);
         assert_eq!(parse(&md), items);
@@ -246,8 +296,16 @@ mod tests {
     #[test]
     fn recurrence_reset_all_unchecked() {
         let template = serialize(&[
-            ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: true },
-            ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: true },
+            ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: true,
+            },
+            ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: true,
+            },
         ]);
         let occurrence = parse(&reset_unchecked(&template));
         assert!(occurrence.iter().all(|it| !it.checked));
@@ -269,8 +327,16 @@ mod tests {
     #[test]
     fn reorder_matches_requested_order() {
         let md = serialize(&[
-            ChecklistItem { id: "a1".into(), text: "one".into(), checked: false },
-            ChecklistItem { id: "a2".into(), text: "two".into(), checked: false },
+            ChecklistItem {
+                id: "a1".into(),
+                text: "one".into(),
+                checked: false,
+            },
+            ChecklistItem {
+                id: "a2".into(),
+                text: "two".into(),
+                checked: false,
+            },
         ]);
         let reordered = parse(&reorder(&md, &["a2".to_string(), "a1".to_string()]));
         assert_eq!(reordered[0].id, "a2");
@@ -280,26 +346,59 @@ mod tests {
     #[test]
     fn future_scope_preserves_checked_adds_unchecked_drops_removed() {
         let occurrence = serialize(&[
-            ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: true },
-            ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: false },
+            ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: true,
+            },
+            ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
         ]);
         // template drops a2, adds a3
         let new_template = serialize(&[
-            ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
-            ChecklistItem { id: "a3".into(), text: "lunch".into(), checked: false },
+            ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            ChecklistItem {
+                id: "a3".into(),
+                text: "lunch".into(),
+                checked: false,
+            },
         ]);
         let reconciled = parse(&reconcile_future_scope(Some(&occurrence), &new_template));
         assert_eq!(reconciled.len(), 2);
-        assert!(reconciled.iter().find(|it| it.id == "a1").unwrap().checked, "unchanged item keeps its check");
-        assert!(!reconciled.iter().find(|it| it.id == "a3").unwrap().checked, "new item is unchecked");
-        assert!(reconciled.iter().find(|it| it.id == "a2").is_none(), "removed item is dropped");
+        assert!(
+            reconciled.iter().find(|it| it.id == "a1").unwrap().checked,
+            "unchanged item keeps its check"
+        );
+        assert!(
+            !reconciled.iter().find(|it| it.id == "a3").unwrap().checked,
+            "new item is unchecked"
+        );
+        assert!(
+            reconciled.iter().find(|it| it.id == "a2").is_none(),
+            "removed item is dropped"
+        );
     }
 
     #[test]
     fn merge_independent_item_edits_both_survive() {
         let base = serialize(&[
-            ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
-            ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: false },
+            ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
         ]);
         let mut local_items = parse(&base);
         local_items[0].checked = true; // device A packed headphones
@@ -316,12 +415,88 @@ mod tests {
     }
 
     #[test]
+    fn merge_one_sided_uncheck_wins_against_unchanged_peer() {
+        let base = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones".into(),
+            checked: true,
+        }]);
+        let local = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones".into(),
+            checked: false,
+        }]);
+        let remote = base.clone();
+
+        let (merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let merged = parse(&merged_md);
+        assert!(!had_conflict);
+        assert!(!merged[0].checked);
+    }
+
+    #[test]
+    fn merge_one_sided_remove_wins_against_unchanged_peer() {
+        let base = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones".into(),
+            checked: false,
+        }]);
+        let local = String::new();
+        let remote = base.clone();
+
+        let (merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        assert!(!had_conflict);
+        assert!(parse(&merged_md).is_empty());
+    }
+
+    #[test]
     fn merge_same_item_text_conflict_is_flagged() {
-        let base = serialize(&[ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false }]);
-        let local = serialize(&[ChecklistItem { id: "a1".into(), text: "headphones (blue)".into(), checked: false }]);
-        let remote = serialize(&[ChecklistItem { id: "a1".into(), text: "over-ear headphones".into(), checked: false }]);
+        let base = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones".into(),
+            checked: false,
+        }]);
+        let local = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones (blue)".into(),
+            checked: false,
+        }]);
+        let remote = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "over-ear headphones".into(),
+            checked: false,
+        }]);
 
         let (_merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
         assert!(had_conflict);
+    }
+
+    #[test]
+    fn merge_same_item_text_conflict_chooses_same_winner_from_either_side() {
+        let base = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones".into(),
+            checked: false,
+        }]);
+        let local = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones (blue)".into(),
+            checked: false,
+        }]);
+        let remote = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "over-ear headphones".into(),
+            checked: false,
+        }]);
+
+        let (local_merged_md, local_had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let (remote_merged_md, remote_had_conflict) = merge_3way(Some(&base), &remote, &local);
+        let local_merged = parse(&local_merged_md);
+        let remote_merged = parse(&remote_merged_md);
+
+        assert!(local_had_conflict);
+        assert!(remote_had_conflict);
+        assert_eq!(local_merged, remote_merged);
+        assert_eq!(local_merged[0].text, "headphones (blue)");
     }
 }

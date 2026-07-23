@@ -31,7 +31,20 @@ function onToggleChecklistItem(itemId: string, checked: boolean) {
   store.toggleChecklistItem(props.quest.id, itemId, checked);
 }
 
-const pendingScopeAction = ref<{ kind: "add" | "remove"; payload: string } | null>(null);
+function onEditChecklistItemText(itemId: string, text: string) {
+  if (props.quest.series_id) {
+    pendingScopeAction.value = { kind: "edit", payload: { itemId, text } };
+    return;
+  }
+  store.editChecklistItemText(props.quest.id, itemId, text);
+}
+
+type PendingScopeAction =
+  | { kind: "add"; payload: string }
+  | { kind: "remove"; payload: string }
+  | { kind: "edit"; payload: { itemId: string; text: string } };
+
+const pendingScopeAction = ref<PendingScopeAction | null>(null);
 
 function onAddChecklistItem(text: string) {
   if (props.quest.series_id) {
@@ -56,7 +69,8 @@ async function onScopeChosen(scope: "this" | "future") {
 
   if (scope === "this") {
     if (action.kind === "add") await store.addChecklistItem(props.quest.id, action.payload);
-    else await store.removeChecklistItem(props.quest.id, action.payload);
+    else if (action.kind === "remove") await store.removeChecklistItem(props.quest.id, action.payload);
+    else await store.editChecklistItemText(props.quest.id, action.payload.itemId, action.payload.text);
     return;
   }
 
@@ -64,7 +78,11 @@ async function onScopeChosen(scope: "this" | "future") {
   const nextItems =
     action.kind === "add"
       ? [...items, { id: newChecklistItemId(), text: action.payload, checked: false }]
-      : items.filter((it) => it.id !== action.payload);
+      : action.kind === "remove"
+        ? items.filter((it) => it.id !== action.payload)
+        : items.map((it) =>
+            it.id === action.payload.itemId ? { ...it, text: action.payload.text } : it,
+          );
   await store.updateSeriesChecklist(
     props.quest.series_id!,
     props.quest.id,
@@ -178,6 +196,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     @more="onContextMenu"
     @toggle-checklist-item="onToggleChecklistItem"
     @add-checklist-item="onAddChecklistItem"
+    @edit-checklist-item-text="onEditChecklistItemText"
     @remove-checklist-item="onRemoveChecklistItem"
   />
 

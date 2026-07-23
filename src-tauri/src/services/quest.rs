@@ -13,7 +13,7 @@ use crate::models::UpdateQuestInput;
 use crate::models::{CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries};
 use crate::models::{CreateQuestInput, QuestUpdatePatch};
 use crate::repositories::quest::QuestRepository;
-use crate::schema::{focus_history, settings};
+use crate::schema::{checklist_activity, focus_history, settings};
 #[cfg(test)]
 use crate::schema::{quest_series, quests};
 use crate::services::checklist_md;
@@ -415,7 +415,7 @@ fn emit_quest_sync_events(
     let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
 
     if previous_space_id == quest.space_id {
-        return emit_sync_event(
+        emit_sync_event(
             conn,
             origin_device_id,
             "quest",
@@ -423,7 +423,8 @@ fn emit_quest_sync_events(
             &quest.space_id,
             "upsert",
             Some(payload),
-        );
+        )?;
+        return emit_checklist_activity_sync_events(conn, origin_device_id, quest);
     }
 
     let delete_updated_at = utc_now();
@@ -452,6 +453,54 @@ fn emit_quest_sync_events(
         Some(payload),
         upsert_updated_at,
     )?;
+
+    emit_checklist_activity_sync_events(conn, origin_device_id, quest)?;
+
+    Ok(())
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_checklist_activity_sync_events(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    quest: &Quest,
+) -> Result<(), String> {
+    if !quest.is_checklist {
+        return Ok(());
+    }
+
+    let emitted_activity_ids: Vec<String> = crate::schema::sync_outbox::table
+        .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+        .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+        .filter(crate::schema::sync_outbox::space_id.eq(&quest.space_id))
+        .select(crate::schema::sync_outbox::entity_id)
+        .load(conn)
+        .map_err(|e| e.to_string())?;
+
+    let activities: Vec<crate::models::ChecklistActivity> = checklist_activity::table
+        .filter(checklist_activity::quest_id.eq(&quest.id))
+        .filter(
+            checklist_activity::origin_device_id
+                .is_null()
+                .or(checklist_activity::origin_device_id.eq(origin_device_id)),
+        )
+        .filter(checklist_activity::id.ne_all(emitted_activity_ids))
+        .select(crate::models::ChecklistActivity::as_select())
+        .load(conn)
+        .map_err(|e| e.to_string())?;
+
+    for activity in activities {
+        let payload = serde_json::to_string(&activity).map_err(|e| e.to_string())?;
+        emit_sync_event(
+            conn,
+            origin_device_id,
+            "checklist_activity",
+            &activity.id,
+            &quest.space_id,
+            "upsert",
+            Some(payload),
+        )?;
+    }
 
     Ok(())
 }
@@ -528,9 +577,19 @@ impl<'a> QuestService<'a> {
         id: &str,
         input: UpdateQuestInput,
     ) -> Result<UpdateQuestResult, String> {
+        self.update_with_origin(id, input, None)
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn update_with_origin(
+        &mut self,
+        id: &str,
+        input: UpdateQuestInput,
+        origin_device_id: Option<&str>,
+    ) -> Result<UpdateQuestResult, String> {
         let requested_status = input.status.clone();
         let (previous, quest) = self.repository.update(id, input)?;
-        self.finish_update(previous, quest, requested_status)
+        self.finish_update(previous, quest, requested_status, origin_device_id)
     }
 
     pub fn update_patch(
@@ -538,9 +597,18 @@ impl<'a> QuestService<'a> {
         id: &str,
         patch: QuestUpdatePatch,
     ) -> Result<UpdateQuestResult, String> {
+        self.update_patch_with_origin(id, patch, None)
+    }
+
+    pub fn update_patch_with_origin(
+        &mut self,
+        id: &str,
+        patch: QuestUpdatePatch,
+        origin_device_id: Option<&str>,
+    ) -> Result<UpdateQuestResult, String> {
         let requested_status = patch.input.status.clone();
         let (previous, quest) = self.repository.update_patch(id, patch)?;
-        self.finish_update(previous, quest, requested_status)
+        self.finish_update(previous, quest, requested_status, origin_device_id)
     }
 
     fn finish_update(
@@ -548,6 +616,7 @@ impl<'a> QuestService<'a> {
         previous: Quest,
         quest: Quest,
         requested_status: Option<String>,
+        origin_device_id: Option<&str>,
     ) -> Result<UpdateQuestResult, String> {
         let restore_should_focus = previous.status != "active"
             && quest.status == "active"
@@ -576,7 +645,7 @@ impl<'a> QuestService<'a> {
                 &quest.id,
                 "completed_snapshot",
                 &format!("Checklist at completion: {done}/{total} checked"),
-                None,
+                origin_device_id,
             );
         }
 
@@ -668,6 +737,69 @@ impl<'a> QuestService<'a> {
         }
     }
 
+    fn ensure_checklist_quest(quest: &Quest) -> Result<(), String> {
+        if quest.is_checklist {
+            Ok(())
+        } else {
+            Err("quest is not a checklist".to_string())
+        }
+    }
+
+    fn log_checklist_replacement_activity(
+        conn: &mut SqliteConnection,
+        quest: &Quest,
+        old_md: Option<&str>,
+        new_md: Option<&str>,
+        origin_device_id: Option<&str>,
+    ) -> Result<(), String> {
+        use std::collections::HashMap;
+
+        let old_items = checklist_md::parse_opt(old_md);
+        let new_items = checklist_md::parse_opt(new_md);
+        let old_by_id: HashMap<&str, &checklist_md::ChecklistItem> = old_items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
+        let new_by_id: HashMap<&str, &checklist_md::ChecklistItem> = new_items
+            .iter()
+            .map(|item| (item.id.as_str(), item))
+            .collect();
+
+        for item in &new_items {
+            match old_by_id.get(item.id.as_str()) {
+                Some(old_item) if old_item.text != item.text => log_checklist_activity(
+                    conn,
+                    &quest.id,
+                    Self::checklist_audit_kind(quest, "edited"),
+                    &format!("Renamed item to \"{}\"", item.text),
+                    origin_device_id,
+                )?,
+                None => log_checklist_activity(
+                    conn,
+                    &quest.id,
+                    Self::checklist_audit_kind(quest, "added"),
+                    &format!("Added \"{}\"", item.text),
+                    origin_device_id,
+                )?,
+                _ => {}
+            }
+        }
+
+        for item in &old_items {
+            if !new_by_id.contains_key(item.id.as_str()) {
+                log_checklist_activity(
+                    conn,
+                    &quest.id,
+                    Self::checklist_audit_kind(quest, "removed"),
+                    &format!("Removed \"{}\"", item.text),
+                    origin_device_id,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn add_checklist_item(
         &mut self,
         quest_id: &str,
@@ -675,6 +807,7 @@ impl<'a> QuestService<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let new_md = checklist_md::add_item(quest.description.as_deref(), text);
         let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
         log_checklist_activity(
@@ -694,7 +827,15 @@ impl<'a> QuestService<'a> {
         checked: bool,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
+        if quest.status != "active" {
+            return Err("checklist toggles are only available for active quests".to_string());
+        }
         let md = quest.description.clone().unwrap_or_default();
+        let items = checklist_md::parse(&md);
+        if !items.iter().any(|it| it.id == item_id) {
+            return Err("checklist item not found".to_string());
+        }
         let new_md = checklist_md::set_checked(&md, item_id, checked);
         // Individual check/uncheck toggles are not written to the audit log by design (#128's
         // audit requirement targets add/remove/edit and completion, not every toggle) — the
@@ -710,6 +851,7 @@ impl<'a> QuestService<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
         let new_md = checklist_md::set_text(&md, item_id, text);
         let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
@@ -730,6 +872,7 @@ impl<'a> QuestService<'a> {
         origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
         let removed_text = checklist_md::parse(&md)
             .into_iter()
@@ -757,6 +900,7 @@ impl<'a> QuestService<'a> {
         ordered_ids: &[String],
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
         let md = quest.description.clone().unwrap_or_default();
         let new_md = checklist_md::reorder(&md, ordered_ids);
         self.repository.set_checklist_description(quest_id, &new_md)
@@ -772,13 +916,30 @@ impl<'a> QuestService<'a> {
         current_occurrence_id: &str,
         new_checklist_md: &str,
         scope: &str,
+        origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
+        let current = self.repository.get(current_occurrence_id)?;
+        Self::ensure_checklist_quest(&current)?;
+        if current.series_id.as_deref() != Some(series_id) {
+            return Err("quest is not an occurrence in this series".to_string());
+        }
+
         match scope {
-            "future" => self.repository.update_series_checklist_template(
-                series_id,
-                new_checklist_md,
-                current_occurrence_id,
-            ),
+            "future" => {
+                let updated = self.repository.update_series_checklist_template(
+                    series_id,
+                    new_checklist_md,
+                    current_occurrence_id,
+                )?;
+                Self::log_checklist_replacement_activity(
+                    self.repository.conn,
+                    &current,
+                    current.description.as_deref(),
+                    updated.description.as_deref(),
+                    origin_device_id,
+                )?;
+                Ok(updated)
+            }
             _ => self
                 .repository
                 .set_checklist_description(current_occurrence_id, new_checklist_md),
@@ -1052,7 +1213,11 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
         is_checklist: None,
     };
 
-    match QuestService::new(&mut conn).update(quest_id, input) {
+    match QuestService::new(&mut conn).update_with_origin(
+        quest_id,
+        input,
+        Some(&dc.identity.device_id),
+    ) {
         Ok(result) => {
             let updated_quest = result.quest;
             if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, app, quest_id) {
@@ -1096,7 +1261,11 @@ pub fn update_quest(
     let previous_status = previous.status.clone();
     let previous_space_id = previous.space_id.clone();
 
-    let update_result = QuestService::new(&mut conn).update(&id, input)?;
+    let update_result = QuestService::new(&mut conn).update_with_origin(
+        &id,
+        input,
+        Some(&device_connection.identity.device_id),
+    )?;
     let mut quest = update_result.quest;
 
     if previous_status != "active" && quest.status == "active" && update_result.restore_should_focus
@@ -1180,6 +1349,31 @@ fn emit_quest_checklist_sync(
         "quest",
         &quest.id,
         &quest.space_id,
+        "upsert",
+        Some(payload),
+    )?;
+    emit_checklist_activity_sync_events(conn, device_id, quest)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_series_checklist_template_sync(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    series_id: &str,
+    outbox_space_id: &str,
+) -> Result<(), String> {
+    let series: QuestSeries = crate::schema::quest_series::table
+        .find(series_id)
+        .select(QuestSeries::as_select())
+        .first(&mut *conn)
+        .map_err(|e: diesel::result::Error| e.to_string())?;
+    let payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
+    emit_sync_event(
+        conn,
+        device_id,
+        "quest_series",
+        series_id,
+        outbox_space_id,
         "upsert",
         Some(payload),
     )
@@ -1286,24 +1480,11 @@ pub fn update_series_checklist(
         &current_occurrence_id,
         &checklist_md,
         &scope,
+        Some(&device_id),
     )?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
     if scope == "future" {
-        let series: QuestSeries = crate::schema::quest_series::table
-            .find(&series_id)
-            .select(QuestSeries::as_select())
-            .first(&mut *conn)
-            .map_err(|e: diesel::result::Error| e.to_string())?;
-        let payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
-        emit_sync_event(
-            &mut conn,
-            &device_id,
-            "quest_series",
-            &series_id,
-            &series.space_id,
-            "upsert",
-            Some(payload),
-        )?;
+        emit_series_checklist_template_sync(&mut conn, &device_id, &series_id, &quest.space_id)?;
     }
     Ok(quest)
 }
@@ -2382,6 +2563,295 @@ mod tests {
     }
 
     #[test]
+    fn checklist_activity_is_emitted_with_checklist_sync() {
+        let db_path = temp_db_path("checklist-activity-sync-outbox");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Pack".to_string(),
+                description: Some("- [ ] headphones <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create checklist quest")
+            .quest;
+
+        log_checklist_activity(
+            &mut conn,
+            &quest.id,
+            "added",
+            "Added \"headphones\"",
+            Some("device-local"),
+        )
+        .expect("log checklist activity");
+
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+            .expect("emit quest sync with checklist activity");
+
+        let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((
+                sync_outbox::entity_type,
+                sync_outbox::entity_id,
+                sync_outbox::op_type,
+                sync_outbox::payload,
+            ))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        assert_eq!(rows.len(), 2, "quest and activity events should be emitted");
+        assert_eq!(rows[0].0, "quest");
+        assert_eq!(rows[0].1, quest.id);
+        assert_eq!(rows[0].2, "upsert");
+        assert_eq!(rows[1].0, "checklist_activity");
+        assert_eq!(rows[1].2, "upsert");
+        let payload = rows[1].3.as_ref().expect("activity payload");
+        let activity: crate::models::ChecklistActivity = serde_json::from_str(payload).unwrap();
+        assert_eq!(activity.quest_id, quest.id);
+        assert_eq!(activity.kind, "added");
+        assert_eq!(activity.detail, "Added \"headphones\"");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn checklist_sync_does_not_reemit_existing_activity_on_toggle() {
+        let db_path = temp_db_path("checklist-activity-sync-no-reemit");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Pack".to_string(),
+                description: Some("- [ ] headphones <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create checklist quest")
+            .quest;
+
+        log_checklist_activity(
+            &mut conn,
+            &quest.id,
+            "added",
+            "Added \"headphones\"",
+            Some("device-local"),
+        )
+        .expect("log checklist activity");
+
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+            .expect("emit initial quest sync with checklist activity");
+
+        let toggled = QuestService::new(&mut conn)
+            .toggle_checklist_item(&quest.id, "a1", true)
+            .expect("toggle checklist item");
+        emit_quest_sync_events(&mut conn, "device-local", &toggled.space_id, &toggled)
+            .expect("emit toggle quest sync without duplicate activity");
+
+        let rows: Vec<(String, String)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((sync_outbox::entity_type, sync_outbox::op_type))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        assert_eq!(rows.len(), 3, "initial quest/activity plus toggle quest only");
+        assert_eq!(rows[0], ("quest".to_string(), "upsert".to_string()));
+        assert_eq!(
+            rows[1],
+            ("checklist_activity".to_string(), "upsert".to_string())
+        );
+        assert_eq!(rows[2], ("quest".to_string(), "upsert".to_string()));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn moving_checklist_to_new_space_reemits_activity_for_destination_space() {
+        let db_path = temp_db_path("checklist-activity-sync-space-move-reemit");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Pack".to_string(),
+                description: Some("- [ ] headphones <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create checklist quest")
+            .quest;
+
+        log_checklist_activity(
+            &mut conn,
+            &quest.id,
+            "added",
+            "Added \"headphones\"",
+            Some("device-local"),
+        )
+        .expect("log checklist activity");
+
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+            .expect("emit initial quest sync with checklist activity");
+
+        let (moved, _, _) = update_quest_in_db(&mut conn, &quest.id, space_patch("2"))
+            .expect("move checklist to space 2");
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &moved)
+            .expect("emit move sync with checklist activity in destination space");
+
+        let rows: Vec<(String, String, String)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((
+                sync_outbox::entity_type,
+                sync_outbox::op_type,
+                sync_outbox::space_id,
+            ))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        assert_eq!(
+            rows,
+            vec![
+                ("quest".to_string(), "upsert".to_string(), "1".to_string()),
+                (
+                    "checklist_activity".to_string(),
+                    "upsert".to_string(),
+                    "1".to_string()
+                ),
+                ("quest".to_string(), "delete".to_string(), "1".to_string()),
+                ("quest".to_string(), "upsert".to_string(), "2".to_string()),
+                (
+                    "checklist_activity".to_string(),
+                    "upsert".to_string(),
+                    "2".to_string()
+                ),
+            ],
+            "space move must re-emit checklist activity under the destination space"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn future_series_checklist_sync_uses_current_occurrence_space() {
+        let db_path = temp_db_path("future-series-checklist-sync-occurrence-space");
+        let mut conn = open_db_at_path(&db_path);
+
+        let repeat_rule = r#"{"preset":"weekly"}"#;
+        let series = diesel::insert_into(quest_series::table)
+            .values(&CreateSeriesInput {
+                space_id: "1".to_string(),
+                title: "Moved checklist".to_string(),
+                description: Some("- [ ] old <!--k=a1-->".to_string()),
+                repeat_rule: repeat_rule.to_string(),
+                priority: 1,
+                energy: "medium".to_string(),
+                is_checklist: true,
+            })
+            .returning(QuestSeries::as_returning())
+            .get_result::<QuestSeries>(&mut conn)
+            .expect("insert series");
+
+        diesel::insert_into(quests::table)
+            .values((
+                quests::space_id.eq("2"),
+                quests::title.eq("Moved checklist"),
+                quests::description.eq(Some("- [ ] old <!--k=a1-->")),
+                quests::status.eq("active"),
+                quests::due.eq("2026-05-15"),
+                quests::repeat_rule.eq(repeat_rule),
+                quests::series_id.eq(&series.id),
+                quests::period_key.eq("2026-05-15"),
+                quests::is_checklist.eq(true),
+                quests::created_at.eq("2026-05-15T10:00:00Z"),
+                quests::updated_at.eq("2026-05-15T10:00:00Z"),
+            ))
+            .execute(&mut conn)
+            .expect("insert moved occurrence");
+
+        let occurrence_id: String = quests::table
+            .filter(quests::series_id.eq(&series.id))
+            .select(quests::id)
+            .first(&mut conn)
+            .expect("load occurrence id");
+
+        let updated = QuestService::new(&mut conn)
+            .update_series_checklist(
+                &series.id,
+                &occurrence_id,
+                "- [ ] new <!--k=a1-->",
+                "future",
+                Some("device-local"),
+            )
+            .expect("update future checklist");
+
+        assert_eq!(updated.space_id, "2", "occurrence stays in its moved space");
+        assert_eq!(
+            QuestRepository::new(&mut conn)
+                .series_space_id(&series.id)
+                .expect("load series space"),
+            "1",
+            "series row can still retain the original space"
+        );
+
+        emit_quest_checklist_sync(&mut conn, "device-local", &updated)
+            .expect("emit occurrence checklist sync");
+        emit_series_checklist_template_sync(
+            &mut conn,
+            "device-local",
+            &series.id,
+            &updated.space_id,
+        )
+        .expect("emit series template sync");
+
+        let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
+            .order(sync_outbox::created_at.asc())
+            .select((
+                sync_outbox::entity_type,
+                sync_outbox::op_type,
+                sync_outbox::space_id,
+                sync_outbox::payload,
+            ))
+            .load(&mut conn)
+            .expect("load sync outbox rows");
+
+        let series_row = rows
+            .iter()
+            .find(|(entity_type, op_type, _, _)| {
+                entity_type == "quest_series" && op_type == "upsert"
+            })
+            .expect("series template sync row");
+        assert_eq!(
+            series_row.2, "2",
+            "series template update must route through the moved occurrence space"
+        );
+        let payload = series_row.3.as_ref().expect("series payload");
+        let payload: QuestSeries = serde_json::from_str(payload).expect("deserialize series payload");
+        assert_eq!(
+            payload.space_id, "1",
+            "outbox routing space must not require mutating the series row"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn updating_due_to_existing_series_period_key_is_rejected() {
         let db_path = temp_db_path("updating-due-conflicting-period-key-is-rejected");
         let mut conn = open_db_at_path(&db_path);
@@ -2620,6 +3090,24 @@ mod tests {
         result.quest
     }
 
+    fn create_active_quest_with_prose(conn: &mut SqliteConnection, description: &str) -> Quest {
+        let result = QuestService::new(conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Meeting notes".to_string(),
+                description: Some(description.to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create quest with prose");
+        result.quest
+    }
+
     #[test]
     fn checklist_item_crud_logs_activity_but_toggles_do_not() {
         let db_path = temp_db_path("checklist-crud");
@@ -2667,6 +3155,219 @@ mod tests {
     }
 
     #[test]
+    fn toggling_missing_checklist_item_is_rejected_without_writing() {
+        let db_path = temp_db_path("checklist-toggle-missing-item");
+        let mut conn = open_db_at_path(&db_path);
+
+        let template = checklist_md::serialize(&[
+            checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            checklist_md::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: true,
+            },
+        ]);
+        let quest = create_active_quest_with_checklist(&mut conn, &template);
+        let original_description = quest.description.clone();
+        let original_updated_at = quest.updated_at.clone();
+
+        let result = QuestService::new(&mut conn).toggle_checklist_item(&quest.id, "missing", true);
+        assert!(matches!(
+            result,
+            Err(ref error) if error == "checklist item not found"
+        ));
+
+        let mut service = QuestService::new(&mut conn);
+        let stored = service.get(&quest.id).expect("load checklist quest");
+        assert_eq!(stored.description, original_description);
+        assert_eq!(stored.updated_at, original_updated_at);
+
+        let activity = service
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        assert!(activity.is_empty(), "rejected toggle must not log activity");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn toggling_non_active_checklist_item_is_rejected_without_writing() {
+        for status in ["completed", "abandoned"] {
+            let db_path = temp_db_path(&format!("checklist-toggle-non-active-{status}"));
+            let mut conn = open_db_at_path(&db_path);
+
+            let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            }]);
+            let quest = create_active_quest_with_checklist(&mut conn, &template);
+            let mut service = QuestService::new(&mut conn);
+            service
+                .update(&quest.id, status_patch(status))
+                .expect("move quest out of active status");
+            let before = service.get(&quest.id).expect("load non-active checklist quest");
+            let before_activity = service
+                .get_checklist_activity(&quest.id)
+                .expect("load activity before rejected toggle");
+
+            let result = service.toggle_checklist_item(&quest.id, "a1", true);
+            assert!(matches!(
+                result,
+                Err(ref error) if error == "checklist toggles are only available for active quests"
+            ));
+
+            let after = service.get(&quest.id).expect("reload non-active checklist quest");
+            assert_eq!(after.description, before.description);
+            assert_eq!(after.updated_at, before.updated_at);
+
+            let after_activity = service
+                .get_checklist_activity(&quest.id)
+                .expect("load activity after rejected toggle");
+            assert_eq!(
+                after_activity.len(),
+                before_activity.len(),
+                "rejected non-active toggle must not add audit rows"
+            );
+
+            let _ = std::fs::remove_file(db_path);
+        }
+    }
+
+    #[test]
+    fn checklist_mutations_reject_prose_quests_without_conversion() {
+        let db_path = temp_db_path("checklist-reject-prose");
+        let mut conn = open_db_at_path(&db_path);
+
+        let quest = create_active_quest_with_prose(&mut conn, "meeting notes");
+        let mut service = QuestService::new(&mut conn);
+
+        for result in [
+            service.add_checklist_item(&quest.id, "headphones", Some("dev-a")),
+            service.toggle_checklist_item(&quest.id, "a1", true),
+            service.edit_checklist_item_text(&quest.id, "a1", "headphones", Some("dev-a")),
+            service.remove_checklist_item(&quest.id, "a1", Some("dev-a")),
+            service.reorder_checklist(&quest.id, &["a1".to_string()]),
+        ] {
+            assert!(matches!(
+                result,
+                Err(ref error) if error == "quest is not a checklist"
+            ));
+        }
+
+        let stored = service.get(&quest.id).expect("load prose quest");
+        assert!(!stored.is_checklist, "mutation must not convert prose quests");
+        assert_eq!(stored.description.as_deref(), Some("meeting notes"));
+
+        let activity = service
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        assert!(activity.is_empty(), "rejected mutations must not log activity");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn update_series_checklist_rejects_prose_and_mismatched_occurrences() {
+        let db_path = temp_db_path("checklist-series-reject-invalid");
+        let mut conn = open_db_at_path(&db_path);
+
+        let prose_result = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Recurring notes".to_string(),
+                description: Some("meeting notes".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create repeating prose quest");
+        let prose_quest = prose_result.quest;
+        let prose_series = prose_result.series.expect("repeating prose quest must create a series");
+
+        for scope in ["this", "future"] {
+            let result = QuestService::new(&mut conn).update_series_checklist(
+                &prose_series.id,
+                &prose_quest.id,
+                "- [ ] checklist item <!--k=a1-->",
+                scope,
+                None,
+            );
+            assert!(matches!(
+                result,
+                Err(ref error) if error == "quest is not a checklist"
+            ));
+        }
+
+        let stored_prose = QuestService::new(&mut conn).get(&prose_quest.id).unwrap();
+        assert!(!stored_prose.is_checklist, "set-template must not convert prose quests");
+        assert_eq!(stored_prose.description.as_deref(), Some("meeting notes"));
+
+        let stored_prose_series: QuestSeries = crate::schema::quest_series::table
+            .find(&prose_series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(!stored_prose_series.is_checklist, "rejected future scope must not convert series");
+        assert_eq!(stored_prose_series.description.as_deref(), Some("meeting notes"));
+
+        let first_checklist = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Checklist one".to_string(),
+                description: Some("- [ ] one <!--k=a1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-02".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create first checklist series");
+        let first_series = first_checklist.series.expect("first checklist series");
+        let second_checklist = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Checklist two".to_string(),
+                description: Some("- [ ] two <!--k=b1-->".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-03".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: true,
+            })
+            .expect("create second checklist series");
+        let second_quest = second_checklist.quest;
+
+        let result = QuestService::new(&mut conn).update_series_checklist(
+            &first_series.id,
+            &second_quest.id,
+            "- [ ] wrong series <!--k=x1-->",
+            "this",
+            None,
+        );
+        assert!(matches!(
+            result,
+            Err(ref error) if error == "quest is not an occurrence in this series"
+        ));
+        let stored_second = QuestService::new(&mut conn).get(&second_quest.id).unwrap();
+        assert_eq!(stored_second.description.as_deref(), Some("- [ ] two <!--k=b1-->"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn completing_quest_with_checklist_logs_completed_snapshot() {
         let db_path = temp_db_path("checklist-completion-snapshot");
         let mut conn = open_db_at_path(&db_path);
@@ -2679,7 +3380,7 @@ mod tests {
 
         let mut service = QuestService::new(&mut conn);
         service
-            .update(&quest.id, status_patch("completed"))
+            .update_with_origin(&quest.id, status_patch("completed"), Some("dev-a"))
             .expect("complete quest");
 
         let activity = service
@@ -2690,6 +3391,7 @@ mod tests {
             .find(|a| a.kind == "completed_snapshot")
             .expect("completed_snapshot activity row must exist");
         assert_eq!(snapshot.detail, "Checklist at completion: 1/2 checked");
+        assert_eq!(snapshot.origin_device_id.as_deref(), Some("dev-a"));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -2751,7 +3453,7 @@ mod tests {
 
         let occurrence_only_md = checklist_md::add_item(Some(&template), "extra for today only");
         QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &occurrence_only_md, "this")
+            .update_series_checklist(&series.id, &quest.id, &occurrence_only_md, "this", None)
             .expect("this-occurrence scoped update");
 
         let stored_series: QuestSeries = crate::schema::quest_series::table
@@ -2812,7 +3514,7 @@ mod tests {
             checklist_md::ChecklistItem { id: "a3".into(), text: "badge".into(), checked: false },
         ]);
         QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &new_template, "future")
+            .update_series_checklist(&series.id, &quest.id, &new_template, "future", None)
             .expect("future-scoped update");
 
         let stored_series: QuestSeries = crate::schema::quest_series::table
@@ -2839,6 +3541,22 @@ mod tests {
         assert!(
             items.iter().find(|it| it.id == "a2").is_none(),
             "template-removed item must be dropped from the active occurrence"
+        );
+
+        let activity = QuestService::new(&mut conn)
+            .get_checklist_activity(&quest.id)
+            .expect("load activity");
+        assert!(
+            activity
+                .iter()
+                .any(|row| row.kind == "added" && row.detail == "Added \"badge\""),
+            "future-scope reconciliation must audit the item added to the current occurrence"
+        );
+        assert!(
+            activity
+                .iter()
+                .any(|row| row.kind == "removed" && row.detail == "Removed \"key fob\""),
+            "future-scope reconciliation must audit the item removed from the current occurrence"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -2884,6 +3602,73 @@ mod tests {
         let next_items = checklist_md::parse(next.description.as_deref().unwrap());
         assert_eq!(next_items.len(), 1);
         assert!(!next_items[0].checked, "next occurrence's checklist must start fully unchecked");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn recurring_non_checklist_occurrence_copies_current_prose_description() {
+        let db_path = temp_db_path("non-checklist-recurrence-current-description");
+        let mut conn = open_db_at_path(&db_path);
+
+        let result = QuestService::new(&mut conn)
+            .create(CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Write journal".to_string(),
+                description: Some("Original notes".to_string()),
+                energy: "medium".to_string(),
+                priority: 1,
+                due: Some("2026-04-01".to_string()),
+                due_time: None,
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create repeating prose quest");
+        let quest = result.quest;
+        let series = result.series.expect("repeating quest must create a series");
+
+        QuestService::new(&mut conn)
+            .update_patch(
+                &quest.id,
+                QuestUpdatePatch {
+                    input: UpdateQuestInput {
+                        description: Some("Edited occurrence notes".to_string()),
+                        ..status_patch("active")
+                    },
+                    description: QuestFieldPatch::Set("Edited occurrence notes".to_string()),
+                    due: QuestFieldPatch::Unchanged,
+                    due_time: QuestFieldPatch::Unchanged,
+                    repeat_rule: QuestFieldPatch::Unchanged,
+                },
+            )
+            .expect("edit current occurrence prose");
+
+        let stored_series: QuestSeries = crate::schema::quest_series::table
+            .find(&series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(
+            stored_series.description.as_deref(),
+            Some("Original notes"),
+            "normal prose edits must not rewrite the series row"
+        );
+
+        let update_result = QuestService::new(&mut conn)
+            .update(&quest.id, status_patch("completed"))
+            .expect("complete occurrence");
+        let next = update_result
+            .next_occurrence
+            .expect("completing a recurring quest must generate the next occurrence");
+
+        assert_eq!(
+            next.description.as_deref(),
+            Some("Edited occurrence notes"),
+            "non-checklist recurrence should carry current prose notes forward"
+        );
+        assert!(!next.is_checklist);
+        assert!(next.checklist_base.is_none());
 
         let _ = std::fs::remove_file(db_path);
     }

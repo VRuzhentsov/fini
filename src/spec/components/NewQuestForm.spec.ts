@@ -269,6 +269,26 @@ describe("NewQuestForm", () => {
     );
   });
 
+  it("preserves checklist mode for an empty checklist draft", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="chat-input"]').setValue("Pack later");
+    await wrapper.find('[data-testid="new-quest-checklist-toggle"]').trigger("click");
+    await wrapper.find("form").trigger("submit");
+
+    expect(createQuest).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Pack later",
+      description: null,
+      is_checklist: true,
+    }));
+  });
+
   it("allows non-empty metadata drafts to collapse", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {

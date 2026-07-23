@@ -69,6 +69,30 @@ describe("quest store checklist actions", () => {
     });
   });
 
+  it("restores the previous checklist state when an optimistic toggle is rejected", async () => {
+    const store = useQuestStore();
+    store.quests = [baseQuest()];
+    const staleItemError = new Error("checklist item not found");
+
+    let rejectInvoke!: (error: Error) => void;
+    (invoke as unknown as jest.Mock).mockReturnValueOnce(
+      new Promise<Quest>((_, reject) => {
+        rejectInvoke = reject;
+      }),
+    );
+
+    const pending = store.toggleChecklistItem("q1", "a1", true);
+    expect(store.quests[0].description).toContain("[x] headphones");
+
+    rejectInvoke(staleItemError);
+    await expect(pending).rejects.toThrow("checklist item not found");
+
+    expect(store.quests[0].description).toBe(
+      "- [ ] headphones <!--k=a1-->\n- [ ] key fob <!--k=a2-->",
+    );
+    expect(store.quests[0].updated_at).toBe("2026-01-01T00:00:00Z");
+  });
+
   it("addChecklistItem invokes add_checklist_item and applies the returned quest", async () => {
     const store = useQuestStore();
     store.quests = [baseQuest()];
