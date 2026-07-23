@@ -995,7 +995,18 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quest_id": args.quest_id, "activity": activity }))
         }
         QuestCommand::ChecklistSetTemplate(args) => {
-            let normalized_checklist = normalize_cli_checklist_markdown(&args.checklist);
+            let normalized_checklist = if args.scope == "future" {
+                // Preserve ids for text-matching lines against the *current occurrence*, which
+                // is what reconcile_future_scope diffs the new template against for checked-state
+                // preservation — see normalize_future_template_markdown.
+                let current_occurrence_md = QuestService::new(&mut conn)
+                    .get(&args.quest_id)
+                    .ok()
+                    .and_then(|q| q.description);
+                normalize_future_template_markdown(&args.checklist, current_occurrence_md.as_deref())
+            } else {
+                normalize_cli_checklist_markdown(&args.checklist)
+            };
             let quest = QuestService::new(&mut conn)
                 .update_series_checklist(
                     &args.series_id,
@@ -1007,12 +1018,25 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 .map_err(CliError::from_string)?;
             emit_quest_sync(ctx, &mut conn, &quest, "upsert");
             if args.scope == "future" {
+                // Route through the occurrence's current space, not series.space_id: if this
+                // occurrence was moved to another space, peers mapped only to the destination
+                // space must still receive the template update, matching the Tauri
+                // update_series_checklist command's emit_series_checklist_template_sync.
                 if let Ok(series) = crate::schema::quest_series::table
                     .find(&args.series_id)
                     .select(crate::models::QuestSeries::as_select())
                     .first::<crate::models::QuestSeries>(&mut conn)
                 {
-                    emit_series_sync(ctx, &mut conn, &series);
+                    let payload = serde_json::to_string(&series).ok();
+                    let _ = emit_sync_event(
+                        &mut conn,
+                        &ctx.device_state.identity.device_id,
+                        "quest_series",
+                        &series.id,
+                        &quest.space_id,
+                        "upsert",
+                        payload,
+                    );
                 }
             }
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
@@ -1040,6 +1064,32 @@ fn normalize_repeat_alias(value: &str) -> String {
 
 fn normalize_cli_checklist_markdown(value: &str) -> String {
     crate::services::checklist_md::serialize(&crate::services::checklist_md::parse(value))
+}
+
+/// Like `normalize_cli_checklist_markdown`, but for `checklist-set-template --scope future`:
+/// the documented raw-text input (`'- [ ] headphones'`, no `<!--k=...-->` tokens) would otherwise
+/// get a fresh random id per line, which `reconcile_future_scope` then can't match against the
+/// current occurrence's existing item ids — silently resetting an already-checked item back to
+/// unchecked even though the user only meant to keep it. Reuse the current occurrence's id for
+/// any line whose text exactly matches an existing item, so unchanged lines keep their identity.
+fn normalize_future_template_markdown(raw: &str, current_occurrence_md: Option<&str>) -> String {
+    let existing = crate::services::checklist_md::parse_opt(current_occurrence_md);
+    let mut existing_by_text: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for item in &existing {
+        existing_by_text.entry(item.text.as_str()).or_insert(item.id.as_str());
+    }
+
+    let items: Vec<crate::services::checklist_md::ChecklistItem> =
+        crate::services::checklist_md::parse(raw)
+            .into_iter()
+            .map(|mut item| {
+                if let Some(&existing_id) = existing_by_text.get(item.text.as_str()) {
+                    item.id = existing_id.to_string();
+                }
+                item
+            })
+            .collect();
+    crate::services::checklist_md::serialize(&items)
 }
 
 fn update_quest_from_cli(
@@ -2042,6 +2092,43 @@ mod tests {
 
         std::env::remove_var("FINI_DB_PATH");
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn normalize_future_template_markdown_preserves_ids_for_matching_text() {
+        let current_occurrence_md = crate::services::checklist_md::serialize(&[
+            crate::services::checklist_md::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: true,
+            },
+            crate::services::checklist_md::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+
+        // Raw, undocumented-id input: "headphones" unchanged, "key fob" dropped, "lunch" added.
+        let raw = "- [ ] headphones\n- [ ] lunch";
+        let normalized = normalize_future_template_markdown(raw, Some(&current_occurrence_md));
+        let items = crate::services::checklist_md::parse(&normalized);
+
+        assert_eq!(
+            items.iter().find(|it| it.text == "headphones").unwrap().id,
+            "a1",
+            "unchanged text must keep the current occurrence's item id, or reconcile_future_scope \
+             can't tell it apart from a brand-new item and resets its check"
+        );
+        assert_ne!(
+            items.iter().find(|it| it.text == "lunch").unwrap().id,
+            "a1",
+            "a genuinely new line must not collide with an existing id"
+        );
+        assert_ne!(
+            items.iter().find(|it| it.text == "lunch").unwrap().id,
+            "a2",
+        );
     }
 
     #[test]

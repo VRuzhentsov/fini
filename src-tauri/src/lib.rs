@@ -40,8 +40,9 @@ mod resume_watcher;
 #[cfg(feature = "ui-plane")]
 use services::quest::{
     add_checklist_item, create_quest, delete_quest, delete_quest_series, edit_checklist_item,
-    get_active_focus, get_checklist_activity, get_quests, remove_checklist_item,
-    reorder_checklist, set_focus, toggle_checklist_item, update_quest, update_series_checklist,
+    get_active_focus, get_checklist_activity, get_quests, get_series_checklist_template,
+    remove_checklist_item, reorder_checklist, set_focus, toggle_checklist_item, update_quest,
+    update_series_checklist,
 };
 #[cfg(feature = "ui-plane")]
 use services::reconciler;
@@ -310,6 +311,7 @@ pub fn run() {
             reorder_checklist,
             update_series_checklist,
             get_checklist_activity,
+            get_series_checklist_template,
             get_reminders,
             create_reminder,
             update_reminder,

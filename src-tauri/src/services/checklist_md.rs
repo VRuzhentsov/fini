@@ -189,13 +189,31 @@ pub fn merge_3way(base: Option<&str>, local: &str, remote: &str) -> (String, boo
     let remote_by_id: HashMap<&str, &ChecklistItem> =
         remote_items.iter().map(|it| (it.id.as_str(), it)).collect();
 
+    // Ordering must be deterministic regardless of which side calls merge_3way as "local" vs
+    // "remote" (see track_a_/merge_same_item_text_conflict_chooses_same_winner_from_either_side
+    // for the same requirement applied to conflict resolution) — otherwise two devices that both
+    // independently added items from the same base would each serialize a different item order,
+    // and the convergence push-back (which re-emits whenever merged != incoming) would never
+    // settle. Base order is unambiguous (both sides start from the same base), so items retained
+    // from base keep base's order; anything new to either side is appended in a symmetric,
+    // side-independent order (sorted by id).
     let mut order: Vec<&str> = Vec::new();
     let mut seen = HashSet::new();
-    for it in local_items.iter().chain(remote_items.iter()) {
-        if seen.insert(it.id.as_str()) {
+    for it in base_items.iter() {
+        if (local_by_id.contains_key(it.id.as_str()) || remote_by_id.contains_key(it.id.as_str()))
+            && seen.insert(it.id.as_str())
+        {
             order.push(it.id.as_str());
         }
     }
+    let mut new_ids: Vec<&str> = local_items
+        .iter()
+        .chain(remote_items.iter())
+        .map(|it| it.id.as_str())
+        .filter(|id| seen.insert(id))
+        .collect();
+    new_ids.sort_unstable();
+    order.extend(new_ids);
 
     let mut merged = Vec::new();
     let mut had_conflict = false;
@@ -383,6 +401,38 @@ mod tests {
         assert!(
             reconciled.iter().find(|it| it.id == "a2").is_none(),
             "removed item is dropped"
+        );
+    }
+
+    #[test]
+    fn merge_independently_added_items_converge_on_the_same_order_from_either_side() {
+        let base = serialize(&[ChecklistItem {
+            id: "a1".into(),
+            text: "headphones".into(),
+            checked: false,
+        }]);
+        let mut local_items = parse(&base);
+        local_items.push(ChecklistItem {
+            id: "b2".into(),
+            text: "key fob".into(),
+            checked: false,
+        });
+        let local = serialize(&local_items);
+        let mut remote_items = parse(&base);
+        remote_items.push(ChecklistItem {
+            id: "c3".into(),
+            text: "lunch".into(),
+            checked: false,
+        });
+        let remote = serialize(&remote_items);
+
+        let (from_local_md, _) = merge_3way(Some(&base), &local, &remote);
+        let (from_remote_md, _) = merge_3way(Some(&base), &remote, &local);
+
+        assert_eq!(
+            from_local_md, from_remote_md,
+            "merge order must not depend on which side calls merge_3way as local vs remote, \
+             or the convergence push-back never settles"
         );
     }
 
