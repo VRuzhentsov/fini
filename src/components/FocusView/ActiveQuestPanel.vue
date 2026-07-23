@@ -6,7 +6,7 @@ import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
-import { CheckIcon } from "@heroicons/vue/24/outline";
+import ChecklistEditor from "../ChecklistEditor.vue";
 import QuestEditor from "../QuestEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import RecurrenceScopeSheet from "../QuestsView/RecurrenceScopeSheet.vue";
@@ -230,22 +230,13 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     </div>
 
     <!-- Checklist (issue #128): checkable directly from the collapsed hero card. -->
-    <div v-if="renderFlags.checklist" class="active-quest-checklist">
-      <div
-        v-for="item in checklistItems"
-        :key="item.id"
-        class="active-quest-checklist-item"
-      >
-        <button
-          class="active-quest-checklist-box"
-          :class="{ checked: item.checked }"
-          :aria-label="item.checked ? 'Uncheck item' : 'Check item'"
-          @click.stop="onToggleChecklistItem(item.id, !item.checked)"
-        >
-          <CheckIcon v-if="item.checked" />
-        </button>
-        <span class="active-quest-checklist-text" :class="{ checked: item.checked }">{{ item.text }}</span>
-      </div>
+    <div v-if="renderFlags.checklist" class="active-quest-checklist" @click.stop>
+      <ChecklistEditor
+        :items="checklistItems"
+        mode="compact"
+        @toggle-item="onToggleChecklistItem"
+        @edit-item-text="onEditChecklistItemText"
+      />
     </div>
 
     <div class="active-quest-actions">
@@ -425,48 +416,6 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-}
-
-.active-quest-checklist-item {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  min-height: 36px;
-  padding: 2px 4px;
-  border-radius: 6px;
-}
-
-.active-quest-checklist-item:hover { background: var(--color-base-200); }
-
-.active-quest-checklist-box {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  padding: 0;
-  cursor: pointer;
-  background: transparent;
-  border: 1.5px solid var(--fg-5);
-  border-radius: 4px;
-}
-
-.active-quest-checklist-box:hover { border-color: var(--fg-3); }
-.active-quest-checklist-box.checked { background: var(--color-success); border-color: var(--color-success); }
-.active-quest-checklist-box svg { width: 11px; height: 11px; color: #fff; stroke-width: 3; }
-
-.active-quest-checklist-text {
-  flex: 1;
-  min-width: 0;
-  font-size: 14px;
-  color: var(--fg-1);
-  overflow-wrap: break-word;
-}
-
-.active-quest-checklist-text.checked {
-  color: var(--fg-4);
-  text-decoration: line-through;
 }
 
 .active-quest-actions {

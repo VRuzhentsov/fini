@@ -10,11 +10,9 @@ import {
   ClockIcon,
   ChevronUpIcon,
   ExclamationCircleIcon,
-  CheckIcon,
-  PlusIcon,
-  XMarkIcon,
 } from "@heroicons/vue/24/outline";
 import ActionsBtn from "./ActionsBtn.vue";
+import ChecklistEditor from "./ChecklistEditor.vue";
 
 const props = defineProps<{
   quest: Quest;
@@ -48,7 +46,6 @@ const emit = defineEmits<{
 
 const title = ref(props.quest.title);
 const description = ref(props.quest.description ?? "");
-const newItemText = ref("");
 
 watch(
   () => props.quest,
@@ -89,33 +86,20 @@ const checklistProgressPct = computed(() =>
   checklistTotal.value === 0 ? 0 : (checklistDone.value / checklistTotal.value) * 100,
 );
 
-function onAddItem() {
-  const value = newItemText.value.trim();
-  if (!value) return;
-  emit("addChecklistItem", value);
-  newItemText.value = "";
+function onToggleItem(itemId: string, checked: boolean) {
+  emit("toggleChecklistItem", itemId, checked);
 }
 
-function onAddItemKeydown(event: KeyboardEvent) {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  onAddItem();
+function onEditItemText(itemId: string, text: string) {
+  emit("editChecklistItemText", itemId, text);
 }
 
-function onItemTextBlur(itemId: string, currentText: string, event: FocusEvent) {
-  const input = event.target as HTMLInputElement;
-  const value = input.value.trim();
-  if (!value) {
-    input.value = currentText;
-    return;
-  }
-  if (value !== currentText) emit("editChecklistItemText", itemId, value);
+function onAddItem(text: string) {
+  emit("addChecklistItem", text);
 }
 
-function onItemTextKeydown(event: KeyboardEvent) {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  (event.target as HTMLInputElement).blur();
+function onRemoveItem(itemId: string) {
+  emit("removeChecklistItem", itemId);
 }
 
 function formatActivityTime(iso: string): string {
@@ -206,47 +190,14 @@ const renderFlags = computed(() => ({
       </div>
 
       <div class="quest-editor-checklist-items">
-        <div v-for="item in checklistItems" :key="item.id" class="quest-editor-checklist-item">
-          <button
-            class="quest-editor-checklist-box"
-            :class="{ checked: item.checked }"
-            :aria-label="item.checked ? 'Uncheck item' : 'Check item'"
-            :disabled="!renderFlags.checklistEditable"
-            @click.stop="emit('toggleChecklistItem', item.id, !item.checked)"
-          >
-            <CheckIcon v-if="item.checked" />
-          </button>
-          <input
-            v-if="renderFlags.checklistEditable"
-            class="quest-editor-checklist-text-input"
-            :class="{ checked: item.checked }"
-            :value="item.text"
-            type="text"
-            aria-label="Checklist item text"
-            @click.stop
-            @blur="onItemTextBlur(item.id, item.text, $event)"
-            @keydown="onItemTextKeydown"
-          />
-          <span v-else class="quest-editor-checklist-text" :class="{ checked: item.checked }">{{ item.text }}</span>
-          <button
-            v-if="renderFlags.checklistEditable"
-            class="quest-editor-checklist-remove"
-            aria-label="Remove item"
-            @click.stop="emit('removeChecklistItem', item.id)"
-          >
-            <XMarkIcon />
-          </button>
-        </div>
-
-        <div v-if="renderFlags.checklistEditable" class="quest-editor-checklist-add">
-          <PlusIcon />
-          <input
-            v-model="newItemText"
-            placeholder="Add item"
-            @keydown="onAddItemKeydown"
-            @blur="onAddItem"
-          />
-        </div>
+        <ChecklistEditor
+          :items="checklistItems"
+          :mode="renderFlags.checklistEditable ? 'active' : 'readonly'"
+          @toggle-item="onToggleItem"
+          @edit-item-text="onEditItemText"
+          @add-item="onAddItem"
+          @remove-item="onRemoveItem"
+        />
       </div>
 
       <div v-if="renderFlags.checklistAudit" class="quest-editor-checklist-audit">
@@ -522,118 +473,6 @@ const renderFlags = computed(() => ({
   display: flex;
   flex-direction: column;
 }
-
-.quest-editor-checklist-item {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  min-height: 36px;
-  padding: 2px 4px;
-  border-radius: 6px;
-}
-
-.quest-editor-checklist-item:hover { background: var(--color-base-200); }
-
-.quest-editor-checklist-box {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  padding: 0;
-  cursor: pointer;
-  background: transparent;
-  border: 1.5px solid var(--fg-5);
-  border-radius: 4px;
-}
-
-.quest-editor-checklist-box:hover { border-color: var(--fg-3); }
-.quest-editor-checklist-box.checked {
-  background: var(--color-success);
-  border-color: var(--color-success);
-}
-.quest-editor-checklist-box svg { width: 11px; height: 11px; color: #fff; stroke-width: 3; }
-
-.quest-editor-checklist-text {
-  flex: 1;
-  min-width: 0;
-  font-size: 14px;
-  color: var(--fg-1);
-  overflow-wrap: break-word;
-}
-
-.quest-editor-checklist-text-input {
-  flex: 1;
-  min-width: 0;
-  padding: 2px 0;
-  font-size: 14px;
-  color: var(--fg-1);
-  background: transparent;
-  border: 0;
-  outline: none;
-}
-
-.quest-editor-checklist-text-input:focus {
-  box-shadow: inset 0 -1px 0 var(--color-border-soft);
-}
-
-.quest-editor-checklist-text.checked {
-  color: var(--fg-4);
-  text-decoration: line-through;
-}
-
-.quest-editor-checklist-text-input.checked {
-  color: var(--fg-4);
-  text-decoration: line-through;
-}
-
-.quest-editor-checklist-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
-  padding: 0;
-  color: var(--fg-6);
-  cursor: pointer;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-}
-
-.quest-editor-checklist-remove:hover { color: var(--fg-2); background: var(--color-base-200); }
-.quest-editor-checklist-remove svg { width: 13px; height: 13px; stroke-width: 2; }
-
-.quest-editor-checklist-add {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  min-height: 36px;
-  padding: 2px 4px;
-}
-
-.quest-editor-checklist-add svg {
-  width: 17px;
-  height: 17px;
-  flex-shrink: 0;
-  color: var(--fg-5);
-  stroke-width: 2;
-}
-
-.quest-editor-checklist-add input {
-  flex: 1;
-  min-width: 0;
-  font-size: 14px;
-  color: var(--fg-1);
-  background: transparent;
-  border: 0;
-  outline: none;
-}
-
-.quest-editor-checklist-add input::placeholder { color: var(--fg-5); }
 
 .quest-editor-checklist-audit {
   display: flex;

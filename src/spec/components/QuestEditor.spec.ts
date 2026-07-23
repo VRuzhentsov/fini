@@ -70,7 +70,7 @@ describe("QuestEditor checklist rendering", () => {
       },
     });
 
-    await wrapper.find(".quest-editor-checklist-box").trigger("click");
+    await wrapper.find('button[aria-label="Check item"]').trigger("click");
 
     expect(wrapper.emitted("toggleChecklistItem")).toEqual([["a1", true]]);
   });
@@ -83,14 +83,14 @@ describe("QuestEditor checklist rendering", () => {
       },
     });
 
-    const input = wrapper.find(".quest-editor-checklist-add input");
+    const input = wrapper.find('input[placeholder="Add item"]');
     await input.setValue("lunch");
     await input.trigger("keydown", { key: "Enter" });
 
     expect(wrapper.emitted("addChecklistItem")).toEqual([["lunch"]]);
   });
 
-  it("lets active checklist item text edits emit the existing item id and new text", async () => {
+  it("keeps active checklist item text readonly until the item is held", async () => {
     const wrapper = mount(QuestEditor, {
       props: {
         ...defaultProps,
@@ -101,14 +101,67 @@ describe("QuestEditor checklist rendering", () => {
       },
     });
 
-    const input = wrapper.find(".quest-editor-checklist-text-input");
-    await input.setValue("headphones");
-    await input.trigger("blur");
-
-    expect(wrapper.emitted("editChecklistItemText")).toEqual([["a1", "headphones"]]);
+    // Per the Fini App Refresh design, item text is a read-only label until held (#128) —
+    // instant editability was the app's own earlier, non-canonical behavior.
+    expect(wrapper.find('input[aria-label="Checklist item text"]').exists()).toBe(false);
+    expect(wrapper.find(".checklist-item-text").text()).toBe("headpones");
   });
 
-  it("keeps completed checklist item text readonly", () => {
+  it("reveals an editable input after holding an active checklist item, and emits the edit on blur", async () => {
+    jest.useFakeTimers();
+    try {
+      const wrapper = mount(QuestEditor, {
+        props: {
+          ...defaultProps,
+          quest: baseQuest({
+            is_checklist: true,
+            description: "- [ ] headpones <!--k=a1-->",
+          }),
+        },
+      });
+
+      await wrapper.find(".checklist-item-text").trigger("pointerdown");
+      jest.advanceTimersByTime(600);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const input = wrapper.find<HTMLInputElement>('input[aria-label="Checklist item text"]');
+      expect(input.exists()).toBe(true);
+      await input.setValue("headphones");
+      await input.trigger("blur");
+
+      expect(wrapper.emitted("editChecklistItemText")).toEqual([["a1", "headphones"]]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("does not reveal an editable input on a quick (non-held) tap of an active checklist item", async () => {
+    jest.useFakeTimers();
+    try {
+      const wrapper = mount(QuestEditor, {
+        props: {
+          ...defaultProps,
+          quest: baseQuest({
+            is_checklist: true,
+            description: "- [ ] headpones <!--k=a1-->",
+          }),
+        },
+      });
+
+      await wrapper.find(".checklist-item-text").trigger("pointerdown");
+      jest.advanceTimersByTime(200);
+      await wrapper.find(".checklist-item-text").trigger("pointerup");
+      jest.advanceTimersByTime(600);
+      await Promise.resolve();
+
+      expect(wrapper.find('input[aria-label="Checklist item text"]').exists()).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("keeps completed checklist item text readonly and not hold-editable", () => {
     const wrapper = mount(QuestEditor, {
       props: {
         ...defaultProps,
@@ -120,8 +173,8 @@ describe("QuestEditor checklist rendering", () => {
       },
     });
 
-    expect(wrapper.find(".quest-editor-checklist-text-input").exists()).toBe(false);
-    expect(wrapper.find(".quest-editor-checklist-text").text()).toBe("headphones");
+    expect(wrapper.find('input[aria-label="Checklist item text"]').exists()).toBe(false);
+    expect(wrapper.find(".checklist-item-text").text()).toBe("headphones");
   });
 
   it("disables checklist item toggles for completed checklist quests", async () => {
@@ -136,7 +189,7 @@ describe("QuestEditor checklist rendering", () => {
       },
     });
 
-    const checkbox = wrapper.find<HTMLButtonElement>(".quest-editor-checklist-box");
+    const checkbox = wrapper.find<HTMLButtonElement>('button[aria-label="Uncheck item"]');
 
     expect(checkbox.element.disabled).toBe(true);
     await checkbox.trigger("click");
@@ -155,8 +208,8 @@ describe("QuestEditor checklist rendering", () => {
       },
     });
 
-    expect(wrapper.find(".quest-editor-checklist-remove").exists()).toBe(false);
-    expect(wrapper.find(".quest-editor-checklist-add").exists()).toBe(false);
+    expect(wrapper.find('button[aria-label="Remove item"]').exists()).toBe(false);
+    expect(wrapper.find('input[placeholder="Add item"]').exists()).toBe(false);
   });
 
   it("shows the audit trail only when checklistActivity is provided on a checklist quest", () => {

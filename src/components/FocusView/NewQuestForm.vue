@@ -6,14 +6,13 @@ import { useReminderNotifications } from "../../composables/useReminderNotificat
 import {
   CalendarDaysIcon,
   CheckCircleIcon,
-  CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   PaperAirplaneIcon,
-  PlusIcon,
   XMarkIcon,
 } from "@heroicons/vue/24/outline";
-import { newChecklistItemId, serializeChecklist, type ChecklistItem } from "../../utils/checklist";
+import { serializeChecklist, type ChecklistItem } from "../../utils/checklist";
+import ChecklistEditor from "../ChecklistEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -28,7 +27,7 @@ const description = ref("");
 // checklist item on submit.
 const isChecklistMode = ref(false);
 const checklistItems = ref<ChecklistItem[]>([]);
-const newChecklistItemText = ref("");
+const checklistEditorRef = ref<InstanceType<typeof ChecklistEditor> | null>(null);
 const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
@@ -195,32 +194,16 @@ function toggleChecklistMode() {
   if (isChecklistMode.value) metadataExpanded.value = true;
 }
 
-function addChecklistItem() {
-  const text = newChecklistItemText.value.trim();
-  if (!text) return;
-  checklistItems.value.push({ id: newChecklistItemId(), text, checked: false });
-  newChecklistItemText.value = "";
-}
-
-function onNewChecklistItemKeydown(event: KeyboardEvent) {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  addChecklistItem();
-}
-
-function toggleChecklistItemChecked(itemId: string) {
+function onToggleChecklistItem(itemId: string, checked: boolean) {
   const item = checklistItems.value.find((it) => it.id === itemId);
-  if (item) item.checked = !item.checked;
-}
-
-function removeChecklistItem(itemId: string) {
-  checklistItems.value = checklistItems.value.filter((it) => it.id !== itemId);
+  if (item) item.checked = checked;
 }
 
 async function onSubmit() {
   const value = title.value.trim();
   if (!value || isSubmitting.value) return;
-  if (isChecklistMode.value) addChecklistItem(); // capture whatever's still in the "add item" input
+  // Capture whatever's still sitting in the "add item" input (e.g. submit clicked without Enter).
+  if (isChecklistMode.value) checklistEditorRef.value?.flushPendingItem();
   const descriptionValue = isChecklistMode.value
     ? serializeChecklist(checklistItems.value) || null
     : description.value.trim() || null;
@@ -242,7 +225,6 @@ async function onSubmit() {
     description.value = "";
     isChecklistMode.value = false;
     checklistItems.value = [];
-    newChecklistItemText.value = "";
     clearReminder();
     metadataExpanded.value = false;
   } finally {
@@ -287,51 +269,16 @@ async function onSubmit() {
           :disabled="isSubmitting"
         />
 
-        <div v-else data-testid="new-quest-checklist" class="flex flex-col gap-0.5">
-          <div
-            v-for="item in checklistItems"
-            :key="item.id"
-            class="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-base-200"
-          >
-            <button
-              type="button"
-              class="flex size-[18px] shrink-0 items-center justify-center rounded border-[1.5px] border-base-content/40 disabled:opacity-50"
-              :class="item.checked ? 'border-success bg-success' : ''"
-              :aria-label="item.checked ? 'Uncheck item' : 'Check item'"
-              :disabled="isSubmitting"
-              @click="toggleChecklistItemChecked(item.id)"
-            >
-              <CheckIcon v-if="item.checked" class="size-3 text-success-content" />
-            </button>
-            <span
-              class="min-w-0 flex-1 text-sm"
-              :class="item.checked ? 'text-base-content/40 line-through' : ''"
-            >{{ item.text }}</span>
-            <button
-              type="button"
-              class="flex size-6 shrink-0 items-center justify-center rounded text-base-content/40 hover:bg-base-300 hover:text-base-content/70"
-              aria-label="Remove item"
-              :disabled="isSubmitting"
-              @click="removeChecklistItem(item.id)"
-            >
-              <XMarkIcon class="size-3.5" />
-            </button>
-          </div>
-
-          <div class="flex items-center gap-2 px-1 py-1">
-            <PlusIcon class="size-[17px] shrink-0 text-base-content/40" />
-            <input
-              v-model="newChecklistItemText"
-              type="text"
-              data-testid="new-quest-checklist-item-input"
-              class="input input-ghost min-h-0 flex-1 p-0 text-sm focus:outline-none"
-              placeholder="Add item"
-              :disabled="isSubmitting"
-              @keydown="onNewChecklistItemKeydown"
-              @blur="addChecklistItem"
-            />
-          </div>
-        </div>
+        <ChecklistEditor
+          v-else
+          ref="checklistEditorRef"
+          v-model:items="checklistItems"
+          mode="draft"
+          data-testid="new-quest-checklist"
+          add-item-test-id="new-quest-checklist-item-input"
+          :disabled="isSubmitting"
+          @toggle-item="onToggleChecklistItem"
+        />
       </div>
 
       <div class="flex items-center justify-between gap-2 pt-1">

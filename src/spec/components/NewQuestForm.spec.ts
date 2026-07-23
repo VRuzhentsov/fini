@@ -220,8 +220,10 @@ describe("NewQuestForm", () => {
     const rows = wrapper.findAll('[data-testid="new-quest-checklist"] > div');
     // Two item rows plus the trailing "add item" row.
     expect(rows.length).toBe(3);
-    expect(wrapper.text()).toContain("headphones");
-    expect(wrapper.text()).toContain("key fob");
+    const itemValues = wrapper
+      .findAll('[data-testid="new-quest-checklist"] input[aria-label="Checklist item text"]')
+      .map((input) => (input.element as HTMLInputElement).value);
+    expect(itemValues).toEqual(["headphones", "key fob"]);
   });
 
   it("checking an item while composing shows it as checked before submit", async () => {
@@ -240,7 +242,10 @@ describe("NewQuestForm", () => {
     await checkbox.trigger("click");
 
     expect(wrapper.find('[aria-label="Uncheck item"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="new-quest-checklist"]').text()).toContain("headphones");
+    const itemInput = wrapper.find<HTMLInputElement>(
+      '[data-testid="new-quest-checklist"] input[aria-label="Checklist item text"]',
+    );
+    expect(itemInput.element.value).toBe("headphones");
   });
 
   it("submits composed checklist items, including their checked state and one left in the input", async () => {
