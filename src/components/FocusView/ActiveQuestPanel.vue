@@ -33,22 +33,26 @@ function onToggleChecklistItem(itemId: string, checked: boolean) {
 
 function onEditChecklistItemText(itemId: string, text: string) {
   if (props.quest.series_id) {
-    pendingScopeAction.value = { kind: "edit", payload: { itemId, text } };
+    pendingScopeAction.value = { quest: props.quest, kind: "edit", payload: { itemId, text } };
     return;
   }
   store.editChecklistItemText(props.quest.id, itemId, text);
 }
 
+// Captures the quest at the moment the scope sheet opens (not just at resolution time): Focus
+// can refresh or replace `activeQuest` while the sheet is still open (e.g. after a sync or
+// reminder refresh), and resolving against a freshly-read props.quest could apply this pending
+// item edit to a different quest than the one that actually opened the sheet.
 type PendingScopeAction =
-  | { kind: "add"; payload: string }
-  | { kind: "remove"; payload: string }
-  | { kind: "edit"; payload: { itemId: string; text: string } };
+  | { quest: Quest; kind: "add"; payload: string }
+  | { quest: Quest; kind: "remove"; payload: string }
+  | { quest: Quest; kind: "edit"; payload: { itemId: string; text: string } };
 
 const pendingScopeAction = ref<PendingScopeAction | null>(null);
 
 function onAddChecklistItem(text: string) {
   if (props.quest.series_id) {
-    pendingScopeAction.value = { kind: "add", payload: text };
+    pendingScopeAction.value = { quest: props.quest, kind: "add", payload: text };
     return;
   }
   store.addChecklistItem(props.quest.id, text);
@@ -56,7 +60,7 @@ function onAddChecklistItem(text: string) {
 
 function onRemoveChecklistItem(itemId: string) {
   if (props.quest.series_id) {
-    pendingScopeAction.value = { kind: "remove", payload: itemId };
+    pendingScopeAction.value = { quest: props.quest, kind: "remove", payload: itemId };
     return;
   }
   store.removeChecklistItem(props.quest.id, itemId);
@@ -66,19 +70,31 @@ async function onScopeChosen(scope: "this" | "future") {
   const action = pendingScopeAction.value;
   pendingScopeAction.value = null;
   if (!action) return;
+  const { quest } = action;
 
   if (scope === "this") {
-    if (action.kind === "add") await store.addChecklistItem(props.quest.id, action.payload);
-    else if (action.kind === "remove") await store.removeChecklistItem(props.quest.id, action.payload);
-    else await store.editChecklistItemText(props.quest.id, action.payload.itemId, action.payload.text);
+    if (action.kind === "add") await store.addChecklistItem(quest.id, action.payload);
+    else if (action.kind === "remove") await store.removeChecklistItem(quest.id, action.payload);
+    else await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
     return;
   }
 
   // "This and future occurrences" must diff against the series' own stored template, not this
   // occurrence's current description — the occurrence may already carry "this occurrence only"
   // changes that were never promoted, and basing the edit on it would silently promote them.
-  const template = await store.fetchSeriesChecklistTemplate(props.quest.series_id!);
+  const template = await store.fetchSeriesChecklistTemplate(quest.series_id!);
   const items = parseChecklist(template);
+
+  if (action.kind === "edit" && !items.some((it) => it.id === action.payload.itemId)) {
+    // The item being renamed was added via "This occurrence" and was never promoted to the
+    // template — pushing the template unchanged would leave the rename un-applied, and the
+    // backend's reconcile would then drop the item entirely (absent from the new template)
+    // instead of renaming it. There's no coherent "future" version of an occurrence-only item,
+    // so fall back to applying the rename to just this occurrence.
+    await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
+    return;
+  }
+
   const nextItems =
     action.kind === "add"
       ? [...items, { id: newChecklistItemId(), text: action.payload, checked: false }]
@@ -88,8 +104,8 @@ async function onScopeChosen(scope: "this" | "future") {
             it.id === action.payload.itemId ? { ...it, text: action.payload.text } : it,
           );
   await store.updateSeriesChecklist(
-    props.quest.series_id!,
-    props.quest.id,
+    quest.series_id!,
+    quest.id,
     serializeChecklist(nextItems),
     "future",
   );
@@ -270,7 +286,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
 
   <RecurrenceScopeSheet
     v-if="pendingScopeAction"
-    :quest-title="quest.title"
+    :quest-title="pendingScopeAction.quest.title"
     @close="pendingScopeAction = null"
     @choose="onScopeChosen"
   />

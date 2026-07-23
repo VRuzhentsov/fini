@@ -141,6 +141,18 @@ async function onScopeChosen(scope: "this" | "future") {
   // checks on unchanged items, per #128).
   const template = await store.fetchSeriesChecklistTemplate(quest.series_id!);
   const items = parseChecklist(template);
+
+  if (kind === "edit" && !items.some((it) => it.id === payload.itemId)) {
+    // The item being renamed was added via "This occurrence" and was never promoted to the
+    // template — it has no counterpart there to update. Pushing the template unchanged would
+    // leave the rename un-applied, and reconcile_future_scope would then drop the item entirely
+    // (since it's absent from the new template), destroying it instead of renaming it. There's no
+    // coherent "future" version of an occurrence-only item, so fall back to applying the rename
+    // to just this occurrence.
+    await store.editChecklistItemText(quest.id, payload.itemId, payload.text);
+    return;
+  }
+
   const nextItems =
     kind === "add"
       ? [...items, { id: newChecklistItemId(), text: payload, checked: false }]

@@ -1128,6 +1128,14 @@ fn upsert_quest_for_import(
         .optional()?
         .is_some();
     if exists {
+        // checklist_base is deliberately left out of this SET list: it's device-local per-item
+        // sync convergence bookkeeping, never part of a quest's own data (see its doc comment —
+        // "never included in sync payloads"). It's also excluded from quest_value()'s conflict
+        // comparison for the same reason, so a quest that round-trips through backup/import with
+        // no other changes never appears as a conflict at all — if this UPDATE still overwrote
+        // checklist_base from the backup, a stale backup could silently regress convergence
+        // bookkeeping for a quest that was never flagged as conflicting, causing the next sync
+        // merge to misjudge which side already agreed on what.
         diesel::update(quests::table.find(&quest.id))
             .set((
                 quests::space_id.eq(&quest.space_id),
@@ -1148,7 +1156,6 @@ fn upsert_quest_for_import(
                 quests::series_id.eq(&quest.series_id),
                 quests::period_key.eq(&quest.period_key),
                 quests::is_checklist.eq(quest.is_checklist),
-                quests::checklist_base.eq(&quest.checklist_base),
             ))
             .execute(conn)?;
     } else {
@@ -1677,6 +1684,80 @@ mod tests {
         assert_eq!(
             imported_activity[0].origin_device_id.as_deref(),
             Some("backup-device")
+        );
+
+        let _ = fs::remove_file(out_path);
+        let _ = fs::remove_file(source_db_path);
+        let _ = fs::remove_file(target_db_path);
+    }
+
+    #[test]
+    fn import_preserves_local_checklist_base_for_a_non_conflicting_quest() {
+        let _guard = lock_temp_dir_namespace();
+        let source_db_path = temp_db_path("backup-source-checklist-base");
+        let mut source = open_db_at_path(&source_db_path);
+        source
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'base-quest', '1', 'Pack bag',
+                    '- [ ] headphones <!--k=a1-->', 'active', 'medium', 1, 0,
+                    NULL, NULL, NULL, NULL, 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, NULL, 1,
+                    'stale-backup-base'
+                );
+                "#,
+            )
+            .expect("seed source quest");
+
+        let out_path = backup_path("backup-checklist-base");
+        export_backup(&mut source, &out_path, &["1".to_string()]).expect("export");
+
+        let target_db_path = temp_db_path("backup-target-checklist-base");
+        let mut target = open_db_at_path(&target_db_path);
+        target
+            .batch_execute(
+                r#"
+                INSERT INTO quests (
+                    id, space_id, title, description, status, energy, priority, pinned,
+                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
+                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                ) VALUES (
+                    'base-quest', '1', 'Pack bag',
+                    '- [ ] headphones <!--k=a1-->', 'active', 'medium', 1, 0,
+                    NULL, NULL, NULL, NULL, 0, 0,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, NULL, 1,
+                    'current-local-base'
+                );
+                "#,
+            )
+            .expect("seed target quest with an identical quest but a different local base");
+
+        let preflight = preflight_import(&mut target, &out_path, &[]).expect("preflight");
+        assert!(
+            preflight.conflicts.is_empty(),
+            "checklist_base must not be part of conflict detection — it's device-local \
+             bookkeeping, not quest data — got: {:?}",
+            preflight.conflicts
+        );
+
+        apply_import(&mut target, &out_path, &[], &[]).expect("import with no conflicts to resolve");
+
+        let imported: Quest = quests::table
+            .find("base-quest")
+            .select(Quest::as_select())
+            .first(&mut target)
+            .expect("load imported quest");
+        assert_eq!(
+            imported.checklist_base.as_deref(),
+            Some("current-local-base"),
+            "a non-conflicting quest's import must not overwrite the local checklist_base with a \
+             stale backup value — that would desync the next per-item sync merge's convergence \
+             bookkeeping"
         );
 
         let _ = fs::remove_file(out_path);

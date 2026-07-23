@@ -996,14 +996,20 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         }
         QuestCommand::ChecklistSetTemplate(args) => {
             let normalized_checklist = if args.scope == "future" {
-                // Preserve ids for text-matching lines against the *current occurrence*, which
-                // is what reconcile_future_scope diffs the new template against for checked-state
-                // preservation — see normalize_future_template.
-                let current_occurrence_checklist = QuestService::new(&mut conn)
-                    .get(&args.quest_id)
+                // Preserve ids for text-matching lines against the *series template* — not the
+                // current occurrence, which may carry this-occurrence-only edits (e.g. a rename)
+                // that never made it into the template. Matching against the occurrence would
+                // miss the template's own item and assign it a fresh id, which
+                // reconcile_future_scope then treats as a brand-new item — dropping the real one
+                // and re-adding it unchecked. The template is what the user is actually revising,
+                // and reconcile_future_scope's own occurrence/template id match still carries
+                // checked-state over for any item whose id round-trips through this template
+                // unchanged (see normalize_future_template).
+                let series_template = QuestService::new(&mut conn)
+                    .get_series_checklist_template(&args.series_id)
                     .ok()
-                    .and_then(|q| q.description);
-                normalize_future_template(&args.checklist, current_occurrence_checklist.as_deref())
+                    .flatten();
+                normalize_future_template(&args.checklist, series_template.as_deref())
             } else {
                 normalize_cli_checklist(&args.checklist)
             };
@@ -1069,21 +1075,33 @@ fn normalize_cli_checklist(value: &str) -> String {
 /// Like `normalize_cli_checklist`, but for `checklist-set-template --scope future`:
 /// the documented raw-text input (`'- [ ] headphones'`, no `<!--k=...-->` tokens) would otherwise
 /// get a fresh random id per line, which `reconcile_future_scope` then can't match against the
-/// current occurrence's existing item ids — silently resetting an already-checked item back to
-/// unchecked even though the user only meant to keep it. Reuse the current occurrence's id for
+/// series template's existing item ids — silently resetting an already-checked item back to
+/// unchecked even though the user only meant to keep it. Reuse the series template's id for
 /// any line whose text exactly matches an existing item, so unchanged lines keep their identity.
-fn normalize_future_template(raw: &str, current_occurrence_checklist: Option<&str>) -> String {
-    let existing = crate::services::checklist::parse_opt(current_occurrence_checklist);
-    let mut existing_by_text: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+fn normalize_future_template(raw: &str, series_template_checklist: Option<&str>) -> String {
+    use std::collections::{HashMap, VecDeque};
+
+    let existing = crate::services::checklist::parse_opt(series_template_checklist);
+    // A queue per text, not a single id: two existing items can share the same text, and two raw
+    // lines can too. Popping one id per match pairs them up one-to-one in original order instead
+    // of handing every matching line the same id (which would give duplicate items the same
+    // <!--k=id--> token — breaking per-item identity for both removal-by-id and sync merge).
+    let mut existing_by_text: HashMap<&str, VecDeque<&str>> = HashMap::new();
     for item in &existing {
-        existing_by_text.entry(item.text.as_str()).or_insert(item.id.as_str());
+        existing_by_text
+            .entry(item.text.as_str())
+            .or_default()
+            .push_back(item.id.as_str());
     }
 
     let items: Vec<crate::services::checklist::ChecklistItem> =
         crate::services::checklist::parse(raw)
             .into_iter()
             .map(|mut item| {
-                if let Some(&existing_id) = existing_by_text.get(item.text.as_str()) {
+                if let Some(existing_id) = existing_by_text
+                    .get_mut(item.text.as_str())
+                    .and_then(VecDeque::pop_front)
+                {
                     item.id = existing_id.to_string();
                 }
                 item
@@ -2096,7 +2114,7 @@ mod tests {
 
     #[test]
     fn normalize_future_template_preserves_ids_for_matching_text() {
-        let current_occurrence_checklist = crate::services::checklist::serialize(&[
+        let series_template = crate::services::checklist::serialize(&[
             crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
@@ -2111,13 +2129,13 @@ mod tests {
 
         // Raw, undocumented-id input: "headphones" unchanged, "key fob" dropped, "lunch" added.
         let raw = "- [ ] headphones\n- [ ] lunch";
-        let normalized = normalize_future_template(raw, Some(&current_occurrence_checklist));
+        let normalized = normalize_future_template(raw, Some(&series_template));
         let items = crate::services::checklist::parse(&normalized);
 
         assert_eq!(
             items.iter().find(|it| it.text == "headphones").unwrap().id,
             "a1",
-            "unchanged text must keep the current occurrence's item id, or reconcile_future_scope \
+            "unchanged text must keep the series template's item id, or reconcile_future_scope \
              can't tell it apart from a brand-new item and resets its check"
         );
         assert_ne!(
@@ -2128,6 +2146,76 @@ mod tests {
         assert_ne!(
             items.iter().find(|it| it.text == "lunch").unwrap().id,
             "a2",
+        );
+    }
+
+    #[test]
+    fn normalize_future_template_matches_the_series_template_not_this_occurrence_only_edits() {
+        // The occurrence renamed "headphones" to "wireless headphones" via a "this occurrence"
+        // scoped edit — that never touched the series template, which still says "headphones".
+        let series_template = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: true,
+            },
+        ]);
+        let occurrence_only_rename = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "wireless headphones".into(),
+                checked: true,
+            },
+        ]);
+
+        // Raw future-template input retypes the *template's* original text.
+        let raw = "- [ ] headphones";
+        let normalized = normalize_future_template(raw, Some(&series_template));
+        let items = crate::services::checklist::parse(&normalized);
+        assert_eq!(
+            items[0].id, "a1",
+            "must match against the series template's own item, not the occurrence's \
+             this-occurrence-only rename, or the template's real item gets a fresh id and \
+             reconcile_future_scope drops it instead of updating it"
+        );
+
+        // Matching against the (stale) occurrence text instead would have missed entirely.
+        let normalized_against_occurrence = normalize_future_template(raw, Some(&occurrence_only_rename));
+        let items_against_occurrence = crate::services::checklist::parse(&normalized_against_occurrence);
+        assert_ne!(
+            items_against_occurrence[0].id, "a1",
+            "sanity check: matching against the renamed occurrence text does NOT find the id — \
+             confirms the series template must be the match source, not the occurrence"
+        );
+    }
+
+    #[test]
+    fn normalize_future_template_assigns_duplicate_text_lines_distinct_existing_ids() {
+        let series_template = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "milk".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "milk".into(),
+                checked: true,
+            },
+        ]);
+
+        let raw = "- [ ] milk\n- [ ] milk";
+        let normalized = normalize_future_template(raw, Some(&series_template));
+        let items = crate::services::checklist::parse(&normalized);
+
+        assert_eq!(items.len(), 2);
+        let ids: std::collections::HashSet<&str> =
+            items.iter().map(|it| it.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            std::collections::HashSet::from(["a1", "a2"]),
+            "each duplicate-text line must be paired with a distinct existing id, not share one \
+             — a shared id breaks remove-by-id and per-item sync identity for both rows"
         );
     }
 
