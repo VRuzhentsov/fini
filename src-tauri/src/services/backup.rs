@@ -1267,6 +1267,18 @@ fn path_str(path: &Path) -> Result<&str, String> {
 mod tests {
     use super::*;
     use crate::services::db::{open_db_at_path, temp_db_path};
+    use std::sync::Mutex;
+
+    /// Every test in this module extracts backups through `create_temp_dir("import")`, which
+    /// writes into the process-wide `fini-backup-import-*` namespace under the OS temp dir.
+    /// Several tests assert on that namespace's before/after contents to prove cleanup happened;
+    /// without serializing the module, one test's in-flight temp dir is indistinguishable from
+    /// another concurrently-running test's leak, causing spurious failures.
+    static TEMP_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_temp_dir_namespace() -> std::sync::MutexGuard<'static, ()> {
+        TEMP_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn backup_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("fini-{label}-{}.zip", Uuid::new_v4()))
@@ -1391,6 +1403,7 @@ mod tests {
 
     #[test]
     fn dry_run_plan_reports_unresolved_conflicts_without_selecting_a_resolution() {
+        let _guard = lock_temp_dir_namespace();
         let plan = BackupImportDryRunPlan::from_preflight(BackupImportPreflight {
             manifest: BackupManifest {
                 format: BACKUP_FORMAT.to_string(),
@@ -1430,6 +1443,7 @@ mod tests {
 
     #[test]
     fn export_creates_zip_with_exact_required_files() {
+        let _guard = lock_temp_dir_namespace();
         let db_path = temp_db_path("backup-export-exact-files");
         let mut conn = open_db_at_path(&db_path);
         let out_path = backup_path("backup-export-exact-files");
@@ -1460,6 +1474,7 @@ mod tests {
 
     #[test]
     fn import_preflight_requires_missing_custom_space_mapping() {
+        let _guard = lock_temp_dir_namespace();
         let source_db_path = temp_db_path("backup-source-custom-space");
         let mut source = open_db_at_path(&source_db_path);
         seed_custom_space(&mut source, "space-custom", "Custom");
@@ -1483,6 +1498,7 @@ mod tests {
 
     #[test]
     fn import_accepts_legacy_v2_backups_without_checklist_columns() {
+        let _guard = lock_temp_dir_namespace();
         let (archive_path, backup_database_path) =
             write_legacy_v2_backup_archive("backup-legacy-v2-checklist-columns");
 
@@ -1518,6 +1534,7 @@ mod tests {
 
     #[test]
     fn backup_roundtrip_preserves_checklist_activity() {
+        let _guard = lock_temp_dir_namespace();
         let source_db_path = temp_db_path("backup-source-checklist-activity");
         let mut source = open_db_at_path(&source_db_path);
         source
@@ -1577,6 +1594,7 @@ mod tests {
 
     #[test]
     fn import_backup_resolution_replaces_local_checklist_activity() {
+        let _guard = lock_temp_dir_namespace();
         let source_db_path = temp_db_path("backup-source-replace-checklist-activity");
         let mut source = open_db_at_path(&source_db_path);
         source
@@ -1668,6 +1686,7 @@ mod tests {
 
     #[test]
     fn preflight_reports_checklist_activity_conflicts_before_import() {
+        let _guard = lock_temp_dir_namespace();
         let source_db_path = temp_db_path("backup-source-activity-conflict");
         let mut source = open_db_at_path(&source_db_path);
         source
@@ -1762,6 +1781,7 @@ mod tests {
 
     #[test]
     fn import_preflight_removes_temp_dir_when_schema_validation_fails() {
+        let _guard = lock_temp_dir_namespace();
         let backup_database_path = temp_db_path("backup-invalid-schema");
         let backup_conn =
             SqliteConnection::establish(path_str(&backup_database_path).expect("path"))
@@ -1822,6 +1842,7 @@ mod tests {
 
     #[test]
     fn extract_backup_removes_temp_dir_when_database_copy_fails() {
+        let _guard = lock_temp_dir_namespace();
         let backup_path = backup_path("backup-corrupt-database");
         let manifest = BackupManifest {
             format: BACKUP_FORMAT.to_string(),
