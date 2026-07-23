@@ -131,12 +131,28 @@ impl<'a> QuestRepository<'a> {
             .first::<Option<f64>>(self.conn)
             .map_err(|error| error.to_string())?
             .unwrap_or(0.0);
+        // Checklist occurrences get a fresh, unchecked copy of the series template (issue #128:
+        // "a fresh, unchecked checklist copied from its checklist template"). Plain prose
+        // descriptions keep following the completed occurrence, because normal prose edits only
+        // update `quests.description` and should carry into the next occurrence.
+        let (template_description, is_checklist): (Option<String>, bool) = quest_series::table
+            .find(series_id)
+            .select((quest_series::description, quest_series::is_checklist))
+            .first(self.conn)
+            .map_err(|error| error.to_string())?;
+        let description = if is_checklist {
+            template_description
+                .as_deref()
+                .map(crate::services::checklist::reset_unchecked)
+        } else {
+            quest.description.clone()
+        };
         let now = utc_now();
         diesel::insert_into(quests::table)
             .values((
                 quests::space_id.eq(&quest.space_id),
                 quests::title.eq(&quest.title),
-                quests::description.eq(quest.description.as_deref()),
+                quests::description.eq(&description),
                 quests::status.eq("active"),
                 quests::energy.eq(&quest.energy),
                 quests::priority.eq(quest.priority),
@@ -146,6 +162,8 @@ impl<'a> QuestRepository<'a> {
                 quests::order_rank.eq(max_rank + 1.0),
                 quests::series_id.eq(series_id),
                 quests::period_key.eq(period_key),
+                quests::is_checklist.eq(is_checklist),
+                quests::checklist_base.eq(if is_checklist { &description } else { &None }),
                 quests::created_at.eq(&now),
                 quests::updated_at.eq(&now),
             ))
@@ -158,6 +176,54 @@ impl<'a> QuestRepository<'a> {
             .first(self.conn)
             .optional()
             .map_err(|error| error.to_string())
+    }
+
+    /// "This and future occurrences": update the series checklist template (stored in
+    /// `quest_series.description`) and reconcile the current occurrence against it (preserve
+    /// checks on unchanged items, add new items unchecked, drop removed items). Completed
+    /// history is untouched — callers must not invoke this for a non-active occurrence.
+    pub fn update_series_checklist_template(
+        &mut self,
+        series_id: &str,
+        new_template: &str,
+        current_occurrence_id: &str,
+    ) -> Result<Quest, String> {
+        diesel::update(quest_series::table.find(series_id))
+            .set((
+                quest_series::description.eq(new_template),
+                quest_series::is_checklist.eq(true),
+                quest_series::updated_at.eq(utc_now()),
+            ))
+            .execute(self.conn)
+            .map_err(|error| error.to_string())?;
+
+        let current = self.get(current_occurrence_id)?;
+        let reconciled = crate::services::checklist::reconcile_future_scope(
+            current.description.as_deref(),
+            new_template,
+        );
+        self.set_checklist_description(current_occurrence_id, &reconciled)
+    }
+
+    /// Sets `description` (as checklist text) for a local edit — not a sync-merge apply.
+    /// Marks the quest `is_checklist` if it wasn't already. `checklist_base` is deliberately
+    /// left untouched here — it only advances when a sync merge completes (see
+    /// `space_sync::commands::apply_sync_event`), so the next merge can still tell that this
+    /// device has diverged from the last mutually-agreed state.
+    pub fn set_checklist_description(
+        &mut self,
+        quest_id: &str,
+        checklist: &str,
+    ) -> Result<Quest, String> {
+        diesel::update(quests::table.find(quest_id))
+            .set((
+                quests::description.eq(checklist),
+                quests::is_checklist.eq(true),
+                quests::updated_at.eq(utc_now()),
+            ))
+            .execute(self.conn)
+            .map_err(|error| error.to_string())?;
+        self.get(quest_id)
     }
 
     pub fn touch(&mut self, id: &str) -> Result<(), String> {
@@ -216,11 +282,23 @@ impl<'a> QuestRepository<'a> {
             order_rank: Some(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
             ..input
         };
-        diesel::insert_into(quests::table)
+        let quest: Quest = diesel::insert_into(quests::table)
             .values(&input)
             .returning(Quest::as_returning())
             .get_result(self.conn)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        // checklist_base is device-local convergence bookkeeping (never part of the Insertable
+        // input) — seed it to match the freshly-created description so the first sync exchange
+        // has a real base to diff against instead of treating any incoming edit as
+        // unconditionally authoritative.
+        if quest.is_checklist {
+            diesel::update(quests::table.find(&quest.id))
+                .set(quests::checklist_base.eq(&quest.description))
+                .execute(self.conn)
+                .map_err(|error| error.to_string())?;
+            return self.get(&quest.id);
+        }
+        Ok(quest)
     }
 
     pub fn create_series_and_quest(
@@ -244,6 +322,7 @@ impl<'a> QuestRepository<'a> {
                 repeat_rule,
                 priority: input.priority,
                 energy: input.energy.clone(),
+                is_checklist: input.is_checklist,
             })
             .returning(QuestSeries::as_returning())
             .get_result(self.conn)
@@ -267,6 +346,12 @@ impl<'a> QuestRepository<'a> {
                 quests::order_rank.eq(clamp_order_rank(input.order_rank.unwrap_or(max_rank + 1.0))),
                 quests::series_id.eq(&series.id),
                 quests::period_key.eq(&period_key),
+                quests::is_checklist.eq(input.is_checklist),
+                quests::checklist_base.eq(if input.is_checklist {
+                    &input.description
+                } else {
+                    &None
+                }),
                 quests::created_at.eq(&now),
                 quests::updated_at.eq(&now),
             ))
@@ -458,6 +543,7 @@ mod tests {
                 due_time: Some("10:30".to_string()),
                 repeat_rule: Some("weekly".to_string()),
                 order_rank: None,
+                is_checklist: false,
             })
             .expect("create quest");
 
@@ -477,6 +563,7 @@ mod tests {
                         due_time: None,
                         repeat_rule: None,
                         order_rank: None,
+                        is_checklist: None,
                     },
                     description: QuestFieldPatch::Clear,
                     due: QuestFieldPatch::Unchanged,
@@ -508,6 +595,7 @@ mod tests {
                 due_time: None,
                 repeat_rule: Some("weekly".to_string()),
                 order_rank: None,
+                is_checklist: false,
             })
             .expect("create series quest");
 
@@ -527,6 +615,7 @@ mod tests {
                         due_time: None,
                         repeat_rule: None,
                         order_rank: None,
+                        is_checklist: None,
                     },
                     description: QuestFieldPatch::Unchanged,
                     due: QuestFieldPatch::Clear,

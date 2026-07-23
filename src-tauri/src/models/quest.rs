@@ -29,6 +29,17 @@ pub struct Quest {
     pub updated_at: String,
     pub series_id: Option<String>,
     pub period_key: Option<String>,
+    /// When true, `description` is authored/rendered as a checklist (task-list text,
+    /// `- [ ] text <!--k=id-->` lines) instead of prose — issue #128. There is no separate
+    /// checklist content column: the description field itself holds that task-list text, and a
+    /// checklist quest simply parses/renders that same field as a task list.
+    #[serde(default)]
+    pub is_checklist: bool,
+    /// Device-local convergence bookkeeping for the per-item checklist merge when
+    /// `is_checklist` — the last `description` value both sides last agreed on. Never included
+    /// in sync payloads.
+    #[serde(skip_serializing, default)]
+    pub checklist_base: Option<String>,
 }
 
 #[derive(Deserialize, Insertable)]
@@ -46,6 +57,9 @@ pub struct CreateQuestInput {
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
     pub order_rank: Option<f64>,
+    /// Marks this quest as a checklist quest — `description` is authored as task-list text.
+    #[serde(default)]
+    pub is_checklist: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +112,7 @@ pub struct UpdateQuestInput {
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
     pub order_rank: Option<f64>,
+    pub is_checklist: Option<bool>,
 }
 
 pub fn default_priority() -> i64 {

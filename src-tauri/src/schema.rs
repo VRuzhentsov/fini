@@ -26,6 +26,7 @@ diesel::table! {
         active      -> Bool,
         created_at  -> Text,
         updated_at  -> Text,
+        is_checklist -> Bool,
     }
 }
 
@@ -49,6 +50,19 @@ diesel::table! {
         updated_at  -> Text,
         series_id   -> Nullable<Text>,
         period_key  -> Nullable<Text>,
+        is_checklist -> Bool,
+        checklist_base -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    checklist_activity (id) {
+        id               -> Text,
+        quest_id         -> Text,
+        kind             -> Text,
+        detail           -> Text,
+        created_at       -> Text,
+        origin_device_id -> Nullable<Text>,
     }
 }
 
@@ -160,6 +174,7 @@ diesel::joinable!(series_reminder_templates -> quest_series (series_id));
 diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
 diesel::joinable!(pair_space_mappings -> spaces (space_id));
 diesel::joinable!(focus_history -> quests (quest_id));
+diesel::joinable!(checklist_activity -> quests (quest_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     spaces,
@@ -175,5 +190,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     sync_acks,
     sync_seen,
     tombstones,
-    notification_snoozes
+    notification_snoozes,
+    checklist_activity
 );

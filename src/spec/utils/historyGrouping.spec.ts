@@ -21,6 +21,7 @@ function quest(input: Partial<Quest> & Pick<Quest, "id" | "title" | "status" | "
     updated_at: input.updated_at,
     series_id: input.series_id ?? null,
     period_key: input.period_key ?? null,
+    is_checklist: input.is_checklist ?? false,
   };
 }
 

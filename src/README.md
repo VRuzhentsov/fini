@@ -17,8 +17,8 @@ src/
 │   │   ├── ActiveQuestPanel.vue
 │   │   └── NewQuestForm.vue
 │   ├── QuestsView/          # Transitional/shared list components
-│   │   └── QuestList.vue
-│   ├── ChatInput.vue        # Shared input bar
+│   │   ├── QuestList.vue
+│   │   └── RecurrenceScopeSheet.vue
 │   └── ToastStack.vue       # Global toast notifications
 └── composables/             # Shared Vue composables
 ```

@@ -17,6 +17,11 @@ pub struct QuestSeries {
     pub active: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// When true, `description` is the checklist template (task-list text) copied — fresh
+    /// and fully unchecked — onto every new occurrence. Issue #128; no dedicated template
+    /// column, `description` doubles as the template body.
+    #[serde(default)]
+    pub is_checklist: bool,
 }
 
 #[derive(Deserialize, Insertable)]
@@ -28,4 +33,6 @@ pub struct CreateSeriesInput {
     pub repeat_rule: String,
     pub priority: i64,
     pub energy: String,
+    #[serde(default)]
+    pub is_checklist: bool,
 }

@@ -3,7 +3,16 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { CalendarDaysIcon, ChevronDownIcon, ChevronUpIcon, PaperAirplaneIcon, XMarkIcon } from "@heroicons/vue/24/outline";
+import {
+  CalendarDaysIcon,
+  CheckCircleIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  PaperAirplaneIcon,
+  XMarkIcon,
+} from "@heroicons/vue/24/outline";
+import { serializeChecklist, type ChecklistItem } from "../../utils/checklist";
+import ChecklistEditor from "../ChecklistEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -13,6 +22,12 @@ const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 
 const title = ref("");
 const description = ref("");
+// Issue #128: a checklist quest reuses this same field — when on, the composer shows a live
+// checkbox list instead of a plain textarea; each row (checkable while composing) becomes one
+// checklist item on submit.
+const isChecklistMode = ref(false);
+const checklistItems = ref<ChecklistItem[]>([]);
+const checklistEditorRef = ref<InstanceType<typeof ChecklistEditor> | null>(null);
 const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
@@ -25,6 +40,7 @@ const titleInput = ref<HTMLInputElement | null>(null);
 const hasMetadataDraft = computed(
   () =>
     description.value.trim().length > 0 ||
+    checklistItems.value.length > 0 ||
     !!due.value ||
     !!dueTime.value ||
     !!repeatRule.value,
@@ -64,7 +80,9 @@ const draftQuest = computed<Quest>(() => ({
   id: "__new_quest__",
   space_id: selectedSpaceId.value,
   title: title.value,
-  description: description.value.trim() || null,
+  description: isChecklistMode.value
+    ? serializeChecklist(checklistItems.value) || null
+    : description.value.trim() || null,
   status: "active",
   energy: "medium",
   priority: 1,
@@ -79,6 +97,7 @@ const draftQuest = computed<Quest>(() => ({
   updated_at: "",
   series_id: null,
   period_key: null,
+  is_checklist: isChecklistMode.value,
 }));
 
 const canSubmit = computed(() => title.value.trim().length > 0 && !isSubmitting.value);
@@ -170,16 +189,32 @@ function onTitleKeydown(event: KeyboardEvent) {
   }
 }
 
+function toggleChecklistMode() {
+  isChecklistMode.value = !isChecklistMode.value;
+  if (isChecklistMode.value) metadataExpanded.value = true;
+}
+
+function onToggleChecklistItem(itemId: string, checked: boolean) {
+  const item = checklistItems.value.find((it) => it.id === itemId);
+  if (item) item.checked = checked;
+}
+
 async function onSubmit() {
   const value = title.value.trim();
   if (!value || isSubmitting.value) return;
-  const descriptionValue = description.value.trim() || null;
+  // Capture whatever's still sitting in the "add item" input (e.g. submit clicked without Enter).
+  if (isChecklistMode.value) checklistEditorRef.value?.flushPendingItem();
+  const descriptionValue = isChecklistMode.value
+    ? serializeChecklist(checklistItems.value) || null
+    : description.value.trim() || null;
 
   isSubmitting.value = true;
   try {
     await questStore.createQuest({
       title: value,
       description: descriptionValue,
+      // An empty checklist is still a checklist: its first item may be added later.
+      is_checklist: isChecklistMode.value,
       space_id: selectedSpaceId.value,
       due: due.value,
       due_time: dueTime.value,
@@ -188,6 +223,8 @@ async function onSubmit() {
 
     title.value = "";
     description.value = "";
+    isChecklistMode.value = false;
+    checklistItems.value = [];
     clearReminder();
     metadataExpanded.value = false;
   } finally {
@@ -223,6 +260,7 @@ async function onSubmit() {
 
       <div v-if="isExpanded" class="flex flex-col gap-2 border-t border-base-300 pt-2">
         <textarea
+          v-if="!isChecklistMode"
           v-model="description"
           data-testid="new-quest-description"
           class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
@@ -231,6 +269,16 @@ async function onSubmit() {
           :disabled="isSubmitting"
         />
 
+        <ChecklistEditor
+          v-else
+          ref="checklistEditorRef"
+          v-model:items="checklistItems"
+          mode="draft"
+          data-testid="new-quest-checklist"
+          add-item-test-id="new-quest-checklist-item-input"
+          :disabled="isSubmitting"
+          @toggle-item="onToggleChecklistItem"
+        />
       </div>
 
       <div class="flex items-center justify-between gap-2 pt-1">
@@ -256,6 +304,19 @@ async function onSubmit() {
             @click.stop="clearReminder"
           >
             <XMarkIcon class="size-4" />
+          </button>
+          <button
+            type="button"
+            data-testid="new-quest-checklist-toggle"
+            class="btn btn-ghost btn-sm gap-1 px-2"
+            :class="{ 'text-success': isChecklistMode }"
+            :aria-pressed="isChecklistMode"
+            title="Checklist"
+            :disabled="isSubmitting"
+            @click="toggleChecklistMode"
+          >
+            <CheckCircleIcon class="size-5" />
+            <span>Checklist</span>
           </button>
           <button
             type="button"
