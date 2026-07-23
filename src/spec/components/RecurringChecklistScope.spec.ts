@@ -64,7 +64,7 @@ function baseQuest(overrides: Partial<Quest> = {}): Quest {
   };
 }
 
-function mockQuestStore() {
+function mockQuestStore(seriesTemplate: string | null = null) {
   const store = {
     activeQuest: null,
     toggleChecklistItem: jest.fn().mockResolvedValue(undefined),
@@ -76,6 +76,7 @@ function mockQuestStore() {
     setFocusQuest: jest.fn().mockResolvedValue(undefined),
     deleteQuest: jest.fn().mockResolvedValue(undefined),
     fetchChecklistActivity: jest.fn().mockResolvedValue([]),
+    fetchSeriesChecklistTemplate: jest.fn().mockResolvedValue(seriesTemplate),
   };
   (useQuestStore as unknown as jest.Mock).mockReturnValue(store);
   return store;
@@ -87,8 +88,8 @@ describe("recurring checklist item text scope", () => {
   });
 
   it("prompts for scope before QuestList applies recurring item text edits", async () => {
-    const store = mockQuestStore();
     const quest = baseQuest();
+    const store = mockQuestStore(quest.description);
     const wrapper = shallowMount(QuestList, {
       props: { quests: [quest] },
       global: {
@@ -112,7 +113,9 @@ describe("recurring checklist item text scope", () => {
 
     wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "future");
     await nextTick();
+    await nextTick();
 
+    expect(store.fetchSeriesChecklistTemplate).toHaveBeenCalledWith("series-1");
     expect(store.updateSeriesChecklist).toHaveBeenCalledWith(
       "series-1",
       "q1",
@@ -122,10 +125,45 @@ describe("recurring checklist item text scope", () => {
     expect(store.editChecklistItemText).not.toHaveBeenCalled();
   });
 
+  it("bases a future-scope edit on the series template, not occurrence-only changes (#128)", async () => {
+    // The occurrence already has a "today only" item that was never promoted to the template —
+    // a future-scope edit must not silently promote it.
+    const quest = baseQuest({
+      description:
+        "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->\n- [ ] today only <!--k=a3-->",
+    });
+    const seriesTemplate = "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->";
+    const store = mockQuestStore(seriesTemplate);
+    const wrapper = shallowMount(QuestList, {
+      props: { quests: [quest] },
+      global: {
+        stubs: {
+          QuestEditor: questEditorStub,
+          RecurrenceScopeSheet: recurrenceScopeSheetStub,
+          ReminderMenu: true,
+          ArrowPathIcon: true,
+          CheckCircleIcon: true,
+        },
+      },
+    });
+
+    await wrapper.find(".quest-row-surface").trigger("click");
+    wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("add-checklist-item", "lunch");
+    await nextTick();
+    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "future");
+    await nextTick();
+    await nextTick();
+
+    const [, , sentMarkdown] = store.updateSeriesChecklist.mock.calls[0];
+    expect(sentMarkdown).toContain("lunch");
+    expect(sentMarkdown).not.toContain("today only");
+  });
+
   it("applies this-occurrence recurring item text edits through the focused active panel", async () => {
-    const store = mockQuestStore();
+    const quest = baseQuest();
+    const store = mockQuestStore(quest.description);
     const wrapper = shallowMount(ActiveQuestPanel, {
-      props: { quest: baseQuest() },
+      props: { quest },
       global: {
         stubs: {
           QuestEditor: questEditorStub,

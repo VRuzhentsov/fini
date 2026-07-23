@@ -134,10 +134,13 @@ async function onScopeChosen(scope: "this" | "future") {
     return;
   }
 
-  // "This and future occurrences": compute the full edited checklist and push it as the new
-  // series template — the backend reconciles this occurrence against it (preserving checks on
-  // unchanged items, per #128).
-  const items = parseChecklist(quest.description);
+  // "This and future occurrences": diff against the series' own stored template, not this
+  // occurrence's current description (which may already carry "this occurrence only" changes
+  // that were never promoted — basing the edit on it would silently promote them), then push the
+  // result as the new template. The backend reconciles this occurrence against it (preserving
+  // checks on unchanged items, per #128).
+  const template = await store.fetchSeriesChecklistTemplate(quest.series_id!);
+  const items = parseChecklist(template);
   const nextItems =
     kind === "add"
       ? [...items, { id: newChecklistItemId(), text: payload, checked: false }]

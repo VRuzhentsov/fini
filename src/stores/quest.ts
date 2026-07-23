@@ -200,6 +200,13 @@ export const useQuestStore = defineStore("quest", () => {
     return invoke<ChecklistActivity[]>("get_checklist_activity", { questId });
   }
 
+  /** The series' own stored checklist template — callers building a "This and future
+   * occurrences" edit must diff against this, not the current occurrence's description, or
+   * occurrence-only changes get silently promoted into the template. */
+  async function fetchSeriesChecklistTemplate(seriesId: string) {
+    return invoke<string | null>("get_series_checklist_template", { seriesId });
+  }
+
   return {
     quests,
     activeQuest,
@@ -218,5 +225,6 @@ export const useQuestStore = defineStore("quest", () => {
     reorderChecklist,
     updateSeriesChecklist,
     fetchChecklistActivity,
+    fetchSeriesChecklistTemplate,
   };
 });

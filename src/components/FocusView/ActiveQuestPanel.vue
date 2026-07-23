@@ -74,7 +74,11 @@ async function onScopeChosen(scope: "this" | "future") {
     return;
   }
 
-  const items = parseChecklist(props.quest.description);
+  // "This and future occurrences" must diff against the series' own stored template, not this
+  // occurrence's current description — the occurrence may already carry "this occurrence only"
+  // changes that were never promoted, and basing the edit on it would silently promote them.
+  const template = await store.fetchSeriesChecklistTemplate(props.quest.series_id!);
+  const items = parseChecklist(template);
   const nextItems =
     action.kind === "add"
       ? [...items, { id: newChecklistItemId(), text: action.payload, checked: false }]
