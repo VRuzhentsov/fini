@@ -16,7 +16,7 @@ use crate::repositories::quest::QuestRepository;
 use crate::schema::{checklist_activity, focus_history, settings};
 #[cfg(test)]
 use crate::schema::{quest_series, quests};
-use crate::services::checklist_md;
+use crate::services::checklist;
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
@@ -617,7 +617,7 @@ impl<'a> QuestService<'a> {
         self.finish_update(previous, quest, requested_status, origin_device_id)
     }
 
-    /// A checklist quest's `description` IS the checklist markdown (issue #128) — an explicit
+    /// A checklist quest's `description` IS the checklist text (issue #128) — an explicit
     /// `--description`/description patch on a checklist quest would silently replace it with
     /// prose, losing every item's id and checked state. Reject it instead; callers must use the
     /// checklist item commands (or `checklist-set-template`) to edit a checklist's content.
@@ -657,7 +657,7 @@ impl<'a> QuestService<'a> {
             && matches!(quest.status.as_str(), "completed" | "abandoned")
             && quest.is_checklist
         {
-            let (done, total) = checklist_md::counts(quest.description.as_deref());
+            let (done, total) = checklist::counts(quest.description.as_deref());
             let _ = log_checklist_activity(
                 self.repository.conn,
                 &quest.id,
@@ -766,19 +766,19 @@ impl<'a> QuestService<'a> {
     fn log_checklist_replacement_activity(
         conn: &mut SqliteConnection,
         quest: &Quest,
-        old_md: Option<&str>,
-        new_md: Option<&str>,
+        old_checklist: Option<&str>,
+        new_checklist: Option<&str>,
         origin_device_id: Option<&str>,
     ) -> Result<(), String> {
         use std::collections::HashMap;
 
-        let old_items = checklist_md::parse_opt(old_md);
-        let new_items = checklist_md::parse_opt(new_md);
-        let old_by_id: HashMap<&str, &checklist_md::ChecklistItem> = old_items
+        let old_items = checklist::parse_opt(old_checklist);
+        let new_items = checklist::parse_opt(new_checklist);
+        let old_by_id: HashMap<&str, &checklist::ChecklistItem> = old_items
             .iter()
             .map(|item| (item.id.as_str(), item))
             .collect();
-        let new_by_id: HashMap<&str, &checklist_md::ChecklistItem> = new_items
+        let new_by_id: HashMap<&str, &checklist::ChecklistItem> = new_items
             .iter()
             .map(|item| (item.id.as_str(), item))
             .collect();
@@ -826,8 +826,10 @@ impl<'a> QuestService<'a> {
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
         Self::ensure_checklist_quest(&quest)?;
-        let new_md = checklist_md::add_item(quest.description.as_deref(), text);
-        let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
+        let updated_checklist = checklist::add_item(quest.description.as_deref(), text);
+        let updated = self
+            .repository
+            .set_checklist_description(quest_id, &updated_checklist)?;
         log_checklist_activity(
             self.repository.conn,
             quest_id,
@@ -849,16 +851,17 @@ impl<'a> QuestService<'a> {
         if quest.status != "active" {
             return Err("checklist toggles are only available for active quests".to_string());
         }
-        let md = quest.description.clone().unwrap_or_default();
-        let items = checklist_md::parse(&md);
+        let checklist_text = quest.description.clone().unwrap_or_default();
+        let items = checklist::parse(&checklist_text);
         if !items.iter().any(|it| it.id == item_id) {
             return Err("checklist item not found".to_string());
         }
-        let new_md = checklist_md::set_checked(&md, item_id, checked);
+        let updated_checklist = checklist::set_checked(&checklist_text, item_id, checked);
         // Individual check/uncheck toggles are not written to the audit log by design (#128's
         // audit requirement targets add/remove/edit and completion, not every toggle) — the
         // checklist's own checked state is itself the record of what was packed.
-        self.repository.set_checklist_description(quest_id, &new_md)
+        self.repository
+            .set_checklist_description(quest_id, &updated_checklist)
     }
 
     pub fn edit_checklist_item_text(
@@ -870,15 +873,17 @@ impl<'a> QuestService<'a> {
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
         Self::ensure_checklist_quest(&quest)?;
-        let md = quest.description.clone().unwrap_or_default();
+        let checklist_text = quest.description.clone().unwrap_or_default();
         // A stale/nonexistent item_id (e.g. another device already removed it) must not report
-        // a fake rename: checklist_md::set_text no-ops on a missing id, so without this check we'd
+        // a fake rename: checklist::set_text no-ops on a missing id, so without this check we'd
         // persist a no-op write and log a "Renamed item" activity for a change that never happened.
-        if !checklist_md::parse(&md).iter().any(|it| it.id == item_id) {
+        if !checklist::parse(&checklist_text).iter().any(|it| it.id == item_id) {
             return Err("checklist item not found".to_string());
         }
-        let new_md = checklist_md::set_text(&md, item_id, text);
-        let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
+        let updated_checklist = checklist::set_text(&checklist_text, item_id, text);
+        let updated = self
+            .repository
+            .set_checklist_description(quest_id, &updated_checklist)?;
         log_checklist_activity(
             self.repository.conn,
             quest_id,
@@ -897,8 +902,8 @@ impl<'a> QuestService<'a> {
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
         Self::ensure_checklist_quest(&quest)?;
-        let md = quest.description.clone().unwrap_or_default();
-        let removed_text = checklist_md::parse(&md)
+        let checklist_text = quest.description.clone().unwrap_or_default();
+        let removed_text = checklist::parse(&checklist_text)
             .into_iter()
             .find(|it| it.id == item_id)
             .map(|it| it.text);
@@ -908,8 +913,10 @@ impl<'a> QuestService<'a> {
             Some(text) => text,
             None => return Err("checklist item not found".to_string()),
         };
-        let new_md = checklist_md::remove_item(&md, item_id);
-        let updated = self.repository.set_checklist_description(quest_id, &new_md)?;
+        let updated_checklist = checklist::remove_item(&checklist_text, item_id);
+        let updated = self
+            .repository
+            .set_checklist_description(quest_id, &updated_checklist)?;
         log_checklist_activity(
             self.repository.conn,
             quest_id,
@@ -927,20 +934,21 @@ impl<'a> QuestService<'a> {
     ) -> Result<Quest, String> {
         let quest = self.repository.get(quest_id)?;
         Self::ensure_checklist_quest(&quest)?;
-        let md = quest.description.clone().unwrap_or_default();
-        let new_md = checklist_md::reorder(&md, ordered_ids);
-        self.repository.set_checklist_description(quest_id, &new_md)
+        let checklist_text = quest.description.clone().unwrap_or_default();
+        let updated_checklist = checklist::reorder(&checklist_text, ordered_ids);
+        self.repository
+            .set_checklist_description(quest_id, &updated_checklist)
     }
 
     /// `scope` is `"this"` (mutate only this occurrence's checklist) or `"future"` (mutate the
     /// series template and reconcile the current occurrence — #128's "This and future
-    /// occurrences"). `new_checklist_md` is the fully-edited checklist for "this", or the fully
+    /// occurrences"). `new_checklist` is the fully-edited checklist for "this", or the fully
     /// -edited template for "future".
     pub fn update_series_checklist(
         &mut self,
         series_id: &str,
         current_occurrence_id: &str,
-        new_checklist_md: &str,
+        new_checklist: &str,
         scope: &str,
         origin_device_id: Option<&str>,
     ) -> Result<Quest, String> {
@@ -961,7 +969,7 @@ impl<'a> QuestService<'a> {
             "future" => {
                 let updated = self.repository.update_series_checklist_template(
                     series_id,
-                    new_checklist_md,
+                    new_checklist,
                     current_occurrence_id,
                 )?;
                 Self::log_checklist_replacement_activity(
@@ -976,7 +984,7 @@ impl<'a> QuestService<'a> {
             _ => {
                 let updated = self
                     .repository
-                    .set_checklist_description(current_occurrence_id, new_checklist_md)?;
+                    .set_checklist_description(current_occurrence_id, new_checklist)?;
                 Self::log_checklist_replacement_activity(
                     self.repository.conn,
                     &current,
@@ -1529,7 +1537,7 @@ pub fn update_series_checklist(
     device_connection: State<DeviceConnectionState>,
     series_id: String,
     current_occurrence_id: String,
-    checklist_md: String,
+    checklist: String,
     scope: String,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
@@ -1537,7 +1545,7 @@ pub fn update_series_checklist(
     let quest = QuestService::new(&mut conn).update_series_checklist(
         &series_id,
         &current_occurrence_id,
-        &checklist_md,
+        &checklist,
         &scope,
         Some(&device_id),
     )?;
@@ -3139,14 +3147,14 @@ mod tests {
     // ── Checklist (issue #128) ──────────────────────────────────────────────
     //
     // Checklist content lives in the existing `description` field, parsed/rendered as task-list
-    // markdown when `is_checklist` is set — there is no dedicated checklist content column.
+    // text when `is_checklist` is set — there is no dedicated checklist content column.
 
-    fn create_active_quest_with_checklist(conn: &mut SqliteConnection, checklist_md: &str) -> Quest {
+    fn create_active_quest_with_checklist(conn: &mut SqliteConnection, checklist: &str) -> Quest {
         let result = QuestService::new(conn)
             .create(CreateQuestInput {
                 space_id: "1".to_string(),
                 title: "Go to office".to_string(),
-                description: Some(checklist_md.to_string()),
+                description: Some(checklist.to_string()),
                 energy: "medium".to_string(),
                 priority: 1,
                 due: None,
@@ -3188,27 +3196,27 @@ mod tests {
         let quest = service
             .add_checklist_item(&quest.id, "headphones", Some("dev-a"))
             .expect("add item");
-        let item_id = checklist_md::parse(quest.description.as_deref().unwrap())[0]
+        let item_id = checklist::parse(quest.description.as_deref().unwrap())[0]
             .id
             .clone();
 
         let quest = service
             .toggle_checklist_item(&quest.id, &item_id, true)
             .expect("toggle item");
-        assert!(checklist_md::parse(quest.description.as_deref().unwrap())[0].checked);
+        assert!(checklist::parse(quest.description.as_deref().unwrap())[0].checked);
 
         let quest = service
             .edit_checklist_item_text(&quest.id, &item_id, "over-ear headphones", Some("dev-a"))
             .expect("edit item text");
         assert_eq!(
-            checklist_md::parse(quest.description.as_deref().unwrap())[0].text,
+            checklist::parse(quest.description.as_deref().unwrap())[0].text,
             "over-ear headphones"
         );
 
         let quest = service
             .remove_checklist_item(&quest.id, &item_id, Some("dev-a"))
             .expect("remove item");
-        assert!(checklist_md::parse(quest.description.as_deref().unwrap()).is_empty());
+        assert!(checklist::parse(quest.description.as_deref().unwrap()).is_empty());
 
         let activity = service
             .get_checklist_activity(&quest.id)
@@ -3228,7 +3236,7 @@ mod tests {
         let db_path = temp_db_path("checklist-reject-prose-patch");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+        let template = checklist::serialize(&[checklist::ChecklistItem {
             id: "a1".into(),
             text: "headphones".into(),
             checked: true,
@@ -3236,7 +3244,7 @@ mod tests {
         let quest = create_active_quest_with_checklist(&mut conn, &template);
 
         // `quest update --description "notes"` must not be able to silently overwrite the
-        // checklist markdown with prose, which would lose every item's id and checked state.
+        // checklist text with prose, which would lose every item's id and checked state.
         let mut service = QuestService::new(&mut conn);
         let result = service.update(&quest.id, UpdateQuestInput {
             description: Some("notes".to_string()),
@@ -3278,13 +3286,13 @@ mod tests {
         let db_path = temp_db_path("checklist-toggle-missing-item");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[
-            checklist_md::ChecklistItem {
+        let template = checklist::serialize(&[
+            checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            checklist_md::ChecklistItem {
+            checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: true,
@@ -3318,7 +3326,7 @@ mod tests {
         let db_path = temp_db_path("checklist-edit-missing-item");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+        let template = checklist::serialize(&[checklist::ChecklistItem {
             id: "a1".into(),
             text: "headphones".into(),
             checked: false,
@@ -3360,7 +3368,7 @@ mod tests {
         let db_path = temp_db_path("checklist-remove-missing-item");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+        let template = checklist::serialize(&[checklist::ChecklistItem {
             id: "a1".into(),
             text: "headphones".into(),
             checked: false,
@@ -3399,7 +3407,7 @@ mod tests {
             let db_path = temp_db_path(&format!("checklist-toggle-non-active-{status}"));
             let mut conn = open_db_at_path(&db_path);
 
-            let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+            let template = checklist::serialize(&[checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
@@ -3571,9 +3579,9 @@ mod tests {
         let db_path = temp_db_path("checklist-completion-snapshot");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[
-            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: true },
-            checklist_md::ChecklistItem { id: "a2".into(), text: "lunch".into(), checked: false },
+        let template = checklist::serialize(&[
+            checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: true },
+            checklist::ChecklistItem { id: "a2".into(), text: "lunch".into(), checked: false },
         ]);
         let quest = create_active_quest_with_checklist(&mut conn, &template);
 
@@ -3630,7 +3638,7 @@ mod tests {
         let db_path = temp_db_path("checklist-get-series-template");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+        let template = checklist::serialize(&[checklist::ChecklistItem {
             id: "a1".into(),
             text: "headphones".into(),
             checked: false,
@@ -3653,9 +3661,9 @@ mod tests {
         let series = result.series.expect("repeating quest must create a series");
 
         // "This occurrence" only affects the occurrence — the template read must be unaffected.
-        let occurrence_only_md = checklist_md::add_item(Some(&template), "today only");
+        let occurrence_only_checklist = checklist::add_item(Some(&template), "today only");
         QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &occurrence_only_md, "this", None)
+            .update_series_checklist(&series.id, &quest.id, &occurrence_only_checklist, "this", None)
             .expect("this-occurrence scoped update");
 
         let stored_template = QuestService::new(&mut conn)
@@ -3676,8 +3684,8 @@ mod tests {
         let db_path = temp_db_path("checklist-scope-this");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[
-            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+        let template = checklist::serialize(&[
+            checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
         ]);
         let result = QuestService::new(&mut conn)
             .create(CreateQuestInput {
@@ -3696,9 +3704,9 @@ mod tests {
         let quest = result.quest;
         let series = result.series.expect("repeating quest must create a series");
 
-        let occurrence_only_md = checklist_md::add_item(Some(&template), "extra for today only");
+        let occurrence_only_checklist = checklist::add_item(Some(&template), "extra for today only");
         QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &occurrence_only_md, "this", None)
+            .update_series_checklist(&series.id, &quest.id, &occurrence_only_checklist, "this", None)
             .expect("this-occurrence scoped update");
 
         let stored_series: QuestSeries = crate::schema::quest_series::table
@@ -3714,7 +3722,7 @@ mod tests {
 
         let stored_quest = QuestService::new(&mut conn).get(&quest.id).unwrap();
         assert_eq!(
-            checklist_md::parse(stored_quest.description.as_deref().unwrap()).len(),
+            checklist::parse(stored_quest.description.as_deref().unwrap()).len(),
             2,
             "the occurrence itself must reflect the this-scoped edit"
         );
@@ -3727,7 +3735,7 @@ mod tests {
         let db_path = temp_db_path("checklist-scope-this-activity");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+        let template = checklist::serialize(&[checklist::ChecklistItem {
             id: "a1".into(),
             text: "headphones".into(),
             checked: false,
@@ -3752,7 +3760,7 @@ mod tests {
         // "This occurrence" set-template must be audited the same as add/remove/edit — issue
         // #128's history requirement doesn't stop applying just because the whole checklist was
         // replaced in one call instead of one item at a time.
-        let replacement = checklist_md::add_item(Some(&template), "lunch");
+        let replacement = checklist::add_item(Some(&template), "lunch");
         QuestService::new(&mut conn)
             .update_series_checklist(&series.id, &quest.id, &replacement, "this", Some("dev-a"))
             .expect("this-scope replacement");
@@ -3775,7 +3783,7 @@ mod tests {
             let db_path = temp_db_path(&format!("checklist-scope-non-active-{scope}"));
             let mut conn = open_db_at_path(&db_path);
 
-            let template = checklist_md::serialize(&[checklist_md::ChecklistItem {
+            let template = checklist::serialize(&[checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
@@ -3806,7 +3814,7 @@ mod tests {
             let result = QuestService::new(&mut conn).update_series_checklist(
                 &series.id,
                 &quest.id,
-                &checklist_md::add_item(Some(&template), "lunch"),
+                &checklist::add_item(Some(&template), "lunch"),
                 scope,
                 Some("dev-a"),
             );
@@ -3824,9 +3832,9 @@ mod tests {
         let db_path = temp_db_path("checklist-scope-future");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[
-            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
-            checklist_md::ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: false },
+        let template = checklist::serialize(&[
+            checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+            checklist::ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: false },
         ]);
         let result = QuestService::new(&mut conn)
             .create(CreateQuestInput {
@@ -3851,9 +3859,9 @@ mod tests {
             .expect("toggle item");
 
         // "This and future occurrences": drop the key fob, add a badge, keep headphones.
-        let new_template = checklist_md::serialize(&[
-            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
-            checklist_md::ChecklistItem { id: "a3".into(), text: "badge".into(), checked: false },
+        let new_template = checklist::serialize(&[
+            checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+            checklist::ChecklistItem { id: "a3".into(), text: "badge".into(), checked: false },
         ]);
         QuestService::new(&mut conn)
             .update_series_checklist(&series.id, &quest.id, &new_template, "future", None)
@@ -3871,7 +3879,7 @@ mod tests {
         );
 
         let stored_quest = QuestService::new(&mut conn).get(&quest.id).unwrap();
-        let items = checklist_md::parse(stored_quest.description.as_deref().unwrap());
+        let items = checklist::parse(stored_quest.description.as_deref().unwrap());
         assert!(
             items.iter().find(|it| it.id == "a1").unwrap().checked,
             "unchanged current-occurrence item must keep its check"
@@ -3909,8 +3917,8 @@ mod tests {
         let db_path = temp_db_path("checklist-recurrence-copy");
         let mut conn = open_db_at_path(&db_path);
 
-        let template = checklist_md::serialize(&[
-            checklist_md::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+        let template = checklist::serialize(&[
+            checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
         ]);
         let result = QuestService::new(&mut conn)
             .create(CreateQuestInput {
@@ -3941,7 +3949,7 @@ mod tests {
             .next_occurrence
             .expect("completing a recurring quest must generate the next occurrence");
 
-        let next_items = checklist_md::parse(next.description.as_deref().unwrap());
+        let next_items = checklist::parse(next.description.as_deref().unwrap());
         assert_eq!(next_items.len(), 1);
         assert!(!next_items[0].checked, "next occurrence's checklist must start fully unchecked");
 

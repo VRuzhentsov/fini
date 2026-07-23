@@ -17,7 +17,7 @@ import {
   newChecklistItemId,
   parseChecklist,
   serializeChecklist,
-} from "../../utils/checklistMarkdown";
+} from "../../utils/checklist";
 import ReminderMenu from "./ReminderMenu.vue";
 import RecurrenceScopeSheet from "./RecurrenceScopeSheet.vue";
 import QuestEditor from "../QuestEditor.vue";

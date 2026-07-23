@@ -154,9 +154,9 @@ describe("recurring checklist item text scope", () => {
     await nextTick();
     await nextTick();
 
-    const [, , sentMarkdown] = store.updateSeriesChecklist.mock.calls[0];
-    expect(sentMarkdown).toContain("lunch");
-    expect(sentMarkdown).not.toContain("today only");
+    const [, , sentChecklist] = store.updateSeriesChecklist.mock.calls[0];
+    expect(sentChecklist).toContain("lunch");
+    expect(sentChecklist).not.toContain("today only");
   });
 
   it("applies this-occurrence recurring item text edits through the focused active panel", async () => {

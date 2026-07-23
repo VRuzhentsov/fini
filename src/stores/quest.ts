@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { ref } from "vue";
-import { parseChecklist, serializeChecklist } from "../utils/checklistMarkdown";
+import { parseChecklist, serializeChecklist } from "../utils/checklist";
 
 export type Energy = "low" | "medium" | "high";
 
@@ -24,7 +24,7 @@ export interface Quest {
   updated_at: string;
   series_id: string | null;
   period_key: string | null;
-  /** When true, `description` is task-list markdown rendered/edited as a checklist (#128). */
+  /** When true, `description` is task-list text rendered/edited as a checklist (#128). */
   is_checklist: boolean;
 }
 
@@ -183,13 +183,13 @@ export const useQuestStore = defineStore("quest", () => {
   async function updateSeriesChecklist(
     seriesId: string,
     currentOccurrenceId: string,
-    checklistMd: string,
+    checklist: string,
     scope: "this" | "future",
   ) {
     const quest = await invoke<Quest>("update_series_checklist", {
       seriesId,
       currentOccurrenceId,
-      checklistMd,
+      checklist,
       scope,
     });
     applyLocalQuest(quest);

@@ -1,11 +1,10 @@
-//! Checklist storage codec for issue #128 (Track A — Markdown task-list, chosen after the
-//! spike documented in `space_sync` history / issue #128 / fini-wiki, then refined so the
-//! checklist reuses the existing `description` field instead of a dedicated column). A checklist
-//! quest's `description` holds GitHub-style task-list markdown (`- [ ] text <!--k=id-->`) instead
-//! of prose — the same textarea, just parsed/rendered differently when `quests.is_checklist` is
-//! set. `quest_series.description` holds the recurring template in the same format, gated by
-//! `quest_series.is_checklist`. `quests.checklist_base` is separate, device-local bookkeeping for
-//! the sync merge below — never the checklist content itself.
+//! Checklist storage codec for issue #128, refined so the checklist reuses the existing
+//! `description` field instead of a dedicated column. A checklist quest's `description` holds
+//! GitHub-style task-list text (`- [ ] text <!--k=id-->`) instead of prose — the same textarea,
+//! just parsed/rendered differently when `quests.is_checklist` is set. `quest_series.description`
+//! holds the recurring template in the same format, gated by `quest_series.is_checklist`.
+//! `quests.checklist_base` is separate, device-local bookkeeping for the sync merge below — never
+//! the checklist content itself.
 //!
 //! The embedded `<!--k=id-->` token gives each line stable identity across edits, which is what
 //! makes the per-item sync merge (`merge_3way`, used by `space_sync::commands::apply_sync_event`)
@@ -26,8 +25,8 @@ pub fn new_item_id() -> String {
 }
 
 /// Parses task-list lines (`- [ ] text` / `- [x] text`) with an optional trailing hidden id
-/// token. Non-task lines are ignored — a checklist quest's markdown field is expected to be
-/// checklist-only (prose stays in the separate `description` field).
+/// token. Non-task lines are ignored — a checklist quest's description is expected to be
+/// checklist-only (prose stays in a non-checklist quest's `description`).
 pub fn parse(src: &str) -> Vec<ChecklistItem> {
     let mut items = Vec::new();
     for line in src.lines() {
@@ -145,16 +144,16 @@ pub fn reorder(src: &str, ordered_ids: &[String]) -> String {
 /// (per #128: "preserve checks on unchanged current-occurrence items"), new template items are
 /// added unchecked, and template-removed items are dropped from the occurrence.
 pub fn reconcile_future_scope(
-    current_occurrence_md: Option<&str>,
-    new_template_md: &str,
+    current_occurrence_checklist: Option<&str>,
+    new_template_checklist: &str,
 ) -> String {
-    let current = parse_opt(current_occurrence_md);
+    let current = parse_opt(current_occurrence_checklist);
     let checked_by_id: std::collections::HashMap<&str, bool> = current
         .iter()
         .map(|it| (it.id.as_str(), it.checked))
         .collect();
 
-    let reconciled: Vec<ChecklistItem> = parse(new_template_md)
+    let reconciled: Vec<ChecklistItem> = parse(new_template_checklist)
         .into_iter()
         .map(|template_item| {
             let checked = checked_by_id
@@ -172,9 +171,9 @@ pub fn reconcile_future_scope(
 
 /// 3-way merge for the per-item sync path (`space_sync::commands::apply_sync_event`). `base` is
 /// the device-local `checklist_base` — the last value both sides last agreed on. Returns the
-/// merged markdown and whether an irreconcilable same-item conflict was hit (logged, not fatal —
-/// see module docs / issue #128 spike write-up for why this is a narrow, accepted deviation from
-/// per-item deterministic LWW for same-item *text* edits specifically).
+/// merged checklist text and whether an irreconcilable same-item conflict was hit (logged, not
+/// fatal — see module docs / issue #128 spike write-up for why this is a narrow, accepted
+/// deviation from per-item deterministic LWW for same-item *text* edits specifically).
 pub fn merge_3way(base: Option<&str>, local: &str, remote: &str) -> (String, bool) {
     use std::collections::{HashMap, HashSet};
 
@@ -233,10 +232,10 @@ pub fn merge_3way(base: Option<&str>, local: &str, remote: &str) -> (String, boo
                     _ if l.text == r.text => l.text.clone(),
                     _ => {
                         // Genuine same-item text divergence: no per-item updated_at/device_id is
-                        // available on a single markdown field, so Fini's deterministic LWW rule
-                        // cannot be applied here. Choose the same lexical winner on every peer
-                        // instead of keeping whichever side is local, so conflict convergence
-                        // events eventually settle on one value.
+                        // available on a single shared text field, so Fini's deterministic LWW
+                        // rule cannot be applied here. Choose the same lexical winner on every
+                        // peer instead of keeping whichever side is local, so conflict
+                        // convergence events eventually settle on one value.
                         had_conflict = true;
                         if l.text <= r.text {
                             l.text.clone()
@@ -307,8 +306,8 @@ mod tests {
                 checked: true,
             },
         ];
-        let md = serialize(&items);
-        assert_eq!(parse(&md), items);
+        let checklist = serialize(&items);
+        assert_eq!(parse(&checklist), items);
     }
 
     #[test]
@@ -332,19 +331,19 @@ mod tests {
 
     #[test]
     fn add_toggle_edit_remove_round_trip() {
-        let md = add_item(None, "headphones");
-        let id = parse(&md)[0].id.clone();
-        let md = set_checked(&md, &id, true);
-        assert!(parse(&md)[0].checked);
-        let md = set_text(&md, &id, "over-ear headphones");
-        assert_eq!(parse(&md)[0].text, "over-ear headphones");
-        let md = remove_item(&md, &id);
-        assert!(parse(&md).is_empty());
+        let checklist = add_item(None, "headphones");
+        let id = parse(&checklist)[0].id.clone();
+        let checklist = set_checked(&checklist, &id, true);
+        assert!(parse(&checklist)[0].checked);
+        let checklist = set_text(&checklist, &id, "over-ear headphones");
+        assert_eq!(parse(&checklist)[0].text, "over-ear headphones");
+        let checklist = remove_item(&checklist, &id);
+        assert!(parse(&checklist).is_empty());
     }
 
     #[test]
     fn reorder_matches_requested_order() {
-        let md = serialize(&[
+        let checklist = serialize(&[
             ChecklistItem {
                 id: "a1".into(),
                 text: "one".into(),
@@ -356,7 +355,7 @@ mod tests {
                 checked: false,
             },
         ]);
-        let reordered = parse(&reorder(&md, &["a2".to_string(), "a1".to_string()]));
+        let reordered = parse(&reorder(&checklist, &["a2".to_string(), "a1".to_string()]));
         assert_eq!(reordered[0].id, "a2");
         assert_eq!(reordered[1].id, "a1");
     }
@@ -426,11 +425,11 @@ mod tests {
         });
         let remote = serialize(&remote_items);
 
-        let (from_local_md, _) = merge_3way(Some(&base), &local, &remote);
-        let (from_remote_md, _) = merge_3way(Some(&base), &remote, &local);
+        let (from_local, _) = merge_3way(Some(&base), &local, &remote);
+        let (from_remote, _) = merge_3way(Some(&base), &remote, &local);
 
         assert_eq!(
-            from_local_md, from_remote_md,
+            from_local, from_remote,
             "merge order must not depend on which side calls merge_3way as local vs remote, \
              or the convergence push-back never settles"
         );
@@ -457,8 +456,8 @@ mod tests {
         remote_items[1].checked = true; // device B packed key fob
         let remote = serialize(&remote_items);
 
-        let (merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
-        let merged = parse(&merged_md);
+        let (merged_checklist, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let merged = parse(&merged_checklist);
         assert!(!had_conflict);
         assert!(merged.iter().find(|it| it.id == "a1").unwrap().checked);
         assert!(merged.iter().find(|it| it.id == "a2").unwrap().checked);
@@ -478,8 +477,8 @@ mod tests {
         }]);
         let remote = base.clone();
 
-        let (merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
-        let merged = parse(&merged_md);
+        let (merged_checklist, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let merged = parse(&merged_checklist);
         assert!(!had_conflict);
         assert!(!merged[0].checked);
     }
@@ -494,9 +493,9 @@ mod tests {
         let local = String::new();
         let remote = base.clone();
 
-        let (merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let (merged_checklist, had_conflict) = merge_3way(Some(&base), &local, &remote);
         assert!(!had_conflict);
-        assert!(parse(&merged_md).is_empty());
+        assert!(parse(&merged_checklist).is_empty());
     }
 
     #[test]
@@ -517,7 +516,7 @@ mod tests {
             checked: false,
         }]);
 
-        let (_merged_md, had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let (_merged_checklist, had_conflict) = merge_3way(Some(&base), &local, &remote);
         assert!(had_conflict);
     }
 
@@ -539,10 +538,11 @@ mod tests {
             checked: false,
         }]);
 
-        let (local_merged_md, local_had_conflict) = merge_3way(Some(&base), &local, &remote);
-        let (remote_merged_md, remote_had_conflict) = merge_3way(Some(&base), &remote, &local);
-        let local_merged = parse(&local_merged_md);
-        let remote_merged = parse(&remote_merged_md);
+        let (local_merged_checklist, local_had_conflict) = merge_3way(Some(&base), &local, &remote);
+        let (remote_merged_checklist, remote_had_conflict) =
+            merge_3way(Some(&base), &remote, &local);
+        let local_merged = parse(&local_merged_checklist);
+        let remote_merged = parse(&remote_merged_checklist);
 
         assert!(local_had_conflict);
         assert!(remote_had_conflict);

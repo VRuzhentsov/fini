@@ -5,7 +5,7 @@ import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklistMarkdown";
+import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
 import { CheckIcon } from "@heroicons/vue/24/outline";
 import QuestEditor from "../QuestEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";

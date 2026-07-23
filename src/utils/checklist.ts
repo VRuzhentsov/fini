@@ -15,7 +15,7 @@ export function newChecklistItemId(): string {
 
 /**
  * Parses task-list lines (`- [ ] text` / `- [x] text`) with an optional trailing hidden id token
- * (`<!--k=id-->`) out of a quest's `description`. Mirrors src-tauri/src/services/checklist_md.rs
+ * (`<!--k=id-->`) out of a quest's `description`. Mirrors src-tauri/src/services/checklist.rs
  * `parse` — kept in sync manually since the two run in different languages.
  */
 export function parseChecklist(src: string | null | undefined): ChecklistItem[] {

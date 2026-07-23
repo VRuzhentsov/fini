@@ -29,9 +29,9 @@ pub struct Quest {
     pub updated_at: String,
     pub series_id: Option<String>,
     pub period_key: Option<String>,
-    /// When true, `description` is authored/rendered as a checklist (task-list markdown,
+    /// When true, `description` is authored/rendered as a checklist (task-list text,
     /// `- [ ] text <!--k=id-->` lines) instead of prose — issue #128. There is no separate
-    /// checklist content column: the description field already is markdown-compatible, and a
+    /// checklist content column: the description field itself holds that task-list text, and a
     /// checklist quest simply parses/renders that same field as a task list.
     #[serde(default)]
     pub is_checklist: bool,
@@ -57,7 +57,7 @@ pub struct CreateQuestInput {
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,
     pub order_rank: Option<f64>,
-    /// Marks this quest as a checklist quest — `description` is authored as task-list markdown.
+    /// Marks this quest as a checklist quest — `description` is authored as task-list text.
     #[serde(default)]
     pub is_checklist: bool,
 }

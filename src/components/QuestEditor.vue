@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import type { ChecklistActivity, Quest, UpdateQuestInput } from "../stores/quest";
 import { SPACE_COLOR_CLASS } from "../stores/space";
-import { parseChecklist } from "../utils/checklistMarkdown";
+import { parseChecklist } from "../utils/checklist";
 import {
   PaperClipIcon,
   TagIcon,

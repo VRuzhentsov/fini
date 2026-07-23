@@ -143,7 +143,7 @@ impl<'a> QuestRepository<'a> {
         let description = if is_checklist {
             template_description
                 .as_deref()
-                .map(crate::services::checklist_md::reset_unchecked)
+                .map(crate::services::checklist::reset_unchecked)
         } else {
             quest.description.clone()
         };
@@ -185,12 +185,12 @@ impl<'a> QuestRepository<'a> {
     pub fn update_series_checklist_template(
         &mut self,
         series_id: &str,
-        new_template_md: &str,
+        new_template: &str,
         current_occurrence_id: &str,
     ) -> Result<Quest, String> {
         diesel::update(quest_series::table.find(series_id))
             .set((
-                quest_series::description.eq(new_template_md),
+                quest_series::description.eq(new_template),
                 quest_series::is_checklist.eq(true),
                 quest_series::updated_at.eq(utc_now()),
             ))
@@ -198,14 +198,14 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())?;
 
         let current = self.get(current_occurrence_id)?;
-        let reconciled = crate::services::checklist_md::reconcile_future_scope(
+        let reconciled = crate::services::checklist::reconcile_future_scope(
             current.description.as_deref(),
-            new_template_md,
+            new_template,
         );
         self.set_checklist_description(current_occurrence_id, &reconciled)
     }
 
-    /// Sets `description` (as checklist markdown) for a local edit — not a sync-merge apply.
+    /// Sets `description` (as checklist text) for a local edit — not a sync-merge apply.
     /// Marks the quest `is_checklist` if it wasn't already. `checklist_base` is deliberately
     /// left untouched here — it only advances when a sync merge completes (see
     /// `space_sync::commands::apply_sync_event`), so the next merge can still tell that this
@@ -213,11 +213,11 @@ impl<'a> QuestRepository<'a> {
     pub fn set_checklist_description(
         &mut self,
         quest_id: &str,
-        checklist_md: &str,
+        checklist: &str,
     ) -> Result<Quest, String> {
         diesel::update(quests::table.find(quest_id))
             .set((
-                quests::description.eq(checklist_md),
+                quests::description.eq(checklist),
                 quests::is_checklist.eq(true),
                 quests::updated_at.eq(utc_now()),
             ))

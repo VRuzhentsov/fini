@@ -13,7 +13,7 @@ import {
   PlusIcon,
   XMarkIcon,
 } from "@heroicons/vue/24/outline";
-import { newChecklistItemId, serializeChecklist, type ChecklistItem } from "../../utils/checklistMarkdown";
+import { newChecklistItemId, serializeChecklist, type ChecklistItem } from "../../utils/checklist";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 

@@ -206,7 +206,7 @@ struct QuestCreateArgs {
     #[arg(
         long,
         conflicts_with = "description",
-        help = "Raw task-list markdown for the initial checklist (e.g. '- [ ] headphones'); stored in the same field as --description, so the two are exclusive. Conflicts with --item"
+        help = "Raw task-list text for the initial checklist (e.g. '- [ ] headphones'); stored in the same field as --description, so the two are exclusive. Conflicts with --item"
     )]
     checklist: Option<String>,
     #[arg(
@@ -562,7 +562,7 @@ struct ChecklistSetTemplateArgs {
     quest_id: String,
     #[arg(
         long,
-        help = "Full replacement task-list markdown, e.g. '- [ ] headphones\\n- [ ] key fob'"
+        help = "Full replacement task-list text, e.g. '- [ ] headphones\\n- [ ] key fob'"
     )]
     checklist: String,
     #[arg(
@@ -869,11 +869,11 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             let (description, is_checklist) = if !args.items.is_empty() {
                 let mut md: Option<String> = None;
                 for item in &args.items {
-                    md = Some(crate::services::checklist_md::add_item(md.as_deref(), item));
+                    md = Some(crate::services::checklist::add_item(md.as_deref(), item));
                 }
                 (md, true)
             } else if let Some(checklist) = args.checklist {
-                (Some(normalize_cli_checklist_markdown(&checklist)), true)
+                (Some(normalize_cli_checklist(&checklist)), true)
             } else {
                 (args.description, false)
             };
@@ -935,7 +935,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             let quest = QuestService::new(&mut conn)
                 .get(&args.quest_id)
                 .map_err(CliError::from_string)?;
-            let items = crate::services::checklist_md::parse_opt(quest.description.as_deref());
+            let items = crate::services::checklist::parse_opt(quest.description.as_deref());
             Ok(
                 json!({ "quest_id": args.quest_id, "is_checklist": quest.is_checklist, "items": items }),
             )
@@ -998,14 +998,14 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             let normalized_checklist = if args.scope == "future" {
                 // Preserve ids for text-matching lines against the *current occurrence*, which
                 // is what reconcile_future_scope diffs the new template against for checked-state
-                // preservation — see normalize_future_template_markdown.
-                let current_occurrence_md = QuestService::new(&mut conn)
+                // preservation — see normalize_future_template.
+                let current_occurrence_checklist = QuestService::new(&mut conn)
                     .get(&args.quest_id)
                     .ok()
                     .and_then(|q| q.description);
-                normalize_future_template_markdown(&args.checklist, current_occurrence_md.as_deref())
+                normalize_future_template(&args.checklist, current_occurrence_checklist.as_deref())
             } else {
-                normalize_cli_checklist_markdown(&args.checklist)
+                normalize_cli_checklist(&args.checklist)
             };
             let quest = QuestService::new(&mut conn)
                 .update_series_checklist(
@@ -1062,25 +1062,25 @@ fn normalize_repeat_alias(value: &str) -> String {
     }
 }
 
-fn normalize_cli_checklist_markdown(value: &str) -> String {
-    crate::services::checklist_md::serialize(&crate::services::checklist_md::parse(value))
+fn normalize_cli_checklist(value: &str) -> String {
+    crate::services::checklist::serialize(&crate::services::checklist::parse(value))
 }
 
-/// Like `normalize_cli_checklist_markdown`, but for `checklist-set-template --scope future`:
+/// Like `normalize_cli_checklist`, but for `checklist-set-template --scope future`:
 /// the documented raw-text input (`'- [ ] headphones'`, no `<!--k=...-->` tokens) would otherwise
 /// get a fresh random id per line, which `reconcile_future_scope` then can't match against the
 /// current occurrence's existing item ids — silently resetting an already-checked item back to
 /// unchecked even though the user only meant to keep it. Reuse the current occurrence's id for
 /// any line whose text exactly matches an existing item, so unchanged lines keep their identity.
-fn normalize_future_template_markdown(raw: &str, current_occurrence_md: Option<&str>) -> String {
-    let existing = crate::services::checklist_md::parse_opt(current_occurrence_md);
+fn normalize_future_template(raw: &str, current_occurrence_checklist: Option<&str>) -> String {
+    let existing = crate::services::checklist::parse_opt(current_occurrence_checklist);
     let mut existing_by_text: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     for item in &existing {
         existing_by_text.entry(item.text.as_str()).or_insert(item.id.as_str());
     }
 
-    let items: Vec<crate::services::checklist_md::ChecklistItem> =
-        crate::services::checklist_md::parse(raw)
+    let items: Vec<crate::services::checklist::ChecklistItem> =
+        crate::services::checklist::parse(raw)
             .into_iter()
             .map(|mut item| {
                 if let Some(&existing_id) = existing_by_text.get(item.text.as_str()) {
@@ -1089,7 +1089,7 @@ fn normalize_future_template_markdown(raw: &str, current_occurrence_md: Option<&
                 item
             })
             .collect();
-    crate::services::checklist_md::serialize(&items)
+    crate::services::checklist::serialize(&items)
 }
 
 fn update_quest_from_cli(
@@ -1937,9 +1937,9 @@ mod tests {
     }
 
     #[test]
-    fn quest_create_normalizes_raw_cli_checklist_markdown_before_saving() {
+    fn quest_create_normalizes_raw_cli_checklist_before_saving() {
         let _guard = ENV_LOCK.lock().expect("lock env");
-        let db_path = temp_db_path("cli-create-normalizes-raw-checklist-markdown");
+        let db_path = temp_db_path("cli-create-normalizes-raw-checklist-text");
         std::env::set_var("FINI_DB_PATH", &db_path);
 
         let ctx = CliContext::new()
@@ -1970,16 +1970,16 @@ mod tests {
         let stored_quest = QuestService::new(&mut conn)
             .get(&quest_id)
             .expect("load created checklist quest");
-        let stored_md = stored_quest
+        let stored_checklist = stored_quest
             .description
             .as_deref()
-            .expect("created checklist markdown");
-        let items = crate::services::checklist_md::parse(stored_md);
+            .expect("created checklist text");
+        let items = crate::services::checklist::parse(stored_checklist);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "headphones");
         assert!(
-            stored_md.contains("<!--k=") && stored_md.ends_with("-->"),
-            "stored checklist markdown must persist hidden item ids, got: {stored_md}"
+            stored_checklist.contains("<!--k=") && stored_checklist.ends_with("-->"),
+            "stored checklist text must persist hidden item ids, got: {stored_checklist}"
         );
 
         let listed_item_id = items[0].id.clone();
@@ -1999,10 +1999,10 @@ mod tests {
         };
         let checked = handle_quest(&ctx, check_command)
             .unwrap_or_else(|err| panic!("check listed checklist item: {}", err.message));
-        let checked_items = crate::services::checklist_md::parse(
+        let checked_items = crate::services::checklist::parse(
             checked["description"]
                 .as_str()
-                .expect("checked checklist markdown"),
+                .expect("checked checklist text"),
         );
         assert_eq!(checked_items[0].id, listed_item_id);
         assert!(checked_items[0].checked);
@@ -2012,9 +2012,9 @@ mod tests {
     }
 
     #[test]
-    fn checklist_set_template_normalizes_raw_cli_markdown_before_saving() {
+    fn checklist_set_template_normalizes_raw_cli_input_before_saving() {
         let _guard = ENV_LOCK.lock().expect("lock env");
-        let db_path = temp_db_path("cli-checklist-set-template-normalizes-raw-markdown");
+        let db_path = temp_db_path("cli-checklist-set-template-normalizes-raw-input");
         std::env::set_var("FINI_DB_PATH", &db_path);
 
         let ctx = CliContext::new()
@@ -2071,7 +2071,7 @@ mod tests {
             .first(&mut conn)
             .expect("load updated series");
 
-        for stored_md in [
+        for stored_checklist in [
             stored_quest
                 .description
                 .as_deref()
@@ -2081,12 +2081,12 @@ mod tests {
                 .as_deref()
                 .expect("series checklist md"),
         ] {
-            let items = crate::services::checklist_md::parse(stored_md);
+            let items = crate::services::checklist::parse(stored_checklist);
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].text, "headphones");
             assert!(
-                stored_md.contains("<!--k=") && stored_md.ends_with("-->"),
-                "stored checklist markdown must persist hidden item ids, got: {stored_md}"
+                stored_checklist.contains("<!--k=") && stored_checklist.ends_with("-->"),
+                "stored checklist text must persist hidden item ids, got: {stored_checklist}"
             );
         }
 
@@ -2095,14 +2095,14 @@ mod tests {
     }
 
     #[test]
-    fn normalize_future_template_markdown_preserves_ids_for_matching_text() {
-        let current_occurrence_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+    fn normalize_future_template_preserves_ids_for_matching_text() {
+        let current_occurrence_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: true,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
@@ -2111,8 +2111,8 @@ mod tests {
 
         // Raw, undocumented-id input: "headphones" unchanged, "key fob" dropped, "lunch" added.
         let raw = "- [ ] headphones\n- [ ] lunch";
-        let normalized = normalize_future_template_markdown(raw, Some(&current_occurrence_md));
-        let items = crate::services::checklist_md::parse(&normalized);
+        let normalized = normalize_future_template(raw, Some(&current_occurrence_checklist));
+        let items = crate::services::checklist::parse(&normalized);
 
         assert_eq!(
             items.iter().find(|it| it.text == "headphones").unwrap().id,
@@ -2178,8 +2178,8 @@ mod tests {
             .unwrap_or_else(|err| panic!("add checklist item: {}", err.message));
         let added_description = added["description"]
             .as_str()
-            .expect("updated checklist markdown");
-        let added_item_id = crate::services::checklist_md::parse(added_description)
+            .expect("updated checklist text");
+        let added_item_id = crate::services::checklist::parse(added_description)
             .into_iter()
             .find(|item| item.text == "headphones")
             .expect("added checklist item")

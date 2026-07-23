@@ -2,9 +2,9 @@ import {
   parseChecklist,
   serializeChecklist,
   checklistCounts,
-} from "../../utils/checklistMarkdown";
+} from "../../utils/checklist";
 
-describe("checklistMarkdown", () => {
+describe("checklist", () => {
   it("round-trips parse/serialize", () => {
     const src = "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->";
     const items = parseChecklist(src);

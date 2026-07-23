@@ -127,7 +127,7 @@ describe("quest store checklist actions", () => {
     expect(invoke).toHaveBeenCalledWith("update_series_checklist", {
       seriesId: "series-1",
       currentOccurrenceId: "q1",
-      checklistMd: "- [ ] headphones <!--k=a1-->",
+      checklist: "- [ ] headphones <!--k=a1-->",
       scope: "future",
     });
   });

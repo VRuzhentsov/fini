@@ -667,11 +667,11 @@ fn emit_checklist_convergence_event(
     Ok(())
 }
 
-/// Merges an incoming checklist quest's `description` (task-list markdown) against local state
+/// Merges an incoming checklist quest's `description` (task-list text) against local state
 /// and persists the result, regardless of whether the incoming event wins the whole-entity LWW
 /// comparison for the quest's other fields. Issue #128 explicitly forbids whole-quest LWW for
 /// checklist item state — this is the retained-base 3-way merge from the storage spike
-/// (`services::checklist_md::merge_3way`). Only called when the local quest is a checklist quest
+/// (`services::checklist::merge_3way`). Only called when the local quest is a checklist quest
 /// (`is_checklist`); plain prose quests never enter this path and follow normal whole-entity LWW
 /// on `description` like any other field. Pushes the merged result back out to the origin peer
 /// when it differs from what they sent, so both sides converge. Returns the merged description
@@ -694,7 +694,7 @@ fn merge_and_persist_quest_checklist(
         Some(local) => local,
     };
 
-    let (merged_raw, _had_text_conflict) = crate::services::checklist_md::merge_3way(
+    let (merged_raw, _had_text_conflict) = crate::services::checklist::merge_3way(
         local.checklist_base.as_deref(),
         local.description.as_deref().unwrap_or(""),
         incoming_description.unwrap_or(""),
@@ -1700,8 +1700,8 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let checklist_template = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let checklist_template = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: true,
@@ -1898,33 +1898,33 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let base_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
             },
         ]);
         // Local device packed headphones (item a1) after the shared base.
-        let local_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
 
         let mut local_quest = test_quest("q1", "Go to office", "2026-03-01T00:00:00Z");
         local_quest.is_checklist = true;
-        local_quest.description = Some(local_md.clone());
-        local_quest.checklist_base = Some(base_md.clone());
+        local_quest.description = Some(local_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
         // Remote device independently packed the key fob (item a2) after the same base, and its
         // event is newer, so it wins the whole-entity comparison.
-        let remote_md = crate::services::checklist_md::set_checked(&base_md, "a2", true);
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
         let mut remote_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
         remote_quest.is_checklist = true;
-        remote_quest.description = Some(remote_md);
+        remote_quest.description = Some(remote_checklist);
         let event = test_envelope(
             "evt-remote",
             "dev-remote",
@@ -1942,7 +1942,7 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut conn)
             .unwrap();
-        let items = crate::services::checklist_md::parse(merged.description.as_deref().unwrap());
+        let items = crate::services::checklist::parse(merged.description.as_deref().unwrap());
         assert!(
             items.iter().find(|it| it.id == "a1").unwrap().checked,
             "local's independent pack of item a1 must survive"
@@ -1953,7 +1953,7 @@ mod tests {
         );
         assert_eq!(
             merged.checklist_base.as_deref(),
-            Some(base_md.as_str()),
+            Some(base_checklist.as_str()),
             "merging local-only content must not advance the shared checklist base before the peer adopts it"
         );
 
@@ -1966,8 +1966,8 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let checklist_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
@@ -1976,12 +1976,12 @@ mod tests {
 
         let mut local_quest = test_quest("q-legacy", "Pack", "2026-03-01T00:00:00Z");
         local_quest.is_checklist = true;
-        local_quest.description = Some(checklist_md.clone());
-        local_quest.checklist_base = Some(checklist_md.clone());
+        local_quest.description = Some(checklist.clone());
+        local_quest.checklist_base = Some(checklist.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
         let mut remote_quest = test_quest("q-legacy", "Pack for office", "2026-03-02T00:00:00Z");
-        remote_quest.description = Some(checklist_md.clone());
+        remote_quest.description = Some(checklist.clone());
         let mut legacy_payload = serde_json::to_value(&remote_quest).unwrap();
         legacy_payload
             .as_object_mut()
@@ -2005,7 +2005,7 @@ mod tests {
             .first(&mut conn)
             .unwrap();
         assert_eq!(after.title, "Pack for office");
-        assert_eq!(after.description.as_deref(), Some(checklist_md.as_str()));
+        assert_eq!(after.description.as_deref(), Some(checklist.as_str()));
         assert!(
             after.is_checklist,
             "legacy payloads without is_checklist must not demote locally-known checklists"
@@ -2020,13 +2020,13 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let checklist_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
@@ -2035,7 +2035,7 @@ mod tests {
 
         let mut remote_quest = test_quest("q-synced-checklist", "Pack", "2026-03-02T00:00:00Z");
         remote_quest.is_checklist = true;
-        remote_quest.description = Some(checklist_md.clone());
+        remote_quest.description = Some(checklist.clone());
         let event = test_envelope(
             "evt-synced-checklist",
             "dev-remote",
@@ -2054,10 +2054,10 @@ mod tests {
             .first(&mut conn)
             .unwrap();
         assert!(stored.is_checklist);
-        assert_eq!(stored.description.as_deref(), Some(checklist_md.as_str()));
+        assert_eq!(stored.description.as_deref(), Some(checklist.as_str()));
         assert_eq!(
             stored.checklist_base.as_deref(),
-            Some(checklist_md.as_str()),
+            Some(checklist.as_str()),
             "a first synced checklist insert must establish the shared base for later negative edits"
         );
 
@@ -2070,13 +2070,13 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let checklist_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
@@ -2084,12 +2084,12 @@ mod tests {
         ]);
 
         let mut local_quest = test_quest("q-converted-checklist", "Pack", "2026-03-01T00:00:00Z");
-        local_quest.description = Some(checklist_md.clone());
+        local_quest.description = Some(checklist.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
         let mut remote_quest = local_quest.clone();
         remote_quest.is_checklist = true;
-        remote_quest.description = Some(checklist_md.clone());
+        remote_quest.description = Some(checklist.clone());
         remote_quest.updated_at = "2026-03-02T00:00:00Z".to_string();
         let event = test_envelope(
             "evt-synced-checklist-conversion",
@@ -2109,10 +2109,10 @@ mod tests {
             .first(&mut conn)
             .unwrap();
         assert!(stored.is_checklist);
-        assert_eq!(stored.description.as_deref(), Some(checklist_md.as_str()));
+        assert_eq!(stored.description.as_deref(), Some(checklist.as_str()));
         assert_eq!(
             stored.checklist_base.as_deref(),
-            Some(checklist_md.as_str()),
+            Some(checklist.as_str()),
             "a synced conversion to checklist mode must seed the shared base for later negative edits"
         );
 
@@ -2128,19 +2128,19 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let base_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
             },
         ]);
-        let local_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
 
         // Local's last-known event is newer than the incoming one, so the incoming event loses
         // the whole-entity comparison (title etc. must NOT be adopted from it).
@@ -2154,14 +2154,14 @@ mod tests {
         );
         let mut local_quest = test_quest("q1", "Go to office", "2026-03-05T00:00:00Z");
         local_quest.is_checklist = true;
-        local_quest.description = Some(local_md.clone());
-        local_quest.checklist_base = Some(base_md.clone());
+        local_quest.description = Some(local_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
-        let remote_md = crate::services::checklist_md::set_checked(&base_md, "a2", true);
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
         let mut remote_quest = test_quest("q1", "Stale remote title", "2026-03-01T00:00:00Z");
         remote_quest.is_checklist = true;
-        remote_quest.description = Some(remote_md);
+        remote_quest.description = Some(remote_checklist);
         let event = test_envelope(
             "evt-remote-old",
             "dev-remote",
@@ -2186,7 +2186,7 @@ mod tests {
             after.title, "Go to office",
             "losing event must not overwrite other fields"
         );
-        let items = crate::services::checklist_md::parse(after.description.as_deref().unwrap());
+        let items = crate::services::checklist::parse(after.description.as_deref().unwrap());
         assert!(
             items.iter().find(|it| it.id == "a1").unwrap().checked,
             "local's own pack of item a1 must remain"
@@ -2207,29 +2207,29 @@ mod tests {
         crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
             .expect("seed local device id");
 
-        let base_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
             },
         ]);
-        let adopted_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
+        let adopted_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
 
         let mut local_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
         local_quest.is_checklist = true;
-        local_quest.description = Some(adopted_md.clone());
-        local_quest.checklist_base = Some(base_md);
+        local_quest.description = Some(adopted_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist);
         insert_local_quest_row(&mut conn, &local_quest);
 
         let mut incoming_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
         incoming_quest.is_checklist = true;
-        incoming_quest.description = Some(adopted_md.clone());
+        incoming_quest.description = Some(adopted_checklist.clone());
         let event = test_envelope(
             "evt-clean-adoption",
             "dev-remote",
@@ -2247,8 +2247,8 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut conn)
             .unwrap();
-        assert_eq!(after.description.as_deref(), Some(adopted_md.as_str()));
-        assert_eq!(after.checklist_base.as_deref(), Some(adopted_md.as_str()));
+        assert_eq!(after.description.as_deref(), Some(adopted_checklist.as_str()));
+        assert_eq!(after.checklist_base.as_deref(), Some(adopted_checklist.as_str()));
 
         let emitted: Vec<(String, String, String, Option<String>)> = sync_outbox::table
             .filter(sync_outbox::entity_type.eq("quest"))
@@ -2266,7 +2266,7 @@ mod tests {
         assert_eq!(emitted[0].1, "upsert");
         assert_eq!(emitted[0].2, "1");
         let payload: Quest = serde_json::from_str(emitted[0].3.as_deref().unwrap()).unwrap();
-        assert_eq!(payload.description.as_deref(), Some(adopted_md.as_str()));
+        assert_eq!(payload.description.as_deref(), Some(adopted_checklist.as_str()));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -2279,33 +2279,33 @@ mod tests {
         crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
             .expect("seed local device id");
 
-        let base_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
             },
         ]);
-        let local_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
 
         let mut local_quest = test_quest("q1", "Local stale title", "2026-03-01T00:00:00Z");
         local_quest.is_checklist = true;
-        local_quest.description = Some(local_md.clone());
-        local_quest.checklist_base = Some(base_md.clone());
+        local_quest.description = Some(local_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
-        let remote_md = crate::services::checklist_md::set_checked(&base_md, "a2", true);
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
         let mut remote_quest = test_quest("q1", "Remote winning title", "2026-03-02T00:00:00Z");
         remote_quest.space_id = "2".to_string();
         remote_quest.status = "completed".to_string();
         remote_quest.completed_at = Some("2026-03-02T00:00:00Z".to_string());
         remote_quest.is_checklist = true;
-        remote_quest.description = Some(remote_md);
+        remote_quest.description = Some(remote_checklist);
         let event = test_envelope(
             "evt-winning-metadata",
             "dev-remote",
@@ -2349,7 +2349,7 @@ mod tests {
         );
 
         let emitted_items =
-            crate::services::checklist_md::parse(emitted.description.as_deref().unwrap());
+            crate::services::checklist::parse(emitted.description.as_deref().unwrap());
         assert!(
             emitted_items
                 .iter()
@@ -2376,19 +2376,19 @@ mod tests {
         crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
             .expect("seed local device id");
 
-        let base_md = crate::services::checklist_md::serialize(&[
-            crate::services::checklist_md::ChecklistItem {
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
             },
-            crate::services::checklist_md::ChecklistItem {
+            crate::services::checklist::ChecklistItem {
                 id: "a2".into(),
                 text: "key fob".into(),
                 checked: false,
             },
         ]);
-        let local_md = crate::services::checklist_md::set_checked(&base_md, "a1", true);
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
 
         insert_outbox_entry_for_space(
             &mut conn,
@@ -2403,11 +2403,11 @@ mod tests {
             test_quest("q-current-space", "Moved locally", "2026-03-05T00:00:00Z");
         local_quest.space_id = "2".to_string();
         local_quest.is_checklist = true;
-        local_quest.description = Some(local_md);
-        local_quest.checklist_base = Some(base_md.clone());
+        local_quest.description = Some(local_checklist);
+        local_quest.checklist_base = Some(base_checklist.clone());
         insert_local_quest_row(&mut conn, &local_quest);
 
-        let remote_md = crate::services::checklist_md::set_checked(&base_md, "a2", true);
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
         let mut remote_quest = test_quest(
             "q-current-space",
             "Remote old-space edit",
@@ -2415,7 +2415,7 @@ mod tests {
         );
         remote_quest.space_id = "1".to_string();
         remote_quest.is_checklist = true;
-        remote_quest.description = Some(remote_md);
+        remote_quest.description = Some(remote_checklist);
         let event = test_envelope(
             "evt-old-space-checklist-edit",
             "dev-remote",
@@ -2444,7 +2444,7 @@ mod tests {
         );
         let payload: Quest = serde_json::from_str(emitted.1.as_deref().unwrap()).unwrap();
         assert_eq!(payload.space_id, "2");
-        let items = crate::services::checklist_md::parse(payload.description.as_deref().unwrap());
+        let items = crate::services::checklist::parse(payload.description.as_deref().unwrap());
         assert!(items.iter().find(|it| it.id == "a1").unwrap().checked);
         assert!(items.iter().find(|it| it.id == "a2").unwrap().checked);
 
