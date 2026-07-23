@@ -192,6 +192,36 @@ describe("recurring checklist item text scope", () => {
     expect(store.updateSeriesChecklist).not.toHaveBeenCalled();
   });
 
+  it("falls back to a this-occurrence edit for an occurrence-only item via the focused active panel (#128)", async () => {
+    const quest = baseQuest({
+      description:
+        "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->\n- [ ] today only <!--k=a3-->",
+    });
+    const seriesTemplate = "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->";
+    const store = mockQuestStore(seriesTemplate);
+    const wrapper = shallowMount(ActiveQuestPanel, {
+      props: { quest },
+      global: {
+        stubs: {
+          QuestEditor: questEditorStub,
+          RecurrenceScopeSheet: recurrenceScopeSheetStub,
+          ReminderMenu: true,
+          CheckIcon: true,
+        },
+      },
+    });
+
+    await wrapper.find(".active-quest-title").trigger("click");
+    wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("edit-checklist-item-text", "a3", "today only, renamed");
+    await nextTick();
+    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "future");
+    await nextTick();
+    await nextTick();
+
+    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a3", "today only, renamed");
+    expect(store.updateSeriesChecklist).not.toHaveBeenCalled();
+  });
+
   it("applies this-occurrence recurring item text edits through the focused active panel", async () => {
     const quest = baseQuest();
     const store = mockQuestStore(quest.description);
