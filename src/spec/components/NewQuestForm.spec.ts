@@ -198,7 +198,52 @@ describe("NewQuestForm", () => {
     });
   });
 
-  it("converts each description line into a checklist item when checklist mode is on", async () => {
+  async function addChecklistDraftItem(wrapper: ReturnType<typeof mount>, text: string) {
+    const input = wrapper.find('[data-testid="new-quest-checklist-item-input"]');
+    await input.setValue(text);
+    await input.trigger("keydown", { key: "Enter" });
+  }
+
+  it("shows a checkbox row for each item as it's added, before the quest is created", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="new-quest-checklist-toggle"]').trigger("click");
+    await addChecklistDraftItem(wrapper, "headphones");
+    await addChecklistDraftItem(wrapper, "key fob");
+
+    const rows = wrapper.findAll('[data-testid="new-quest-checklist"] > div');
+    // Two item rows plus the trailing "add item" row.
+    expect(rows.length).toBe(3);
+    expect(wrapper.text()).toContain("headphones");
+    expect(wrapper.text()).toContain("key fob");
+  });
+
+  it("checking an item while composing shows it as checked before submit", async () => {
+    const wrapper = mount(NewQuestForm, {
+      global: {
+        stubs: {
+          ReminderMenu: true,
+        },
+      },
+    });
+
+    await wrapper.find('[data-testid="new-quest-checklist-toggle"]').trigger("click");
+    await addChecklistDraftItem(wrapper, "headphones");
+
+    const checkbox = wrapper.find('[data-testid="new-quest-checklist"] button[aria-label="Check item"]');
+    await checkbox.trigger("click");
+
+    expect(wrapper.find('[aria-label="Uncheck item"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="new-quest-checklist"]').text()).toContain("headphones");
+  });
+
+  it("submits composed checklist items, including their checked state and one left in the input", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
         stubs: {
@@ -209,16 +254,19 @@ describe("NewQuestForm", () => {
 
     await wrapper.find('[data-testid="chat-input"]').setValue("Go to office");
     await wrapper.find('[data-testid="new-quest-checklist-toggle"]').trigger("click");
-    await wrapper
-      .find('[data-testid="new-quest-description"]')
-      .setValue("headphones\nkey fob\n\nlunch");
+    await addChecklistDraftItem(wrapper, "headphones");
+    await wrapper.find('[data-testid="new-quest-checklist"] button[aria-label="Check item"]').trigger("click");
+    // Left in the input, not confirmed with Enter — must still be captured on submit.
+    await wrapper.find('[data-testid="new-quest-checklist-item-input"]').setValue("lunch");
     await wrapper.find("form").trigger("submit");
 
     expect(createQuest).toHaveBeenCalledTimes(1);
     const call = createQuest.mock.calls[0][0];
     expect(call.title).toBe("Go to office");
     expect(call.is_checklist).toBe(true);
-    expect(call.description).toMatch(/^- \[ \] headphones <!--k=.+-->\n- \[ \] key fob <!--k=.+-->\n- \[ \] lunch <!--k=.+-->$/);
+    expect(call.description).toMatch(
+      /^- \[x\] headphones <!--k=.+-->\n- \[ \] lunch <!--k=.+-->$/,
+    );
   });
 
   it("allows non-empty metadata drafts to collapse", async () => {

@@ -6,12 +6,14 @@ import { useReminderNotifications } from "../../composables/useReminderNotificat
 import {
   CalendarDaysIcon,
   CheckCircleIcon,
+  CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
   PaperAirplaneIcon,
+  PlusIcon,
   XMarkIcon,
 } from "@heroicons/vue/24/outline";
-import { newChecklistItemId, serializeChecklist } from "../../utils/checklistMarkdown";
+import { newChecklistItemId, serializeChecklist, type ChecklistItem } from "../../utils/checklistMarkdown";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -21,9 +23,12 @@ const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 
 const title = ref("");
 const description = ref("");
-// Issue #128: a checklist quest reuses this same field — when on, each non-empty line typed
-// here becomes one unchecked checklist item instead of a paragraph of prose.
+// Issue #128: a checklist quest reuses this same field — when on, the composer shows a live
+// checkbox list instead of a plain textarea; each row (checkable while composing) becomes one
+// checklist item on submit.
 const isChecklistMode = ref(false);
+const checklistItems = ref<ChecklistItem[]>([]);
+const newChecklistItemText = ref("");
 const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
@@ -36,6 +41,7 @@ const titleInput = ref<HTMLInputElement | null>(null);
 const hasMetadataDraft = computed(
   () =>
     description.value.trim().length > 0 ||
+    checklistItems.value.length > 0 ||
     !!due.value ||
     !!dueTime.value ||
     !!repeatRule.value,
@@ -75,7 +81,9 @@ const draftQuest = computed<Quest>(() => ({
   id: "__new_quest__",
   space_id: selectedSpaceId.value,
   title: title.value,
-  description: description.value.trim() || null,
+  description: isChecklistMode.value
+    ? serializeChecklist(checklistItems.value) || null
+    : description.value.trim() || null,
   status: "active",
   energy: "medium",
   priority: 1,
@@ -187,23 +195,34 @@ function toggleChecklistMode() {
   if (isChecklistMode.value) metadataExpanded.value = true;
 }
 
-/** Each non-empty line typed while checklist mode is on becomes one unchecked item. */
-function checklistDescriptionFromDraft(): string | null {
-  const lines = description.value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length === 0) return null;
-  return serializeChecklist(
-    lines.map((text) => ({ id: newChecklistItemId(), text, checked: false })),
-  );
+function addChecklistItem() {
+  const text = newChecklistItemText.value.trim();
+  if (!text) return;
+  checklistItems.value.push({ id: newChecklistItemId(), text, checked: false });
+  newChecklistItemText.value = "";
+}
+
+function onNewChecklistItemKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  addChecklistItem();
+}
+
+function toggleChecklistItemChecked(itemId: string) {
+  const item = checklistItems.value.find((it) => it.id === itemId);
+  if (item) item.checked = !item.checked;
+}
+
+function removeChecklistItem(itemId: string) {
+  checklistItems.value = checklistItems.value.filter((it) => it.id !== itemId);
 }
 
 async function onSubmit() {
   const value = title.value.trim();
   if (!value || isSubmitting.value) return;
+  if (isChecklistMode.value) addChecklistItem(); // capture whatever's still in the "add item" input
   const descriptionValue = isChecklistMode.value
-    ? checklistDescriptionFromDraft()
+    ? serializeChecklist(checklistItems.value) || null
     : description.value.trim() || null;
 
   isSubmitting.value = true;
@@ -221,6 +240,8 @@ async function onSubmit() {
     title.value = "";
     description.value = "";
     isChecklistMode.value = false;
+    checklistItems.value = [];
+    newChecklistItemText.value = "";
     clearReminder();
     metadataExpanded.value = false;
   } finally {
@@ -256,13 +277,60 @@ async function onSubmit() {
 
       <div v-if="isExpanded" class="flex flex-col gap-2 border-t border-base-300 pt-2">
         <textarea
+          v-if="!isChecklistMode"
           v-model="description"
           data-testid="new-quest-description"
           class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
-          :placeholder="isChecklistMode ? 'One item per line' : 'Description'"
+          placeholder="Description"
           rows="2"
           :disabled="isSubmitting"
         />
+
+        <div v-else data-testid="new-quest-checklist" class="flex flex-col gap-0.5">
+          <div
+            v-for="item in checklistItems"
+            :key="item.id"
+            class="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-base-200"
+          >
+            <button
+              type="button"
+              class="flex size-[18px] shrink-0 items-center justify-center rounded border-[1.5px] border-base-content/40 disabled:opacity-50"
+              :class="item.checked ? 'border-success bg-success' : ''"
+              :aria-label="item.checked ? 'Uncheck item' : 'Check item'"
+              :disabled="isSubmitting"
+              @click="toggleChecklistItemChecked(item.id)"
+            >
+              <CheckIcon v-if="item.checked" class="size-3 text-success-content" />
+            </button>
+            <span
+              class="min-w-0 flex-1 text-sm"
+              :class="item.checked ? 'text-base-content/40 line-through' : ''"
+            >{{ item.text }}</span>
+            <button
+              type="button"
+              class="flex size-6 shrink-0 items-center justify-center rounded text-base-content/40 hover:bg-base-300 hover:text-base-content/70"
+              aria-label="Remove item"
+              :disabled="isSubmitting"
+              @click="removeChecklistItem(item.id)"
+            >
+              <XMarkIcon class="size-3.5" />
+            </button>
+          </div>
+
+          <div class="flex items-center gap-2 px-1 py-1">
+            <PlusIcon class="size-[17px] shrink-0 text-base-content/40" />
+            <input
+              v-model="newChecklistItemText"
+              type="text"
+              data-testid="new-quest-checklist-item-input"
+              class="input input-ghost min-h-0 flex-1 p-0 text-sm focus:outline-none"
+              placeholder="Add item"
+              :disabled="isSubmitting"
+              @keydown="onNewChecklistItemKeydown"
+              @blur="addChecklistItem"
+            />
+          </div>
+        </div>
       </div>
 
       <div class="flex items-center justify-between gap-2 pt-1">
