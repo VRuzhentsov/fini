@@ -10,4 +10,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 sleep 1
-DISPLAY=:99 npm run test:e2e:ci
+status=0
+DISPLAY=:99 npm run test:e2e:ci || status=$?
+DISPLAY=:99 npm run test:e2e:ci:sim || status=$?
+exit "$status"

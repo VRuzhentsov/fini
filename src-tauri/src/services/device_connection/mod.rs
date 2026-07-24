@@ -1,12 +1,15 @@
 mod commands;
 mod runtime;
+mod transport;
 pub(crate) mod types;
 
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::services::space_sync::types::{SessionSender, SyncEventEnvelope, WsMessage};
+use crate::services::space_sync::types::{PeerFrame, SessionSender, SyncEventEnvelope};
+use crate::services::transport::selection::{new_lifecycle_bus, LifecycleBus, LifecycleEvent};
+use crate::services::transport::TransportKind;
 
 #[cfg(any(feature = "ui-plane", test))]
 pub use commands::{
@@ -18,9 +21,11 @@ pub use commands::{
     device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_save_paired_device, device_connection_send_pair_request,
-    device_connection_unpair, device_connection_update_last_seen,
+    device_connection_session_transport, device_connection_set_bluetooth_transport,
+    device_connection_transport_statuses, device_connection_unpair,
+    device_connection_update_last_seen,
 };
-#[cfg(feature = "cli-plane")]
+#[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,
     device_connection_discovery_snapshot_impl, device_connection_enter_add_mode_impl,
@@ -30,10 +35,12 @@ pub use commands::{
     device_connection_pair_incoming_requests_impl,
     device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
-    device_connection_send_pair_request_impl, device_connection_unpair_impl,
-    device_connection_update_last_seen_impl,
+    device_connection_send_pair_request_impl, device_connection_session_transport_impl,
+    device_connection_set_bluetooth_transport_impl, device_connection_transport_statuses_impl,
+    device_connection_unpair_impl, device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
+pub use transport::{build_transport_statuses, TransportStatus};
 use types::DiscoveryRuntime;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
@@ -63,6 +70,7 @@ pub struct DeviceConnectionState {
     pub discovery_port: u16,
     pub space_sync_ws_port: u16,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
+    lifecycle_tx: LifecycleBus,
 }
 
 fn env_port(name: &str, fallback: u16) -> u16 {
@@ -124,6 +132,7 @@ impl DeviceConnectionState {
             discovery_port,
             space_sync_ws_port,
             runtime,
+            lifecycle_tx: new_lifecycle_bus(),
         })
     }
 
@@ -215,19 +224,72 @@ impl DeviceConnectionState {
             .collect()
     }
 
-    pub fn register_session(&self, peer_device_id: String, sender: SessionSender) {
-        if let Ok(mut guard) = self.runtime.lock() {
-            guard.peer_sessions.insert(peer_device_id, sender);
+    /// Enforces the sticky single-session invariant: succeeds (and claims
+    /// the peer's session slot) only if no session is currently active for
+    /// `peer_device_id`, on any transport. Callers must check the return
+    /// value — on `false`, the caller's link must not proceed to `AuthOk`/
+    /// the session loop. See `crate::services::transport::selection` for
+    /// the network-first/sticky-handoff rules this protects.
+    pub fn try_claim_session(
+        &self,
+        peer_device_id: &str,
+        kind: TransportKind,
+        sender: SessionSender,
+    ) -> bool {
+        {
+            let Ok(mut guard) = self.runtime.lock() else {
+                return false;
+            };
+            if guard.peer_sessions.contains_key(peer_device_id) {
+                return false;
+            }
+            guard
+                .peer_sessions
+                .insert(peer_device_id.to_string(), sender);
+            guard
+                .peer_session_kind
+                .insert(peer_device_id.to_string(), kind);
         }
+        let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
+            peer_device_id: peer_device_id.to_string(),
+            kind,
+        });
+        true
     }
 
-    pub fn unregister_session(&self, peer_device_id: &str) {
-        if let Ok(mut guard) = self.runtime.lock() {
+    pub fn release_session(&self, peer_device_id: &str) {
+        let kind = {
+            let Ok(mut guard) = self.runtime.lock() else {
+                return;
+            };
             guard.peer_sessions.remove(peer_device_id);
+            guard.peer_session_kind.remove(peer_device_id)
+        };
+        if let Some(kind) = kind {
+            let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
+                peer_device_id: peer_device_id.to_string(),
+                kind,
+            });
         }
     }
 
-    pub fn push_to_peer(&self, peer_device_id: &str, msg: WsMessage) -> bool {
+    /// Which transport carries the peer's currently claimed session, if any.
+    /// Exposed via `device_connection_session_transport`.
+    pub fn session_kind(&self, peer_device_id: &str) -> Option<TransportKind> {
+        let guard = self.runtime.lock().ok()?;
+        guard.peer_session_kind.get(peer_device_id).copied()
+    }
+
+    /// Reserved for UI consumption (live transport-changed/connect/disconnect
+    /// rows) — the draft's `device_connection_transport_statuses` polling
+    /// command remains the UI-facing surface in this PR; wiring a push-based
+    /// subscriber is follow-up work.
+    #[allow(dead_code)]
+    pub fn subscribe_lifecycle(&self) -> tokio::sync::broadcast::Receiver<LifecycleEvent> {
+        self.lifecycle_tx.subscribe()
+    }
+
+    pub fn push_to_peer(&self, peer_device_id: &str, msg: PeerFrame) -> bool {
         let guard = match self.runtime.lock() {
             Ok(g) => g,
             Err(_) => return false,
@@ -343,5 +405,12 @@ impl DeviceConnectionState {
                 )
             })
             .collect()
+    }
+
+    pub fn network_peer_available(&self, peer_device_id: &str) -> bool {
+        let Ok(guard) = self.runtime.lock() else {
+            return false;
+        };
+        guard.presence.contains_key(peer_device_id)
     }
 }

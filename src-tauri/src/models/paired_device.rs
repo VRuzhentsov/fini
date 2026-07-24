@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::paired_devices;
 
-#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
+#[derive(Debug, Queryable, Selectable, Serialize, Deserialize, Clone)]
 #[diesel(table_name = paired_devices)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct PairedDevice {
@@ -12,6 +12,9 @@ pub struct PairedDevice {
     pub paired_at: String,
     pub last_seen_at: Option<String>,
     pub pair_state: String,
+    pub bluetooth_enabled: bool,
+    pub bluetooth_address: Option<String>,
+    pub bluetooth_last_verified_at: Option<String>,
 }
 
 #[derive(Deserialize, Insertable)]

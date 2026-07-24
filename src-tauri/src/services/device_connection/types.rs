@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::services::space_sync::types::{SessionSender, SyncEventEnvelope};
+use crate::services::transport::TransportKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceIdentity {
@@ -104,6 +105,13 @@ pub struct DevicePairRequestAckInput {
     pub request_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceBluetoothTransportInput {
+    pub peer_device_id: String,
+    pub enabled: bool,
+    pub bluetooth_address: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct DiscoveryBeacon {
     pub protocol: String,
@@ -153,6 +161,12 @@ pub(crate) struct PairCompletePayload {
     pub from_hostname: String,
     pub to_device_id: String,
     pub paired_at: String,
+    /// Reserved for future Signal-style key agreement (X3DH). Unused today;
+    /// pass-through `SecureChannel` never populates or reads this. Keeping
+    /// the slot on the wire now means enabling encryption later is additive,
+    /// not a breaking wire-format change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_material: Option<crate::services::transport::secure_channel::KeyMaterial>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,4 +204,9 @@ pub(super) struct DiscoveryRuntime {
     pub incoming_sync_events: HashMap<String, SyncEventEnvelope>,
     pub incoming_sync_acks: HashMap<String, IncomingSyncAck>,
     pub peer_sessions: HashMap<String, SessionSender>,
+    /// Which transport carries each peer's currently claimed session. Kept
+    /// alongside `peer_sessions` (same keys) so status commands and the
+    /// lifecycle bus can report which transport is active without a second
+    /// lock. See `DeviceConnectionState::try_claim_session`.
+    pub peer_session_kind: HashMap<String, TransportKind>,
 }

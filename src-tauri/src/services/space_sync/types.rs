@@ -20,11 +20,14 @@ pub struct SyncEventEnvelope {
     pub created_at: String,
 }
 
-pub type SessionSender = mpsc::Sender<WsMessage>;
+pub type SessionSender = mpsc::Sender<PeerFrame>;
 
+/// A message of the transport-neutral Fini peer protocol: pairing handshake
+/// plus authenticated sync. Carried by whichever `Transport`/`Link` is
+/// currently selected for a peer (see `crate::services::transport`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum WsMessage {
+pub enum PeerFrame {
     #[serde(rename = "auth")]
     Auth {
         device_id: String,
