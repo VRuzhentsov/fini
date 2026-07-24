@@ -10,14 +10,6 @@ jest.mock("../../components/QuestsView/QuestList.vue", () => ({
   },
 }));
 
-jest.mock("../../components/ChatInput.vue", () => ({
-  __esModule: true,
-  default: {
-    name: "ChatInput",
-    template: '<div data-testid="chat-input-stub" />',
-  },
-}));
-
 jest.mock("../../components/FocusView/NewQuestForm.vue", () => ({
   __esModule: true,
   default: {
@@ -39,18 +31,16 @@ describe("QuestsView quest creation", () => {
     });
   });
 
-  it("uses the shared rich quest composer instead of the plain chat input", () => {
+  it("uses the shared rich quest composer", () => {
     const wrapper = mount(QuestsView, {
       global: {
         stubs: {
           QuestList: true,
           NewQuestForm: { name: "NewQuestForm", template: '<div data-testid="new-quest-form-stub" />' },
-          ChatInput: { name: "ChatInput", template: '<div data-testid="chat-input-stub" />' },
         },
       },
     });
 
     expect(wrapper.find('[data-testid="new-quest-form-stub"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="chat-input-stub"]').exists()).toBe(false);
   });
 });

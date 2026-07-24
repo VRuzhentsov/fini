@@ -1,6 +1,7 @@
 #[cfg(all(any(feature = "ui-plane", test), target_os = "linux"))]
 pub mod appimage_desktop;
 pub mod backup;
+pub mod checklist;
 #[cfg(feature = "cli-plane")]
 pub mod cli;
 #[cfg(feature = "cli-plane")]
@@ -10,6 +11,7 @@ pub mod db;
 pub mod desktop_update;
 pub mod device_connection;
 pub mod due_time;
+pub mod migration_import;
 #[cfg(any(feature = "ui-plane", test))]
 pub mod notification;
 pub mod quest;

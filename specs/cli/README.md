@@ -2,6 +2,20 @@
 
 Fini exposes a CLI-only binary named `fini` for synchronous automation.
 
+## Output Contract
+
+CLI output is human-readable by default. `fini` with no subcommand and
+`fini <command>` must print concise terminal-facing text unless the global
+`--json` flag is present.
+
+Use `--json` when scripts need structured machine-readable output. Automation
+fixtures and API-like CLI consumers should opt into that format explicitly, for
+example `fini --json quest list`.
+
+New CLI commands must implement or inherit a human formatter for default output;
+they must not expose raw pretty-printed JSON merely because their internal result
+is represented as a JSON value.
+
 ## Entry Points
 
 | Binary | Build features | Contract |

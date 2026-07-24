@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-import type { Quest, UpdateQuestInput } from "../stores/quest";
+import { computed, ref, watch } from "vue";
+import type { ChecklistActivity, Quest, UpdateQuestInput } from "../stores/quest";
 import { SPACE_COLOR_CLASS } from "../stores/space";
+import { parseChecklist } from "../utils/checklist";
 import {
   PaperClipIcon,
   TagIcon,
@@ -11,6 +12,7 @@ import {
   ExclamationCircleIcon,
 } from "@heroicons/vue/24/outline";
 import ActionsBtn from "./ActionsBtn.vue";
+import ChecklistEditor from "./ChecklistEditor.vue";
 
 const props = defineProps<{
   quest: Quest;
@@ -20,6 +22,11 @@ const props = defineProps<{
   priorityLabel: string;
   reminderText?: string;
   timestampText?: string;
+  /** Post-completion audit trail (issue #128) — only meaningful for checklist quests. */
+  checklistActivity?: ChecklistActivity[];
+  /** Set when this occurrence belongs to a series and the checklist is being edited, so the
+   * caller can present the "This occurrence" / "This and future occurrences" scope choice. */
+  isRecurring?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -31,6 +38,10 @@ const emit = defineEmits<{
   openReminder: [];
   cyclePriority: [];
   more: [event: MouseEvent];
+  toggleChecklistItem: [itemId: string, checked: boolean];
+  addChecklistItem: [text: string];
+  editChecklistItemText: [itemId: string, text: string];
+  removeChecklistItem: [itemId: string];
 }>();
 
 const title = ref(props.quest.title);
@@ -67,6 +78,50 @@ function onTitleKeydown(event: KeyboardEvent) {
 function spaceCss(): string {
   return SPACE_COLOR_CLASS[props.quest.space_id] ?? "";
 }
+
+const checklistItems = computed(() => parseChecklist(props.quest.description));
+const checklistDone = computed(() => checklistItems.value.filter((it) => it.checked).length);
+const checklistTotal = computed(() => checklistItems.value.length);
+const checklistProgressPct = computed(() =>
+  checklistTotal.value === 0 ? 0 : (checklistDone.value / checklistTotal.value) * 100,
+);
+
+function onToggleItem(itemId: string, checked: boolean) {
+  emit("toggleChecklistItem", itemId, checked);
+}
+
+function onEditItemText(itemId: string, text: string) {
+  emit("editChecklistItemText", itemId, text);
+}
+
+function onAddItem(text: string) {
+  emit("addChecklistItem", text);
+}
+
+function onRemoveItem(itemId: string) {
+  emit("removeChecklistItem", itemId);
+}
+
+function formatActivityTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+// Issue #128: checklist section render decisions, per fini-frontend's renderFlags convention.
+const renderFlags = computed(() => ({
+  checklist: props.quest.is_checklist,
+  checklistRecurringBadge: props.quest.is_checklist && !!props.isRecurring,
+  checklistEditable: props.quest.is_checklist && props.quest.status === "active",
+  checklistAudit: props.quest.is_checklist && !!props.checklistActivity?.length,
+  prose: !props.quest.is_checklist && props.quest.status === "active",
+  proseReadonly: !props.quest.is_checklist && props.quest.status !== "active" && !!props.quest.description,
+}));
 </script>
 
 <template>
@@ -115,15 +170,54 @@ function spaceCss(): string {
       </button>
     </div>
 
+    <!-- Checklist (issue #128): a checklist quest's description IS the checklist — it replaces
+         the prose textarea entirely rather than sitting alongside it. -->
+    <div v-if="renderFlags.checklist" class="quest-editor-checklist">
+      <div class="quest-editor-checklist-header">
+        <span class="quest-editor-checklist-label">Checklist</span>
+        <span
+          v-if="renderFlags.checklistRecurringBadge"
+          class="quest-editor-checklist-repeat"
+          title="This quest repeats"
+        >repeats</span>
+        <span class="quest-editor-checklist-progress">
+          <span
+            class="quest-editor-checklist-progress-fill"
+            :style="{ width: checklistProgressPct + '%' }"
+          />
+        </span>
+        <span class="quest-editor-checklist-count">{{ checklistDone }}/{{ checklistTotal }}</span>
+      </div>
+
+      <div class="quest-editor-checklist-items">
+        <ChecklistEditor
+          :items="checklistItems"
+          :mode="renderFlags.checklistEditable ? 'active' : 'readonly'"
+          @toggle-item="onToggleItem"
+          @edit-item-text="onEditItemText"
+          @add-item="onAddItem"
+          @remove-item="onRemoveItem"
+        />
+      </div>
+
+      <div v-if="renderFlags.checklistAudit" class="quest-editor-checklist-audit">
+        <div v-for="entry in checklistActivity" :key="entry.id" class="quest-editor-checklist-audit-row">
+          <ClockIcon />
+          <span class="quest-editor-checklist-audit-detail">{{ entry.detail }}</span>
+          <span class="quest-editor-checklist-audit-time">{{ formatActivityTime(entry.created_at) }}</span>
+        </div>
+      </div>
+    </div>
+
     <textarea
-      v-if="quest.status === 'active'"
+      v-else-if="renderFlags.prose"
       v-model="description"
       class="quest-editor-desc"
       placeholder="Description"
       rows="2"
       @blur="saveDescription"
     />
-    <p v-else-if="quest.description" class="quest-editor-desc readonly">{{ quest.description }}</p>
+    <p v-else-if="renderFlags.proseReadonly" class="quest-editor-desc readonly">{{ quest.description }}</p>
 
     <div class="quest-editor-footer">
       <button
@@ -318,4 +412,87 @@ function spaceCss(): string {
 .quest-editor-date:hover { background: var(--color-base-200); }
 .quest-editor-date svg { width: 18px; height: 18px; color: var(--fg-3); stroke-width: 1.7; }
 .quest-editor-actions { display: flex; align-items: center; gap: 0; }
+
+/* ── Checklist (issue #128) ─────────────────────────────────────────── */
+
+.quest-editor-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quest-editor-checklist-header {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 2px 0 6px;
+}
+
+.quest-editor-checklist-label {
+  font: 600 11px var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-3);
+}
+
+.quest-editor-checklist-repeat {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-3);
+  background: var(--color-base-200);
+  border-radius: 999px;
+}
+
+.quest-editor-checklist-progress {
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  display: block;
+  overflow: hidden;
+  background: var(--color-base-200);
+  border-radius: 999px;
+}
+
+.quest-editor-checklist-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--color-success);
+  transition: width var(--dur-normal);
+}
+
+.quest-editor-checklist-count {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.quest-editor-checklist-items {
+  display: flex;
+  flex-direction: column;
+}
+
+.quest-editor-checklist-audit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 0.5rem 0.625rem;
+  background: var(--color-base-200);
+  border-radius: 8px;
+}
+
+.quest-editor-checklist-audit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.quest-editor-checklist-audit-row svg { width: 12px; height: 12px; flex-shrink: 0; stroke-width: 1.7; }
+.quest-editor-checklist-audit-detail { flex: 1; min-width: 0; }
+.quest-editor-checklist-audit-time { font-family: var(--font-mono); font-size: 10px; color: var(--fg-4); }
 </style>

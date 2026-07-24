@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
+import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
+import ChecklistEditor from "../ChecklistEditor.vue";
 import QuestEditor from "../QuestEditor.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
+import RecurrenceScopeSheet from "../QuestsView/RecurrenceScopeSheet.vue";
 
 const props = defineProps<{ quest: Quest }>();
 const store = useQuestStore();
@@ -18,6 +21,95 @@ const reminderOpen = ref(false);
 const HOLD_MS = 900;
 let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
+
+const renderFlags = computed(() => ({
+  checklist: props.quest.is_checklist,
+}));
+const checklistItems = computed(() => parseChecklist(props.quest.description));
+
+function onToggleChecklistItem(itemId: string, checked: boolean) {
+  store.toggleChecklistItem(props.quest.id, itemId, checked);
+}
+
+function onEditChecklistItemText(itemId: string, text: string) {
+  if (props.quest.series_id) {
+    pendingScopeAction.value = { quest: props.quest, kind: "edit", payload: { itemId, text } };
+    return;
+  }
+  store.editChecklistItemText(props.quest.id, itemId, text);
+}
+
+// Captures the quest at the moment the scope sheet opens (not just at resolution time): Focus
+// can refresh or replace `activeQuest` while the sheet is still open (e.g. after a sync or
+// reminder refresh), and resolving against a freshly-read props.quest could apply this pending
+// item edit to a different quest than the one that actually opened the sheet.
+type PendingScopeAction =
+  | { quest: Quest; kind: "add"; payload: string }
+  | { quest: Quest; kind: "remove"; payload: string }
+  | { quest: Quest; kind: "edit"; payload: { itemId: string; text: string } };
+
+const pendingScopeAction = ref<PendingScopeAction | null>(null);
+
+function onAddChecklistItem(text: string) {
+  if (props.quest.series_id) {
+    pendingScopeAction.value = { quest: props.quest, kind: "add", payload: text };
+    return;
+  }
+  store.addChecklistItem(props.quest.id, text);
+}
+
+function onRemoveChecklistItem(itemId: string) {
+  if (props.quest.series_id) {
+    pendingScopeAction.value = { quest: props.quest, kind: "remove", payload: itemId };
+    return;
+  }
+  store.removeChecklistItem(props.quest.id, itemId);
+}
+
+async function onScopeChosen(scope: "this" | "future") {
+  const action = pendingScopeAction.value;
+  pendingScopeAction.value = null;
+  if (!action) return;
+  const { quest } = action;
+
+  if (scope === "this") {
+    if (action.kind === "add") await store.addChecklistItem(quest.id, action.payload);
+    else if (action.kind === "remove") await store.removeChecklistItem(quest.id, action.payload);
+    else await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
+    return;
+  }
+
+  // "This and future occurrences" must diff against the series' own stored template, not this
+  // occurrence's current description — the occurrence may already carry "this occurrence only"
+  // changes that were never promoted, and basing the edit on it would silently promote them.
+  const template = await store.fetchSeriesChecklistTemplate(quest.series_id!);
+  const items = parseChecklist(template);
+
+  if (action.kind === "edit" && !items.some((it) => it.id === action.payload.itemId)) {
+    // The item being renamed was added via "This occurrence" and was never promoted to the
+    // template — pushing the template unchanged would leave the rename un-applied, and the
+    // backend's reconcile would then drop the item entirely (absent from the new template)
+    // instead of renaming it. There's no coherent "future" version of an occurrence-only item,
+    // so fall back to applying the rename to just this occurrence.
+    await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
+    return;
+  }
+
+  const nextItems =
+    action.kind === "add"
+      ? [...items, { id: newChecklistItemId(), text: action.payload, checked: false }]
+      : action.kind === "remove"
+        ? items.filter((it) => it.id !== action.payload)
+        : items.map((it) =>
+            it.id === action.payload.itemId ? { ...it, text: action.payload.text } : it,
+          );
+  await store.updateSeriesChecklist(
+    quest.series_id!,
+    quest.id,
+    serializeChecklist(nextItems),
+    "future",
+  );
+}
 
 function onContextMenu(e: MouseEvent) {
   const items = buildQuestMenu(props.quest, {
@@ -112,6 +204,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     :priority-color="'oklch(var(--color-warning))'"
     :priority-label="'Priority'"
     :reminder-text="quest.due ? 'Date set' : 'Date'"
+    :is-recurring="!!quest.series_id"
     @contextmenu="onContextMenu"
     @update="store.updateQuest(quest.id, $event)"
     @complete="completeQuest"
@@ -121,6 +214,10 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     @open-reminder="reminderOpen = true"
     @cycle-priority="store.updateQuest(quest.id, { priority: quest.priority >= 4 ? 1 : quest.priority + 1 })"
     @more="onContextMenu"
+    @toggle-checklist-item="onToggleChecklistItem"
+    @add-checklist-item="onAddChecklistItem"
+    @edit-checklist-item-text="onEditChecklistItemText"
+    @remove-checklist-item="onRemoveChecklistItem"
   />
 
   <div v-else class="active-quest-card" @contextmenu="onContextMenu">
@@ -146,6 +243,16 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
           <span class="kebab-glyph"><span /></span>
         </button>
       </div>
+    </div>
+
+    <!-- Checklist (issue #128): checkable directly from the collapsed hero card. -->
+    <div v-if="renderFlags.checklist" class="active-quest-checklist" @click.stop>
+      <ChecklistEditor
+        :items="checklistItems"
+        mode="compact"
+        @toggle-item="onToggleChecklistItem"
+        @edit-item-text="onEditChecklistItemText"
+      />
     </div>
 
     <div class="active-quest-actions">
@@ -175,6 +282,13 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     :quest="quest"
     @close="reminderOpen = false"
     @save="onReminderSave"
+  />
+
+  <RecurrenceScopeSheet
+    v-if="pendingScopeAction"
+    :quest-title="pendingScopeAction.quest.title"
+    @close="pendingScopeAction = null"
+    @choose="onScopeChosen"
   />
 </template>
 
@@ -309,6 +423,16 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
 .kebab-glyph::before { content: ""; top: -7px; left: 0; }
 .kebab-glyph::after { content: ""; top: 7px; left: 0; }
 .kebab-glyph span { top: 0; left: 0; }
+
+.active-quest-checklist {
+  display: flex;
+  flex-direction: column;
+  max-height: 172px;
+  margin-top: 0.75rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
 
 .active-quest-actions {
   display: grid;
