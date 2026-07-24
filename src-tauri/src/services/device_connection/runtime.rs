@@ -438,6 +438,13 @@ pub(super) fn spawn_discovery_worker(
     broadcast_ports: Vec<u16>,
     space_sync_ws_port: u16,
 ) {
+    // Lets hermetic Sim-transport tests/E2E force the network transport to
+    // be genuinely unavailable (no mDNS, no UDP beacons), so fallback
+    // selection is exercised for real rather than raced against presence.
+    if std::env::var("FINI_DISCOVERY_DISABLED").ok().as_deref() == Some("1") {
+        return;
+    }
+
     spawn_mdns_worker(
         identity.clone(),
         runtime.clone(),

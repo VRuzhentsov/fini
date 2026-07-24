@@ -22,7 +22,8 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 - Pairing completion persists both peers as paired devices
 - Presence is refreshed independently from pairing state
 - Discovery metadata is untrusted and only used to find candidate peers/endpoints
-- Network and Bluetooth are independent transport providers; network remains preferred when both are available
+- Network and Bluetooth are independent transport providers behind a shared, transport-neutral peer protocol (`PeerFrame`); network remains preferred when both are available — see `docs/adr/0001-transport-neutral-peer-protocol.md`
+- At most one authenticated session may exist per paired peer at a time, on any transport (sticky handoff); a live session is never migrated mid-session to a different transport
 - Bluetooth is disabled by default for every Fini pair and can only be enabled explicitly per paired device
 - Bluetooth enablement stores only the peer Bluetooth address and the local verification time after the user action succeeds
 - OS Bluetooth pairing is a transport precondition only; Fini app pairing remains the trust boundary for pairing/control/sync messages
@@ -42,6 +43,7 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 ## Related Feature
 
 - `specs/space-sync/README.md`
+- `specs/e2e/transports.md` for the E2E topology-to-verification matrix
 
 ## Wiki Links
 

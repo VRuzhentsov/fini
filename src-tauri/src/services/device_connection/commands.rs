@@ -24,7 +24,8 @@ use crate::services::device_connection::types::{
 };
 use crate::services::device_connection::DeviceConnectionState;
 use crate::services::device_connection::{build_transport_statuses, TransportStatus};
-use crate::services::space_sync::types::WsMessage;
+use crate::services::space_sync::types::PeerFrame;
+use crate::services::transport::TransportKind;
 
 fn ws_url(addr: IpAddr, port: u16) -> String {
     match addr {
@@ -71,14 +72,22 @@ fn bluetooth_address_is_os_paired(address: &str) -> bool {
     false
 }
 
-fn send_pair_ws(addr: IpAddr, port: u16, msg: WsMessage) -> Result<(), String> {
+/// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/`PairComplete`).
+/// Independent of `transport::tcp_ws::TcpWsLink` (connect, send one frame,
+/// close — no need for a full `Link`), but MUST encode via the same
+/// `transport::codec::encode_frame` (envelope-wrapped) and the same `Message::Text`
+/// framing `TcpWsLink` reads, or `run_peer_gate` silently fails to parse the
+/// first frame.
+fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
     tauri::async_runtime::block_on(async move {
         let url = ws_url(addr, port);
         let (mut ws, _) = connect_async(&url)
             .await
             .map_err(|err| format!("connect pair websocket {url} failed: {err}"))?;
-        let text = serde_json::to_string(&msg)
-            .map_err(|err| format!("serialize pair websocket message failed: {err}"))?;
+        let bytes = crate::services::transport::codec::encode_frame(&msg)
+            .map_err(|err| format!("encode pair websocket message failed: {err}"))?;
+        let text = String::from_utf8(bytes)
+            .map_err(|err| format!("non-utf8 pair websocket message: {err}"))?;
         ws.send(Message::Text(text.into()))
             .await
             .map_err(|err| format!("send pair websocket message failed: {err}"))?;
@@ -175,7 +184,7 @@ pub fn device_connection_send_pair_request_impl(
     send_pair_ws(
         target_ip,
         target_port,
-        WsMessage::PairRequest(payload.clone()),
+        PeerFrame::PairRequest(payload.clone()),
     )?;
 
     if let Ok(mut guard) = state.runtime.lock() {
@@ -327,7 +336,7 @@ pub fn device_connection_pair_accept_request_impl(
         accepted_at: update.accepted_at.clone(),
     };
 
-    send_pair_ws(target_ip, to_ws_port, WsMessage::PairAccept(payload))?;
+    send_pair_ws(target_ip, to_ws_port, PeerFrame::PairAccept(payload))?;
 
     if let Ok(mut guard) = state.runtime.lock() {
         guard.tx_count += 1;
@@ -385,9 +394,10 @@ pub fn device_connection_pair_complete_request_impl(
         from_hostname: state.identity.hostname.clone(),
         to_device_id: to_device_id.clone(),
         paired_at: utc_now(),
+        key_material: None,
     };
 
-    send_pair_ws(target_ip, to_ws_port, WsMessage::PairComplete(payload))?;
+    send_pair_ws(target_ip, to_ws_port, PeerFrame::PairComplete(payload))?;
 
     let mut guard = state
         .runtime
@@ -757,6 +767,26 @@ pub fn device_connection_transport_statuses(
     device_connection_transport_statuses_impl(&mut conn, &state, peer_device_id)
 }
 
+pub fn device_connection_session_transport_impl(
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+) -> Option<TransportKind> {
+    state.session_kind(&peer_device_id)
+}
+
+/// Which transport (if any) the currently claimed session with a peer is
+/// using. Debug/test surface proving the sticky single-session invariant
+/// end-to-end through the real app binary — see
+/// `specs/e2e/actors/tests/peer-sync-over-sim.spec.ts`.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_session_transport(
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+) -> Option<TransportKind> {
+    device_connection_session_transport_impl(&state, peer_device_id)
+}
+
 pub fn device_connection_unpair_impl(
     conn: &mut SqliteConnection,
     peer_device_id: String,
@@ -805,6 +835,11 @@ mod tests {
     use super::*;
     use crate::services::db;
 
+    /// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global; tests that set
+    /// and clear it must not interleave with each other under the default
+    /// parallel test runner.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn paired_device_input(enabled: bool, address: Option<&str>) -> DeviceBluetoothTransportInput {
         DeviceBluetoothTransportInput {
             peer_device_id: "peer-a".to_string(),
@@ -833,6 +868,7 @@ mod tests {
 
     #[test]
     fn enabling_bluetooth_transport_requires_os_paired_address() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
         let mut conn = test_conn();
 
@@ -866,6 +902,7 @@ mod tests {
 
     #[test]
     fn disabling_bluetooth_transport_clears_reconnect_metadata() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
         let mut conn = test_conn();
         device_connection_set_bluetooth_transport_impl(

@@ -29,6 +29,7 @@ Per-pair space mapping lifecycle, sync session establishment, bootstrap transfer
 - Transport selection is peer-scoped and deterministic: network first, Bluetooth fallback only when explicitly enabled for that Fini pair and OS Bluetooth pairing is verified
 - SpaceSync consent is peer-and-space scoped; changing between network and Bluetooth must not create a new consent prompt for an already approved space
 - Network recovery after Bluetooth fallback keeps the current authenticated session until reconnect; the next session selection returns to network-first order
+- Session establishment enforces at most one authenticated session per peer regardless of transport, so a Bluetooth-fallback session can never duplicate or lose sync events by racing a network session
 - Visible sync status should converge for both peers after successful bootstrap/event transfer
 
 ## Primary UI Surfaces
@@ -40,6 +41,7 @@ Per-pair space mapping lifecycle, sync session establishment, bootstrap transfer
 
 - `specs/device-connect/README.md`
 - `specs/space/README.md`
+- `specs/e2e/transports.md` for the E2E topology-to-verification matrix
 
 ## Wiki Links
 

@@ -8,8 +8,10 @@ use tauri::State;
 use super::merge::incoming_wins;
 use super::outbox::{load_latest_event_for_entity, load_unacked_events_for_peer};
 use super::replay::{is_event_seen, mark_event_seen, record_ack};
-use super::types::{SyncEventEnvelope, WsMessage};
-use super::ws_client::ensure_peer_sessions;
+use super::types::{PeerFrame, SyncEventEnvelope};
+#[cfg(test)]
+use crate::services::transport::TransportKind;
+use crate::services::transport::{sim, tcp_ws};
 use crate::models::{CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space};
 use crate::schema::{
     focus_history, pair_space_mappings, paired_devices, quest_series, quests, spaces, sync_acks,
@@ -344,7 +346,7 @@ fn send_mapping_update_to_peer(
 ) -> Result<(), String> {
     if device_connection.push_to_peer(
         peer_device_id,
-        WsMessage::SpaceMappingUpdate {
+        PeerFrame::SpaceMappingUpdate {
             mapped_space_ids: mapped_space_ids.to_vec(),
             custom_spaces: custom_spaces.to_vec(),
             sent_at: utc_now(),
@@ -364,7 +366,7 @@ fn send_space_sync_end_to_peer(
 ) -> Result<(), String> {
     if device_connection.push_to_peer(
         peer_device_id,
-        WsMessage::SpaceSyncEnd {
+        PeerFrame::SpaceSyncEnd {
             space_id: space_id.to_string(),
             ended_at: ended_at.to_string(),
         },
@@ -380,7 +382,7 @@ fn send_sync_event_to_peer(
     peer_device_id: &str,
     event: &SyncEventEnvelope,
 ) -> Result<(), String> {
-    if device_connection.push_to_peer(peer_device_id, WsMessage::SyncEvent(event.clone())) {
+    if device_connection.push_to_peer(peer_device_id, PeerFrame::SyncEvent(event.clone())) {
         Ok(())
     } else {
         Err(format!("no active session for peer {peer_device_id}"))
@@ -394,7 +396,7 @@ fn send_sync_ack_to_peer(
 ) -> Result<(), String> {
     if device_connection.push_to_peer(
         peer_device_id,
-        WsMessage::Ack {
+        PeerFrame::Ack {
             event_id: event_id.to_string(),
         },
     ) {
@@ -1046,9 +1048,15 @@ pub fn space_sync_tick_impl(
         .load(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    // Ensure WS sessions are open for peers where we are the dialer
+    // Ensure a session is open for peers where we are the dialer: network
+    // first, Sim (Bluetooth-fallback role) only when network is unavailable.
     let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
-    ensure_peer_sessions(
+    tcp_ws::spawn_dial_loop(
+        device_connection,
+        device_connection.db_path.clone(),
+        &paired_peer_ids,
+    );
+    sim::spawn_fallback_dial_loop(
         device_connection,
         device_connection.db_path.clone(),
         &paired_peer_ids,
@@ -1104,7 +1112,7 @@ pub fn space_sync_tick_impl(
             .load(&mut *conn)
             .map_err(|e| e.to_string())?;
         for space_id in unsynced {
-            device_connection.push_to_peer(peer_device_id, WsMessage::BootstrapStart { space_id });
+            device_connection.push_to_peer(peer_device_id, PeerFrame::BootstrapStart { space_id });
         }
     }
 
@@ -1812,13 +1820,13 @@ mod tests {
 
         let device_connection = DeviceConnectionState::from_app_data_dir(&app_dir);
         let (tx, mut rx) = mpsc::channel(4);
-        device_connection.register_session("peer-a".to_string(), tx);
+        assert!(device_connection.try_claim_session("peer-a", TransportKind::TcpWs, tx));
 
         let tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
         assert_eq!(tick.sent_events, 0);
 
         while let Ok(sent) = rx.try_recv() {
-            if matches!(sent, WsMessage::SpaceMappingUpdate { .. }) {
+            if matches!(sent, PeerFrame::SpaceMappingUpdate { .. }) {
                 panic!("mapping snapshot should not be sent");
             }
         }

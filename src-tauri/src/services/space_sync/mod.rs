@@ -2,11 +2,8 @@ mod commands;
 mod merge;
 pub(crate) mod outbox;
 mod replay;
+pub(crate) mod session;
 pub mod types;
-pub(crate) mod ws_client;
-#[cfg(any(feature = "ui-plane", test))]
-pub(crate) mod ws_server;
-pub(crate) mod ws_session;
 
 #[cfg(any(feature = "ui-plane", test))]
 pub use commands::{
@@ -20,5 +17,3 @@ pub use commands::{
     space_sync_resolve_custom_space_mapping_impl, space_sync_status_impl, space_sync_tick_impl,
     space_sync_update_mappings_impl, SpaceResolutionMode,
 };
-#[cfg(any(feature = "ui-plane", test))]
-pub use ws_server::run_ws_server;

@@ -48,6 +48,7 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "r
 futures-util = "0.3"
 tokio-tungstenite = "0.26"
 tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 clap = { version = "4", features = ["derive"], optional = true }

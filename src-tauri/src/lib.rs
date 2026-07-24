@@ -23,7 +23,8 @@ use services::device_connection::{
     device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_save_paired_device, device_connection_send_pair_request,
-    device_connection_set_bluetooth_transport, device_connection_transport_statuses,
+    device_connection_session_transport, device_connection_set_bluetooth_transport,
+    device_connection_transport_statuses,
     device_connection_unpair, device_connection_update_last_seen, DeviceConnectionState,
 };
 #[cfg(feature = "ui-plane")]
@@ -54,10 +55,12 @@ use services::settings::{self, ThemeMode};
 use services::space::{create_space, delete_space, get_spaces, update_space};
 #[cfg(feature = "ui-plane")]
 use services::space_sync::{
-    run_ws_server, space_sync_apply_remote_mappings, space_sync_list_mappings,
+    space_sync_apply_remote_mappings, space_sync_list_mappings,
     space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
     space_sync_update_mappings,
 };
+#[cfg(feature = "ui-plane")]
+use services::transport::{sim, tcp_ws};
 #[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
@@ -283,7 +286,8 @@ pub fn run() {
 
             let data_dir = app_data_dir(&app_handle);
             let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
-            tauri::async_runtime::spawn(run_ws_server(dc_state.clone(), dc_state.db_path.clone()));
+            tauri::async_runtime::spawn(tcp_ws::run_server(dc_state.clone(), dc_state.db_path.clone()));
+            sim::maybe_spawn_server(dc_state.clone(), dc_state.db_path.clone());
             app.manage(dc_state);
             Ok(())
         })
@@ -322,6 +326,7 @@ pub fn run() {
             device_connection_debug_status,
             device_connection_get_paired_devices,
             device_connection_save_paired_device,
+            device_connection_session_transport,
             device_connection_set_bluetooth_transport,
             device_connection_transport_statuses,
             device_connection_unpair,

@@ -295,7 +295,8 @@ e2e-headed:
 	restore_capability; \
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors; \
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=sim FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-sim
 
 # Build/update the published headless runtime image locally.
 runtime-image:
@@ -307,6 +308,15 @@ runtime-smoke:
 	$(MAKE) require-container
 	$(CONTAINER_ENGINE) image inspect fini-runtime >/dev/null 2>&1 || $(CONTAINER_ENGINE) build --target runtime -t fini-runtime .
 	$(CONTAINER_ENGINE) run --rm fini-runtime --help
+
+# Real-Bluetooth transport verification: local/manual only, never CI (no
+# radio on GitHub-hosted runners). Lands with the real Bluetooth adapter —
+# see docs/adr/0001-transport-neutral-peer-protocol.md and
+# specs/e2e/transports.md.
+e2e-bt-local:
+	@echo "e2e-bt-local: real Bluetooth adapter not implemented yet (follow-up PR)." >&2; \
+	echo "This target will pair over real Bluetooth with LAN disabled once it lands." >&2; \
+	exit 1
 
 pre-release-check:
 	@set -eu; \
