@@ -143,7 +143,9 @@ pub(crate) async fn run_server(state: DeviceConnectionState, db_path: PathBuf, p
 /// Fallback dial loop: for every paired peer with no active session and no
 /// available network transport, try each configured Sim peer port. No-op
 /// unless `FINI_SIM_PEER_PORTS` is set. Playing the "Bluetooth fallback"
-/// role for this PR's test/E2E coverage — see module docs.
+/// role for this PR's test/E2E coverage — see module docs. Applies
+/// `should_dial_fallback_peer`'s deterministic dialer rule, mirroring
+/// `tcp_ws::spawn_dial_loop`/`should_dial_peer`.
 pub fn spawn_fallback_dial_loop(
     state: &DeviceConnectionState,
     db_path: PathBuf,
@@ -154,7 +156,12 @@ pub fn spawn_fallback_dial_loop(
         return;
     }
 
+    let my_id = state.identity.device_id.clone();
+
     for peer_id in paired_peer_ids {
+        if !should_dial_fallback_peer(&my_id, peer_id) {
+            continue;
+        }
         let order = crate::services::transport::selection::select_dial_order(
             state.network_peer_available(peer_id),
             true,
@@ -171,6 +178,19 @@ pub fn spawn_fallback_dial_loop(
             dial_with_backoff(state, db_path, peer_id, ports).await;
         });
     }
+}
+
+/// Deterministic dialer rule for the fallback role, mirroring
+/// `tcp_ws::should_dial_peer`'s `self.device_id < peer.device_id`: exactly
+/// one side of a pair ever attempts to dial. Without this, both peers can
+/// dial each other in the same tick — each accepts the other's inbound
+/// connection and claims a session on it, then each side's own outbound
+/// dial loses that claim race (already claimed by the inbound) and drops
+/// its outbound `Link`, which — since both ends of one TCP connection share
+/// a socket — tears down the peer's just-claimed inbound session too,
+/// leaving both disconnected until a tick happens not to race.
+fn should_dial_fallback_peer(my_id: &str, peer_id: &str) -> bool {
+    my_id < peer_id
 }
 
 async fn dial_with_backoff(
@@ -210,5 +230,17 @@ async fn dial_with_backoff(
 
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(max_delay);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_dial_fallback_peer_only_from_the_lower_device_id() {
+        assert!(should_dial_fallback_peer("local-a", "peer-b"));
+        assert!(!should_dial_fallback_peer("peer-b", "local-a"));
+        assert!(!should_dial_fallback_peer("same-id", "same-id"));
     }
 }

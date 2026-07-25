@@ -65,7 +65,13 @@ fn bluetooth_address_is_os_paired(address: &str) -> bool {
 
     #[cfg(target_os = "android")]
     {
-        return true;
+        // Fail closed: no bonded-device query is wired up yet (lands with
+        // the real Android Bluetooth adapter, PR B). Unconditionally
+        // returning true here would let any address be marked OS-paired
+        // without ever checking Android's actual bonded-device list,
+        // violating the "OS Bluetooth pairing is a transport precondition"
+        // rule this function exists to enforce.
+        return false;
     }
 
     #[allow(unreachable_code)]

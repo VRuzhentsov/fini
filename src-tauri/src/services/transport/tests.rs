@@ -357,3 +357,12 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     assert_eq!(outgoing[0].request_id, "req-round-trip");
     assert!(outgoing[0].code.chars().all(|ch| ch.is_ascii_digit()));
 }
+
+// The mutual-dial race that `sim::should_dial_fallback_peer`'s deterministic
+// dialer rule fixes is unit-tested directly there, mirroring
+// `tcp_ws::should_dial_peer`'s own test — reproducing the actual network
+// race end-to-end in an integration test proved unreliable (the exact
+// collision needs both connects landing in the same async poll step, and a
+// sleep-driven loopback test can't force that deterministically) without
+// adding disproportionate complexity for what a pure function test already
+// covers exactly.
