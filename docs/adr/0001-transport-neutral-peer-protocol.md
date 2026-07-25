@@ -167,3 +167,18 @@ runners, which cannot run real Bluetooth radios:
 - The network transport's gate/session code is shared with every future
   adapter — a bug fixed in `run_peer_gate`/`run_session` is fixed for all
   transports at once, not per-adapter.
+- **Breaking wire-format change, no compatibility shim.** The already-released
+  v0.2.2 build's wire format was a bare, untagged `WsMessage` JSON frame;
+  this PR's `run_peer_gate`/`codec::decode_frame` only accept the new
+  `FrameEnvelope { v, enc, payload }`. A device still on v0.2.2 and a device
+  on this release or newer will discover and dial each other (the discovery
+  protocol string is unchanged) but every pairing/auth frame will be
+  silently rejected, so an existing pair stops syncing until **both**
+  devices update. This is an accepted tradeoff, not an oversight: legacy
+  bare-JSON decoding or protocol version negotiation was deliberately not
+  built for it. Rationale — this is pre-1.0 (0.2.x) personal-device-sync
+  software where the user controls both ends of every pair, so a
+  coordinated-update requirement is a one-time cost, not an ongoing one. If
+  a staggered/independently-updating-clients scenario becomes real, protocol
+  version negotiation is a deliberate follow-up ticket against this same
+  envelope, not something to retrofit silently here.

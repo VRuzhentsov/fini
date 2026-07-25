@@ -54,12 +54,27 @@ pub fn select_transport_endpoint(
     })
 }
 
+/// No real Bluetooth `Transport`/`Link` adapter is registered yet — this PR
+/// only wires up `tcp_ws` and `sim` in `lib.rs` (see
+/// `docs/adr/0001-transport-neutral-peer-protocol.md`); the real adapter is
+/// a stacked follow-up PR. Until it lands, no Bluetooth session can ever be
+/// established, so status must never report `available`/`preferred`
+/// regardless of stored metadata — otherwise the Device view would promise
+/// a fallback that silently cannot sync. Flip to `true` when the adapter
+/// lands.
+const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = false;
+
 pub fn build_transport_statuses(
     network_available: bool,
     bluetooth_enabled: bool,
     bluetooth_has_metadata: bool,
     bluetooth_os_paired: bool,
 ) -> Vec<TransportStatus> {
+    let bluetooth_ready = BLUETOOTH_ADAPTER_IMPLEMENTED
+        && bluetooth_enabled
+        && bluetooth_has_metadata
+        && bluetooth_os_paired;
+
     vec![
         TransportStatus {
             kind: TransportKind::Network,
@@ -76,11 +91,8 @@ pub fn build_transport_statuses(
         TransportStatus {
             kind: TransportKind::Bluetooth,
             enabled: bluetooth_enabled,
-            available: bluetooth_enabled && bluetooth_has_metadata && bluetooth_os_paired,
-            preferred: !network_available
-                && bluetooth_enabled
-                && bluetooth_has_metadata
-                && bluetooth_os_paired,
+            available: bluetooth_ready,
+            preferred: !network_available && bluetooth_ready,
             detail: bluetooth_status_detail(
                 bluetooth_enabled,
                 bluetooth_has_metadata,
@@ -91,6 +103,9 @@ pub fn build_transport_statuses(
 }
 
 fn bluetooth_status_detail(enabled: bool, has_metadata: bool, os_paired: bool) -> String {
+    if !BLUETOOTH_ADAPTER_IMPLEMENTED {
+        return "Bluetooth transport not implemented yet".to_string();
+    }
     if !enabled {
         return "Disabled for this Fini pair".to_string();
     }
@@ -172,20 +187,40 @@ mod tests {
     }
 
     #[test]
-    fn status_marks_network_preferred_until_it_is_unavailable() {
+    fn status_marks_network_preferred_when_available() {
         let both = build_transport_statuses(true, true, true, true);
         assert!(both
             .iter()
             .any(|status| status.kind == TransportKind::Network && status.preferred));
-        assert!(both
-            .iter()
-            .any(|status| status.kind == TransportKind::Bluetooth
-                && status.available
-                && !status.preferred));
 
         let fallback = build_transport_statuses(false, true, true, true);
-        assert!(fallback
+        assert!(!fallback
             .iter()
-            .any(|status| status.kind == TransportKind::Bluetooth && status.preferred));
+            .any(|status| status.kind == TransportKind::Network && status.preferred));
+    }
+
+    /// No Bluetooth `Transport`/`Link` adapter is registered in this PR
+    /// (`tcp_ws`/`sim` only — see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc
+    /// comment), so a Bluetooth session can never actually establish.
+    /// Status must report `available`/`preferred: false` regardless of how
+    /// complete the stored enablement metadata is, or the Device view would
+    /// promise a fallback that silently cannot sync.
+    #[test]
+    fn bluetooth_is_never_reported_available_without_a_registered_adapter() {
+        // Every combination that used to make the old (buggy) heuristic
+        // report Bluetooth as available/preferred:
+        for (network_available, enabled, has_metadata, os_paired) in [
+            (true, true, true, true),
+            (false, true, true, true),
+        ] {
+            let statuses =
+                build_transport_statuses(network_available, enabled, has_metadata, os_paired);
+            let bluetooth = statuses
+                .iter()
+                .find(|status| status.kind == TransportKind::Bluetooth)
+                .expect("bluetooth status row");
+            assert!(!bluetooth.available, "bluetooth must not report available");
+            assert!(!bluetooth.preferred, "bluetooth must not report preferred");
+        }
     }
 }

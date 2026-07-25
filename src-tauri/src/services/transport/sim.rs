@@ -166,8 +166,14 @@ pub fn spawn_fallback_dial_loop(
             state.network_peer_available(peer_id),
             true,
         );
-        let sim_is_selected = order.contains(&TransportKind::Sim);
-        if state.has_session(peer_id) || !sim_is_selected {
+        // Network-first: only start a fallback dial when Sim is the
+        // *preferred* (first) choice, i.e. network is genuinely
+        // unavailable — not merely present somewhere in the order. Checking
+        // `contains` instead of `first` would race the fallback dial
+        // against the network dial whenever both are configured, letting
+        // Sim win the claim despite network being available.
+        let sim_is_preferred = order.first() == Some(&TransportKind::Sim);
+        if state.has_session(peer_id) || !sim_is_preferred {
             continue;
         }
         let state = state.clone();
