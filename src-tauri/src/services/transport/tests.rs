@@ -358,6 +358,48 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     assert!(outgoing[0].code.chars().all(|ch| ch.is_ascii_digit()));
 }
 
+/// Regression test: discovery presence alone must not make selection treat
+/// a peer as network-available forever. `network_peer_available` only
+/// reflects that beacons are arriving; `tcp_ws::dial_with_backoff` retries
+/// a connect/auth failure indefinitely without giving up as long as
+/// presence holds, so without `network_effectively_available` factoring in
+/// bounded failures, `sim::spawn_fallback_dial_loop` would never engage for
+/// a peer whose WebSocket port is permanently unreachable (bind failure,
+/// firewall) but who is still discoverable.
+#[test]
+fn network_effectively_available_demotes_after_repeated_tcp_failures() {
+    use crate::services::transport::selection::NETWORK_UNRESPONSIVE_THRESHOLD;
+
+    let (state, _db) = server_state("transport-network-effectively-available");
+
+    // No presence at all: never effectively available regardless of failures
+    // (this test can't inject synthetic presence — that's owned by the
+    // discovery worker's internal state — so it verifies the failure-count
+    // threshold mechanics directly; presence itself is exercised end-to-end
+    // by the existing discovery/pairing tests).
+    assert!(!state.network_effectively_available("peer-x"));
+
+    for _ in 0..(NETWORK_UNRESPONSIVE_THRESHOLD - 1) {
+        state.record_tcp_dial_failure("peer-x");
+    }
+    assert_eq!(
+        state.tcp_dial_failure_count("peer-x"),
+        NETWORK_UNRESPONSIVE_THRESHOLD - 1,
+        "below threshold yet"
+    );
+
+    state.record_tcp_dial_failure("peer-x");
+    assert_eq!(
+        state.tcp_dial_failure_count("peer-x"),
+        NETWORK_UNRESPONSIVE_THRESHOLD,
+        "at threshold"
+    );
+
+    // A later success resets the counter (transient blip, not permanent).
+    state.record_tcp_dial_success("peer-x");
+    assert_eq!(state.tcp_dial_failure_count("peer-x"), 0);
+}
+
 // The mutual-dial race that `sim::should_dial_fallback_peer`'s deterministic
 // dialer rule fixes is unit-tested directly there, mirroring
 // `tcp_ws::should_dial_peer`'s own test — reproducing the actual network

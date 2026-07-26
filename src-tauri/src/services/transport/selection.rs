@@ -31,6 +31,12 @@ pub type LifecycleBus = tokio::sync::broadcast::Sender<LifecycleEvent>;
 
 const LIFECYCLE_BUS_CAPACITY: usize = 64;
 
+/// Consecutive TCP-WS dial/auth failures at or above which a presenced peer
+/// is treated as not effectively network-available for transport selection
+/// (see `DeviceConnectionState::network_effectively_available`) — presence
+/// alone doesn't mean the WebSocket port is reachable.
+pub const NETWORK_UNRESPONSIVE_THRESHOLD: u32 = 3;
+
 pub fn new_lifecycle_bus() -> LifecycleBus {
     let (tx, _rx) = tokio::sync::broadcast::channel(LIFECYCLE_BUS_CAPACITY);
     tx

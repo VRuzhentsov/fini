@@ -209,4 +209,13 @@ pub(super) struct DiscoveryRuntime {
     /// lifecycle bus can report which transport is active without a second
     /// lock. See `DeviceConnectionState::try_claim_session`.
     pub peer_session_kind: HashMap<String, TransportKind>,
+    /// Consecutive TCP-WS connect/auth failures per peer, reset on success.
+    /// Discovery presence alone (`presence`, above) only means a peer's
+    /// beacons are reaching us — it says nothing about whether their
+    /// WebSocket port is actually reachable (bind failure, firewall). This
+    /// is what lets `network_effectively_available` distinguish "present"
+    /// from "actually connectable" so the Sim fallback role can engage when
+    /// the network transport is present-but-unusable, not just absent. See
+    /// `DeviceConnectionState::network_effectively_available`.
+    pub tcp_dial_failures: HashMap<String, u32>,
 }

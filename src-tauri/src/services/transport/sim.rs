@@ -162,8 +162,14 @@ pub fn spawn_fallback_dial_loop(
         if !should_dial_fallback_peer(&my_id, peer_id) {
             continue;
         }
+        // network_effectively_available, not raw presence: a peer's
+        // discovery beacons can keep arriving while its WebSocket port is
+        // permanently unreachable (bind failure, firewall) —
+        // tcp_ws::dial_with_backoff retries that forever without giving up,
+        // so gating on presence alone would mean Sim never engages even
+        // though the network transport can never actually work here.
         let order = crate::services::transport::selection::select_dial_order(
-            state.network_peer_available(peer_id),
+            state.network_effectively_available(peer_id),
             true,
         );
         // Network-first: only start a fallback dial when Sim is the
@@ -209,7 +215,7 @@ async fn dial_with_backoff(
     let max_delay = Duration::from_secs(15);
 
     loop {
-        if state.has_session(&peer_id) || state.network_peer_available(&peer_id) {
+        if state.has_session(&peer_id) || state.network_effectively_available(&peer_id) {
             return;
         }
 

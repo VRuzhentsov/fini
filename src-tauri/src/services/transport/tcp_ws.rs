@@ -257,6 +257,7 @@ async fn dial_with_backoff(
                 {
                     Ok(()) => {
                         eprintln!("[transport][tcp_ws] auth OK with {peer_id}");
+                        state.record_tcp_dial_success(&peer_id);
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
                         if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx) {
                             session::run_session(
@@ -276,11 +277,16 @@ async fn dial_with_backoff(
                         if err.starts_with("auth rejected") {
                             return; // not paired; don't retry
                         }
+                        // Connection-level failure (link dropped mid-auth,
+                        // etc.), not a rejection — counts toward "network
+                        // present but not actually reachable."
+                        state.record_tcp_dial_failure(&peer_id);
                     }
                 }
             }
             Err(err) => {
                 eprintln!("[transport][tcp_ws] connect to {peer_id} failed: {err}");
+                state.record_tcp_dial_failure(&peer_id);
             }
         }
 

@@ -407,10 +407,55 @@ impl DeviceConnectionState {
             .collect()
     }
 
+    /// Raw discovery presence: is this peer's beacon reaching us right now?
+    /// This says nothing about whether their WebSocket port is actually
+    /// reachable — see `network_effectively_available` for the check that
+    /// matters for transport *selection*.
     pub fn network_peer_available(&self, peer_device_id: &str) -> bool {
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
         guard.presence.contains_key(peer_device_id)
+    }
+
+    pub fn record_tcp_dial_success(&self, peer_device_id: &str) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.tcp_dial_failures.remove(peer_device_id);
+        }
+    }
+
+    pub fn record_tcp_dial_failure(&self, peer_device_id: &str) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            *guard
+                .tcp_dial_failures
+                .entry(peer_device_id.to_string())
+                .or_insert(0) += 1;
+        }
+    }
+
+    pub fn tcp_dial_failure_count(&self, peer_device_id: &str) -> u32 {
+        let Ok(guard) = self.runtime.lock() else {
+            return 0;
+        };
+        guard
+            .tcp_dial_failures
+            .get(peer_device_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Network availability for *transport selection* purposes: present
+    /// (discoverable) **and** not stuck failing to actually connect.
+    /// Presence alone (`network_peer_available`) can stay true while the
+    /// peer's WebSocket port is unreachable (bind failure, firewall) —
+    /// `tcp_ws::dial_with_backoff` retries forever in that case and never
+    /// gives up, so without this check `select_dial_order` would forever
+    /// treat network as available and the Sim fallback role would never
+    /// engage, even though the network transport can never actually work
+    /// for this peer.
+    pub fn network_effectively_available(&self, peer_device_id: &str) -> bool {
+        self.network_peer_available(peer_device_id)
+            && self.tcp_dial_failure_count(peer_device_id)
+                < crate::services::transport::selection::NETWORK_UNRESPONSIVE_THRESHOLD
     }
 }
