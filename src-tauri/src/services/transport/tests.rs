@@ -18,7 +18,8 @@ use crate::schema::paired_devices;
 use crate::services::db::{open_db_at_path, temp_db_path};
 use crate::services::device_connection::DeviceConnectionState;
 use crate::services::space_sync::session;
-use crate::services::transport::{sim, tcp_ws, Transport, TransportKind};
+use crate::services::space_sync::types::PeerFrame;
+use crate::services::transport::{recv_frame, send_frame, sim, tcp_ws, Link, Transport, TransportKind};
 
 async fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -398,6 +399,69 @@ fn network_effectively_available_demotes_after_repeated_tcp_failures() {
     // A later success resets the counter (transient blip, not permanent).
     state.record_tcp_dial_success("peer-x");
     assert_eq!(state.tcp_dial_failure_count("peer-x"), 0);
+}
+
+/// Regression test: `tcp_dial_failures` must not outlive the Sim session it
+/// caused. `tcp_ws::dial_with_backoff` stops updating the counter the
+/// instant any session exists (it gives up as soon as `has_session` is
+/// true), so once a Sim fallback session claims, the failure count is
+/// frozen at whatever it was — stale by the time that session eventually
+/// ends. Without resetting it there, the *next* establishment cycle would
+/// see a stale "network unresponsive" verdict and start a fresh Sim
+/// fallback dial concurrently with a fresh tcp_ws dial, racing for the
+/// claim despite the underlying network condition being unknown/possibly
+/// recovered — contrary to "the next session selection returns to
+/// network-first order" (`specs/space-sync/README.md`).
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_failure_count_resets_after_a_sim_session_ends() {
+    let (dialer, dialer_db) = server_state("transport-sim-failure-reset-dialer");
+    let peer_id = "peer-fake-server".to_string();
+    seed_paired_device(&dialer_db, &peer_id);
+
+    // Pre-seed failures as if tcp_ws had already given up on this peer,
+    // triggering the Sim fallback role.
+    for _ in 0..(3 + 2) {
+        dialer.record_tcp_dial_failure(&peer_id);
+    }
+    assert!(dialer.tcp_dial_failure_count(&peer_id) >= 3);
+
+    // A minimal fake "server": accept one connection, speak just enough of
+    // the peer protocol to authenticate, then close — simulating the Sim
+    // session ending shortly after establishing, without needing the full
+    // sim::run_server accept loop (this test only has one dialer, so there's
+    // no mutual-dial race to worry about — see should_dial_fallback_peer's
+    // own direct test for that).
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+        if let Some(Ok(PeerFrame::Auth { .. })) = recv_frame(link.as_mut()).await {
+            let _ = send_frame(link.as_mut(), &PeerFrame::AuthOk).await;
+        }
+        // link drops here, closing the connection right after handshake.
+    });
+
+    std::env::set_var("FINI_SIM_PEER_PORTS", port.to_string());
+    let paired_peer_ids: std::collections::HashSet<String> = [peer_id.clone()].into_iter().collect();
+    sim::spawn_fallback_dial_loop(&dialer, dialer_db.clone(), &paired_peer_ids);
+    std::env::remove_var("FINI_SIM_PEER_PORTS");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut reset = false;
+    while tokio::time::Instant::now() < deadline {
+        if dialer.tcp_dial_failure_count(&peer_id) == 0 {
+            reset = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        reset,
+        "tcp_dial_failures should be cleared once the Sim session it caused ends"
+    );
 }
 
 // The mutual-dial race that `sim::should_dial_fallback_peer`'s deterministic

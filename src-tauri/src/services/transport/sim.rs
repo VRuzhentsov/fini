@@ -32,7 +32,11 @@ pub struct SimLink {
 }
 
 impl SimLink {
-    fn new(stream: TcpStream) -> Self {
+    /// `pub(crate)`, not private: `transport::tests` constructs one
+    /// directly from an accepted `TcpStream` to act as a controlled fake
+    /// peer in the TCP-failure-reset regression test, without needing the
+    /// full `run_server` accept loop.
+    pub(crate) fn new(stream: TcpStream) -> Self {
         Self { stream }
     }
 }
@@ -233,6 +237,16 @@ async fn dial_with_backoff(
                         session::run_session(link, rx, state.clone(), db_path.clone(), peer_id.clone())
                             .await;
                         eprintln!("[transport][sim] session with {peer_id} ended");
+                        // tcp_ws::dial_with_backoff gives up (and stops
+                        // updating the failure counter) the instant any
+                        // session exists, so tcp_dial_failures is frozen at
+                        // whatever it was when this Sim session claimed —
+                        // stale by the time it ends, however long later that
+                        // is. Clear it here so the next establishment cycle
+                        // gets an uncontested, network-first attempt rather
+                        // than racing a fresh tcp_ws dial against a Sim
+                        // fallback still armed by a stale failure count.
+                        state.record_tcp_dial_success(&peer_id);
                     }
                     return;
                 }
