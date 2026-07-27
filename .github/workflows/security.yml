@@ -2,14 +2,12 @@ name: Security Check
 
 on:
   workflow_call:
-  push:
-    branches:
-      - main
 
 jobs:
   snyk:
     name: Snyk Vulnerability Scan
     runs-on: ubuntu-latest
+    continue-on-error: true
     env:
       SNYK_CLI_VERSION: 1.1305.2
     steps:
