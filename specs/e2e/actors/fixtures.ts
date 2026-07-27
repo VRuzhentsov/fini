@@ -49,6 +49,21 @@ function actorSlugs(): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Which transport actors use to sync. 'network' (default) is the real
+ * WebSocket transport used by every other actor suite. 'sim' spawns actors
+ * with the network transport made genuinely unavailable
+ * (`FINI_DISCOVERY_DISABLED=1` — no mDNS, no UDP presence) and the Sim
+ * transport configured instead, so fallback/selection is proven against a
+ * real second transport rather than raced against presence timing. See
+ * `specs/e2e/transports.md`.
+ */
+export type ActorTransport = 'network' | 'sim';
+
+function actorTransport(): ActorTransport {
+  return process.env.FINI_E2E_TRANSPORT === 'sim' ? 'sim' : 'network';
+}
+
 function resolveAppBinaryPath(): string {
   const binary = process.env.FINI_APP_BINARY ?? DEFAULT_APP_BINARY;
   if (!existsSync(binary)) {
@@ -135,9 +150,22 @@ function spawnActorProcess(
   const discoveryPort = baseDiscoveryPort + index * 2;
   const wsPort = discoveryPort + 1;
   const peerPorts = slugs.map((_, peerIndex) => String(baseDiscoveryPort + peerIndex * 2)).join(',');
+  const simBasePort = baseDiscoveryPort + slugs.length * 2 + 1000;
+  const simPort = simBasePort + index;
+  const peerSimPorts = slugs.map((_, peerIndex) => String(simBasePort + peerIndex)).join(',');
+  const transport = actorTransport();
 
   mkdirSync(dataDir, { recursive: true });
   rmSync(socketPath, { force: true });
+
+  const transportEnv: Record<string, string> =
+    transport === 'sim'
+      ? {
+          FINI_DISCOVERY_DISABLED: '1',
+          FINI_SIM_TRANSPORT_PORT: String(simPort),
+          FINI_SIM_PEER_PORTS: peerSimPorts,
+        }
+      : {};
 
   const child = spawn(binaryPath, [], {
     env: {
@@ -155,6 +183,7 @@ function spawnActorProcess(
       HOSTNAME: slug,
       TZ: 'UTC',
       XDG_DATA_HOME: dataDir,
+      ...transportEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

@@ -34,6 +34,9 @@ describe("DeviceView mapped spaces sync labels", () => {
         paired_at: "2026-04-07T11:00:00.000Z",
         last_seen_at: "2026-04-07T11:05:00.000Z",
         pair_state: "paired",
+        bluetooth_enabled: true,
+        bluetooth_address: "AA:BB:CC:DD:EE:FF",
+        bluetooth_last_verified_at: "2026-04-07T11:01:00.000Z",
       }),
       isDeviceOnline: jest.fn().mockReturnValue(true),
       getSpaceSyncStatus: jest.fn().mockReturnValue({
@@ -53,11 +56,29 @@ describe("DeviceView mapped spaces sync labels", () => {
       }),
       getMappedSpaceIds: jest.fn().mockReturnValue(["1", "2", "foo-space-1"]),
       getUnresolvedCustomSpaces: jest.fn().mockReturnValue([]),
+      getTransportStatuses: jest.fn().mockReturnValue([
+        {
+          kind: "network",
+          enabled: true,
+          available: true,
+          preferred: true,
+          detail: "Available",
+        },
+        {
+          kind: "bluetooth",
+          enabled: true,
+          available: true,
+          preferred: false,
+          detail: "Available for fallback",
+        },
+      ]),
       shortDeviceId: jest.fn().mockReturnValue("ce-123"),
       hydrate: jest.fn().mockResolvedValue(undefined),
       runSpaceSyncTick: jest.fn().mockResolvedValue(undefined),
       loadMappedSpaces: jest.fn().mockResolvedValue(["1", "2", "foo-space-1"]),
       refreshSpaceSyncStatus: jest.fn().mockResolvedValue(undefined),
+      refreshTransportStatuses: jest.fn().mockResolvedValue(undefined),
+      setBluetoothTransport: jest.fn().mockResolvedValue(undefined),
       saveMappedSpaces: jest.fn().mockResolvedValue(["1", "2", "foo-space-1"]),
       resolveCustomSpaceMapping: jest.fn().mockResolvedValue(undefined),
       unpairDevice: jest.fn().mockResolvedValue(undefined),
@@ -121,5 +142,24 @@ describe("DeviceView mapped spaces sync labels", () => {
     expect(wrapper.find('span[title="1"]').exists()).toBe(false);
     expect(wrapper.find('span[title="2"]').exists()).toBe(false);
     expect(wrapper.find('span[title="foo-space-1"]').exists()).toBe(true);
+  });
+
+  it("shows separate network and Bluetooth transport rows", async () => {
+    const wrapper = mount(DeviceView, {
+      global: {
+        stubs: {
+          "router-link": { template: "<a><slot /></a>" },
+        },
+      },
+    });
+
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].text()).toContain("Network");
+    expect(rows[0].text()).toContain("preferred");
+    expect(rows[1].text()).toContain("Bluetooth");
+    expect(rows[1].text()).toContain("Available for fallback");
   });
 });
