@@ -66,13 +66,27 @@ async fn backend() -> Result<Arc<dyn Backend>, String> {
     // rest of the process's life, even after the adapter comes back —
     // `get_or_try_init` instead leaves the cell empty on error, so the
     // next call genuinely retries construction.
+    // Bounded: `LinuxBackend::new()` opens a D-Bus system-bus session and
+    // talks to BlueZ over it. On a machine with no `bluetoothd` running at
+    // all (headless CI containers, minimal installs) there's nothing wrong
+    // locally, but D-Bus's own service-activation/name-owner-wait semantics
+    // can leave that call pending far longer than this transport is worth
+    // blocking anything on — this runs at app startup via
+    // `tauri::async_runtime::spawn`, so an unbounded wait here would tie up
+    // an async worker thread for however long that takes. A timeout turns
+    // "no adapter reachable" into a fast, retryable failure instead.
+    const BACKEND_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+
     static BACKEND: OnceCell<Arc<dyn Backend>> = OnceCell::const_new();
     BACKEND
         .get_or_try_init(|| async {
-            LinuxBackend::new()
-                .await
-                .map(|backend| Arc::new(backend) as Arc<dyn Backend>)
-                .map_err(|err| err.to_string())
+            match tokio::time::timeout(BACKEND_INIT_TIMEOUT, LinuxBackend::new()).await {
+                Ok(Ok(backend)) => Ok(Arc::new(backend) as Arc<dyn Backend>),
+                Ok(Err(err)) => Err(err.to_string()),
+                Err(_) => Err(format!(
+                    "timed out after {BACKEND_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
+                )),
+            }
         })
         .await
         .map(Arc::clone)
