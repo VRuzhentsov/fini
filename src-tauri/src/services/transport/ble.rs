@@ -20,8 +20,9 @@
 //! `device_connection::commands::bluetooth_address_is_os_paired` already
 //! checks for the enable command.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -235,14 +236,33 @@ pub fn spawn_dial_loop(
         if state.network_effectively_available(peer_id) {
             continue;
         }
+        // One retry loop per peer, not one per tick: `space_sync_tick`
+        // (and therefore this function) runs every few seconds from the
+        // frontend, and `dial_with_backoff` itself already loops with
+        // backoff until a session claims or the peer stops being
+        // eligible. Without this guard, every tick while a peer stays
+        // unreachable would spawn *another* concurrent retry loop for the
+        // same peer on top of the ones already running — unbounded tasks
+        // and increasingly concurrent connection attempts to one address.
+        if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
+            continue;
+        }
         let state = state.clone();
         let db_path = db_path.clone();
         let peer_id = peer_id.clone();
         let address = address.clone();
         tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id, address).await;
+            dial_with_backoff(state, db_path, peer_id.clone(), address).await;
+            in_flight_dials().lock().unwrap().remove(&peer_id);
         });
     }
+}
+
+/// Peers with a `dial_with_backoff` task currently running. See the doc
+/// comment on the guard in `spawn_dial_loop` for why this exists.
+fn in_flight_dials() -> &'static StdMutex<HashSet<String>> {
+    static IN_FLIGHT: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+    IN_FLIGHT.get_or_init(|| StdMutex::new(HashSet::new()))
 }
 
 /// Deterministic dialer rule, mirroring `tcp_ws::should_dial_peer`/
