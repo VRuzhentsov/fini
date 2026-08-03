@@ -13,6 +13,7 @@ finish-args:
   - --filesystem=home
   - --talk-name=org.freedesktop.Flatpak
   - --talk-name=org.freedesktop.Notifications
+  - --system-talk-name=org.bluez
 
 modules:
   - name: fini

@@ -52,7 +52,23 @@ fn bluetooth_address_is_os_paired(address: &str) -> bool {
 
     #[cfg(target_os = "linux")]
     {
-        return std::process::Command::new("bluetoothctl")
+        // Inside the Flatpak sandbox, `bluetoothctl` and the system D-Bus
+        // it needs aren't reachable directly (the GNOME runtime doesn't
+        // bundle the binary, and its own D-Bus proxy is per-app/session,
+        // not the host's `bluetoothd`). Route through `flatpak-spawn
+        // --host` instead, the same pattern already used elsewhere in this
+        // codebase (see `lib.rs`'s `FLATPAK_ID` check) — it runs the
+        // command on the host, where the real `bluetoothctl` and its
+        // system-bus connection exist, using the `--talk-name=org.freedesktop.Flatpak`
+        // permission the manifest already grants.
+        let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
+            let mut command = std::process::Command::new("flatpak-spawn");
+            command.arg("--host").arg("bluetoothctl");
+            command
+        } else {
+            std::process::Command::new("bluetoothctl")
+        };
+        return command
             .arg("info")
             .arg(address)
             .output()

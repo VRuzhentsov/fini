@@ -56,16 +56,24 @@ fn datagram_config() -> DatagramConfig {
 /// machine with no/unpowered Bluetooth adapter never fails app startup over
 /// a transport most sessions won't use.
 async fn backend() -> Result<Arc<dyn Backend>, String> {
-    static BACKEND: OnceCell<Result<Arc<dyn Backend>, String>> = OnceCell::const_new();
+    // `get_or_try_init`, not `get_or_init` over a cached `Result`: the
+    // latter permanently bakes in whatever the *first* call returned,
+    // success or failure. If Fini starts while Bluetooth is off, BlueZ is
+    // restarting, or the adapter is briefly unavailable, that first
+    // failure would be replayed to every later dial/serve attempt for the
+    // rest of the process's life, even after the adapter comes back —
+    // `get_or_try_init` instead leaves the cell empty on error, so the
+    // next call genuinely retries construction.
+    static BACKEND: OnceCell<Arc<dyn Backend>> = OnceCell::const_new();
     BACKEND
-        .get_or_init(|| async {
+        .get_or_try_init(|| async {
             LinuxBackend::new()
                 .await
                 .map(|backend| Arc::new(backend) as Arc<dyn Backend>)
                 .map_err(|err| err.to_string())
         })
         .await
-        .clone()
+        .map(Arc::clone)
 }
 
 pub struct BleLink {
