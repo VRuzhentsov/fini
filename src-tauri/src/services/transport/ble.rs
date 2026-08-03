@@ -31,7 +31,8 @@ use ble_gatt::{Backend, CharacteristicUuid, PeerAddress, ServiceUuid};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
-use crate::services::device_connection::DeviceConnectionState;
+use crate::services::db::open_db_at_path;
+use crate::services::device_connection::{bluetooth_dial_candidates, DeviceConnectionState};
 use crate::services::space_sync::session;
 use crate::services::transport::{BoxDialFuture, Link, Transport, TransportKind};
 
@@ -149,31 +150,62 @@ impl Transport for BleTransport {
 pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     use futures_util::StreamExt;
 
-    let backend = match backend().await {
-        Ok(backend) => backend,
-        Err(err) => {
-            eprintln!("[transport][ble] adapter unavailable, Bluetooth transport disabled: {err}");
-            return;
-        }
-    };
-    if !backend.capabilities().await.peripheral {
-        eprintln!("[transport][ble] adapter has no peripheral support; central-only for this device");
-        return;
-    }
-    let mut incoming = match datagram::serve(backend, &datagram_config()).await {
-        Ok(stream) => stream,
-        Err(err) => {
-            eprintln!("[transport][ble] advertise failed: {err}");
-            return;
-        }
-    };
-    eprintln!("[transport][ble] advertising, awaiting centrals");
+    // Retried with backoff, not returned-from-once: `lib.rs` spawns this
+    // exactly once at startup, so an early failure here (adapter off,
+    // BlueZ restarting, briefly unavailable) used to end the peripheral
+    // role for the rest of the process's life even after `backend()`
+    // itself became able to retry. If this device also has the higher
+    // device id, the deterministic dial rule means it never dials out
+    // either — Bluetooth would be unusable until restart. Looping means
+    // enabling Bluetooth later (or the adapter coming back) can still
+    // stand up the acceptor.
+    let mut delay = Duration::from_secs(2);
+    let max_delay = Duration::from_secs(60);
 
-    while let Some(channel) = incoming.next().await {
-        let link: Box<dyn Link> = Box::new(BleLink::new(channel));
-        let state = state.clone();
-        let db_path = db_path.clone();
-        tokio::spawn(session::run_peer_gate(link, state, db_path));
+    loop {
+        let backend = match backend().await {
+            Ok(backend) => backend,
+            Err(err) => {
+                eprintln!("[transport][ble] adapter unavailable, retrying in {delay:?}: {err}");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(max_delay);
+                continue;
+            }
+        };
+        if !backend.capabilities().await.peripheral {
+            eprintln!(
+                "[transport][ble] adapter has no peripheral support; retrying in {delay:?} \
+                 in case a different adapter becomes available"
+            );
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(max_delay);
+            continue;
+        }
+        let mut incoming = match datagram::serve(backend, &datagram_config()).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                eprintln!("[transport][ble] advertise failed, retrying in {delay:?}: {err}");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(max_delay);
+                continue;
+            }
+        };
+        eprintln!("[transport][ble] advertising, awaiting centrals");
+        delay = Duration::from_secs(2);
+
+        while let Some(channel) = incoming.next().await {
+            let link: Box<dyn Link> = Box::new(BleLink::new(channel));
+            let state = state.clone();
+            let db_path = db_path.clone();
+            tokio::spawn(session::run_peer_gate(link, state, db_path));
+        }
+        // The serve stream itself ended (e.g. the adapter dropped out from
+        // under it) rather than a caller closing it — nothing here ever
+        // drops the stream deliberately. Retry rather than leaving the
+        // peripheral role dead.
+        eprintln!("[transport][ble] serve stream ended unexpectedly; retrying in {delay:?}");
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(max_delay);
     }
 }
 
@@ -221,12 +253,42 @@ fn should_dial_peer(my_id: &str, peer_id: &str, has_session: bool) -> bool {
     my_id < peer_id && !has_session
 }
 
+/// Re-reads `paired_devices` for the current, live answer to "is this peer
+/// still a valid Bluetooth dial target" — enabled, still holding this exact
+/// address, and currently OS-paired. `block_in_place` around the blocking
+/// DB open, matching `space_sync::session::check_paired`'s existing pattern
+/// for the same kind of call from inside an async loop.
+fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str, address: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        bluetooth_dial_candidates(&mut conn)
+            .into_iter()
+            .any(|(candidate_id, candidate_address)| {
+                candidate_id == peer_id && candidate_address == address
+            })
+    })
+}
+
 async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String, address: String) {
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(30);
 
     loop {
         if state.has_session(&peer_id) || state.network_effectively_available(&peer_id) {
+            return;
+        }
+        // Re-checked every retry, not just at the moment this task was
+        // spawned: the candidate list `spawn_dial_loop` built is a single
+        // snapshot, so a peer reachable only later in this backoff loop
+        // would otherwise still complete auth and claim a session even
+        // after the user disabled Bluetooth for them or unpaired them
+        // entirely in the meantime — a setting meant to stop future
+        // Bluetooth use silently not taking effect.
+        if !is_still_bluetooth_eligible(&db_path, &peer_id, &address) {
+            eprintln!(
+                "[transport][ble] {peer_id} is no longer Bluetooth-enabled/OS-paired; \
+                 stopping dial retries"
+            );
             return;
         }
 
