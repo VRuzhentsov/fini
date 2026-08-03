@@ -1266,6 +1266,16 @@ pub fn space_sync_tick_impl(
         device_connection.db_path.clone(),
         &paired_peer_ids,
     );
+    #[cfg(target_os = "linux")]
+    {
+        let mut conn = crate::services::db::open_db_at_path(&device_connection.db_path);
+        let candidates = crate::services::device_connection::bluetooth_dial_candidates(&mut conn);
+        crate::services::transport::ble::spawn_dial_loop(
+            device_connection,
+            device_connection.db_path.clone(),
+            &candidates,
+        );
+    }
 
     let ticked_at = utc_now();
     let mut transferred_by_peer: std::collections::HashMap<String, (usize, usize, usize)> =

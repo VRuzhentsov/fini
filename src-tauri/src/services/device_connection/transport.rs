@@ -54,14 +54,14 @@ pub fn select_transport_endpoint(
     })
 }
 
-/// No real Bluetooth `Transport`/`Link` adapter is registered yet — this PR
-/// only wires up `tcp_ws` and `sim` in `lib.rs` (see
-/// `docs/adr/0001-transport-neutral-peer-protocol.md`); the real adapter is
-/// a stacked follow-up PR. Until it lands, no Bluetooth session can ever be
-/// established, so status must never report `available`/`preferred`
-/// regardless of stored metadata — otherwise the Device view would promise
-/// a fallback that silently cannot sync. Flip to `true` when the adapter
-/// lands.
+/// `transport::ble` (BlueZ via `ble-gatt`) is wired up in `lib.rs` on Linux;
+/// Android has no adapter yet (needs the `tao` -> `ndk-context` bridge —
+/// see that module's doc comment). Until Android lands, status there must
+/// never report `available`/`preferred` regardless of stored metadata, or
+/// the Device view would promise a fallback that silently cannot sync.
+#[cfg(target_os = "linux")]
+const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = true;
+#[cfg(not(target_os = "linux"))]
 const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = false;
 
 pub fn build_transport_statuses(
@@ -199,16 +199,17 @@ mod tests {
             .any(|status| status.kind == TransportKind::Network && status.preferred));
     }
 
-    /// No Bluetooth `Transport`/`Link` adapter is registered in this PR
-    /// (`tcp_ws`/`sim` only — see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc
-    /// comment), so a Bluetooth session can never actually establish.
-    /// Status must report `available`/`preferred: false` regardless of how
-    /// complete the stored enablement metadata is, or the Device view would
-    /// promise a fallback that silently cannot sync.
+    /// No Bluetooth `Transport`/`Link` adapter is registered on this platform
+    /// (Android — see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc comment), so a
+    /// Bluetooth session can never actually establish there. Status must
+    /// report `available`/`preferred: false` regardless of how complete the
+    /// stored enablement metadata is, or the Device view would promise a
+    /// fallback that silently cannot sync. On Linux, where the real adapter
+    /// (`transport::ble`) is wired up, full metadata *should* report ready —
+    /// see `bluetooth_is_available_on_linux_with_full_metadata` below.
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn bluetooth_is_never_reported_available_without_a_registered_adapter() {
-        // Every combination that used to make the old (buggy) heuristic
-        // report Bluetooth as available/preferred:
         for (network_available, enabled, has_metadata, os_paired) in [
             (true, true, true, true),
             (false, true, true, true),
@@ -221,6 +222,46 @@ mod tests {
                 .expect("bluetooth status row");
             assert!(!bluetooth.available, "bluetooth must not report available");
             assert!(!bluetooth.preferred, "bluetooth must not report preferred");
+        }
+    }
+
+    /// Mirror of the above for Linux, where `transport::ble` is a real,
+    /// registered adapter: full enablement metadata should now report
+    /// Bluetooth ready, and preferred exactly when network is not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bluetooth_is_available_on_linux_with_full_metadata() {
+        let fallback = build_transport_statuses(false, true, true, true);
+        let bluetooth = fallback
+            .iter()
+            .find(|status| status.kind == TransportKind::Bluetooth)
+            .expect("bluetooth status row");
+        assert!(bluetooth.available, "bluetooth should report available");
+        assert!(bluetooth.preferred, "bluetooth should be preferred when network is absent");
+
+        let both = build_transport_statuses(true, true, true, true);
+        let bluetooth = both
+            .iter()
+            .find(|status| status.kind == TransportKind::Bluetooth)
+            .expect("bluetooth status row");
+        assert!(bluetooth.available, "bluetooth should still report available");
+        assert!(!bluetooth.preferred, "network should be preferred when both are available");
+    }
+
+    /// Incomplete metadata must still gate availability even with a real
+    /// adapter registered.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bluetooth_still_requires_full_metadata_on_linux() {
+        for (enabled, has_metadata, os_paired) in
+            [(false, true, true), (true, false, true), (true, true, false)]
+        {
+            let statuses = build_transport_statuses(false, enabled, has_metadata, os_paired);
+            let bluetooth = statuses
+                .iter()
+                .find(|status| status.kind == TransportKind::Bluetooth)
+                .expect("bluetooth status row");
+            assert!(!bluetooth.available, "incomplete metadata must not report available");
         }
     }
 }
