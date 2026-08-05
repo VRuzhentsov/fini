@@ -8,14 +8,18 @@
 //! - `tcp_ws` — the network transport (mDNS/UDP discovery + WebSocket link).
 //! - `sim` — a deterministic, CI-safe adapter used by tests and E2E to
 //!   exercise transport selection/fallback/handoff without real radios.
-//! - Bluetooth (Linux BlueZ + Android) and LoRaWAN are reserved `TransportKind`
-//!   variants with no adapter yet; see `docs/adr/0001-transport-neutral-peer-protocol.md`.
+//! - `ble` — the real Bluetooth adapter (Linux BlueZ via `ble-gatt`; Android
+//!   not yet wired up, see that module's doc comment). LoRaWAN remains a
+//!   reserved `TransportKind` variant with no adapter; see
+//!   `docs/adr/0001-transport-neutral-peer-protocol.md`.
 //!
 //! A `Link` moves opaque byte datagrams (whole payloads, boundaries
 //! preserved); each adapter owns its own chunking/framing. Above `Link` sits
 //! `codec` (envelope + `PeerFrame` (de)serialization) and `secure_channel`
 //! (currently pass-through; the seam for future end-to-end encryption).
 
+#[cfg(target_os = "linux")]
+pub mod ble;
 pub mod codec;
 pub mod envelope;
 pub mod secure_channel;
@@ -40,8 +44,8 @@ pub enum TransportKind {
     /// Deterministic loopback-TCP adapter used by tests/E2E to prove
     /// selection, fallback, and handoff without a real radio.
     Sim,
-    /// Reserved for the real Bluetooth adapter (Linux BlueZ + Android),
-    /// landing in a follow-up PR. No adapter implements this kind yet.
+    /// The real Bluetooth adapter — see `transport::ble` (Linux BlueZ via
+    /// `ble-gatt`; Android not yet wired up).
     Bluetooth,
     /// Reserved for a future LoRaWAN adapter. No adapter implements this
     /// kind yet.

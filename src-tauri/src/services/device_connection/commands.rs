@@ -52,7 +52,23 @@ fn bluetooth_address_is_os_paired(address: &str) -> bool {
 
     #[cfg(target_os = "linux")]
     {
-        return std::process::Command::new("bluetoothctl")
+        // Inside the Flatpak sandbox, `bluetoothctl` and the system D-Bus
+        // it needs aren't reachable directly (the GNOME runtime doesn't
+        // bundle the binary, and its own D-Bus proxy is per-app/session,
+        // not the host's `bluetoothd`). Route through `flatpak-spawn
+        // --host` instead, the same pattern already used elsewhere in this
+        // codebase (see `lib.rs`'s `FLATPAK_ID` check) — it runs the
+        // command on the host, where the real `bluetoothctl` and its
+        // system-bus connection exist, using the `--talk-name=org.freedesktop.Flatpak`
+        // permission the manifest already grants.
+        let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
+            let mut command = std::process::Command::new("flatpak-spawn");
+            command.arg("--host").arg("bluetoothctl");
+            command
+        } else {
+            std::process::Command::new("bluetoothctl")
+        };
+        return command
             .arg("info")
             .arg(address)
             .output()
@@ -771,6 +787,29 @@ pub fn device_connection_transport_statuses(
 ) -> Result<Vec<TransportStatus>, String> {
     let mut conn = db.0.lock().unwrap();
     device_connection_transport_statuses_impl(&mut conn, &state, peer_device_id)
+}
+
+/// Every paired peer eligible for a Bluetooth dial attempt right now:
+/// Bluetooth-enabled, with a stored address, and currently OS-paired. Used
+/// by `transport::ble::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
+/// presence worker or static port list to draw candidates from, so this
+/// queries `paired_devices` directly, the same source
+/// `device_connection_transport_statuses` already checks per-peer.
+#[cfg(target_os = "linux")]
+pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<(String, String)> {
+    let paired: Vec<PairedDevice> = paired_devices::table
+        .filter(paired_devices::bluetooth_enabled.eq(true))
+        .select(PairedDevice::as_select())
+        .load(&mut *conn)
+        .unwrap_or_default();
+
+    paired
+        .into_iter()
+        .filter_map(|device| {
+            let address = device.bluetooth_address.as_deref().and_then(normalize_bluetooth_address)?;
+            bluetooth_address_is_os_paired(&address).then_some((device.peer_device_id, address))
+        })
+        .collect()
 }
 
 pub fn device_connection_session_transport_impl(

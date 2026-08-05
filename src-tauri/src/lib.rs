@@ -62,6 +62,8 @@ use services::space_sync::{
     space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
     space_sync_update_mappings,
 };
+#[cfg(all(feature = "ui-plane", target_os = "linux"))]
+use services::transport::ble;
 #[cfg(feature = "ui-plane")]
 use services::transport::{sim, tcp_ws};
 #[cfg(feature = "ui-plane")]
@@ -291,6 +293,8 @@ pub fn run() {
             let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
             tauri::async_runtime::spawn(tcp_ws::run_server(dc_state.clone(), dc_state.db_path.clone()));
             sim::maybe_spawn_server(dc_state.clone(), dc_state.db_path.clone());
+            #[cfg(target_os = "linux")]
+            tauri::async_runtime::spawn(ble::run_server(dc_state.clone(), dc_state.db_path.clone()));
             app.manage(dc_state);
             Ok(())
         })
