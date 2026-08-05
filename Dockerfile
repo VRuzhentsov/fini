@@ -154,7 +154,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libcairo2 \
       fonts-liberation \
       xvfb \
-      xauth; \
+      xauth \
+      dbus; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
