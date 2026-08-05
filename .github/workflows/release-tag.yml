@@ -19,10 +19,6 @@ env:
   NODE_VERSION: "24"
 
 jobs:
-  security-scan:
-    uses: ./.github/workflows/security.yml
-    secrets: inherit
-
   validate-tag:
     name: Validate Release Tag
     runs-on: ubuntu-latest

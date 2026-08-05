@@ -1,7 +1,16 @@
 name: Security Check
 
+# Manual/on-demand only. This used to also run as a workflow_call step
+# inside the tagged release pipeline (release-tag.yml); that made it
+# effectively mandatory-but-invisible -- continue-on-error kept a failure
+# from blocking the release, but it still ran, unconditionally, on every
+# tag push, and had already hit the org's 200-private-test monthly limit
+# more than once. A scan nobody asked for and that can't block anything
+# either way isn't worth running automatically; it's still one command
+# away (`gh workflow run security.yml` or the Actions UI) whenever
+# someone actually wants the result.
 on:
-  workflow_call:
+  workflow_dispatch:
 
 jobs:
   snyk:
