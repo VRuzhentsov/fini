@@ -1268,7 +1268,16 @@ pub fn space_sync_tick_impl(
     );
     #[cfg(target_os = "linux")]
     {
-        let mut conn = crate::services::db::open_db_at_path(&device_connection.db_path);
+        // Reuse the connection this function was already handed, rather
+        // than opening a second one. This runs every space_sync_tick --
+        // every 3s, per peer, for the life of the process (see
+        // MAPPING_UPDATE_POLL_INTERVAL_MS in src/stores/device.ts) --
+        // so a redundant `open_db_at_path` here was a fresh SQLite
+        // connection open on every single tick, indefinitely, for every
+        // running instance. tcp_ws::spawn_dial_loop and
+        // sim::spawn_fallback_dial_loop above don't need this because
+        // their candidates come from `paired_peer_ids`, already loaded
+        // through this same `conn`.
         let candidates = crate::services::device_connection::bluetooth_dial_candidates(&mut conn);
         crate::services::transport::ble::spawn_dial_loop(
             device_connection,
