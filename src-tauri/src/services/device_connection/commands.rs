@@ -88,7 +88,7 @@ fn bluetooth_address_is_os_paired(address: &str) -> bool {
         // directly rather than through `ble_gatt::backend::linux`) queries
         // `BluetoothAdapter.getBondedDevices()` via JNI.
         return crate::services::android_context::call_static_context_string_to_bool(
-            "com/fini/app/BluetoothPairing",
+            "com.fini.app.BluetoothPairing",
             "isBonded",
             address,
         );
@@ -723,11 +723,11 @@ pub fn device_connection_set_bluetooth_transport_impl(
         #[cfg(target_os = "android")]
         {
             crate::services::android_context::call_static_context_void(
-                "com/fini/app/BluetoothPairing",
+                "com.fini.app.BluetoothPairing",
                 "requestPermissionsIfNeeded",
             );
             if !crate::services::android_context::call_static_context_to_bool(
-                "com/fini/app/BluetoothPairing",
+                "com.fini.app.BluetoothPairing",
                 "hasPermissions",
             ) {
                 return Err(

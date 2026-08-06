@@ -50,6 +50,13 @@ pub fn ensure_bridged() -> Result<(), String> {
 /// Resolves an app-defined class through the Context's own classloader —
 /// see the module doc for why `env.find_class(binary_name)` can't be used
 /// here instead.
+///
+/// `binary_name` must be a **dotted** Java binary name (`"com.fini.app.BluetoothPairing"`),
+/// not the JNI-internal slash form (`"com/fini/app/BluetoothPairing"`) —
+/// `ClassLoader.loadClass(String)` is a normal Java reflection call, not
+/// `FindClass`, and only accepts the dotted form. Passing the slash form
+/// throws `ClassNotFoundException` for every call through this function,
+/// silently, since every caller below fails closed on error.
 fn load_app_class<'a>(
     env: &mut JNIEnv<'a>, context: &JObject, binary_name: &str,
 ) -> Result<jni::objects::JClass<'a>, String> {
@@ -81,6 +88,8 @@ fn resolve_context<'local>() -> Result<(JavaVM, JObject<'local>), String> {
 
 /// Calls an app-defined Kotlin object's `@JvmStatic fun name(context:
 /// Context, address: String): Boolean` — e.g. `BluetoothPairing.isBonded`.
+/// `class_binary_name` is dotted (`"com.fini.app.BluetoothPairing"`) — see
+/// `load_app_class`'s doc comment.
 ///
 /// Fails closed (`false`) on any error along the way: an unreachable check
 /// (bridge not ready, class not found, permission denied inside the Kotlin
