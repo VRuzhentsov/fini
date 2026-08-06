@@ -54,14 +54,14 @@ pub fn select_transport_endpoint(
     })
 }
 
-/// `transport::ble` (BlueZ via `ble-gatt`) is wired up in `lib.rs` on Linux;
-/// Android has no adapter yet (needs the `tao` -> `ndk-context` bridge —
-/// see that module's doc comment). Until Android lands, status there must
+/// `transport::ble` (BlueZ on Linux, GATT via `ble_gatt::backend::android`
+/// on Android, both through `ble-gatt`) is wired up in `lib.rs`/
+/// `space_sync::commands` on both platforms. Everywhere else, status must
 /// never report `available`/`preferred` regardless of stored metadata, or
 /// the Device view would promise a fallback that silently cannot sync.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = true;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = false;
 
 pub fn build_transport_statuses(
@@ -200,14 +200,15 @@ mod tests {
     }
 
     /// No Bluetooth `Transport`/`Link` adapter is registered on this platform
-    /// (Android — see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc comment), so a
-    /// Bluetooth session can never actually establish there. Status must
-    /// report `available`/`preferred: false` regardless of how complete the
-    /// stored enablement metadata is, or the Device view would promise a
-    /// fallback that silently cannot sync. On Linux, where the real adapter
+    /// (see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc comment), so a Bluetooth
+    /// session can never actually establish there. Status must report
+    /// `available`/`preferred: false` regardless of how complete the stored
+    /// enablement metadata is, or the Device view would promise a fallback
+    /// that silently cannot sync. On Linux/Android, where the real adapter
     /// (`transport::ble`) is wired up, full metadata *should* report ready —
-    /// see `bluetooth_is_available_on_linux_with_full_metadata` below.
-    #[cfg(not(target_os = "linux"))]
+    /// see `bluetooth_is_available_with_full_metadata_where_implemented`
+    /// below.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     #[test]
     fn bluetooth_is_never_reported_available_without_a_registered_adapter() {
         for (network_available, enabled, has_metadata, os_paired) in [
@@ -225,12 +226,13 @@ mod tests {
         }
     }
 
-    /// Mirror of the above for Linux, where `transport::ble` is a real,
-    /// registered adapter: full enablement metadata should now report
-    /// Bluetooth ready, and preferred exactly when network is not.
-    #[cfg(target_os = "linux")]
+    /// Mirror of the above for platforms where `transport::ble` is a real,
+    /// registered adapter (Linux, Android): full enablement metadata should
+    /// now report Bluetooth ready, and preferred exactly when network is
+    /// not.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn bluetooth_is_available_on_linux_with_full_metadata() {
+    fn bluetooth_is_available_with_full_metadata_where_implemented() {
         let fallback = build_transport_statuses(false, true, true, true);
         let bluetooth = fallback
             .iter()
@@ -250,9 +252,9 @@ mod tests {
 
     /// Incomplete metadata must still gate availability even with a real
     /// adapter registered.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn bluetooth_still_requires_full_metadata_on_linux() {
+    fn bluetooth_still_requires_full_metadata_where_implemented() {
         for (enabled, has_metadata, os_paired) in
             [(false, true, true), (true, false, true), (true, true, false)]
         {

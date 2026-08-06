@@ -1266,8 +1266,20 @@ pub fn space_sync_tick_impl(
         device_connection.db_path.clone(),
         &paired_peer_ids,
     );
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
+        // Android must not start the peripheral acceptor from `.setup()`
+        // (see `transport::ble::start_peripheral_once`'s doc comment) --
+        // this command's first real, JS-triggered invocation is the
+        // earliest safe point, so it starts here instead. A no-op on every
+        // call after the first, and a no-op entirely on Linux, which
+        // already starts it from `.setup()`.
+        #[cfg(target_os = "android")]
+        crate::services::transport::ble::start_peripheral_once(
+            device_connection.clone(),
+            device_connection.db_path.clone(),
+        );
+
         // Reuse the connection this function was already handed, rather
         // than opening a second one. This runs every space_sync_tick --
         // every 3s, per peer, for the life of the process (see

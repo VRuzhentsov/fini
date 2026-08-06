@@ -11,5 +11,9 @@ class MainActivity : TauriActivity() {
     PluginManager.onActivityCreate(this)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // Bluetooth runtime permissions are deliberately NOT requested here.
+    // See BluetoothPairing.requestPermissionsIfNeeded's doc comment: the
+    // prompt is only triggered from a genuine user action (the Bluetooth
+    // toggle in Device settings), not on every app launch.
   }
 }

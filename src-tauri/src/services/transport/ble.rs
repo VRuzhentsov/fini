@@ -1,13 +1,15 @@
 //! The Bluetooth transport: BLE GATT `Link`s over `ble-gatt`'s datagram tier
 //! (github.com/VRuzhentsov/ble-gatt).
 //!
-//! Linux only for now (BlueZ via `ble_gatt::backend::linux`). Android needs
-//! the same `tao` -> `ndk-context` bridge `tauri-plugin-ble-gatt`'s own
-//! `android_lazy` module already solved for the JS-facing plugin — this
-//! Rust-native path (Fini's own backend calling `ble-gatt` directly, no
-//! Tauri IPC involved) hasn't been wired up for it yet. Gating the whole
-//! module behind `target_os = "linux"` keeps that follow-up isolated rather
-//! than half-implemented behind runtime checks.
+//! Linux (BlueZ via `ble_gatt::backend::linux`) and Android (via
+//! `ble_gatt::backend::android`, bridged through the same `tao` ->
+//! `ndk-context` handoff `tauri-plugin-ble-gatt`'s own `android_lazy` module
+//! uses for the JS-facing plugin — reimplemented here for this Rust-native
+//! path, since Fini calls `ble-gatt` directly rather than through Tauri IPC).
+//! See `android_lazy` below for why construction is deferred, and
+//! `start_peripheral_once`/its caller in `space_sync::commands` for why the
+//! peripheral role isn't spawned from `.setup()` on Android the way it is on
+//! Linux.
 //!
 //! Plays the same "Bluetooth fallback" role `transport::sim` plays for
 //! tests/E2E, but for real: network is preferred (see
@@ -26,11 +28,149 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+#[cfg(target_os = "linux")]
 use ble_gatt::backend::linux::LinuxBackend;
 use ble_gatt::datagram::{self, DatagramChannel, DatagramConfig};
 use ble_gatt::{Backend, CharacteristicUuid, PeerAddress, ServiceUuid};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
+
+/// Tauri's Android runtime (`tao`) keeps its own Android context separate
+/// from the ecosystem-wide `ndk-context` interop point
+/// `ble_gatt::backend::android::AndroidBackend::new()` reads. Bridging it,
+/// and deferring the real backend's construction past `.setup()`, is
+/// Tauri-specific glue that doesn't belong in `ble-gatt` itself — this is a
+/// direct reimplementation of `tauri-plugin-ble-gatt`'s own `android_lazy`
+/// module for Fini's Rust-native transport path (no Tauri IPC involved, so
+/// that module's own JS-facing plugin code can't be reused directly).
+///
+/// See its doc comment for the crash this defers: `.setup()` runs
+/// synchronously from inside `tao`'s own Android context bring-up, so
+/// reading `ndk_context::android_context()` at that point panics with
+/// "android context was not initialized". `LazyAndroidBackend` defers real
+/// construction to the first genuine use, which for Fini means the first
+/// `space_sync_tick` — see `start_peripheral_once` and its caller.
+#[cfg(target_os = "android")]
+mod android_lazy {
+    use async_trait::async_trait;
+    use ble_gatt::backend::android::AndroidBackend;
+    use ble_gatt::{
+        Backend, BleError, BoxStream, CapabilityReport, CharacteristicUuid, DiscoveredPeer,
+        GattConnection, GattEvent, GattServiceSpec, PeerAddress, Result, ServiceUuid,
+    };
+    use tokio::sync::{broadcast, OnceCell};
+    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::StreamExt;
+
+    const EVENT_CHANNEL_CAPACITY: usize = 64;
+
+    /// Delegates to the one shared bridge in `services::android_context` —
+    /// `ndk_context::initialize_android_context` panics if invoked more than
+    /// once for the process, and the OS-pairing check
+    /// (`device_connection::commands::bluetooth_address_is_os_paired`) needs
+    /// this same bridge from an independent call site, so both go through
+    /// one idempotent entry point rather than each racing their own copy.
+    fn bridge_ndk_context_from_tao() -> Result<()> {
+        crate::services::android_context::ensure_bridged()
+            .map_err(BleError::AdapterUnavailable)
+    }
+
+    pub struct LazyAndroidBackend {
+        cell: OnceCell<AndroidBackend>,
+        /// Events are republished through a channel owned by *this* wrapper,
+        /// not borrowed from the inner backend. That is what lets a caller
+        /// subscribe before the backend exists: `watchEvents()`/`events()`
+        /// first is a natural setup order, and returning the inner
+        /// backend's stream directly meant subscribing early got a
+        /// permanently empty one — a silent, successful-looking no-op.
+        events_tx: broadcast::Sender<GattEvent>,
+    }
+
+    impl LazyAndroidBackend {
+        pub fn new() -> Self {
+            let (events_tx, _rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+            Self { cell: OnceCell::new(), events_tx }
+        }
+
+        async fn inner(&self) -> Result<&AndroidBackend> {
+            self.cell
+                .get_or_try_init(|| async {
+                    bridge_ndk_context_from_tao()?;
+                    let backend = AndroidBackend::new().await?;
+                    let mut source = backend.events();
+                    let sink = self.events_tx.clone();
+                    tokio::spawn(async move {
+                        while let Some(event) = source.next().await {
+                            // Errors when there are currently no receivers,
+                            // which is normal, not terminal. Exiting on it
+                            // meant one event arriving before anyone
+                            // subscribed killed the forwarder permanently.
+                            let _ = sink.send(event);
+                        }
+                    });
+                    Ok(backend)
+                })
+                .await
+        }
+    }
+
+    #[async_trait]
+    impl Backend for LazyAndroidBackend {
+        async fn capabilities(&self) -> CapabilityReport {
+            match self.inner().await {
+                Ok(backend) => backend.capabilities().await,
+                Err(err) => {
+                    eprintln!("[transport][ble] android backend construction failed: {err}");
+                    CapabilityReport::default()
+                }
+            }
+        }
+
+        async fn scan(&self, service: ServiceUuid) -> Result<BoxStream<Result<DiscoveredPeer>>> {
+            self.inner().await?.scan(service).await
+        }
+
+        async fn connect(&self, peer: &PeerAddress) -> Result<Box<dyn GattConnection>> {
+            self.inner().await?.connect(peer).await
+        }
+
+        async fn advertise(&self, service: GattServiceSpec) -> Result<()> {
+            self.inner().await?.advertise(service).await
+        }
+
+        async fn stop_advertising(&self) -> Result<()> {
+            self.inner().await?.stop_advertising().await
+        }
+
+        async fn notify(&self, characteristic: CharacteristicUuid, value: Vec<u8>) -> Result<()> {
+            self.inner().await?.notify(characteristic, value).await
+        }
+
+        async fn notify_peer(
+            &self, peer: &PeerAddress, session: Option<u64>, characteristic: CharacteristicUuid,
+            value: Vec<u8>,
+        ) -> Result<()> {
+            self.inner().await?.notify_peer(peer, session, characteristic, value).await
+        }
+
+        async fn disconnect_peer(&self, peer: &PeerAddress, session: Option<u64>) -> Result<()> {
+            self.inner().await?.disconnect_peer(peer, session).await
+        }
+
+        fn events(&self) -> BoxStream<GattEvent> {
+            // Always a live subscription, whether or not the backend exists
+            // yet. Once it is built, `inner()` starts forwarding into this
+            // channel.
+            let rx = self.events_tx.subscribe();
+            Box::pin(BroadcastStream::new(rx).map(|item| match item {
+                Ok(event) => event,
+                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                    GattEvent::Lagged { dropped: n }
+                }
+            }))
+        }
+    }
+}
 
 use crate::services::db::open_db_at_path;
 use crate::services::device_connection::{bluetooth_dial_candidates, DeviceConnectionState};
@@ -57,6 +197,7 @@ fn datagram_config() -> DatagramConfig {
 /// it lazily (on first dial/serve attempt) rather than at startup means a
 /// machine with no/unpowered Bluetooth adapter never fails app startup over
 /// a transport most sessions won't use.
+#[cfg(target_os = "linux")]
 async fn backend() -> Result<Arc<dyn Backend>, String> {
     // `get_or_try_init`, not `get_or_init` over a cached `Result`: the
     // latter permanently bakes in whatever the *first* call returned,
@@ -90,6 +231,40 @@ async fn backend() -> Result<Arc<dyn Backend>, String> {
         })
         .await
         .map(Arc::clone)
+}
+
+/// One `LazyAndroidBackend` for the process's lifetime. Building the wrapper
+/// itself touches neither `ndk-context` nor `AndroidBackend::new()` — that
+/// work is deferred by `LazyAndroidBackend` to its first real use (the first
+/// `capabilities`/`scan`/`connect`/`advertise` call), which by construction
+/// only happens from a genuine post-startup JS -> Rust command (see
+/// `start_peripheral_once` and `spawn_dial_loop`'s callers), never from
+/// `.setup()`. See `android_lazy`'s module doc for why an eager attempt
+/// there would crash.
+#[cfg(target_os = "android")]
+async fn backend() -> Result<Arc<dyn Backend>, String> {
+    static BACKEND: OnceCell<Arc<dyn Backend>> = OnceCell::const_new();
+    let backend = BACKEND
+        .get_or_init(|| async { Arc::new(android_lazy::LazyAndroidBackend::new()) as Arc<dyn Backend> })
+        .await;
+    Ok(Arc::clone(backend))
+}
+
+/// Starts the Bluetooth peripheral acceptor loop exactly once. Android-only:
+/// on Linux `lib.rs` spawns `run_server` unconditionally from `.setup()`,
+/// which is safe there since `LinuxBackend::new()` has no Android-context
+/// ordering requirement. On Android that same eager spawn would race
+/// `tao`'s own context bring-up (see `android_lazy`'s module doc), so the
+/// first call instead comes from `space_sync_tick_impl` — a
+/// `#[tauri::command]`, whose first real invocation can only happen once
+/// the WebView/Activity has actually dispatched an IPC call, a strictly
+/// later and safer point than anything obtainable from `.setup()` itself.
+#[cfg(target_os = "android")]
+pub fn start_peripheral_once(state: DeviceConnectionState, db_path: PathBuf) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        tauri::async_runtime::spawn(run_server(state, db_path));
+    });
 }
 
 pub struct BleLink {

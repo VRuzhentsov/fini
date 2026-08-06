@@ -76,6 +76,13 @@ gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
 ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "d0d00a634156f98b7698eb8e0acf0df166c5d681" }
 
+[target.'cfg(target_os = "android")'.dependencies]
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "d0d00a634156f98b7698eb8e0acf0df166c5d681" }
+tao = "0.35"
+ndk-context = "0.1"
+tokio-stream = "0.1"
+jni = "0.21"
+
 [features]
 default = []
 ui-plane = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-notification", "dep:tauri-plugin-autostart", "dep:tauri-plugin-dialog", "dep:tauri-plugin-fs", "dep:gtk", "dep:notify-rust"]

@@ -25,7 +25,7 @@ pub use commands::{
     device_connection_transport_statuses, device_connection_unpair,
     device_connection_update_last_seen,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{

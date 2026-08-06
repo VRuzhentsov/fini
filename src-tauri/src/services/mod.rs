@@ -1,5 +1,7 @@
 #[cfg(all(any(feature = "ui-plane", test), target_os = "linux"))]
 pub mod appimage_desktop;
+#[cfg(target_os = "android")]
+pub mod android_context;
 pub mod backup;
 pub mod checklist;
 #[cfg(feature = "cli-plane")]
