@@ -44,8 +44,8 @@ pub enum TransportKind {
     /// Deterministic loopback-TCP adapter used by tests/E2E to prove
     /// selection, fallback, and handoff without a real radio.
     Sim,
-    /// The real Bluetooth adapter — see `transport::ble` (Linux BlueZ via
-    /// `ble-gatt`; Android not yet wired up).
+    /// The real Bluetooth adapter — see `transport::ble` (BlueZ on Linux,
+    /// GATT on Android, both via `ble-gatt`).
     Bluetooth,
     /// Reserved for a future LoRaWAN adapter. No adapter implements this
     /// kind yet.

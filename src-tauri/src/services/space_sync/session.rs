@@ -16,7 +16,7 @@ use crate::services::device_connection::{
 };
 use crate::services::space_sync::outbox::load_events_for_space;
 use crate::services::space_sync::types::PeerFrame;
-use crate::services::transport::{recv_frame, send_frame, Link};
+use crate::services::transport::{recv_frame, send_frame, Link, TransportKind};
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
     tokio::task::block_in_place(|| {
@@ -27,6 +27,28 @@ fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
             .get_result::<i64>(&mut conn)
             .unwrap_or(0)
             > 0
+    })
+}
+
+/// Whether `device_id`'s paired-device row currently has Bluetooth enabled.
+/// Checked only for `TransportKind::Bluetooth` accepts, in addition to
+/// `check_paired` -- `bluetooth_dial_candidates` already enforces this on
+/// the *dialing* side, but `run_peer_gate` had no equivalent on the
+/// *accepting* side: a peer that still had this pair's Bluetooth enabled on
+/// their end could dial in and connect to our advertising GATT server, and
+/// be authenticated on `check_paired` alone, even after the local user
+/// disabled Bluetooth for this pair -- contradicting
+/// `specs/device-connect/README.md`'s "disabling ... prevents future
+/// Bluetooth use" contract. `unwrap_or(false)` fails closed: a peer row
+/// that's gone (unpaired) or unreadable must not be treated as enabled.
+fn check_bluetooth_enabled(db_path: &PathBuf, device_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        paired_devices::table
+            .find(device_id)
+            .select(paired_devices::bluetooth_enabled)
+            .first::<bool>(&mut conn)
+            .unwrap_or(false)
     })
 }
 
@@ -121,6 +143,17 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             link.as_mut(),
             &PeerFrame::AuthFail {
                 reason: "unknown device".into(),
+            },
+        )
+        .await;
+        return;
+    }
+
+    if kind == TransportKind::Bluetooth && !check_bluetooth_enabled(&db_path, &device_id) {
+        let _ = send_frame(
+            link.as_mut(),
+            &PeerFrame::AuthFail {
+                reason: "bluetooth disabled for this pair".into(),
             },
         )
         .await;

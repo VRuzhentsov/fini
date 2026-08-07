@@ -9,8 +9,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use diesel::prelude::*;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::time::sleep;
 
 use crate::models::CreatePairedDeviceInput;
@@ -472,3 +473,99 @@ async fn tcp_failure_count_resets_after_a_sim_session_ends() {
 // sleep-driven loopback test can't force that deterministically) without
 // adding disproportionate complexity for what a pure function test already
 // covers exactly.
+
+/// Wraps a real link but reports a different `TransportKind` — lets these
+/// tests drive `run_peer_gate`'s Bluetooth-specific enablement check using
+/// `sim`'s real, already-proven TCP+length-delimited wire protocol, without
+/// needing an actual BLE stack (no adapter's `Link` impl is swappable at the
+/// `kind()` level otherwise).
+struct AsBluetooth(Box<dyn Link>);
+
+#[async_trait]
+impl Link for AsBluetooth {
+    fn kind(&self) -> TransportKind {
+        TransportKind::Bluetooth
+    }
+
+    async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
+        self.0.send(payload).await
+    }
+
+    async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
+        self.0.recv().await
+    }
+
+    fn peer_addr(&self) -> Option<String> {
+        self.0.peer_addr()
+    }
+}
+
+/// Regression test for the gap Codex flagged on PR #140: `run_peer_gate`
+/// used to authenticate any paired device regardless of its per-transport
+/// enablement, so a peer that still had this pair's Bluetooth enabled on
+/// their end could dial in and connect even after the local user disabled
+/// Bluetooth for the pair. `bluetooth_enabled` defaults to `false`
+/// (`specs/device-connect/README.md`: "disabled by default for every Fini
+/// pair"), so a freshly paired, never-enabled device is exactly that case.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
+    let (server, server_db) = server_state("transport-ble-gate-disabled");
+    seed_paired_device(&server_db, "peer-client");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_server = server.clone();
+    let gate_db = server_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_server, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect_err("a paired but bluetooth-disabled device must be rejected over a Bluetooth-kind link");
+    assert!(err.contains("bluetooth disabled"), "unexpected error: {err}");
+}
+
+/// Mirror of the above with Bluetooth explicitly enabled for the pair: the
+/// same link kind must now authenticate and claim the session as
+/// `TransportKind::Bluetooth`, proving the new check only rejects the
+/// disabled case rather than breaking Bluetooth accepts outright.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
+    let (server, server_db) = server_state("transport-ble-gate-enabled");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set(paired_devices::bluetooth_enabled.eq(true))
+            .execute(&mut conn)
+            .expect("enable bluetooth for seeded peer");
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_server = server.clone();
+    let gate_db = server_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_server, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("a bluetooth-enabled paired device should authenticate over a Bluetooth-kind link");
+
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::Bluetooth));
+}
