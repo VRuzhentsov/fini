@@ -42,7 +42,7 @@ fn normalize_bluetooth_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_uppercase())
 }
 
-fn bluetooth_address_is_os_paired(address: &str) -> bool {
+pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
     if let Ok(allowed) = std::env::var("FINI_BLUETOOTH_PAIRED_ADDRESSES") {
         return allowed
             .split(',')

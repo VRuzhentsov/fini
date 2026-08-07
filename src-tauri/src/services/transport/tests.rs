@@ -56,6 +56,11 @@ fn server_state(label: &str) -> (DeviceConnectionState, PathBuf) {
 /// window so concurrently-running tests can't clobber each other's value.
 static WS_PORT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global too — same reasoning,
+/// separate lock since it guards a disjoint set of tests. Mirrors the lock
+/// of the same name in `device_connection::commands::tests`.
+static BLUETOOTH_ADDRESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Like `server_state`, but the constructed state *announces* `port` as its
 /// own `space_sync_ws_port` (what it puts in outgoing `PairRequestPayload.from_ws_port`
 /// for peers to reply to) — needed whenever a test's peer must reply back to
@@ -538,12 +543,22 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
 /// disabled case rather than breaking Bluetooth accepts outright.
 #[tokio::test(flavor = "multi_thread")]
 async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
+    // `check_bluetooth_bond` requires the connecting link's `peer_addr()` to
+    // match the pair's stored `bluetooth_address` *and* that address to be
+    // OS-paired -- `sim::SimLink::peer_addr()` reports the TCP peer's IP
+    // ("127.0.0.1" here), so that's what gets stored and allow-listed.
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "127.0.0.1");
+
     let (server, server_db) = server_state("transport-ble-gate-enabled");
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
         diesel::update(paired_devices::table.find("peer-client"))
-            .set(paired_devices::bluetooth_enabled.eq(true))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("127.0.0.1")),
+            ))
             .execute(&mut conn)
             .expect("enable bluetooth for seeded peer");
     }
@@ -564,8 +579,67 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
     let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
-        .expect("a bluetooth-enabled paired device should authenticate over a Bluetooth-kind link");
+        .expect("a bluetooth-enabled, bonded paired device should authenticate over a Bluetooth-kind link");
 
     sleep(Duration::from_millis(50)).await;
     assert_eq!(server.session_kind("peer-client"), Some(TransportKind::Bluetooth));
+
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+}
+
+/// Regression test for the second gap Codex flagged on PR #140's re-review:
+/// `check_bluetooth_enabled` alone proves the authenticated `device_id`'s
+/// row has Bluetooth on, but says nothing about whether the central that
+/// just connected is the specific bonded hardware the pairing metadata
+/// expects. Here the pair's stored address is OS-paired, but a *different*
+/// address connects (matching neither), so the accept must still be
+/// rejected even though `bluetooth_enabled` is true.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_gate_rejects_when_connecting_address_does_not_match_the_bonded_address() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    // The allow-listed (OS-paired) address is real, but it isn't the one
+    // stored for this pair, and it isn't the one connecting either -- only
+    // "AA:BB:CC:DD:EE:FF" is both stored *and* what a real bonded device at
+    // that address would present. "127.0.0.1" (what actually connects, via
+    // SimLink) is deliberately left off the allow-list and mismatched from
+    // storage, so this proves the address-match check independently of the
+    // OS-paired check `bluetooth_gate_accepts_...` already covers.
+    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-ble-gate-address-mismatch");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
+            ))
+            .execute(&mut conn)
+            .expect("enable bluetooth for seeded peer");
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_server = server.clone();
+    let gate_db = server_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        // Connects as "127.0.0.1" (SimLink's real peer_addr), not the
+        // stored "AA:BB:CC:DD:EE:FF" -- simulating a central that knows a
+        // valid device_id but isn't the actual bonded hardware.
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_server, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect_err("a connecting address that doesn't match the stored bond must be rejected");
+    assert!(err.contains("not currently OS-paired"), "unexpected error: {err}");
+
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }

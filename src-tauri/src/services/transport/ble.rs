@@ -508,6 +508,20 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 {
                     Ok(()) => {
                         eprintln!("[transport][ble] auth OK with {peer_id} via {address}");
+                        // The connect+auth round trip is real wall-clock time
+                        // during which the user could disable Bluetooth or
+                        // unpair entirely; without this, a disable/unpair
+                        // that lands in that window would still be raced by
+                        // a session claim that started before it. Re-run the
+                        // same eligibility check the top of this loop uses,
+                        // right before claiming, to close that window.
+                        if !is_still_bluetooth_eligible(&db_path, &peer_id, &address) {
+                            eprintln!(
+                                "[transport][ble] {peer_id} became ineligible during the \
+                                 connect/auth handshake; discarding this session"
+                            );
+                            return;
+                        }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
                         if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx) {
                             session::run_session(link, rx, state.clone(), db_path.clone(), peer_id.clone())

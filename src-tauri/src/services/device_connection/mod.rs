@@ -27,6 +27,8 @@ pub use commands::{
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) use commands::bluetooth_address_is_os_paired;
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,
