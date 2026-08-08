@@ -16,7 +16,7 @@ use crate::services::device_connection::{
 };
 use crate::services::space_sync::outbox::load_events_for_space;
 use crate::services::space_sync::types::PeerFrame;
-use crate::services::transport::{recv_frame, send_frame, Link};
+use crate::services::transport::{recv_frame, send_frame, Link, TransportKind};
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
     tokio::task::block_in_place(|| {
@@ -28,6 +28,72 @@ fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
             .unwrap_or(0)
             > 0
     })
+}
+
+/// Whether `device_id`'s paired-device row currently has Bluetooth enabled.
+/// Checked only for `TransportKind::Bluetooth` accepts, in addition to
+/// `check_paired` -- `bluetooth_dial_candidates` already enforces this on
+/// the *dialing* side, but `run_peer_gate` had no equivalent on the
+/// *accepting* side: a peer that still had this pair's Bluetooth enabled on
+/// their end could dial in and connect to our advertising GATT server, and
+/// be authenticated on `check_paired` alone, even after the local user
+/// disabled Bluetooth for this pair -- contradicting
+/// `specs/device-connect/README.md`'s "disabling ... prevents future
+/// Bluetooth use" contract. `unwrap_or(false)` fails closed: a peer row
+/// that's gone (unpaired) or unreadable must not be treated as enabled.
+fn check_bluetooth_enabled(db_path: &PathBuf, device_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        paired_devices::table
+            .find(device_id)
+            .select(paired_devices::bluetooth_enabled)
+            .first::<bool>(&mut conn)
+            .unwrap_or(false)
+    })
+}
+
+/// Whether the link's actual peer address matches this pair's stored
+/// Bluetooth address, *and* that address is currently OS-bonded.
+///
+/// `check_bluetooth_enabled` alone only proves the authenticated
+/// `device_id` belongs to a row with Bluetooth turned on -- it says nothing
+/// about whether the central that just connected over BLE is actually the
+/// specific bonded hardware the pairing metadata expects. `device_id` is an
+/// app-level identifier carried inside the `Auth` frame, not tied to any
+/// physical radio; `specs/device-connect/README.md` states OS Bluetooth
+/// pairing as an additional, transport-level precondition specifically for
+/// Bluetooth (unlike tcp_ws/sim, which have no such notion), and Android's
+/// `BleGattBridge` advertises plain, unencrypted GATT characteristics (no
+/// `PERMISSION_*_ENCRYPTED`), so nothing at the BLE stack level enforces
+/// bonding before a connection succeeds -- that enforcement has to happen
+/// here. Mirrors `bluetooth_dial_candidates`'s own dial-side eligibility
+/// check. Fails closed on any missing/unreadable/mismatched data.
+fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Option<&str>) -> bool {
+    let Some(observed_address) = observed_address else {
+        return false;
+    };
+    let stored: Option<String> = tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        paired_devices::table
+            .find(device_id)
+            .select(paired_devices::bluetooth_address)
+            .first::<Option<String>>(&mut conn)
+            .unwrap_or(None)
+    });
+    let Some(stored) = stored else {
+        return false;
+    };
+    if !stored.eq_ignore_ascii_case(observed_address) {
+        return false;
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        crate::services::device_connection::bluetooth_address_is_os_paired(&stored)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        false
+    }
 }
 
 /// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.
@@ -125,6 +191,29 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         )
         .await;
         return;
+    }
+
+    if kind == TransportKind::Bluetooth {
+        if !check_bluetooth_enabled(&db_path, &device_id) {
+            let _ = send_frame(
+                link.as_mut(),
+                &PeerFrame::AuthFail {
+                    reason: "bluetooth disabled for this pair".into(),
+                },
+            )
+            .await;
+            return;
+        }
+        if !check_bluetooth_bond(&db_path, &device_id, link.peer_addr().as_deref()) {
+            let _ = send_frame(
+                link.as_mut(),
+                &PeerFrame::AuthFail {
+                    reason: "bluetooth device is not currently OS-paired".into(),
+                },
+            )
+            .await;
+            return;
+        }
     }
 
     let (tx, rx) = mpsc::channel::<PeerFrame>(64);

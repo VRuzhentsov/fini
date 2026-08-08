@@ -42,7 +42,7 @@ fn normalize_bluetooth_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_uppercase())
 }
 
-fn bluetooth_address_is_os_paired(address: &str) -> bool {
+pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
     if let Ok(allowed) = std::env::var("FINI_BLUETOOTH_PAIRED_ADDRESSES") {
         return allowed
             .split(',')
@@ -81,13 +81,17 @@ fn bluetooth_address_is_os_paired(address: &str) -> bool {
 
     #[cfg(target_os = "android")]
     {
-        // Fail closed: no bonded-device query is wired up yet (lands with
-        // the real Android Bluetooth adapter, PR B). Unconditionally
-        // returning true here would let any address be marked OS-paired
-        // without ever checking Android's actual bonded-device list,
-        // violating the "OS Bluetooth pairing is a transport precondition"
-        // rule this function exists to enforce.
-        return false;
+        // `BluetoothPairing.isBonded` (com.fini.app, not ble-gatt's
+        // dev.blegatt bridge — OS bond status is a Fini pairing
+        // precondition, not part of the reusable GATT transport surface,
+        // mirroring the Linux branch above shelling out to `bluetoothctl`
+        // directly rather than through `ble_gatt::backend::linux`) queries
+        // `BluetoothAdapter.getBondedDevices()` via JNI.
+        return crate::services::android_context::call_static_context_string_to_bool(
+            "com.fini.app.BluetoothPairing",
+            "isBonded",
+            address,
+        );
     }
 
     #[allow(unreachable_code)]
@@ -706,6 +710,33 @@ pub fn device_connection_set_bluetooth_transport_impl(
         let Some(address) = normalized_address else {
             return Err("bluetooth address is required to enable Bluetooth transport".to_string());
         };
+
+        // This command only runs from the user explicitly flipping the
+        // Bluetooth toggle in Device settings -- the one point in the app
+        // where requesting the runtime permission triad is appropriate. Not
+        // requested at startup or from any background path (the dial loop,
+        // the peripheral acceptor): see BluetoothPairing.requestPermissionsIfNeeded's
+        // doc comment. Fire-and-forget: if the user hasn't responded to the
+        // dialog yet, `isBonded`/`hasPermissions` below still (correctly)
+        // fail closed, and this same toggle click can just be retried once
+        // they grant it.
+        #[cfg(target_os = "android")]
+        {
+            crate::services::android_context::call_static_context_void(
+                "com.fini.app.BluetoothPairing",
+                "requestPermissionsIfNeeded",
+            );
+            if !crate::services::android_context::call_static_context_to_bool(
+                "com.fini.app.BluetoothPairing",
+                "hasPermissions",
+            ) {
+                return Err(
+                    "Bluetooth permission required -- grant it in the dialog, then try again"
+                        .to_string(),
+                );
+            }
+        }
+
         if !bluetooth_address_is_os_paired(&address) {
             return Err(
                 "OS Bluetooth pairing is required before enabling Bluetooth transport".to_string(),
@@ -795,7 +826,7 @@ pub fn device_connection_transport_statuses(
 /// presence worker or static port list to draw candidates from, so this
 /// queries `paired_devices` directly, the same source
 /// `device_connection_transport_statuses` already checks per-peer.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<(String, String)> {
     let paired: Vec<PairedDevice> = paired_devices::table
         .filter(paired_devices::bluetooth_enabled.eq(true))

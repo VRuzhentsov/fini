@@ -11,6 +11,24 @@
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
+    <!-- Bluetooth LE transport (ble-gatt). Not required to install: BLE is
+         one of several transport::selection candidates, not mandatory
+         hardware for the app to function. -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <!-- API 30 and below: legacy Bluetooth + coarse/fine location (BLE scan
+         results were treated as location data prior to API 31). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+
+    <!-- API 31+: the runtime-requestable Bluetooth permission triad. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
