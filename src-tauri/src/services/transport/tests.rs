@@ -200,6 +200,60 @@ async fn bluetooth_self_report_is_withheld_from_a_peer_that_reports_no_protocol_
     std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
 }
 
+/// Regression test: the self-report must not be a one-shot fired only at
+/// session start -- if the local Bluetooth controller changes underneath a
+/// long-lived network session (simulated here by changing
+/// `FINI_LOCAL_BLUETOOTH_ADDRESS` mid-session), the peer must eventually
+/// learn the new address, not keep holding the stale one with no other way
+/// to refresh it (this self-report only ever travels over the network
+/// transport, so once network sync eventually breaks, a Bluetooth fallback
+/// dial would be stuck targeting an address that no longer exists).
+/// `FINI_BLUETOOTH_RECHECK_INTERVAL_MS` shortens the real 5-minute periodic
+/// recheck so this can be observed deterministically.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_session() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS", "50");
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-refresh");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::BluetoothAddressUpdate { address })) => {
+            assert_eq!(address, "AA:BB:CC:DD:EE:FF");
+        }
+        other => panic!("expected the initial BluetoothAddressUpdate, got {other:?}"),
+    }
+
+    // Simulates a controller swap while this session stays live.
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "11:22:33:44:55:66");
+
+    match tokio::time::timeout(Duration::from_millis(500), recv_frame(link.as_mut())).await {
+        Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { address }))) => {
+            assert_eq!(address, "11:22:33:44:55:66");
+        }
+        other => panic!("expected a refreshed BluetoothAddressUpdate after the address changed, got {other:?}"),
+    }
+
+    std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+    std::env::remove_var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS");
+}
+
 /// Regression test for the receiving half of Phase 1: an inbound
 /// `BluetoothAddressUpdate` for an already OS-paired address both persists
 /// the address and auto-enables Bluetooth for that pair -- self-report

@@ -5,6 +5,7 @@
 //! the future real Bluetooth adapter).
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use diesel::prelude::*;
 use tokio::sync::mpsc;
@@ -305,11 +306,34 @@ pub async fn run_session(
     // a peer on a build from before this frame existed cannot decode it and
     // would drop the whole authenticated session, so this frame is never
     // sent proactively to a peer that hasn't proven it understands it.
-    if link.kind() == TransportKind::TcpWs && peer_protocol_version >= 1 {
+    let bluetooth_self_report_enabled = link.kind() == TransportKind::TcpWs && peer_protocol_version >= 1;
+    let mut last_reported_bluetooth_address: Option<String> = None;
+    if bluetooth_self_report_enabled {
         if let Some(address) = crate::services::device_connection::local_bluetooth_address() {
-            let _ = send_frame(link.as_mut(), &PeerFrame::BluetoothAddressUpdate { address }).await;
+            if send_frame(
+                link.as_mut(),
+                &PeerFrame::BluetoothAddressUpdate { address: address.clone() },
+            )
+            .await
+            .is_ok()
+            {
+                last_reported_bluetooth_address = Some(address);
+            }
         }
     }
+
+    // Re-checked periodically, not just once at session start: a network
+    // session can stay live for a long time, and if the local Bluetooth
+    // controller changes underneath it (e.g. a USB dongle swap) with
+    // nothing to notice, the peer is left holding a stale address with no
+    // other way to refresh it -- this self-report only ever travels over
+    // the network transport, so once network sync eventually breaks, the
+    // Bluetooth fallback would be stuck dialing an address that no longer
+    // exists. `set_missed_tick_behavior(Delay)`: a slow tick (e.g. this
+    // process suspended) should never fire a burst of catch-up sends.
+    let mut bluetooth_recheck = tokio::time::interval(bluetooth_recheck_interval());
+    bluetooth_recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    bluetooth_recheck.tick().await; // interval fires immediately on the first tick; consume it
 
     loop {
         tokio::select! {
@@ -322,10 +346,36 @@ pub async fn run_session(
                     break;
                 }
             }
+            _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {
+                if let Some(address) = crate::services::device_connection::local_bluetooth_address() {
+                    if last_reported_bluetooth_address.as_deref() != Some(address.as_str())
+                        && send_frame(
+                            link.as_mut(),
+                            &PeerFrame::BluetoothAddressUpdate { address: address.clone() },
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        last_reported_bluetooth_address = Some(address);
+                    }
+                }
+            }
         }
     }
 
     state.release_session(&peer_device_id);
+}
+
+/// Test/CI escape hatch, mirroring `local_bluetooth_address`'s own
+/// `FINI_LOCAL_BLUETOOTH_ADDRESS`: exercising the periodic re-check
+/// deterministically can't wait on the real 5-minute interval.
+fn bluetooth_recheck_interval() -> Duration {
+    if let Ok(value) = std::env::var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS") {
+        if let Ok(ms) = value.parse::<u64>() {
+            return Duration::from_millis(ms);
+        }
+    }
+    Duration::from_secs(300)
 }
 
 async fn handle_inbound(
