@@ -144,7 +144,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
 
     let (device_id, peer_device_id) = match frame {
         PeerFrame::PairRequest(payload) => {
-            let _ = state.receive_ws_pair_request(payload, from_addr);
+            let _ = state.receive_ws_pair_request(payload, from_addr, kind == TransportKind::Bluetooth);
             return;
         }
         PeerFrame::PairAccept(payload) => {
@@ -152,7 +152,8 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             return;
         }
         PeerFrame::PairComplete(payload) => {
-            let _ = state.receive_ws_pair_complete(payload);
+            let _ =
+                state.receive_ws_pair_complete(payload, from_addr, kind == TransportKind::Bluetooth);
             return;
         }
         PeerFrame::DiscoveryHello => {

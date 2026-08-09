@@ -61,6 +61,13 @@ pub struct IncomingPairRequest {
     pub expires_at: String,
     pub attempts: i64,
     pub cooldown_until: Option<String>,
+    /// Whether this `PairRequest` arrived over a Bluetooth link (ADR 0002
+    /// Phase 3's BLE-first pairing) rather than network. When true,
+    /// `from_bluetooth_address` carries the sender's address as *observed*
+    /// on this connection (`Link::peer_addr()`), which is more trustworthy
+    /// than a self-reported value.
+    pub via_bluetooth: bool,
+    pub from_bluetooth_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +83,13 @@ pub struct PairCompletionUpdate {
     pub from_device_id: String,
     pub from_hostname: String,
     pub paired_at: String,
+    /// Mirrors `IncomingPairRequest::via_bluetooth` for the completion leg.
+    pub via_bluetooth: bool,
+    /// The completing peer's Bluetooth address, if known -- either observed
+    /// directly (when `via_bluetooth`) or self-reported in the payload
+    /// (when completion arrived over network). See
+    /// `PairCompletePayload::bluetooth_address`.
+    pub bluetooth_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +198,13 @@ pub(crate) struct PairCompletePayload {
     pub from_hostname: String,
     pub to_device_id: String,
     pub paired_at: String,
+    /// The completing peer's own local Bluetooth address, if known -- sent
+    /// regardless of which transport carries this frame (ADR 0002 Phase 3),
+    /// so a network-carried completion can still hand the receiver a
+    /// Bluetooth address to store. `#[serde(default)]` keeps this additive
+    /// for any peer still running the pre-Phase-3 wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bluetooth_address: Option<String>,
     /// Reserved for future Signal-style key agreement (X3DH). Unused today;
     /// pass-through `SecureChannel` never populates or reads this. Keeping
     /// the slot on the wire now means enabling encryption later is additive,

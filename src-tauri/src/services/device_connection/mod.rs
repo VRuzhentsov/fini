@@ -345,6 +345,7 @@ impl DeviceConnectionState {
         &self,
         payload: PairRequestPayload,
         from_addr: String,
+        via_bluetooth: bool,
     ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
@@ -362,7 +363,7 @@ impl DeviceConnectionState {
                 .contains_key(payload.request_id.as_str());
             guard.incoming_requests.insert(
                 payload.request_id.clone(),
-                runtime::build_incoming_pair_request(&payload, from_addr),
+                runtime::build_incoming_pair_request(&payload, from_addr, via_bluetooth),
             );
 
             if is_new {
@@ -399,10 +400,24 @@ impl DeviceConnectionState {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn receive_ws_pair_complete(&self, payload: PairCompletePayload) -> Result<(), String> {
+    pub fn receive_ws_pair_complete(
+        &self,
+        payload: PairCompletePayload,
+        from_addr: String,
+        via_bluetooth: bool,
+    ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
         }
+
+        // When `via_bluetooth`, trust the address actually observed on this
+        // connection over the sender's self-reported `payload.bluetooth_address`
+        // -- same reasoning as `IncomingPairRequest::from_bluetooth_address`.
+        let bluetooth_address = if via_bluetooth {
+            Some(from_addr)
+        } else {
+            payload.bluetooth_address.clone()
+        };
 
         let mut guard = self
             .runtime
@@ -416,6 +431,8 @@ impl DeviceConnectionState {
                 from_device_id: payload.from_device_id,
                 from_hostname: payload.from_hostname,
                 paired_at: payload.paired_at,
+                via_bluetooth,
+                bluetooth_address,
             },
         );
         Ok(())

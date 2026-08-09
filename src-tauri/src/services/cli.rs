@@ -1457,6 +1457,7 @@ fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
                     &mut conn,
                     args.peer_device_id,
                     args.display_name,
+                    None,
                 )
                 .map_err(CliError::from_string)?,
             )

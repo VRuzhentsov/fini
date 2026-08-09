@@ -114,11 +114,16 @@ pub(super) fn generate_passcode() -> String {
 pub(super) fn build_incoming_pair_request(
     payload: &PairRequestPayload,
     from_addr: String,
+    via_bluetooth: bool,
 ) -> StoredIncomingPairRequest {
     let created_at = utc_now();
     let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
+    // When `via_bluetooth`, `from_addr` is the sender's Bluetooth address as
+    // observed on this connection (`Link::peer_addr()`), not an IP -- see
+    // `IncomingPairRequest::from_bluetooth_address`.
+    let from_bluetooth_address = via_bluetooth.then(|| from_addr.clone());
 
     StoredIncomingPairRequest {
         request: IncomingPairRequest {
@@ -129,6 +134,8 @@ pub(super) fn build_incoming_pair_request(
             expires_at,
             attempts: 0,
             cooldown_until: None,
+            via_bluetooth,
+            from_bluetooth_address,
         },
         from_addr,
         from_ws_port: payload.from_ws_port,
@@ -581,6 +588,7 @@ pub(super) fn spawn_discovery_worker(
                                         build_incoming_pair_request(
                                             &pair_request,
                                             addr.ip().to_string(),
+                                            false,
                                         ),
                                     );
 
@@ -641,6 +649,8 @@ pub(super) fn spawn_discovery_worker(
                                         from_device_id: pair_complete.from_device_id.clone(),
                                         from_hostname: pair_complete.from_hostname.clone(),
                                         paired_at: pair_complete.paired_at.clone(),
+                                        via_bluetooth: false,
+                                        bluetooth_address: pair_complete.bluetooth_address.clone(),
                                     },
                                 );
 
@@ -723,6 +733,8 @@ mod tests {
                 expires_at: expires_at.to_string(),
                 attempts: 0,
                 cooldown_until: None,
+                via_bluetooth: false,
+                from_bluetooth_address: None,
             },
             from_addr: "127.0.0.1".to_string(),
             from_ws_port: Some(SPACE_SYNC_WS_PORT),
@@ -854,7 +866,7 @@ mod tests {
     fn incoming_pair_request_uses_receiver_local_ttl() {
         let payload = sample_pair_request_payload("1999-01-01T00:00:00Z");
         let before = Utc::now();
-        let stored = build_incoming_pair_request(&payload, "192.168.1.50".to_string());
+        let stored = build_incoming_pair_request(&payload, "192.168.1.50".to_string(), false);
         let after = Utc::now();
 
         assert_eq!(stored.request.request_id, payload.request_id);

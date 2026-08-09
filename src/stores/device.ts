@@ -46,6 +46,9 @@ export interface IncomingPairRequest {
   expires_at: string;
   attempts: number;
   cooldown_until: string | null;
+  // Whether this request arrived over Bluetooth -- ADR 0002 Phase 3.
+  via_bluetooth: boolean;
+  from_bluetooth_address: string | null;
 }
 
 export interface OutgoingPairRequest {
@@ -85,6 +88,8 @@ export interface PairCompletionUpdate {
   from_device_id: string;
   from_hostname: string;
   paired_at: string;
+  via_bluetooth: boolean;
+  bluetooth_address: string | null;
 }
 
 export interface SpaceSyncStatus {
@@ -249,11 +254,16 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  async function savePairedDevice(deviceId: string, displayName: string) {
+  async function savePairedDevice(
+    deviceId: string,
+    displayName: string,
+    bluetoothAddress: string | null = null,
+  ) {
     try {
       await invoke<PairedDevice>("device_connection_save_paired_device", {
         peerDeviceId: deviceId,
         displayName,
+        bluetoothAddress,
       });
       await loadPairedDevices();
     } catch (error) {
@@ -760,7 +770,11 @@ export const useDeviceStore = defineStore("device", () => {
         );
 
         if (completion) {
-          await savePairedDevice(outgoingRequest.value.to_device_id, outgoingRequest.value.to_hostname);
+          await savePairedDevice(
+            outgoingRequest.value.to_device_id,
+            outgoingRequest.value.to_hostname,
+            completion.bluetooth_address,
+          );
           outgoingRequest.value = null;
           pairCompletedAt.value = nowIso();
         }
@@ -1014,7 +1028,7 @@ export const useDeviceStore = defineStore("device", () => {
       return false;
     }
 
-    await savePairedDevice(request.from_device_id, request.from_hostname);
+    await savePairedDevice(request.from_device_id, request.from_hostname, request.from_bluetooth_address);
 
     try {
       await invoke("device_connection_pair_complete_request", {

@@ -596,7 +596,7 @@ pub fn device_connection_pair_complete_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    let (to_device_id, to_addr, to_ws_port) = {
+    let (to_device_id, to_addr, to_ws_port, via_bluetooth) = {
         let mut guard = state
             .runtime
             .lock()
@@ -612,12 +612,9 @@ pub fn device_connection_pair_complete_request_impl(
             stored.request.from_device_id.clone(),
             stored.from_addr.clone(),
             stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
+            stored.request.via_bluetooth,
         )
     };
-
-    let target_ip: IpAddr = to_addr
-        .parse()
-        .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
 
     let payload = PairCompletePayload {
         protocol: DISCOVERY_PROTOCOL.to_string(),
@@ -627,10 +624,24 @@ pub fn device_connection_pair_complete_request_impl(
         from_hostname: state.identity.hostname.clone(),
         to_device_id: to_device_id.clone(),
         paired_at: utc_now(),
+        // Best-effort: shared regardless of which transport carries this
+        // frame, so a network-carried completion can still hand the
+        // requester a Bluetooth address to store (ADR 0002 Phase 3).
+        bluetooth_address: local_bluetooth_address(),
         key_material: None,
     };
 
-    send_pair_ws(target_ip, to_ws_port, PeerFrame::PairComplete(payload))?;
+    if via_bluetooth {
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        return Err("Bluetooth is not available on this platform".to_string());
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        send_pair_ble(&to_addr, PeerFrame::PairComplete(payload))?;
+    } else {
+        let target_ip: IpAddr = to_addr
+            .parse()
+            .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
+        send_pair_ws(target_ip, to_ws_port, PeerFrame::PairComplete(payload))?;
+    }
 
     let mut guard = state
         .runtime
@@ -848,6 +859,7 @@ pub fn device_connection_save_paired_device_impl(
     conn: &mut SqliteConnection,
     peer_device_id: String,
     display_name: String,
+    bluetooth_address: Option<String>,
 ) -> Result<PairedDevice, String> {
     let now = utc_now();
 
@@ -876,6 +888,25 @@ pub fn device_connection_save_paired_device_impl(
             .values(&input)
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
+
+        // ADR 0002 Phase 3: a Bluetooth address handed over as part of the
+        // pairing handshake itself (either observed directly on a
+        // Bluetooth-carried completion, or self-reported by the peer) is
+        // trusted immediately -- unlike the Device settings toggle
+        // (`device_connection_set_bluetooth_transport_impl`), this isn't a
+        // background path and a real pairing handshake with human code
+        // confirmation just proved the peers are who they claim to be, so
+        // it doesn't need the OS-bond/permission gate that toggle enforces.
+        if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
+            diesel::update(paired_devices::table.find(&peer_device_id))
+                .set((
+                    paired_devices::bluetooth_enabled.eq(true),
+                    paired_devices::bluetooth_address.eq(Some(address)),
+                    paired_devices::bluetooth_last_verified_at.eq(Some(now.clone())),
+                ))
+                .execute(&mut *conn)
+                .map_err(|e| e.to_string())?;
+        }
     }
 
     paired_devices::table
@@ -891,9 +922,10 @@ pub fn device_connection_save_paired_device(
     db: State<AppDbConnection>,
     peer_device_id: String,
     display_name: String,
+    bluetooth_address: Option<String>,
 ) -> Result<PairedDevice, String> {
     let mut conn = db.0.lock().unwrap();
-    device_connection_save_paired_device_impl(&mut conn, peer_device_id, display_name)
+    device_connection_save_paired_device_impl(&mut conn, peer_device_id, display_name, bluetooth_address)
 }
 
 pub fn device_connection_set_bluetooth_transport_impl(
@@ -1220,6 +1252,53 @@ mod tests {
             .execute(&mut conn)
             .expect("insert paired device");
         conn
+    }
+
+    /// ADR 0002 Phase 3: a Bluetooth address handed over as part of the
+    /// pairing handshake itself is trusted immediately on row creation,
+    /// unlike the Device settings toggle (`set_bluetooth_transport_impl`,
+    /// tested below) which requires OS pairing -- a completed handshake with
+    /// human code confirmation is already a stronger trust signal.
+    #[test]
+    fn save_paired_device_populates_bluetooth_fields_on_insert_when_address_given() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = db::open_db_at_path(&db_path);
+        std::mem::forget(dir);
+
+        let saved = device_connection_save_paired_device_impl(
+            &mut conn,
+            "peer-new".to_string(),
+            "Peer New".to_string(),
+            Some("aa:bb:cc:dd:ee:ff".to_string()),
+        )
+        .expect("save paired device");
+
+        assert!(saved.bluetooth_enabled);
+        assert_eq!(saved.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert!(saved.bluetooth_last_verified_at.is_some());
+    }
+
+    #[test]
+    fn save_paired_device_ignores_bluetooth_address_on_update() {
+        // `test_conn` already seeds "peer-a" with bluetooth disabled --
+        // saving over an *existing* row must only touch display_name/
+        // last_seen_at, matching "create the new paired_devices row" in the
+        // ADR: an address arriving via a duplicate pairing pass must not
+        // silently override whatever the settings-page toggle set.
+        let mut conn = test_conn();
+
+        let saved = device_connection_save_paired_device_impl(
+            &mut conn,
+            "peer-a".to_string(),
+            "Peer A Renamed".to_string(),
+            Some("11:22:33:44:55:66".to_string()),
+        )
+        .expect("save paired device");
+
+        assert_eq!(saved.display_name, "Peer A Renamed");
+        assert!(!saved.bluetooth_enabled);
+        assert_eq!(saved.bluetooth_address, None);
     }
 
     #[test]

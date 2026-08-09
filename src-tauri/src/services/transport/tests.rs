@@ -778,6 +778,177 @@ async fn bluetooth_gate_rejects_when_connecting_address_does_not_match_the_bonde
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }
 
+/// ADR 0002 Phase 3: a `PairRequest` delivered over a Bluetooth-kind link
+/// must be flagged `via_bluetooth`, with `from_bluetooth_address` set to the
+/// address actually *observed* on that connection (`Link::peer_addr()`) --
+/// trusted over any self-report, since the sender has no network endpoint
+/// fields to self-report through this transport in the first place.
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
+    use crate::services::device_connection::types::PairRequestPayload;
+    use crate::services::device_connection::{
+        device_connection_enter_add_mode_impl, device_connection_pair_incoming_requests_impl,
+        DISCOVERY_PROTOCOL,
+    };
+
+    let (receiver, receiver_db) = server_state("transport-pair-request-bluetooth");
+    device_connection_enter_add_mode_impl(&receiver).expect("enter add mode");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::PairRequest(PairRequestPayload {
+            protocol: DISCOVERY_PROTOCOL.to_string(),
+            kind: "pair_request".to_string(),
+            request_id: "req-ble-1".to_string(),
+            from_device_id: "device-a".to_string(),
+            from_hostname: "alpha".to_string(),
+            from_discovery_port: None,
+            from_ws_port: None,
+            to_device_id: receiver.identity.device_id.clone(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            expires_at: "2099-01-01T00:00:00Z".to_string(),
+        }),
+    )
+    .await
+    .expect("send pair request over bluetooth-kind link");
+
+    sleep(Duration::from_millis(200)).await;
+    let incoming =
+        device_connection_pair_incoming_requests_impl(&receiver).expect("list incoming requests");
+    assert_eq!(incoming.len(), 1);
+    assert!(
+        incoming[0].via_bluetooth,
+        "a request delivered over a Bluetooth-kind link must be flagged as such"
+    );
+    assert_eq!(
+        incoming[0].from_bluetooth_address.as_deref(),
+        Some("127.0.0.1"),
+        "must capture the address observed on the link itself"
+    );
+}
+
+/// Mirror of the above for the completion leg: a `PairComplete` delivered
+/// over a Bluetooth-kind link must trust the *observed* link address over
+/// whatever the sender self-reported in the payload -- proven here by
+/// deliberately mismatching them.
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
+    use crate::services::device_connection::types::PairCompletePayload;
+    use crate::services::device_connection::{
+        device_connection_pair_outgoing_completions_impl, DISCOVERY_PROTOCOL,
+    };
+
+    let (receiver, receiver_db) = server_state("transport-pair-complete-bluetooth");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::PairComplete(PairCompletePayload {
+            protocol: DISCOVERY_PROTOCOL.to_string(),
+            kind: "pair_complete".to_string(),
+            request_id: "req-ble-2".to_string(),
+            from_device_id: "device-b".to_string(),
+            from_hostname: "beta".to_string(),
+            to_device_id: receiver.identity.device_id.clone(),
+            paired_at: "2026-01-01T00:00:00Z".to_string(),
+            bluetooth_address: Some("AA:BB:CC:DD:EE:FF".to_string()),
+            key_material: None,
+        }),
+    )
+    .await
+    .expect("send pair complete over bluetooth-kind link");
+
+    sleep(Duration::from_millis(200)).await;
+    let completions = device_connection_pair_outgoing_completions_impl(&receiver)
+        .expect("list outgoing completions");
+    assert_eq!(completions.len(), 1);
+    assert!(completions[0].via_bluetooth);
+    assert_eq!(
+        completions[0].bluetooth_address.as_deref(),
+        Some("127.0.0.1"),
+        "the observed link address must win over the payload's self-reported address"
+    );
+}
+
+/// Mirror of the above for a network-carried completion: with no live
+/// Bluetooth connection to observe an address from, the sender's
+/// self-reported `PairCompletePayload::bluetooth_address` is what gets
+/// captured instead (ADR 0002 Phase 3's "exchanges both transports'
+/// details... regardless of which transport carried the pairing").
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
+    use crate::services::device_connection::types::PairCompletePayload;
+    use crate::services::device_connection::{
+        device_connection_pair_outgoing_completions_impl, DISCOVERY_PROTOCOL,
+    };
+
+    let (receiver, receiver_db) = server_state("transport-pair-complete-network-btaddr");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        receiver.clone(),
+        receiver_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::PairComplete(PairCompletePayload {
+            protocol: DISCOVERY_PROTOCOL.to_string(),
+            kind: "pair_complete".to_string(),
+            request_id: "req-net-1".to_string(),
+            from_device_id: "device-c".to_string(),
+            from_hostname: "gamma".to_string(),
+            to_device_id: receiver.identity.device_id.clone(),
+            paired_at: "2026-01-01T00:00:00Z".to_string(),
+            bluetooth_address: Some("11:22:33:44:55:66".to_string()),
+            key_material: None,
+        }),
+    )
+    .await
+    .expect("send pair complete over network");
+
+    sleep(Duration::from_millis(200)).await;
+    let completions = device_connection_pair_outgoing_completions_impl(&receiver)
+        .expect("list outgoing completions");
+    assert_eq!(completions.len(), 1);
+    assert!(!completions[0].via_bluetooth);
+    assert_eq!(
+        completions[0].bluetooth_address.as_deref(),
+        Some("11:22:33:44:55:66")
+    );
+}
+
 /// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
 /// reply when the receiver is actually in add-mode -- the BLE-scan
 /// equivalent of network discovery simply not broadcasting outside
