@@ -238,6 +238,12 @@ export const useDeviceStore = defineStore("device", () => {
   // leave two independent recurring chains alive, each overwriting
   // `bluetoothScanTimer`, so stopping the loop later can only cancel one).
   let bluetoothScanGeneration = 0;
+  // Same purpose as `bluetoothScanGeneration`, one level up: lets
+  // `enterAddMode`'s suspended continuation tell whether `leaveAddMode`
+  // ran while it was awaiting something, so it doesn't start fresh loops
+  // (or leave the backend's add-mode advertisement on) for a session the
+  // view already left.
+  let addModeGeneration = 0;
   // Merge inputs for the unified candidate list (ADR 0002 Phase 3):
   // network beacons and BLE scan results are fetched on independent
   // schedules, so `discoveredDevices` is recomputed from both whenever
@@ -936,9 +942,18 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   async function enterAddMode() {
+    // Guards against `leaveAddMode` completing first if the view unmounts
+    // while this is still awaiting `refreshIdentity`/the backend invoke
+    // (e.g. the user navigates away moments after opening Add Device):
+    // without this, the suspended continuation would resume *after*
+    // `leaveAddMode` already stopped everything, re-enable the backend's
+    // add-mode advertisement, and start fresh discovery/scan loops with
+    // nothing left to ever stop them again.
+    const generation = ++addModeGeneration;
     addModeEnabled.value = true;
     pairCompletedAt.value = null;
     await refreshIdentity();
+    if (generation !== addModeGeneration) return;
 
     try {
       await invoke("device_connection_enter_add_mode");
@@ -946,11 +961,24 @@ export const useDeviceStore = defineStore("device", () => {
       console.warn("[device-connection] enter add mode failed", error);
     }
 
+    if (generation !== addModeGeneration) {
+      // The view left while that invoke was in flight -- the backend was
+      // just told to enter add-mode for a session nobody wants anymore.
+      // Tell it to leave again immediately rather than starting loops.
+      try {
+        await invoke("device_connection_leave_add_mode");
+      } catch (error) {
+        console.warn("[device-connection] leave add mode (late cancel) failed", error);
+      }
+      return;
+    }
+
     startDiscoveryLoop();
     startBluetoothScanLoop();
   }
 
   async function leaveAddMode() {
+    addModeGeneration += 1; // invalidates any in-flight enterAddMode continuation
     addModeEnabled.value = false;
     pairCompletedAt.value = null;
     stopDiscoveryLoop();

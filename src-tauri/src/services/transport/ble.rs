@@ -216,7 +216,11 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// connection but never replies could consume the *entire* remaining scan
 /// budget, starving out every other candidate that might otherwise have
 /// matched sooner -- including the actual peer being searched for.
-const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Deliberately shorter than `AddDeviceView.vue`'s own per-pass scan
+/// duration (`BLUETOOTH_SCAN_DURATION_MS`, currently 4s): a cap that isn't
+/// *materially* shorter than a single pass is no cap at all in practice,
+/// since `remaining.min(...)` just reduces to `remaining` every time.
+const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 /// Shared add-mode state, watched by `run_server`'s peripheral loop so a
 /// toggle can trigger a fresh advertisement carrying (or dropping) the
