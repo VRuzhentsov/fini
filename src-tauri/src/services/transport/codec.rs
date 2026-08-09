@@ -107,6 +107,27 @@ mod tests {
         assert_eq!(envelope.enc, EncScheme::None);
     }
 
+    /// Regression test: a frame `type` this build doesn't recognize (e.g.
+    /// one added by a newer peer) must decode into `PeerFrame::Unknown`
+    /// rather than fail outright -- otherwise `run_session`'s `let
+    /// Some(Ok(frame)) = inbound else { break }` would treat any single
+    /// unrecognized frame as a fatal decode error and silently end the
+    /// whole authenticated sync session. Mixed-version paired devices are
+    /// the normal case during a rollout, not an edge case.
+    #[test]
+    fn unrecognized_frame_type_decodes_to_unknown_instead_of_failing() {
+        let inner = serde_json::json!({
+            "type": "some_frame_kind_this_build_has_never_heard_of",
+            "extra_field": 123,
+        });
+        let plain = serde_json::to_vec(&inner).unwrap();
+        let envelope = FrameEnvelope::new(EncScheme::None, plain);
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+
+        let decoded = decode_frame(&bytes).expect("must decode, not error");
+        assert!(matches!(decoded, PeerFrame::Unknown));
+    }
+
     #[test]
     fn rejects_unsupported_envelope_version() {
         let envelope = FrameEnvelope {

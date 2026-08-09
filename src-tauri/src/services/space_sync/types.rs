@@ -89,4 +89,18 @@ pub enum PeerFrame {
     /// in add-mode are pairing candidates."
     #[serde(rename = "discovery_hello_reply")]
     DiscoveryHelloReply { device_id: String, hostname: String },
+    /// Catches any `type` tag this build doesn't recognize, instead of
+    /// failing to decode outright. Without this, a peer running an older
+    /// build that unconditionally receives a newer frame kind (e.g.
+    /// `BluetoothAddressUpdate`, sent proactively into an already
+    /// *authenticated* `run_session` loop) would hit a decode error on
+    /// `recv_frame` -- and `run_session`'s `let Some(Ok(frame)) = inbound
+    /// else { break }` treats that as fatal, silently ending the whole
+    /// sync session rather than just skipping the one frame it didn't
+    /// understand. Mixed-version paired devices (one side updated, one
+    /// not) are the normal case during a rollout, not an edge case.
+    /// `#[serde(other)]` must be a unit variant and is matched only when no
+    /// named variant's tag matches.
+    #[serde(other)]
+    Unknown,
 }

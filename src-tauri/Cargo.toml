@@ -74,10 +74,10 @@ url = { version = "2", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "efb3192f2780e15fce739f3994d06ef663e0ecf8" }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "af4ed1e5cfcade75d15ff96e8c3e8de1d97749fa" }
 
 [target.'cfg(target_os = "android")'.dependencies]
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "efb3192f2780e15fce739f3994d06ef663e0ecf8" }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "af4ed1e5cfcade75d15ff96e8c3e8de1d97749fa" }
 tao = "0.35"
 ndk-context = "0.1"
 tokio-stream = "0.1"

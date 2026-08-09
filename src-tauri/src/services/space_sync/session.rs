@@ -396,6 +396,10 @@ async fn handle_inbound(
         | PeerFrame::PairAccept(_)
         | PeerFrame::PairComplete(_)
         | PeerFrame::DiscoveryHello
-        | PeerFrame::DiscoveryHelloReply { .. } => {}
+        | PeerFrame::DiscoveryHelloReply { .. }
+        // A tag this build doesn't recognize -- see `PeerFrame::Unknown`'s
+        // doc comment. Ignoring it is the whole point: the session must
+        // keep running rather than treat it as a decode failure.
+        | PeerFrame::Unknown => {}
     }
 }

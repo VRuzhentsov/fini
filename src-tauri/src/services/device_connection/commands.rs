@@ -419,6 +419,30 @@ pub async fn device_connection_discover_bluetooth_candidates(
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
+        // Same reasoning as `device_connection_find_bluetooth_address_impl`'s
+        // permission block above: opening Add Device mode is a genuine user
+        // action, not a background/startup path, so this is an appropriate
+        // point to prompt. Without this, a first-ever Add Device scan on
+        // Android 12+ silently returns nothing and the frontend's scan loop
+        // gives up for the rest of the session -- see
+        // `BluetoothPairing.requestPermissionsIfNeeded`'s doc comment.
+        #[cfg(target_os = "android")]
+        {
+            crate::services::android_context::call_static_context_void(
+                "com.fini.app.BluetoothPairing",
+                "requestPermissionsIfNeeded",
+            );
+            if !crate::services::android_context::call_static_context_to_bool(
+                "com.fini.app.BluetoothPairing",
+                "hasPermissions",
+            ) {
+                return Err(
+                    "Bluetooth permission required -- grant it in the dialog, then try again"
+                        .to_string(),
+                );
+            }
+        }
+
         let my_device_id = state.identity.device_id.clone();
         let candidates = crate::services::transport::ble::scan_add_mode_candidates(
             &my_device_id,
@@ -530,7 +554,7 @@ pub fn device_connection_pair_accept_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
-    let (to_device_id, to_addr, to_ws_port) = {
+    let (to_device_id, to_addr, to_ws_port, via_bluetooth) = {
         let mut guard = state
             .runtime
             .lock()
@@ -546,12 +570,9 @@ pub fn device_connection_pair_accept_request_impl(
             stored.request.from_device_id.clone(),
             stored.from_addr.clone(),
             stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
+            stored.request.via_bluetooth,
         )
     };
-
-    let target_ip: IpAddr = to_addr
-        .parse()
-        .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
 
     let update = PairCodeUpdate {
         request_id: input.request_id,
@@ -569,7 +590,17 @@ pub fn device_connection_pair_accept_request_impl(
         accepted_at: update.accepted_at.clone(),
     };
 
-    send_pair_ws(target_ip, to_ws_port, PeerFrame::PairAccept(payload))?;
+    if via_bluetooth {
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        return Err("Bluetooth is not available on this platform".to_string());
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        send_pair_ble(&to_addr, PeerFrame::PairAccept(payload))?;
+    } else {
+        let target_ip: IpAddr = to_addr
+            .parse()
+            .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
+        send_pair_ws(target_ip, to_ws_port, PeerFrame::PairAccept(payload))?;
+    }
 
     if let Ok(mut guard) = state.runtime.lock() {
         guard.tx_count += 1;

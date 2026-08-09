@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
@@ -65,11 +65,31 @@ const hasMappingChanges = computed(() => {
   return saved.join(",") !== current.join(",");
 });
 
+const TRANSPORT_STATUS_POLL_INTERVAL_MS = 5_000;
+let transportStatusTimer: ReturnType<typeof setInterval> | null = null;
+
 onMounted(() => {
   void deviceStore.hydrate();
   void spaceStore.fetchSpaces();
   void deviceStore.runSpaceSyncTick();
   void loadMappings();
+
+  // `loadMappings` only refreshes transport status once, on mount/route
+  // change -- the store's periodic presence loop only touches paired
+  // devices that show up in the *network* presence snapshot, which a
+  // Bluetooth-only fallback session never does. Without an independent
+  // poll here, "connected now" goes stale the moment a Bluetooth-only
+  // session connects or disconnects while this page stays open.
+  transportStatusTimer = setInterval(() => {
+    if (deviceId.value) void deviceStore.refreshTransportStatuses(deviceId.value);
+  }, TRANSPORT_STATUS_POLL_INTERVAL_MS);
+});
+
+onUnmounted(() => {
+  if (transportStatusTimer) {
+    clearInterval(transportStatusTimer);
+    transportStatusTimer = null;
+  }
 });
 
 watch(deviceId, () => {

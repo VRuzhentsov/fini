@@ -811,12 +811,13 @@ export const useDeviceStore = defineStore("device", () => {
       if (!bluetoothScanActive) return;
       setBluetoothDiscovered(items);
     } catch (error) {
-      // Not a transient failure -- either the platform has no Bluetooth
-      // backend or scanning permission was denied. Stop rather than retry
-      // forever; `enterAddMode` restarts the loop on the next visit.
-      console.warn("[device-connection] bluetooth candidate scan failed, stopping scan loop", error);
-      bluetoothScanActive = false;
-      return;
+      // Keep retrying rather than giving up for the rest of the session:
+      // the most common failure on a fresh install is the Android
+      // permission dialog not having been answered yet, which is resolved
+      // the moment the user grants it -- not a permanent condition. On a
+      // platform with no Bluetooth backend at all this just retries
+      // harmlessly until `leaveAddMode` stops the loop.
+      console.warn("[device-connection] bluetooth candidate scan failed, will retry", error);
     }
 
     if (!bluetoothScanActive) return;
