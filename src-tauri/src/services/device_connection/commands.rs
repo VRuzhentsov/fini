@@ -178,8 +178,20 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
             ))
             .execute(conn);
     } else {
+        // The new address isn't OS-bonded, so it must not keep whatever
+        // `bluetooth_enabled`/`bluetooth_last_verified_at` an *older*,
+        // possibly different address earned -- otherwise the row would
+        // claim "enabled, verified at T" while actually pointing at an
+        // address that was never verified at all, and dial attempts would
+        // silently use it. Clear enablement and verification atomically
+        // with the address update so the row is never in that
+        // inconsistent state.
         let _ = diesel::update(paired_devices::table.find(peer_id))
-            .set(paired_devices::bluetooth_address.eq(Some(address)))
+            .set((
+                paired_devices::bluetooth_address.eq(Some(address)),
+                paired_devices::bluetooth_enabled.eq(false),
+                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
+            ))
             .execute(conn);
     }
     is_os_paired
@@ -923,20 +935,16 @@ pub fn device_connection_save_paired_device_impl(
         // ADR 0002 Phase 3: a Bluetooth address handed over as part of the
         // pairing handshake itself (either observed directly on a
         // Bluetooth-carried completion, or self-reported by the peer) is
-        // trusted immediately -- unlike the Device settings toggle
-        // (`device_connection_set_bluetooth_transport_impl`), this isn't a
-        // background path and a real pairing handshake with human code
-        // confirmation just proved the peers are who they claim to be, so
-        // it doesn't need the OS-bond/permission gate that toggle enforces.
+        // stored immediately -- but `bluetooth_enabled` still only flips on
+        // if the address is actually OS-bonded (same gate Phase 1's
+        // self-report already uses via `persist_bluetooth_address_and_maybe_enable`,
+        // reused here). A completed pre-auth handshake proves reachability,
+        // not bonding: `bluetooth_dial_candidates`/`check_bluetooth_bond`
+        // both hard-require OS pairing regardless of this flag, so setting
+        // it without a real bond would just be a lie the UI shows while the
+        // pair can never actually establish a Bluetooth session.
         if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
-            diesel::update(paired_devices::table.find(&peer_device_id))
-                .set((
-                    paired_devices::bluetooth_enabled.eq(true),
-                    paired_devices::bluetooth_address.eq(Some(address)),
-                    paired_devices::bluetooth_last_verified_at.eq(Some(now.clone())),
-                ))
-                .execute(&mut *conn)
-                .map_err(|e| e.to_string())?;
+            persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
         }
     }
 
@@ -1286,12 +1294,17 @@ mod tests {
     }
 
     /// ADR 0002 Phase 3: a Bluetooth address handed over as part of the
-    /// pairing handshake itself is trusted immediately on row creation,
-    /// unlike the Device settings toggle (`set_bluetooth_transport_impl`,
-    /// tested below) which requires OS pairing -- a completed handshake with
-    /// human code confirmation is already a stronger trust signal.
+    /// pairing handshake itself is stored on row creation, and enabled if
+    /// it's also OS-bonded -- same gate Phase 1's self-report already uses
+    /// (`persist_bluetooth_address_and_maybe_enable`). A completed pre-auth
+    /// handshake proves reachability, not bonding: enabling without a real
+    /// bond would be a dead end, since `bluetooth_dial_candidates` and the
+    /// accepting gate both hard-require OS pairing regardless of this flag.
     #[test]
-    fn save_paired_device_populates_bluetooth_fields_on_insert_when_address_given() {
+    fn save_paired_device_enables_bluetooth_on_insert_when_address_is_os_paired() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("fini.db");
         let mut conn = db::open_db_at_path(&db_path);
@@ -1308,6 +1321,75 @@ mod tests {
         assert!(saved.bluetooth_enabled);
         assert_eq!(saved.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert!(saved.bluetooth_last_verified_at.is_some());
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    #[test]
+    fn save_paired_device_stores_but_does_not_enable_bluetooth_on_insert_when_not_os_paired() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = db::open_db_at_path(&db_path);
+        std::mem::forget(dir);
+
+        let saved = device_connection_save_paired_device_impl(
+            &mut conn,
+            "peer-new-unbonded".to_string(),
+            "Peer New Unbonded".to_string(),
+            Some("aa:bb:cc:dd:ee:ff".to_string()),
+        )
+        .expect("save paired device");
+
+        assert!(!saved.bluetooth_enabled);
+        assert_eq!(saved.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert!(saved.bluetooth_last_verified_at.is_none());
+    }
+
+    /// Regression test for the P2 review finding: before this fix, an
+    /// unbonded address update left `bluetooth_enabled`/
+    /// `bluetooth_last_verified_at` untouched, so the row could end up
+    /// claiming "enabled, verified" while actually pointing at an address
+    /// that was never verified at all -- silently pointing dial attempts at
+    /// an address that can't work while the metadata still looked healthy.
+    #[test]
+    fn persist_bluetooth_address_clears_enablement_when_the_new_address_is_not_os_paired() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+
+        let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
+                paired_devices::bluetooth_last_verified_at.eq(Some("2026-01-01T00:00:00Z")),
+            ))
+            .execute(&mut conn)
+            .expect("seed a previously-verified bluetooth address");
+
+        let still_paired = persist_bluetooth_address_and_maybe_enable(
+            &mut conn,
+            "peer-a",
+            "11:22:33:44:55:66",
+        );
+        assert!(!still_paired);
+
+        let row: PairedDevice = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .expect("load peer row");
+        assert_eq!(row.bluetooth_address.as_deref(), Some("11:22:33:44:55:66"));
+        assert!(
+            !row.bluetooth_enabled,
+            "must not keep claiming enabled for an address that was never verified"
+        );
+        assert!(
+            row.bluetooth_last_verified_at.is_none(),
+            "stale verification timestamp must not survive an unbonded address update"
+        );
     }
 
     #[test]

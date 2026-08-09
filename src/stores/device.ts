@@ -601,14 +601,23 @@ export const useDeviceStore = defineStore("device", () => {
   function recomputeDiscovered() {
     const deduped = new Map<string, DiscoveredDevice>();
 
-    for (const item of [...latestNetworkDiscovered, ...latestBluetoothDiscovered]) {
+    // Network always wins over Bluetooth for the same device_id, regardless
+    // of which poll happened to finish more recently -- ADR 0002's selection
+    // order prefers network whenever it's available, and a timestamp-based
+    // merge would otherwise flip the row (and requestPair's transport
+    // choice) to Bluetooth just because the BLE scan's own completion timer
+    // landed after the network beacon's. Bluetooth only fills in device_ids
+    // network didn't find at all.
+    for (const item of latestNetworkDiscovered) {
       if (item.device_id === identity.value.device_id) continue;
       if (pairedDeviceIds.value.has(item.device_id)) continue;
-
-      const existing = deduped.get(item.device_id);
-      if (!existing || Date.parse(item.last_seen_at) > Date.parse(existing.last_seen_at)) {
-        deduped.set(item.device_id, item);
-      }
+      deduped.set(item.device_id, item);
+    }
+    for (const item of latestBluetoothDiscovered) {
+      if (item.device_id === identity.value.device_id) continue;
+      if (pairedDeviceIds.value.has(item.device_id)) continue;
+      if (deduped.has(item.device_id)) continue;
+      deduped.set(item.device_id, item);
     }
 
     discoveredDevices.value = [...deduped.values()].sort((a, b) => {
