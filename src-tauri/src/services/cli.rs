@@ -1458,6 +1458,7 @@ fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
                     args.peer_device_id,
                     args.display_name,
                     None,
+                    ctx.db_path.clone(),
                 )
                 .map_err(CliError::from_string)?,
             )

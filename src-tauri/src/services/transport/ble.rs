@@ -412,10 +412,28 @@ pub async fn find_peer_address(
         let Ok(mut link) = dial(&address).await else {
             continue;
         };
-        if session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id)
-            .await
-            .is_ok()
+        // `BluetoothProbe`, not `perform_client_auth`: the ordinary Auth
+        // path requires Bluetooth to already be enabled for this pair
+        // (`run_peer_gate`'s `check_bluetooth_enabled`), which is exactly
+        // the precondition this discovery flow exists to help establish --
+        // reusing it would mean "Find via Bluetooth" could never succeed
+        // for its actual target case (address not yet known/enabled).
+        if send_frame(
+            link.as_mut(),
+            &PeerFrame::BluetoothProbe {
+                device_id: state.identity.device_id.clone(),
+            },
+        )
+        .await
+        .is_err()
         {
+            continue;
+        }
+        let confirmed = matches!(
+            recv_frame(link.as_mut()).await,
+            Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) if device_id == peer_id
+        );
+        if confirmed {
             let db_path = db_path.clone();
             let peer_id = peer_id.clone();
             let address_owned = address.clone();

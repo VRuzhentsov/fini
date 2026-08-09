@@ -160,6 +160,21 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
                 state.receive_ws_pair_complete(payload, from_addr, kind == TransportKind::Bluetooth);
             return;
         }
+        PeerFrame::BluetoothProbe { device_id } => {
+            // Deliberately `check_paired`, not `check_bluetooth_enabled`:
+            // this exists precisely so "Find via Bluetooth" can confirm an
+            // address for a pair that doesn't have Bluetooth enabled yet.
+            if check_paired(&db_path, &device_id) {
+                let _ = send_frame(
+                    link.as_mut(),
+                    &PeerFrame::BluetoothProbeReply {
+                        device_id: state.identity.device_id.clone(),
+                    },
+                )
+                .await;
+            }
+            return;
+        }
         PeerFrame::DiscoveryHello => {
             // No reply at all when not in add-mode -- matching the
             // network-discovery equivalent (a mDNS beacon simply isn't
@@ -415,6 +430,8 @@ async fn handle_inbound(
         | PeerFrame::PairComplete(_)
         | PeerFrame::DiscoveryHello
         | PeerFrame::DiscoveryHelloReply { .. }
+        | PeerFrame::BluetoothProbe { .. }
+        | PeerFrame::BluetoothProbeReply { .. }
         // A tag this build doesn't recognize -- see `PeerFrame::Unknown`'s
         // doc comment. Ignoring it is the whole point: the session must
         // keep running rather than treat it as a decode failure.

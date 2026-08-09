@@ -1008,6 +1008,84 @@ async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
     );
 }
 
+/// Regression test: `BluetoothProbe` ("Find via Bluetooth"'s confirmation
+/// step) must succeed for a paired peer whose Bluetooth transport is *not*
+/// enabled yet -- that's the normal case this discovery flow exists for.
+/// Before this fix, `find_peer_address` reused the ordinary Auth/AuthOk
+/// handshake, whose `check_bluetooth_enabled` precondition made this
+/// scenario impossible to ever complete.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet_enabled() {
+    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-not-enabled");
+    seed_paired_device(&receiver_db, "peer-client");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: "peer-client".to_string(),
+        },
+    )
+    .await
+    .expect("send bluetooth probe");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) => {
+            assert_eq!(device_id, receiver.identity.device_id);
+        }
+        other => panic!("expected a BluetoothProbeReply, got {other:?}"),
+    }
+}
+
+/// Mirror of the above: a probe from a device_id that isn't actually paired
+/// must get no reply at all -- same "silently ignore, don't confirm/deny"
+/// pattern `DiscoveryHello` uses.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_probe_gets_no_reply_from_an_unpaired_device_id() {
+    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-unpaired");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: "a-stranger".to_string(),
+        },
+    )
+    .await
+    .expect("send bluetooth probe");
+
+    match recv_frame(link.as_mut()).await {
+        None | Some(Err(_)) => {}
+        other => panic!("an unpaired probe must not get a reply, got {other:?}"),
+    }
+}
+
 /// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
 /// reply when the receiver is actually in add-mode -- the BLE-scan
 /// equivalent of network discovery simply not broadcasting outside

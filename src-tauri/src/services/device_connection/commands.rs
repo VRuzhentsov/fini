@@ -144,26 +144,32 @@ pub(crate) fn local_bluetooth_address() -> Option<String> {
 }
 
 /// Best-effort, fire-and-forget kickoff of the actual OS-level Bluetooth
-/// bond for `address`. Never blocks the caller and never reports whether
-/// bonding actually succeeds -- `bluetooth_address_is_os_paired` is the only
-/// source of truth for that, checked independently afterward (by the
-/// settings toggle, or the next pairing/self-report pass). Triggered right
-/// after a BLE-first pair reveals an address that isn't bonded yet
-/// (`device_connection_save_paired_device_impl`), so the OS pairing prompt
-/// appears immediately instead of leaving the user to find system Bluetooth
-/// settings on their own -- otherwise two freshly BLE-paired devices with no
-/// shared network have no path to a working Bluetooth session at all, since
-/// both `bluetooth_dial_candidates` and the accepting gate hard-require OS
-/// bonding regardless of `bluetooth_enabled`.
-pub(crate) fn request_os_bond(address: &str) {
+/// bond for `address`, belonging to the already-paired `peer_device_id`.
+/// Never blocks the caller. Triggered right after a BLE-first pair reveals
+/// an address that isn't bonded yet (`device_connection_save_paired_device_impl`),
+/// so the OS pairing prompt appears immediately instead of leaving the user
+/// to find system Bluetooth settings on their own -- otherwise two freshly
+/// BLE-paired devices with no shared network have no path to a working
+/// Bluetooth session at all, since both `bluetooth_dial_candidates` and the
+/// accepting gate hard-require OS bonding regardless of `bluetooth_enabled`.
+///
+/// Bonding itself completes asynchronously (the user has to respond to a
+/// system dialog), so this also re-checks afterward and flips
+/// `bluetooth_enabled` on the moment it observes the bond succeed --
+/// otherwise nothing would ever revisit this pair again outside the
+/// Device settings toggle, leaving a successfully-bonded pair stuck
+/// disabled until the user happened to open Settings and flip it by hand.
+pub(crate) fn request_os_bond(address: &str, peer_device_id: &str, db_path: std::path::PathBuf) {
     #[cfg(target_os = "linux")]
     {
         // `bluetoothctl pair` blocks on the pairing agent interaction (can
-        // take several seconds), so this runs off-thread -- callers must
-        // not wait on it, matching the fire-and-forget contract. Same
-        // Flatpak `flatpak-spawn --host` routing as the other `bluetoothctl`
-        // call sites in this file.
+        // take several seconds) and only returns once it has resolved one
+        // way or another, so a single re-check right after it returns is
+        // enough to catch success -- no separate poll loop needed on this
+        // platform. Same Flatpak `flatpak-spawn --host` routing as the
+        // other `bluetoothctl` call sites in this file.
         let address = address.to_string();
+        let peer_device_id = peer_device_id.to_string();
         std::thread::spawn(move || {
             let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
                 let mut command = std::process::Command::new("flatpak-spawn");
@@ -173,6 +179,10 @@ pub(crate) fn request_os_bond(address: &str) {
                 std::process::Command::new("bluetoothctl")
             };
             let _ = command.arg("pair").arg(&address).output();
+            if bluetooth_address_is_os_paired(&address) {
+                let mut conn = crate::services::db::open_db_at_path(&db_path);
+                persist_bluetooth_address_and_maybe_enable(&mut conn, &peer_device_id, &address);
+            }
         });
     }
     #[cfg(target_os = "android")]
@@ -182,10 +192,28 @@ pub(crate) fn request_os_bond(address: &str) {
             "createBond",
             address,
         );
+        // `createBond()` only *requests* bonding -- completion is signaled
+        // asynchronously via a system broadcast this process doesn't
+        // observe directly (no JNI BroadcastReceiver bridge exists), so
+        // poll `isBonded` for a bounded window instead.
+        let address = address.to_string();
+        let peer_device_id = peer_device_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+            const MAX_ATTEMPTS: u32 = 40; // ~2 minutes
+            for _ in 0..MAX_ATTEMPTS {
+                tokio::time::sleep(POLL_INTERVAL).await;
+                if bluetooth_address_is_os_paired(&address) {
+                    let mut conn = crate::services::db::open_db_at_path(&db_path);
+                    persist_bluetooth_address_and_maybe_enable(&mut conn, &peer_device_id, &address);
+                    return;
+                }
+            }
+        });
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        let _ = address;
+        let _ = (address, peer_device_id, db_path);
     }
 }
 
@@ -949,6 +977,7 @@ pub fn device_connection_save_paired_device_impl(
     peer_device_id: String,
     display_name: String,
     bluetooth_address: Option<String>,
+    db_path: std::path::PathBuf,
 ) -> Result<PairedDevice, String> {
     let now = utc_now();
 
@@ -996,7 +1025,7 @@ pub fn device_connection_save_paired_device_impl(
         if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
             let enabled = persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
             if !enabled {
-                request_os_bond(&address);
+                request_os_bond(&address, &peer_device_id, db_path.clone());
             }
         }
     }
@@ -1012,12 +1041,19 @@ pub fn device_connection_save_paired_device_impl(
 #[tauri::command]
 pub fn device_connection_save_paired_device(
     db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
     peer_device_id: String,
     display_name: String,
     bluetooth_address: Option<String>,
 ) -> Result<PairedDevice, String> {
     let mut conn = db.0.lock().unwrap();
-    device_connection_save_paired_device_impl(&mut conn, peer_device_id, display_name, bluetooth_address)
+    device_connection_save_paired_device_impl(
+        &mut conn,
+        peer_device_id,
+        display_name,
+        bluetooth_address,
+        state.db_path.clone(),
+    )
 }
 
 pub fn device_connection_set_bluetooth_transport_impl(
@@ -1368,6 +1404,7 @@ mod tests {
             "peer-new".to_string(),
             "Peer New".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
+            db_path.clone(),
         )
         .expect("save paired device");
 
@@ -1393,6 +1430,7 @@ mod tests {
             "peer-new-unbonded".to_string(),
             "Peer New Unbonded".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
+            db_path.clone(),
         )
         .expect("save paired device");
 
@@ -1459,6 +1497,9 @@ mod tests {
             "peer-a".to_string(),
             "Peer A Renamed".to_string(),
             Some("11:22:33:44:55:66".to_string()),
+            // Never touched: the update branch (an existing row, seeded by
+            // `test_conn`) never calls `request_os_bond`.
+            std::path::PathBuf::from("/nonexistent"),
         )
         .expect("save paired device");
 

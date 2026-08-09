@@ -107,6 +107,25 @@ pub enum PeerFrame {
     /// in add-mode are pairing candidates."
     #[serde(rename = "discovery_hello_reply")]
     DiscoveryHelloReply { device_id: String, hostname: String },
+    /// Pre-auth, sent by `transport::ble::find_peer_address` ("Find via
+    /// Bluetooth") to confirm a freshly-scanned address genuinely belongs
+    /// to an already-paired peer, *without* requiring Bluetooth to already
+    /// be enabled for that pair. This can't reuse the ordinary `Auth`/
+    /// `AuthOk` handshake: `run_peer_gate`'s Bluetooth branch enforces
+    /// `check_bluetooth_enabled` as a precondition, which is exactly the
+    /// flag "Find via Bluetooth" exists to help the user turn on in the
+    /// first place -- reusing it would mean the discovery flow could never
+    /// succeed for its actual target case. Untrusted, same trust model as
+    /// `DiscoveryHello`: this only proves "you already know a device_id I
+    /// have paired," not cryptographic identity -- Fini's own pairing
+    /// handshake remains the trust boundary (`specs/device-connect/README.md`).
+    #[serde(rename = "bluetooth_probe")]
+    BluetoothProbe { device_id: String },
+    /// Reply to `BluetoothProbe`, sent only if the sender's claimed
+    /// `device_id` is already one of this device's paired peers
+    /// (`check_paired` -- deliberately not `check_bluetooth_enabled`).
+    #[serde(rename = "bluetooth_probe_reply")]
+    BluetoothProbeReply { device_id: String },
     /// Catches any `type` tag this build doesn't recognize, instead of
     /// failing to decode outright. Without this, a peer running an older
     /// build that unconditionally receives a newer frame kind (e.g.
