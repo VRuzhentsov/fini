@@ -1030,34 +1030,42 @@ pub fn device_connection_save_paired_device_impl(
             .values(&input)
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
+    }
 
-        // ADR 0002 Phase 3: a Bluetooth address handed over as part of the
-        // pairing handshake itself (either observed directly on a
-        // Bluetooth-carried completion, or self-reported by the peer) is
-        // stored immediately -- but `bluetooth_enabled` still only flips on
-        // if the address is actually OS-bonded (same gate Phase 1's
-        // self-report already uses via `persist_bluetooth_address_and_maybe_enable`,
-        // reused here). A completed pre-auth handshake proves reachability,
-        // not bonding: `bluetooth_dial_candidates`/`check_bluetooth_bond`
-        // both hard-require OS pairing regardless of this flag, so setting
-        // it without a real bond would just be a lie the UI shows while the
-        // pair can never actually establish a Bluetooth session.
-        if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
-            let enabled = persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
-            // Only kick off the OS bond *request* (a system pairing
-            // prompt) for the BLE-first flow this exists to unblock -- an
-            // ordinary network pairing that happens to also carry a
-            // self-reported Bluetooth address (both transports' details
-            // are always exchanged regardless of which one carried
-            // completion) must not surprise the user with a Bluetooth
-            // pairing dialog they never asked for
-            // (`docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`).
-            // Two freshly *BLE-paired* devices with no shared network do
-            // need this, though: nothing else would ever prompt the user
-            // to complete OS pairing for them.
-            if !enabled && via_bluetooth {
-                request_os_bond(&address, &peer_device_id, db_path.clone());
-            }
+    // ADR 0002 Phase 3: a Bluetooth address handed over as part of the
+    // pairing handshake itself (either observed directly on a
+    // Bluetooth-carried completion, or self-reported by the peer) is
+    // stored immediately -- but `bluetooth_enabled` still only flips on
+    // if the address is actually OS-bonded (same gate Phase 1's
+    // self-report already uses via `persist_bluetooth_address_and_maybe_enable`,
+    // reused here). A completed pre-auth handshake proves reachability,
+    // not bonding: `bluetooth_dial_candidates`/`check_bluetooth_bond`
+    // both hard-require OS pairing regardless of this flag, so setting it
+    // without a real bond would just be a lie the UI shows while the pair
+    // can never actually establish a Bluetooth session.
+    //
+    // Runs for both branches above, not just a fresh insert: this
+    // function is only ever called as the final step of a real,
+    // human-confirmed pairing completion, never from an unrelated
+    // background path -- an *existing* row here means an asymmetric
+    // re-pair (the other side reset and paired again while this side kept
+    // its old row), and that fresh handshake's Bluetooth details are just
+    // as real as a brand-new pair's.
+    if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
+        let enabled = persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
+        // Only kick off the OS bond *request* (a system pairing prompt)
+        // for the BLE-first flow this exists to unblock -- an ordinary
+        // network pairing that happens to also carry a self-reported
+        // Bluetooth address (both transports' details are always
+        // exchanged regardless of which one carried completion) must not
+        // surprise the user with a Bluetooth pairing dialog they never
+        // asked for
+        // (`docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`).
+        // Two freshly *BLE-paired* devices with no shared network do need
+        // this, though: nothing else would ever prompt the user to
+        // complete OS pairing for them.
+        if !enabled && via_bluetooth {
+            request_os_bond(&address, &peer_device_id, db_path.clone());
         }
     }
 
@@ -1538,13 +1546,17 @@ mod tests {
         );
     }
 
+    /// Regression test for the P2 review finding: this function is only
+    /// ever called as the final step of a real pairing completion, never
+    /// from an unrelated background path, so an *existing* row here means
+    /// an asymmetric re-pair (the other side reset and paired again while
+    /// this side kept its old row) -- that fresh handshake's Bluetooth
+    /// details must not be silently dropped just because the row already
+    /// existed.
     #[test]
-    fn save_paired_device_ignores_bluetooth_address_on_update() {
-        // `test_conn` already seeds "peer-a" with bluetooth disabled --
-        // saving over an *existing* row must only touch display_name/
-        // last_seen_at, matching "create the new paired_devices row" in the
-        // ADR: an address arriving via a duplicate pairing pass must not
-        // silently override whatever the settings-page toggle set.
+    fn save_paired_device_refreshes_bluetooth_metadata_on_update_too() {
+        // `test_conn` seeds "peer-a" with no Bluetooth metadata at all, as
+        // if from a stale prior pairing.
         let mut conn = test_conn();
 
         let saved = device_connection_save_paired_device_impl(
@@ -1553,15 +1565,13 @@ mod tests {
             "Peer A Renamed".to_string(),
             Some("11:22:33:44:55:66".to_string()),
             false,
-            // Never touched: the update branch (an existing row, seeded by
-            // `test_conn`) never calls `request_os_bond`.
+            // Never touched: not OS-paired, and via_bluetooth is false.
             std::path::PathBuf::from("/nonexistent"),
         )
         .expect("save paired device");
 
         assert_eq!(saved.display_name, "Peer A Renamed");
-        assert!(!saved.bluetooth_enabled);
-        assert_eq!(saved.bluetooth_address, None);
+        assert_eq!(saved.bluetooth_address.as_deref(), Some("11:22:33:44:55:66"));
     }
 
     #[test]

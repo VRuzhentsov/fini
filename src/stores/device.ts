@@ -502,17 +502,26 @@ export const useDeviceStore = defineStore("device", () => {
   // field of whatever was last loaded rather than re-deriving the whole
   // row set.
   async function refreshLiveConnectedState(peerDeviceId: string) {
-    const existing = transportStatusesByPeer.value[peerDeviceId];
-    if (!existing || existing.length === 0) return;
+    if (!transportStatusesByPeer.value[peerDeviceId]?.length) return;
 
     try {
       const liveKind = await invoke<"tcp_ws" | "sim" | "bluetooth" | "lo_ra" | null>(
         "device_connection_session_transport",
         { peerDeviceId },
       );
+      // Re-read *after* the await, not the array captured before it: an
+      // enable/disable operation's full refresh (`setBluetoothTransport`)
+      // can land while this invoke is pending, and patching on top of the
+      // pre-await snapshot would silently revert `enabled`/`available`/
+      // `detail` back to their stale values -- with nothing else to correct
+      // it afterward for a Bluetooth-only peer, since it never appears in
+      // the network presence snapshot that would otherwise trigger a fresh
+      // full load.
+      const current = transportStatusesByPeer.value[peerDeviceId];
+      if (!current || current.length === 0) return;
       const networkConnected = liveKind === "tcp_ws";
       const bluetoothConnected = liveKind === "bluetooth" || liveKind === "sim";
-      transportStatusesByPeer.value[peerDeviceId] = existing.map((status) => ({
+      transportStatusesByPeer.value[peerDeviceId] = current.map((status) => ({
         ...status,
         connected: status.kind === "network" ? networkConnected : bluetoothConnected,
       }));
