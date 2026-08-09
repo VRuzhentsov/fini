@@ -378,6 +378,29 @@ pub async fn dial(address: &str) -> Result<Box<dyn Link>, String> {
 /// connection is dropped either way: this function's job is identity
 /// confirmation, not establishing the real session — the next
 /// `space_sync_tick`'s dial loop picks the now-eligible peer up normally.
+/// Dials `address` and confirms it's genuinely `peer_id` via `BluetoothProbe`
+/// (not `perform_client_auth`: the ordinary Auth path requires Bluetooth to
+/// already be enabled for this pair, which is exactly the precondition
+/// `find_peer_address` exists to help establish -- reusing it would mean
+/// this discovery flow could never succeed for its actual target case).
+/// `None` on any failure along the way (dial, send, wrong/missing reply);
+/// the caller is responsible for bounding how long this is allowed to run.
+async fn probe_candidate(state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
+    let mut link = dial(address).await.ok()?;
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: state.identity.device_id.clone(),
+        },
+    )
+    .await
+    .ok()?;
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) if device_id == peer_id => Some(()),
+        _ => None,
+    }
+}
+
 pub async fn find_peer_address(
     state: DeviceConnectionState, db_path: PathBuf, peer_id: String, timeout: Duration,
 ) -> Result<Option<String>, String> {
@@ -409,30 +432,21 @@ pub async fn find_peer_address(
         if !tried.insert(address.clone()) {
             continue;
         }
-        let Ok(mut link) = dial(&address).await else {
-            continue;
-        };
-        // `BluetoothProbe`, not `perform_client_auth`: the ordinary Auth
-        // path requires Bluetooth to already be enabled for this pair
-        // (`run_peer_gate`'s `check_bluetooth_enabled`), which is exactly
-        // the precondition this discovery flow exists to help establish --
-        // reusing it would mean "Find via Bluetooth" could never succeed
-        // for its actual target case (address not yet known/enabled).
-        if send_frame(
-            link.as_mut(),
-            &PeerFrame::BluetoothProbe {
-                device_id: state.identity.device_id.clone(),
-            },
-        )
-        .await
-        .is_err()
-        {
-            continue;
+        // The dial+probe+reply round trip is bounded by the *remaining*
+        // scan deadline too, not left unbounded -- a candidate that
+        // accepts the connection but never answers `BluetoothProbe` would
+        // otherwise leave `recv_frame` waiting indefinitely, well past the
+        // `timeout` this function promises its caller (and the "Find via
+        // Bluetooth" button's advertised bound).
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
         }
-        let confirmed = matches!(
-            recv_frame(link.as_mut()).await,
-            Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) if device_id == peer_id
-        );
+        let confirmed = tokio::time::timeout(remaining, probe_candidate(&state, &address, &peer_id))
+            .await
+            .ok()
+            .flatten()
+            .is_some();
         if confirmed {
             let db_path = db_path.clone();
             let peer_id = peer_id.clone();

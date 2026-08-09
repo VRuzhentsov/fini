@@ -309,7 +309,7 @@ pub async fn run_session(
     let bluetooth_self_report_enabled = link.kind() == TransportKind::TcpWs && peer_protocol_version >= 1;
     let mut last_reported_bluetooth_address: Option<String> = None;
     if bluetooth_self_report_enabled {
-        if let Some(address) = crate::services::device_connection::local_bluetooth_address() {
+        if let Some(address) = local_bluetooth_address_bounded().await {
             if send_frame(
                 link.as_mut(),
                 &PeerFrame::BluetoothAddressUpdate { address: address.clone() },
@@ -347,7 +347,7 @@ pub async fn run_session(
                 }
             }
             _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {
-                if let Some(address) = crate::services::device_connection::local_bluetooth_address() {
+                if let Some(address) = local_bluetooth_address_bounded().await {
                     if last_reported_bluetooth_address.as_deref() != Some(address.as_str())
                         && send_frame(
                             link.as_mut(),
@@ -364,6 +364,21 @@ pub async fn run_session(
     }
 
     state.release_session(&peer_device_id);
+}
+
+/// `local_bluetooth_address()` shells out synchronously (`bluetoothctl
+/// show` on Linux) -- called directly from this async session loop, a
+/// stalled BlueZ/D-Bus would block the task indefinitely, and with it any
+/// sync frames waiting on the same `tokio::select!` despite Bluetooth being
+/// only an optional fallback. Runs it on the blocking thread pool instead,
+/// bounded by a timeout: `None` either way (never blocks) if it doesn't
+/// finish in time, same as if the platform couldn't read an address at all.
+async fn local_bluetooth_address_bounded() -> Option<String> {
+    let handle = tokio::task::spawn_blocking(crate::services::device_connection::local_bluetooth_address);
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .ok()?
+        .ok()?
 }
 
 /// Test/CI escape hatch, mirroring `local_bluetooth_address`'s own
