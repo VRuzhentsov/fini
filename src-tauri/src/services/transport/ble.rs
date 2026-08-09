@@ -264,6 +264,14 @@ pub fn set_add_mode(enabled: bool) {
     });
 }
 
+/// Serializes test access to the `add_mode_sender` process-global: held by
+/// this module's own test and by any `device_connection`/`transport` test
+/// that goes through `enter_add_mode_impl`/`leave_add_mode_impl` (which also
+/// call `set_add_mode`), so a concurrent flip from one can't land mid-assertion
+/// in another.
+#[cfg(test)]
+pub(crate) static ADD_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// One `LinuxBackend` for the process's lifetime. `ble_gatt::backend::linux::LinuxBackend::new()`
 /// opens a BlueZ D-Bus session and requires a powered adapter; constructing
 /// it lazily (on first dial/serve attempt) rather than at startup means a
@@ -905,11 +913,14 @@ mod tests {
     }
 
     /// `add_mode_sender` is a process-global singleton (mirrors the real
-    /// adapter's own single peripheral instance), so this is the only test
-    /// in the crate touching it -- adding a second would need the same kind
-    /// of env-var-style lock other tests use for genuinely global state.
+    /// adapter's own single peripheral instance). `device_connection`'s
+    /// `enter_add_mode_impl`/`leave_add_mode_impl` also flip it, so any test
+    /// exercising those (see `transport::tests`) must hold
+    /// `ADD_MODE_TEST_LOCK` too, the same way other process-global test
+    /// state in this crate is serialized.
     #[test]
     fn datagram_config_advertises_the_add_mode_flag_only_while_enabled() {
+        let _guard = ADD_MODE_TEST_LOCK.lock().unwrap();
         set_add_mode(false);
         let disabled = datagram_config();
         assert!(
