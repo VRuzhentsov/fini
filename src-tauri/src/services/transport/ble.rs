@@ -520,8 +520,8 @@ pub async fn find_peer_address(
                 let mut conn = open_db_at_path(&db_path);
                 crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
                     &mut conn, &peer_id, &address_owned,
-                );
-            });
+                )
+            })?;
             return Ok(Some(address));
         }
     }

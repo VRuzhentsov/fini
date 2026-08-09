@@ -506,9 +506,13 @@ async fn handle_inbound(
             let peer = peer_device_id.to_string();
             tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
-                    &mut conn, &peer, &address,
-                );
+                if let Err(err) =
+                    crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
+                        &mut conn, &peer, &address,
+                    )
+                {
+                    eprintln!("[space-sync] persist bluetooth self-report failed: {err}");
+                }
             });
         }
         // Pre-auth only (handled earlier in run_peer_gate's first-frame
