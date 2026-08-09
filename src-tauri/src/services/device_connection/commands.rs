@@ -321,19 +321,33 @@ pub(crate) fn request_os_bond(address: &str, peer_device_id: &str, db_path: std:
 pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     conn: &mut SqliteConnection, peer_id: &str, address: &str,
 ) -> bool {
-    // Read once upfront, used by more than one branch below: `enabled` for
-    // the inconclusive case's "is there anything to protect" check, and
-    // `disabled_by_user` to keep an explicit opt-out
-    // (`device_connection_set_bluetooth_transport_impl`'s disable branch)
-    // from being silently undone by this self-report/discovery path
-    // re-confirming a bond that never actually stopped existing at the OS
-    // level -- the user's *Fini-level* choice to not use it is a separate
-    // question from whether the OS thinks it's bonded.
+    // Read once upfront: `enabled` for the inconclusive case's "is there
+    // anything to protect" check below, and `disabled_by_user` to keep an
+    // explicit opt-out (`device_connection_set_bluetooth_transport_impl`'s
+    // disable branch) from being silently undone by this self-report/
+    // discovery path re-confirming a bond that never actually stopped
+    // existing at the OS level -- the user's *Fini-level* choice to not
+    // use it is a separate question from whether the OS thinks it's
+    // bonded.
     let (currently_enabled, disabled_by_user): (bool, bool) = paired_devices::table
         .find(peer_id)
         .select((paired_devices::bluetooth_enabled, paired_devices::bluetooth_disabled_by_user))
         .first(&mut *conn)
         .unwrap_or((false, false));
+
+    if disabled_by_user {
+        // `specs/device-connect/README.md`: "Disabling ... clears stored
+        // Bluetooth reconnect metadata," and that must *stay* cleared no
+        // matter what this self-report's bond check would otherwise
+        // conclude -- confirmed bonded, confirmed not bonded, or
+        // inconclusive all leave the row untouched here. Checked before
+        // even running the bond check itself: there is nothing this
+        // self-report could learn that should change a row the user has
+        // explicitly opted out of. Re-enabling via the settings toggle is
+        // what stores a fresh address again, deliberately as its own
+        // distinct user action.
+        return false;
+    }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let bond_check = bluetooth_address_bond_check(address);
@@ -341,16 +355,6 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     let bond_check = Some(false);
 
     match bond_check {
-        Some(true) if disabled_by_user => {
-            // Confirmed bonded, but the user explicitly turned this pair's
-            // Bluetooth off -- `specs/device-connect/README.md`: "Disabling
-            // ... clears stored Bluetooth reconnect metadata," and that
-            // must *stay* cleared, not get quietly repopulated by the next
-            // self-report. Do nothing at all; re-enabling via the settings
-            // toggle is what stores a fresh address again, deliberately as
-            // a distinct user action.
-            false
-        }
         Some(true) => {
             let _ = diesel::update(paired_devices::table.find(peer_id))
                 .set((
@@ -1686,6 +1690,49 @@ mod tests {
              metadata, and it must *stay* cleared -- not get quietly repopulated by the next \
              self-report"
         );
+        assert!(row.bluetooth_last_verified_at.is_none());
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    /// Regression test for the P2 review finding: the disabled-by-user
+    /// guard originally only covered the `Some(true)` (confirmed bonded)
+    /// branch, so a self-report while the bond was confirmed *absent* or
+    /// the check was inconclusive still repopulated `bluetooth_address`.
+    /// The guard now runs before the bond check even executes, so this
+    /// covers both remaining cases: a confirmed-not-paired address (no
+    /// matching `FINI_BLUETOOTH_PAIRED_ADDRESSES` entry) leaves an
+    /// explicitly-disabled peer's row untouched too.
+    #[test]
+    fn persist_bluetooth_address_ignores_a_confirmed_not_paired_result_after_an_explicit_disable() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
+
+        let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set((
+                paired_devices::bluetooth_enabled.eq(false),
+                paired_devices::bluetooth_address.eq(Option::<String>::None),
+                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
+                paired_devices::bluetooth_disabled_by_user.eq(true),
+            ))
+            .execute(&mut conn)
+            .expect("seed an explicitly-disabled pair");
+
+        let enabled =
+            persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF");
+        assert!(!enabled);
+
+        let row: PairedDevice = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .expect("load peer row");
+        assert_eq!(
+            row.bluetooth_address, None,
+            "a confirmed-not-paired result must not repopulate a disabled peer's address either"
+        );
+        assert!(!row.bluetooth_enabled);
         assert!(row.bluetooth_last_verified_at.is_none());
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
