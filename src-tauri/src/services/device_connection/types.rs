@@ -4,6 +4,12 @@ use std::time::Instant;
 
 use crate::services::space_sync::types::{SessionSender, SyncEventEnvelope};
 use crate::services::transport::TransportKind;
+// Aliased: this module's own `TransportKind` (Network/Bluetooth, above)
+// names the same concept `crate::services::transport::TransportKind`
+// (TcpWs/Sim/Bluetooth/LoRa, used for `peer_session_kind` below) does at a
+// different granularity -- `DiscoveredDevice.transport` only ever needs
+// "which discovery mechanism found this," not the live-session kind.
+use super::transport::TransportKind as DiscoveryTransportKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceIdentity {
@@ -19,6 +25,14 @@ pub struct DiscoveredDevice {
     pub discovery_port: u16,
     pub ws_port: Option<u16>,
     pub last_seen_at: String,
+    /// Which discovery mechanism found this candidate — ADR 0002 Phase 3's
+    /// unified candidate list. `discovery_port`/`ws_port` are meaningless
+    /// for a Bluetooth-discovered entry (`addr` carries the Bluetooth
+    /// address instead of an IP); `#[serde(default)]` on the network side
+    /// keeps this additive for any caller still constructing the old
+    /// three-field shape.
+    #[serde(default)]
+    pub transport: DiscoveryTransportKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +112,15 @@ pub struct DevicePairRequestInput {
     pub to_device_id: String,
     pub to_addr: String,
     pub to_ws_port: Option<u16>,
+}
+
+/// The BLE-first pairing equivalent of `DevicePairRequestInput` (ADR 0002
+/// Phase 3) — no port, since a BLE connection is addressed by MAC alone.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DevicePairRequestBluetoothInput {
+    pub request_id: String,
+    pub to_device_id: String,
+    pub to_bluetooth_address: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

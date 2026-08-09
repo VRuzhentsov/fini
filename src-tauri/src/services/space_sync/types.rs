@@ -71,4 +71,22 @@ pub enum PeerFrame {
     /// `docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`.
     #[serde(rename = "bluetooth_address_update")]
     BluetoothAddressUpdate { address: String },
+    /// Pre-auth, sent by a scanner over a fresh BLE connection to a
+    /// candidate whose advertisement already carried the add-mode flag
+    /// (`transport::ble`'s own scan-side filtering, so a stranger not in
+    /// add-mode is never even connected to). BLE advertisements can't carry
+    /// a device_id/hostname the way mDNS's `DiscoveryBeacon` does (payload
+    /// too small alongside the service UUID), and `PairRequestPayload`
+    /// itself requires `to_device_id` up front -- this is what lets a
+    /// scanner learn it before attempting a real `PairRequest`. Untrusted,
+    /// same as `PairRequest`/`PairAccept`/`PairComplete`: discovery
+    /// metadata is never the trust boundary, Fini's own pairing handshake
+    /// is (`specs/device-connect/README.md`).
+    #[serde(rename = "discovery_hello")]
+    DiscoveryHello,
+    /// Reply to `DiscoveryHello`, sent only if the receiver is currently in
+    /// add-mode itself -- `specs/device-connect/README.md`: "Only devices
+    /// in add-mode are pairing candidates."
+    #[serde(rename = "discovery_hello_reply")]
+    DiscoveryHelloReply { device_id: String, hostname: String },
 }

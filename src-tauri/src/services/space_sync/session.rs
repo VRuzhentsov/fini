@@ -155,6 +155,24 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             let _ = state.receive_ws_pair_complete(payload);
             return;
         }
+        PeerFrame::DiscoveryHello => {
+            // No reply at all when not in add-mode -- matching the
+            // network-discovery equivalent (a mDNS beacon simply isn't
+            // broadcast outside add-mode), rather than an explicit
+            // rejection frame that would let a scanner distinguish "not in
+            // add-mode" from "connection failed."
+            if state.is_add_mode_enabled() {
+                let _ = send_frame(
+                    link.as_mut(),
+                    &PeerFrame::DiscoveryHelloReply {
+                        device_id: state.identity.device_id.clone(),
+                        hostname: state.identity.hostname.clone(),
+                    },
+                )
+                .await;
+            }
+            return;
+        }
         PeerFrame::Auth {
             device_id,
             peer_device_id,
@@ -368,12 +386,15 @@ async fn handle_inbound(
                 );
             });
         }
-        // Sent by this side, not expected inbound
+        // Pre-auth only (handled earlier in run_peer_gate's first-frame
+        // dispatch) or sent by this side -- never expected inbound here.
         PeerFrame::Auth { .. }
         | PeerFrame::AuthOk
         | PeerFrame::AuthFail { .. }
         | PeerFrame::PairRequest(_)
         | PeerFrame::PairAccept(_)
-        | PeerFrame::PairComplete(_) => {}
+        | PeerFrame::PairComplete(_)
+        | PeerFrame::DiscoveryHello
+        | PeerFrame::DiscoveryHelloReply { .. } => {}
     }
 }

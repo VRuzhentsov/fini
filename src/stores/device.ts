@@ -32,6 +32,10 @@ export interface DiscoveredDevice {
   discovery_port: number;
   ws_port: number | null;
   last_seen_at: string;
+  // Which discovery mechanism found this candidate -- ADR 0002 Phase 3.
+  // `addr` carries a Bluetooth MAC (and `discovery_port`/`ws_port` are
+  // meaningless) when this is "bluetooth".
+  transport: "network" | "bluetooth";
 }
 
 export interface IncomingPairRequest {
@@ -149,6 +153,12 @@ interface DevicePairRequestInput {
   to_ws_port?: number | null;
 }
 
+interface DevicePairRequestBluetoothInput {
+  request_id: string;
+  to_device_id: string;
+  to_bluetooth_address: string;
+}
+
 interface DevicePairRequestAckInput {
   request_id: string;
 }
@@ -162,6 +172,13 @@ export const ADD_MODE_DISCOVERY_INTERVAL_MS = 5_000;
 const ADD_MODE_POLL_INTERVAL_MS = 1_000;
 const PRESENCE_POLL_INTERVAL_MS = 15_000;
 const MAPPING_UPDATE_POLL_INTERVAL_MS = 3_000;
+// A BLE scan pass has its own internal deadline covering both scanning and
+// dialing each flagged candidate for a `DiscoveryHello`, so it can take up
+// to `BLUETOOTH_SCAN_DURATION_MS` to resolve -- unlike the other polls,
+// this loop is self-rescheduling (not `setInterval`) so passes never
+// overlap.
+const BLUETOOTH_SCAN_DURATION_MS = 4_000;
+const BLUETOOTH_SCAN_IDLE_GAP_MS = 2_000;
 const NORMAL_HEARTBEAT_MS = 60_000;
 const OFFLINE_AFTER_MISSED_HEARTBEATS_MS = NORMAL_HEARTBEAT_MS * 2;
 const REQUEST_TTL_MS = 60_000;
@@ -206,6 +223,14 @@ export const useDeviceStore = defineStore("device", () => {
   let discoveryTimer: ReturnType<typeof setInterval> | null = null;
   let presenceTimer: ReturnType<typeof setInterval> | null = null;
   let mappingUpdateTimer: ReturnType<typeof setInterval> | null = null;
+  let bluetoothScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let bluetoothScanActive = false;
+  // Merge inputs for the unified candidate list (ADR 0002 Phase 3):
+  // network beacons and BLE scan results are fetched on independent
+  // schedules, so `discoveredDevices` is recomputed from both whenever
+  // either source updates rather than one overwriting the other.
+  let latestNetworkDiscovered: DiscoveredDevice[] = [];
+  let latestBluetoothDiscovered: DiscoveredDevice[] = [];
 
   const outgoingRequestSecondsLeft = computed(() => {
     if (!outgoingRequest.value) return 0;
@@ -563,10 +588,10 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  function setDiscovered(items: DiscoveredDevice[]) {
+  function recomputeDiscovered() {
     const deduped = new Map<string, DiscoveredDevice>();
 
-    for (const item of items) {
+    for (const item of [...latestNetworkDiscovered, ...latestBluetoothDiscovered]) {
       if (item.device_id === identity.value.device_id) continue;
       if (pairedDeviceIds.value.has(item.device_id)) continue;
 
@@ -579,6 +604,16 @@ export const useDeviceStore = defineStore("device", () => {
     discoveredDevices.value = [...deduped.values()].sort((a, b) => {
       return Date.parse(b.last_seen_at) - Date.parse(a.last_seen_at);
     });
+  }
+
+  function setDiscovered(items: DiscoveredDevice[]) {
+    latestNetworkDiscovered = items;
+    recomputeDiscovered();
+  }
+
+  function setBluetoothDiscovered(items: DiscoveredDevice[]) {
+    latestBluetoothDiscovered = items;
+    recomputeDiscovered();
   }
 
   function pruneRequests() {
@@ -752,6 +787,46 @@ export const useDeviceStore = defineStore("device", () => {
     discoveryTimer = null;
   }
 
+  async function bluetoothScanTick() {
+    if (!bluetoothScanActive) return;
+
+    try {
+      const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
+        durationMs: BLUETOOTH_SCAN_DURATION_MS,
+      });
+      if (!bluetoothScanActive) return;
+      setBluetoothDiscovered(items);
+    } catch (error) {
+      // Not a transient failure -- either the platform has no Bluetooth
+      // backend or scanning permission was denied. Stop rather than retry
+      // forever; `enterAddMode` restarts the loop on the next visit.
+      console.warn("[device-connection] bluetooth candidate scan failed, stopping scan loop", error);
+      bluetoothScanActive = false;
+      return;
+    }
+
+    if (!bluetoothScanActive) return;
+    bluetoothScanTimer = setTimeout(() => {
+      void bluetoothScanTick();
+    }, BLUETOOTH_SCAN_IDLE_GAP_MS);
+  }
+
+  function startBluetoothScanLoop() {
+    if (bluetoothScanActive) return;
+    bluetoothScanActive = true;
+    void bluetoothScanTick();
+  }
+
+  function stopBluetoothScanLoop() {
+    bluetoothScanActive = false;
+    if (bluetoothScanTimer) {
+      clearTimeout(bluetoothScanTimer);
+      bluetoothScanTimer = null;
+    }
+    latestBluetoothDiscovered = [];
+    recomputeDiscovered();
+  }
+
   function startPresenceLoop() {
     if (presenceTimer) return;
     void refreshPresence();
@@ -792,12 +867,14 @@ export const useDeviceStore = defineStore("device", () => {
     }
 
     startDiscoveryLoop();
+    startBluetoothScanLoop();
   }
 
   async function leaveAddMode() {
     addModeEnabled.value = false;
     pairCompletedAt.value = null;
     stopDiscoveryLoop();
+    stopBluetoothScanLoop();
 
     try {
       await invoke("device_connection_leave_add_mode");
@@ -810,6 +887,8 @@ export const useDeviceStore = defineStore("device", () => {
     incomingAttemptCount.value = {};
     incomingCooldownUntil.value = {};
     outgoingRequest.value = null;
+    latestNetworkDiscovered = [];
+    latestBluetoothDiscovered = [];
     discoveredDevices.value = [];
     addModeLastRefreshAt.value = null;
     void refreshDebugStatus();
@@ -822,12 +901,6 @@ export const useDeviceStore = defineStore("device", () => {
     }
 
     const requestId = randomId();
-    const payload: DevicePairRequestInput = {
-      request_id: requestId,
-      to_device_id: device.device_id,
-      to_addr: device.addr,
-      to_ws_port: device.ws_port,
-    };
 
     outgoingRequest.value = {
       request_id: requestId,
@@ -840,7 +913,22 @@ export const useDeviceStore = defineStore("device", () => {
     };
 
     try {
-      await invoke("device_connection_send_pair_request", { input: payload });
+      if (device.transport === "bluetooth") {
+        const payload: DevicePairRequestBluetoothInput = {
+          request_id: requestId,
+          to_device_id: device.device_id,
+          to_bluetooth_address: device.addr,
+        };
+        await invoke("device_connection_send_pair_request_bluetooth", { input: payload });
+      } else {
+        const payload: DevicePairRequestInput = {
+          request_id: requestId,
+          to_device_id: device.device_id,
+          to_addr: device.addr,
+          to_ws_port: device.ws_port,
+        };
+        await invoke("device_connection_send_pair_request", { input: payload });
+      }
       void refreshDiscovery();
     } catch (error) {
       console.warn("[device-connection] pair request send failed", error);

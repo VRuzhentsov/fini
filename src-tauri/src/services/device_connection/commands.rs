@@ -18,9 +18,9 @@ use crate::services::device_connection::runtime::{
 };
 use crate::services::device_connection::types::{
     DeviceBluetoothTransportInput, DeviceConnectionDebugStatus, DeviceIdentity,
-    DevicePairRequestAckInput, DevicePairRequestInput, DiscoveredDevice, IncomingPairRequest,
-    IncomingSpaceMappingUpdate, PairAcceptPayload, PairCodeUpdate, PairCompletePayload,
-    PairCompletionUpdate, PairRequestPayload,
+    DevicePairRequestAckInput, DevicePairRequestBluetoothInput, DevicePairRequestInput,
+    DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairAcceptPayload,
+    PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::device_connection::DeviceConnectionState;
 use crate::services::device_connection::{build_transport_statuses, TransportStatus};
@@ -209,6 +209,19 @@ fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
     })
 }
 
+/// One-shot pre-auth pairing sender over Bluetooth — the BLE-first pairing
+/// equivalent of `send_pair_ws` above (ADR 0002 Phase 3). No text-framing
+/// dance needed here: `transport::send_frame` already handles encoding for
+/// any `Link`, unlike the WebSocket path, which has to hand-roll a
+/// `Message::Text` frame around the same codec.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn send_pair_ble(address: &str, msg: PeerFrame) -> Result<(), String> {
+    tauri::async_runtime::block_on(async move {
+        let mut link = crate::services::transport::ble::dial(address).await?;
+        crate::services::transport::send_frame(link.as_mut(), &msg).await
+    })
+}
+
 pub fn device_connection_get_identity_impl(
     state: &DeviceConnectionState,
 ) -> Result<DeviceIdentity, String> {
@@ -234,6 +247,11 @@ pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> R
         "[device-sync] add mode enabled for {} ({})",
         state.identity.hostname, state.identity.device_id
     );
+    // One toggle, both transports (ADR 0002 Phase 3): entering add-mode
+    // makes this device discoverable over Bluetooth too, not just the
+    // existing mDNS beacon.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::transport::ble::set_add_mode(true);
     Ok(())
 }
 
@@ -257,6 +275,8 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
         "[device-sync] add mode disabled for {} ({})",
         state.identity.hostname, state.identity.device_id
     );
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::transport::ble::set_add_mode(false);
     Ok(())
 }
 
@@ -319,6 +339,106 @@ pub fn device_connection_send_pair_request(
     input: DevicePairRequestInput,
 ) -> Result<(), String> {
     device_connection_send_pair_request_impl(&state, input)
+}
+
+/// BLE-first pairing (ADR 0002 Phase 3): sends the same `PairRequestPayload`
+/// shape `device_connection_send_pair_request_impl` does, just over a fresh
+/// Bluetooth connection instead of a WebSocket one -- `run_peer_gate`
+/// handles the resulting `PeerFrame::PairRequest` identically regardless of
+/// which transport carried it, so nothing downstream of `send_pair_ble`
+/// needs to know the difference. `to_device_id` here comes from a prior
+/// `scan_add_mode_candidates`/`DiscoveryHelloReply`, not typed in by the
+/// user.
+pub fn device_connection_send_pair_request_bluetooth_impl(
+    state: &DeviceConnectionState,
+    input: DevicePairRequestBluetoothInput,
+) -> Result<(), String> {
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = (state, input);
+        return Err("Bluetooth is not available on this platform".to_string());
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let created_at = utc_now();
+        let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        let payload = PairRequestPayload {
+            protocol: DISCOVERY_PROTOCOL.to_string(),
+            kind: "pair_request".to_string(),
+            request_id: input.request_id,
+            from_device_id: state.identity.device_id.clone(),
+            from_hostname: state.identity.hostname.clone(),
+            from_discovery_port: Some(state.discovery_port),
+            from_ws_port: Some(state.space_sync_ws_port),
+            to_device_id: input.to_device_id,
+            created_at,
+            expires_at,
+        };
+
+        send_pair_ble(&input.to_bluetooth_address, PeerFrame::PairRequest(payload.clone()))?;
+
+        if let Ok(mut guard) = state.runtime.lock() {
+            guard.tx_count += 1;
+        }
+
+        eprintln!(
+            "[device-sync] pair request {} sent to {} (bluetooth {})",
+            payload.request_id, payload.to_device_id, input.to_bluetooth_address
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_send_pair_request_bluetooth(
+    state: State<DeviceConnectionState>,
+    input: DevicePairRequestBluetoothInput,
+) -> Result<(), String> {
+    device_connection_send_pair_request_bluetooth_impl(&state, input)
+}
+
+/// Phase 3's discovery scan, exposed to `AddDeviceView.vue`: scans for
+/// add-mode-flagged BLE candidates for `duration_ms` and maps them into the
+/// same `DiscoveredDevice` shape mDNS-sourced candidates use, tagged
+/// `transport: Bluetooth`, for the unified candidate list.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub async fn device_connection_discover_bluetooth_candidates(
+    state: State<'_, DeviceConnectionState>, duration_ms: u64,
+) -> Result<Vec<DiscoveredDevice>, String> {
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = duration_ms;
+        let _ = state.identity.device_id.as_str();
+        return Err("Bluetooth is not available on this platform".to_string());
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let my_device_id = state.identity.device_id.clone();
+        let candidates = crate::services::transport::ble::scan_add_mode_candidates(
+            &my_device_id,
+            std::time::Duration::from_millis(duration_ms),
+        )
+        .await?;
+        let now = utc_now();
+        Ok(candidates
+            .into_iter()
+            .map(|candidate| DiscoveredDevice {
+                device_id: candidate.device_id,
+                hostname: candidate.hostname,
+                addr: candidate.address,
+                discovery_port: 0,
+                ws_port: None,
+                last_seen_at: now.clone(),
+                transport: crate::services::device_connection::transport::TransportKind::Bluetooth,
+            })
+            .collect())
+    }
 }
 
 pub fn device_connection_pair_incoming_requests_impl(
@@ -581,6 +701,7 @@ pub fn device_connection_discovery_snapshot_impl(
             discovery_port: peer.discovery_port,
             ws_port: peer.ws_port,
             last_seen_at: peer.last_seen_at.clone(),
+            transport: Default::default(),
         })
         .collect();
 
@@ -619,6 +740,7 @@ pub fn device_connection_presence_snapshot_impl(
             discovery_port: peer.discovery_port,
             ws_port: peer.ws_port,
             last_seen_at: peer.last_seen_at.clone(),
+            transport: Default::default(),
         })
         .collect();
 

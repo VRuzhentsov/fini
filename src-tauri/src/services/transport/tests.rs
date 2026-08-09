@@ -777,3 +777,67 @@ async fn bluetooth_gate_rejects_when_connecting_address_does_not_match_the_bonde
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }
+
+/// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
+/// reply when the receiver is actually in add-mode -- the BLE-scan
+/// equivalent of network discovery simply not broadcasting outside
+/// add-mode. Uses `set_add_mode_for_test` (instance-scoped) rather than the
+/// real `enter_add_mode_impl`, which would also flip the process-global
+/// `transport::ble` advertising flag `ble::tests` already covers
+/// separately.
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
+    let (server, server_db) = server_state("transport-discovery-hello-on");
+    server.set_add_mode_for_test(true);
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+        .await
+        .expect("send discovery hello");
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname })) => {
+            assert_eq!(device_id, server.identity.device_id);
+            assert_eq!(hostname, server.identity.hostname);
+        }
+        other => panic!("expected a DiscoveryHelloReply while in add-mode, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
+    let (server, server_db) = server_state("transport-discovery-hello-off");
+    // Add-mode is off by default -- no set_add_mode_for_test call.
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+        .await
+        .expect("send discovery hello");
+    // The server task returns without replying, dropping its side of the
+    // link -- observed here as either a clean EOF (`None`) or a connection
+    // error from the abrupt close (`Some(Err(_))`), depending on how the
+    // underlying transport surfaces an ungraceful drop. Either is "no
+    // valid reply was given"; only an actual `DiscoveryHelloReply` fails
+    // the test.
+    match recv_frame(link.as_mut()).await {
+        None | Some(Err(_)) => {}
+        other => panic!("a receiver not in add-mode must not reply to DiscoveryHello, got {other:?}"),
+    }
+}

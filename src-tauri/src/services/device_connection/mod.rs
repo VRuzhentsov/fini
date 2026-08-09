@@ -14,14 +14,15 @@ use crate::services::transport::TransportKind;
 #[cfg(any(feature = "ui-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
-    device_connection_discovery_snapshot, device_connection_enter_add_mode,
-    device_connection_find_bluetooth_address, device_connection_get_identity,
-    device_connection_get_paired_devices, device_connection_leave_add_mode,
-    device_connection_pair_accept_request, device_connection_pair_acknowledge_request,
-    device_connection_pair_complete_request, device_connection_pair_incoming_requests,
-    device_connection_pair_outgoing_completions, device_connection_pair_outgoing_updates,
-    device_connection_presence_snapshot, device_connection_save_paired_device,
-    device_connection_send_pair_request, device_connection_session_transport,
+    device_connection_discover_bluetooth_candidates, device_connection_discovery_snapshot,
+    device_connection_enter_add_mode, device_connection_find_bluetooth_address,
+    device_connection_get_identity, device_connection_get_paired_devices,
+    device_connection_leave_add_mode, device_connection_pair_accept_request,
+    device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
+    device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
+    device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
+    device_connection_save_paired_device, device_connection_send_pair_request,
+    device_connection_send_pair_request_bluetooth, device_connection_session_transport,
     device_connection_set_bluetooth_transport, device_connection_transport_statuses,
     device_connection_unpair, device_connection_update_last_seen,
 };
@@ -285,6 +286,30 @@ impl DeviceConnectionState {
     pub fn session_kind(&self, peer_device_id: &str) -> Option<TransportKind> {
         let guard = self.runtime.lock().ok()?;
         guard.peer_session_kind.get(peer_device_id).copied()
+    }
+
+    /// Whether this device is currently discoverable for pairing —
+    /// `specs/device-connect/README.md`: "Only devices in add-mode are
+    /// pairing candidates." Used by `session::run_peer_gate`'s
+    /// `DiscoveryHello` handling (ADR 0002 Phase 3) to decide whether to
+    /// reply at all, the BLE-scan equivalent of the existing check
+    /// `receive_ws_pair_request` already makes for network `PairRequest`s.
+    pub fn is_add_mode_enabled(&self) -> bool {
+        self.runtime.lock().map(|guard| guard.add_mode_enabled).unwrap_or(false)
+    }
+
+    /// Test-only, instance-scoped toggle for `is_add_mode_enabled` --
+    /// deliberately does *not* also flip `transport::ble::set_add_mode`
+    /// (unlike the real `device_connection_enter_add_mode_impl`/
+    /// `leave_add_mode_impl`), since that is a *process-global* singleton
+    /// shared by every test in the binary. Exercising `run_peer_gate`'s
+    /// `DiscoveryHello` gating needs only this instance's flag, not the
+    /// BLE-advertising side effect.
+    #[cfg(test)]
+    pub fn set_add_mode_for_test(&self, enabled: bool) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.add_mode_enabled = enabled;
+        }
     }
 
     /// Reserved for UI consumption (live transport-changed/connect/disconnect

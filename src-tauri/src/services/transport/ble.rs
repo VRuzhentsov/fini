@@ -175,7 +175,8 @@ mod android_lazy {
 use crate::services::db::open_db_at_path;
 use crate::services::device_connection::{bluetooth_dial_candidates, DeviceConnectionState};
 use crate::services::space_sync::session;
-use crate::services::transport::{BoxDialFuture, Link, Transport, TransportKind};
+use crate::services::space_sync::types::PeerFrame;
+use crate::services::transport::{recv_frame, send_frame, BoxDialFuture, Link, Transport, TransportKind};
 
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
@@ -186,10 +187,58 @@ const FINI_BLE_SERVICE_UUID: &str = "b1e6a000-f101-4000-8000-00805f9b34fb";
 const FINI_BLE_CHARACTERISTIC_UUID: &str = "b1e6a001-f101-4000-8000-00805f9b34fb";
 
 fn datagram_config() -> DatagramConfig {
-    DatagramConfig::new(
+    let mut config = DatagramConfig::new(
         ServiceUuid(Uuid::parse_str(FINI_BLE_SERVICE_UUID).expect("valid UUID literal")),
         CharacteristicUuid(Uuid::parse_str(FINI_BLE_CHARACTERISTIC_UUID).expect("valid UUID literal")),
-    )
+    );
+    if *add_mode_sender().borrow() {
+        config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, vec![ADD_MODE_FLAG_BYTE]);
+    }
+    config
+}
+
+/// `0xFFFF` is the Bluetooth SIG's own reserved value for "manufacturer
+/// specific data" used for testing and non-market purposes — the
+/// appropriate choice for a private, unregistered app like Fini rather
+/// than picking an arbitrary value that could collide with a real vendor's
+/// company ID some other nearby scanner is specifically watching for.
+const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
+/// The entire payload of that manufacturer data: whether this device is
+/// currently in add-mode. One byte is deliberate — legacy advertisements
+/// cap out at 31 bytes total, and the service UUID above already spends
+/// most of that; see `GattServiceSpec::manufacturer_data`'s own doc
+/// comment in ble-gatt.
+const ADD_MODE_FLAG_BYTE: u8 = 0x01;
+
+/// Shared add-mode state, watched by `run_server`'s peripheral loop so a
+/// toggle can trigger a fresh advertisement carrying (or dropping) the
+/// add-mode flag without restarting the whole peripheral task -- Android's
+/// `start_peripheral_once` is deliberately a one-time start (ADR-0002 in
+/// ble-gatt: constructing `AndroidBackend` outside a genuine post-startup
+/// call panics), so the *outer* task can never be torn down and re-spawned
+/// to pick up a config change; only the inner advertise/accept loop can be.
+///
+/// `watch::Sender` alone is enough: it has its own `borrow()` for a
+/// snapshot read (`datagram_config()`, above), and `subscribe()` hands out
+/// a fresh `Receiver` for whichever caller needs to *wait* on a change
+/// (`run_server`, in a `tokio::select!` against the incoming-connections
+/// stream) — no need to also keep a shared `Receiver` around.
+fn add_mode_sender() -> &'static tokio::sync::watch::Sender<bool> {
+    static SENDER: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
+}
+
+/// Called from `device_connection_enter_add_mode`/`leave_add_mode` — see
+/// `add_mode_sender`'s doc comment for why this signals a running
+/// `run_server` rather than restarting it.
+pub fn set_add_mode(enabled: bool) {
+    add_mode_sender().send_if_modified(|current| {
+        if *current == enabled {
+            return false;
+        }
+        *current = enabled;
+        true
+    });
 }
 
 /// One `LinuxBackend` for the process's lifetime. `ble_gatt::backend::linux::LinuxBackend::new()`
@@ -381,6 +430,86 @@ pub async fn find_peer_address(
     }
 }
 
+/// A nearby, not-yet-paired device discovered via BLE while both sides are
+/// in add-mode — the Bluetooth-side entry `AddDeviceView.vue`'s unified
+/// candidate list merges alongside mDNS-discovered ones (ADR 0002 Phase 3).
+pub struct AddModeCandidate {
+    pub address: String,
+    pub device_id: String,
+    pub hostname: String,
+}
+
+/// Scans for nearby Fini BLE advertisers carrying the add-mode flag (see
+/// `datagram_config`/`set_add_mode`) and exchanges `DiscoveryHello` with
+/// each one to learn its identity — Phase 3's discovery mechanism for
+/// devices that have never paired at all. Devices not currently
+/// advertising the flag are invisible here and never connected to; this is
+/// the client-side half of the filtering `datagram_config` implements on
+/// the advertising side.
+///
+/// Returns everything found within `timeout`, not just the first match
+/// (unlike `find_peer_address`, this feeds a picker list, not a single
+/// confirm-and-persist action) — callers needing an ongoing view call this
+/// repeatedly rather than once for a long window.
+pub async fn scan_add_mode_candidates(
+    my_device_id: &str, timeout: Duration,
+) -> Result<Vec<AddModeCandidate>, String> {
+    use futures_util::StreamExt;
+
+    let backend = backend().await?;
+    let mut discovered = backend
+        .scan(datagram_config().service)
+        .await
+        .map_err(|err| format!("ble scan failed: {err}"))?;
+
+    let mut candidates = Vec::new();
+    let mut tried: HashSet<String> = HashSet::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok(Some(Ok(peer))) = tokio::time::timeout(remaining, discovered.next()).await else {
+            // Timed out, the stream ended, or this one scan result carried
+            // an error -- all three just end the scan with whatever was
+            // already found, matching `find_peer_address`'s own reasoning.
+            break;
+        };
+        let address = peer.address.0.clone();
+        if !tried.insert(address.clone()) {
+            continue;
+        }
+        let flagged =
+            peer.manufacturer_data.get(&FINI_MANUFACTURER_ID).map(|v| v.as_slice())
+                == Some([ADD_MODE_FLAG_BYTE].as_slice());
+        if !flagged {
+            continue;
+        }
+        let Ok(mut link) = dial(&address).await else {
+            continue;
+        };
+        if send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.is_err() {
+            continue;
+        }
+        // Bounded separately from the overall scan deadline: one
+        // unresponsive candidate (in range, advertising, but slow or gone
+        // by the time this connects) must not eat the whole remaining scan
+        // window waiting on a reply that may never come.
+        let reply = tokio::time::timeout(Duration::from_secs(5), recv_frame(link.as_mut())).await;
+        if let Ok(Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname }))) = reply {
+            // A stale/self-seen advertisement (e.g. two adapters on the
+            // same machine, or a previous scan's own peripheral still
+            // winding down) must not show up as a candidate to pair with.
+            if device_id != my_device_id {
+                candidates.push(AddModeCandidate { address, device_id, hostname });
+            }
+        }
+    }
+    Ok(candidates)
+}
+
 /// `Transport` implementation for the Bluetooth adapter — see the note on
 /// `transport::tcp_ws::TcpWsTransport` for why production dial loops call
 /// `dial()` directly rather than through this trait object.
@@ -453,16 +582,43 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         eprintln!("[transport][ble] advertising, awaiting centrals");
         delay = Duration::from_secs(2);
 
-        while let Some(channel) = incoming.next().await {
-            let link: Box<dyn Link> = Box::new(BleLink::new(channel));
-            let state = state.clone();
-            let db_path = db_path.clone();
-            tokio::spawn(session::run_peer_gate(link, state, db_path));
+        // Watched (not merely read) so a toggle mid-serve interrupts the
+        // accept loop below immediately, rather than only taking effect on
+        // whatever later triggers a natural re-advertise -- see
+        // `add_mode_sender`'s doc comment for why this is a signal to the
+        // running loop rather than a full task restart.
+        let mut add_mode_rx = add_mode_sender().subscribe();
+        let mut restarting_for_add_mode_change = false;
+        loop {
+            tokio::select! {
+                channel = incoming.next() => {
+                    let Some(channel) = channel else { break; };
+                    let link: Box<dyn Link> = Box::new(BleLink::new(channel));
+                    let state = state.clone();
+                    let db_path = db_path.clone();
+                    tokio::spawn(session::run_peer_gate(link, state, db_path));
+                }
+                _ = add_mode_rx.changed() => {
+                    eprintln!("[transport][ble] add-mode changed; re-advertising");
+                    restarting_for_add_mode_change = true;
+                    break;
+                }
+            }
+        }
+        if restarting_for_add_mode_change {
+            // Ending `incoming` here (by falling through to the outer
+            // loop's next `datagram::serve` call) is what actually stops
+            // the old advertisement -- ble-gatt's backends tear down the
+            // previous generation's GATT server/advertisement as part of
+            // starting a new one (see BleGattBridge.startAdvertising's own
+            // doc comment: "tear down any predecessor first").
+            delay = Duration::from_secs(2);
+            continue;
         }
         // The serve stream itself ended (e.g. the adapter dropped out from
-        // under it) rather than a caller closing it — nothing here ever
-        // drops the stream deliberately. Retry rather than leaving the
-        // peripheral role dead.
+        // under it) rather than a caller closing it or an add-mode change
+        // — nothing else here ever drops the stream deliberately. Retry
+        // rather than leaving the peripheral role dead.
         eprintln!("[transport][ble] serve stream ended unexpectedly; retrying in {delay:?}");
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(max_delay);
@@ -626,5 +782,33 @@ mod tests {
         assert!(!should_dial_peer("peer-b", "local-a", false));
         assert!(!should_dial_peer("local-a", "peer-b", true));
         assert!(!should_dial_peer("same-id", "same-id", false));
+    }
+
+    /// `add_mode_sender` is a process-global singleton (mirrors the real
+    /// adapter's own single peripheral instance), so this is the only test
+    /// in the crate touching it -- adding a second would need the same kind
+    /// of env-var-style lock other tests use for genuinely global state.
+    #[test]
+    fn datagram_config_advertises_the_add_mode_flag_only_while_enabled() {
+        set_add_mode(false);
+        let disabled = datagram_config();
+        assert!(
+            !disabled.advertised_manufacturer_data.contains_key(&FINI_MANUFACTURER_ID),
+            "must not advertise the add-mode flag while add-mode is off"
+        );
+
+        set_add_mode(true);
+        let enabled = datagram_config();
+        assert_eq!(
+            enabled.advertised_manufacturer_data.get(&FINI_MANUFACTURER_ID),
+            Some(&vec![ADD_MODE_FLAG_BYTE])
+        );
+
+        set_add_mode(false);
+        let disabled_again = datagram_config();
+        assert!(
+            !disabled_again.advertised_manufacturer_data.contains_key(&FINI_MANUFACTURER_ID),
+            "must stop advertising the flag once add-mode is left again"
+        );
     }
 }
