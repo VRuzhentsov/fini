@@ -478,13 +478,17 @@ pub async fn find_peer_address(
         if remaining.is_zero() {
             return Ok(None);
         }
-        let Ok(Some(Ok(candidate))) = tokio::time::timeout(remaining, discovered.next()).await else {
-            // Timed out, the stream ended, or this one candidate's scan
-            // result carried an error -- none of those should abandon the
-            // whole search except the timeout, but a broken stream can't
-            // usefully be polled again either, so treat all three as "stop
-            // and report not found."
-            return Ok(None);
+        let candidate = match tokio::time::timeout(remaining, discovered.next()).await {
+            Ok(Some(Ok(candidate))) => candidate,
+            // A backend-level scan failure (e.g. Android's async
+            // `onScanFailed` for an adapter, registration, or permission
+            // problem) means Bluetooth itself is unusable right now, not
+            // merely "no candidate seen yet" -- surface it as an error so
+            // the caller doesn't report a misleading "not found".
+            Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
+            // Timed out, or the stream ended with nothing left to poll:
+            // both are a genuine "not found within the deadline".
+            Ok(None) | Err(_) => return Ok(None),
         };
         let address = candidate.address.0;
         if !tried.insert(address.clone()) {
