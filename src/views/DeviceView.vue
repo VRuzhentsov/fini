@@ -19,6 +19,7 @@ const savingMappings = ref(false);
 const savingBluetoothTransport = ref(false);
 const findingBluetoothAddress = ref(false);
 const bluetoothFindResult = ref<"found" | "not_found" | null>(null);
+let findBluetoothGeneration = 0;
 const mappingError = ref<string | null>(null);
 const bluetoothTransportError = ref<string | null>(null);
 const mappingsDirty = ref(false);
@@ -102,6 +103,16 @@ onUnmounted(() => {
 watch(deviceId, () => {
   mappingsDirty.value = false;
   void loadMappings();
+
+  // Invalidate any in-flight findViaBluetooth scan for the device we just
+  // navigated away from, and reset this route's own find UI immediately.
+  // findingBluetoothAddress is page-level, not per-device; without this,
+  // it would stay "Scanning..." (and the button disabled) on the new
+  // device's view until the old device's up-to-60s scan happens to settle.
+  findBluetoothGeneration += 1;
+  findingBluetoothAddress.value = false;
+  bluetoothFindResult.value = null;
+  bluetoothTransportError.value = null;
 });
 
 watch(savedMappedSelection, (next) => {
@@ -182,13 +193,14 @@ async function saveBluetoothTransport(enabled: boolean) {
 async function findViaBluetooth() {
   if (!deviceId.value) return;
   const requestedDeviceId = deviceId.value;
+  const generation = ++findBluetoothGeneration;
   findingBluetoothAddress.value = true;
   bluetoothFindResult.value = null;
   bluetoothTransportError.value = null;
 
   try {
     const address = await deviceStore.findBluetoothAddress(requestedDeviceId);
-    if (deviceId.value !== requestedDeviceId) return;
+    if (generation !== findBluetoothGeneration) return;
     if (address) {
       bluetoothAddressInput.value = address;
       bluetoothFindResult.value = "found";
@@ -196,11 +208,16 @@ async function findViaBluetooth() {
       bluetoothFindResult.value = "not_found";
     }
   } catch (error) {
-    if (deviceId.value === requestedDeviceId) {
+    if (generation === findBluetoothGeneration) {
       bluetoothTransportError.value = String(error);
     }
   } finally {
-    findingBluetoothAddress.value = false;
+    // The route-change watcher already reset `findingBluetoothAddress` for
+    // the device we navigated to (if any) -- a stale generation clearing
+    // it here would incorrectly cancel a newer scan's own "Scanning..." state.
+    if (generation === findBluetoothGeneration) {
+      findingBluetoothAddress.value = false;
+    }
   }
 }
 
