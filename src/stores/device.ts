@@ -1130,20 +1130,31 @@ export const useDeviceStore = defineStore("device", () => {
       return false;
     }
 
+    // Send PairComplete *before* committing anything locally: if the final
+    // BLE dial or write times out (e.g. the requester moved out of range
+    // right after the code was confirmed), the requester never learns
+    // pairing succeeded and stays unpaired. Committing our own side and
+    // reporting success anyway would leave the two devices permanently
+    // asymmetric in the no-shared-network case, with no way back short of
+    // starting the whole handshake over. On failure, leave the request in
+    // place (not cleared below) so the user can just retry submitting the
+    // same code once whatever failed has resolved, without needing the
+    // requester to send a new one.
+    try {
+      await invoke("device_connection_pair_complete_request", {
+        input: { request_id: requestId } satisfies DevicePairRequestAckInput,
+      });
+    } catch (error) {
+      console.warn("[device-connection] submit code completion failed, keeping request for retry", error);
+      return false;
+    }
+
     await savePairedDevice(
       request.from_device_id,
       request.from_hostname,
       request.from_bluetooth_address,
       request.via_bluetooth,
     );
-
-    try {
-      await invoke("device_connection_pair_complete_request", {
-        input: { request_id: requestId } satisfies DevicePairRequestAckInput,
-      });
-    } catch (error) {
-      console.warn("[device-connection] submit code completion failed", error);
-    }
 
     delete incomingExpectedCode.value[requestId];
     delete incomingAttemptCount.value[requestId];

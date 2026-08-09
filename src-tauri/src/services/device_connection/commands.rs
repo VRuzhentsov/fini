@@ -307,12 +307,38 @@ pub(crate) fn request_os_bond(address: &str, peer_device_id: &str, db_path: std:
 pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     conn: &mut SqliteConnection, peer_id: &str, address: &str,
 ) -> bool {
+    // Read once upfront, used by more than one branch below: `enabled` for
+    // the inconclusive case's "is there anything to protect" check, and
+    // `disabled_by_user` to keep an explicit opt-out
+    // (`device_connection_set_bluetooth_transport_impl`'s disable branch)
+    // from being silently undone by this self-report/discovery path
+    // re-confirming a bond that never actually stopped existing at the OS
+    // level -- the user's *Fini-level* choice to not use it is a separate
+    // question from whether the OS thinks it's bonded.
+    let (currently_enabled, disabled_by_user): (bool, bool) = paired_devices::table
+        .find(peer_id)
+        .select((paired_devices::bluetooth_enabled, paired_devices::bluetooth_disabled_by_user))
+        .first(&mut *conn)
+        .unwrap_or((false, false));
+
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let bond_check = bluetooth_address_bond_check(address);
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let bond_check = Some(false);
 
     match bond_check {
+        Some(true) if disabled_by_user => {
+            // Confirmed bonded, but the user explicitly turned this pair's
+            // Bluetooth off -- record the address (useful the moment they
+            // opt back in) without touching `bluetooth_enabled`/
+            // `bluetooth_last_verified_at`, which the disable already
+            // cleared and which re-enabling is exclusively
+            // `device_connection_set_bluetooth_transport_impl`'s job now.
+            let _ = diesel::update(paired_devices::table.find(peer_id))
+                .set(paired_devices::bluetooth_address.eq(Some(address)))
+                .execute(conn);
+            false
+        }
         Some(true) => {
             let _ = diesel::update(paired_devices::table.find(peer_id))
                 .set((
@@ -357,11 +383,6 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
             // at their old values would claim "enabled, verified at T" for
             // a replacement address that was never actually checked, so
             // that case leaves the entire tuple untouched instead.
-            let currently_enabled: bool = paired_devices::table
-                .find(peer_id)
-                .select(paired_devices::bluetooth_enabled)
-                .first(&mut *conn)
-                .unwrap_or(false);
             if !currently_enabled {
                 let _ = diesel::update(paired_devices::table.find(peer_id))
                     .set(paired_devices::bluetooth_address.eq(Some(address)))
@@ -1253,6 +1274,10 @@ pub fn device_connection_set_bluetooth_transport_impl(
                 paired_devices::bluetooth_enabled.eq(true),
                 paired_devices::bluetooth_address.eq(Some(address)),
                 paired_devices::bluetooth_last_verified_at.eq(Some(utc_now())),
+                // The user explicitly opted back in -- clears whatever a
+                // previous explicit disable set, so self-reports are free
+                // to auto-confirm/re-enable this pair again.
+                paired_devices::bluetooth_disabled_by_user.eq(false),
             ))
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
@@ -1262,6 +1287,12 @@ pub fn device_connection_set_bluetooth_transport_impl(
                 paired_devices::bluetooth_enabled.eq(false),
                 paired_devices::bluetooth_address.eq(Option::<String>::None),
                 paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
+                // An explicit opt-out: must stick until the user explicitly
+                // re-enables it above, not just until the next self-report
+                // over a network session re-confirms the (still genuinely
+                // OS-bonded) address -- see
+                // `persist_bluetooth_address_and_maybe_enable`.
+                paired_devices::bluetooth_disabled_by_user.eq(true),
             ))
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
@@ -1584,6 +1615,88 @@ mod tests {
             .execute(&mut conn)
             .expect("insert paired device");
         conn
+    }
+
+    /// Regression test for the P1 review finding: an explicit disable via
+    /// the settings toggle must stick even when a later self-report over
+    /// an authenticated session re-confirms the address is genuinely
+    /// still OS-bonded -- the user's Fini-level opt-out is a separate
+    /// question from OS bond status, and `persist_bluetooth_address_and_maybe_enable`
+    /// must not silently re-enable behind their back just because the
+    /// bond never actually went away.
+    #[test]
+    fn persist_bluetooth_address_does_not_reenable_after_an_explicit_disable() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+        let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set((
+                paired_devices::bluetooth_enabled.eq(false),
+                paired_devices::bluetooth_address.eq(Option::<String>::None),
+                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
+                paired_devices::bluetooth_disabled_by_user.eq(true),
+            ))
+            .execute(&mut conn)
+            .expect("seed an explicitly-disabled pair");
+
+        // `persist_bluetooth_address_and_maybe_enable` itself doesn't
+        // normalize -- callers do that first (see
+        // `device_connection_save_paired_device_impl`/the inbound
+        // self-report handler) -- so this passes an already-normalized
+        // address, matching the real contract.
+        let enabled =
+            persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF");
+        assert!(!enabled, "must not report enabled despite a confirmed bond");
+
+        let row: PairedDevice = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .expect("load peer row");
+        assert!(
+            !row.bluetooth_enabled,
+            "an explicit disable must survive a self-report confirming the bond still exists"
+        );
+        assert_eq!(
+            row.bluetooth_address.as_deref(),
+            Some("AA:BB:CC:DD:EE:FF"),
+            "the address is still worth recording for whenever the user opts back in"
+        );
+        assert!(row.bluetooth_last_verified_at.is_none());
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    /// Regression test for the same P1 finding: explicitly re-enabling via
+    /// the settings toggle must clear the opt-out flag, so a *subsequent*
+    /// self-report is free to auto-confirm/re-enable normally again.
+    #[test]
+    fn set_bluetooth_transport_clears_disabled_by_user_flag_when_re_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+        let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set(paired_devices::bluetooth_disabled_by_user.eq(true))
+            .execute(&mut conn)
+            .expect("seed an explicitly-disabled pair");
+
+        device_connection_set_bluetooth_transport_impl(
+            &mut conn,
+            paired_device_input(true, Some("aa:bb:cc:dd:ee:ff")),
+        )
+        .expect("re-enable bluetooth transport");
+
+        // Now a self-report must be free to keep it enabled/refresh
+        // verification, since the explicit opt-out was cleared above.
+        // (Already-normalized address, matching this lower-level
+        // function's real contract -- see the sibling test's comment.)
+        let enabled =
+            persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF");
+        assert!(enabled);
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
     /// ADR 0002 Phase 3: a Bluetooth address handed over as part of the

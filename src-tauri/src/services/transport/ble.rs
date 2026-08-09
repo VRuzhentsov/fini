@@ -222,6 +222,17 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// since `remaining.min(...)` just reduces to `remaining` every time.
 const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
 
+/// `find_peer_address`'s own per-candidate cap, larger than
+/// `CANDIDATE_PROBE_TIMEOUT`: `probe_candidate` tries a legacy
+/// `perform_client_auth` fallback after `BluetoothProbe` goes unanswered
+/// (see its doc comment), so a confirmation attempt here can be two
+/// sequential dial+handshake round trips, not one. `find_peer_address`'s
+/// own budget is the 60s "Find via Bluetooth" button timeout, not
+/// `AddDeviceView.vue`'s tight 4s scan pass, so there's ample room for a
+/// larger per-candidate share without starving out other candidates in
+/// practice.
+const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(4);
+
 /// Shared add-mode state, watched by `run_server`'s peripheral loop so a
 /// toggle can trigger a fresh advertisement carrying (or dropping) the
 /// add-mode flag without restarting the whole peripheral task -- Android's
@@ -395,22 +406,49 @@ pub async fn dial(address: &str) -> Result<Box<dyn Link>, String> {
 /// already be enabled for this pair, which is exactly the precondition
 /// `find_peer_address` exists to help establish -- reusing it would mean
 /// this discovery flow could never succeed for its actual target case).
-/// `None` on any failure along the way (dial, send, wrong/missing reply);
-/// the caller is responsible for bounding how long this is allowed to run.
+///
+/// Falls back to `perform_client_auth` if `BluetoothProbe` goes
+/// unanswered: a peer still running a build from before that frame
+/// existed can't decode it at all and just silently closes the
+/// connection, indistinguishable here from "not paired." The ordinary
+/// Auth path still works against such a peer *if* Bluetooth happens to
+/// already be enabled for this pair (the one case its
+/// `check_bluetooth_enabled` gate allows), recovering "Find via
+/// Bluetooth" for the "already enabled, address changed" scenario even
+/// against a peer that can't speak the newer discovery protocol. A
+/// never-enabled pair against such a peer remains a genuine limit of
+/// protocol evolution -- there's no discovery flow to fall back to that
+/// doesn't equally require the peer to understand it.
+///
+/// `None` on any failure along the way; the caller is responsible for
+/// bounding how long this (now up to two sequential dial+handshake
+/// attempts) is allowed to run -- see `FIND_PEER_CANDIDATE_TIMEOUT`.
 async fn probe_candidate(state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
-    let mut link = dial(address).await.ok()?;
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::BluetoothProbe {
-            device_id: state.identity.device_id.clone(),
-        },
-    )
-    .await
-    .ok()?;
-    match recv_frame(link.as_mut()).await {
-        Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) if device_id == peer_id => Some(()),
-        _ => None,
+    if let Ok(mut link) = dial(address).await {
+        if send_frame(
+            link.as_mut(),
+            &PeerFrame::BluetoothProbe {
+                device_id: state.identity.device_id.clone(),
+            },
+        )
+        .await
+        .is_ok()
+        {
+            if let Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) =
+                recv_frame(link.as_mut()).await
+            {
+                if device_id == peer_id {
+                    return Some(());
+                }
+            }
+        }
     }
+
+    let mut fallback_link = dial(address).await.ok()?;
+    session::perform_client_auth(fallback_link.as_mut(), &state.identity.device_id, peer_id)
+        .await
+        .ok()
+        .map(|_protocol_version| ())
 }
 
 pub async fn find_peer_address(
@@ -455,7 +493,7 @@ pub async fn find_peer_address(
             return Ok(None);
         }
         let confirmed = tokio::time::timeout(
-            remaining.min(CANDIDATE_PROBE_TIMEOUT),
+            remaining.min(FIND_PEER_CANDIDATE_TIMEOUT),
             probe_candidate(&state, &address, &peer_id),
         )
         .await

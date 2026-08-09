@@ -99,6 +99,7 @@ diesel::table! {
         bluetooth_enabled          -> Bool,
         bluetooth_address          -> Nullable<Text>,
         bluetooth_last_verified_at -> Nullable<Text>,
+        bluetooth_disabled_by_user -> Bool,
     }
 }
 
