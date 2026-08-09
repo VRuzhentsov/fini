@@ -987,6 +987,7 @@ export const useDeviceStore = defineStore("device", () => {
 
   async function leaveAddMode() {
     addModeGeneration += 1; // invalidates any in-flight enterAddMode continuation
+    const generation = addModeGeneration;
     addModeEnabled.value = false;
     pairCompletedAt.value = null;
     stopDiscoveryLoop();
@@ -997,6 +998,13 @@ export const useDeviceStore = defineStore("device", () => {
     } catch (error) {
       console.warn("[device-connection] leave add mode failed", error);
     }
+
+    // A newer `enterAddMode` can take over while the invoke above is still
+    // in flight (leave, then immediately re-enter). If it has, its own
+    // request/candidate state is already the live one -- clearing it out
+    // from under it here would be this stale continuation winning a race
+    // it lost the moment the generation moved on.
+    if (generation !== addModeGeneration) return;
 
     incomingRequests.value = [];
     incomingExpectedCode.value = {};

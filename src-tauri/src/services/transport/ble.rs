@@ -577,11 +577,17 @@ pub async fn scan_add_mode_candidates(
         if remaining.is_zero() {
             break;
         }
-        let Ok(Some(Ok(peer))) = tokio::time::timeout(remaining, discovered.next()).await else {
-            // Timed out, the stream ended, or this one scan result carried
-            // an error -- all three just end the scan with whatever was
-            // already found, matching `find_peer_address`'s own reasoning.
-            break;
+        let peer = match tokio::time::timeout(remaining, discovered.next()).await {
+            Ok(Some(Ok(peer))) => peer,
+            // A backend-level scan failure (e.g. Android's async
+            // `onScanFailed`) means Bluetooth itself is unusable, not
+            // merely "no more candidates" -- propagate it like
+            // `find_peer_address` does, rather than reporting an
+            // apparently-successful empty/partial scan.
+            Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
+            // Timed out, or the stream ended: stop with whatever was
+            // already found.
+            Ok(None) | Err(_) => break,
         };
         let address = peer.address.0.clone();
         if !tried.insert(address.clone()) {
