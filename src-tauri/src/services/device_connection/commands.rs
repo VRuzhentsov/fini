@@ -370,16 +370,29 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
 
     match bond_check {
         Some(true) => {
-            diesel::update(paired_devices::table.find(peer_id))
-                .set((
-                    paired_devices::bluetooth_enabled.eq(true),
-                    paired_devices::bluetooth_address.eq(Some(address)),
-                    paired_devices::bluetooth_last_verified_at
-                        .eq(Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string())),
-                ))
-                .execute(conn)
-                .map_err(|e| e.to_string())?;
-            Ok(true)
+            // `disabled_by_user` was only checked above, before
+            // `bluetooth_address_bond_check` ran -- that check can take up
+            // to its own several-second timeout, a window in which the
+            // user can disable Bluetooth for this pair (clearing metadata
+            // and setting the opt-out) before this write lands. Filtering
+            // the update on `bluetooth_disabled_by_user = false` rechecks
+            // it atomically at write time instead of trusting the stale
+            // snapshot from above, so a disable that landed mid-check
+            // can't get silently undone by this branch re-enabling.
+            let rows_affected = diesel::update(
+                paired_devices::table
+                    .find(peer_id)
+                    .filter(paired_devices::bluetooth_disabled_by_user.eq(false)),
+            )
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some(address)),
+                paired_devices::bluetooth_last_verified_at
+                    .eq(Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string())),
+            ))
+            .execute(conn)
+            .map_err(|e| e.to_string())?;
+            Ok(rows_affected > 0)
         }
         Some(false) => {
             // *Confirmed* not OS-bonded, so it must not keep whatever
@@ -1225,9 +1238,10 @@ pub fn device_connection_save_paired_device_impl(
         // unlike an ordinary network pairing that merely happens to carry
         // a self-reported address alongside it.
         if via_bluetooth {
-            let _ = diesel::update(paired_devices::table.find(&peer_device_id))
+            diesel::update(paired_devices::table.find(&peer_device_id))
                 .set(paired_devices::bluetooth_disabled_by_user.eq(false))
-                .execute(&mut *conn);
+                .execute(&mut *conn)
+                .map_err(|e| e.to_string())?;
         }
         let enabled =
             persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address)?;
