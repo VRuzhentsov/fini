@@ -11,6 +11,12 @@ use crate::services::space_sync::types::{PeerFrame, SessionSender, SyncEventEnve
 use crate::services::transport::selection::{new_lifecycle_bus, LifecycleBus, LifecycleEvent};
 use crate::services::transport::TransportKind;
 
+// Shared with `transport::tests`, which sets/clears the same process-global
+// `FINI_BLUETOOTH_PAIRED_ADDRESSES` env var in its own tests -- see the
+// lock's own doc comment for why this must be one lock, not two.
+#[cfg(test)]
+pub(crate) use commands::BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK;
+
 #[cfg(any(feature = "ui-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,

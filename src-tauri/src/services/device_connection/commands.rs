@@ -1539,15 +1539,23 @@ pub fn device_connection_update_last_seen(
     device_connection_update_last_seen_impl(&mut conn, peer_device_id, last_seen_at)
 }
 
+/// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global; tests that set and
+/// clear it must not interleave with each other under the default
+/// parallel test runner. `pub(crate)` (not nested inside `mod tests`
+/// below) and shared with `transport::tests`, which independently sets/
+/// clears the same env var in its own tests: two separate locks for one
+/// shared mutable global meant they could still race with *each other*
+/// across files, observed as intermittent failures once enough tests in
+/// both modules touched it.
+#[cfg(test)]
+pub(crate) static BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::db;
 
-    /// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global; tests that set
-    /// and clear it must not interleave with each other under the default
-    /// parallel test runner.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK as ENV_LOCK;
 
     /// Regression test: `run_command_with_timeout` must actually terminate
     /// a command that outlives its deadline, not just stop waiting on it --
@@ -1736,6 +1744,53 @@ mod tests {
         assert!(row.bluetooth_last_verified_at.is_none());
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    /// Regression test for the P1 review finding on the migration itself:
+    /// the previous schema had no way to distinguish "never enabled" from
+    /// "explicitly disabled" -- both left `bluetooth_enabled = 0` with no
+    /// address -- so an installation upgrading with a row already in that
+    /// state must have `bluetooth_disabled_by_user` backfilled to `true`,
+    /// not left at the column's own default of `false` (which would let
+    /// the peer's next self-report silently re-enable a choice the user
+    /// actually made under the old schema). Reverts and re-applies just
+    /// this migration to exercise the real backfill SQL, not a hand-rolled
+    /// equivalent.
+    #[test]
+    fn migration_backfills_disabled_by_user_for_preexisting_not_enabled_rows() {
+        use diesel_migrations::MigrationHarness;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = db::open_db_at_path(&db_path);
+        std::mem::forget(dir);
+
+        conn.revert_last_migration(db::MIGRATIONS)
+            .expect("revert the bluetooth_disabled_by_user migration");
+
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-legacy-disabled"),
+                paired_devices::display_name.eq("Peer Legacy"),
+                paired_devices::paired_at.eq("2026-01-01T00:00:00Z"),
+                paired_devices::pair_state.eq("paired"),
+                paired_devices::bluetooth_enabled.eq(false),
+            ))
+            .execute(&mut conn)
+            .expect("seed a pre-existing not-enabled row, as if from the old schema");
+
+        conn.run_pending_migrations(db::MIGRATIONS)
+            .expect("reapply the bluetooth_disabled_by_user migration");
+
+        let disabled_by_user: bool = paired_devices::table
+            .find("peer-legacy-disabled")
+            .select(paired_devices::bluetooth_disabled_by_user)
+            .first(&mut conn)
+            .expect("load the backfilled row");
+        assert!(
+            disabled_by_user,
+            "a pre-existing not-enabled row must be conservatively backfilled as opted out"
+        );
     }
 
     /// Regression test for the same P1 finding: explicitly re-enabling via

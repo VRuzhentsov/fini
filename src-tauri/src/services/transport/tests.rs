@@ -56,10 +56,13 @@ fn server_state(label: &str) -> (DeviceConnectionState, PathBuf) {
 /// window so concurrently-running tests can't clobber each other's value.
 static WS_PORT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global too — same reasoning,
-/// separate lock since it guards a disjoint set of tests. Mirrors the lock
-/// of the same name in `device_connection::commands::tests`.
-static BLUETOOTH_ADDRESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global too. Shared with
+/// `device_connection::commands::tests` (not a separate lock of the same
+/// name -- an earlier version of this comment claimed a disjoint set of
+/// tests justified two locks, but both modules set/clear the exact same
+/// env var, so two locks could still race with *each other*, observed as
+/// intermittent failures once enough tests in both files touched it).
+use crate::services::device_connection::BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK as BLUETOOTH_ADDRESS_ENV_LOCK;
 
 /// Like `server_state`, but the constructed state *announces* `port` as its
 /// own `space_sync_ws_port` (what it puts in outgoing `PairRequestPayload.from_ws_port`
