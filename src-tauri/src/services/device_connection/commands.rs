@@ -328,10 +328,24 @@ fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
 /// any `Link`, unlike the WebSocket path, which has to hand-roll a
 /// `Message::Text` frame around the same codec.
 #[cfg(any(target_os = "linux", target_os = "android"))]
+/// A stale/unresponsive BLE candidate has no bound of its own here: `dial`
+/// can hang trying to connect to a device that's since gone out of range,
+/// and `send_frame` can hang on a stalled write. All three BLE pairing legs
+/// (request/accept/complete) are synchronous Tauri commands that block on
+/// this via `block_on`, so an unbounded hang here freezes the whole
+/// command -- leaving pairing controls stuck disabled, and letting a retry
+/// after the request TTL expires collide with the still-open earlier
+/// attempt.
+const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn send_pair_ble(address: &str, msg: PeerFrame) -> Result<(), String> {
     tauri::async_runtime::block_on(async move {
-        let mut link = crate::services::transport::ble::dial(address).await?;
-        crate::services::transport::send_frame(link.as_mut(), &msg).await
+        tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
+            let mut link = crate::services::transport::ble::dial(address).await?;
+            crate::services::transport::send_frame(link.as_mut(), &msg).await
+        })
+        .await
+        .map_err(|_| "bluetooth pairing send timed out".to_string())?
     })
 }
 
