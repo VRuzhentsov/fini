@@ -53,6 +53,32 @@ fn check_bluetooth_enabled(db_path: &PathBuf, device_id: &str) -> bool {
     })
 }
 
+/// Whether this device has *explicitly* disabled Bluetooth for
+/// `device_id`'s pair (`device_connection_set_bluetooth_transport_impl`'s
+/// disable branch) -- checked by `BluetoothProbe`'s pre-auth handler so an
+/// explicit opt-out isn't bypassed by "Find via Bluetooth": that flow's
+/// whole point is discovering an address for a pair that has *never* been
+/// enabled (see its own doc comment), but a pair the user actively turned
+/// off is a different case entirely. Replying would let the other side
+/// believe discovery succeeded and persist/enable the address on its own
+/// end, only for every real session attempt to then be rejected by
+/// `check_bluetooth_enabled` here -- `specs/device-connect/README.md`'s
+/// "disabling ... prevents future Bluetooth use" contract, silently
+/// undermined via a side channel that predates it. `unwrap_or(false)`
+/// fails open here on purpose (opposite of `check_bluetooth_enabled`'s
+/// fail-closed): an unpaired/unreadable row has nothing to have been
+/// disabled, matching a never-enabled pair.
+fn check_bluetooth_disabled_by_user(db_path: &PathBuf, device_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        paired_devices::table
+            .find(device_id)
+            .select(paired_devices::bluetooth_disabled_by_user)
+            .first::<bool>(&mut conn)
+            .unwrap_or(false)
+    })
+}
+
 /// Whether the link's actual peer address matches this pair's stored
 /// Bluetooth address, *and* that address is currently OS-bonded.
 ///
@@ -175,7 +201,12 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             // Deliberately `check_paired`, not `check_bluetooth_enabled`:
             // this exists precisely so "Find via Bluetooth" can confirm an
             // address for a pair that doesn't have Bluetooth enabled yet.
-            if check_paired(&db_path, &device_id) {
+            // But an *explicit* disable is a different case from
+            // never-enabled -- see `check_bluetooth_disabled_by_user`'s
+            // doc comment for why that one must still gate the reply.
+            if check_paired(&db_path, &device_id)
+                && !check_bluetooth_disabled_by_user(&db_path, &device_id)
+            {
                 let _ = send_frame(
                     link.as_mut(),
                     &PeerFrame::BluetoothProbeReply {

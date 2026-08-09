@@ -1107,6 +1107,55 @@ async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet
     }
 }
 
+/// Regression test for the P2 review finding: a probe from a paired but
+/// *explicitly disabled* peer must get no reply either -- replying would
+/// let that peer believe "Find via Bluetooth" succeeded and persist/enable
+/// the address on its own end, only for every real session attempt to
+/// then be rejected by this device's own `check_bluetooth_enabled` gate.
+/// Distinct from the "not yet enabled" case above: that one must still
+/// reply (it's the whole point of this discovery flow), an explicit
+/// disable must not.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_probe_gets_no_reply_when_explicitly_disabled() {
+    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-disabled");
+    seed_paired_device(&receiver_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&receiver_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set(paired_devices::bluetooth_disabled_by_user.eq(true))
+            .execute(&mut conn)
+            .expect("mark the pair as explicitly disabled");
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: "peer-client".to_string(),
+        },
+    )
+    .await
+    .expect("send bluetooth probe");
+
+    match recv_frame(link.as_mut()).await {
+        None | Some(Err(_)) => {}
+        other => panic!("an explicitly disabled pair must not reply to BluetoothProbe, got {other:?}"),
+    }
+}
+
 /// Mirror of the above: a probe from a device_id that isn't actually paired
 /// must get no reply at all -- same "silently ignore, don't confirm/deny"
 /// pattern `DiscoveryHello` uses.

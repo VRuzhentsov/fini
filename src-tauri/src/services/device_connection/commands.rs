@@ -1194,6 +1194,24 @@ pub fn device_connection_save_paired_device_impl(
     // its old row), and that fresh handshake's Bluetooth details are just
     // as real as a brand-new pair's.
     if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
+        // A fresh BLE-carried pairing completion is treated as an implicit
+        // opt back *in*: an asymmetric re-pair (the other side reset and
+        // paired again) can land on a row that still carries
+        // `bluetooth_disabled_by_user = true` from a *previous* pairing
+        // with this same peer_device_id, and
+        // `persist_bluetooth_address_and_maybe_enable`'s opt-out guard
+        // would otherwise silently ignore this completely fresh handshake
+        // -- the UI would report pairing complete while this side
+        // permanently rejects every real session. Completing a whole
+        // BLE-first pairing (device discovery, code confirmation) is a
+        // clear enough user action to count as re-opting in on its own,
+        // unlike an ordinary network pairing that merely happens to carry
+        // a self-reported address alongside it.
+        if via_bluetooth {
+            let _ = diesel::update(paired_devices::table.find(&peer_device_id))
+                .set(paired_devices::bluetooth_disabled_by_user.eq(false))
+                .execute(&mut *conn);
+        }
         let enabled = persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
         // Only kick off the OS bond *request* (a system pairing prompt)
         // for the BLE-first flow this exists to unblock -- an ordinary
@@ -1820,6 +1838,45 @@ mod tests {
         let enabled =
             persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF");
         assert!(enabled);
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    /// Regression test for the P2 review finding: an asymmetric BLE
+    /// re-pair (the other side reset and paired again) can land on an
+    /// *existing* row that still carries `bluetooth_disabled_by_user =
+    /// true` from a previous pairing with this same peer_device_id.
+    /// Without clearing it, `persist_bluetooth_address_and_maybe_enable`'s
+    /// opt-out guard would silently ignore this completely fresh
+    /// handshake -- the UI reports pairing complete, but this side
+    /// permanently rejects every real session. Completing a whole
+    /// BLE-first pairing counts as an implicit re-opt-in on its own.
+    #[test]
+    fn save_paired_device_clears_a_stale_opt_out_on_a_fresh_ble_carried_pairing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+        let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set(paired_devices::bluetooth_disabled_by_user.eq(true))
+            .execute(&mut conn)
+            .expect("seed a stale opt-out from a previous pairing with this peer_device_id");
+
+        let saved = device_connection_save_paired_device_impl(
+            &mut conn,
+            "peer-a".to_string(),
+            "Peer A".to_string(),
+            Some("aa:bb:cc:dd:ee:ff".to_string()),
+            true, // via_bluetooth
+            std::path::PathBuf::from("/nonexistent"), // never touched: enabled, no bond request
+        )
+        .expect("save paired device");
+
+        assert!(
+            saved.bluetooth_enabled,
+            "a fresh BLE-carried pairing must not be silently ignored by a stale opt-out"
+        );
+        assert_eq!(saved.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
