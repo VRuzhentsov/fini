@@ -230,6 +230,14 @@ export const useDeviceStore = defineStore("device", () => {
   let mappingUpdateTimer: ReturnType<typeof setInterval> | null = null;
   let bluetoothScanTimer: ReturnType<typeof setTimeout> | null = null;
   let bluetoothScanActive = false;
+  // Bumped on every start/stop so a tick whose `invoke` was still pending
+  // when the loop stopped -- and a *new* loop started again before that
+  // pending call resolved -- can tell it no longer belongs to the current
+  // session, instead of reading the now-true `bluetoothScanActive` and
+  // wrongly continuing as if it were the new loop's own tick (which would
+  // leave two independent recurring chains alive, each overwriting
+  // `bluetoothScanTimer`, so stopping the loop later can only cancel one).
+  let bluetoothScanGeneration = 0;
   // Merge inputs for the unified candidate list (ADR 0002 Phase 3):
   // network beacons and BLE scan results are fetched on independent
   // schedules, so `discoveredDevices` is recomputed from both whenever
@@ -810,14 +818,14 @@ export const useDeviceStore = defineStore("device", () => {
     discoveryTimer = null;
   }
 
-  async function bluetoothScanTick() {
-    if (!bluetoothScanActive) return;
+  async function bluetoothScanTick(generation: number) {
+    if (generation !== bluetoothScanGeneration) return;
 
     try {
       const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
         durationMs: BLUETOOTH_SCAN_DURATION_MS,
       });
-      if (!bluetoothScanActive) return;
+      if (generation !== bluetoothScanGeneration) return;
       setBluetoothDiscovered(items);
     } catch (error) {
       // Keep retrying rather than giving up for the rest of the session:
@@ -829,20 +837,27 @@ export const useDeviceStore = defineStore("device", () => {
       console.warn("[device-connection] bluetooth candidate scan failed, will retry", error);
     }
 
-    if (!bluetoothScanActive) return;
+    if (generation !== bluetoothScanGeneration) return;
     bluetoothScanTimer = setTimeout(() => {
-      void bluetoothScanTick();
+      void bluetoothScanTick(generation);
     }, BLUETOOTH_SCAN_IDLE_GAP_MS);
   }
 
   function startBluetoothScanLoop() {
     if (bluetoothScanActive) return;
     bluetoothScanActive = true;
-    void bluetoothScanTick();
+    bluetoothScanGeneration += 1;
+    void bluetoothScanTick(bluetoothScanGeneration);
   }
 
   function stopBluetoothScanLoop() {
     bluetoothScanActive = false;
+    // Invalidates any tick still in flight from this (or an even earlier,
+    // already-orphaned) generation -- see `bluetoothScanGeneration`'s doc
+    // comment. Must happen even though `bluetoothScanTimer` is cleared
+    // below: the in-flight tick that scheduled it isn't cancelled by
+    // clearing the handle, only its *next* scheduling is prevented.
+    bluetoothScanGeneration += 1;
     if (bluetoothScanTimer) {
       clearTimeout(bluetoothScanTimer);
       bluetoothScanTimer = null;

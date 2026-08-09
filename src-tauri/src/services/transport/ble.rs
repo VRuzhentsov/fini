@@ -570,6 +570,22 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
             delay = (delay * 2).min(max_delay);
             continue;
         }
+        // Subscribed *before* the config snapshot/`serve` call below, not
+        // after: a `watch::Receiver` only misses changes that happen
+        // strictly before it subscribes, so subscribing here closes the
+        // window where a toggle lands while the advertisement (built from
+        // the config snapshot `serve` takes) is still starting up -- a real
+        // async operation, not instant. Subscribing afterward would let
+        // that specific toggle go unseen (the receiver's baseline already
+        // reflects the new value at subscribe time), leaving the device
+        // advertising without the add-mode flag, undiscoverable, until
+        // some *later* toggle happens to fire `changed()` again. Watched
+        // (not merely read) so a toggle mid-serve interrupts the accept
+        // loop below immediately, rather than only taking effect on
+        // whatever later triggers a natural re-advertise -- see
+        // `add_mode_sender`'s doc comment for why this is a signal to the
+        // running loop rather than a full task restart.
+        let mut add_mode_rx = add_mode_sender().subscribe();
         let mut incoming = match datagram::serve(backend, &datagram_config()).await {
             Ok(stream) => stream,
             Err(err) => {
@@ -582,12 +598,6 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         eprintln!("[transport][ble] advertising, awaiting centrals");
         delay = Duration::from_secs(2);
 
-        // Watched (not merely read) so a toggle mid-serve interrupts the
-        // accept loop below immediately, rather than only taking effect on
-        // whatever later triggers a natural re-advertise -- see
-        // `add_mode_sender`'s doc comment for why this is a signal to the
-        // running loop rather than a full task restart.
-        let mut add_mode_rx = add_mode_sender().subscribe();
         let mut restarting_for_add_mode_change = false;
         loop {
             tokio::select! {
