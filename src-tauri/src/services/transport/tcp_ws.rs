@@ -255,7 +255,7 @@ async fn dial_with_backoff(
                 )
                 .await
                 {
-                    Ok(()) => {
+                    Ok(peer_protocol_version) => {
                         eprintln!("[transport][tcp_ws] auth OK with {peer_id}");
                         state.record_tcp_dial_success(&peer_id);
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
@@ -266,6 +266,7 @@ async fn dial_with_backoff(
                                 state.clone(),
                                 db_path.clone(),
                                 peer_id.clone(),
+                                peer_protocol_version,
                             )
                             .await;
                             eprintln!("[transport][tcp_ws] session with {peer_id} ended");

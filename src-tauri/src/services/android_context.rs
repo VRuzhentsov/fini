@@ -225,3 +225,50 @@ pub fn call_static_context_void(class_binary_name: &str, method: &str) {
         eprintln!("[android-context] {class_binary_name}.{method} failed: {err}");
     }
 }
+
+/// Calls an app-defined Kotlin object's `@JvmStatic fun name(context:
+/// Context, arg: String): Unit` — e.g. `BluetoothPairing.createBond`.
+/// Fire-and-forget, same reasoning as `call_static_context_void`: bonding
+/// completes asynchronously via a system broadcast the caller here never
+/// observes, so there is nothing meaningful to return.
+pub fn call_static_context_string_void(class_binary_name: &str, method: &str, arg: &str) {
+    let (vm, context_obj) = match resolve_context() {
+        Ok(attached) => attached,
+        Err(err) => {
+            eprintln!("[android-context] bridge unavailable, not calling {class_binary_name}.{method}: {err}");
+            return;
+        }
+    };
+    let mut env = match vm.attach_current_thread_as_daemon() {
+        Ok(env) => env,
+        Err(err) => {
+            eprintln!("[android-context] JNI attach failed, not calling {class_binary_name}.{method}: {err}");
+            return;
+        }
+    };
+
+    let class = match load_app_class(&mut env, &context_obj, class_binary_name) {
+        Ok(class) => class,
+        Err(err) => {
+            eprintln!("[android-context] loading {class_binary_name} failed: {err}");
+            return;
+        }
+    };
+    let jarg = match env.new_string(arg) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[android-context] new_string failed: {err}");
+            return;
+        }
+    };
+    if let Err(err) = env.call_static_method(
+        class,
+        method,
+        "(Landroid/content/Context;Ljava/lang/String;)V",
+        &[JValue::Object(&context_obj), JValue::Object(&jarg)],
+    ) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+        eprintln!("[android-context] {class_binary_name}.{method} failed: {err}");
+    }
+}

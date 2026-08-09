@@ -15,7 +15,7 @@ use crate::services::device_connection::{
     DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd, IncomingSyncAck,
 };
 use crate::services::space_sync::outbox::load_events_for_space;
-use crate::services::space_sync::types::PeerFrame;
+use crate::services::space_sync::types::{PeerFrame, PROTOCOL_VERSION};
 use crate::services::transport::{recv_frame, send_frame, Link, TransportKind};
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
@@ -97,23 +97,27 @@ fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Op
 }
 
 /// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.
-/// Shared by every adapter's dial path.
+/// Shared by every adapter's dial path. Returns the peer's reported
+/// `PROTOCOL_VERSION` (`0` for a peer running a build from before that
+/// field existed) so the caller's `run_session` knows which proactive
+/// frames are safe to send -- see `PROTOCOL_VERSION`'s doc comment.
 pub async fn perform_client_auth(
     link: &mut dyn Link,
     my_device_id: &str,
     peer_device_id: &str,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     send_frame(
         link,
         &PeerFrame::Auth {
             device_id: my_device_id.to_string(),
             peer_device_id: peer_device_id.to_string(),
+            protocol_version: PROTOCOL_VERSION,
         },
     )
     .await?;
 
     match recv_frame(link).await {
-        Some(Ok(PeerFrame::AuthOk)) => Ok(()),
+        Some(Ok(PeerFrame::AuthOk { protocol_version })) => Ok(protocol_version),
         Some(Ok(PeerFrame::AuthFail { reason })) => Err(format!("auth rejected: {reason}")),
         Some(Ok(_)) => Err("unexpected reply to auth".to_string()),
         Some(Err(err)) => Err(err),
@@ -142,7 +146,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         return;
     };
 
-    let (device_id, peer_device_id) = match frame {
+    let (device_id, peer_device_id, peer_protocol_version) = match frame {
         PeerFrame::PairRequest(payload) => {
             let _ = state.receive_ws_pair_request(payload, from_addr, kind == TransportKind::Bluetooth);
             return;
@@ -177,7 +181,8 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         PeerFrame::Auth {
             device_id,
             peer_device_id,
-        } => (device_id, peer_device_id),
+            protocol_version,
+        } => (device_id, peer_device_id, protocol_version),
         _ => {
             let _ = send_frame(
                 link.as_mut(),
@@ -247,12 +252,20 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         return;
     }
 
-    if send_frame(link.as_mut(), &PeerFrame::AuthOk).await.is_err() {
+    if send_frame(
+        link.as_mut(),
+        &PeerFrame::AuthOk {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await
+    .is_err()
+    {
         state.release_session(&device_id);
         return;
     }
 
-    run_session(link, rx, state, db_path, device_id).await;
+    run_session(link, rx, state, db_path, device_id, peer_protocol_version).await;
 }
 
 /// The authenticated per-peer message loop. `rx` is the mailbox side of the
@@ -266,13 +279,18 @@ pub async fn run_session(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_device_id: String,
+    peer_protocol_version: u32,
 ) {
     // Self-report our own Bluetooth address once per network session, if
     // this platform can read one at all -- see `PeerFrame::BluetoothAddressUpdate`'s
     // doc comment. Only over the network transport: sending it over an
     // already-live Bluetooth session would be reporting an address the
-    // other side already used to reach us.
-    if link.kind() == TransportKind::TcpWs {
+    // other side already used to reach us. Gated on `peer_protocol_version`
+    // (learned during the Auth/AuthOk exchange, see `PROTOCOL_VERSION`):
+    // a peer on a build from before this frame existed cannot decode it and
+    // would drop the whole authenticated session, so this frame is never
+    // sent proactively to a peer that hasn't proven it understands it.
+    if link.kind() == TransportKind::TcpWs && peer_protocol_version >= 1 {
         if let Some(address) = crate::services::device_connection::local_bluetooth_address() {
             let _ = send_frame(link.as_mut(), &PeerFrame::BluetoothAddressUpdate { address }).await;
         }
@@ -390,7 +408,7 @@ async fn handle_inbound(
         // Pre-auth only (handled earlier in run_peer_gate's first-frame
         // dispatch) or sent by this side -- never expected inbound here.
         PeerFrame::Auth { .. }
-        | PeerFrame::AuthOk
+        | PeerFrame::AuthOk { .. }
         | PeerFrame::AuthFail { .. }
         | PeerFrame::PairRequest(_)
         | PeerFrame::PairAccept(_)

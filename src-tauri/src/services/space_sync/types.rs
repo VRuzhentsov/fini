@@ -25,6 +25,19 @@ pub type SessionSender = mpsc::Sender<PeerFrame>;
 /// A message of the transport-neutral Fini peer protocol: pairing handshake
 /// plus authenticated sync. Carried by whichever `Transport`/`Link` is
 /// currently selected for a peer (see `crate::services::transport`).
+/// Bump whenever a new `PeerFrame` variant is introduced that must not be
+/// *proactively* sent to a peer that might not understand it yet (unlike a
+/// frame sent only in reply to something the peer itself sent first, which
+/// proves they're already on a compatible build). `PeerFrame::Unknown`
+/// alone only protects an updated build's own deserialization of frames
+/// *it* receives -- it does nothing for an older, already-installed peer
+/// receiving a frame kind its own `PeerFrame` enum predates. `Auth`/
+/// `AuthOk` exchange this once per session so both sides know whether the
+/// other actually supports version-gated frames before sending one; an
+/// older peer's `Auth`/`AuthOk` simply omits the field (`#[serde(default)]`
+/// -> `0`), which reads as "supports nothing past the original protocol."
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PeerFrame {
@@ -32,9 +45,14 @@ pub enum PeerFrame {
     Auth {
         device_id: String,
         peer_device_id: String,
+        #[serde(default)]
+        protocol_version: u32,
     },
     #[serde(rename = "auth_ok")]
-    AuthOk,
+    AuthOk {
+        #[serde(default)]
+        protocol_version: u32,
+    },
     #[serde(rename = "auth_fail")]
     AuthFail { reason: String },
     #[serde(rename = "pair_request")]

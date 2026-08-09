@@ -230,12 +230,19 @@ async fn dial_with_backoff(
             match session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id)
                 .await
             {
-                Ok(()) => {
+                Ok(peer_protocol_version) => {
                     eprintln!("[transport][sim] auth OK with {peer_id} via :{port}");
                     let (tx, rx) = tokio::sync::mpsc::channel(64);
                     if state.try_claim_session(&peer_id, TransportKind::Sim, tx) {
-                        session::run_session(link, rx, state.clone(), db_path.clone(), peer_id.clone())
-                            .await;
+                        session::run_session(
+                            link,
+                            rx,
+                            state.clone(),
+                            db_path.clone(),
+                            peer_id.clone(),
+                            peer_protocol_version,
+                        )
+                        .await;
                         eprintln!("[transport][sim] session with {peer_id} ended");
                         // tcp_ws::dial_with_backoff gives up (and stops
                         // updating the failure counter) the instant any

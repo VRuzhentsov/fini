@@ -732,7 +732,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 match session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(peer_protocol_version) => {
                         eprintln!("[transport][ble] auth OK with {peer_id} via {address}");
                         // The connect+auth round trip is real wall-clock time
                         // during which the user could disable Bluetooth or
@@ -750,8 +750,15 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                         }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
                         if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx) {
-                            session::run_session(link, rx, state.clone(), db_path.clone(), peer_id.clone())
-                                .await;
+                            session::run_session(
+                                link,
+                                rx,
+                                state.clone(),
+                                db_path.clone(),
+                                peer_id.clone(),
+                                peer_protocol_version,
+                            )
+                            .await;
                             eprintln!("[transport][ble] session with {peer_id} ended");
                         }
                         delay = Duration::from_secs(2);

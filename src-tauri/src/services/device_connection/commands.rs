@@ -143,6 +143,52 @@ pub(crate) fn local_bluetooth_address() -> Option<String> {
     None
 }
 
+/// Best-effort, fire-and-forget kickoff of the actual OS-level Bluetooth
+/// bond for `address`. Never blocks the caller and never reports whether
+/// bonding actually succeeds -- `bluetooth_address_is_os_paired` is the only
+/// source of truth for that, checked independently afterward (by the
+/// settings toggle, or the next pairing/self-report pass). Triggered right
+/// after a BLE-first pair reveals an address that isn't bonded yet
+/// (`device_connection_save_paired_device_impl`), so the OS pairing prompt
+/// appears immediately instead of leaving the user to find system Bluetooth
+/// settings on their own -- otherwise two freshly BLE-paired devices with no
+/// shared network have no path to a working Bluetooth session at all, since
+/// both `bluetooth_dial_candidates` and the accepting gate hard-require OS
+/// bonding regardless of `bluetooth_enabled`.
+pub(crate) fn request_os_bond(address: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        // `bluetoothctl pair` blocks on the pairing agent interaction (can
+        // take several seconds), so this runs off-thread -- callers must
+        // not wait on it, matching the fire-and-forget contract. Same
+        // Flatpak `flatpak-spawn --host` routing as the other `bluetoothctl`
+        // call sites in this file.
+        let address = address.to_string();
+        std::thread::spawn(move || {
+            let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
+                let mut command = std::process::Command::new("flatpak-spawn");
+                command.arg("--host").arg("bluetoothctl");
+                command
+            } else {
+                std::process::Command::new("bluetoothctl")
+            };
+            let _ = command.arg("pair").arg(&address).output();
+        });
+    }
+    #[cfg(target_os = "android")]
+    {
+        crate::services::android_context::call_static_context_string_void(
+            "com.fini.app.BluetoothPairing",
+            "createBond",
+            address,
+        );
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = address;
+    }
+}
+
 /// Stores `address` as `peer_id`'s Bluetooth address, and additionally
 /// enables Bluetooth for the pair if -- and only if -- `address` is
 /// currently OS-bonded *on this machine*. Returns whether it was enabled.
@@ -942,9 +988,16 @@ pub fn device_connection_save_paired_device_impl(
         // not bonding: `bluetooth_dial_candidates`/`check_bluetooth_bond`
         // both hard-require OS pairing regardless of this flag, so setting
         // it without a real bond would just be a lie the UI shows while the
-        // pair can never actually establish a Bluetooth session.
+        // pair can never actually establish a Bluetooth session. When it
+        // isn't bonded yet, kick off the real OS bond request too -- two
+        // freshly BLE-paired devices with no shared network otherwise have
+        // no path to a working Bluetooth session at all, since nothing else
+        // would ever prompt the user to complete OS pairing.
         if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
-            persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
+            let enabled = persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
+            if !enabled {
+                request_os_bond(&address);
+            }
         }
     }
 

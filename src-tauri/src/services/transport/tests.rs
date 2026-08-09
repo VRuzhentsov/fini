@@ -141,6 +141,65 @@ async fn bluetooth_self_report_is_sent_once_over_a_network_session() {
     std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
 }
 
+/// Regression test: a peer that authenticates without reporting a
+/// `protocol_version` (simulating a build from before `PROTOCOL_VERSION`
+/// existed -- `perform_client_auth` always sends the current one, so this
+/// hand-crafts the raw `Auth` frame instead) must never receive a
+/// `BluetoothAddressUpdate`. That older peer's `PeerFrame` enum predates
+/// the variant and would fail to decode it, dropping the whole
+/// authenticated session -- exactly what version-gating this proactive
+/// send exists to prevent.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_is_withheld_from_a_peer_that_reports_no_protocol_version() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-old-peer");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+
+    // Hand-crafted, deliberately omitting `protocol_version` -- this is
+    // what an old build's `Auth` frame looked like before this field
+    // existed. `#[serde(default)]` on the receiving end reads this as `0`.
+    let old_style_auth = serde_json::json!({
+        "type": "auth",
+        "device_id": "peer-client",
+        "peer_device_id": server.identity.device_id,
+    });
+    let plain = serde_json::to_vec(&old_style_auth).unwrap();
+    let envelope = crate::services::transport::envelope::FrameEnvelope::new(
+        crate::services::transport::envelope::EncScheme::None,
+        plain,
+    );
+    let bytes = serde_json::to_vec(&envelope).unwrap();
+    link.send(bytes).await.expect("send hand-crafted auth");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::AuthOk { .. })) => {}
+        other => panic!("expected AuthOk, got {other:?}"),
+    }
+
+    match tokio::time::timeout(Duration::from_millis(300), recv_frame(link.as_mut())).await {
+        Err(_) => {} // timed out waiting -- correctly withheld
+        Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { .. }))) => {
+            panic!("must not send BluetoothAddressUpdate to a peer reporting no protocol_version")
+        }
+        Ok(other) => panic!("unexpected frame while waiting: {other:?}"),
+    }
+
+    std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+}
+
 /// Regression test for the receiving half of Phase 1: an inbound
 /// `BluetoothAddressUpdate` for an already OS-paired address both persists
 /// the address and auto-enables Bluetooth for that pair -- self-report
@@ -579,7 +638,7 @@ async fn tcp_failure_count_resets_after_a_sim_session_ends() {
         };
         let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
         if let Some(Ok(PeerFrame::Auth { .. })) = recv_frame(link.as_mut()).await {
-            let _ = send_frame(link.as_mut(), &PeerFrame::AuthOk).await;
+            let _ = send_frame(link.as_mut(), &PeerFrame::AuthOk { protocol_version: 1 }).await;
         }
         // link drops here, closing the connection right after handshake.
     });

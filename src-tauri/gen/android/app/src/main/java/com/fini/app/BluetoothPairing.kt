@@ -78,4 +78,31 @@ object BluetoothPairing {
             false
         }
     }
+
+    /**
+     * Fires the OS-level bonding request for [address]. Fire-and-forget from
+     * Rust's side, same as [requestPermissionsIfNeeded]: `createBond()` only
+     * reports whether the request was *accepted*, not whether bonding
+     * eventually succeeds -- that plays out via the system's own pairing
+     * UI/broadcast on its own schedule, well after this call returns.
+     * [isBonded] is the only source of truth callers should poll afterward.
+     *
+     * Requires [BLUETOOTH_CONNECT]/[ACCESS_FINE_LOCATION] (whichever
+     * [requiredPermissions] resolves to on this SDK level); like [isBonded],
+     * fails closed on `SecurityException` rather than crashing.
+     */
+    @JvmStatic
+    fun createBond(context: Context, address: String) {
+        try {
+            val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            val adapter = manager?.adapter ?: return
+            val device = adapter.getRemoteDevice(address)
+            device.createBond()
+        } catch (e: SecurityException) {
+            // Permission not granted -- nothing more to do here;
+            // requestPermissionsIfNeeded is the caller's job, not this one's.
+        } catch (e: IllegalArgumentException) {
+            // Malformed address -- nothing to bond.
+        }
+    }
 }
