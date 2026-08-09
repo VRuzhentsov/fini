@@ -210,6 +210,14 @@ const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
 /// comment in ble-gatt.
 const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 
+/// Per-candidate cap for a dial+probe+reply confirmation round trip
+/// (`probe_candidate`/`probe_discovery_hello`), separate from the overall
+/// scan deadline: without this, a single candidate that accepts the
+/// connection but never replies could consume the *entire* remaining scan
+/// budget, starving out every other candidate that might otherwise have
+/// matched sooner -- including the actual peer being searched for.
+const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Shared add-mode state, watched by `run_server`'s peripheral loop so a
 /// toggle can trigger a fresh advertisement carrying (or dropping) the
 /// add-mode flag without restarting the whole peripheral task -- Android's
@@ -442,11 +450,14 @@ pub async fn find_peer_address(
         if remaining.is_zero() {
             return Ok(None);
         }
-        let confirmed = tokio::time::timeout(remaining, probe_candidate(&state, &address, &peer_id))
-            .await
-            .ok()
-            .flatten()
-            .is_some();
+        let confirmed = tokio::time::timeout(
+            remaining.min(CANDIDATE_PROBE_TIMEOUT),
+            probe_candidate(&state, &address, &peer_id),
+        )
+        .await
+        .ok()
+        .flatten()
+        .is_some();
         if confirmed {
             let db_path = db_path.clone();
             let peer_id = peer_id.clone();
@@ -535,12 +546,19 @@ pub async fn scan_add_mode_candidates(
         // single self-rescheduling chain, so one stuck candidate here would
         // otherwise delay every subsequent Add Device discovery pass. Dial
         // and send are covered too, not just the reply: neither has a bound
-        // of its own.
+        // of its own. Also capped per-candidate (`CANDIDATE_PROBE_TIMEOUT`):
+        // without that, one silent candidate could eat the *entire*
+        // remaining budget by itself, starving out every other candidate
+        // still to be tried, including the one actually being searched for.
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;
         }
-        let reply = tokio::time::timeout(remaining, probe_discovery_hello(&address)).await;
+        let reply = tokio::time::timeout(
+            remaining.min(CANDIDATE_PROBE_TIMEOUT),
+            probe_discovery_hello(&address),
+        )
+        .await;
         if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname })) = reply {
             // A stale/self-seen advertisement (e.g. two adapters on the
             // same machine, or a previous scan's own peripheral still

@@ -42,6 +42,17 @@ pub(crate) fn normalize_bluetooth_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_uppercase())
 }
 
+/// Kept synchronous on purpose -- unlike `local_bluetooth_address`, this is
+/// called from too many contexts (a plain sync Tauri command, an already
+/// `block_in_place`-wrapped DB check, a raw non-runtime OS thread) to
+/// thread `async`/`.await` through every caller safely. Internally bounded
+/// instead: the Linux branch runs `bluetoothctl info` through
+/// `run_command_with_timeout` (kill-on-drop, so a stalled BlueZ/D-Bus can't
+/// hang this call forever) via `tauri::async_runtime::block_on`, which is
+/// safe from all of those contexts -- just never call this directly from
+/// inside an `async fn`'s body without going through `tokio::task::block_in_place`
+/// first (see `session::check_bluetooth_bond`), since `block_on`ing a
+/// runtime's own worker thread while it's mid-poll panics.
 pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
     if let Ok(allowed) = std::env::var("FINI_BLUETOOTH_PAIRED_ADDRESSES") {
         return allowed
@@ -62,19 +73,15 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
         // system-bus connection exist, using the `--talk-name=org.freedesktop.Flatpak`
         // permission the manifest already grants.
         let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
-            let mut command = std::process::Command::new("flatpak-spawn");
+            let mut command = tokio::process::Command::new("flatpak-spawn");
             command.arg("--host").arg("bluetoothctl");
             command
         } else {
-            std::process::Command::new("bluetoothctl")
+            tokio::process::Command::new("bluetoothctl")
         };
-        return command
-            .arg("info")
-            .arg(address)
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
+        command.arg("info").arg(address);
+        let stdout = tauri::async_runtime::block_on(run_command_with_timeout(command, Duration::from_secs(5)));
+        return stdout
             .map(|stdout| stdout.lines().any(|line| line.trim() == "Paired: yes"))
             .unwrap_or(false);
     }

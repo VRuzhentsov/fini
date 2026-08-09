@@ -89,7 +89,17 @@ fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Op
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        crate::services::device_connection::bluetooth_address_is_os_paired(&stored)
+        // `bluetooth_address_is_os_paired` internally does a
+        // `tauri::async_runtime::block_on` on Linux (bounding its
+        // `bluetoothctl` subprocess) -- calling that directly from this
+        // async fn's body would risk "cannot start a runtime from within a
+        // runtime" on whichever worker thread is currently driving this
+        // task. `block_in_place` (already used for the DB read above) is
+        // the sanctioned way to run blocking/nested-runtime work safely
+        // from inside an async task on a multi-threaded runtime.
+        tokio::task::block_in_place(|| {
+            crate::services::device_connection::bluetooth_address_is_os_paired(&stored)
+        })
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
