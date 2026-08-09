@@ -101,6 +101,140 @@ async fn tcp_ws_gate_accepts_paired_device_and_claims_session_as_network() {
     );
 }
 
+/// Regression test for Phase 1 of ADR 0002: whichever side of a network
+/// session can read its own real Bluetooth address self-reports it via
+/// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the
+/// server side is configured (via the `FINI_LOCAL_BLUETOOTH_ADDRESS` test
+/// escape hatch — real `bluetoothctl` isn't available/deterministic in
+/// CI); the client reads it directly off the link rather than through a
+/// full `run_session` loop, matching how these tests already only run
+/// `run_session` on the accept side.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_is_sent_once_over_a_network_session() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::BluetoothAddressUpdate { address })) => {
+            assert_eq!(address, "AA:BB:CC:DD:EE:FF");
+        }
+        other => panic!("expected a BluetoothAddressUpdate frame, got {other:?}"),
+    }
+
+    std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+}
+
+/// Regression test for the receiving half of Phase 1: an inbound
+/// `BluetoothAddressUpdate` for an already OS-paired address both persists
+/// the address and auto-enables Bluetooth for that pair -- self-report
+/// alone is sufficient confirmation only because it arrives over an
+/// already-authenticated session, but auto-*enabling* additionally
+/// requires OS bonding, mirroring `device_connection_set_bluetooth_transport_impl`'s
+/// own precondition.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_persists_and_enables_when_os_paired() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-enable");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothAddressUpdate {
+            address: "aa:bb:cc:dd:ee:ff".to_string(),
+        },
+    )
+    .await
+    .expect("send self-report");
+
+    sleep(Duration::from_millis(100)).await;
+    let mut conn = open_db_at_path(&server_db);
+    let row: (Option<String>, bool) = paired_devices::table
+        .find("peer-client")
+        .select((paired_devices::bluetooth_address, paired_devices::bluetooth_enabled))
+        .first(&mut conn)
+        .expect("load peer row");
+    assert_eq!(row.0.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+    assert!(row.1, "bluetooth should be auto-enabled when the reported address is OS-paired");
+
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+}
+
+/// Mirror of the above without OS pairing: the address still gets stored
+/// (so a later manual "Enable Bluetooth" click has something pre-filled),
+/// but Bluetooth is not auto-enabled -- a self-report by itself proves
+/// nothing about OS bonding.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_persists_without_enabling_when_not_os_paired() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-no-enable");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothAddressUpdate {
+            address: "11:22:33:44:55:66".to_string(),
+        },
+    )
+    .await
+    .expect("send self-report");
+
+    sleep(Duration::from_millis(100)).await;
+    let mut conn = open_db_at_path(&server_db);
+    let row: (Option<String>, bool) = paired_devices::table
+        .find("peer-client")
+        .select((paired_devices::bluetooth_address, paired_devices::bluetooth_enabled))
+        .first(&mut conn)
+        .expect("load peer row");
+    assert_eq!(row.0.as_deref(), Some("11:22:33:44:55:66"));
+    assert!(!row.1, "bluetooth must not auto-enable without OS pairing");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn tcp_ws_gate_rejects_unpaired_device() {
     let (server, _server_db) = server_state("transport-tcpws-reject");

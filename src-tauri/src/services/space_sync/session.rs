@@ -248,6 +248,17 @@ pub async fn run_session(
     db_path: PathBuf,
     peer_device_id: String,
 ) {
+    // Self-report our own Bluetooth address once per network session, if
+    // this platform can read one at all -- see `PeerFrame::BluetoothAddressUpdate`'s
+    // doc comment. Only over the network transport: sending it over an
+    // already-live Bluetooth session would be reporting an address the
+    // other side already used to reach us.
+    if link.kind() == TransportKind::TcpWs {
+        if let Some(address) = crate::services::device_connection::local_bluetooth_address() {
+            let _ = send_frame(link.as_mut(), &PeerFrame::BluetoothAddressUpdate { address }).await;
+        }
+    }
+
     loop {
         tokio::select! {
             inbound = recv_frame(link.as_mut()) => {
@@ -341,6 +352,20 @@ async fn handle_inbound(
                 )
                 .set(pair_space_mappings::last_synced_at.eq(Some(completed_at)))
                 .execute(&mut conn);
+            });
+        }
+        PeerFrame::BluetoothAddressUpdate { address } => {
+            let Some(address) = crate::services::device_connection::normalize_bluetooth_address(&address)
+            else {
+                return;
+            };
+            let db = db_path.clone();
+            let peer = peer_device_id.to_string();
+            tokio::task::block_in_place(|| {
+                let mut conn = open_db_at_path(&db);
+                crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
+                    &mut conn, &peer, &address,
+                );
             });
         }
         // Sent by this side, not expected inbound

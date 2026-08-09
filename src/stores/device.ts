@@ -19,6 +19,9 @@ export interface DeviceTransportStatus {
   enabled: boolean;
   available: boolean;
   preferred: boolean;
+  // Live session state for this specific transport right now, distinct
+  // from `available` (precondition met) -- see ADR 0002 Phase 2.
+  connected: boolean;
   detail: string;
 }
 
@@ -464,6 +467,22 @@ export const useDeviceStore = defineStore("device", () => {
     }
     await refreshTransportStatuses(peerDeviceId);
     return updated;
+  }
+
+  // Phase 1 of ADR 0002's "Find via Bluetooth" button: scans for up to 60s
+  // and, on a match, the backend has already persisted the address (and
+  // enabled Bluetooth for the pair, if this machine is already OS-bonded
+  // with it) -- so this just re-loads state afterward rather than
+  // constructing the update itself, unlike setBluetoothTransport above.
+  async function findBluetoothAddress(peerDeviceId: string): Promise<string | null> {
+    const address = await invoke<string | null>("device_connection_find_bluetooth_address", {
+      peerDeviceId,
+    });
+    if (address) {
+      await loadPairedDevices();
+      await refreshTransportStatuses(peerDeviceId);
+    }
+    return address;
   }
 
   async function runSpaceSyncTick() {
@@ -996,6 +1015,7 @@ export const useDeviceStore = defineStore("device", () => {
     getTransportStatuses,
     refreshTransportStatuses,
     setBluetoothTransport,
+    findBluetoothAddress,
     isSyncingPeer,
     runSpaceSyncTick,
     enterAddMode,

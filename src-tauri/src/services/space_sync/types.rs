@@ -62,4 +62,13 @@ pub enum PeerFrame {
     },
     #[serde(rename = "space_sync_end")]
     SpaceSyncEnd { space_id: String, ended_at: String },
+    /// Sent once by whichever side of an authenticated *network* session can
+    /// read its own real Bluetooth adapter address (Linux, via
+    /// `bluetoothctl` — Android cannot: `BluetoothAdapter.getAddress()` has
+    /// returned a dummy value since Android 6.0 for every normal app, no
+    /// workaround exists). Lets the other side learn a usable Bluetooth
+    /// fallback address without the user typing it in by hand. See
+    /// `docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`.
+    #[serde(rename = "bluetooth_address_update")]
+    BluetoothAddressUpdate { address: String },
 }

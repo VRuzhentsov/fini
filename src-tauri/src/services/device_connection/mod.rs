@@ -15,20 +15,23 @@ use crate::services::transport::TransportKind;
 pub use commands::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
     device_connection_discovery_snapshot, device_connection_enter_add_mode,
-    device_connection_get_identity, device_connection_get_paired_devices,
-    device_connection_leave_add_mode, device_connection_pair_accept_request,
-    device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
-    device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
-    device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
-    device_connection_save_paired_device, device_connection_send_pair_request,
-    device_connection_session_transport, device_connection_set_bluetooth_transport,
-    device_connection_transport_statuses, device_connection_unpair,
-    device_connection_update_last_seen,
+    device_connection_find_bluetooth_address, device_connection_get_identity,
+    device_connection_get_paired_devices, device_connection_leave_add_mode,
+    device_connection_pair_accept_request, device_connection_pair_acknowledge_request,
+    device_connection_pair_complete_request, device_connection_pair_incoming_requests,
+    device_connection_pair_outgoing_completions, device_connection_pair_outgoing_updates,
+    device_connection_presence_snapshot, device_connection_save_paired_device,
+    device_connection_send_pair_request, device_connection_session_transport,
+    device_connection_set_bluetooth_transport, device_connection_transport_statuses,
+    device_connection_unpair, device_connection_update_last_seen,
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) use commands::bluetooth_address_is_os_paired;
+pub(crate) use commands::{
+    local_bluetooth_address, normalize_bluetooth_address, persist_bluetooth_address_and_maybe_enable,
+};
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,

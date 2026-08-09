@@ -29,6 +29,16 @@ pub struct TransportStatus {
     pub enabled: bool,
     pub available: bool,
     pub preferred: bool,
+    /// Whether an authenticated session is live on *this specific*
+    /// transport right now — distinct from `available`, which only reports
+    /// whether the precondition for one is met. Network is preferred
+    /// whenever both are available (ADR-0001's selection order), so a
+    /// peer can be fully reachable while this is `false` on the Bluetooth
+    /// row because the live session happens to be running over network
+    /// instead — that is expected, not a bug. See
+    /// `docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`
+    /// Phase 2.
+    pub connected: bool,
     pub detail: String,
 }
 
@@ -69,6 +79,8 @@ pub fn build_transport_statuses(
     bluetooth_enabled: bool,
     bluetooth_has_metadata: bool,
     bluetooth_os_paired: bool,
+    network_connected: bool,
+    bluetooth_connected: bool,
 ) -> Vec<TransportStatus> {
     let bluetooth_ready = BLUETOOTH_ADAPTER_IMPLEMENTED
         && bluetooth_enabled
@@ -81,6 +93,7 @@ pub fn build_transport_statuses(
             enabled: true,
             available: network_available,
             preferred: network_available,
+            connected: network_connected,
             detail: if network_available {
                 "Available"
             } else {
@@ -93,6 +106,7 @@ pub fn build_transport_statuses(
             enabled: bluetooth_enabled,
             available: bluetooth_ready,
             preferred: !network_available && bluetooth_ready,
+            connected: bluetooth_connected,
             detail: bluetooth_status_detail(
                 bluetooth_enabled,
                 bluetooth_has_metadata,
@@ -188,15 +202,45 @@ mod tests {
 
     #[test]
     fn status_marks_network_preferred_when_available() {
-        let both = build_transport_statuses(true, true, true, true);
+        let both = build_transport_statuses(true, true, true, true, false, false);
         assert!(both
             .iter()
             .any(|status| status.kind == TransportKind::Network && status.preferred));
 
-        let fallback = build_transport_statuses(false, true, true, true);
+        let fallback = build_transport_statuses(false, true, true, true, false, false);
         assert!(!fallback
             .iter()
             .any(|status| status.kind == TransportKind::Network && status.preferred));
+    }
+
+    /// Phase 2 of ADR 0002: `connected` reports live session state per row,
+    /// independent of `available`/`preferred` — a row can be available but
+    /// not currently connected (network reachable, no session established
+    /// yet), or connected on one transport while the other reports
+    /// available too (Bluetooth configured and bonded, but the live
+    /// session happens to be running over network since network is always
+    /// preferred when both are available).
+    #[test]
+    fn connected_reflects_live_session_state_independent_of_availability() {
+        let statuses = build_transport_statuses(true, true, true, true, true, false);
+        let network = statuses
+            .iter()
+            .find(|status| status.kind == TransportKind::Network)
+            .expect("network status row");
+        let bluetooth = statuses
+            .iter()
+            .find(|status| status.kind == TransportKind::Bluetooth)
+            .expect("bluetooth status row");
+        assert!(network.connected, "network row should report the live session");
+        assert!(bluetooth.available, "bluetooth stays available even while not the live transport");
+        assert!(!bluetooth.connected, "bluetooth row must not claim a session it isn't carrying");
+
+        let bluetooth_live = build_transport_statuses(true, true, true, true, false, true);
+        let bluetooth = bluetooth_live
+            .iter()
+            .find(|status| status.kind == TransportKind::Bluetooth)
+            .expect("bluetooth status row");
+        assert!(bluetooth.connected, "bluetooth row should report a live Bluetooth session");
     }
 
     /// No Bluetooth `Transport`/`Link` adapter is registered on this platform
@@ -216,7 +260,7 @@ mod tests {
             (false, true, true, true),
         ] {
             let statuses =
-                build_transport_statuses(network_available, enabled, has_metadata, os_paired);
+                build_transport_statuses(network_available, enabled, has_metadata, os_paired, false, false);
             let bluetooth = statuses
                 .iter()
                 .find(|status| status.kind == TransportKind::Bluetooth)
@@ -233,7 +277,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn bluetooth_is_available_with_full_metadata_where_implemented() {
-        let fallback = build_transport_statuses(false, true, true, true);
+        let fallback = build_transport_statuses(false, true, true, true, false, false);
         let bluetooth = fallback
             .iter()
             .find(|status| status.kind == TransportKind::Bluetooth)
@@ -241,7 +285,7 @@ mod tests {
         assert!(bluetooth.available, "bluetooth should report available");
         assert!(bluetooth.preferred, "bluetooth should be preferred when network is absent");
 
-        let both = build_transport_statuses(true, true, true, true);
+        let both = build_transport_statuses(true, true, true, true, false, false);
         let bluetooth = both
             .iter()
             .find(|status| status.kind == TransportKind::Bluetooth)
@@ -258,7 +302,8 @@ mod tests {
         for (enabled, has_metadata, os_paired) in
             [(false, true, true), (true, false, true), (true, true, false)]
         {
-            let statuses = build_transport_statuses(false, enabled, has_metadata, os_paired);
+            let statuses =
+                build_transport_statuses(false, enabled, has_metadata, os_paired, false, false);
             let bluetooth = statuses
                 .iter()
                 .find(|status| status.kind == TransportKind::Bluetooth)

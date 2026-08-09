@@ -397,7 +397,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=d0d00a634156f98b7698eb8e0acf0df166c5d681#d0d00a634156f98b7698eb8e0acf0df166c5d681"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=3e7f92f3ef231ebeb9347102dc43acb9062de58f#3e7f92f3ef231ebeb9347102dc43acb9062de58f"
 dependencies = [
  "async-trait",
  "bluer",

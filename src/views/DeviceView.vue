@@ -17,6 +17,8 @@ const bluetoothAddressInput = ref("");
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
 const savingBluetoothTransport = ref(false);
+const findingBluetoothAddress = ref(false);
+const bluetoothFindResult = ref<"found" | "not_found" | null>(null);
 const mappingError = ref<string | null>(null);
 const bluetoothTransportError = ref<string | null>(null);
 const mappingsDirty = ref(false);
@@ -146,6 +148,31 @@ async function saveBluetoothTransport(enabled: boolean) {
   }
 }
 
+// Phase 1 of ADR 0002: scans for up to 60s and, on a match, the backend has
+// already persisted (and possibly enabled) Bluetooth for this pair -- the
+// store call re-loads paired-device/transport-status state, so the address
+// input just needs to pick up whatever landed there.
+async function findViaBluetooth() {
+  if (!deviceId.value) return;
+  findingBluetoothAddress.value = true;
+  bluetoothFindResult.value = null;
+  bluetoothTransportError.value = null;
+
+  try {
+    const address = await deviceStore.findBluetoothAddress(deviceId.value);
+    if (address) {
+      bluetoothAddressInput.value = address;
+      bluetoothFindResult.value = "found";
+    } else {
+      bluetoothFindResult.value = "not_found";
+    }
+  } catch (error) {
+    bluetoothTransportError.value = String(error);
+  } finally {
+    findingBluetoothAddress.value = false;
+  }
+}
+
 function openUnpairDialog() {
   unpairDialog.value?.showModal();
 }
@@ -218,12 +245,19 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           <template #leading>
             <span
               class="h-2.5 w-2.5 rounded-full"
-              :class="status.available ? 'bg-green-500' : 'bg-gray-400'"
+              :class="
+                status.connected
+                  ? 'bg-green-500'
+                  : status.available
+                    ? 'bg-amber-400'
+                    : 'bg-gray-400'
+              "
             />
           </template>
           <template #start>
             <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
             <span v-if="status.preferred" class="ml-2 text-[11px] opacity-60">preferred</span>
+            <span v-if="status.connected" class="ml-2 text-[11px] text-success">connected now</span>
           </template>
           <template #end>
             <span class="text-xs opacity-60">{{ status.detail }}</span>
@@ -231,6 +265,19 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
         </SettingsListItem>
       </SettingsListGroup>
       <div class="mt-3 flex flex-col gap-2">
+        <button
+          class="btn btn-sm btn-outline w-fit"
+          data-testid="find-bluetooth-address"
+          :disabled="findingBluetoothAddress"
+          @click="void findViaBluetooth()"
+        >{{ findingBluetoothAddress ? "Scanning… (up to 60s)" : "Find via Bluetooth" }}</button>
+        <p v-if="bluetoothFindResult === 'found'" class="text-xs text-success">
+          Found and confirmed nearby.
+        </p>
+        <p v-else-if="bluetoothFindResult === 'not_found'" class="text-xs opacity-60">
+          Not found within 60s — make sure the other device is nearby and its Bluetooth is on, or
+          enter its address manually below.
+        </p>
         <label class="text-xs font-medium opacity-70" for="bluetooth-address">Bluetooth address</label>
         <input
           id="bluetooth-address"

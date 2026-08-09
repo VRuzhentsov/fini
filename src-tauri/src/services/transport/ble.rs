@@ -311,6 +311,76 @@ pub async fn dial(address: &str) -> Result<Box<dyn Link>, String> {
     Ok(Box::new(BleLink::new(channel)))
 }
 
+/// Scans for nearby Fini BLE advertisers and opportunistically connects and
+/// authenticates each discovered address against `peer_id`'s already-known
+/// `device_id` — the "discover" half of Phase 1 in
+/// `docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`,
+/// used when this side cannot self-report its own address (Android) or a
+/// peer just hasn't sent one yet. A real `AuthOk` from a candidate is what
+/// proves it belongs to the expected peer, not merely some other nearby
+/// Fini install; `backend.scan()` itself already filters to Fini's service
+/// UUID (each backend does this at the native scan-callback level, before
+/// candidates ever reach this Rust code).
+///
+/// On success the address is persisted — and Bluetooth enabled for the
+/// pair, if this machine's own OS bonding with it already exists — via
+/// `persist_bluetooth_address_and_maybe_enable`. Returns the confirmed
+/// address, or `None` if nothing matched within `timeout`. The confirming
+/// connection is dropped either way: this function's job is identity
+/// confirmation, not establishing the real session — the next
+/// `space_sync_tick`'s dial loop picks the now-eligible peer up normally.
+pub async fn find_peer_address(
+    state: DeviceConnectionState, db_path: PathBuf, peer_id: String, timeout: Duration,
+) -> Result<Option<String>, String> {
+    use futures_util::StreamExt;
+
+    let backend = backend().await?;
+    let mut discovered = backend
+        .scan(datagram_config().service)
+        .await
+        .map_err(|err| format!("ble scan failed: {err}"))?;
+
+    let mut tried: HashSet<String> = HashSet::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let Ok(Some(Ok(candidate))) = tokio::time::timeout(remaining, discovered.next()).await else {
+            // Timed out, the stream ended, or this one candidate's scan
+            // result carried an error -- none of those should abandon the
+            // whole search except the timeout, but a broken stream can't
+            // usefully be polled again either, so treat all three as "stop
+            // and report not found."
+            return Ok(None);
+        };
+        let address = candidate.address.0;
+        if !tried.insert(address.clone()) {
+            continue;
+        }
+        let Ok(mut link) = dial(&address).await else {
+            continue;
+        };
+        if session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id)
+            .await
+            .is_ok()
+        {
+            let db_path = db_path.clone();
+            let peer_id = peer_id.clone();
+            let address_owned = address.clone();
+            tokio::task::block_in_place(|| {
+                let mut conn = open_db_at_path(&db_path);
+                crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
+                    &mut conn, &peer_id, &address_owned,
+                );
+            });
+            return Ok(Some(address));
+        }
+    }
+}
+
 /// `Transport` implementation for the Bluetooth adapter — see the note on
 /// `transport::tcp_ws::TcpWsTransport` for why production dial loops call
 /// `dial()` directly rather than through this trait object.

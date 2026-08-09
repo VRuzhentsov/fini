@@ -34,7 +34,7 @@ fn ws_url(addr: IpAddr, port: u16) -> String {
     }
 }
 
-fn normalize_bluetooth_address(value: &str) -> Option<String> {
+pub(crate) fn normalize_bluetooth_address(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
@@ -96,6 +96,93 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
 
     #[allow(unreachable_code)]
     false
+}
+
+/// This device's own real Bluetooth adapter address, when the platform can
+/// read it at all. `None` on Android: `BluetoothAdapter.getAddress()` has
+/// returned a dummy value since Android 6.0 for every normal app (a
+/// permanent platform privacy protection, not a bug to work around) — so
+/// Android has nothing real to self-report over `PeerFrame::BluetoothAddressUpdate`
+/// and instead is discovered by a peer's BLE scan (`transport::ble`'s
+/// discovery path). Linux has no such restriction.
+pub(crate) fn local_bluetooth_address() -> Option<String> {
+    // Test/CI escape hatch, mirroring `FINI_BLUETOOTH_PAIRED_ADDRESSES` above:
+    // exercising the self-report send path deterministically can't depend on
+    // whether the machine actually has a Bluetooth controller.
+    if let Ok(value) = std::env::var("FINI_LOCAL_BLUETOOTH_ADDRESS") {
+        return normalize_bluetooth_address(&value);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // `bluetoothctl show` (the local controller), not `info <address>`
+        // (a remote peer's bond status, used by `bluetooth_address_is_os_paired`
+        // above) — same Flatpak `flatpak-spawn --host` routing, same reason.
+        let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
+            let mut command = std::process::Command::new("flatpak-spawn");
+            command.arg("--host").arg("bluetoothctl");
+            command
+        } else {
+            std::process::Command::new("bluetoothctl")
+        };
+        return command
+            .arg("show")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|stdout| {
+                stdout.lines().find_map(|line| {
+                    let rest = line.trim().strip_prefix("Controller ")?;
+                    normalize_bluetooth_address(rest.split_whitespace().next()?)
+                })
+            });
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+/// Stores `address` as `peer_id`'s Bluetooth address, and additionally
+/// enables Bluetooth for the pair if -- and only if -- `address` is
+/// currently OS-bonded *on this machine*. Returns whether it was enabled.
+///
+/// Shared by both Phase 1 mechanisms of ADR 0002: `session::run_session`'s
+/// inbound `BluetoothAddressUpdate` handler (self-report) and
+/// `transport::ble`'s scan-and-auth discovery. Both already have a form of
+/// remote confirmation before calling this (an authenticated `PeerFrame`
+/// channel, or a live `AuthOk` from the discovered address) -- what neither
+/// proves on its own is that *this* device has completed OS-level bonding
+/// with that address. `check_bluetooth_bond` (space_sync::session) already
+/// enforces that only the *accepting* side of a Bluetooth session, so a
+/// remote AuthOk during discovery only proves bonding on the *other*
+/// side. Requiring it here too, symmetrically, before auto-enabling keeps
+/// this consistent with `device_connection_set_bluetooth_transport_impl`'s
+/// own manual-enable precondition -- never silently enable a pair this
+/// machine can't actually use yet.
+pub(crate) fn persist_bluetooth_address_and_maybe_enable(
+    conn: &mut SqliteConnection, peer_id: &str, address: &str,
+) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let is_os_paired = bluetooth_address_is_os_paired(address);
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let is_os_paired = false;
+
+    if is_os_paired {
+        let _ = diesel::update(paired_devices::table.find(peer_id))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some(address)),
+                paired_devices::bluetooth_last_verified_at
+                    .eq(Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string())),
+            ))
+            .execute(conn);
+    } else {
+        let _ = diesel::update(paired_devices::table.find(peer_id))
+            .set(paired_devices::bluetooth_address.eq(Some(address)))
+            .execute(conn);
+    }
+    is_os_paired
 }
 
 /// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/`PairComplete`).
@@ -779,6 +866,60 @@ pub fn device_connection_set_bluetooth_transport(
     device_connection_set_bluetooth_transport_impl(&mut conn, input)
 }
 
+/// The "Find via Bluetooth" button on `DeviceView.vue` — Phase 1's discovery
+/// mechanism (ADR 0002) for a peer that hasn't self-reported an address
+/// (Android peers can't; see `local_bluetooth_address`'s doc comment) or
+/// simply hasn't connected over network since this feature existed. Scans
+/// for up to 60 seconds; `Ok(None)` means nothing matched in that window,
+/// not an error -- the frontend shows "not found" rather than an error
+/// state for that case. A genuine `Err` means Bluetooth itself couldn't be
+/// used at all (no adapter, permission denied, etc).
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub async fn device_connection_find_bluetooth_address(
+    state: State<'_, DeviceConnectionState>,
+    peer_device_id: String,
+) -> Result<Option<String>, String> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // Same click-triggered permission request as the "Enable Bluetooth"
+        // toggle above -- this button is exactly the same class of genuine
+        // user action, not a background/startup path. See
+        // BluetoothPairing.requestPermissionsIfNeeded's doc comment.
+        #[cfg(target_os = "android")]
+        {
+            crate::services::android_context::call_static_context_void(
+                "com.fini.app.BluetoothPairing",
+                "requestPermissionsIfNeeded",
+            );
+            if !crate::services::android_context::call_static_context_to_bool(
+                "com.fini.app.BluetoothPairing",
+                "hasPermissions",
+            ) {
+                return Err(
+                    "Bluetooth permission required -- grant it in the dialog, then try again"
+                        .to_string(),
+                );
+            }
+        }
+
+        let device_connection = state.inner().clone();
+        let db_path = device_connection.db_path.clone();
+        crate::services::transport::ble::find_peer_address(
+            device_connection,
+            db_path,
+            peer_device_id,
+            Duration::from_secs(60),
+        )
+        .await
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = peer_device_id;
+        Err("Bluetooth is not available on this platform".to_string())
+    }
+}
+
 pub fn device_connection_transport_statuses_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -801,11 +942,28 @@ pub fn device_connection_transport_statuses_impl(
         .map(|address| bluetooth_address_is_os_paired(&address))
         .unwrap_or(false);
 
+    // Phase 2 of ADR 0002: `session_kind` reports the *live* transport
+    // (services::transport::TransportKind — TcpWs/Sim/Bluetooth/LoRa), a
+    // finer-grained enum than this module's own Network/Bluetooth kind.
+    // `Sim` maps to the Bluetooth row: it exists specifically to stand in
+    // for Bluetooth's fallback role in tests/E2E (see
+    // `transport::tests`'s own doc comment), so a live Sim session should
+    // read the same way a live Bluetooth session would.
+    let live_kind = state.session_kind(&peer_device_id);
+    let network_connected = live_kind == Some(crate::services::transport::TransportKind::TcpWs);
+    let bluetooth_connected = matches!(
+        live_kind,
+        Some(crate::services::transport::TransportKind::Bluetooth)
+            | Some(crate::services::transport::TransportKind::Sim)
+    );
+
     Ok(build_transport_statuses(
         state.network_peer_available(&peer_device_id),
         paired.bluetooth_enabled,
         bluetooth_has_metadata,
         bluetooth_os_paired,
+        network_connected,
+        bluetooth_connected,
     ))
 }
 
