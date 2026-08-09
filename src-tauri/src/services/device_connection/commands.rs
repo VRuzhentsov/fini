@@ -1765,17 +1765,17 @@ mod tests {
     }
 
     /// Regression test for the P1 review finding on the migration itself:
-    /// the previous schema had no way to distinguish "never enabled" from
-    /// "explicitly disabled" -- both left `bluetooth_enabled = 0` with no
-    /// address -- so an installation upgrading with a row already in that
-    /// state must have `bluetooth_disabled_by_user` backfilled to `true`,
-    /// not left at the column's own default of `false` (which would let
-    /// the peer's next self-report silently re-enable a choice the user
-    /// actually made under the old schema). Reverts and re-applies just
-    /// this migration to exercise the real backfill SQL, not a hand-rolled
-    /// equivalent.
+    /// `bluetooth_enabled` (migration 19) and `bluetooth_disabled_by_user`
+    /// (this migration) ship together, unreleased -- no released build
+    /// ever exposed a way to explicitly disable Bluetooth, so a
+    /// pre-existing `bluetooth_enabled = 0` row is simply "never touched,"
+    /// not "explicitly disabled." An earlier version of this migration
+    /// backfilled such rows to `disabled_by_user = true`, which would have
+    /// opted every existing pair out of the new automatic exchange flow on
+    /// first upgrade. Reverts and re-applies just this migration to
+    /// exercise the real SQL, not a hand-rolled equivalent.
     #[test]
-    fn migration_backfills_disabled_by_user_for_preexisting_not_enabled_rows() {
+    fn migration_does_not_backfill_disabled_by_user_for_preexisting_not_enabled_rows() {
         use diesel_migrations::MigrationHarness;
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1788,26 +1788,27 @@ mod tests {
 
         diesel::insert_into(paired_devices::table)
             .values((
-                paired_devices::peer_device_id.eq("peer-legacy-disabled"),
+                paired_devices::peer_device_id.eq("peer-legacy-untouched"),
                 paired_devices::display_name.eq("Peer Legacy"),
                 paired_devices::paired_at.eq("2026-01-01T00:00:00Z"),
                 paired_devices::pair_state.eq("paired"),
                 paired_devices::bluetooth_enabled.eq(false),
             ))
             .execute(&mut conn)
-            .expect("seed a pre-existing not-enabled row, as if from the old schema");
+            .expect("seed a pre-existing not-enabled row, as if from before this migration");
 
         conn.run_pending_migrations(db::MIGRATIONS)
             .expect("reapply the bluetooth_disabled_by_user migration");
 
         let disabled_by_user: bool = paired_devices::table
-            .find("peer-legacy-disabled")
+            .find("peer-legacy-untouched")
             .select(paired_devices::bluetooth_disabled_by_user)
             .first(&mut conn)
-            .expect("load the backfilled row");
+            .expect("load the migrated row");
         assert!(
-            disabled_by_user,
-            "a pre-existing not-enabled row must be conservatively backfilled as opted out"
+            !disabled_by_user,
+            "a pre-existing not-enabled row must default to not-opted-out, since no released \
+             build could have explicitly disabled it"
         );
     }
 
