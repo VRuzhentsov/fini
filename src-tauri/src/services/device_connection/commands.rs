@@ -42,23 +42,24 @@ pub(crate) fn normalize_bluetooth_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_uppercase())
 }
 
-/// Kept synchronous on purpose -- unlike `local_bluetooth_address`, this is
-/// called from too many contexts (a plain sync Tauri command, an already
-/// `block_in_place`-wrapped DB check, a raw non-runtime OS thread) to
-/// thread `async`/`.await` through every caller safely. Internally bounded
-/// instead: the Linux branch runs `bluetoothctl info` through
-/// `run_command_with_timeout` (kill-on-drop, so a stalled BlueZ/D-Bus can't
-/// hang this call forever) via `tauri::async_runtime::block_on`, which is
-/// safe from all of those contexts -- just never call this directly from
-/// inside an `async fn`'s body without going through `tokio::task::block_in_place`
-/// first (see `session::check_bluetooth_bond`), since `block_on`ing a
-/// runtime's own worker thread while it's mid-poll panics.
-pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
+/// Tri-state OS-bond check: `Some(true)`/`Some(false)` are *confirmed*
+/// results (the query actually completed), `None` means the check itself
+/// failed or timed out -- inconclusive, not evidence the bond doesn't
+/// exist. Most callers (the settings toggle, the accepting gate's
+/// `check_bluetooth_bond`) correctly want to fail closed on `None` too --
+/// see `bluetooth_address_is_os_paired`, the simple-bool wrapper they use.
+/// `persist_bluetooth_address_and_maybe_enable` is the one caller that
+/// needs to tell the difference, so a transient `bluetoothctl`/D-Bus
+/// hiccup can't destructively clear a still-valid bond just because one
+/// query attempt didn't complete.
+fn bluetooth_address_bond_check(address: &str) -> Option<bool> {
     if let Ok(allowed) = std::env::var("FINI_BLUETOOTH_PAIRED_ADDRESSES") {
-        return allowed
-            .split(',')
-            .filter_map(normalize_bluetooth_address)
-            .any(|item| item == address);
+        return Some(
+            allowed
+                .split(',')
+                .filter_map(normalize_bluetooth_address)
+                .any(|item| item == address),
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -80,10 +81,7 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
             tokio::process::Command::new("bluetoothctl")
         };
         command.arg("info").arg(address);
-        let stdout = tauri::async_runtime::block_on(run_command_with_timeout(command, Duration::from_secs(5)));
-        return stdout
-            .map(|stdout| stdout.lines().any(|line| line.trim() == "Paired: yes"))
-            .unwrap_or(false);
+        return tauri::async_runtime::block_on(bluetoothctl_bond_status(command, Duration::from_secs(5)));
     }
 
     #[cfg(target_os = "android")]
@@ -93,16 +91,52 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
         // precondition, not part of the reusable GATT transport surface,
         // mirroring the Linux branch above shelling out to `bluetoothctl`
         // directly rather than through `ble_gatt::backend::linux`) queries
-        // `BluetoothAdapter.getBondedDevices()` via JNI.
-        return crate::services::android_context::call_static_context_string_to_bool(
+        // `BluetoothAdapter.getBondedDevices()` via JNI. The JNI bridge
+        // already fails closed to `false` internally on any error, so
+        // there is no separate "inconclusive" signal to surface here.
+        return Some(crate::services::android_context::call_static_context_string_to_bool(
             "com.fini.app.BluetoothPairing",
             "isBonded",
             address,
-        );
+        ));
     }
 
     #[allow(unreachable_code)]
-    false
+    None
+}
+
+/// Runs `bluetoothctl info` and reports whether it *completed* (regardless
+/// of exit code -- a fast "device not found" answer is just as much a real
+/// result as a "Paired: yes" line, both cases this device's controller
+/// definitely resolved *something*), separately from whether it never
+/// finished at all (`None`: failed to spawn, or ran past `timeout`).
+/// `kill_on_drop(true)`, matching `run_command_with_timeout`: a timeout
+/// elapsing here actually terminates and reaps the subprocess.
+async fn bluetoothctl_bond_status(mut command: tokio::process::Command, timeout: Duration) -> Option<bool> {
+    command
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let child = command.spawn().ok()?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output()).await.ok()?.ok()?;
+    Some(
+        String::from_utf8(output.stdout)
+            .map(|stdout| stdout.lines().any(|line| line.trim() == "Paired: yes"))
+            .unwrap_or(false),
+    )
+}
+
+/// Kept synchronous on purpose -- unlike `local_bluetooth_address`, this is
+/// called from too many contexts (a plain sync Tauri command, an already
+/// `block_in_place`-wrapped DB check, a raw non-runtime OS thread) to
+/// thread `async`/`.await` through every caller safely. Fails closed
+/// (`false`) on an inconclusive check, same as a confirmed "not paired" --
+/// appropriate for every caller of this simple-bool wrapper (they all want
+/// to fail closed regardless of *why* the answer was negative), unlike
+/// `persist_bluetooth_address_and_maybe_enable`, which calls
+/// `bluetooth_address_bond_check` directly to preserve that distinction.
+pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
+    bluetooth_address_bond_check(address).unwrap_or(false)
 }
 
 /// Runs `command` with a hard time limit that actually terminates it, not
@@ -265,37 +299,56 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     conn: &mut SqliteConnection, peer_id: &str, address: &str,
 ) -> bool {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    let is_os_paired = bluetooth_address_is_os_paired(address);
+    let bond_check = bluetooth_address_bond_check(address);
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let is_os_paired = false;
+    let bond_check = Some(false);
 
-    if is_os_paired {
-        let _ = diesel::update(paired_devices::table.find(peer_id))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some(address)),
-                paired_devices::bluetooth_last_verified_at
-                    .eq(Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string())),
-            ))
-            .execute(conn);
-    } else {
-        // The new address isn't OS-bonded, so it must not keep whatever
-        // `bluetooth_enabled`/`bluetooth_last_verified_at` an *older*,
-        // possibly different address earned -- otherwise the row would
-        // claim "enabled, verified at T" while actually pointing at an
-        // address that was never verified at all, and dial attempts would
-        // silently use it. Clear enablement and verification atomically
-        // with the address update so the row is never in that
-        // inconsistent state.
-        let _ = diesel::update(paired_devices::table.find(peer_id))
-            .set((
-                paired_devices::bluetooth_address.eq(Some(address)),
-                paired_devices::bluetooth_enabled.eq(false),
-                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
-            ))
-            .execute(conn);
+    match bond_check {
+        Some(true) => {
+            let _ = diesel::update(paired_devices::table.find(peer_id))
+                .set((
+                    paired_devices::bluetooth_enabled.eq(true),
+                    paired_devices::bluetooth_address.eq(Some(address)),
+                    paired_devices::bluetooth_last_verified_at
+                        .eq(Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string())),
+                ))
+                .execute(conn);
+            true
+        }
+        Some(false) => {
+            // *Confirmed* not OS-bonded, so it must not keep whatever
+            // `bluetooth_enabled`/`bluetooth_last_verified_at` an *older*,
+            // possibly different address earned -- otherwise the row
+            // would claim "enabled, verified at T" while actually
+            // pointing at an address that was never verified at all, and
+            // dial attempts would silently use it. Clear enablement and
+            // verification atomically with the address update so the row
+            // is never in that inconsistent state.
+            let _ = diesel::update(paired_devices::table.find(peer_id))
+                .set((
+                    paired_devices::bluetooth_address.eq(Some(address)),
+                    paired_devices::bluetooth_enabled.eq(false),
+                    paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
+                ))
+                .execute(conn);
+            false
+        }
+        None => {
+            // Inconclusive (the check itself failed or timed out, e.g. a
+            // transient BlueZ/D-Bus hiccup) -- not evidence the bond
+            // doesn't exist, so `bluetooth_enabled`/`bluetooth_last_verified_at`
+            // must be left untouched: clearing them here would silently
+            // drop an enabled peer's Bluetooth fallback until the user
+            // happens to notice and re-enable it by hand, over a problem
+            // that may have already resolved itself by the next check.
+            // Still record the self-reported address, though -- that part
+            // doesn't depend on the bond check having succeeded.
+            let _ = diesel::update(paired_devices::table.find(peer_id))
+                .set(paired_devices::bluetooth_address.eq(Some(address)))
+                .execute(conn);
+            false
+        }
     }
-    is_os_paired
 }
 
 /// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/`PairComplete`).
@@ -1436,6 +1489,41 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "must return promptly once the timeout elapses, took {elapsed:?}"
         );
+    }
+
+    /// Regression test for the P2 review finding: a bond check that never
+    /// completes (timeout, here simulated with `sleep`) must report
+    /// `None` -- inconclusive -- not `Some(false)`. Conflating the two is
+    /// exactly what let a transient `bluetoothctl`/D-Bus hiccup
+    /// destructively clear `bluetooth_enabled` for a peer whose bond very
+    /// likely still exists.
+    #[tokio::test]
+    async fn bluetoothctl_bond_status_reports_none_when_the_check_times_out() {
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30");
+        let result = bluetoothctl_bond_status(command, Duration::from_millis(200)).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn bluetoothctl_bond_status_reports_some_true_when_paired() {
+        let mut command = tokio::process::Command::new("printf");
+        command.arg("Paired: yes\n");
+        let result = bluetoothctl_bond_status(command, Duration::from_secs(5)).await;
+        assert_eq!(result, Some(true));
+    }
+
+    /// A completed run that simply doesn't report a bond (a genuinely
+    /// unknown/never-paired address, or a "not found" answer) is a real,
+    /// confirmed result -- `Some(false)`, not `None` -- since the command
+    /// resolved *something* within its deadline, unlike the timeout case
+    /// above.
+    #[tokio::test]
+    async fn bluetoothctl_bond_status_reports_some_false_when_not_paired() {
+        let mut command = tokio::process::Command::new("printf");
+        command.arg("Paired: no\n");
+        let result = bluetoothctl_bond_status(command, Duration::from_secs(5)).await;
+        assert_eq!(result, Some(false));
     }
 
     fn paired_device_input(enabled: bool, address: Option<&str>) -> DeviceBluetoothTransportInput {

@@ -962,13 +962,21 @@ export const useDeviceStore = defineStore("device", () => {
     }
 
     if (generation !== addModeGeneration) {
-      // The view left while that invoke was in flight -- the backend was
-      // just told to enter add-mode for a session nobody wants anymore.
-      // Tell it to leave again immediately rather than starting loops.
-      try {
-        await invoke("device_connection_leave_add_mode");
-      } catch (error) {
-        console.warn("[device-connection] leave add mode (late cancel) failed", error);
+      // A newer generation has taken over since this call started -- either
+      // a genuine `leaveAddMode` (nobody wants add-mode active anymore), or
+      // the user left and quickly came back, in which case a *newer*
+      // `enterAddMode` call is now the active owner and already running its
+      // own loops. Only compensate in the first case: `addModeEnabled` is
+      // `leaveAddMode`'s own signal for "the current desired state is
+      // left" (it's flipped back to `true` immediately by any newer
+      // `enterAddMode`), so sending "leave" while it's `true` would
+      // incorrectly turn off that newer, legitimately active session.
+      if (!addModeEnabled.value) {
+        try {
+          await invoke("device_connection_leave_add_mode");
+        } catch (error) {
+          console.warn("[device-connection] leave add mode (late cancel) failed", error);
+        }
       }
       return;
     }
