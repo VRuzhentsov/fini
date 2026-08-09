@@ -488,6 +488,19 @@ pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> R
     // existing mDNS beacon.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     crate::services::transport::ble::set_add_mode(true);
+    // Opening Add Device is a genuine user action, the right point to
+    // prompt -- see `BluetoothPairing.requestPermissionsIfNeeded`'s doc
+    // comment. Requested exactly once per add-mode entry, here, not from
+    // `device_connection_discover_bluetooth_candidates`: that command is
+    // invoked repeatedly by the frontend's self-rescheduling scan loop
+    // (every ~2s for as long as this view stays open), and prompting
+    // again on every retry after the user has already explicitly denied
+    // it once would violate that same contract.
+    #[cfg(target_os = "android")]
+    crate::services::android_context::call_static_context_void(
+        "com.fini.app.BluetoothPairing",
+        "requestPermissionsIfNeeded",
+    );
     Ok(())
 }
 
@@ -655,19 +668,16 @@ pub async fn device_connection_discover_bluetooth_candidates(
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        // Same reasoning as `device_connection_find_bluetooth_address_impl`'s
-        // permission block above: opening Add Device mode is a genuine user
-        // action, not a background/startup path, so this is an appropriate
-        // point to prompt. Without this, a first-ever Add Device scan on
-        // Android 12+ silently returns nothing and the frontend's scan loop
-        // gives up for the rest of the session -- see
-        // `BluetoothPairing.requestPermissionsIfNeeded`'s doc comment.
+        // Only *rechecks* permission here, doesn't re-prompt:
+        // `device_connection_enter_add_mode_impl` already requested it once
+        // for this add-mode session. This command is invoked repeatedly by
+        // the frontend's self-rescheduling scan loop (every ~2s for as
+        // long as Add Device stays open), and re-prompting on every retry
+        // after an explicit denial would violate
+        // `BluetoothPairing.requestPermissionsIfNeeded`'s "tied to a
+        // genuine user action" contract.
         #[cfg(target_os = "android")]
         {
-            crate::services::android_context::call_static_context_void(
-                "com.fini.app.BluetoothPairing",
-                "requestPermissionsIfNeeded",
-            );
             if !crate::services::android_context::call_static_context_to_bool(
                 "com.fini.app.BluetoothPairing",
                 "hasPermissions",
