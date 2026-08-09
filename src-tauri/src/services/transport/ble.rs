@@ -471,6 +471,15 @@ pub struct AddModeCandidate {
     pub hostname: String,
 }
 
+/// Dials `address` and exchanges `DiscoveryHello`/`DiscoveryHelloReply`.
+/// `None` on any failure along the way (dial, send, no/wrong reply); the
+/// caller is responsible for bounding how long this is allowed to run.
+async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
+    let mut link = dial(address).await.ok()?;
+    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.ok()?;
+    recv_frame(link.as_mut()).await?.ok()
+}
+
 /// Scans for nearby Fini BLE advertisers carrying the add-mode flag (see
 /// `datagram_config`/`set_add_mode`) and exchanges `DiscoveryHello` with
 /// each one to learn its identity — Phase 3's discovery mechanism for
@@ -519,18 +528,20 @@ pub async fn scan_add_mode_candidates(
         if !flagged {
             continue;
         }
-        let Ok(mut link) = dial(&address).await else {
-            continue;
-        };
-        if send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.is_err() {
-            continue;
-        }
-        // Bounded separately from the overall scan deadline: one
+        // Bounded by the *remaining* scan deadline, not a fixed window: one
         // unresponsive candidate (in range, advertising, but slow or gone
-        // by the time this connects) must not eat the whole remaining scan
-        // window waiting on a reply that may never come.
-        let reply = tokio::time::timeout(Duration::from_secs(5), recv_frame(link.as_mut())).await;
-        if let Ok(Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname }))) = reply {
+        // by the time this connects) must not eat the whole scan past the
+        // caller's requested `duration_ms` -- the frontend runs this as a
+        // single self-rescheduling chain, so one stuck candidate here would
+        // otherwise delay every subsequent Add Device discovery pass. Dial
+        // and send are covered too, not just the reply: neither has a bound
+        // of its own.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let reply = tokio::time::timeout(remaining, probe_discovery_hello(&address)).await;
+        if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname })) = reply {
             // A stale/self-seen advertisement (e.g. two adapters on the
             // same machine, or a previous scan's own peripheral still
             // winding down) must not show up as a candidate to pair with.

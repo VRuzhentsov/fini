@@ -98,6 +98,32 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
     false
 }
 
+/// Runs `command` with a hard time limit that actually terminates it, not
+/// merely bounds how long a caller waits: `kill_on_drop(true)` makes Tokio
+/// send the kill signal (and reap the process via its own SIGCHLD-driven
+/// reaper) the instant `tokio::time::timeout` below drops the still-running
+/// future. A `spawn_blocking`-wrapped `std::process::Command::output()`
+/// can't do this -- once the blocking call is in flight there is no way to
+/// cancel it, so a permanently hung subprocess keeps its thread (and the
+/// process itself) alive forever, and every periodic retry leaks another
+/// one. `None` if the command fails to spawn, doesn't exit successfully, or
+/// doesn't finish within `timeout`.
+async fn run_command_with_timeout(mut command: tokio::process::Command, timeout: Duration) -> Option<String> {
+    command
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let child = command.spawn().ok()?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
 /// This device's own real Bluetooth adapter address, when the platform can
 /// read it at all. `None` on Android: `BluetoothAdapter.getAddress()` has
 /// returned a dummy value since Android 6.0 for every normal app (a
@@ -105,7 +131,7 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
 /// Android has nothing real to self-report over `PeerFrame::BluetoothAddressUpdate`
 /// and instead is discovered by a peer's BLE scan (`transport::ble`'s
 /// discovery path). Linux has no such restriction.
-pub(crate) fn local_bluetooth_address() -> Option<String> {
+pub(crate) async fn local_bluetooth_address() -> Option<String> {
     // Test/CI escape hatch, mirroring `FINI_BLUETOOTH_PAIRED_ADDRESSES` above:
     // exercising the self-report send path deterministically can't depend on
     // whether the machine actually has a Bluetooth controller.
@@ -119,24 +145,18 @@ pub(crate) fn local_bluetooth_address() -> Option<String> {
         // (a remote peer's bond status, used by `bluetooth_address_is_os_paired`
         // above) — same Flatpak `flatpak-spawn --host` routing, same reason.
         let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
-            let mut command = std::process::Command::new("flatpak-spawn");
+            let mut command = tokio::process::Command::new("flatpak-spawn");
             command.arg("--host").arg("bluetoothctl");
             command
         } else {
-            std::process::Command::new("bluetoothctl")
+            tokio::process::Command::new("bluetoothctl")
         };
-        return command
-            .arg("show")
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .and_then(|stdout| {
-                stdout.lines().find_map(|line| {
-                    let rest = line.trim().strip_prefix("Controller ")?;
-                    normalize_bluetooth_address(rest.split_whitespace().next()?)
-                })
-            });
+        command.arg("show");
+        let stdout = run_command_with_timeout(command, Duration::from_secs(5)).await?;
+        return stdout.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix("Controller ")?;
+            normalize_bluetooth_address(rest.split_whitespace().next()?)
+        });
     }
 
     #[allow(unreachable_code)]
@@ -744,7 +764,10 @@ pub fn device_connection_pair_complete_request_impl(
         // Best-effort: shared regardless of which transport carries this
         // frame, so a network-carried completion can still hand the
         // requester a Bluetooth address to store (ADR 0002 Phase 3).
-        bluetooth_address: local_bluetooth_address(),
+        // `local_bluetooth_address` is genuinely bounded internally now
+        // (kills its subprocess on timeout), so blocking this synchronous
+        // command on it can't hang the way it could before.
+        bluetooth_address: tauri::async_runtime::block_on(local_bluetooth_address()),
         key_material: None,
     };
 
@@ -1355,6 +1378,26 @@ mod tests {
     /// and clear it must not interleave with each other under the default
     /// parallel test runner.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Regression test: `run_command_with_timeout` must actually terminate
+    /// a command that outlives its deadline, not just stop waiting on it --
+    /// `sleep 30` run with a 200ms timeout proves this by returning `None`
+    /// almost immediately rather than only after the full 30 seconds.
+    #[tokio::test]
+    async fn run_command_with_timeout_returns_promptly_on_a_hung_command() {
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30");
+
+        let started = std::time::Instant::now();
+        let result = run_command_with_timeout(command, Duration::from_millis(200)).await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_none());
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "must return promptly once the timeout elapses, took {elapsed:?}"
+        );
+    }
 
     fn paired_device_input(enabled: bool, address: Option<&str>) -> DeviceBluetoothTransportInput {
         DeviceBluetoothTransportInput {
