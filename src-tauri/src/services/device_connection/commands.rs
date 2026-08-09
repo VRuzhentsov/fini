@@ -1000,6 +1000,7 @@ pub fn device_connection_save_paired_device_impl(
     peer_device_id: String,
     display_name: String,
     bluetooth_address: Option<String>,
+    via_bluetooth: bool,
     db_path: std::path::PathBuf,
 ) -> Result<PairedDevice, String> {
     let now = utc_now();
@@ -1040,14 +1041,21 @@ pub fn device_connection_save_paired_device_impl(
         // not bonding: `bluetooth_dial_candidates`/`check_bluetooth_bond`
         // both hard-require OS pairing regardless of this flag, so setting
         // it without a real bond would just be a lie the UI shows while the
-        // pair can never actually establish a Bluetooth session. When it
-        // isn't bonded yet, kick off the real OS bond request too -- two
-        // freshly BLE-paired devices with no shared network otherwise have
-        // no path to a working Bluetooth session at all, since nothing else
-        // would ever prompt the user to complete OS pairing.
+        // pair can never actually establish a Bluetooth session.
         if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
             let enabled = persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address);
-            if !enabled {
+            // Only kick off the OS bond *request* (a system pairing
+            // prompt) for the BLE-first flow this exists to unblock -- an
+            // ordinary network pairing that happens to also carry a
+            // self-reported Bluetooth address (both transports' details
+            // are always exchanged regardless of which one carried
+            // completion) must not surprise the user with a Bluetooth
+            // pairing dialog they never asked for
+            // (`docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`).
+            // Two freshly *BLE-paired* devices with no shared network do
+            // need this, though: nothing else would ever prompt the user
+            // to complete OS pairing for them.
+            if !enabled && via_bluetooth {
                 request_os_bond(&address, &peer_device_id, db_path.clone());
             }
         }
@@ -1068,6 +1076,7 @@ pub fn device_connection_save_paired_device(
     peer_device_id: String,
     display_name: String,
     bluetooth_address: Option<String>,
+    via_bluetooth: bool,
 ) -> Result<PairedDevice, String> {
     let mut conn = db.0.lock().unwrap();
     device_connection_save_paired_device_impl(
@@ -1075,6 +1084,7 @@ pub fn device_connection_save_paired_device(
         peer_device_id,
         display_name,
         bluetooth_address,
+        via_bluetooth,
         state.db_path.clone(),
     )
 }
@@ -1447,6 +1457,7 @@ mod tests {
             "peer-new".to_string(),
             "Peer New".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
+            true,
             db_path.clone(),
         )
         .expect("save paired device");
@@ -1473,6 +1484,7 @@ mod tests {
             "peer-new-unbonded".to_string(),
             "Peer New Unbonded".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
+            true,
             db_path.clone(),
         )
         .expect("save paired device");
@@ -1540,6 +1552,7 @@ mod tests {
             "peer-a".to_string(),
             "Peer A Renamed".to_string(),
             Some("11:22:33:44:55:66".to_string()),
+            false,
             // Never touched: the update branch (an existing row, seeded by
             // `test_conn`) never calls `request_os_bond`.
             std::path::PathBuf::from("/nonexistent"),

@@ -266,12 +266,14 @@ export const useDeviceStore = defineStore("device", () => {
     deviceId: string,
     displayName: string,
     bluetoothAddress: string | null = null,
+    viaBluetooth = false,
   ) {
     try {
       await invoke<PairedDevice>("device_connection_save_paired_device", {
         peerDeviceId: deviceId,
         displayName,
         bluetoothAddress,
+        viaBluetooth,
       });
       await loadPairedDevices();
     } catch (error) {
@@ -487,6 +489,35 @@ export const useDeviceStore = defineStore("device", () => {
       console.warn("[device-connection] failed to load transport statuses", error);
       transportStatusesByPeer.value[peerDeviceId] = [];
       return [];
+    }
+  }
+
+  // On Linux, `device_connection_transport_statuses` re-checks OS bond
+  // status via a `bluetoothctl` subprocess call on every invocation --
+  // fine for a one-shot load, but not something a live-status poll should
+  // rerun every few seconds while a device's page stays open (a stalled
+  // BlueZ/D-Bus would hold up every other DB-backed command for as long as
+  // the view stays mounted). `device_connection_session_transport` reads
+  // only in-memory session state, so this patches just the `connected`
+  // field of whatever was last loaded rather than re-deriving the whole
+  // row set.
+  async function refreshLiveConnectedState(peerDeviceId: string) {
+    const existing = transportStatusesByPeer.value[peerDeviceId];
+    if (!existing || existing.length === 0) return;
+
+    try {
+      const liveKind = await invoke<"tcp_ws" | "sim" | "bluetooth" | "lo_ra" | null>(
+        "device_connection_session_transport",
+        { peerDeviceId },
+      );
+      const networkConnected = liveKind === "tcp_ws";
+      const bluetoothConnected = liveKind === "bluetooth" || liveKind === "sim";
+      transportStatusesByPeer.value[peerDeviceId] = existing.map((status) => ({
+        ...status,
+        connected: status.kind === "network" ? networkConnected : bluetoothConnected,
+      }));
+    } catch (error) {
+      console.warn("[device-connection] failed to refresh live connected state", error);
     }
   }
 
@@ -791,6 +822,7 @@ export const useDeviceStore = defineStore("device", () => {
             outgoingRequest.value.to_device_id,
             outgoingRequest.value.to_hostname,
             completion.bluetooth_address,
+            completion.via_bluetooth,
           );
           outgoingRequest.value = null;
           pairCompletedAt.value = nowIso();
@@ -1053,7 +1085,12 @@ export const useDeviceStore = defineStore("device", () => {
       return false;
     }
 
-    await savePairedDevice(request.from_device_id, request.from_hostname, request.from_bluetooth_address);
+    await savePairedDevice(
+      request.from_device_id,
+      request.from_hostname,
+      request.from_bluetooth_address,
+      request.via_bluetooth,
+    );
 
     try {
       await invoke("device_connection_pair_complete_request", {
@@ -1141,6 +1178,7 @@ export const useDeviceStore = defineStore("device", () => {
     getLastSyncedAtForSpace,
     getTransportStatuses,
     refreshTransportStatuses,
+    refreshLiveConnectedState,
     setBluetoothTransport,
     findBluetoothAddress,
     isSyncingPeer,

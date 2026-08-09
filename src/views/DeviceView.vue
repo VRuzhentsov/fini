@@ -80,8 +80,15 @@ onMounted(() => {
   // Bluetooth-only fallback session never does. Without an independent
   // poll here, "connected now" goes stale the moment a Bluetooth-only
   // session connects or disconnects while this page stays open.
+  //
+  // Uses the lightweight `refreshLiveConnectedState`, not the full
+  // `refreshTransportStatuses` `loadMappings` already ran once above: the
+  // full check re-verifies OS Bluetooth bonding via a `bluetoothctl`
+  // subprocess on Linux, which this view has no reason to rerun every 5s
+  // for as long as it stays open -- only the live "connected" state
+  // actually needs to be fresh here.
   transportStatusTimer = setInterval(() => {
-    if (deviceId.value) void deviceStore.refreshTransportStatuses(deviceId.value);
+    if (deviceId.value) void deviceStore.refreshLiveConnectedState(deviceId.value);
   }, TRANSPORT_STATUS_POLL_INTERVAL_MS);
 });
 
