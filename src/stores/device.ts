@@ -268,23 +268,25 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
+  // Deliberately does not catch its own errors: both callers (submitPairCode,
+  // the outgoing-completion poll in refreshDiscovery) send PairComplete to
+  // the peer *before* this local write, so a failure here already leaves
+  // the two devices asymmetric -- the peer believes pairing succeeded. Each
+  // caller needs to know the write actually failed, not have it silently
+  // swallowed here, so it doesn't also report success on this side.
   async function savePairedDevice(
     deviceId: string,
     displayName: string,
     bluetoothAddress: string | null = null,
     viaBluetooth = false,
   ) {
-    try {
-      await invoke<PairedDevice>("device_connection_save_paired_device", {
-        peerDeviceId: deviceId,
-        displayName,
-        bluetoothAddress,
-        viaBluetooth,
-      });
-      await loadPairedDevices();
-    } catch (error) {
-      console.warn("[device-connection] failed to save paired device", error);
-    }
+    await invoke<PairedDevice>("device_connection_save_paired_device", {
+      peerDeviceId: deviceId,
+      displayName,
+      bluetoothAddress,
+      viaBluetooth,
+    });
+    await loadPairedDevices();
   }
 
   function getMappedSpaceIds(peerDeviceId: string): string[] {
@@ -1157,12 +1159,44 @@ export const useDeviceStore = defineStore("device", () => {
       return false;
     }
 
-    await savePairedDevice(
-      request.from_device_id,
-      request.from_hostname,
-      request.from_bluetooth_address,
-      request.via_bluetooth,
-    );
+    // PairComplete has now been sent, and the backend's own record of this
+    // incoming request is gone the moment that send succeeds (it can't be
+    // resubmitted from here on) -- the peer will persist its side of the
+    // pairing regardless of what happens next on this one. A failure below
+    // must not be swallowed as success: silently reporting "paired" while
+    // this device's own row was never written would leave the two devices
+    // permanently asymmetric with nothing left to retry against. SQLite's
+    // own busy_timeout already absorbs a few seconds of contention before
+    // this ever throws, so a few more retries with backoff cover a
+    // still-transient failure without adding much delay to the common case.
+    const RETRY_DELAYS_MS = [500, 1500, 3000];
+    let saved = false;
+    for (let attempt = 0; !saved; attempt++) {
+      try {
+        await savePairedDevice(
+          request.from_device_id,
+          request.from_hostname,
+          request.from_bluetooth_address,
+          request.via_bluetooth,
+        );
+        saved = true;
+      } catch (error) {
+        if (attempt >= RETRY_DELAYS_MS.length) {
+          console.error(
+            "[device-connection] local pairing persistence failed after PairComplete was already " +
+              "sent -- the peer believes pairing succeeded, this device does not have it recorded",
+            error,
+          );
+          break;
+        }
+        console.warn(
+          `[device-connection] local pairing persistence attempt ${attempt + 1} failed, retrying`,
+          error,
+        );
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+    if (!saved) return false;
 
     delete incomingExpectedCode.value[requestId];
     delete incomingAttemptCount.value[requestId];
