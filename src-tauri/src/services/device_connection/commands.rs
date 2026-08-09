@@ -242,13 +242,27 @@ pub(crate) fn request_os_bond(address: &str, peer_device_id: &str, db_path: std:
         let peer_device_id = peer_device_id.to_string();
         std::thread::spawn(move || {
             let mut command = if std::env::var_os("FLATPAK_ID").is_some() {
-                let mut command = std::process::Command::new("flatpak-spawn");
+                let mut command = tokio::process::Command::new("flatpak-spawn");
                 command.arg("--host").arg("bluetoothctl");
                 command
             } else {
-                std::process::Command::new("bluetoothctl")
+                tokio::process::Command::new("bluetoothctl")
             };
-            let _ = command.arg("pair").arg(&address).output();
+            command.arg("pair").arg(&address);
+            // `bluetoothctl pair` can hang indefinitely on an unresponsive
+            // BlueZ/D-Bus or a pairing agent nobody answers -- bounded the
+            // same way as every other `bluetoothctl` call site in this
+            // file (`run_command_with_timeout`'s `kill_on_drop` actually
+            // terminates and reaps the subprocess on timeout, unlike the
+            // plain `Command::output()` this replaces, which would leave
+            // this thread and the child process stuck forever). A
+            // generous 60s, not the 5s used for a quick read-only query:
+            // this one involves real interactive user confirmation on one
+            // or both ends, which can legitimately take a while.
+            let _ = tauri::async_runtime::block_on(run_command_with_timeout(
+                command,
+                Duration::from_secs(60),
+            ));
             if bluetooth_address_is_os_paired(&address) {
                 let mut conn = crate::services::db::open_db_at_path(&db_path);
                 persist_bluetooth_address_and_maybe_enable(&mut conn, &peer_device_id, &address);
