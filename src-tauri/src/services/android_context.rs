@@ -144,6 +144,90 @@ pub fn call_static_context_string_to_bool(class_binary_name: &str, method: &str,
 }
 
 /// Calls an app-defined Kotlin object's `@JvmStatic fun name(context:
+/// Context, address: String): Boolean?` — the tri-state form
+/// `call_static_context_string_to_bool` collapses away. Kotlin's nullable
+/// `Boolean?` marshals as a boxed `java.lang.Boolean`, so `null` is a
+/// distinct wire value from `false`, not the same thing squashed together.
+///
+/// Returns `None` for the Kotlin method's own `null` result *and* for
+/// every failure along the way (bridge unavailable, class not found,
+/// exception thrown inside the method) -- none of those are evidence of
+/// `false`, only that this check couldn't be completed. Use this instead
+/// of the plain-bool variant wherever the caller needs to tell "confirmed
+/// false" apart from "inconclusive" (e.g.
+/// `device_connection::commands::persist_bluetooth_address_and_maybe_enable`);
+/// callers that are fine failing closed either way should keep using
+/// `call_static_context_string_to_bool`.
+pub fn call_static_context_string_to_optional_bool(
+    class_binary_name: &str,
+    method: &str,
+    arg: &str,
+) -> Option<bool> {
+    let (vm, context_obj) = match resolve_context() {
+        Ok(attached) => attached,
+        Err(err) => {
+            eprintln!("[android-context] bridge unavailable, treating as inconclusive: {err}");
+            return None;
+        }
+    };
+    let mut env = match vm.attach_current_thread_as_daemon() {
+        Ok(env) => env,
+        Err(err) => {
+            eprintln!("[android-context] JNI attach failed, treating as inconclusive: {err}");
+            return None;
+        }
+    };
+
+    let class = match load_app_class(&mut env, &context_obj, class_binary_name) {
+        Ok(class) => class,
+        Err(err) => {
+            eprintln!(
+                "[android-context] loading {class_binary_name} failed, treating as inconclusive: {err}"
+            );
+            return None;
+        }
+    };
+    let jarg = match env.new_string(arg) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[android-context] new_string failed, treating as inconclusive: {err}");
+            return None;
+        }
+    };
+    let result = env.call_static_method(
+        class,
+        method,
+        "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/Boolean;",
+        &[JValue::Object(&context_obj), JValue::Object(&jarg)],
+    );
+    let boxed = match result.and_then(|v| v.l()) {
+        Ok(obj) => obj,
+        Err(err) => {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+            eprintln!(
+                "[android-context] {class_binary_name}.{method} failed, treating as inconclusive: {err}"
+            );
+            return None;
+        }
+    };
+    if boxed.is_null() {
+        return None;
+    }
+    match env.call_method(&boxed, "booleanValue", "()Z", &[]).and_then(|v| v.z()) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+            eprintln!(
+                "[android-context] unboxing {class_binary_name}.{method}'s result failed, treating as inconclusive: {err}"
+            );
+            None
+        }
+    }
+}
+
+/// Calls an app-defined Kotlin object's `@JvmStatic fun name(context:
 /// Context): Boolean` — e.g. `BluetoothPairing.hasPermissions`. Fails closed
 /// (`false`), same reasoning as the string-argument variant above.
 pub fn call_static_context_to_bool(class_binary_name: &str, method: &str) -> bool {

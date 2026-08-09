@@ -91,14 +91,16 @@ fn bluetooth_address_bond_check(address: &str) -> Option<bool> {
         // precondition, not part of the reusable GATT transport surface,
         // mirroring the Linux branch above shelling out to `bluetoothctl`
         // directly rather than through `ble_gatt::backend::linux`) queries
-        // `BluetoothAdapter.getBondedDevices()` via JNI. The JNI bridge
-        // already fails closed to `false` internally on any error, so
-        // there is no separate "inconclusive" signal to surface here.
-        return Some(crate::services::android_context::call_static_context_string_to_bool(
+        // `BluetoothAdapter.getBondedDevices()` via JNI, returning `Boolean?`
+        // on the Kotlin side so a permission/adapter/bridge failure is
+        // distinguishable from a confirmed "not bonded" -- the tri-state
+        // JNI helper, not the plain-bool one every *other* Android call
+        // site in this file uses.
+        return crate::services::android_context::call_static_context_string_to_optional_bool(
             "com.fini.app.BluetoothPairing",
             "isBonded",
             address,
-        ));
+        );
     }
 
     #[allow(unreachable_code)]
@@ -119,6 +121,13 @@ async fn bluetoothctl_bond_status(mut command: tokio::process::Command, timeout:
         .stderr(std::process::Stdio::null());
     let child = command.spawn().ok()?;
     let output = tokio::time::timeout(timeout, child.wait_with_output()).await.ok()?.ok()?;
+    // A non-zero exit isn't necessarily "device unknown" -- it's just as
+    // likely BlueZ, D-Bus, or the controller itself being temporarily
+    // unavailable, an operational failure with nothing to say about the
+    // actual bond. Only a successful run's content is a real answer.
+    if !output.status.success() {
+        return None;
+    }
     Some(
         String::from_utf8(output.stdout)
             .map(|stdout| stdout.lines().any(|line| line.trim() == "Paired: yes"))
@@ -336,16 +345,28 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
         None => {
             // Inconclusive (the check itself failed or timed out, e.g. a
             // transient BlueZ/D-Bus hiccup) -- not evidence the bond
-            // doesn't exist, so `bluetooth_enabled`/`bluetooth_last_verified_at`
-            // must be left untouched: clearing them here would silently
-            // drop an enabled peer's Bluetooth fallback until the user
-            // happens to notice and re-enable it by hand, over a problem
-            // that may have already resolved itself by the next check.
-            // Still record the self-reported address, though -- that part
-            // doesn't depend on the bond check having succeeded.
-            let _ = diesel::update(paired_devices::table.find(peer_id))
-                .set(paired_devices::bluetooth_address.eq(Some(address)))
-                .execute(conn);
+            // doesn't exist. Whether it's safe to still record `address`
+            // depends on what's already there: a peer with no *currently
+            // enabled* Bluetooth state has nothing to protect (a brand new
+            // pair, or one this same function already confirmed disabled),
+            // so recording the self-reported address is harmless and
+            // useful for the next check to target. But a peer that's
+            // currently enabled has a previously-*verified* address/
+            // timestamp on record -- overwriting just `bluetooth_address`
+            // while leaving `bluetooth_enabled`/`bluetooth_last_verified_at`
+            // at their old values would claim "enabled, verified at T" for
+            // a replacement address that was never actually checked, so
+            // that case leaves the entire tuple untouched instead.
+            let currently_enabled: bool = paired_devices::table
+                .find(peer_id)
+                .select(paired_devices::bluetooth_enabled)
+                .first(&mut *conn)
+                .unwrap_or(false);
+            if !currently_enabled {
+                let _ = diesel::update(paired_devices::table.find(peer_id))
+                    .set(paired_devices::bluetooth_address.eq(Some(address)))
+                    .execute(conn);
+            }
             false
         }
     }
@@ -1526,6 +1547,19 @@ mod tests {
         assert_eq!(result, Some(false));
     }
 
+    /// Regression test for the P2 review finding: a non-zero exit isn't
+    /// evidence the device is unpaired -- it's just as likely BlueZ,
+    /// D-Bus, or the controller being temporarily unavailable, an
+    /// operational failure this must report as inconclusive rather than
+    /// a confirmed "not bonded."
+    #[tokio::test]
+    async fn bluetoothctl_bond_status_reports_none_on_a_nonzero_exit() {
+        let mut command = tokio::process::Command::new("sh");
+        command.arg("-c").arg("exit 1");
+        let result = bluetoothctl_bond_status(command, Duration::from_secs(5)).await;
+        assert_eq!(result, None);
+    }
+
     fn paired_device_input(enabled: bool, address: Option<&str>) -> DeviceBluetoothTransportInput {
         DeviceBluetoothTransportInput {
             peer_device_id: "peer-a".to_string(),
@@ -1620,7 +1654,15 @@ mod tests {
     #[test]
     fn persist_bluetooth_address_clears_enablement_when_the_new_address_is_not_os_paired() {
         let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+        // A *confirmed* not-paired result, not merely absent from the
+        // allow-list of one: this must be `Some(false)`, not `None` --
+        // `remove_var` alone would fall through to the real `bluetoothctl`
+        // check, whose result for a nonexistent address depends on
+        // whatever this machine's actual Bluetooth stack happens to
+        // report (often now `None`/inconclusive, since a genuinely
+        // unknown device typically makes `bluetoothctl info` exit
+        // non-zero) -- not deterministic enough for this test's purpose.
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
 
         let mut conn = test_conn();
         diesel::update(paired_devices::table.find("peer-a"))
@@ -1653,6 +1695,8 @@ mod tests {
             row.bluetooth_last_verified_at.is_none(),
             "stale verification timestamp must not survive an unbonded address update"
         );
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
     /// Regression test for the P2 review finding: this function is only
@@ -1664,6 +1708,11 @@ mod tests {
     /// existed.
     #[test]
     fn save_paired_device_refreshes_bluetooth_metadata_on_update_too() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // A *confirmed* not-paired result (see the sibling test's comment
+        // above for why `remove_var` alone isn't deterministic enough).
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
+
         // `test_conn` seeds "peer-a" with no Bluetooth metadata at all, as
         // if from a stale prior pairing.
         let mut conn = test_conn();
@@ -1681,6 +1730,8 @@ mod tests {
 
         assert_eq!(saved.display_name, "Peer A Renamed");
         assert_eq!(saved.bluetooth_address.as_deref(), Some("11:22:33:44:55:66"));
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
     #[test]
