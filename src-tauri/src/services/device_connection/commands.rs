@@ -343,14 +343,12 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     match bond_check {
         Some(true) if disabled_by_user => {
             // Confirmed bonded, but the user explicitly turned this pair's
-            // Bluetooth off -- record the address (useful the moment they
-            // opt back in) without touching `bluetooth_enabled`/
-            // `bluetooth_last_verified_at`, which the disable already
-            // cleared and which re-enabling is exclusively
-            // `device_connection_set_bluetooth_transport_impl`'s job now.
-            let _ = diesel::update(paired_devices::table.find(peer_id))
-                .set(paired_devices::bluetooth_address.eq(Some(address)))
-                .execute(conn);
+            // Bluetooth off -- `specs/device-connect/README.md`: "Disabling
+            // ... clears stored Bluetooth reconnect metadata," and that
+            // must *stay* cleared, not get quietly repopulated by the next
+            // self-report. Do nothing at all; re-enabling via the settings
+            // toggle is what stores a fresh address again, deliberately as
+            // a distinct user action.
             false
         }
         Some(true) => {
@@ -1683,9 +1681,10 @@ mod tests {
             "an explicit disable must survive a self-report confirming the bond still exists"
         );
         assert_eq!(
-            row.bluetooth_address.as_deref(),
-            Some("AA:BB:CC:DD:EE:FF"),
-            "the address is still worth recording for whenever the user opts back in"
+            row.bluetooth_address, None,
+            "specs/device-connect/README.md: disabling clears stored Bluetooth reconnect \
+             metadata, and it must *stay* cleared -- not get quietly repopulated by the next \
+             self-report"
         );
         assert!(row.bluetooth_last_verified_at.is_none());
 
