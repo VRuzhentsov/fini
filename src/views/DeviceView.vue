@@ -181,12 +181,14 @@ async function saveBluetoothTransport(enabled: boolean) {
 // input just needs to pick up whatever landed there.
 async function findViaBluetooth() {
   if (!deviceId.value) return;
+  const requestedDeviceId = deviceId.value;
   findingBluetoothAddress.value = true;
   bluetoothFindResult.value = null;
   bluetoothTransportError.value = null;
 
   try {
-    const address = await deviceStore.findBluetoothAddress(deviceId.value);
+    const address = await deviceStore.findBluetoothAddress(requestedDeviceId);
+    if (deviceId.value !== requestedDeviceId) return;
     if (address) {
       bluetoothAddressInput.value = address;
       bluetoothFindResult.value = "found";
@@ -194,7 +196,9 @@ async function findViaBluetooth() {
       bluetoothFindResult.value = "not_found";
     }
   } catch (error) {
-    bluetoothTransportError.value = String(error);
+    if (deviceId.value === requestedDeviceId) {
+      bluetoothTransportError.value = String(error);
+    }
   } finally {
     findingBluetoothAddress.value = false;
   }
