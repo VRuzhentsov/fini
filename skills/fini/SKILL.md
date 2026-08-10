@@ -90,6 +90,17 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 - Set `repeat_rule` for recurring quests (e.g. `daily`, `weekly`, `monthly`)
 - Repeating quests track `series_id` and `period_key` automatically
 
+### Backlog Selection and Ticket Initiation
+
+When a user asks which quests to take next, distinguish urgency from the value of spending time on a quest. Do not equate a quick completion with a good completion.
+
+1. Preserve deadline and consequence obligations first: due today, then recently overdue, then older overdue. Do not treat Fini's stored `priority` field as a reliable triage ranking until the product implements that behavior.
+2. For candidate selection, identify whether each quest is a deadline/consequence task, removes a blocker, is high-impact strategic work, is maintenance/admin, or is low-value. A blocker can be the best next choice when it unlocks multiple worthwhile outcomes.
+3. Use energy only to place selected work in the day: high-impact work needing concentration belongs in a peak-energy slot; quick high-value work fits between deep-work blocks; mechanical/admin work is a low-energy or batch option. Energy must not promote a low-value quest over a more urgent or impactful one.
+4. Keep the daily commitment small: one Main outcome, one or two Must items (deadline/consequence or blockers), then only a few Quick or Low-energy fallback items. Recommend at most two simultaneous work streams: one cognitively heavy and one small/admin.
+5. Before proposing a ticket, classify it as `ready to create`, `needs discovery/decision`, or `defer`. A ready ticket has a shippable outcome, meaningful scope boundary, and enough acceptance evidence to describe it. Do not turn vague research, an unresolved decision, or an implementation mechanism into a ticket merely to make it feel progressed; prepare it first as a discovery or decision quest.
+6. This guidance is read-only. Creating a Fini quest or an external ticket still requires the applicable workflow and the user's explicit authorization.
+
 ### Quest Mutation Safety
 
 Apply this workflow before every quest mutation: create, update, complete, abandon, restore, or delete.
