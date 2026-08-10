@@ -62,6 +62,7 @@ describe("DeviceView mapped spaces sync labels", () => {
           enabled: true,
           available: true,
           preferred: true,
+          connected: true,
           detail: "Available",
         },
         {
@@ -69,6 +70,7 @@ describe("DeviceView mapped spaces sync labels", () => {
           enabled: true,
           available: true,
           preferred: false,
+          connected: false,
           detail: "Available for fallback",
         },
       ]),

@@ -19,6 +19,9 @@ export interface DeviceTransportStatus {
   enabled: boolean;
   available: boolean;
   preferred: boolean;
+  // Live session state for this specific transport right now, distinct
+  // from `available` (precondition met) -- see ADR 0002 Phase 2.
+  connected: boolean;
   detail: string;
 }
 
@@ -29,6 +32,10 @@ export interface DiscoveredDevice {
   discovery_port: number;
   ws_port: number | null;
   last_seen_at: string;
+  // Which discovery mechanism found this candidate -- ADR 0002 Phase 3.
+  // `addr` carries a Bluetooth MAC (and `discovery_port`/`ws_port` are
+  // meaningless) when this is "bluetooth".
+  transport: "network" | "bluetooth";
 }
 
 export interface IncomingPairRequest {
@@ -39,6 +46,9 @@ export interface IncomingPairRequest {
   expires_at: string;
   attempts: number;
   cooldown_until: string | null;
+  // Whether this request arrived over Bluetooth -- ADR 0002 Phase 3.
+  via_bluetooth: boolean;
+  from_bluetooth_address: string | null;
 }
 
 export interface OutgoingPairRequest {
@@ -78,6 +88,8 @@ export interface PairCompletionUpdate {
   from_device_id: string;
   from_hostname: string;
   paired_at: string;
+  via_bluetooth: boolean;
+  bluetooth_address: string | null;
 }
 
 export interface SpaceSyncStatus {
@@ -146,6 +158,12 @@ interface DevicePairRequestInput {
   to_ws_port?: number | null;
 }
 
+interface DevicePairRequestBluetoothInput {
+  request_id: string;
+  to_device_id: string;
+  to_bluetooth_address: string;
+}
+
 interface DevicePairRequestAckInput {
   request_id: string;
 }
@@ -159,6 +177,13 @@ export const ADD_MODE_DISCOVERY_INTERVAL_MS = 5_000;
 const ADD_MODE_POLL_INTERVAL_MS = 1_000;
 const PRESENCE_POLL_INTERVAL_MS = 15_000;
 const MAPPING_UPDATE_POLL_INTERVAL_MS = 3_000;
+// A BLE scan pass has its own internal deadline covering both scanning and
+// dialing each flagged candidate for a `DiscoveryHello`, so it can take up
+// to `BLUETOOTH_SCAN_DURATION_MS` to resolve -- unlike the other polls,
+// this loop is self-rescheduling (not `setInterval`) so passes never
+// overlap.
+const BLUETOOTH_SCAN_DURATION_MS = 4_000;
+const BLUETOOTH_SCAN_IDLE_GAP_MS = 2_000;
 const NORMAL_HEARTBEAT_MS = 60_000;
 const OFFLINE_AFTER_MISSED_HEARTBEATS_MS = NORMAL_HEARTBEAT_MS * 2;
 const REQUEST_TTL_MS = 60_000;
@@ -203,6 +228,28 @@ export const useDeviceStore = defineStore("device", () => {
   let discoveryTimer: ReturnType<typeof setInterval> | null = null;
   let presenceTimer: ReturnType<typeof setInterval> | null = null;
   let mappingUpdateTimer: ReturnType<typeof setInterval> | null = null;
+  let bluetoothScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let bluetoothScanActive = false;
+  // Bumped on every start/stop so a tick whose `invoke` was still pending
+  // when the loop stopped -- and a *new* loop started again before that
+  // pending call resolved -- can tell it no longer belongs to the current
+  // session, instead of reading the now-true `bluetoothScanActive` and
+  // wrongly continuing as if it were the new loop's own tick (which would
+  // leave two independent recurring chains alive, each overwriting
+  // `bluetoothScanTimer`, so stopping the loop later can only cancel one).
+  let bluetoothScanGeneration = 0;
+  // Same purpose as `bluetoothScanGeneration`, one level up: lets
+  // `enterAddMode`'s suspended continuation tell whether `leaveAddMode`
+  // ran while it was awaiting something, so it doesn't start fresh loops
+  // (or leave the backend's add-mode advertisement on) for a session the
+  // view already left.
+  let addModeGeneration = 0;
+  // Merge inputs for the unified candidate list (ADR 0002 Phase 3):
+  // network beacons and BLE scan results are fetched on independent
+  // schedules, so `discoveredDevices` is recomputed from both whenever
+  // either source updates rather than one overwriting the other.
+  let latestNetworkDiscovered: DiscoveredDevice[] = [];
+  let latestBluetoothDiscovered: DiscoveredDevice[] = [];
 
   const outgoingRequestSecondsLeft = computed(() => {
     if (!outgoingRequest.value) return 0;
@@ -221,16 +268,25 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  async function savePairedDevice(deviceId: string, displayName: string) {
-    try {
-      await invoke<PairedDevice>("device_connection_save_paired_device", {
-        peerDeviceId: deviceId,
-        displayName,
-      });
-      await loadPairedDevices();
-    } catch (error) {
-      console.warn("[device-connection] failed to save paired device", error);
-    }
+  // Deliberately does not catch its own errors: both callers (submitPairCode,
+  // the outgoing-completion poll in refreshDiscovery) send PairComplete to
+  // the peer *before* this local write, so a failure here already leaves
+  // the two devices asymmetric -- the peer believes pairing succeeded. Each
+  // caller needs to know the write actually failed, not have it silently
+  // swallowed here, so it doesn't also report success on this side.
+  async function savePairedDevice(
+    deviceId: string,
+    displayName: string,
+    bluetoothAddress: string | null = null,
+    viaBluetooth = false,
+  ) {
+    await invoke<PairedDevice>("device_connection_save_paired_device", {
+      peerDeviceId: deviceId,
+      displayName,
+      bluetoothAddress,
+      viaBluetooth,
+    });
+    await loadPairedDevices();
   }
 
   function getMappedSpaceIds(peerDeviceId: string): string[] {
@@ -444,6 +500,44 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
+  // On Linux, `device_connection_transport_statuses` re-checks OS bond
+  // status via a `bluetoothctl` subprocess call on every invocation --
+  // fine for a one-shot load, but not something a live-status poll should
+  // rerun every few seconds while a device's page stays open (a stalled
+  // BlueZ/D-Bus would hold up every other DB-backed command for as long as
+  // the view stays mounted). `device_connection_session_transport` reads
+  // only in-memory session state, so this patches just the `connected`
+  // field of whatever was last loaded rather than re-deriving the whole
+  // row set.
+  async function refreshLiveConnectedState(peerDeviceId: string) {
+    if (!transportStatusesByPeer.value[peerDeviceId]?.length) return;
+
+    try {
+      const liveKind = await invoke<"tcp_ws" | "sim" | "bluetooth" | "lo_ra" | null>(
+        "device_connection_session_transport",
+        { peerDeviceId },
+      );
+      // Re-read *after* the await, not the array captured before it: an
+      // enable/disable operation's full refresh (`setBluetoothTransport`)
+      // can land while this invoke is pending, and patching on top of the
+      // pre-await snapshot would silently revert `enabled`/`available`/
+      // `detail` back to their stale values -- with nothing else to correct
+      // it afterward for a Bluetooth-only peer, since it never appears in
+      // the network presence snapshot that would otherwise trigger a fresh
+      // full load.
+      const current = transportStatusesByPeer.value[peerDeviceId];
+      if (!current || current.length === 0) return;
+      const networkConnected = liveKind === "tcp_ws";
+      const bluetoothConnected = liveKind === "bluetooth" || liveKind === "sim";
+      transportStatusesByPeer.value[peerDeviceId] = current.map((status) => ({
+        ...status,
+        connected: status.kind === "network" ? networkConnected : bluetoothConnected,
+      }));
+    } catch (error) {
+      console.warn("[device-connection] failed to refresh live connected state", error);
+    }
+  }
+
   async function setBluetoothTransport(
     peerDeviceId: string,
     enabled: boolean,
@@ -464,6 +558,22 @@ export const useDeviceStore = defineStore("device", () => {
     }
     await refreshTransportStatuses(peerDeviceId);
     return updated;
+  }
+
+  // Phase 1 of ADR 0002's "Find via Bluetooth" button: scans for up to 60s
+  // and, on a match, the backend has already persisted the address (and
+  // enabled Bluetooth for the pair, if this machine is already OS-bonded
+  // with it) -- so this just re-loads state afterward rather than
+  // constructing the update itself, unlike setBluetoothTransport above.
+  async function findBluetoothAddress(peerDeviceId: string): Promise<string | null> {
+    const address = await invoke<string | null>("device_connection_find_bluetooth_address", {
+      peerDeviceId,
+    });
+    if (address) {
+      await loadPairedDevices();
+      await refreshTransportStatuses(peerDeviceId);
+    }
+    return address;
   }
 
   async function runSpaceSyncTick() {
@@ -544,22 +654,41 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  function setDiscovered(items: DiscoveredDevice[]) {
+  function recomputeDiscovered() {
     const deduped = new Map<string, DiscoveredDevice>();
 
-    for (const item of items) {
+    // Network always wins over Bluetooth for the same device_id, regardless
+    // of which poll happened to finish more recently -- ADR 0002's selection
+    // order prefers network whenever it's available, and a timestamp-based
+    // merge would otherwise flip the row (and requestPair's transport
+    // choice) to Bluetooth just because the BLE scan's own completion timer
+    // landed after the network beacon's. Bluetooth only fills in device_ids
+    // network didn't find at all.
+    for (const item of latestNetworkDiscovered) {
       if (item.device_id === identity.value.device_id) continue;
       if (pairedDeviceIds.value.has(item.device_id)) continue;
-
-      const existing = deduped.get(item.device_id);
-      if (!existing || Date.parse(item.last_seen_at) > Date.parse(existing.last_seen_at)) {
-        deduped.set(item.device_id, item);
-      }
+      deduped.set(item.device_id, item);
+    }
+    for (const item of latestBluetoothDiscovered) {
+      if (item.device_id === identity.value.device_id) continue;
+      if (pairedDeviceIds.value.has(item.device_id)) continue;
+      if (deduped.has(item.device_id)) continue;
+      deduped.set(item.device_id, item);
     }
 
     discoveredDevices.value = [...deduped.values()].sort((a, b) => {
       return Date.parse(b.last_seen_at) - Date.parse(a.last_seen_at);
     });
+  }
+
+  function setDiscovered(items: DiscoveredDevice[]) {
+    latestNetworkDiscovered = items;
+    recomputeDiscovered();
+  }
+
+  function setBluetoothDiscovered(items: DiscoveredDevice[]) {
+    latestBluetoothDiscovered = items;
+    recomputeDiscovered();
   }
 
   function pruneRequests() {
@@ -706,7 +835,12 @@ export const useDeviceStore = defineStore("device", () => {
         );
 
         if (completion) {
-          await savePairedDevice(outgoingRequest.value.to_device_id, outgoingRequest.value.to_hostname);
+          await savePairedDevice(
+            outgoingRequest.value.to_device_id,
+            outgoingRequest.value.to_hostname,
+            completion.bluetooth_address,
+            completion.via_bluetooth,
+          );
           outgoingRequest.value = null;
           pairCompletedAt.value = nowIso();
         }
@@ -731,6 +865,54 @@ export const useDeviceStore = defineStore("device", () => {
     if (!discoveryTimer) return;
     clearInterval(discoveryTimer);
     discoveryTimer = null;
+  }
+
+  async function bluetoothScanTick(generation: number) {
+    if (generation !== bluetoothScanGeneration) return;
+
+    try {
+      const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
+        durationMs: BLUETOOTH_SCAN_DURATION_MS,
+      });
+      if (generation !== bluetoothScanGeneration) return;
+      setBluetoothDiscovered(items);
+    } catch (error) {
+      // Keep retrying rather than giving up for the rest of the session:
+      // the most common failure on a fresh install is the Android
+      // permission dialog not having been answered yet, which is resolved
+      // the moment the user grants it -- not a permanent condition. On a
+      // platform with no Bluetooth backend at all this just retries
+      // harmlessly until `leaveAddMode` stops the loop.
+      console.warn("[device-connection] bluetooth candidate scan failed, will retry", error);
+    }
+
+    if (generation !== bluetoothScanGeneration) return;
+    bluetoothScanTimer = setTimeout(() => {
+      void bluetoothScanTick(generation);
+    }, BLUETOOTH_SCAN_IDLE_GAP_MS);
+  }
+
+  function startBluetoothScanLoop() {
+    if (bluetoothScanActive) return;
+    bluetoothScanActive = true;
+    bluetoothScanGeneration += 1;
+    void bluetoothScanTick(bluetoothScanGeneration);
+  }
+
+  function stopBluetoothScanLoop() {
+    bluetoothScanActive = false;
+    // Invalidates any tick still in flight from this (or an even earlier,
+    // already-orphaned) generation -- see `bluetoothScanGeneration`'s doc
+    // comment. Must happen even though `bluetoothScanTimer` is cleared
+    // below: the in-flight tick that scheduled it isn't cancelled by
+    // clearing the handle, only its *next* scheduling is prevented.
+    bluetoothScanGeneration += 1;
+    if (bluetoothScanTimer) {
+      clearTimeout(bluetoothScanTimer);
+      bluetoothScanTimer = null;
+    }
+    latestBluetoothDiscovered = [];
+    recomputeDiscovered();
   }
 
   function startPresenceLoop() {
@@ -762,9 +944,18 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   async function enterAddMode() {
+    // Guards against `leaveAddMode` completing first if the view unmounts
+    // while this is still awaiting `refreshIdentity`/the backend invoke
+    // (e.g. the user navigates away moments after opening Add Device):
+    // without this, the suspended continuation would resume *after*
+    // `leaveAddMode` already stopped everything, re-enable the backend's
+    // add-mode advertisement, and start fresh discovery/scan loops with
+    // nothing left to ever stop them again.
+    const generation = ++addModeGeneration;
     addModeEnabled.value = true;
     pairCompletedAt.value = null;
     await refreshIdentity();
+    if (generation !== addModeGeneration) return;
 
     try {
       await invoke("device_connection_enter_add_mode");
@@ -772,13 +963,37 @@ export const useDeviceStore = defineStore("device", () => {
       console.warn("[device-connection] enter add mode failed", error);
     }
 
+    if (generation !== addModeGeneration) {
+      // A newer generation has taken over since this call started -- either
+      // a genuine `leaveAddMode` (nobody wants add-mode active anymore), or
+      // the user left and quickly came back, in which case a *newer*
+      // `enterAddMode` call is now the active owner and already running its
+      // own loops. Only compensate in the first case: `addModeEnabled` is
+      // `leaveAddMode`'s own signal for "the current desired state is
+      // left" (it's flipped back to `true` immediately by any newer
+      // `enterAddMode`), so sending "leave" while it's `true` would
+      // incorrectly turn off that newer, legitimately active session.
+      if (!addModeEnabled.value) {
+        try {
+          await invoke("device_connection_leave_add_mode");
+        } catch (error) {
+          console.warn("[device-connection] leave add mode (late cancel) failed", error);
+        }
+      }
+      return;
+    }
+
     startDiscoveryLoop();
+    startBluetoothScanLoop();
   }
 
   async function leaveAddMode() {
+    addModeGeneration += 1; // invalidates any in-flight enterAddMode continuation
+    const generation = addModeGeneration;
     addModeEnabled.value = false;
     pairCompletedAt.value = null;
     stopDiscoveryLoop();
+    stopBluetoothScanLoop();
 
     try {
       await invoke("device_connection_leave_add_mode");
@@ -786,11 +1001,20 @@ export const useDeviceStore = defineStore("device", () => {
       console.warn("[device-connection] leave add mode failed", error);
     }
 
+    // A newer `enterAddMode` can take over while the invoke above is still
+    // in flight (leave, then immediately re-enter). If it has, its own
+    // request/candidate state is already the live one -- clearing it out
+    // from under it here would be this stale continuation winning a race
+    // it lost the moment the generation moved on.
+    if (generation !== addModeGeneration) return;
+
     incomingRequests.value = [];
     incomingExpectedCode.value = {};
     incomingAttemptCount.value = {};
     incomingCooldownUntil.value = {};
     outgoingRequest.value = null;
+    latestNetworkDiscovered = [];
+    latestBluetoothDiscovered = [];
     discoveredDevices.value = [];
     addModeLastRefreshAt.value = null;
     void refreshDebugStatus();
@@ -803,12 +1027,6 @@ export const useDeviceStore = defineStore("device", () => {
     }
 
     const requestId = randomId();
-    const payload: DevicePairRequestInput = {
-      request_id: requestId,
-      to_device_id: device.device_id,
-      to_addr: device.addr,
-      to_ws_port: device.ws_port,
-    };
 
     outgoingRequest.value = {
       request_id: requestId,
@@ -821,7 +1039,22 @@ export const useDeviceStore = defineStore("device", () => {
     };
 
     try {
-      await invoke("device_connection_send_pair_request", { input: payload });
+      if (device.transport === "bluetooth") {
+        const payload: DevicePairRequestBluetoothInput = {
+          request_id: requestId,
+          to_device_id: device.device_id,
+          to_bluetooth_address: device.addr,
+        };
+        await invoke("device_connection_send_pair_request_bluetooth", { input: payload });
+      } else {
+        const payload: DevicePairRequestInput = {
+          request_id: requestId,
+          to_device_id: device.device_id,
+          to_addr: device.addr,
+          to_ws_port: device.ws_port,
+        };
+        await invoke("device_connection_send_pair_request", { input: payload });
+      }
       void refreshDiscovery();
     } catch (error) {
       console.warn("[device-connection] pair request send failed", error);
@@ -907,15 +1140,63 @@ export const useDeviceStore = defineStore("device", () => {
       return false;
     }
 
-    await savePairedDevice(request.from_device_id, request.from_hostname);
-
+    // Send PairComplete *before* committing anything locally: if the final
+    // BLE dial or write times out (e.g. the requester moved out of range
+    // right after the code was confirmed), the requester never learns
+    // pairing succeeded and stays unpaired. Committing our own side and
+    // reporting success anyway would leave the two devices permanently
+    // asymmetric in the no-shared-network case, with no way back short of
+    // starting the whole handshake over. On failure, leave the request in
+    // place (not cleared below) so the user can just retry submitting the
+    // same code once whatever failed has resolved, without needing the
+    // requester to send a new one.
     try {
       await invoke("device_connection_pair_complete_request", {
         input: { request_id: requestId } satisfies DevicePairRequestAckInput,
       });
     } catch (error) {
-      console.warn("[device-connection] submit code completion failed", error);
+      console.warn("[device-connection] submit code completion failed, keeping request for retry", error);
+      return false;
     }
+
+    // PairComplete has now been sent, and the backend's own record of this
+    // incoming request is gone the moment that send succeeds (it can't be
+    // resubmitted from here on) -- the peer will persist its side of the
+    // pairing regardless of what happens next on this one. A failure below
+    // must not be swallowed as success: silently reporting "paired" while
+    // this device's own row was never written would leave the two devices
+    // permanently asymmetric with nothing left to retry against. SQLite's
+    // own busy_timeout already absorbs a few seconds of contention before
+    // this ever throws, so a few more retries with backoff cover a
+    // still-transient failure without adding much delay to the common case.
+    const RETRY_DELAYS_MS = [500, 1500, 3000];
+    let saved = false;
+    for (let attempt = 0; !saved; attempt++) {
+      try {
+        await savePairedDevice(
+          request.from_device_id,
+          request.from_hostname,
+          request.from_bluetooth_address,
+          request.via_bluetooth,
+        );
+        saved = true;
+      } catch (error) {
+        if (attempt >= RETRY_DELAYS_MS.length) {
+          console.error(
+            "[device-connection] local pairing persistence failed after PairComplete was already " +
+              "sent -- the peer believes pairing succeeded, this device does not have it recorded",
+            error,
+          );
+          break;
+        }
+        console.warn(
+          `[device-connection] local pairing persistence attempt ${attempt + 1} failed, retrying`,
+          error,
+        );
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+    if (!saved) return false;
 
     delete incomingExpectedCode.value[requestId];
     delete incomingAttemptCount.value[requestId];
@@ -995,7 +1276,9 @@ export const useDeviceStore = defineStore("device", () => {
     getLastSyncedAtForSpace,
     getTransportStatuses,
     refreshTransportStatuses,
+    refreshLiveConnectedState,
     setBluetoothTransport,
+    findBluetoothAddress,
     isSyncingPeer,
     runSpaceSyncTick,
     enterAddMode,

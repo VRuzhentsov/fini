@@ -4,6 +4,12 @@ use std::time::Instant;
 
 use crate::services::space_sync::types::{SessionSender, SyncEventEnvelope};
 use crate::services::transport::TransportKind;
+// Aliased: this module's own `TransportKind` (Network/Bluetooth, above)
+// names the same concept `crate::services::transport::TransportKind`
+// (TcpWs/Sim/Bluetooth/LoRa, used for `peer_session_kind` below) does at a
+// different granularity -- `DiscoveredDevice.transport` only ever needs
+// "which discovery mechanism found this," not the live-session kind.
+use super::transport::TransportKind as DiscoveryTransportKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceIdentity {
@@ -19,6 +25,14 @@ pub struct DiscoveredDevice {
     pub discovery_port: u16,
     pub ws_port: Option<u16>,
     pub last_seen_at: String,
+    /// Which discovery mechanism found this candidate — ADR 0002 Phase 3's
+    /// unified candidate list. `discovery_port`/`ws_port` are meaningless
+    /// for a Bluetooth-discovered entry (`addr` carries the Bluetooth
+    /// address instead of an IP); `#[serde(default)]` on the network side
+    /// keeps this additive for any caller still constructing the old
+    /// three-field shape.
+    #[serde(default)]
+    pub transport: DiscoveryTransportKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +61,13 @@ pub struct IncomingPairRequest {
     pub expires_at: String,
     pub attempts: i64,
     pub cooldown_until: Option<String>,
+    /// Whether this `PairRequest` arrived over a Bluetooth link (ADR 0002
+    /// Phase 3's BLE-first pairing) rather than network. When true,
+    /// `from_bluetooth_address` carries the sender's address as *observed*
+    /// on this connection (`Link::peer_addr()`), which is more trustworthy
+    /// than a self-reported value.
+    pub via_bluetooth: bool,
+    pub from_bluetooth_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +83,13 @@ pub struct PairCompletionUpdate {
     pub from_device_id: String,
     pub from_hostname: String,
     pub paired_at: String,
+    /// Mirrors `IncomingPairRequest::via_bluetooth` for the completion leg.
+    pub via_bluetooth: bool,
+    /// The completing peer's Bluetooth address, if known -- either observed
+    /// directly (when `via_bluetooth`) or self-reported in the payload
+    /// (when completion arrived over network). See
+    /// `PairCompletePayload::bluetooth_address`.
+    pub bluetooth_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +126,15 @@ pub struct DevicePairRequestInput {
     pub to_device_id: String,
     pub to_addr: String,
     pub to_ws_port: Option<u16>,
+}
+
+/// The BLE-first pairing equivalent of `DevicePairRequestInput` (ADR 0002
+/// Phase 3) — no port, since a BLE connection is addressed by MAC alone.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DevicePairRequestBluetoothInput {
+    pub request_id: String,
+    pub to_device_id: String,
+    pub to_bluetooth_address: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,6 +198,13 @@ pub(crate) struct PairCompletePayload {
     pub from_hostname: String,
     pub to_device_id: String,
     pub paired_at: String,
+    /// The completing peer's own local Bluetooth address, if known -- sent
+    /// regardless of which transport carries this frame (ADR 0002 Phase 3),
+    /// so a network-carried completion can still hand the receiver a
+    /// Bluetooth address to store. `#[serde(default)]` keeps this additive
+    /// for any peer still running the pre-Phase-3 wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bluetooth_address: Option<String>,
     /// Reserved for future Signal-style key agreement (X3DH). Unused today;
     /// pass-through `SecureChannel` never populates or reads this. Keeping
     /// the slot on the wire now means enabling encryption later is additive,

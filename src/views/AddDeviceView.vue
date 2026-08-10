@@ -180,12 +180,13 @@ function rejectRequest(requestId: string) {
     <section class="rounded-xl bg-base-200 p-3" data-testid="nearby-devices">
       <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Nearby devices</h2>
       <SettingsListGroup>
-        <SettingsListItem v-for="device in deviceStore.discoveredDevices" :key="device.device_id" data-testid="nearby-device-row" :data-device-hostname="device.hostname" :data-device-id="device.device_id">
+        <SettingsListItem v-for="device in deviceStore.discoveredDevices" :key="device.device_id" data-testid="nearby-device-row" :data-device-hostname="device.hostname" :data-device-id="device.device_id" :data-device-transport="device.transport">
           <template #leading>
             <span class="h-2.5 w-2.5 rounded-full bg-green-500" />
           </template>
           <template #start>
             <span class="block truncate font-medium">{{ device.hostname }}</span>
+            <span class="text-xs opacity-60">{{ device.transport === "bluetooth" ? "via Bluetooth" : "via network" }}</span>
           </template>
           <template #end>
             <div class="flex items-center justify-end gap-2">

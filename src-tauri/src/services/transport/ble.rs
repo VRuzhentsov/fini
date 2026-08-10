@@ -175,7 +175,8 @@ mod android_lazy {
 use crate::services::db::open_db_at_path;
 use crate::services::device_connection::{bluetooth_dial_candidates, DeviceConnectionState};
 use crate::services::space_sync::session;
-use crate::services::transport::{BoxDialFuture, Link, Transport, TransportKind};
+use crate::services::space_sync::types::PeerFrame;
+use crate::services::transport::{recv_frame, send_frame, BoxDialFuture, Link, Transport, TransportKind};
 
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
@@ -186,11 +187,90 @@ const FINI_BLE_SERVICE_UUID: &str = "b1e6a000-f101-4000-8000-00805f9b34fb";
 const FINI_BLE_CHARACTERISTIC_UUID: &str = "b1e6a001-f101-4000-8000-00805f9b34fb";
 
 fn datagram_config() -> DatagramConfig {
-    DatagramConfig::new(
+    let mut config = DatagramConfig::new(
         ServiceUuid(Uuid::parse_str(FINI_BLE_SERVICE_UUID).expect("valid UUID literal")),
         CharacteristicUuid(Uuid::parse_str(FINI_BLE_CHARACTERISTIC_UUID).expect("valid UUID literal")),
-    )
+    );
+    if *add_mode_sender().borrow() {
+        config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, vec![ADD_MODE_FLAG_BYTE]);
+    }
+    config
 }
+
+/// `0xFFFF` is the Bluetooth SIG's own reserved value for "manufacturer
+/// specific data" used for testing and non-market purposes — the
+/// appropriate choice for a private, unregistered app like Fini rather
+/// than picking an arbitrary value that could collide with a real vendor's
+/// company ID some other nearby scanner is specifically watching for.
+const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
+/// The entire payload of that manufacturer data: whether this device is
+/// currently in add-mode. One byte is deliberate — legacy advertisements
+/// cap out at 31 bytes total, and the service UUID above already spends
+/// most of that; see `GattServiceSpec::manufacturer_data`'s own doc
+/// comment in ble-gatt.
+const ADD_MODE_FLAG_BYTE: u8 = 0x01;
+
+/// Per-candidate cap for a dial+probe+reply confirmation round trip
+/// (`probe_candidate`/`probe_discovery_hello`), separate from the overall
+/// scan deadline: without this, a single candidate that accepts the
+/// connection but never replies could consume the *entire* remaining scan
+/// budget, starving out every other candidate that might otherwise have
+/// matched sooner -- including the actual peer being searched for.
+/// Deliberately shorter than `AddDeviceView.vue`'s own per-pass scan
+/// duration (`BLUETOOTH_SCAN_DURATION_MS`, currently 4s): a cap that isn't
+/// *materially* shorter than a single pass is no cap at all in practice,
+/// since `remaining.min(...)` just reduces to `remaining` every time.
+const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+/// `find_peer_address`'s own per-candidate cap, larger than
+/// `CANDIDATE_PROBE_TIMEOUT`: `probe_candidate` tries a legacy
+/// `perform_client_auth` fallback after `BluetoothProbe` goes unanswered
+/// (see its doc comment), so a confirmation attempt here can be two
+/// sequential dial+handshake round trips, not one. `find_peer_address`'s
+/// own budget is the 60s "Find via Bluetooth" button timeout, not
+/// `AddDeviceView.vue`'s tight 4s scan pass, so there's ample room for a
+/// larger per-candidate share without starving out other candidates in
+/// practice.
+const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Shared add-mode state, watched by `run_server`'s peripheral loop so a
+/// toggle can trigger a fresh advertisement carrying (or dropping) the
+/// add-mode flag without restarting the whole peripheral task -- Android's
+/// `start_peripheral_once` is deliberately a one-time start (ADR-0002 in
+/// ble-gatt: constructing `AndroidBackend` outside a genuine post-startup
+/// call panics), so the *outer* task can never be torn down and re-spawned
+/// to pick up a config change; only the inner advertise/accept loop can be.
+///
+/// `watch::Sender` alone is enough: it has its own `borrow()` for a
+/// snapshot read (`datagram_config()`, above), and `subscribe()` hands out
+/// a fresh `Receiver` for whichever caller needs to *wait* on a change
+/// (`run_server`, in a `tokio::select!` against the incoming-connections
+/// stream) — no need to also keep a shared `Receiver` around.
+fn add_mode_sender() -> &'static tokio::sync::watch::Sender<bool> {
+    static SENDER: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
+}
+
+/// Called from `device_connection_enter_add_mode`/`leave_add_mode` — see
+/// `add_mode_sender`'s doc comment for why this signals a running
+/// `run_server` rather than restarting it.
+pub fn set_add_mode(enabled: bool) {
+    add_mode_sender().send_if_modified(|current| {
+        if *current == enabled {
+            return false;
+        }
+        *current = enabled;
+        true
+    });
+}
+
+/// Serializes test access to the `add_mode_sender` process-global: held by
+/// this module's own test and by any `device_connection`/`transport` test
+/// that goes through `enter_add_mode_impl`/`leave_add_mode_impl` (which also
+/// call `set_add_mode`), so a concurrent flip from one can't land mid-assertion
+/// in another.
+#[cfg(test)]
+pub(crate) static ADD_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// One `LinuxBackend` for the process's lifetime. `ble_gatt::backend::linux::LinuxBackend::new()`
 /// opens a BlueZ D-Bus session and requires a powered adapter; constructing
@@ -311,6 +391,246 @@ pub async fn dial(address: &str) -> Result<Box<dyn Link>, String> {
     Ok(Box::new(BleLink::new(channel)))
 }
 
+/// Scans for nearby Fini BLE advertisers and opportunistically connects and
+/// authenticates each discovered address against `peer_id`'s already-known
+/// `device_id` — the "discover" half of Phase 1 in
+/// `docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`,
+/// used when this side cannot self-report its own address (Android) or a
+/// peer just hasn't sent one yet. A real `AuthOk` from a candidate is what
+/// proves it belongs to the expected peer, not merely some other nearby
+/// Fini install; `backend.scan()` itself already filters to Fini's service
+/// UUID (each backend does this at the native scan-callback level, before
+/// candidates ever reach this Rust code).
+///
+/// On success the address is persisted — and Bluetooth enabled for the
+/// pair, if this machine's own OS bonding with it already exists — via
+/// `persist_bluetooth_address_and_maybe_enable`. Returns the confirmed
+/// address, or `None` if nothing matched within `timeout`. The confirming
+/// connection is dropped either way: this function's job is identity
+/// confirmation, not establishing the real session — the next
+/// `space_sync_tick`'s dial loop picks the now-eligible peer up normally.
+/// Dials `address` and confirms it's genuinely `peer_id` via `BluetoothProbe`
+/// (not `perform_client_auth`: the ordinary Auth path requires Bluetooth to
+/// already be enabled for this pair, which is exactly the precondition
+/// `find_peer_address` exists to help establish -- reusing it would mean
+/// this discovery flow could never succeed for its actual target case).
+///
+/// Falls back to `perform_client_auth` if `BluetoothProbe` goes
+/// unanswered: a peer still running a build from before that frame
+/// existed can't decode it at all and just silently closes the
+/// connection, indistinguishable here from "not paired." The ordinary
+/// Auth path still works against such a peer *if* Bluetooth happens to
+/// already be enabled for this pair (the one case its
+/// `check_bluetooth_enabled` gate allows), recovering "Find via
+/// Bluetooth" for the "already enabled, address changed" scenario even
+/// against a peer that can't speak the newer discovery protocol. A
+/// never-enabled pair against such a peer remains a genuine limit of
+/// protocol evolution -- there's no discovery flow to fall back to that
+/// doesn't equally require the peer to understand it.
+///
+/// `None` on any failure along the way; the caller is responsible for
+/// bounding how long this (now up to two sequential dial+handshake
+/// attempts) is allowed to run -- see `FIND_PEER_CANDIDATE_TIMEOUT`.
+async fn probe_candidate(state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
+    if let Ok(mut link) = dial(address).await {
+        if send_frame(
+            link.as_mut(),
+            &PeerFrame::BluetoothProbe {
+                device_id: state.identity.device_id.clone(),
+            },
+        )
+        .await
+        .is_ok()
+        {
+            if let Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) =
+                recv_frame(link.as_mut()).await
+            {
+                if device_id == peer_id {
+                    return Some(());
+                }
+            }
+        }
+    }
+
+    let mut fallback_link = dial(address).await.ok()?;
+    session::perform_client_auth(fallback_link.as_mut(), &state.identity.device_id, peer_id)
+        .await
+        .ok()
+        .map(|_protocol_version| ())
+}
+
+pub async fn find_peer_address(
+    state: DeviceConnectionState, db_path: PathBuf, peer_id: String, timeout: Duration,
+) -> Result<Option<String>, String> {
+    use futures_util::StreamExt;
+
+    let backend = backend().await?;
+    let mut discovered = backend
+        .scan(datagram_config().service)
+        .await
+        .map_err(|err| format!("ble scan failed: {err}"))?;
+
+    let mut tried: HashSet<String> = HashSet::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let candidate = match tokio::time::timeout(remaining, discovered.next()).await {
+            Ok(Some(Ok(candidate))) => candidate,
+            // A backend-level scan failure (e.g. Android's async
+            // `onScanFailed` for an adapter, registration, or permission
+            // problem) means Bluetooth itself is unusable right now, not
+            // merely "no candidate seen yet" -- surface it as an error so
+            // the caller doesn't report a misleading "not found".
+            Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
+            // Timed out, or the stream ended with nothing left to poll:
+            // both are a genuine "not found within the deadline".
+            Ok(None) | Err(_) => return Ok(None),
+        };
+        let address = candidate.address.0;
+        if !tried.insert(address.clone()) {
+            continue;
+        }
+        // The dial+probe+reply round trip is bounded by the *remaining*
+        // scan deadline too, not left unbounded -- a candidate that
+        // accepts the connection but never answers `BluetoothProbe` would
+        // otherwise leave `recv_frame` waiting indefinitely, well past the
+        // `timeout` this function promises its caller (and the "Find via
+        // Bluetooth" button's advertised bound).
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let confirmed = tokio::time::timeout(
+            remaining.min(FIND_PEER_CANDIDATE_TIMEOUT),
+            probe_candidate(&state, &address, &peer_id),
+        )
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+        if confirmed {
+            let db_path = db_path.clone();
+            let peer_id = peer_id.clone();
+            let address_owned = address.clone();
+            tokio::task::block_in_place(|| {
+                let mut conn = open_db_at_path(&db_path);
+                crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
+                    &mut conn, &peer_id, &address_owned,
+                )
+            })?;
+            return Ok(Some(address));
+        }
+    }
+}
+
+/// A nearby, not-yet-paired device discovered via BLE while both sides are
+/// in add-mode — the Bluetooth-side entry `AddDeviceView.vue`'s unified
+/// candidate list merges alongside mDNS-discovered ones (ADR 0002 Phase 3).
+pub struct AddModeCandidate {
+    pub address: String,
+    pub device_id: String,
+    pub hostname: String,
+}
+
+/// Dials `address` and exchanges `DiscoveryHello`/`DiscoveryHelloReply`.
+/// `None` on any failure along the way (dial, send, no/wrong reply); the
+/// caller is responsible for bounding how long this is allowed to run.
+async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
+    let mut link = dial(address).await.ok()?;
+    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.ok()?;
+    recv_frame(link.as_mut()).await?.ok()
+}
+
+/// Scans for nearby Fini BLE advertisers carrying the add-mode flag (see
+/// `datagram_config`/`set_add_mode`) and exchanges `DiscoveryHello` with
+/// each one to learn its identity — Phase 3's discovery mechanism for
+/// devices that have never paired at all. Devices not currently
+/// advertising the flag are invisible here and never connected to; this is
+/// the client-side half of the filtering `datagram_config` implements on
+/// the advertising side.
+///
+/// Returns everything found within `timeout`, not just the first match
+/// (unlike `find_peer_address`, this feeds a picker list, not a single
+/// confirm-and-persist action) — callers needing an ongoing view call this
+/// repeatedly rather than once for a long window.
+pub async fn scan_add_mode_candidates(
+    my_device_id: &str, timeout: Duration,
+) -> Result<Vec<AddModeCandidate>, String> {
+    use futures_util::StreamExt;
+
+    let backend = backend().await?;
+    let mut discovered = backend
+        .scan(datagram_config().service)
+        .await
+        .map_err(|err| format!("ble scan failed: {err}"))?;
+
+    let mut candidates = Vec::new();
+    let mut tried: HashSet<String> = HashSet::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let peer = match tokio::time::timeout(remaining, discovered.next()).await {
+            Ok(Some(Ok(peer))) => peer,
+            // A backend-level scan failure (e.g. Android's async
+            // `onScanFailed`) means Bluetooth itself is unusable, not
+            // merely "no more candidates" -- propagate it like
+            // `find_peer_address` does, rather than reporting an
+            // apparently-successful empty/partial scan.
+            Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
+            // Timed out, or the stream ended: stop with whatever was
+            // already found.
+            Ok(None) | Err(_) => break,
+        };
+        let address = peer.address.0.clone();
+        if !tried.insert(address.clone()) {
+            continue;
+        }
+        let flagged =
+            peer.manufacturer_data.get(&FINI_MANUFACTURER_ID).map(|v| v.as_slice())
+                == Some([ADD_MODE_FLAG_BYTE].as_slice());
+        if !flagged {
+            continue;
+        }
+        // Bounded by the *remaining* scan deadline, not a fixed window: one
+        // unresponsive candidate (in range, advertising, but slow or gone
+        // by the time this connects) must not eat the whole scan past the
+        // caller's requested `duration_ms` -- the frontend runs this as a
+        // single self-rescheduling chain, so one stuck candidate here would
+        // otherwise delay every subsequent Add Device discovery pass. Dial
+        // and send are covered too, not just the reply: neither has a bound
+        // of its own. Also capped per-candidate (`CANDIDATE_PROBE_TIMEOUT`):
+        // without that, one silent candidate could eat the *entire*
+        // remaining budget by itself, starving out every other candidate
+        // still to be tried, including the one actually being searched for.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let reply = tokio::time::timeout(
+            remaining.min(CANDIDATE_PROBE_TIMEOUT),
+            probe_discovery_hello(&address),
+        )
+        .await;
+        if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname })) = reply {
+            // A stale/self-seen advertisement (e.g. two adapters on the
+            // same machine, or a previous scan's own peripheral still
+            // winding down) must not show up as a candidate to pair with.
+            if device_id != my_device_id {
+                candidates.push(AddModeCandidate { address, device_id, hostname });
+            }
+        }
+    }
+    Ok(candidates)
+}
+
 /// `Transport` implementation for the Bluetooth adapter — see the note on
 /// `transport::tcp_ws::TcpWsTransport` for why production dial loops call
 /// `dial()` directly rather than through this trait object.
@@ -371,6 +691,22 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
             delay = (delay * 2).min(max_delay);
             continue;
         }
+        // Subscribed *before* the config snapshot/`serve` call below, not
+        // after: a `watch::Receiver` only misses changes that happen
+        // strictly before it subscribes, so subscribing here closes the
+        // window where a toggle lands while the advertisement (built from
+        // the config snapshot `serve` takes) is still starting up -- a real
+        // async operation, not instant. Subscribing afterward would let
+        // that specific toggle go unseen (the receiver's baseline already
+        // reflects the new value at subscribe time), leaving the device
+        // advertising without the add-mode flag, undiscoverable, until
+        // some *later* toggle happens to fire `changed()` again. Watched
+        // (not merely read) so a toggle mid-serve interrupts the accept
+        // loop below immediately, rather than only taking effect on
+        // whatever later triggers a natural re-advertise -- see
+        // `add_mode_sender`'s doc comment for why this is a signal to the
+        // running loop rather than a full task restart.
+        let mut add_mode_rx = add_mode_sender().subscribe();
         let mut incoming = match datagram::serve(backend, &datagram_config()).await {
             Ok(stream) => stream,
             Err(err) => {
@@ -383,16 +719,37 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         eprintln!("[transport][ble] advertising, awaiting centrals");
         delay = Duration::from_secs(2);
 
-        while let Some(channel) = incoming.next().await {
-            let link: Box<dyn Link> = Box::new(BleLink::new(channel));
-            let state = state.clone();
-            let db_path = db_path.clone();
-            tokio::spawn(session::run_peer_gate(link, state, db_path));
+        let mut restarting_for_add_mode_change = false;
+        loop {
+            tokio::select! {
+                channel = incoming.next() => {
+                    let Some(channel) = channel else { break; };
+                    let link: Box<dyn Link> = Box::new(BleLink::new(channel));
+                    let state = state.clone();
+                    let db_path = db_path.clone();
+                    tokio::spawn(session::run_peer_gate(link, state, db_path));
+                }
+                _ = add_mode_rx.changed() => {
+                    eprintln!("[transport][ble] add-mode changed; re-advertising");
+                    restarting_for_add_mode_change = true;
+                    break;
+                }
+            }
+        }
+        if restarting_for_add_mode_change {
+            // Ending `incoming` here (by falling through to the outer
+            // loop's next `datagram::serve` call) is what actually stops
+            // the old advertisement -- ble-gatt's backends tear down the
+            // previous generation's GATT server/advertisement as part of
+            // starting a new one (see BleGattBridge.startAdvertising's own
+            // doc comment: "tear down any predecessor first").
+            delay = Duration::from_secs(2);
+            continue;
         }
         // The serve stream itself ended (e.g. the adapter dropped out from
-        // under it) rather than a caller closing it — nothing here ever
-        // drops the stream deliberately. Retry rather than leaving the
-        // peripheral role dead.
+        // under it) rather than a caller closing it or an add-mode change
+        // — nothing else here ever drops the stream deliberately. Retry
+        // rather than leaving the peripheral role dead.
         eprintln!("[transport][ble] serve stream ended unexpectedly; retrying in {delay:?}");
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(max_delay);
@@ -506,7 +863,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 match session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(peer_protocol_version) => {
                         eprintln!("[transport][ble] auth OK with {peer_id} via {address}");
                         // The connect+auth round trip is real wall-clock time
                         // during which the user could disable Bluetooth or
@@ -524,8 +881,15 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                         }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
                         if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx) {
-                            session::run_session(link, rx, state.clone(), db_path.clone(), peer_id.clone())
-                                .await;
+                            session::run_session(
+                                link,
+                                rx,
+                                state.clone(),
+                                db_path.clone(),
+                                peer_id.clone(),
+                                peer_protocol_version,
+                            )
+                            .await;
                             eprintln!("[transport][ble] session with {peer_id} ended");
                         }
                         delay = Duration::from_secs(2);
@@ -556,5 +920,36 @@ mod tests {
         assert!(!should_dial_peer("peer-b", "local-a", false));
         assert!(!should_dial_peer("local-a", "peer-b", true));
         assert!(!should_dial_peer("same-id", "same-id", false));
+    }
+
+    /// `add_mode_sender` is a process-global singleton (mirrors the real
+    /// adapter's own single peripheral instance). `device_connection`'s
+    /// `enter_add_mode_impl`/`leave_add_mode_impl` also flip it, so any test
+    /// exercising those (see `transport::tests`) must hold
+    /// `ADD_MODE_TEST_LOCK` too, the same way other process-global test
+    /// state in this crate is serialized.
+    #[test]
+    fn datagram_config_advertises_the_add_mode_flag_only_while_enabled() {
+        let _guard = ADD_MODE_TEST_LOCK.lock().unwrap();
+        set_add_mode(false);
+        let disabled = datagram_config();
+        assert!(
+            !disabled.advertised_manufacturer_data.contains_key(&FINI_MANUFACTURER_ID),
+            "must not advertise the add-mode flag while add-mode is off"
+        );
+
+        set_add_mode(true);
+        let enabled = datagram_config();
+        assert_eq!(
+            enabled.advertised_manufacturer_data.get(&FINI_MANUFACTURER_ID),
+            Some(&vec![ADD_MODE_FLAG_BYTE])
+        );
+
+        set_add_mode(false);
+        let disabled_again = datagram_config();
+        assert!(
+            !disabled_again.advertised_manufacturer_data.contains_key(&FINI_MANUFACTURER_ID),
+            "must stop advertising the flag once add-mode is left again"
+        );
     }
 }

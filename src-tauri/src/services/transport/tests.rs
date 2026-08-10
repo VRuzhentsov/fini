@@ -56,10 +56,13 @@ fn server_state(label: &str) -> (DeviceConnectionState, PathBuf) {
 /// window so concurrently-running tests can't clobber each other's value.
 static WS_PORT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global too — same reasoning,
-/// separate lock since it guards a disjoint set of tests. Mirrors the lock
-/// of the same name in `device_connection::commands::tests`.
-static BLUETOOTH_ADDRESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// `FINI_BLUETOOTH_PAIRED_ADDRESSES` is process-global too. Shared with
+/// `device_connection::commands::tests` (not a separate lock of the same
+/// name -- an earlier version of this comment claimed a disjoint set of
+/// tests justified two locks, but both modules set/clear the exact same
+/// env var, so two locks could still race with *each other*, observed as
+/// intermittent failures once enough tests in both files touched it).
+use crate::services::device_connection::BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK as BLUETOOTH_ADDRESS_ENV_LOCK;
 
 /// Like `server_state`, but the constructed state *announces* `port` as its
 /// own `space_sync_ws_port` (what it puts in outgoing `PairRequestPayload.from_ws_port`
@@ -99,6 +102,253 @@ async fn tcp_ws_gate_accepts_paired_device_and_claims_session_as_network() {
         server.session_kind("peer-client"),
         Some(TransportKind::TcpWs)
     );
+}
+
+/// Regression test for Phase 1 of ADR 0002: whichever side of a network
+/// session can read its own real Bluetooth address self-reports it via
+/// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the
+/// server side is configured (via the `FINI_LOCAL_BLUETOOTH_ADDRESS` test
+/// escape hatch — real `bluetoothctl` isn't available/deterministic in
+/// CI); the client reads it directly off the link rather than through a
+/// full `run_session` loop, matching how these tests already only run
+/// `run_session` on the accept side.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_is_sent_once_over_a_network_session() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::BluetoothAddressUpdate { address })) => {
+            assert_eq!(address, "AA:BB:CC:DD:EE:FF");
+        }
+        other => panic!("expected a BluetoothAddressUpdate frame, got {other:?}"),
+    }
+
+    std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+}
+
+/// Regression test: a peer that authenticates without reporting a
+/// `protocol_version` (simulating a build from before `PROTOCOL_VERSION`
+/// existed -- `perform_client_auth` always sends the current one, so this
+/// hand-crafts the raw `Auth` frame instead) must never receive a
+/// `BluetoothAddressUpdate`. That older peer's `PeerFrame` enum predates
+/// the variant and would fail to decode it, dropping the whole
+/// authenticated session -- exactly what version-gating this proactive
+/// send exists to prevent.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_is_withheld_from_a_peer_that_reports_no_protocol_version() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-old-peer");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+
+    // Hand-crafted, deliberately omitting `protocol_version` -- this is
+    // what an old build's `Auth` frame looked like before this field
+    // existed. `#[serde(default)]` on the receiving end reads this as `0`.
+    let old_style_auth = serde_json::json!({
+        "type": "auth",
+        "device_id": "peer-client",
+        "peer_device_id": server.identity.device_id,
+    });
+    let plain = serde_json::to_vec(&old_style_auth).unwrap();
+    let envelope = crate::services::transport::envelope::FrameEnvelope::new(
+        crate::services::transport::envelope::EncScheme::None,
+        plain,
+    );
+    let bytes = serde_json::to_vec(&envelope).unwrap();
+    link.send(bytes).await.expect("send hand-crafted auth");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::AuthOk { .. })) => {}
+        other => panic!("expected AuthOk, got {other:?}"),
+    }
+
+    match tokio::time::timeout(Duration::from_millis(300), recv_frame(link.as_mut())).await {
+        Err(_) => {} // timed out waiting -- correctly withheld
+        Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { .. }))) => {
+            panic!("must not send BluetoothAddressUpdate to a peer reporting no protocol_version")
+        }
+        Ok(other) => panic!("unexpected frame while waiting: {other:?}"),
+    }
+
+    std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+}
+
+/// Regression test: the self-report must not be a one-shot fired only at
+/// session start -- if the local Bluetooth controller changes underneath a
+/// long-lived network session (simulated here by changing
+/// `FINI_LOCAL_BLUETOOTH_ADDRESS` mid-session), the peer must eventually
+/// learn the new address, not keep holding the stale one with no other way
+/// to refresh it (this self-report only ever travels over the network
+/// transport, so once network sync eventually breaks, a Bluetooth fallback
+/// dial would be stuck targeting an address that no longer exists).
+/// `FINI_BLUETOOTH_RECHECK_INTERVAL_MS` shortens the real 5-minute periodic
+/// recheck so this can be observed deterministically.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_session() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS", "50");
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-refresh");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::BluetoothAddressUpdate { address })) => {
+            assert_eq!(address, "AA:BB:CC:DD:EE:FF");
+        }
+        other => panic!("expected the initial BluetoothAddressUpdate, got {other:?}"),
+    }
+
+    // Simulates a controller swap while this session stays live.
+    std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "11:22:33:44:55:66");
+
+    match tokio::time::timeout(Duration::from_millis(500), recv_frame(link.as_mut())).await {
+        Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { address }))) => {
+            assert_eq!(address, "11:22:33:44:55:66");
+        }
+        other => panic!("expected a refreshed BluetoothAddressUpdate after the address changed, got {other:?}"),
+    }
+
+    std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+    std::env::remove_var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS");
+}
+
+/// Regression test for the receiving half of Phase 1: an inbound
+/// `BluetoothAddressUpdate` for an already OS-paired address both persists
+/// the address and auto-enables Bluetooth for that pair -- self-report
+/// alone is sufficient confirmation only because it arrives over an
+/// already-authenticated session, but auto-*enabling* additionally
+/// requires OS bonding, mirroring `device_connection_set_bluetooth_transport_impl`'s
+/// own precondition.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_persists_and_enables_when_os_paired() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-enable");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothAddressUpdate {
+            address: "aa:bb:cc:dd:ee:ff".to_string(),
+        },
+    )
+    .await
+    .expect("send self-report");
+
+    sleep(Duration::from_millis(100)).await;
+    let mut conn = open_db_at_path(&server_db);
+    let row: (Option<String>, bool) = paired_devices::table
+        .find("peer-client")
+        .select((paired_devices::bluetooth_address, paired_devices::bluetooth_enabled))
+        .first(&mut conn)
+        .expect("load peer row");
+    assert_eq!(row.0.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+    assert!(row.1, "bluetooth should be auto-enabled when the reported address is OS-paired");
+
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+}
+
+/// Mirror of the above without OS pairing: the address still gets stored
+/// (so a later manual "Enable Bluetooth" click has something pre-filled),
+/// but Bluetooth is not auto-enabled -- a self-report by itself proves
+/// nothing about OS bonding.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_self_report_persists_without_enabling_when_not_os_paired() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+
+    let (server, server_db) = server_state("transport-tcpws-self-report-no-enable");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothAddressUpdate {
+            address: "11:22:33:44:55:66".to_string(),
+        },
+    )
+    .await
+    .expect("send self-report");
+
+    sleep(Duration::from_millis(100)).await;
+    let mut conn = open_db_at_path(&server_db);
+    let row: (Option<String>, bool) = paired_devices::table
+        .find("peer-client")
+        .select((paired_devices::bluetooth_address, paired_devices::bluetooth_enabled))
+        .first(&mut conn)
+        .expect("load peer row");
+    assert_eq!(row.0.as_deref(), Some("11:22:33:44:55:66"));
+    assert!(!row.1, "bluetooth must not auto-enable without OS pairing");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -236,6 +486,7 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
         device_connection_send_pair_request_impl,
     };
 
+    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-send-pair-request-receiver");
     device_connection_enter_add_mode_impl(&receiver).expect("enter add mode");
     let port = free_port().await;
@@ -291,6 +542,7 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
         device_connection_send_pair_request_impl,
     };
 
+    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let requester_port = free_port().await;
     let accepter_port = free_port().await;
     // The requester's own port must match where its listener actually
@@ -445,7 +697,7 @@ async fn tcp_failure_count_resets_after_a_sim_session_ends() {
         };
         let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
         if let Some(Ok(PeerFrame::Auth { .. })) = recv_frame(link.as_mut()).await {
-            let _ = send_frame(link.as_mut(), &PeerFrame::AuthOk).await;
+            let _ = send_frame(link.as_mut(), &PeerFrame::AuthOk { protocol_version: 1 }).await;
         }
         // link drops here, closing the connection right after handshake.
     });
@@ -642,4 +894,367 @@ async fn bluetooth_gate_rejects_when_connecting_address_does_not_match_the_bonde
     assert!(err.contains("not currently OS-paired"), "unexpected error: {err}");
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+}
+
+/// ADR 0002 Phase 3: a `PairRequest` delivered over a Bluetooth-kind link
+/// must be flagged `via_bluetooth`, with `from_bluetooth_address` set to the
+/// address actually *observed* on that connection (`Link::peer_addr()`) --
+/// trusted over any self-report, since the sender has no network endpoint
+/// fields to self-report through this transport in the first place.
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
+    use crate::services::device_connection::types::PairRequestPayload;
+    use crate::services::device_connection::{
+        device_connection_enter_add_mode_impl, device_connection_pair_incoming_requests_impl,
+        DISCOVERY_PROTOCOL,
+    };
+
+    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
+    let (receiver, receiver_db) = server_state("transport-pair-request-bluetooth");
+    device_connection_enter_add_mode_impl(&receiver).expect("enter add mode");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::PairRequest(PairRequestPayload {
+            protocol: DISCOVERY_PROTOCOL.to_string(),
+            kind: "pair_request".to_string(),
+            request_id: "req-ble-1".to_string(),
+            from_device_id: "device-a".to_string(),
+            from_hostname: "alpha".to_string(),
+            from_discovery_port: None,
+            from_ws_port: None,
+            to_device_id: receiver.identity.device_id.clone(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            expires_at: "2099-01-01T00:00:00Z".to_string(),
+        }),
+    )
+    .await
+    .expect("send pair request over bluetooth-kind link");
+
+    sleep(Duration::from_millis(200)).await;
+    let incoming =
+        device_connection_pair_incoming_requests_impl(&receiver).expect("list incoming requests");
+    assert_eq!(incoming.len(), 1);
+    assert!(
+        incoming[0].via_bluetooth,
+        "a request delivered over a Bluetooth-kind link must be flagged as such"
+    );
+    assert_eq!(
+        incoming[0].from_bluetooth_address.as_deref(),
+        Some("127.0.0.1"),
+        "must capture the address observed on the link itself"
+    );
+}
+
+/// Mirror of the above for the completion leg: a `PairComplete` delivered
+/// over a Bluetooth-kind link must trust the *observed* link address over
+/// whatever the sender self-reported in the payload -- proven here by
+/// deliberately mismatching them.
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
+    use crate::services::device_connection::types::PairCompletePayload;
+    use crate::services::device_connection::{
+        device_connection_pair_outgoing_completions_impl, DISCOVERY_PROTOCOL,
+    };
+
+    let (receiver, receiver_db) = server_state("transport-pair-complete-bluetooth");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::PairComplete(PairCompletePayload {
+            protocol: DISCOVERY_PROTOCOL.to_string(),
+            kind: "pair_complete".to_string(),
+            request_id: "req-ble-2".to_string(),
+            from_device_id: "device-b".to_string(),
+            from_hostname: "beta".to_string(),
+            to_device_id: receiver.identity.device_id.clone(),
+            paired_at: "2026-01-01T00:00:00Z".to_string(),
+            bluetooth_address: Some("AA:BB:CC:DD:EE:FF".to_string()),
+            key_material: None,
+        }),
+    )
+    .await
+    .expect("send pair complete over bluetooth-kind link");
+
+    sleep(Duration::from_millis(200)).await;
+    let completions = device_connection_pair_outgoing_completions_impl(&receiver)
+        .expect("list outgoing completions");
+    assert_eq!(completions.len(), 1);
+    assert!(completions[0].via_bluetooth);
+    assert_eq!(
+        completions[0].bluetooth_address.as_deref(),
+        Some("127.0.0.1"),
+        "the observed link address must win over the payload's self-reported address"
+    );
+}
+
+/// Mirror of the above for a network-carried completion: with no live
+/// Bluetooth connection to observe an address from, the sender's
+/// self-reported `PairCompletePayload::bluetooth_address` is what gets
+/// captured instead (ADR 0002 Phase 3's "exchanges both transports'
+/// details... regardless of which transport carried the pairing").
+#[tokio::test(flavor = "multi_thread")]
+async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
+    use crate::services::device_connection::types::PairCompletePayload;
+    use crate::services::device_connection::{
+        device_connection_pair_outgoing_completions_impl, DISCOVERY_PROTOCOL,
+    };
+
+    let (receiver, receiver_db) = server_state("transport-pair-complete-network-btaddr");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        receiver.clone(),
+        receiver_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::PairComplete(PairCompletePayload {
+            protocol: DISCOVERY_PROTOCOL.to_string(),
+            kind: "pair_complete".to_string(),
+            request_id: "req-net-1".to_string(),
+            from_device_id: "device-c".to_string(),
+            from_hostname: "gamma".to_string(),
+            to_device_id: receiver.identity.device_id.clone(),
+            paired_at: "2026-01-01T00:00:00Z".to_string(),
+            bluetooth_address: Some("11:22:33:44:55:66".to_string()),
+            key_material: None,
+        }),
+    )
+    .await
+    .expect("send pair complete over network");
+
+    sleep(Duration::from_millis(200)).await;
+    let completions = device_connection_pair_outgoing_completions_impl(&receiver)
+        .expect("list outgoing completions");
+    assert_eq!(completions.len(), 1);
+    assert!(!completions[0].via_bluetooth);
+    assert_eq!(
+        completions[0].bluetooth_address.as_deref(),
+        Some("11:22:33:44:55:66")
+    );
+}
+
+/// Regression test: `BluetoothProbe` ("Find via Bluetooth"'s confirmation
+/// step) must succeed for a paired peer whose Bluetooth transport is *not*
+/// enabled yet -- that's the normal case this discovery flow exists for.
+/// Before this fix, `find_peer_address` reused the ordinary Auth/AuthOk
+/// handshake, whose `check_bluetooth_enabled` precondition made this
+/// scenario impossible to ever complete.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet_enabled() {
+    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-not-enabled");
+    seed_paired_device(&receiver_db, "peer-client");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: "peer-client".to_string(),
+        },
+    )
+    .await
+    .expect("send bluetooth probe");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) => {
+            assert_eq!(device_id, receiver.identity.device_id);
+        }
+        other => panic!("expected a BluetoothProbeReply, got {other:?}"),
+    }
+}
+
+/// Regression test for the P2 review finding: a probe from a paired but
+/// *explicitly disabled* peer must get no reply either -- replying would
+/// let that peer believe "Find via Bluetooth" succeeded and persist/enable
+/// the address on its own end, only for every real session attempt to
+/// then be rejected by this device's own `check_bluetooth_enabled` gate.
+/// Distinct from the "not yet enabled" case above: that one must still
+/// reply (it's the whole point of this discovery flow), an explicit
+/// disable must not.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_probe_gets_no_reply_when_explicitly_disabled() {
+    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-disabled");
+    seed_paired_device(&receiver_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&receiver_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set(paired_devices::bluetooth_disabled_by_user.eq(true))
+            .execute(&mut conn)
+            .expect("mark the pair as explicitly disabled");
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: "peer-client".to_string(),
+        },
+    )
+    .await
+    .expect("send bluetooth probe");
+
+    match recv_frame(link.as_mut()).await {
+        None | Some(Err(_)) => {}
+        other => panic!("an explicitly disabled pair must not reply to BluetoothProbe, got {other:?}"),
+    }
+}
+
+/// Mirror of the above: a probe from a device_id that isn't actually paired
+/// must get no reply at all -- same "silently ignore, don't confirm/deny"
+/// pattern `DiscoveryHello` uses.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_probe_gets_no_reply_from_an_unpaired_device_id() {
+    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-unpaired");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let gate_receiver = receiver.clone();
+    let gate_db = receiver_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_receiver, gate_db).await;
+    });
+
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: "a-stranger".to_string(),
+        },
+    )
+    .await
+    .expect("send bluetooth probe");
+
+    match recv_frame(link.as_mut()).await {
+        None | Some(Err(_)) => {}
+        other => panic!("an unpaired probe must not get a reply, got {other:?}"),
+    }
+}
+
+/// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
+/// reply when the receiver is actually in add-mode -- the BLE-scan
+/// equivalent of network discovery simply not broadcasting outside
+/// add-mode. Uses `set_add_mode_for_test` (instance-scoped) rather than the
+/// real `enter_add_mode_impl`, which would also flip the process-global
+/// `transport::ble` advertising flag `ble::tests` already covers
+/// separately.
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
+    let (server, server_db) = server_state("transport-discovery-hello-on");
+    server.set_add_mode_for_test(true);
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+        .await
+        .expect("send discovery hello");
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname })) => {
+            assert_eq!(device_id, server.identity.device_id);
+            assert_eq!(hostname, server.identity.hostname);
+        }
+        other => panic!("expected a DiscoveryHelloReply while in add-mode, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
+    let (server, server_db) = server_state("transport-discovery-hello-off");
+    // Add-mode is off by default -- no set_add_mode_for_test call.
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+        .await
+        .expect("send discovery hello");
+    // The server task returns without replying, dropping its side of the
+    // link -- observed here as either a clean EOF (`None`) or a connection
+    // error from the abrupt close (`Some(Err(_))`), depending on how the
+    // underlying transport surfaces an ungraceful drop. Either is "no
+    // valid reply was given"; only an actual `DiscoveryHelloReply` fails
+    // the test.
+    match recv_frame(link.as_mut()).await {
+        None | Some(Err(_)) => {}
+        other => panic!("a receiver not in add-mode must not reply to DiscoveryHello, got {other:?}"),
+    }
 }

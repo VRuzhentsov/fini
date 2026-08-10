@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
@@ -17,6 +17,9 @@ const bluetoothAddressInput = ref("");
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
 const savingBluetoothTransport = ref(false);
+const findingBluetoothAddress = ref(false);
+const bluetoothFindResult = ref<"found" | "not_found" | null>(null);
+let findBluetoothGeneration = 0;
 const mappingError = ref<string | null>(null);
 const bluetoothTransportError = ref<string | null>(null);
 const mappingsDirty = ref(false);
@@ -63,16 +66,53 @@ const hasMappingChanges = computed(() => {
   return saved.join(",") !== current.join(",");
 });
 
+const TRANSPORT_STATUS_POLL_INTERVAL_MS = 5_000;
+let transportStatusTimer: ReturnType<typeof setInterval> | null = null;
+
 onMounted(() => {
   void deviceStore.hydrate();
   void spaceStore.fetchSpaces();
   void deviceStore.runSpaceSyncTick();
   void loadMappings();
+
+  // `loadMappings` only refreshes transport status once, on mount/route
+  // change -- the store's periodic presence loop only touches paired
+  // devices that show up in the *network* presence snapshot, which a
+  // Bluetooth-only fallback session never does. Without an independent
+  // poll here, "connected now" goes stale the moment a Bluetooth-only
+  // session connects or disconnects while this page stays open.
+  //
+  // Uses the lightweight `refreshLiveConnectedState`, not the full
+  // `refreshTransportStatuses` `loadMappings` already ran once above: the
+  // full check re-verifies OS Bluetooth bonding via a `bluetoothctl`
+  // subprocess on Linux, which this view has no reason to rerun every 5s
+  // for as long as it stays open -- only the live "connected" state
+  // actually needs to be fresh here.
+  transportStatusTimer = setInterval(() => {
+    if (deviceId.value) void deviceStore.refreshLiveConnectedState(deviceId.value);
+  }, TRANSPORT_STATUS_POLL_INTERVAL_MS);
+});
+
+onUnmounted(() => {
+  if (transportStatusTimer) {
+    clearInterval(transportStatusTimer);
+    transportStatusTimer = null;
+  }
 });
 
 watch(deviceId, () => {
   mappingsDirty.value = false;
   void loadMappings();
+
+  // Invalidate any in-flight findViaBluetooth scan for the device we just
+  // navigated away from, and reset this route's own find UI immediately.
+  // findingBluetoothAddress is page-level, not per-device; without this,
+  // it would stay "Scanning..." (and the button disabled) on the new
+  // device's view until the old device's up-to-60s scan happens to settle.
+  findBluetoothGeneration += 1;
+  findingBluetoothAddress.value = false;
+  bluetoothFindResult.value = null;
+  bluetoothTransportError.value = null;
 });
 
 watch(savedMappedSelection, (next) => {
@@ -143,6 +183,41 @@ async function saveBluetoothTransport(enabled: boolean) {
     bluetoothTransportError.value = String(error);
   } finally {
     savingBluetoothTransport.value = false;
+  }
+}
+
+// Phase 1 of ADR 0002: scans for up to 60s and, on a match, the backend has
+// already persisted (and possibly enabled) Bluetooth for this pair -- the
+// store call re-loads paired-device/transport-status state, so the address
+// input just needs to pick up whatever landed there.
+async function findViaBluetooth() {
+  if (!deviceId.value) return;
+  const requestedDeviceId = deviceId.value;
+  const generation = ++findBluetoothGeneration;
+  findingBluetoothAddress.value = true;
+  bluetoothFindResult.value = null;
+  bluetoothTransportError.value = null;
+
+  try {
+    const address = await deviceStore.findBluetoothAddress(requestedDeviceId);
+    if (generation !== findBluetoothGeneration) return;
+    if (address) {
+      bluetoothAddressInput.value = address;
+      bluetoothFindResult.value = "found";
+    } else {
+      bluetoothFindResult.value = "not_found";
+    }
+  } catch (error) {
+    if (generation === findBluetoothGeneration) {
+      bluetoothTransportError.value = String(error);
+    }
+  } finally {
+    // The route-change watcher already reset `findingBluetoothAddress` for
+    // the device we navigated to (if any) -- a stale generation clearing
+    // it here would incorrectly cancel a newer scan's own "Scanning..." state.
+    if (generation === findBluetoothGeneration) {
+      findingBluetoothAddress.value = false;
+    }
   }
 }
 
@@ -218,12 +293,19 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           <template #leading>
             <span
               class="h-2.5 w-2.5 rounded-full"
-              :class="status.available ? 'bg-green-500' : 'bg-gray-400'"
+              :class="
+                status.connected
+                  ? 'bg-green-500'
+                  : status.available
+                    ? 'bg-amber-400'
+                    : 'bg-gray-400'
+              "
             />
           </template>
           <template #start>
             <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
             <span v-if="status.preferred" class="ml-2 text-[11px] opacity-60">preferred</span>
+            <span v-if="status.connected" class="ml-2 text-[11px] text-success">connected now</span>
           </template>
           <template #end>
             <span class="text-xs opacity-60">{{ status.detail }}</span>
@@ -231,6 +313,19 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
         </SettingsListItem>
       </SettingsListGroup>
       <div class="mt-3 flex flex-col gap-2">
+        <button
+          class="btn btn-sm btn-outline w-fit"
+          data-testid="find-bluetooth-address"
+          :disabled="findingBluetoothAddress"
+          @click="void findViaBluetooth()"
+        >{{ findingBluetoothAddress ? "Scanning… (up to 60s)" : "Find via Bluetooth" }}</button>
+        <p v-if="bluetoothFindResult === 'found'" class="text-xs text-success">
+          Found and confirmed nearby.
+        </p>
+        <p v-else-if="bluetoothFindResult === 'not_found'" class="text-xs opacity-60">
+          Not found within 60s — make sure the other device is nearby and its Bluetooth is on, or
+          enter its address manually below.
+        </p>
         <label class="text-xs font-medium opacity-70" for="bluetooth-address">Bluetooth address</label>
         <input
           id="bluetooth-address"

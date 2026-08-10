@@ -5,6 +5,7 @@
 //! the future real Bluetooth adapter).
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use diesel::prelude::*;
 use tokio::sync::mpsc;
@@ -15,7 +16,7 @@ use crate::services::device_connection::{
     DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd, IncomingSyncAck,
 };
 use crate::services::space_sync::outbox::load_events_for_space;
-use crate::services::space_sync::types::PeerFrame;
+use crate::services::space_sync::types::{PeerFrame, PROTOCOL_VERSION};
 use crate::services::transport::{recv_frame, send_frame, Link, TransportKind};
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
@@ -47,6 +48,32 @@ fn check_bluetooth_enabled(db_path: &PathBuf, device_id: &str) -> bool {
         paired_devices::table
             .find(device_id)
             .select(paired_devices::bluetooth_enabled)
+            .first::<bool>(&mut conn)
+            .unwrap_or(false)
+    })
+}
+
+/// Whether this device has *explicitly* disabled Bluetooth for
+/// `device_id`'s pair (`device_connection_set_bluetooth_transport_impl`'s
+/// disable branch) -- checked by `BluetoothProbe`'s pre-auth handler so an
+/// explicit opt-out isn't bypassed by "Find via Bluetooth": that flow's
+/// whole point is discovering an address for a pair that has *never* been
+/// enabled (see its own doc comment), but a pair the user actively turned
+/// off is a different case entirely. Replying would let the other side
+/// believe discovery succeeded and persist/enable the address on its own
+/// end, only for every real session attempt to then be rejected by
+/// `check_bluetooth_enabled` here -- `specs/device-connect/README.md`'s
+/// "disabling ... prevents future Bluetooth use" contract, silently
+/// undermined via a side channel that predates it. `unwrap_or(false)`
+/// fails open here on purpose (opposite of `check_bluetooth_enabled`'s
+/// fail-closed): an unpaired/unreadable row has nothing to have been
+/// disabled, matching a never-enabled pair.
+fn check_bluetooth_disabled_by_user(db_path: &PathBuf, device_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        paired_devices::table
+            .find(device_id)
+            .select(paired_devices::bluetooth_disabled_by_user)
             .first::<bool>(&mut conn)
             .unwrap_or(false)
     })
@@ -88,7 +115,17 @@ fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Op
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        crate::services::device_connection::bluetooth_address_is_os_paired(&stored)
+        // `bluetooth_address_is_os_paired` internally does a
+        // `tauri::async_runtime::block_on` on Linux (bounding its
+        // `bluetoothctl` subprocess) -- calling that directly from this
+        // async fn's body would risk "cannot start a runtime from within a
+        // runtime" on whichever worker thread is currently driving this
+        // task. `block_in_place` (already used for the DB read above) is
+        // the sanctioned way to run blocking/nested-runtime work safely
+        // from inside an async task on a multi-threaded runtime.
+        tokio::task::block_in_place(|| {
+            crate::services::device_connection::bluetooth_address_is_os_paired(&stored)
+        })
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
@@ -97,23 +134,27 @@ fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Op
 }
 
 /// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.
-/// Shared by every adapter's dial path.
+/// Shared by every adapter's dial path. Returns the peer's reported
+/// `PROTOCOL_VERSION` (`0` for a peer running a build from before that
+/// field existed) so the caller's `run_session` knows which proactive
+/// frames are safe to send -- see `PROTOCOL_VERSION`'s doc comment.
 pub async fn perform_client_auth(
     link: &mut dyn Link,
     my_device_id: &str,
     peer_device_id: &str,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     send_frame(
         link,
         &PeerFrame::Auth {
             device_id: my_device_id.to_string(),
             peer_device_id: peer_device_id.to_string(),
+            protocol_version: PROTOCOL_VERSION,
         },
     )
     .await?;
 
     match recv_frame(link).await {
-        Some(Ok(PeerFrame::AuthOk)) => Ok(()),
+        Some(Ok(PeerFrame::AuthOk { protocol_version })) => Ok(protocol_version),
         Some(Ok(PeerFrame::AuthFail { reason })) => Err(format!("auth rejected: {reason}")),
         Some(Ok(_)) => Err("unexpected reply to auth".to_string()),
         Some(Err(err)) => Err(err),
@@ -142,9 +183,9 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         return;
     };
 
-    let (device_id, peer_device_id) = match frame {
+    let (device_id, peer_device_id, peer_protocol_version) = match frame {
         PeerFrame::PairRequest(payload) => {
-            let _ = state.receive_ws_pair_request(payload, from_addr);
+            let _ = state.receive_ws_pair_request(payload, from_addr, kind == TransportKind::Bluetooth);
             return;
         }
         PeerFrame::PairAccept(payload) => {
@@ -152,13 +193,53 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             return;
         }
         PeerFrame::PairComplete(payload) => {
-            let _ = state.receive_ws_pair_complete(payload);
+            let _ =
+                state.receive_ws_pair_complete(payload, from_addr, kind == TransportKind::Bluetooth);
+            return;
+        }
+        PeerFrame::BluetoothProbe { device_id } => {
+            // Deliberately `check_paired`, not `check_bluetooth_enabled`:
+            // this exists precisely so "Find via Bluetooth" can confirm an
+            // address for a pair that doesn't have Bluetooth enabled yet.
+            // But an *explicit* disable is a different case from
+            // never-enabled -- see `check_bluetooth_disabled_by_user`'s
+            // doc comment for why that one must still gate the reply.
+            if check_paired(&db_path, &device_id)
+                && !check_bluetooth_disabled_by_user(&db_path, &device_id)
+            {
+                let _ = send_frame(
+                    link.as_mut(),
+                    &PeerFrame::BluetoothProbeReply {
+                        device_id: state.identity.device_id.clone(),
+                    },
+                )
+                .await;
+            }
+            return;
+        }
+        PeerFrame::DiscoveryHello => {
+            // No reply at all when not in add-mode -- matching the
+            // network-discovery equivalent (a mDNS beacon simply isn't
+            // broadcast outside add-mode), rather than an explicit
+            // rejection frame that would let a scanner distinguish "not in
+            // add-mode" from "connection failed."
+            if state.is_add_mode_enabled() {
+                let _ = send_frame(
+                    link.as_mut(),
+                    &PeerFrame::DiscoveryHelloReply {
+                        device_id: state.identity.device_id.clone(),
+                        hostname: state.identity.hostname.clone(),
+                    },
+                )
+                .await;
+            }
             return;
         }
         PeerFrame::Auth {
             device_id,
             peer_device_id,
-        } => (device_id, peer_device_id),
+            protocol_version,
+        } => (device_id, peer_device_id, protocol_version),
         _ => {
             let _ = send_frame(
                 link.as_mut(),
@@ -228,12 +309,20 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         return;
     }
 
-    if send_frame(link.as_mut(), &PeerFrame::AuthOk).await.is_err() {
+    if send_frame(
+        link.as_mut(),
+        &PeerFrame::AuthOk {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await
+    .is_err()
+    {
         state.release_session(&device_id);
         return;
     }
 
-    run_session(link, rx, state, db_path, device_id).await;
+    run_session(link, rx, state, db_path, device_id, peer_protocol_version).await;
 }
 
 /// The authenticated per-peer message loop. `rx` is the mailbox side of the
@@ -247,7 +336,46 @@ pub async fn run_session(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_device_id: String,
+    peer_protocol_version: u32,
 ) {
+    // Self-report our own Bluetooth address once per network session, if
+    // this platform can read one at all -- see `PeerFrame::BluetoothAddressUpdate`'s
+    // doc comment. Only over the network transport: sending it over an
+    // already-live Bluetooth session would be reporting an address the
+    // other side already used to reach us. Gated on `peer_protocol_version`
+    // (learned during the Auth/AuthOk exchange, see `PROTOCOL_VERSION`):
+    // a peer on a build from before this frame existed cannot decode it and
+    // would drop the whole authenticated session, so this frame is never
+    // sent proactively to a peer that hasn't proven it understands it.
+    let bluetooth_self_report_enabled = link.kind() == TransportKind::TcpWs && peer_protocol_version >= 1;
+    let mut last_reported_bluetooth_address: Option<String> = None;
+    if bluetooth_self_report_enabled {
+        if let Some(address) = crate::services::device_connection::local_bluetooth_address().await {
+            if send_frame(
+                link.as_mut(),
+                &PeerFrame::BluetoothAddressUpdate { address: address.clone() },
+            )
+            .await
+            .is_ok()
+            {
+                last_reported_bluetooth_address = Some(address);
+            }
+        }
+    }
+
+    // Re-checked periodically, not just once at session start: a network
+    // session can stay live for a long time, and if the local Bluetooth
+    // controller changes underneath it (e.g. a USB dongle swap) with
+    // nothing to notice, the peer is left holding a stale address with no
+    // other way to refresh it -- this self-report only ever travels over
+    // the network transport, so once network sync eventually breaks, the
+    // Bluetooth fallback would be stuck dialing an address that no longer
+    // exists. `set_missed_tick_behavior(Delay)`: a slow tick (e.g. this
+    // process suspended) should never fire a burst of catch-up sends.
+    let mut bluetooth_recheck = tokio::time::interval(bluetooth_recheck_interval());
+    bluetooth_recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    bluetooth_recheck.tick().await; // interval fires immediately on the first tick; consume it
+
     loop {
         tokio::select! {
             inbound = recv_frame(link.as_mut()) => {
@@ -259,10 +387,36 @@ pub async fn run_session(
                     break;
                 }
             }
+            _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {
+                if let Some(address) = crate::services::device_connection::local_bluetooth_address().await {
+                    if last_reported_bluetooth_address.as_deref() != Some(address.as_str())
+                        && send_frame(
+                            link.as_mut(),
+                            &PeerFrame::BluetoothAddressUpdate { address: address.clone() },
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        last_reported_bluetooth_address = Some(address);
+                    }
+                }
+            }
         }
     }
 
     state.release_session(&peer_device_id);
+}
+
+/// Test/CI escape hatch, mirroring `local_bluetooth_address`'s own
+/// `FINI_LOCAL_BLUETOOTH_ADDRESS`: exercising the periodic re-check
+/// deterministically can't wait on the real 5-minute interval.
+fn bluetooth_recheck_interval() -> Duration {
+    if let Ok(value) = std::env::var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS") {
+        if let Ok(ms) = value.parse::<u64>() {
+            return Duration::from_millis(ms);
+        }
+    }
+    Duration::from_secs(300)
 }
 
 async fn handle_inbound(
@@ -343,12 +497,39 @@ async fn handle_inbound(
                 .execute(&mut conn);
             });
         }
-        // Sent by this side, not expected inbound
+        PeerFrame::BluetoothAddressUpdate { address } => {
+            let Some(address) = crate::services::device_connection::normalize_bluetooth_address(&address)
+            else {
+                return;
+            };
+            let db = db_path.clone();
+            let peer = peer_device_id.to_string();
+            tokio::task::block_in_place(|| {
+                let mut conn = open_db_at_path(&db);
+                if let Err(err) =
+                    crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
+                        &mut conn, &peer, &address,
+                    )
+                {
+                    eprintln!("[space-sync] persist bluetooth self-report failed: {err}");
+                }
+            });
+        }
+        // Pre-auth only (handled earlier in run_peer_gate's first-frame
+        // dispatch) or sent by this side -- never expected inbound here.
         PeerFrame::Auth { .. }
-        | PeerFrame::AuthOk
+        | PeerFrame::AuthOk { .. }
         | PeerFrame::AuthFail { .. }
         | PeerFrame::PairRequest(_)
         | PeerFrame::PairAccept(_)
-        | PeerFrame::PairComplete(_) => {}
+        | PeerFrame::PairComplete(_)
+        | PeerFrame::DiscoveryHello
+        | PeerFrame::DiscoveryHelloReply { .. }
+        | PeerFrame::BluetoothProbe { .. }
+        | PeerFrame::BluetoothProbeReply { .. }
+        // A tag this build doesn't recognize -- see `PeerFrame::Unknown`'s
+        // doc comment. Ignoring it is the whole point: the session must
+        // keep running rather than treat it as a decode failure.
+        | PeerFrame::Unknown => {}
     }
 }

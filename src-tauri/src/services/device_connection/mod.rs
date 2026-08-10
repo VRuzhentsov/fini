@@ -11,24 +11,34 @@ use crate::services::space_sync::types::{PeerFrame, SessionSender, SyncEventEnve
 use crate::services::transport::selection::{new_lifecycle_bus, LifecycleBus, LifecycleEvent};
 use crate::services::transport::TransportKind;
 
+// Shared with `transport::tests`, which sets/clears the same process-global
+// `FINI_BLUETOOTH_PAIRED_ADDRESSES` env var in its own tests -- see the
+// lock's own doc comment for why this must be one lock, not two.
+#[cfg(test)]
+pub(crate) use commands::BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK;
+
 #[cfg(any(feature = "ui-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
-    device_connection_discovery_snapshot, device_connection_enter_add_mode,
+    device_connection_discover_bluetooth_candidates, device_connection_discovery_snapshot,
+    device_connection_enter_add_mode, device_connection_find_bluetooth_address,
     device_connection_get_identity, device_connection_get_paired_devices,
     device_connection_leave_add_mode, device_connection_pair_accept_request,
     device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
     device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_save_paired_device, device_connection_send_pair_request,
-    device_connection_session_transport, device_connection_set_bluetooth_transport,
-    device_connection_transport_statuses, device_connection_unpair,
-    device_connection_update_last_seen,
+    device_connection_send_pair_request_bluetooth, device_connection_session_transport,
+    device_connection_set_bluetooth_transport, device_connection_transport_statuses,
+    device_connection_unpair, device_connection_update_last_seen,
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) use commands::bluetooth_address_is_os_paired;
+pub(crate) use commands::{
+    local_bluetooth_address, normalize_bluetooth_address, persist_bluetooth_address_and_maybe_enable,
+};
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
     device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,
@@ -284,6 +294,30 @@ impl DeviceConnectionState {
         guard.peer_session_kind.get(peer_device_id).copied()
     }
 
+    /// Whether this device is currently discoverable for pairing —
+    /// `specs/device-connect/README.md`: "Only devices in add-mode are
+    /// pairing candidates." Used by `session::run_peer_gate`'s
+    /// `DiscoveryHello` handling (ADR 0002 Phase 3) to decide whether to
+    /// reply at all, the BLE-scan equivalent of the existing check
+    /// `receive_ws_pair_request` already makes for network `PairRequest`s.
+    pub fn is_add_mode_enabled(&self) -> bool {
+        self.runtime.lock().map(|guard| guard.add_mode_enabled).unwrap_or(false)
+    }
+
+    /// Test-only, instance-scoped toggle for `is_add_mode_enabled` --
+    /// deliberately does *not* also flip `transport::ble::set_add_mode`
+    /// (unlike the real `device_connection_enter_add_mode_impl`/
+    /// `leave_add_mode_impl`), since that is a *process-global* singleton
+    /// shared by every test in the binary. Exercising `run_peer_gate`'s
+    /// `DiscoveryHello` gating needs only this instance's flag, not the
+    /// BLE-advertising side effect.
+    #[cfg(test)]
+    pub fn set_add_mode_for_test(&self, enabled: bool) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.add_mode_enabled = enabled;
+        }
+    }
+
     /// Reserved for UI consumption (live transport-changed/connect/disconnect
     /// rows) — the draft's `device_connection_transport_statuses` polling
     /// command remains the UI-facing surface in this PR; wiring a push-based
@@ -317,6 +351,7 @@ impl DeviceConnectionState {
         &self,
         payload: PairRequestPayload,
         from_addr: String,
+        via_bluetooth: bool,
     ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
@@ -334,7 +369,7 @@ impl DeviceConnectionState {
                 .contains_key(payload.request_id.as_str());
             guard.incoming_requests.insert(
                 payload.request_id.clone(),
-                runtime::build_incoming_pair_request(&payload, from_addr),
+                runtime::build_incoming_pair_request(&payload, from_addr, via_bluetooth),
             );
 
             if is_new {
@@ -371,10 +406,24 @@ impl DeviceConnectionState {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn receive_ws_pair_complete(&self, payload: PairCompletePayload) -> Result<(), String> {
+    pub fn receive_ws_pair_complete(
+        &self,
+        payload: PairCompletePayload,
+        from_addr: String,
+        via_bluetooth: bool,
+    ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
         }
+
+        // When `via_bluetooth`, trust the address actually observed on this
+        // connection over the sender's self-reported `payload.bluetooth_address`
+        // -- same reasoning as `IncomingPairRequest::from_bluetooth_address`.
+        let bluetooth_address = if via_bluetooth {
+            Some(from_addr)
+        } else {
+            payload.bluetooth_address.clone()
+        };
 
         let mut guard = self
             .runtime
@@ -388,6 +437,8 @@ impl DeviceConnectionState {
                 from_device_id: payload.from_device_id,
                 from_hostname: payload.from_hostname,
                 paired_at: payload.paired_at,
+                via_bluetooth,
+                bluetooth_address,
             },
         );
         Ok(())
