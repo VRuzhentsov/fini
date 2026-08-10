@@ -33,10 +33,12 @@ export async function ensureSimPairedActors(
   await a.actor.invoke('device_connection_save_paired_device', {
     peerDeviceId: b.identity.device_id,
     displayName: b.identity.hostname,
+    viaBluetooth: false,
   });
   await b.actor.invoke('device_connection_save_paired_device', {
     peerDeviceId: a.identity.device_id,
     displayName: a.identity.hostname,
+    viaBluetooth: false,
   });
 
   return [a, b];
