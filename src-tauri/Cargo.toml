@@ -61,8 +61,6 @@ time = { version = "0.3.47", features = ["parsing", "formatting"] }
 tauri-plugin-playwright = { version = "0.2", optional = true }
 socket2 = "0.6"
 mdns-sd = "0.13"
-zbus = { version = "5.14.0", features = ["blocking-api"] }
-zvariant = "5.10.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
@@ -75,6 +73,14 @@ url = { version = "2", optional = true }
 gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
 ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "af4ed1e5cfcade75d15ff96e8c3e8de1d97749fa" }
+# Only used behind #[cfg(target_os = "linux")] (resume_watcher's sleep/wake
+# watcher, settings.rs's portal theme-change watcher, both over the
+# session/system D-Bus) -- kept target-gated rather than unconditional so
+# Windows/macOS builds don't pull in zbus's Windows uds_windows backend at
+# all, which has no reason to be exercised there and can independently break
+# on its own dependency drift (windows-sys versions dropping `core::BOOL`).
+zbus = { version = "5.14.0", features = ["blocking-api"] }
+zvariant = "5.10.0"
 
 [target.'cfg(target_os = "android")'.dependencies]
 ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "af4ed1e5cfcade75d15ff96e8c3e8de1d97749fa" }
