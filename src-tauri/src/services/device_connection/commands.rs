@@ -479,6 +479,7 @@ fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
 /// attempt.
 const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn send_pair_ble(address: &str, msg: PeerFrame) -> Result<(), String> {
     tauri::async_runtime::block_on(async move {
         tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
