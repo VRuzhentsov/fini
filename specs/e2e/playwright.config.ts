@@ -23,7 +23,7 @@ export default defineConfig({
       // actor process pool (the worker-scoped fixture spawns actors once,
       // shared by every test in this project) — see the 'actors-sim'
       // project below and `specs/e2e/transports.md`.
-      testIgnore: ['actors/tests/peer-sync-over-sim.spec.ts'],
+      testIgnore: ['actors/tests/peer-sync-over-sim.spec.ts', 'actors/tests/unpair-and-rejoin-over-sim.spec.ts'],
     },
     {
       // Opt-in: only runs when explicitly selected (`--project actors-sim`)
@@ -31,7 +31,7 @@ export default defineConfig({
       // an unfiltered `playwright test` run alongside the other projects,
       // since it needs network discovery genuinely disabled for its actors.
       name: 'actors-sim',
-      testMatch: ['actors/tests/peer-sync-over-sim.spec.ts'],
+      testMatch: ['actors/tests/peer-sync-over-sim.spec.ts', 'actors/tests/unpair-and-rejoin-over-sim.spec.ts'],
     },
   ],
 });

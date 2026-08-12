@@ -2122,4 +2122,71 @@ mod tests {
         assert_eq!(disabled.bluetooth_last_verified_at, None);
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
+
+    #[test]
+    fn unpair_removes_the_paired_device_row_entirely() {
+        let mut conn = test_conn();
+
+        device_connection_unpair_impl(&mut conn, "peer-a".to_string()).expect("unpair");
+
+        let remaining = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .optional()
+            .expect("query after unpair");
+        assert!(
+            remaining.is_none(),
+            "unpair must remove the row, not just clear its Bluetooth fields"
+        );
+    }
+
+    /// The "delete Bluetooth connection, then pair again" lifecycle a user
+    /// takes when e.g. resetting a stuck pair: unpair fully deletes the
+    /// row (unlike disabling, which only clears Bluetooth fields on an
+    /// otherwise-still-paired row), so a subsequent pairing always goes
+    /// through save_paired_device's *insert* branch, not its update
+    /// branch. Regression coverage for that specific path staying clean --
+    /// no leftover state from the deleted row (there is none to leak, but
+    /// this proves the full cycle end-to-end rather than each half in
+    /// isolation) and the re-pair enabling normally when the fresh address
+    /// is OS-bonded.
+    #[test]
+    fn unpair_then_re_pair_via_bluetooth_starts_with_clean_state() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+        let mut conn = test_conn();
+        device_connection_set_bluetooth_transport_impl(
+            &mut conn,
+            paired_device_input(true, Some("AA:BB:CC:DD:EE:FF")),
+        )
+        .expect("enable bluetooth on the original pairing");
+
+        device_connection_unpair_impl(&mut conn, "peer-a".to_string()).expect("unpair");
+
+        // A real re-pair hands over whatever address the fresh handshake
+        // observed -- plausibly a different one than before (the peer may
+        // have re-paired from a different adapter/OS install).
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "11:22:33:44:55:66");
+        let repaired = device_connection_save_paired_device_impl(
+            &mut conn,
+            "peer-a".to_string(),
+            "Peer A".to_string(),
+            Some("11:22:33:44:55:66".to_string()),
+            true, // via_bluetooth
+            std::path::PathBuf::from("/nonexistent"),
+        )
+        .expect("re-pair after unpair");
+
+        assert!(
+            repaired.bluetooth_enabled,
+            "a fresh re-pair with an OS-bonded address must enable normally, \
+             not inherit anything from the deleted row"
+        );
+        assert_eq!(repaired.bluetooth_address.as_deref(), Some("11:22:33:44:55:66"));
+        assert!(!repaired.bluetooth_disabled_by_user);
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
 }
