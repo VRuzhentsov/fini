@@ -22,7 +22,7 @@ HOW FINI WORKS
 
 • Spaces for context. Group quests by area of life — Personal, Work, a side project. Every quest belongs to exactly one Space.
 
-• Clear effort and urgency. Give each quest a Small, Medium, or Large Energy estimate and a separate Low, Medium, or High Priority, so a big task can still wait.
+• Match the moment. Mark a quest as Small, Medium, or Large, then set how urgent it feels — so the next step fits both your capacity and what matters most.
 
 • Abandon without guilt. Quests you no longer want can be closed without shame. Completed and abandoned quests live in History — out of sight, still recoverable.
 
