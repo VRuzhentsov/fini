@@ -135,12 +135,14 @@ fini --json import --path /path/to/backup.zip --dry-run
 
 ## Quick Start
 
-```bash
-# Create a quest with its estimate and urgency
-fini quest create --title "Prepare presentation" --energy large --priority high
+Keep these two canonical examples intact when editing this skill:
 
-# Update the two properties independently
-fini quest update --id QUEST_ID --energy small --priority low
+```bash
+# Recurring routine task
+fini quest create --title "Pay rent" --repeat monthly
+
+# Inspect a backup without changing local data
+fini import --path backup.zip --inspect --json
 ```
 
 ## Command Discovery
