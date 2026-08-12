@@ -1,6 +1,6 @@
 PRAGMA foreign_keys = OFF;
 
-CREATE TABLE quest_series_old (
+CREATE TABLE quest_series_replacement (
     id          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))),
     space_id    TEXT NOT NULL DEFAULT '1' REFERENCES spaces(id) ON DELETE SET DEFAULT,
     title       TEXT NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE quest_series_old (
     is_checklist BOOLEAN NOT NULL DEFAULT 0
 );
 
-INSERT INTO quest_series_old (
+INSERT INTO quest_series_replacement (
     id, space_id, title, description, repeat_rule, priority, energy, active, created_at, updated_at, is_checklist
 )
 SELECT
@@ -40,9 +40,9 @@ SELECT
 FROM quest_series;
 
 DROP TABLE quest_series;
-ALTER TABLE quest_series_old RENAME TO quest_series;
+ALTER TABLE quest_series_replacement RENAME TO quest_series;
 
-CREATE TABLE quests_old (
+CREATE TABLE quests_replacement (
     id          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))),
     space_id    TEXT NOT NULL DEFAULT '1' REFERENCES spaces(id) ON DELETE SET DEFAULT,
     title       TEXT NOT NULL,
@@ -65,7 +65,7 @@ CREATE TABLE quests_old (
     checklist_base TEXT
 );
 
-INSERT INTO quests_old (
+INSERT INTO quests_replacement (
     id, space_id, title, description, status, energy, priority, pinned, due, due_time, repeat_rule,
     completed_at, order_rank, focus_enter_count, created_at, updated_at, series_id, period_key,
     is_checklist, checklist_base
@@ -102,7 +102,7 @@ SELECT
 FROM quests;
 
 DROP TABLE quests;
-ALTER TABLE quests_old RENAME TO quests;
+ALTER TABLE quests_replacement RENAME TO quests;
 CREATE INDEX IF NOT EXISTS idx_quests_status ON quests (status);
 CREATE INDEX IF NOT EXISTS idx_quests_series_period ON quests (series_id, period_key);
 

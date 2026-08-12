@@ -233,6 +233,24 @@ mod tests {
                 ("priority".to_string(), "INTEGER".to_string())
             ]
         );
+        #[derive(diesel::QueryableByName)]
+        struct CountRow {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            count: i64,
+        }
+
+        let transient_tables: CountRow = diesel::sql_query(
+            "SELECT COUNT(*) AS count FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('quest_series_replacement', 'quests_replacement')",
+        )
+        .get_result(&mut conn)
+        .expect("inspect transient migration tables");
+        assert_eq!(
+            transient_tables.count, 0,
+            "migration must not leave replacement tables"
+        );
+
         let rows: Vec<LegacyQuestMetadata> =
             diesel::sql_query("SELECT id, energy, priority FROM quests ORDER BY id")
                 .load(&mut conn)

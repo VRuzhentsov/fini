@@ -91,6 +91,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
+| Change SQLite schema, Diesel schema, data migrations, migration rollback, or database migration tests | `fini-dev-db`; also load `fini-test` for migration coverage |
 | First-run setup, bootstrap, install, or verification of required sibling project context such as `../fini-wiki/` | `fini-dev-install` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Make a release, bump a release version for shipping, push a release tag, inspect release readiness, fix release automation, or verify release CI | `fini-release`; also load `fini-versioning` for metadata semantics and `fini-scripting` when automation changes are needed |
