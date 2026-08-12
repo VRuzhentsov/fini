@@ -9,20 +9,21 @@ use super::merge::incoming_wins;
 use super::outbox::{load_latest_event_for_entity, load_unacked_events_for_peer};
 use super::replay::{is_event_seen, mark_event_seen, record_ack};
 use super::types::{PeerFrame, SyncEventEnvelope};
-#[cfg(test)]
-use crate::services::transport::TransportKind;
-use crate::services::transport::{sim, tcp_ws};
 use crate::models::{
     ChecklistActivity, CreatePairSpaceMappingInput, FocusHistoryEntry, Quest, QuestSeries, Space,
 };
 use crate::schema::{
-    checklist_activity, focus_history, pair_space_mappings, paired_devices, quest_series, quests,
-    spaces, sync_acks, sync_outbox, sync_seen, tombstones,
+    checklist_activity, focus_history, pair_space_mappings, paired_devices, spaces, sync_acks,
+    sync_outbox, sync_seen, tombstones,
 };
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
 use crate::services::device_connection::{CustomSpaceDescriptor, DeviceConnectionState};
+use crate::services::quest::QuestService;
+#[cfg(test)]
+use crate::services::transport::TransportKind;
+use crate::services::transport::{sim, tcp_ws};
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 
@@ -445,108 +446,12 @@ fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String
 
 fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
     ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
-    let existing_checklist_state = quests::table
-        .find(&quest.id)
-        .select((quests::is_checklist, quests::checklist_base))
-        .first::<(bool, Option<String>)>(conn)
-        .optional()
-        .map_err(|e| e.to_string())?;
-    let insert_checklist_base = if quest.is_checklist {
-        quest.description.clone()
-    } else {
-        None
-    };
-    let update_checklist_base = match &existing_checklist_state {
-        Some((false, _)) if quest.is_checklist => quest.description.clone(),
-        Some((_, checklist_base)) => checklist_base.clone(),
-        None => insert_checklist_base.clone(),
-    };
-
-    diesel::insert_into(quests::table)
-        .values((
-            quests::id.eq(&quest.id),
-            quests::space_id.eq(&quest.space_id),
-            quests::title.eq(&quest.title),
-            quests::description.eq(&quest.description),
-            quests::status.eq(&quest.status),
-            quests::energy.eq(&quest.energy),
-            quests::priority.eq(quest.priority),
-            quests::pinned.eq(quest.pinned),
-            quests::due.eq(&quest.due),
-            quests::due_time.eq(&quest.due_time),
-            quests::repeat_rule.eq(&quest.repeat_rule),
-            quests::completed_at.eq(&quest.completed_at),
-            quests::order_rank.eq(quest.order_rank),
-            quests::focus_enter_count.eq(quest.focus_enter_count),
-            quests::created_at.eq(&quest.created_at),
-            quests::updated_at.eq(&quest.updated_at),
-            quests::series_id.eq(&quest.series_id),
-            quests::period_key.eq(&quest.period_key),
-            quests::is_checklist.eq(quest.is_checklist),
-            quests::checklist_base.eq(&insert_checklist_base),
-        ))
-        .on_conflict(quests::id)
-        .do_update()
-        .set((
-            quests::space_id.eq(&quest.space_id),
-            quests::title.eq(&quest.title),
-            quests::description.eq(&quest.description),
-            quests::status.eq(&quest.status),
-            quests::energy.eq(&quest.energy),
-            quests::priority.eq(quest.priority),
-            quests::pinned.eq(quest.pinned),
-            quests::due.eq(&quest.due),
-            quests::due_time.eq(&quest.due_time),
-            quests::repeat_rule.eq(&quest.repeat_rule),
-            quests::completed_at.eq(&quest.completed_at),
-            quests::order_rank.eq(quest.order_rank),
-            quests::focus_enter_count.eq(quest.focus_enter_count),
-            quests::created_at.eq(&quest.created_at),
-            quests::updated_at.eq(&quest.updated_at),
-            quests::series_id.eq(&quest.series_id),
-            quests::period_key.eq(&quest.period_key),
-            quests::is_checklist.eq(quest.is_checklist),
-            quests::checklist_base.eq(&update_checklist_base),
-        ))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    QuestService::new(conn).sync_upsert_quest(quest)
 }
 
 fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Result<(), String> {
     ensure_spaces_exist(conn, &[series.space_id.clone()])?;
-
-    diesel::insert_into(quest_series::table)
-        .values((
-            quest_series::id.eq(&series.id),
-            quest_series::space_id.eq(&series.space_id),
-            quest_series::title.eq(&series.title),
-            quest_series::description.eq(&series.description),
-            quest_series::repeat_rule.eq(&series.repeat_rule),
-            quest_series::priority.eq(series.priority),
-            quest_series::energy.eq(&series.energy),
-            quest_series::active.eq(series.active),
-            quest_series::created_at.eq(&series.created_at),
-            quest_series::updated_at.eq(&series.updated_at),
-            quest_series::is_checklist.eq(series.is_checklist),
-        ))
-        .on_conflict(quest_series::id)
-        .do_update()
-        .set((
-            quest_series::space_id.eq(&series.space_id),
-            quest_series::title.eq(&series.title),
-            quest_series::description.eq(&series.description),
-            quest_series::repeat_rule.eq(&series.repeat_rule),
-            quest_series::priority.eq(series.priority),
-            quest_series::energy.eq(&series.energy),
-            quest_series::active.eq(series.active),
-            quest_series::created_at.eq(&series.created_at),
-            quest_series::updated_at.eq(&series.updated_at),
-            quest_series::is_checklist.eq(series.is_checklist),
-        ))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    QuestService::new(conn).sync_upsert_series(series)
 }
 
 fn upsert_focus_history(
@@ -594,14 +499,10 @@ fn delete_entity(conn: &mut SqliteConnection, event: &SyncEventEnvelope) -> Resu
                 .map_err(|e| e.to_string())?;
         }
         "quest" => {
-            diesel::delete(quests::table.find(&event.entity_id))
-                .execute(conn)
-                .map_err(|e| e.to_string())?;
+            QuestService::new(conn).sync_delete_quest(&event.entity_id)?;
         }
         "quest_series" => {
-            diesel::delete(quest_series::table.find(&event.entity_id))
-                .execute(conn)
-                .map_err(|e| e.to_string())?;
+            QuestService::new(conn).sync_delete_series(&event.entity_id)?;
         }
         "focus_history" => {
             diesel::delete(focus_history::table.find(&event.entity_id))
@@ -649,11 +550,7 @@ fn emit_checklist_convergence_event(
 ) -> Result<(), String> {
     if let Some(own_device_id) = local_device_id(conn) {
         if own_device_id != remote_origin_device_id {
-            let refreshed = quests::table
-                .find(entity_id)
-                .select(Quest::as_select())
-                .first::<Quest>(conn)
-                .map_err(|e| e.to_string())?;
+            let refreshed = QuestService::new(conn).get(entity_id)?;
             let payload = serde_json::to_string(&refreshed).map_err(|e| e.to_string())?;
             super::outbox::emit_sync_event(
                 conn,
@@ -683,61 +580,50 @@ fn merge_and_persist_quest_checklist(
     entity_id: &str,
     incoming_description: Option<&str>,
 ) -> Result<(Option<String>, bool), String> {
-    let local = quests::table
-        .find(entity_id)
-        .select(Quest::as_select())
-        .first::<Quest>(conn)
-        .optional()
-        .map_err(|e| e.to_string())?;
+    QuestService::new(conn).sync_merge_quest_checklist(entity_id, incoming_description)
+}
 
-    let local = match local {
-        // Brand-new quest arriving via sync: nothing to merge against yet, adopt incoming as-is.
-        None => return Ok((incoming_description.map(|s| s.to_string()), false)),
-        Some(local) => local,
-    };
-
-    let (merged_raw, _had_text_conflict) = crate::services::checklist::merge_3way(
-        local.checklist_base.as_deref(),
-        local.description.as_deref().unwrap_or(""),
-        incoming_description.unwrap_or(""),
-    );
-    let merged = if merged_raw.is_empty() {
-        None
-    } else {
-        Some(merged_raw)
-    };
-
-    let checklist_base_before = local.checklist_base.clone();
-    let incoming_matches_merged = incoming_description == merged.as_deref();
-    let next_checklist_base = if incoming_matches_merged {
-        merged.clone()
-    } else {
-        checklist_base_before.clone()
-    };
-    let base_advanced = checklist_base_before.as_deref() != next_checklist_base.as_deref();
-
-    if merged != local.description {
-        diesel::update(quests::table.find(entity_id))
-            .set((
-                quests::description.eq(&merged),
-                quests::checklist_base.eq(&next_checklist_base),
-            ))
-            .execute(conn)
-            .map_err(|e| e.to_string())?;
-    } else if base_advanced {
-        diesel::update(quests::table.find(entity_id))
-            .set(quests::checklist_base.eq(&next_checklist_base))
-            .execute(conn)
-            .map_err(|e| e.to_string())?;
+fn normalize_sync_metadata_payload(entity_type: &str, payload: &str) -> Result<String, String> {
+    if !matches!(entity_type, "quest" | "quest_series") {
+        return Ok(payload.to_string());
     }
 
-    // Merge changed something relative to what the remote peer sent, or advanced our retained
-    // checklist base after cleanly adopting the peer's state. The caller emits the convergence
-    // event after any winning whole-quest payload is applied, so the outgoing event cannot carry
-    // stale title/status/space metadata from the pre-upsert local row.
-    let should_emit_convergence = merged.as_deref() != incoming_description || base_advanced;
+    let mut value: serde_json::Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "sync metadata payload must be a JSON object".to_string())?;
 
-    Ok((merged, should_emit_convergence))
+    let energy = object
+        .get("energy")
+        .map(|value| match value {
+            serde_json::Value::String(value) => crate::models::legacy_energy_to_value(value),
+            serde_json::Value::Number(value) => value
+                .as_i64()
+                .map(|value| crate::models::legacy_energy_to_value(&value.to_string()))
+                .unwrap_or(crate::models::ENERGY_MEDIUM),
+            _ => crate::models::ENERGY_MEDIUM,
+        })
+        .unwrap_or(crate::models::ENERGY_MEDIUM);
+    let priority = object
+        .get("priority")
+        .map(|value| match value {
+            serde_json::Value::String(value) => crate::models::legacy_priority_to_value(value),
+            serde_json::Value::Number(value) => value
+                .as_i64()
+                .map(|value| crate::models::legacy_priority_to_value(&value.to_string()))
+                .unwrap_or(crate::models::PRIORITY_MEDIUM),
+            _ => crate::models::PRIORITY_MEDIUM,
+        })
+        .unwrap_or(crate::models::PRIORITY_MEDIUM);
+    object.insert(
+        "energy".to_string(),
+        serde_json::Value::String(crate::models::energy_name(energy).to_string()),
+    );
+    object.insert(
+        "priority".to_string(),
+        serde_json::Value::String(crate::models::priority_name(priority).to_string()),
+    );
+    serde_json::to_string(&value).map_err(|e| e.to_string())
 }
 
 fn apply_sync_event(
@@ -763,6 +649,8 @@ fn apply_sync_event(
                 .payload
                 .as_ref()
                 .ok_or_else(|| "missing payload for upsert event".to_string())?;
+            let normalized_payload = normalize_sync_metadata_payload(&event.entity_type, payload)?;
+            let payload = normalized_payload.as_str();
 
             // Checklist items get a per-item merge instead of following whole-quest LWW (#128),
             // so a locally-known checklist quest is handled before the generic win/lose gate
@@ -770,13 +658,7 @@ fn apply_sync_event(
             // brand-new quest arriving for the first time — falls through to the normal
             // whole-entity path; its `description` is treated like any other field.
             let local_is_checklist = if event.entity_type == "quest" {
-                quests::table
-                    .find(&event.entity_id)
-                    .select(quests::is_checklist)
-                    .first::<bool>(conn)
-                    .optional()
-                    .map_err(|e| e.to_string())?
-                    .unwrap_or(false)
+                QuestService::new(conn).sync_quest_is_checklist(&event.entity_id)?
             } else {
                 false
             };
@@ -951,15 +833,8 @@ fn merge_local_space_into_remote_id(
         create_space_with_id(conn, remote_space_id, &name)?;
     }
 
-    diesel::update(quests::table.filter(quests::space_id.eq(local_space_id)))
-        .set(quests::space_id.eq(remote_space_id))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-
-    diesel::update(quest_series::table.filter(quest_series::space_id.eq(local_space_id)))
-        .set(quest_series::space_id.eq(remote_space_id))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
+    QuestService::new(conn)
+        .sync_move_quests_and_series_between_spaces(local_space_id, remote_space_id)?;
 
     diesel::update(focus_history::table.filter(focus_history::space_id.eq(local_space_id)))
         .set(focus_history::space_id.eq(remote_space_id))
@@ -1578,6 +1453,31 @@ pub fn space_sync_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{quest_series, quests};
+
+    #[test]
+    fn space_sync_production_routes_quest_and_series_persistence_through_service() {
+        let source = include_str!("commands.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production space sync source");
+        let forbidden = [
+            "quests::table",
+            "quest_series::table",
+            "diesel::insert_into(quests",
+            "diesel::insert_into(quest_series",
+            "diesel::update(quests",
+            "diesel::update(quest_series",
+            "diesel::delete(quests",
+            "diesel::delete(quest_series",
+        ];
+        for needle in forbidden {
+            assert!(
+                !source.contains(needle),
+                "SpaceSync must route quest/series persistence through QuestService/QuestRepository; found {needle}"
+            );
+        }
+    }
     use crate::models::CreateSyncOutboxEntry;
     use crate::services::db::open_db_at_path;
     use crate::services::device_connection::DeviceConnectionState;
@@ -1602,8 +1502,8 @@ mod tests {
             title: title.to_string(),
             description: None,
             status: "active".to_string(),
-            energy: "medium".to_string(),
-            priority: 1,
+            energy: crate::models::ENERGY_MEDIUM,
+            priority: crate::models::PRIORITY_MEDIUM,
             pinned: false,
             due: None,
             due_time: None,
@@ -1654,8 +1554,8 @@ mod tests {
             title: title.to_string(),
             description: None,
             repeat_rule: r#"{"preset":"daily"}"#.to_string(),
-            priority: 1,
-            energy: "medium".to_string(),
+            priority: crate::models::PRIORITY_MEDIUM,
+            energy: crate::models::ENERGY_MEDIUM,
             active: true,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: updated_at.to_string(),
@@ -1739,13 +1639,12 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let checklist_template = crate::services::checklist::serialize(&[
-            crate::services::checklist::ChecklistItem {
+        let checklist_template =
+            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: true,
-            },
-        ]);
+            }]);
         let mut remote_series = test_series("series-checklist", "Pack", "2026-03-02T00:00:00Z");
         remote_series.description = Some(checklist_template.clone());
         remote_series.is_checklist = true;
@@ -2005,13 +1904,12 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
 
-        let checklist = crate::services::checklist::serialize(&[
-            crate::services::checklist::ChecklistItem {
+        let checklist =
+            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: false,
-            },
-        ]);
+            }]);
 
         let mut local_quest = test_quest("q-legacy", "Pack", "2026-03-01T00:00:00Z");
         local_quest.is_checklist = true;
@@ -2258,7 +2156,8 @@ mod tests {
                 checked: false,
             },
         ]);
-        let adopted_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
+        let adopted_checklist =
+            crate::services::checklist::set_checked(&base_checklist, "a1", true);
 
         let mut local_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
         local_quest.is_checklist = true;
@@ -2286,8 +2185,14 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut conn)
             .unwrap();
-        assert_eq!(after.description.as_deref(), Some(adopted_checklist.as_str()));
-        assert_eq!(after.checklist_base.as_deref(), Some(adopted_checklist.as_str()));
+        assert_eq!(
+            after.description.as_deref(),
+            Some(adopted_checklist.as_str())
+        );
+        assert_eq!(
+            after.checklist_base.as_deref(),
+            Some(adopted_checklist.as_str())
+        );
 
         let emitted: Vec<(String, String, String, Option<String>)> = sync_outbox::table
             .filter(sync_outbox::entity_type.eq("quest"))
@@ -2305,9 +2210,56 @@ mod tests {
         assert_eq!(emitted[0].1, "upsert");
         assert_eq!(emitted[0].2, "1");
         let payload: Quest = serde_json::from_str(emitted[0].3.as_deref().unwrap()).unwrap();
-        assert_eq!(payload.description.as_deref(), Some(adopted_checklist.as_str()));
+        assert_eq!(
+            payload.description.as_deref(),
+            Some(adopted_checklist.as_str())
+        );
 
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_normalizes_legacy_numeric_energy_and_priority_before_persisting() {
+        let db_path = temp_db_path("sync-legacy-numeric-metadata");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).expect("seed default space");
+
+        let remote = test_quest("legacy-metadata", "Legacy metadata", "2026-03-02T00:00:00Z");
+        let mut payload = serde_json::to_value(remote).expect("serialize remote quest");
+        let object = payload.as_object_mut().expect("quest payload object");
+        object.insert("energy".to_string(), serde_json::Value::from(3));
+        object.insert("priority".to_string(), serde_json::Value::from(4));
+        let event = test_envelope(
+            "evt-legacy-numeric-metadata",
+            "dev-remote",
+            "quest",
+            "legacy-metadata",
+            "upsert",
+            Some(serde_json::to_string(&payload).expect("encode legacy payload")),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).expect("apply legacy payload"));
+        let stored: Quest = quests::table
+            .find("legacy-metadata")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("load normalized quest");
+        assert_eq!(stored.energy, crate::models::ENERGY_LARGE);
+        assert_eq!(stored.priority, crate::models::PRIORITY_HIGH);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn normalize_sync_metadata_payload_converts_legacy_values_to_public_names() {
+        let normalized =
+            normalize_sync_metadata_payload("quest", r#"{"energy":"high","priority":4}"#)
+                .expect("normalize legacy metadata");
+        let value: serde_json::Value =
+            serde_json::from_str(&normalized).expect("parse normalized payload");
+        assert_eq!(value["energy"], "large");
+        assert_eq!(value["priority"], "high");
     }
 
     #[test]

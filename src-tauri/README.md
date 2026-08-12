@@ -39,8 +39,10 @@ See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[Re
 | Command        | Input                                                        | Returns      |
 |----------------|--------------------------------------------------------------|--------------|
 | `get_quests`   | —                                                            | `Vec<Quest>` |
-| `create_quest` | `{ space_id?, title, description?, priority?, due?, due_time?, repeat_rule?, order_rank? }` (`space_id` omitted -> `"1"`) | `Quest` |
-| `update_quest` | `id`, `{ space_id?, title?, description?, status?, priority?, due?, due_time?, repeat_rule?, order_rank? }` (`space_id` updates are non-null) | `Quest` |
+| `create_quest` | `{ space_id?, title, description?, energy?, priority?, due?, due_time?, repeat_rule?, order_rank? }` (`space_id` omitted -> `"1"`; `energy` defaults to `medium`; `priority` defaults to `medium`) | `Quest` |
+| `update_quest` | `id`, `{ space_id?, title?, description?, status?, energy?, priority?, due?, due_time?, repeat_rule?, order_rank? }` (`space_id` updates are non-null; omit metadata to preserve it) | `Quest` |
+
+`energy` is an effort estimate: `small`, `medium`, or `large`. `priority` is urgency: `low`, `medium`, or `high`. The Tauri/JSON contract exposes these names; SQLite stores their canonical `1|2|3` representation.
 | `delete_quest` | `id`                                                         | —            |
 
 ### Focus

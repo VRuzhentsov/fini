@@ -27,6 +27,81 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
+    pub fn load_for_spaces(&mut self, space_ids: &[String]) -> Result<Vec<Quest>, String> {
+        quests::table
+            .filter(quests::space_id.eq_any(space_ids))
+            .select(Quest::as_select())
+            .load(self.conn)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn load_series_for_spaces(
+        &mut self,
+        space_ids: &[String],
+    ) -> Result<Vec<QuestSeries>, String> {
+        quest_series::table
+            .filter(quest_series::space_id.eq_any(space_ids))
+            .select(QuestSeries::as_select())
+            .load(self.conn)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn load_all_series(&mut self) -> Result<Vec<QuestSeries>, String> {
+        quest_series::table
+            .select(QuestSeries::as_select())
+            .load(self.conn)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn insert_export_series(&mut self, series: &QuestSeries) -> Result<(), String> {
+        diesel::insert_into(quest_series::table)
+            .values((
+                quest_series::id.eq(&series.id),
+                quest_series::space_id.eq(&series.space_id),
+                quest_series::title.eq(&series.title),
+                quest_series::description.eq(&series.description),
+                quest_series::repeat_rule.eq(&series.repeat_rule),
+                quest_series::priority.eq(series.priority),
+                quest_series::energy.eq(series.energy),
+                quest_series::active.eq(series.active),
+                quest_series::created_at.eq(&series.created_at),
+                quest_series::updated_at.eq(&series.updated_at),
+                quest_series::is_checklist.eq(series.is_checklist),
+            ))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn insert_export_quest(&mut self, quest: &Quest) -> Result<(), String> {
+        diesel::insert_into(quests::table)
+            .values((
+                quests::id.eq(&quest.id),
+                quests::space_id.eq(&quest.space_id),
+                quests::title.eq(&quest.title),
+                quests::description.eq(&quest.description),
+                quests::status.eq(&quest.status),
+                quests::energy.eq(quest.energy),
+                quests::priority.eq(quest.priority),
+                quests::pinned.eq(quest.pinned),
+                quests::due.eq(&quest.due),
+                quests::due_time.eq(&quest.due_time),
+                quests::repeat_rule.eq(&quest.repeat_rule),
+                quests::completed_at.eq(&quest.completed_at),
+                quests::order_rank.eq(quest.order_rank),
+                quests::focus_enter_count.eq(quest.focus_enter_count),
+                quests::created_at.eq(&quest.created_at),
+                quests::updated_at.eq(&quest.updated_at),
+                quests::series_id.eq(&quest.series_id),
+                quests::period_key.eq(&quest.period_key),
+                quests::is_checklist.eq(quest.is_checklist),
+                quests::checklist_base.eq(&quest.checklist_base),
+            ))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     pub fn get(&mut self, id: &str) -> Result<Quest, String> {
         crate::schema::quests::table
             .find(id)
@@ -266,6 +341,198 @@ impl<'a> QuestRepository<'a> {
     }
 
     pub fn delete_series(&mut self, id: &str) -> Result<(), String> {
+        diesel::delete(quest_series::table.find(id))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn find_external_quest(&mut self, id: &str) -> Result<Option<Quest>, String> {
+        quests::table
+            .find(id)
+            .select(Quest::as_select())
+            .first(self.conn)
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn find_external_series(&mut self, id: &str) -> Result<Option<QuestSeries>, String> {
+        quest_series::table
+            .find(id)
+            .select(QuestSeries::as_select())
+            .first(self.conn)
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn get_series(&mut self, id: &str) -> Result<QuestSeries, String> {
+        quest_series::table
+            .find(id)
+            .select(QuestSeries::as_select())
+            .first(self.conn)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn external_quest_checklist_state(
+        &mut self,
+        id: &str,
+    ) -> Result<Option<(bool, Option<String>)>, String> {
+        quests::table
+            .find(id)
+            .select((quests::is_checklist, quests::checklist_base))
+            .first(self.conn)
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn external_quest_is_checklist(&mut self, id: &str) -> Result<bool, String> {
+        quests::table
+            .find(id)
+            .select(quests::is_checklist)
+            .first(self.conn)
+            .optional()
+            .map(|value| value.unwrap_or(false))
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn update_external_quest_checklist_merge(
+        &mut self,
+        id: &str,
+        description: &Option<String>,
+        checklist_base: &Option<String>,
+    ) -> Result<(), String> {
+        diesel::update(quests::table.find(id))
+            .set((
+                quests::description.eq(description),
+                quests::checklist_base.eq(checklist_base),
+            ))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn update_external_quest_checklist_base(
+        &mut self,
+        id: &str,
+        checklist_base: &Option<String>,
+    ) -> Result<(), String> {
+        diesel::update(quests::table.find(id))
+            .set(quests::checklist_base.eq(checklist_base))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn move_quests_and_series_between_spaces(
+        &mut self,
+        local_space_id: &str,
+        remote_space_id: &str,
+    ) -> Result<(), String> {
+        diesel::update(quests::table.filter(quests::space_id.eq(local_space_id)))
+            .set(quests::space_id.eq(remote_space_id))
+            .execute(self.conn)
+            .map_err(|error| error.to_string())?;
+        diesel::update(quest_series::table.filter(quest_series::space_id.eq(local_space_id)))
+            .set(quest_series::space_id.eq(remote_space_id))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn upsert_external_quest(&mut self, quest: &Quest) -> Result<(), String> {
+        diesel::insert_into(quests::table)
+            .values((
+                quests::id.eq(&quest.id),
+                quests::space_id.eq(&quest.space_id),
+                quests::title.eq(&quest.title),
+                quests::description.eq(&quest.description),
+                quests::status.eq(&quest.status),
+                quests::energy.eq(quest.energy),
+                quests::priority.eq(quest.priority),
+                quests::pinned.eq(quest.pinned),
+                quests::due.eq(&quest.due),
+                quests::due_time.eq(&quest.due_time),
+                quests::repeat_rule.eq(&quest.repeat_rule),
+                quests::completed_at.eq(&quest.completed_at),
+                quests::order_rank.eq(quest.order_rank),
+                quests::focus_enter_count.eq(quest.focus_enter_count),
+                quests::created_at.eq(&quest.created_at),
+                quests::updated_at.eq(&quest.updated_at),
+                quests::series_id.eq(&quest.series_id),
+                quests::period_key.eq(&quest.period_key),
+                quests::is_checklist.eq(quest.is_checklist),
+                quests::checklist_base.eq(&quest.checklist_base),
+            ))
+            .on_conflict(quests::id)
+            .do_update()
+            .set((
+                quests::space_id.eq(&quest.space_id),
+                quests::title.eq(&quest.title),
+                quests::description.eq(&quest.description),
+                quests::status.eq(&quest.status),
+                quests::energy.eq(quest.energy),
+                quests::priority.eq(quest.priority),
+                quests::pinned.eq(quest.pinned),
+                quests::due.eq(&quest.due),
+                quests::due_time.eq(&quest.due_time),
+                quests::repeat_rule.eq(&quest.repeat_rule),
+                quests::completed_at.eq(&quest.completed_at),
+                quests::order_rank.eq(quest.order_rank),
+                quests::focus_enter_count.eq(quest.focus_enter_count),
+                quests::created_at.eq(&quest.created_at),
+                quests::updated_at.eq(&quest.updated_at),
+                quests::series_id.eq(&quest.series_id),
+                quests::period_key.eq(&quest.period_key),
+                quests::is_checklist.eq(quest.is_checklist),
+                quests::checklist_base.eq(&quest.checklist_base),
+            ))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn upsert_external_series(&mut self, series: &QuestSeries) -> Result<(), String> {
+        diesel::insert_into(quest_series::table)
+            .values((
+                quest_series::id.eq(&series.id),
+                quest_series::space_id.eq(&series.space_id),
+                quest_series::title.eq(&series.title),
+                quest_series::description.eq(&series.description),
+                quest_series::repeat_rule.eq(&series.repeat_rule),
+                quest_series::priority.eq(series.priority),
+                quest_series::energy.eq(series.energy),
+                quest_series::active.eq(series.active),
+                quest_series::created_at.eq(&series.created_at),
+                quest_series::updated_at.eq(&series.updated_at),
+                quest_series::is_checklist.eq(series.is_checklist),
+            ))
+            .on_conflict(quest_series::id)
+            .do_update()
+            .set((
+                quest_series::space_id.eq(&series.space_id),
+                quest_series::title.eq(&series.title),
+                quest_series::description.eq(&series.description),
+                quest_series::repeat_rule.eq(&series.repeat_rule),
+                quest_series::priority.eq(series.priority),
+                quest_series::energy.eq(series.energy),
+                quest_series::active.eq(series.active),
+                quest_series::created_at.eq(&series.created_at),
+                quest_series::updated_at.eq(&series.updated_at),
+                quest_series::is_checklist.eq(series.is_checklist),
+            ))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn delete_external_quest(&mut self, id: &str) -> Result<(), String> {
+        diesel::delete(quests::table.find(id))
+            .execute(self.conn)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn delete_external_series(&mut self, id: &str) -> Result<(), String> {
         diesel::delete(quest_series::table.find(id))
             .execute(self.conn)
             .map(|_| ())
@@ -537,8 +804,8 @@ mod tests {
                 space_id: "1".to_string(),
                 title: "nullable patch".to_string(),
                 description: Some("clear me".to_string()),
-                energy: "medium".to_string(),
-                priority: 1,
+                energy: crate::models::ENERGY_MEDIUM,
+                priority: crate::models::PRIORITY_MEDIUM,
                 due: Some("2026-04-01".to_string()),
                 due_time: Some("10:30".to_string()),
                 repeat_rule: Some("weekly".to_string()),
@@ -589,8 +856,8 @@ mod tests {
                 space_id: "1".to_string(),
                 title: "nullable series patch".to_string(),
                 description: None,
-                energy: "medium".to_string(),
-                priority: 1,
+                energy: crate::models::ENERGY_MEDIUM,
+                priority: crate::models::PRIORITY_MEDIUM,
                 due: Some("2026-04-01".to_string()),
                 due_time: None,
                 repeat_rule: Some("weekly".to_string()),

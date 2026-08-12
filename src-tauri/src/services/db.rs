@@ -135,18 +135,228 @@ pub fn temp_db_path(label: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{quests, spaces};
+    use crate::schema::{quest_series, quests, spaces};
+    use diesel::connection::SimpleConnection;
 
     fn execute_sql_script(conn: &mut SqliteConnection, script: &str) {
-        for statement in script.split(';') {
-            let sql = statement.trim();
-            if sql.is_empty() {
-                continue;
-            }
-            diesel::sql_query(sql)
-                .execute(conn)
-                .expect("execute SQL statement from script");
+        conn.batch_execute(script)
+            .expect("execute SQL migration script");
+    }
+
+    #[test]
+    fn v21_down_migration_restores_legacy_energy_and_priority_schema() {
+        let db_path = temp_db_path("v21-energy-priority-down-contract");
+        let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
+            .expect("open v21 db path");
+        diesel::sql_query("PRAGMA foreign_keys = ON")
+            .execute(&mut conn)
+            .expect("enable foreign keys");
+
+        for script in [
+            include_str!("../../migrations/00000000000001_init/up.sql"),
+            include_str!("../../migrations/00000000000002_quest_model_v2/up.sql"),
+            include_str!("../../migrations/00000000000003_quest_space_not_null/up.sql"),
+            include_str!("../../migrations/00000000000004_identity_text_ids/up.sql"),
+            include_str!("../../migrations/00000000000005_repair_builtin_spaces/up.sql"),
+            include_str!("../../migrations/00000000000006_main_focus_events/up.sql"),
+            include_str!("../../migrations/00000000000007_quest_order_rank/up.sql"),
+            include_str!("../../migrations/00000000000008_quest_series/up.sql"),
+            include_str!("../../migrations/00000000000009_reminders/up.sql"),
+            include_str!("../../migrations/00000000000010_sync_and_focus/up.sql"),
+            include_str!("../../migrations/00000000000011_pair_mapping_last_synced/up.sql"),
+            include_str!("../../migrations/00000000000012_focus_history_as_source_of_truth/up.sql"),
+            include_str!("../../migrations/00000000000013_reminder_scheduling/up.sql"),
+            include_str!("../../migrations/00000000000014_settings/up.sql"),
+            include_str!("../../migrations/00000000000015_pair_mapping_end_of_sync/up.sql"),
+            include_str!("../../migrations/00000000000016_notification_snoozes/up.sql"),
+            include_str!("../../migrations/00000000000017_focus_enter_count/up.sql"),
+            include_str!("../../migrations/00000000000018_quest_checklist_md/up.sql"),
+            include_str!(
+                "../../migrations/00000000000019_paired_device_bluetooth_transport/up.sql"
+            ),
+            include_str!(
+                "../../migrations/00000000000020_paired_device_bluetooth_disabled_by_user/up.sql"
+            ),
+            include_str!("../../migrations/00000000000021_energy_priority_contract/up.sql"),
+        ] {
+            execute_sql_script(&mut conn, script);
         }
+        diesel::sql_query(
+            "INSERT INTO quest_series (id, space_id, title, repeat_rule, energy, priority) VALUES
+                ('down-series-small-low', '1', 'small-low', '{\"preset\":\"daily\"}', 1, 1),
+                ('down-series-large-high', '1', 'large-high', '{\"preset\":\"daily\"}', 3, 3)",
+        )
+        .execute(&mut conn)
+        .expect("seed canonical series");
+        diesel::sql_query(
+            "INSERT INTO quests (id, space_id, title, status, energy, priority) VALUES
+                ('down-quest-small-low', '1', 'small-low', 'active', 1, 1),
+                ('down-quest-large-high', '1', 'large-high', 'active', 3, 3)",
+        )
+        .execute(&mut conn)
+        .expect("seed canonical quests");
+
+        execute_sql_script(
+            &mut conn,
+            include_str!("../../migrations/00000000000021_energy_priority_contract/down.sql"),
+        );
+
+        #[derive(diesel::QueryableByName)]
+        struct TableColumn {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            name: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            column_type: String,
+        }
+        #[derive(diesel::QueryableByName)]
+        struct LegacyQuestMetadata {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            id: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            energy: String,
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            priority: i64,
+        }
+
+        let quest_types: Vec<(String, String)> =
+            diesel::sql_query("SELECT name, type AS column_type FROM pragma_table_info('quests')")
+                .load::<TableColumn>(&mut conn)
+                .expect("inspect legacy quest columns")
+                .into_iter()
+                .filter(|column| column.name == "energy" || column.name == "priority")
+                .map(|column| (column.name, column.column_type))
+                .collect();
+        assert_eq!(
+            quest_types,
+            vec![
+                ("energy".to_string(), "TEXT".to_string()),
+                ("priority".to_string(), "INTEGER".to_string())
+            ]
+        );
+        let rows: Vec<LegacyQuestMetadata> =
+            diesel::sql_query("SELECT id, energy, priority FROM quests ORDER BY id")
+                .load(&mut conn)
+                .expect("load legacy-shaped quest values");
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| (row.id, row.energy, row.priority))
+                .collect::<Vec<_>>(),
+            vec![
+                ("down-quest-large-high".into(), "high".into(), 4),
+                ("down-quest-small-low".into(), "low".into(), 2),
+            ]
+        );
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn v20_energy_priority_rows_migrate_to_constrained_integer_contract() {
+        let db_path = temp_db_path("v20-energy-priority-contract");
+        let mut conn = SqliteConnection::establish(db_path.to_str().expect("valid temp db path"))
+            .expect("open v20 db path");
+        diesel::sql_query("PRAGMA foreign_keys = ON")
+            .execute(&mut conn)
+            .expect("enable foreign keys");
+
+        // Apply the real historical DDL, then mark it applied so v21 is the only pending
+        // migration. This protects the real v20 upgrade path, not just fresh databases.
+        for script in [
+            include_str!("../../migrations/00000000000001_init/up.sql"),
+            include_str!("../../migrations/00000000000002_quest_model_v2/up.sql"),
+            include_str!("../../migrations/00000000000003_quest_space_not_null/up.sql"),
+            include_str!("../../migrations/00000000000004_identity_text_ids/up.sql"),
+            include_str!("../../migrations/00000000000005_repair_builtin_spaces/up.sql"),
+            include_str!("../../migrations/00000000000006_main_focus_events/up.sql"),
+            include_str!("../../migrations/00000000000007_quest_order_rank/up.sql"),
+            include_str!("../../migrations/00000000000008_quest_series/up.sql"),
+            include_str!("../../migrations/00000000000009_reminders/up.sql"),
+            include_str!("../../migrations/00000000000010_sync_and_focus/up.sql"),
+            include_str!("../../migrations/00000000000011_pair_mapping_last_synced/up.sql"),
+            include_str!("../../migrations/00000000000012_focus_history_as_source_of_truth/up.sql"),
+            include_str!("../../migrations/00000000000013_reminder_scheduling/up.sql"),
+            include_str!("../../migrations/00000000000014_settings/up.sql"),
+            include_str!("../../migrations/00000000000015_pair_mapping_end_of_sync/up.sql"),
+            include_str!("../../migrations/00000000000016_notification_snoozes/up.sql"),
+            include_str!("../../migrations/00000000000017_focus_enter_count/up.sql"),
+            include_str!("../../migrations/00000000000018_quest_checklist_md/up.sql"),
+            include_str!(
+                "../../migrations/00000000000019_paired_device_bluetooth_transport/up.sql"
+            ),
+            include_str!(
+                "../../migrations/00000000000020_paired_device_bluetooth_disabled_by_user/up.sql"
+            ),
+        ] {
+            execute_sql_script(&mut conn, script);
+        }
+        diesel::sql_query(
+            "CREATE TABLE __diesel_schema_migrations (
+                version VARCHAR(50) PRIMARY KEY NOT NULL,
+                run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&mut conn)
+        .expect("create migration metadata");
+        for version in 1..=20 {
+            diesel::sql_query(format!(
+                "INSERT INTO __diesel_schema_migrations (version) VALUES ('000000000000{version:02}')"
+            ))
+            .execute(&mut conn)
+            .expect("mark historical migration applied");
+        }
+        diesel::sql_query(
+            "INSERT INTO quest_series (id, space_id, title, repeat_rule, priority, energy) VALUES
+                ('series-low', '1', 'low', '{\"preset\":\"daily\"}', 'low', 'low'),
+                ('series-mid', '1', 'mid', '{\"preset\":\"daily\"}', 'medium', 'medium'),
+                ('series-high', '1', 'high', '{\"preset\":\"daily\"}', 'urgent', 'high'),
+                ('series-fallback', '1', 'fallback', '{\"preset\":\"daily\"}', 'none', 'unknown')",
+        )
+        .execute(&mut conn)
+        .expect("seed v20 series metadata");
+        diesel::sql_query(
+            "INSERT INTO quests (id, space_id, title, status, priority, energy) VALUES
+                ('quest-low', '1', 'low', 'active', 'low', 'low'),
+                ('quest-mid', '1', 'mid', 'active', 'medium', 'medium'),
+                ('quest-high', '1', 'high', 'active', 'urgent', 'high'),
+                ('quest-fallback', '1', 'fallback', 'active', 'none', 'unknown')",
+        )
+        .execute(&mut conn)
+        .expect("seed v20 quest metadata");
+
+        conn.run_pending_migrations(MIGRATIONS)
+            .expect("migrate v20 database through v21");
+        let quest_values: Vec<(String, i64, i64)> = quests::table
+            .select((quests::id, quests::energy, quests::priority))
+            .order(quests::id.asc())
+            .load(&mut conn)
+            .expect("load migrated quest metadata");
+        let series_values: Vec<(String, i64, i64)> = quest_series::table
+            .select((
+                quest_series::id,
+                quest_series::energy,
+                quest_series::priority,
+            ))
+            .order(quest_series::id.asc())
+            .load(&mut conn)
+            .expect("load migrated series metadata");
+        assert_eq!(
+            quest_values,
+            vec![
+                ("quest-fallback".into(), 2, 2),
+                ("quest-high".into(), 3, 3),
+                ("quest-low".into(), 1, 1),
+                ("quest-mid".into(), 2, 2),
+            ]
+        );
+        assert_eq!(
+            series_values,
+            vec![
+                ("series-fallback".into(), 2, 2),
+                ("series-high".into(), 3, 3),
+                ("series-low".into(), 1, 1),
+                ("series-mid".into(), 2, 2),
+            ]
+        );
+        let _ = std::fs::remove_file(db_path);
     }
 
     fn is_uuid_like(value: &str) -> bool {

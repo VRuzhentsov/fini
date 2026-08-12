@@ -9,7 +9,7 @@ function quest(input: Partial<Quest> & Pick<Quest, "id" | "title" | "status" | "
     description: input.description ?? null,
     status: input.status,
     energy: input.energy ?? "medium",
-    priority: input.priority ?? 1,
+    priority: input.priority ?? "medium",
     pinned: input.pinned ?? false,
     due: input.due ?? null,
     due_time: input.due_time ?? null,

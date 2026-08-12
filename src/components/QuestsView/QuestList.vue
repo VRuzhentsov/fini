@@ -184,12 +184,12 @@ async function restore(id: string) {
 
 // ── Priority ──────────────────────────────────────────────────────────────────
 
-const PRIORITIES = [1, 2, 3, 4] as const;
-const PRIORITY_LABELS: Record<number, string> = { 1: "None", 2: "Low", 3: "Medium", 4: "Urgent" };
-const PRIORITY_COLORS: Record<number, string> = { 1: "oklch(var(--color-base-content)/0.3)", 2: "oklch(var(--color-success))", 3: "oklch(var(--color-warning))", 4: "oklch(var(--color-error))" };
+const PRIORITIES = ["low", "medium", "high"] as const;
+const PRIORITY_LABELS: Record<Quest["priority"], string> = { low: "Low", medium: "Medium", high: "High" };
+const PRIORITY_COLORS: Record<Quest["priority"], string> = { low: "oklch(var(--color-success))", medium: "oklch(var(--color-warning))", high: "oklch(var(--color-error))" };
 
 async function cyclePriority(quest: Quest) {
-  const idx = PRIORITIES.indexOf(quest.priority as typeof PRIORITIES[number]);
+  const idx = PRIORITIES.indexOf(quest.priority);
   const next = PRIORITIES[(idx + 1) % PRIORITIES.length];
   await store.updateQuest(quest.id, { priority: next });
 }

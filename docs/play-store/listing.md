@@ -22,7 +22,7 @@ HOW FINI WORKS
 
 • Spaces for context. Group quests by area of life — Personal, Work, a side project. Every quest belongs to exactly one Space.
 
-• Energy-aware. Tell Fini how you feel today. Low energy surfaces lighter quests. High energy unlocks bigger chunks.
+• Clear effort and urgency. Give each quest a Small, Medium, or Large Energy estimate and a separate Low, Medium, or High Priority, so a big task can still wait.
 
 • Abandon without guilt. Quests you no longer want can be closed without shame. Completed and abandoned quests live in History — out of sight, still recoverable.
 

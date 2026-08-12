@@ -76,8 +76,9 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 
 - `space_id` defaults to `"1"` (Personal) if not provided
 - `status` starts as `active`
-- `energy` defaults to `medium`
-- `priority` defaults to `1`
+- `energy` defaults to `medium` (`small`, `medium`, or `large` estimate)
+- `priority` defaults to `medium` (`low`, `medium`, or `high` urgency)
+- Energy estimates effort/size; priority expresses urgency/importance. They are independent.
 
 ### Due Dates
 
@@ -94,7 +95,7 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 
 When a user asks which quests to take next, distinguish urgency from the value of spending time on a quest. Do not equate a quick completion with a good completion.
 
-1. Preserve deadline and consequence obligations first: due today, then recently overdue, then older overdue. Do not treat Fini's stored `priority` field as a reliable triage ranking until the product implements that behavior.
+1. Preserve deadline and consequence obligations first: due today, then recently overdue, then older overdue. Treat priority as the user's urgency signal, while keeping due dates and consequences as the primary deadline evidence.
 2. For candidate selection, identify whether each quest is a deadline/consequence task, removes a blocker, is high-impact strategic work, is maintenance/admin, or is low-value. A blocker can be the best next choice when it unlocks multiple worthwhile outcomes.
 3. Use energy only to place selected work in the day: high-impact work needing concentration belongs in a peak-energy slot; quick high-value work fits between deep-work blocks; mechanical/admin work is a low-energy or batch option. Energy must not promote a low-value quest over a more urgent or impactful one.
 4. Keep the daily commitment small: one Main outcome, one or two Must items (deadline/consequence or blockers), then only a few Quick or Low-energy fallback items. Recommend at most two simultaneous work streams: one cognitively heavy and one small/admin.
@@ -135,11 +136,11 @@ fini --json import --path /path/to/backup.zip --dry-run
 ## Quick Start
 
 ```bash
-# Recurring routine task
-fini quest create --title "Pay rent" --repeat monthly
+# Create a quest with its estimate and urgency
+fini quest create --title "Prepare presentation" --energy large --priority high
 
-# Non-mutating archive inspection
-fini import --path backup.zip --inspect --json
+# Update the two properties independently
+fini quest update --id QUEST_ID --energy small --priority low
 ```
 
 ## Command Discovery
@@ -148,6 +149,7 @@ For arguments, accepted values, defaults, and workflows beyond these basic examp
 
 ```bash
 fini --help
+fini quest create --help
 fini quest update --help
 fini import --help
 ```

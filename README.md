@@ -49,7 +49,7 @@ Fini should help users move work out of their head and into one concrete next ac
 - **One quest at a time.** No overwhelming lists. Just your current mission.
 - **Spaces for context.** Group quests by area of life (personal, work, side project) without building a hierarchy.
 - **Voice-first input.** Tap the mic, say what's on your mind. AI breaks it into small, achievable steps. _(post-MVP)_
-- **Energy-aware.** Tell the app how you feel today. Low energy = lighter quests. High energy = bigger chunks.
+- **Clear effort and urgency.** Set an Energy estimate—Small, Medium, or Large—separately from Priority—Low, Medium, or High—so a large task can still be low urgency.
 - **Abandon is okay.** Quests can be abandoned without guilt. Closing a chapter is a decision, not a failure. Completed and abandoned quests live in History — out of sight, but recoverable.
 - **Zero guilt accumulation.** The app never shows you a pile of unfinished tasks. Ever.
 - **The app leads, not you.** It tells you what to do next. No planning, no prioritizing, no organizing.

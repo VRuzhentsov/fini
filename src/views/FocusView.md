@@ -21,7 +21,7 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 ### Active backlog
 
 - Shows all active quests below Focus quest
-- Default ordering: overdue, then `order_rank`, then priority, then oldest `created_at`
+- Default ordering: overdue, then `order_rank`, then Priority (`high > medium > low`), then oldest `created_at`
 - Includes expand/edit controls via [[QuestList]]
 - Each quest has explicit "Set Focus" action (manual focus override)
 - Drag-and-drop reorder is currently deferred in UI
@@ -36,6 +36,6 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 - Manual focus and restore triggers append events in [[FocusHistory]]
 - Active reminder due timestamps are virtual Focus events: once `due + due_time` arrives, the reminder timestamp competes with manual Focus timestamps and the youngest valid timestamp wins
 - Reminder preemption is temporary and unwinds to previous valid target
-- If no active override exists, fallback is overdue > `order_rank` > priority > oldest `created_at`
+- If no active override exists, fallback is overdue > `order_rank` > Priority (`high > medium > low`) > oldest `created_at`
 
 See `specs/e2e/focus-reminder-preemption.md` for the open-app e2e contract.

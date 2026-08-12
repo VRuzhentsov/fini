@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useQuestStore, type Quest } from "../../stores/quest";
+import { useQuestStore, type Energy, type Priority, type Quest } from "../../stores/quest";
 import { useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import {
@@ -32,6 +32,8 @@ const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
 const repeatRule = ref<string | null>(null);
+const energy = ref<Energy>("medium");
+const priority = ref<Priority>("medium");
 const reminderOpen = ref(false);
 const metadataExpanded = ref(false);
 const isSubmitting = ref(false);
@@ -41,6 +43,8 @@ const hasMetadataDraft = computed(
   () =>
     description.value.trim().length > 0 ||
     checklistItems.value.length > 0 ||
+    energy.value !== "medium" ||
+    priority.value !== "medium" ||
     !!due.value ||
     !!dueTime.value ||
     !!repeatRule.value,
@@ -84,8 +88,8 @@ const draftQuest = computed<Quest>(() => ({
     ? serializeChecklist(checklistItems.value) || null
     : description.value.trim() || null,
   status: "active",
-  energy: "medium",
-  priority: 1,
+  energy: energy.value,
+  priority: priority.value,
   pinned: false,
   due: due.value,
   due_time: dueTime.value,
@@ -216,6 +220,8 @@ async function onSubmit() {
       // An empty checklist is still a checklist: its first item may be added later.
       is_checklist: isChecklistMode.value,
       space_id: selectedSpaceId.value,
+      energy: energy.value,
+      priority: priority.value,
       due: due.value,
       due_time: dueTime.value,
       repeat_rule: repeatRule.value,
@@ -225,6 +231,8 @@ async function onSubmit() {
     description.value = "";
     isChecklistMode.value = false;
     checklistItems.value = [];
+    energy.value = "medium";
+    priority.value = "medium";
     clearReminder();
     metadataExpanded.value = false;
   } finally {
@@ -269,8 +277,39 @@ async function onSubmit() {
           :disabled="isSubmitting"
         />
 
+        <div class="grid grid-cols-2 gap-2">
+          <label class="form-control text-xs">
+            <span class="label-text">Energy</span>
+            <select
+              v-model="energy"
+              data-testid="new-quest-energy"
+              class="select select-bordered select-sm"
+              aria-label="Quest energy"
+              :disabled="isSubmitting"
+            >
+              <option value="small">Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+            </select>
+          </label>
+          <label class="form-control text-xs">
+            <span class="label-text">Priority</span>
+            <select
+              v-model="priority"
+              data-testid="new-quest-priority"
+              class="select select-bordered select-sm"
+              aria-label="Quest priority"
+              :disabled="isSubmitting"
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+        </div>
+
         <ChecklistEditor
-          v-else
+          v-if="isChecklistMode"
           ref="checklistEditorRef"
           v-model:items="checklistItems"
           mode="draft"

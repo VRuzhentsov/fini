@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { ChecklistActivity, Quest, UpdateQuestInput } from "../stores/quest";
+import type { ChecklistActivity, Energy, Priority, Quest, UpdateQuestInput } from "../stores/quest";
 import { SPACE_COLOR_CLASS } from "../stores/space";
 import { parseChecklist } from "../utils/checklist";
 import {
@@ -67,6 +67,14 @@ function saveTitle() {
 function saveDescription() {
   const value = description.value.trim() || null;
   if (value !== props.quest.description) emit("update", { description: value });
+}
+
+function updateEnergy(event: Event) {
+  emit("update", { energy: (event.target as HTMLSelectElement).value as Energy });
+}
+
+function updatePriority(event: Event) {
+  emit("update", { priority: (event.target as HTMLSelectElement).value as Priority });
 }
 
 function onTitleKeydown(event: KeyboardEvent) {
@@ -218,6 +226,37 @@ const renderFlags = computed(() => ({
       @blur="saveDescription"
     />
     <p v-else-if="renderFlags.proseReadonly" class="quest-editor-desc readonly">{{ quest.description }}</p>
+
+    <div class="quest-editor-metadata">
+      <label class="quest-editor-metadata-field">
+        <span>Energy</span>
+        <select
+          data-testid="quest-editor-energy"
+          aria-label="Quest energy"
+          :value="quest.energy"
+          :disabled="quest.status !== 'active'"
+          @change="updateEnergy"
+        >
+          <option value="small">Small</option>
+          <option value="medium">Medium</option>
+          <option value="large">Large</option>
+        </select>
+      </label>
+      <label class="quest-editor-metadata-field">
+        <span>Priority</span>
+        <select
+          data-testid="quest-editor-priority"
+          aria-label="Quest priority"
+          :value="quest.priority"
+          :disabled="quest.status !== 'active'"
+          @change="updatePriority"
+        >
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+    </div>
 
     <div class="quest-editor-footer">
       <button
@@ -387,6 +426,10 @@ const renderFlags = computed(() => ({
 
 .quest-editor-desc::placeholder { color: var(--fg-5); }
 .quest-editor-desc.readonly { min-height: 0; margin: 0; }
+
+.quest-editor-metadata { display: flex; gap: 0.75rem; }
+.quest-editor-metadata-field { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--fg-3); font-size: 0.75rem; }
+.quest-editor-metadata-field select { min-width: 6rem; padding: 0.25rem; color: var(--fg-1); background: var(--color-base-200); border: 1px solid var(--color-border-soft); border-radius: 6px; }
 
 .quest-editor-footer {
   display: flex;

@@ -14,7 +14,7 @@ function baseQuest(overrides: Partial<Quest> = {}): Quest {
     description: "- [ ] headphones <!--k=a1-->\n- [ ] key fob <!--k=a2-->",
     status: "active",
     energy: "medium",
-    priority: 1,
+    priority: "medium",
     pinned: false,
     due: null,
     due_time: null,
