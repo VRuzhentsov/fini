@@ -6,6 +6,7 @@ import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
 import { useDeviceStore } from "../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../stores/space";
 import { shortUuid } from "../utils/shortUuid";
+import { formatMacAddress, macAddressHexDigits } from "../utils/macAddress";
 
 const route = useRoute();
 const router = useRouter();
@@ -13,7 +14,16 @@ const deviceStore = useDeviceStore();
 const spaceStore = useSpaceStore();
 const unpairDialog = ref<HTMLDialogElement | null>(null);
 const mappedSelection = ref<string[]>([]);
-const bluetoothAddressInput = ref("");
+// Stores just the raw hex digits (no colons); the input mask formats them
+// with colons on display and strips any pasted/typed separators back out
+// on write, so the user never has to type ":" themselves.
+const bluetoothAddressHexDigits = ref("");
+const bluetoothAddressInput = computed({
+  get: () => formatMacAddress(bluetoothAddressHexDigits.value),
+  set: (value: string) => {
+    bluetoothAddressHexDigits.value = macAddressHexDigits(value);
+  },
+});
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
 const savingBluetoothTransport = ref(false);
@@ -333,6 +343,7 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           class="input input-sm input-bordered"
           data-testid="bluetooth-address-input"
           placeholder="AA:BB:CC:DD:EE:FF"
+          maxlength="17"
           :disabled="savingBluetoothTransport"
         />
         <p class="text-xs opacity-60">
