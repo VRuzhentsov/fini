@@ -865,6 +865,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 {
                     Ok(peer_protocol_version) => {
                         eprintln!("[transport][ble] auth OK with {peer_id} via {address}");
+                        state.record_bluetooth_dial_success(&peer_id);
                         // The connect+auth round trip is real wall-clock time
                         // during which the user could disable Bluetooth or
                         // unpair entirely; without this, a disable/unpair
@@ -899,10 +900,17 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                         if err.starts_with("auth rejected") {
                             return; // not paired; don't retry
                         }
+                        // Connection-level failure (link dropped mid-auth,
+                        // etc.), not a rejection -- counts toward "recently
+                        // unreliable," mirroring tcp_ws::dial_with_backoff.
+                        state.record_bluetooth_dial_failure(&peer_id);
                     }
                 }
             }
-            Err(err) => eprintln!("[transport][ble] connect to {peer_id} ({address}) failed: {err}"),
+            Err(err) => {
+                eprintln!("[transport][ble] connect to {peer_id} ({address}) failed: {err}");
+                state.record_bluetooth_dial_failure(&peer_id);
+            }
         }
 
         tokio::time::sleep(delay).await;

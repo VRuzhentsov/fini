@@ -23,7 +23,7 @@ use crate::services::device_connection::types::{
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::device_connection::DeviceConnectionState;
-use crate::services::device_connection::{build_transport_statuses, TransportStatus};
+use crate::services::device_connection::{build_transport_statuses, TransportStatus, TransportStatusInputs};
 use crate::services::space_sync::types::PeerFrame;
 use crate::services::transport::TransportKind;
 
@@ -1483,14 +1483,16 @@ pub fn device_connection_transport_statuses_impl(
             | Some(crate::services::transport::TransportKind::Sim)
     );
 
-    Ok(build_transport_statuses(
-        state.network_peer_available(&peer_device_id),
-        paired.bluetooth_enabled,
+    Ok(build_transport_statuses(TransportStatusInputs {
+        network_present: state.network_peer_available(&peer_device_id),
+        network_reliable: state.network_effectively_available(&peer_device_id),
+        bluetooth_enabled: paired.bluetooth_enabled,
         bluetooth_has_metadata,
         bluetooth_os_paired,
+        bluetooth_reliable: state.bluetooth_effectively_reliable(&peer_device_id),
         network_connected,
         bluetooth_connected,
-    ))
+    }))
 }
 
 #[cfg(any(feature = "ui-plane", test))]

@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
-import { useDeviceStore } from "../stores/device";
+import { useDeviceStore, type DeviceTransportRowState } from "../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../stores/space";
 import { shortUuid } from "../utils/shortUuid";
 
@@ -239,6 +239,35 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
   const lastSynced = lastSyncedLabelBySpace.value[spaceId];
   return lastSynced ? `last synced: ${lastSynced}` : "Mapped";
 }
+
+// ADR 0003 Phase 2: shared four-state model for both transport rows.
+// `live` is the only state that gets a border (ring) -- the sole "this is
+// the transport actually carrying the session right now" signal, replacing
+// the old separate "connected now" text badge. Amber now only means
+// "recently unreliable" (Configured, reliable: false), not "network is
+// just doing the job instead" -- that case is Configured/reliable: true,
+// green with no border.
+function rowDotClass(state: DeviceTransportRowState): string {
+  switch (state.state) {
+    case "live":
+      return "bg-green-500 ring-2 ring-green-600 ring-offset-2 ring-offset-base-200";
+    case "configured":
+      return state.reliable ? "bg-green-500" : "bg-amber-400";
+    case "unconfigured":
+      return "bg-gray-400";
+  }
+}
+
+function rowDetailText(state: DeviceTransportRowState): string {
+  switch (state.state) {
+    case "unconfigured":
+      return state.reason;
+    case "configured":
+      return state.reliable ? "Ready" : "Recently unreliable";
+    case "live":
+      return "Connected now";
+  }
+}
 </script>
 
 <template>
@@ -291,24 +320,14 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           :data-transport-kind="status.kind"
         >
           <template #leading>
-            <span
-              class="h-2.5 w-2.5 rounded-full"
-              :class="
-                status.connected
-                  ? 'bg-green-500'
-                  : status.available
-                    ? 'bg-amber-400'
-                    : 'bg-gray-400'
-              "
-            />
+            <span class="h-2.5 w-2.5 rounded-full" :class="rowDotClass(status.state)" />
           </template>
           <template #start>
             <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
             <span v-if="status.preferred" class="ml-2 text-[11px] opacity-60">preferred</span>
-            <span v-if="status.connected" class="ml-2 text-[11px] text-success">connected now</span>
           </template>
           <template #end>
-            <span class="text-xs opacity-60">{{ status.detail }}</span>
+            <span class="text-xs opacity-60">{{ rowDetailText(status.state) }}</span>
           </template>
         </SettingsListItem>
       </SettingsListGroup>
