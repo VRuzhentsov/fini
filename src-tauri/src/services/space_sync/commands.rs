@@ -2786,7 +2786,12 @@ mod tests {
         assert_eq!(tick.sent_events, 0);
 
         while let Ok(sent) = rx.try_recv() {
-            if matches!(sent, PeerFrame::SpaceMappingUpdate { .. }) {
+            if matches!(
+                sent,
+                crate::services::space_sync::types::SessionCommand::Forward(
+                    PeerFrame::SpaceMappingUpdate { .. }
+                )
+            ) {
                 panic!("mapping snapshot should not be sent");
             }
         }

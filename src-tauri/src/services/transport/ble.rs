@@ -835,12 +835,27 @@ fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str, address
     })
 }
 
+/// ADR-0003 Phase 3: has the user explicitly pinned this pair to Bluetooth?
+/// If so, `dial_with_backoff`'s normal "only engage once network is
+/// unreachable" fallback gating is overridden -- an explicit pin means
+/// dial regardless of network's own availability.
+fn peer_prefers_bluetooth(db_path: &std::path::Path, peer_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        crate::services::device_connection::peer_transport_preference(&mut conn, peer_id).as_deref()
+            == Some("bluetooth")
+    })
+}
+
 async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String, address: String) {
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(30);
 
     loop {
-        if state.has_session(&peer_id) || state.network_effectively_available(&peer_id) {
+        if state.has_session(&peer_id) {
+            return;
+        }
+        if state.network_effectively_available(&peer_id) && !peer_prefers_bluetooth(&db_path, &peer_id) {
             return;
         }
         // Re-checked every retry, not just at the moment this task was

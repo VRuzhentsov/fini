@@ -16,7 +16,7 @@ use crate::services::device_connection::{
     DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd, IncomingSyncAck,
 };
 use crate::services::space_sync::outbox::load_events_for_space;
-use crate::services::space_sync::types::{PeerFrame, PROTOCOL_VERSION};
+use crate::services::space_sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
 use crate::services::transport::{recv_frame, send_frame, Link, TransportKind};
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
@@ -297,7 +297,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         }
     }
 
-    let (tx, rx) = mpsc::channel::<PeerFrame>(64);
+    let (tx, rx) = mpsc::channel::<SessionCommand>(64);
     if !state.try_claim_session(&device_id, kind, tx) {
         let _ = send_frame(
             link.as_mut(),
@@ -332,7 +332,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
 /// it on exit.
 pub async fn run_session(
     mut link: Box<dyn Link>,
-    mut rx: mpsc::Receiver<PeerFrame>,
+    mut rx: mpsc::Receiver<SessionCommand>,
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_device_id: String,
@@ -382,9 +382,22 @@ pub async fn run_session(
                 let Some(Ok(frame)) = inbound else { break };
                 handle_inbound(frame, link.as_mut(), &state, &db_path, &peer_device_id).await;
             }
-            Some(frame) = rx.recv() => {
-                if send_frame(link.as_mut(), &frame).await.is_err() {
-                    break;
+            Some(command) = rx.recv() => {
+                match command {
+                    SessionCommand::Forward(frame) => {
+                        if send_frame(link.as_mut(), &frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    // ADR-0003 Phase 3: the only thing that ever sends this
+                    // -- a manual transport switch closing the session on
+                    // *this* transport so the next reconnect can honor the
+                    // new preference. Deliberately no frame/reason sent to
+                    // the peer here: `device_connection_set_preferred_
+                    // transport_impl` already sent PeerFrame::SwitchTransport
+                    // over this same mailbox (ahead of this Close, so it's
+                    // delivered first) if there was a session to carry it.
+                    SessionCommand::Close => break,
                 }
             }
             _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {
@@ -496,6 +509,24 @@ async fn handle_inbound(
                 .set(pair_space_mappings::last_synced_at.eq(Some(completed_at)))
                 .execute(&mut conn);
             });
+        }
+        PeerFrame::SwitchTransport { to, requested_at } => {
+            let db = db_path.clone();
+            let peer = peer_device_id.to_string();
+            let should_close = tokio::task::block_in_place(|| {
+                let mut conn = open_db_at_path(&db);
+                crate::services::device_connection::adopt_peer_transport_preference(
+                    &mut conn, &peer, to, &requested_at,
+                )
+            });
+            // Only ever closes *this* session if the adopted preference
+            // actually won the race and doesn't already match what's live
+            // -- an older/losing `requested_at` changes nothing here, same
+            // as `device_connection_set_preferred_transport_impl`'s own
+            // local force-switch.
+            if should_close && state.session_kind(&peer) != Some(to) {
+                state.request_session_close(&peer);
+            }
         }
         PeerFrame::BluetoothAddressUpdate { address } => {
             let Some(address) = crate::services::device_connection::normalize_bluetooth_address(&address)

@@ -75,6 +75,7 @@ describe("DeviceView mapped spaces sync labels", () => {
       refreshSpaceSyncStatus: jest.fn().mockResolvedValue(undefined),
       refreshTransportStatuses: jest.fn().mockResolvedValue(undefined),
       setBluetoothTransport: jest.fn().mockResolvedValue(undefined),
+      setPreferredTransport: jest.fn().mockResolvedValue(undefined),
       saveMappedSpaces: jest.fn().mockResolvedValue(["1", "2", "foo-space-1"]),
       resolveCustomSpaceMapping: jest.fn().mockResolvedValue(undefined),
       unpairDevice: jest.fn().mockResolvedValue(undefined),
@@ -154,8 +155,29 @@ describe("DeviceView mapped spaces sync labels", () => {
     const rows = wrapper.findAll('[data-testid="transport-status-row"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].text()).toContain("Network");
-    expect(rows[0].text()).toContain("preferred");
+    expect(rows[0].find("svg").exists()).toBe(true);
     expect(rows[1].text()).toContain("Bluetooth");
     expect(rows[1].text()).toContain("Ready");
+  });
+
+  it("pins a transport when its row is clicked", async () => {
+    const wrapper = mount(DeviceView, {
+      global: {
+        stubs: {
+          "router-link": { template: "<a><slot /></a>" },
+        },
+      },
+    });
+
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    await rows[1].find("button").trigger("click");
+    await flushUi();
+
+    const deviceStore = useDeviceStore() as unknown as {
+      setPreferredTransport: jest.Mock;
+    };
+    expect(deviceStore.setPreferredTransport).toHaveBeenCalledWith("peer-device-123", "bluetooth");
   });
 });

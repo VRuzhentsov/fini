@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { StarIcon } from "@heroicons/vue/24/solid";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
 import { useDeviceStore, type DeviceTransportRowState } from "../stores/device";
@@ -23,6 +24,8 @@ let findBluetoothGeneration = 0;
 const mappingError = ref<string | null>(null);
 const bluetoothTransportError = ref<string | null>(null);
 const mappingsDirty = ref(false);
+const settingPreferredTransport = ref<"network" | "bluetooth" | null>(null);
+const preferredTransportError = ref<string | null>(null);
 
 const deviceId = computed(() => String(route.params.id ?? ""));
 const device = computed(() => deviceStore.findPairedDevice(deviceId.value));
@@ -221,6 +224,25 @@ async function findViaBluetooth() {
   }
 }
 
+// ADR-0003 Phase 3: click-to-pin. Disabled for Unconfigured (Gray) rows --
+// there's nothing to switch to yet -- but otherwise available regardless of
+// whether the row is already live, matching the grill-me answer that this
+// should "force an immediate switch right now" even when re-clicking the
+// transport that's already preferred/live, rather than being a no-op toggle.
+async function pinTransport(kind: "network" | "bluetooth") {
+  if (!deviceId.value) return;
+  settingPreferredTransport.value = kind;
+  preferredTransportError.value = null;
+
+  try {
+    await deviceStore.setPreferredTransport(deviceId.value, kind);
+  } catch (error) {
+    preferredTransportError.value = String(error);
+  } finally {
+    settingPreferredTransport.value = null;
+  }
+}
+
 function openUnpairDialog() {
   unpairDialog.value?.showModal();
 }
@@ -318,19 +340,30 @@ function rowDetailText(state: DeviceTransportRowState): string {
           :key="status.kind"
           data-testid="transport-status-row"
           :data-transport-kind="status.kind"
+          :button="status.state.state !== 'unconfigured'"
+          @click="
+            status.state.state !== 'unconfigured' && settingPreferredTransport === null && void pinTransport(status.kind)
+          "
         >
           <template #leading>
             <span class="h-2.5 w-2.5 rounded-full" :class="rowDotClass(status.state)" />
           </template>
           <template #start>
             <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
-            <span v-if="status.preferred" class="ml-2 text-[11px] opacity-60">preferred</span>
+            <StarIcon
+              v-if="status.preferred"
+              class="ml-1.5 inline-block h-3 w-3 align-text-top opacity-60"
+              aria-label="Automatically preferred"
+            />
           </template>
           <template #end>
-            <span class="text-xs opacity-60">{{ rowDetailText(status.state) }}</span>
+            <span class="text-xs opacity-60">
+              {{ settingPreferredTransport === status.kind ? "Switching…" : rowDetailText(status.state) }}
+            </span>
           </template>
         </SettingsListItem>
       </SettingsListGroup>
+      <p v-if="preferredTransportError" class="mt-2 text-xs text-error">{{ preferredTransportError }}</p>
       <div class="mt-3 flex flex-col gap-2">
         <button
           class="btn btn-sm btn-outline w-fit"

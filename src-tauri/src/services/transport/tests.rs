@@ -104,6 +104,129 @@ async fn tcp_ws_gate_accepts_paired_device_and_claims_session_as_network() {
     );
 }
 
+/// Regression test for ADR-0003 Phase 3's core new mechanism: before this,
+/// nothing could ever end a live `run_session` loop except the loop itself
+/// noticing its own transport failed. `request_session_close` is the first
+/// external caller of the mailbox's new `SessionCommand::Close` -- proves
+/// it actually reaches and terminates a genuinely live session, not just
+/// that the method compiles.
+#[tokio::test(flavor = "multi_thread")]
+async fn request_session_close_terminates_a_live_session() {
+    let (server, server_db) = server_state("transport-request-close");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    sleep(Duration::from_millis(50)).await;
+    assert!(server.has_session("peer-client"), "session must be live before closing it");
+
+    assert!(
+        server.request_session_close("peer-client"),
+        "must find a mailbox to send Close through"
+    );
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        !server.has_session("peer-client"),
+        "Close must actually terminate run_session's loop, not just be accepted into the mailbox"
+    );
+}
+
+/// ADR-0003 Phase 3's full command: pinning a peer to a transport different
+/// from the one it's currently live on (a) persists the preference, (b)
+/// sends the peer PeerFrame::SwitchTransport *before* the session closes
+/// (mpsc ordering through the same mailbox `request_session_close` uses),
+/// and (c) actually closes the mismatched local session.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_preferred_transport_persists_notifies_and_closes_a_mismatched_session() {
+    let (server, server_db) = server_state("transport-set-preferred-mismatch");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::TcpWs));
+
+    let mut conn = open_db_at_path(&server_db);
+    let updated = crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut conn,
+        &server,
+        "peer-client".to_string(),
+        Some(TransportKind::Bluetooth),
+    )
+    .expect("set preferred transport");
+    assert_eq!(updated.preferred_transport.as_deref(), Some("bluetooth"));
+    assert!(updated.preferred_transport_set_at.is_some());
+
+    // The frame must arrive on the wire before this side tears the
+    // connection down underneath it. On a machine with a real Bluetooth
+    // controller, `run_session` also unconditionally self-reports
+    // `PeerFrame::BluetoothAddressUpdate` right after auth (independent of
+    // this test's own concerns) -- skip past any such frames rather than
+    // asserting on exact frame order between two independent features.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for SwitchTransport");
+        match recv_frame(link.as_mut()).await {
+            Some(Ok(PeerFrame::SwitchTransport { to, .. })) => {
+                assert_eq!(to, TransportKind::Bluetooth);
+                break;
+            }
+            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
+            other => panic!("expected SwitchTransport, got {other:?}"),
+        }
+    }
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        !server.has_session("peer-client"),
+        "a preference that doesn't match the live transport must close the session"
+    );
+}
+
+/// Sibling of the test above: pinning a peer to the transport it's *already*
+/// live on must not disturb the session at all -- no reason to tear down
+/// and immediately re-establish the exact same connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_preferred_transport_leaves_an_already_matching_session_alone() {
+    let (server, server_db) = server_state("transport-set-preferred-match");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::TcpWs));
+
+    let mut conn = open_db_at_path(&server_db);
+    crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut conn,
+        &server,
+        "peer-client".to_string(),
+        Some(TransportKind::TcpWs),
+    )
+    .expect("set preferred transport");
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        server.has_session("peer-client"),
+        "pinning the already-live transport must not close the session"
+    );
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the

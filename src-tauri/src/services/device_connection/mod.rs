@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::services::space_sync::types::{PeerFrame, SessionSender, SyncEventEnvelope};
+use crate::services::space_sync::types::{PeerFrame, SessionCommand, SessionSender, SyncEventEnvelope};
 use crate::services::transport::selection::{new_lifecycle_bus, LifecycleBus, LifecycleEvent};
 use crate::services::transport::TransportKind;
 
@@ -29,15 +29,16 @@ pub use commands::{
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_save_paired_device, device_connection_send_pair_request,
     device_connection_send_pair_request_bluetooth, device_connection_session_transport,
-    device_connection_set_bluetooth_transport, device_connection_transport_statuses,
-    device_connection_unpair, device_connection_update_last_seen,
+    device_connection_set_bluetooth_transport, device_connection_set_preferred_transport,
+    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) use commands::bluetooth_address_is_os_paired;
 pub(crate) use commands::{
-    local_bluetooth_address, normalize_bluetooth_address, persist_bluetooth_address_and_maybe_enable,
+    adopt_peer_transport_preference, local_bluetooth_address, normalize_bluetooth_address,
+    peer_transport_preference, persist_bluetooth_address_and_maybe_enable,
 };
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
@@ -50,8 +51,9 @@ pub use commands::{
     device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
     device_connection_send_pair_request_impl, device_connection_session_transport_impl,
-    device_connection_set_bluetooth_transport_impl, device_connection_transport_statuses_impl,
-    device_connection_unpair_impl, device_connection_update_last_seen_impl,
+    device_connection_set_bluetooth_transport_impl, device_connection_set_preferred_transport_impl,
+    device_connection_transport_statuses_impl, device_connection_unpair_impl,
+    device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 pub use transport::{build_transport_statuses, TransportStatus, TransportStatusInputs};
@@ -333,7 +335,30 @@ impl DeviceConnectionState {
             Err(_) => return false,
         };
         if let Some(sender) = guard.peer_sessions.get(peer_device_id) {
-            sender.try_send(msg).is_ok()
+            sender.try_send(SessionCommand::Forward(msg)).is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Forces the peer's currently claimed session (whichever transport
+    /// it's on) closed, without a transport-level failure -- ADR-0003
+    /// Phase 3's manual transport switch is the only caller. A deliberate,
+    /// narrowly-scoped exception to ADR-0001's sticky-handoff invariant
+    /// ("selection only happens at session establishment... kept until it
+    /// drops"): every other session end is `run_session` itself noticing
+    /// its transport failed. `run_session`'s own `release_session` call at
+    /// the end of its loop (unconditional, regardless of why the loop
+    /// exited) still fires normally once it processes this -- the next
+    /// `space_sync_tick`'s dial loop picks the peer back up and honors
+    /// whatever `preferred_transport` is now set to.
+    pub fn request_session_close(&self, peer_device_id: &str) -> bool {
+        let guard = match self.runtime.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        if let Some(sender) = guard.peer_sessions.get(peer_device_id) {
+            sender.try_send(SessionCommand::Close).is_ok()
         } else {
             false
         }

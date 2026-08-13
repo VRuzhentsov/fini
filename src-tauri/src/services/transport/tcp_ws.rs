@@ -219,6 +219,19 @@ fn should_dial_peer(
     paired_peer_ids.contains(peer_id) && my_id < peer_id && !has_session
 }
 
+/// ADR-0003 Phase 3: has the user explicitly pinned this pair to
+/// Bluetooth? If so, `dial_with_backoff` withdraws its own retries even
+/// while network is genuinely reachable -- an explicit pin overrides the
+/// default network-first order, symmetric with `ble::dial_with_backoff`'s
+/// own override in the other direction.
+fn peer_prefers_bluetooth(db_path: &std::path::Path, peer_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = crate::services::db::open_db_at_path(db_path);
+        crate::services::device_connection::peer_transport_preference(&mut conn, peer_id).as_deref()
+            == Some("bluetooth")
+    })
+}
+
 async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
@@ -231,6 +244,9 @@ async fn dial_with_backoff(
 
     loop {
         if state.has_session(&peer_id) {
+            return;
+        }
+        if peer_prefers_bluetooth(&db_path, &peer_id) {
             return;
         }
         let still_present = state
