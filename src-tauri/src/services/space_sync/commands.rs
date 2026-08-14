@@ -583,49 +583,6 @@ fn merge_and_persist_quest_checklist(
     QuestService::new(conn).sync_merge_quest_checklist(entity_id, incoming_description)
 }
 
-fn normalize_sync_metadata_payload(entity_type: &str, payload: &str) -> Result<String, String> {
-    if !matches!(entity_type, "quest" | "quest_series") {
-        return Ok(payload.to_string());
-    }
-
-    let mut value: serde_json::Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| "sync metadata payload must be a JSON object".to_string())?;
-
-    let energy = object
-        .get("energy")
-        .map(|value| match value {
-            serde_json::Value::String(value) => crate::models::legacy_energy_to_value(value),
-            serde_json::Value::Number(value) => value
-                .as_i64()
-                .map(|value| crate::models::legacy_energy_to_value(&value.to_string()))
-                .unwrap_or(crate::models::ENERGY_MEDIUM),
-            _ => crate::models::ENERGY_MEDIUM,
-        })
-        .unwrap_or(crate::models::ENERGY_MEDIUM);
-    let priority = object
-        .get("priority")
-        .map(|value| match value {
-            serde_json::Value::String(value) => crate::models::legacy_priority_to_value(value),
-            serde_json::Value::Number(value) => value
-                .as_i64()
-                .map(|value| crate::models::legacy_priority_to_value(&value.to_string()))
-                .unwrap_or(crate::models::PRIORITY_MEDIUM),
-            _ => crate::models::PRIORITY_MEDIUM,
-        })
-        .unwrap_or(crate::models::PRIORITY_MEDIUM);
-    object.insert(
-        "energy".to_string(),
-        serde_json::Value::String(crate::models::energy_name(energy).to_string()),
-    );
-    object.insert(
-        "priority".to_string(),
-        serde_json::Value::String(crate::models::priority_name(priority).to_string()),
-    );
-    serde_json::to_string(&value).map_err(|e| e.to_string())
-}
-
 fn apply_sync_event(
     conn: &mut SqliteConnection,
     event: &SyncEventEnvelope,
@@ -649,8 +606,7 @@ fn apply_sync_event(
                 .payload
                 .as_ref()
                 .ok_or_else(|| "missing payload for upsert event".to_string())?;
-            let normalized_payload = normalize_sync_metadata_payload(&event.entity_type, payload)?;
-            let payload = normalized_payload.as_str();
+            let payload = payload.as_str();
 
             // Checklist items get a per-item merge instead of following whole-quest LWW (#128),
             // so a locally-known checklist quest is handled before the generic win/lose gate
@@ -2216,50 +2172,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn apply_sync_event_normalizes_legacy_numeric_energy_and_priority_before_persisting() {
-        let db_path = temp_db_path("sync-legacy-numeric-metadata");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).expect("seed default space");
-
-        let remote = test_quest("legacy-metadata", "Legacy metadata", "2026-03-02T00:00:00Z");
-        let mut payload = serde_json::to_value(remote).expect("serialize remote quest");
-        let object = payload.as_object_mut().expect("quest payload object");
-        object.insert("energy".to_string(), serde_json::Value::from(3));
-        object.insert("priority".to_string(), serde_json::Value::from(4));
-        let event = test_envelope(
-            "evt-legacy-numeric-metadata",
-            "dev-remote",
-            "quest",
-            "legacy-metadata",
-            "upsert",
-            Some(serde_json::to_string(&payload).expect("encode legacy payload")),
-            "2026-03-02T00:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &event).expect("apply legacy payload"));
-        let stored: Quest = quests::table
-            .find("legacy-metadata")
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("load normalized quest");
-        assert_eq!(stored.energy, crate::models::ENERGY_LARGE);
-        assert_eq!(stored.priority, crate::models::PRIORITY_HIGH);
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn normalize_sync_metadata_payload_converts_legacy_values_to_public_names() {
-        let normalized =
-            normalize_sync_metadata_payload("quest", r#"{"energy":"high","priority":4}"#)
-                .expect("normalize legacy metadata");
-        let value: serde_json::Value =
-            serde_json::from_str(&normalized).expect("parse normalized payload");
-        assert_eq!(value["energy"], "large");
-        assert_eq!(value["priority"], "high");
     }
 
     #[test]

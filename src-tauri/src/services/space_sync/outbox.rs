@@ -8,44 +8,6 @@ use crate::services::db::utc_now;
 
 use super::types::SyncEventEnvelope;
 
-fn normalize_legacy_sync_payload(
-    entity_type: &str,
-    payload: Option<String>,
-) -> Result<Option<String>, String> {
-    if !matches!(entity_type, "quest" | "quest_series") {
-        return Ok(payload);
-    }
-    let Some(payload) = payload else {
-        return Ok(None);
-    };
-    let mut value: serde_json::Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| "sync metadata payload must be a JSON object".to_string())?;
-    if let Some(serde_json::Value::String(energy)) = object.get("energy") {
-        let legacy = match energy.as_str() {
-            "small" => "low",
-            "large" => "high",
-            _ => energy,
-        };
-        object.insert(
-            "energy".to_string(),
-            serde_json::Value::String(legacy.to_string()),
-        );
-    }
-    if let Some(serde_json::Value::String(priority)) = object.get("priority") {
-        let legacy = match priority.as_str() {
-            "low" => 2,
-            "high" => 4,
-            _ => 3,
-        };
-        object.insert("priority".to_string(), serde_json::Value::from(legacy));
-    }
-    serde_json::to_string(&value)
-        .map(Some)
-        .map_err(|e| e.to_string())
-}
-
 pub fn emit_sync_event_at(
     conn: &mut SqliteConnection,
     origin_device_id: &str,
@@ -56,7 +18,6 @@ pub fn emit_sync_event_at(
     payload: Option<String>,
     updated_at: String,
 ) -> Result<(), String> {
-    let payload = normalize_legacy_sync_payload(entity_type, payload)?;
     let entry = CreateSyncOutboxEntry {
         event_id: Uuid::new_v4().to_string(),
         correlation_id: Uuid::new_v4().to_string(),
@@ -210,30 +171,6 @@ mod tests {
 
     fn temp_db_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("fini-test-outbox-{label}-{}.db", Uuid::new_v4()))
-    }
-
-    #[test]
-    fn quest_metadata_sync_payloads_stay_compatible_with_pre_v21_peers() {
-        let db_path = temp_db_path("legacy-metadata-wire");
-        let mut conn = open_db_at_path(&db_path);
-        emit_sync_event(
-            &mut conn,
-            "device-a",
-            "quest",
-            "quest-1",
-            "1",
-            "upsert",
-            Some(r#"{"energy":"large","priority":"high"}"#.to_string()),
-        )
-        .expect("emit quest sync event");
-        let events = load_unacked_events_for_peer(&mut conn, "device-b", &["1".to_string()])
-            .expect("load unacked");
-        let payload: serde_json::Value =
-            serde_json::from_str(events[0].payload.as_deref().expect("quest payload"))
-                .expect("decode normalized payload");
-        assert_eq!(payload["energy"], "high");
-        assert_eq!(payload["priority"], 4);
-        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]

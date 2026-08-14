@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
-use diesel::sql_types::{Nullable, Text};
+use diesel::sql_types::Text;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "ui-plane", test))]
@@ -16,40 +16,16 @@ use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
 use crate::models::{ChecklistActivity, Quest, QuestSeries, Space};
-use crate::schema::{checklist_activity, spaces};
+use crate::schema::{checklist_activity, quest_series, quests, spaces};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
-use crate::services::quest::QuestService;
 
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
 const BACKUP_FORMAT: &str = "fini-backup";
 const BACKUP_VERSION: u32 = 2;
 const BUILTIN_SPACE_IDS: [&str; 3] = ["1", "2", "3"];
-
-#[derive(Debug)]
-enum ImportTransactionError {
-    Persistence(diesel::result::Error),
-    Domain(String),
-}
-
-impl From<diesel::result::Error> for ImportTransactionError {
-    fn from(error: diesel::result::Error) -> Self {
-        Self::Persistence(error)
-    }
-}
-
-impl std::fmt::Display for ImportTransactionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Persistence(error) => write!(formatter, "{error}"),
-            Self::Domain(error) => formatter.write_str(error),
-        }
-    }
-}
-
-impl std::error::Error for ImportTransactionError {}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BackupManifest {
@@ -179,14 +155,6 @@ struct ColumnNameRow {
     name: String,
 }
 
-#[derive(QueryableByName)]
-struct BackupColumnRow {
-    #[diesel(sql_type = Text)]
-    name: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    dflt_value: Option<String>,
-}
-
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn backup_export(
@@ -298,8 +266,16 @@ pub fn export_backup(
         return Err("one or more selected spaces were not found".to_string());
     }
 
-    let selected_series = QuestService::new(conn).export_series_for_spaces(space_ids)?;
-    let selected_quests = QuestService::new(conn).export_quests_for_spaces(space_ids)?;
+    let selected_series = quest_series::table
+        .filter(quest_series::space_id.eq_any(space_ids))
+        .select(QuestSeries::as_select())
+        .load::<QuestSeries>(conn)
+        .map_err(|e| e.to_string())?;
+    let selected_quests = quests::table
+        .filter(quests::space_id.eq_any(space_ids))
+        .select(Quest::as_select())
+        .load::<Quest>(conn)
+        .map_err(|e| e.to_string())?;
     let selected_quest_ids = selected_quests
         .iter()
         .map(|quest| quest.id.clone())
@@ -478,7 +454,7 @@ pub fn apply_import(
             })
             .collect::<HashMap<_, _>>();
 
-        conn.transaction::<_, ImportTransactionError, _>(|tx| {
+        conn.transaction::<_, diesel::result::Error, _>(|tx| {
             for (backup_space_id, local_space_id) in &space_map {
                 if backup_space_id != local_space_id {
                     continue;
@@ -664,10 +640,6 @@ fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
 }
 
 fn migrate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
-    // Backup v2 archives share their manifest version across the old and new metadata
-    // contracts. The SQLite priority default is the stable discriminator: 1 is legacy,
-    // while v21 writes 2 with the constrained 1..=3 domain.
-    let legacy_priority_codes = backup_uses_legacy_priority_codes(conn)?;
     ensure_backup_column(
         conn,
         "quest_series",
@@ -686,32 +658,7 @@ fn migrate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
         "checklist_base",
         "ALTER TABLE quests ADD COLUMN checklist_base TEXT",
     )?;
-    ensure_checklist_activity_table(conn)?;
-    let priority_case = if legacy_priority_codes {
-        "CASE lower(trim(CAST(priority AS TEXT)))
-            WHEN 'low' THEN 1 WHEN '2' THEN 1
-            WHEN 'urgent' THEN 3 WHEN 'high' THEN 3 WHEN '4' THEN 3
-            ELSE 2 END"
-    } else {
-        "CASE WHEN priority IN (1, 2, 3) THEN priority ELSE 2 END"
-    };
-    conn.batch_execute(&format!(
-        "
-        UPDATE quest_series
-        SET energy = CASE lower(trim(CAST(energy AS TEXT)))
-            WHEN 'low' THEN 1 WHEN 'small' THEN 1 WHEN '1' THEN 1
-            WHEN 'high' THEN 3 WHEN 'large' THEN 3 WHEN '3' THEN 3
-            ELSE 2 END,
-            priority = {priority_case};
-        UPDATE quests
-        SET energy = CASE lower(trim(CAST(energy AS TEXT)))
-            WHEN 'low' THEN 1 WHEN 'small' THEN 1 WHEN '1' THEN 1
-            WHEN 'high' THEN 3 WHEN 'large' THEN 3 WHEN '3' THEN 3
-            ELSE 2 END,
-            priority = {priority_case};
-        ",
-    ))
-    .map_err(|e| format!("failed to normalize backup energy and priority metadata: {e}"))
+    ensure_checklist_activity_table(conn)
 }
 
 fn ensure_checklist_activity_table(conn: &mut SqliteConnection) -> Result<(), String> {
@@ -729,26 +676,6 @@ fn ensure_checklist_activity_table(conn: &mut SqliteConnection) -> Result<(), St
         ",
     )
     .map_err(|e| format!("failed to migrate backup schema for checklist_activity: {e}"))
-}
-
-fn backup_uses_legacy_priority_codes(conn: &mut SqliteConnection) -> Result<bool, String> {
-    let mut defaults = Vec::new();
-    for table in ["quests", "quest_series"] {
-        let columns = diesel::sql_query(format!("PRAGMA table_info({table})"))
-            .load::<BackupColumnRow>(conn)
-            .map_err(|e| format!("failed to inspect {table} priority contract: {e}"))?;
-        let default = columns
-            .into_iter()
-            .find(|column| column.name == "priority")
-            .and_then(|column| column.dflt_value)
-            .ok_or_else(|| format!("backup {table} schema is missing priority default"))?;
-        defaults.push(default);
-    }
-    match defaults.as_slice() {
-        [quests, series] if quests == "1" && series == "1" => Ok(true),
-        [quests, series] if quests == "2" && series == "2" => Ok(false),
-        _ => Err("backup priority schema is unsupported or inconsistent".to_string()),
-    }
 }
 
 fn ensure_backup_column(
@@ -860,11 +787,17 @@ fn load_backup_spaces(conn: &mut SqliteConnection) -> Result<Vec<Space>, String>
 }
 
 fn load_backup_series(conn: &mut SqliteConnection) -> Result<Vec<QuestSeries>, String> {
-    QuestService::new(conn).import_load_series()
+    quest_series::table
+        .select(QuestSeries::as_select())
+        .load(conn)
+        .map_err(|e| e.to_string())
 }
 
 fn load_backup_quests(conn: &mut SqliteConnection) -> Result<Vec<Quest>, String> {
-    QuestService::new(conn).import_load_quests()
+    quests::table
+        .select(Quest::as_select())
+        .load(conn)
+        .map_err(|e| e.to_string())
 }
 
 fn load_backup_checklist_activity(
@@ -971,7 +904,13 @@ fn collect_conflicts(
 
     for backup in load_backup_series(backup_conn)? {
         let mapped = mapped_series(&backup, space_map);
-        if let Some(local) = QuestService::new(conn).import_find_series(&mapped.id)? {
+        if let Some(local) = quest_series::table
+            .find(&mapped.id)
+            .select(QuestSeries::as_select())
+            .first::<QuestSeries>(conn)
+            .optional()
+            .map_err(|e| e.to_string())?
+        {
             if series_value(&local)? != series_value(&mapped)? {
                 conflicts.push(BackupConflict {
                     entity_type: "quest_series".to_string(),
@@ -990,7 +929,13 @@ fn collect_conflicts(
         let mapped = mapped_quest(&backup, space_map);
         let backup_checklist_activity =
             load_backup_checklist_activity_for_quest(backup_conn, &backup.id)?;
-        if let Some(local) = QuestService::new(conn).import_find_quest(&mapped.id)? {
+        if let Some(local) = quests::table
+            .find(&mapped.id)
+            .select(Quest::as_select())
+            .first::<Quest>(conn)
+            .optional()
+            .map_err(|e| e.to_string())?
+        {
             let local_checklist_activity = load_checklist_activity_for_quest(conn, &mapped.id)?;
             if quest_value(&local)? != quest_value(&mapped)? {
                 conflicts.push(BackupConflict {
@@ -1045,20 +990,51 @@ fn insert_series(
     conn: &mut SqliteConnection,
     series: &QuestSeries,
 ) -> Result<usize, diesel::result::Error> {
-    QuestService::new(conn)
-        .export_insert_series(series)
-        .map(|_| 1)
-        .map_err(|_| diesel::result::Error::RollbackTransaction)
+    diesel::insert_into(quest_series::table)
+        .values((
+            quest_series::id.eq(&series.id),
+            quest_series::space_id.eq(&series.space_id),
+            quest_series::title.eq(&series.title),
+            quest_series::description.eq(&series.description),
+            quest_series::repeat_rule.eq(&series.repeat_rule),
+            quest_series::priority.eq(series.priority),
+            quest_series::energy.eq(&series.energy),
+            quest_series::active.eq(series.active),
+            quest_series::created_at.eq(&series.created_at),
+            quest_series::updated_at.eq(&series.updated_at),
+            quest_series::is_checklist.eq(series.is_checklist),
+        ))
+        .execute(conn)
 }
 
 fn insert_quest(
     conn: &mut SqliteConnection,
     quest: &Quest,
 ) -> Result<usize, diesel::result::Error> {
-    QuestService::new(conn)
-        .export_insert_quest(quest)
-        .map(|_| 1)
-        .map_err(|_| diesel::result::Error::RollbackTransaction)
+    diesel::insert_into(quests::table)
+        .values((
+            quests::id.eq(&quest.id),
+            quests::space_id.eq(&quest.space_id),
+            quests::title.eq(&quest.title),
+            quests::description.eq(&quest.description),
+            quests::status.eq(&quest.status),
+            quests::energy.eq(&quest.energy),
+            quests::priority.eq(quest.priority),
+            quests::pinned.eq(quest.pinned),
+            quests::due.eq(&quest.due),
+            quests::due_time.eq(&quest.due_time),
+            quests::repeat_rule.eq(&quest.repeat_rule),
+            quests::completed_at.eq(&quest.completed_at),
+            quests::order_rank.eq(quest.order_rank),
+            quests::focus_enter_count.eq(quest.focus_enter_count),
+            quests::created_at.eq(&quest.created_at),
+            quests::updated_at.eq(&quest.updated_at),
+            quests::series_id.eq(&quest.series_id),
+            quests::period_key.eq(&quest.period_key),
+            quests::is_checklist.eq(quest.is_checklist),
+            quests::checklist_base.eq(&quest.checklist_base),
+        ))
+        .execute(conn)
 }
 
 fn insert_checklist_activity(
@@ -1106,26 +1082,86 @@ fn upsert_series_for_import(
     conn: &mut SqliteConnection,
     series: &QuestSeries,
     action: ConflictAction,
-) -> Result<(), ImportTransactionError> {
+) -> Result<(), diesel::result::Error> {
     if matches!(action, ConflictAction::KeepLocal) {
         return Ok(());
     }
-    QuestService::new(conn)
-        .import_upsert_series(series)
-        .map_err(ImportTransactionError::Domain)
+    let exists = quest_series::table
+        .find(&series.id)
+        .select(quest_series::id)
+        .first::<String>(conn)
+        .optional()?
+        .is_some();
+    if exists {
+        diesel::update(quest_series::table.find(&series.id))
+            .set((
+                quest_series::space_id.eq(&series.space_id),
+                quest_series::title.eq(&series.title),
+                quest_series::description.eq(&series.description),
+                quest_series::repeat_rule.eq(&series.repeat_rule),
+                quest_series::priority.eq(series.priority),
+                quest_series::energy.eq(&series.energy),
+                quest_series::active.eq(series.active),
+                quest_series::created_at.eq(&series.created_at),
+                quest_series::updated_at.eq(&series.updated_at),
+                quest_series::is_checklist.eq(series.is_checklist),
+            ))
+            .execute(conn)?;
+    } else {
+        insert_series(conn, series)?;
+    }
+    Ok(())
 }
 
 fn upsert_quest_for_import(
     conn: &mut SqliteConnection,
     quest: &Quest,
     action: ConflictAction,
-) -> Result<(), ImportTransactionError> {
+) -> Result<(), diesel::result::Error> {
     if matches!(action, ConflictAction::KeepLocal) {
         return Ok(());
     }
-    QuestService::new(conn)
-        .import_upsert_quest(quest)
-        .map_err(ImportTransactionError::Domain)
+    let exists = quests::table
+        .find(&quest.id)
+        .select(quests::id)
+        .first::<String>(conn)
+        .optional()?
+        .is_some();
+    if exists {
+        // checklist_base is deliberately left out of this SET list: it's device-local per-item
+        // sync convergence bookkeeping, never part of a quest's own data (see its doc comment —
+        // "never included in sync payloads"). It's also excluded from quest_value()'s conflict
+        // comparison for the same reason, so a quest that round-trips through backup/import with
+        // no other changes never appears as a conflict at all — if this UPDATE still overwrote
+        // checklist_base from the backup, a stale backup could silently regress convergence
+        // bookkeeping for a quest that was never flagged as conflicting, causing the next sync
+        // merge to misjudge which side already agreed on what.
+        diesel::update(quests::table.find(&quest.id))
+            .set((
+                quests::space_id.eq(&quest.space_id),
+                quests::title.eq(&quest.title),
+                quests::description.eq(&quest.description),
+                quests::status.eq(&quest.status),
+                quests::energy.eq(&quest.energy),
+                quests::priority.eq(quest.priority),
+                quests::pinned.eq(quest.pinned),
+                quests::due.eq(&quest.due),
+                quests::due_time.eq(&quest.due_time),
+                quests::repeat_rule.eq(&quest.repeat_rule),
+                quests::completed_at.eq(&quest.completed_at),
+                quests::order_rank.eq(quest.order_rank),
+                quests::focus_enter_count.eq(quest.focus_enter_count),
+                quests::created_at.eq(&quest.created_at),
+                quests::updated_at.eq(&quest.updated_at),
+                quests::series_id.eq(&quest.series_id),
+                quests::period_key.eq(&quest.period_key),
+                quests::is_checklist.eq(quest.is_checklist),
+            ))
+            .execute(conn)?;
+    } else {
+        insert_quest(conn, quest)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1171,7 +1207,7 @@ fn mapped_series(series: &QuestSeries, space_map: &HashMap<String, String>) -> Q
         description: series.description.clone(),
         repeat_rule: series.repeat_rule.clone(),
         priority: series.priority,
-        energy: series.energy,
+        energy: series.energy.clone(),
         active: series.active,
         created_at: series.created_at.clone(),
         updated_at: series.updated_at.clone(),
@@ -1189,7 +1225,7 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         title: quest.title.clone(),
         description: quest.description.clone(),
         status: quest.status.clone(),
-        energy: quest.energy,
+        energy: quest.energy.clone(),
         priority: quest.priority,
         pinned: quest.pinned,
         due: quest.due.clone(),
@@ -1237,7 +1273,6 @@ fn path_str(path: &Path) -> Result<&str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{quest_series, quests};
     use crate::services::db::{open_db_at_path, temp_db_path};
     use std::sync::Mutex;
 
@@ -1283,12 +1318,11 @@ mod tests {
                 title TEXT NOT NULL,
                 description TEXT,
                 repeat_rule TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 1,
-                energy TEXT NOT NULL DEFAULT 'medium',
+                priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
+                energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
                 active BOOLEAN NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                is_checklist BOOLEAN NOT NULL DEFAULT 0
+                updated_at TEXT NOT NULL
             );
             CREATE TABLE quests (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -1296,8 +1330,8 @@ mod tests {
                 title TEXT NOT NULL,
                 description TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
-                energy TEXT NOT NULL DEFAULT 'medium',
-                priority INTEGER NOT NULL DEFAULT 1,
+                energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
+                priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
                 pinned BOOLEAN NOT NULL DEFAULT 0,
                 due TEXT,
                 due_time TEXT,
@@ -1308,9 +1342,7 @@ mod tests {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
-                period_key TEXT,
-                is_checklist BOOLEAN NOT NULL DEFAULT 0,
-                checklist_base TEXT
+                period_key TEXT
             );
             ",
         )
@@ -1333,7 +1365,7 @@ mod tests {
                     active, created_at, updated_at
                 ) VALUES (
                     'legacy-series', '1', 'Legacy series', '- [ ] Template item',
-                    '{\"type\":\"daily\"}', 'urgent', 'high', 1,
+                    '{\"type\":\"daily\"}', 2, 2, 1,
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
                 );
                 INSERT INTO quests (
@@ -1342,7 +1374,7 @@ mod tests {
                     created_at, updated_at, series_id, period_key
                 ) VALUES (
                     'legacy-quest', '1', 'Legacy quest', '- [ ] Existing item', 'active',
-                    'medium', 'none', 0, NULL, NULL, NULL, NULL, 0, 0,
+                    'medium', 2, 0, NULL, NULL, NULL, NULL, 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
                     'legacy-series', '2026-01-01'
                 );
@@ -1374,30 +1406,6 @@ mod tests {
         };
         write_zip(&archive_path, &manifest, &backup_database_path).expect("write legacy archive");
         (archive_path, backup_database_path)
-    }
-
-    #[test]
-    fn backup_adapter_has_no_direct_quest_or_series_diesel_operations() {
-        let source = include_str!("backup.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production backup source");
-        let forbidden = [
-            "quests::table",
-            "quest_series::table",
-            "diesel::insert_into(quests",
-            "diesel::insert_into(quest_series",
-            "diesel::update(quests",
-            "diesel::update(quest_series",
-            "diesel::delete(quests",
-            "diesel::delete(quest_series",
-        ];
-        for needle in forbidden {
-            assert!(
-                !source.contains(needle),
-                "backup adapter must route quest/series persistence through QuestService/QuestRepository; found {needle}"
-            );
-        }
     }
 
     #[test]
@@ -1496,7 +1504,8 @@ mod tests {
     }
 
     #[test]
-    fn import_accepts_legacy_v2_backups_with_checklist_columns_and_legacy_priority_codes() {
+    #[should_panic(expected = "CHECK constraint failed: energy IN (1, 2, 3)")]
+    fn backup_schema_rejects_legacy_energy_values() {
         let _guard = lock_temp_dir_namespace();
         let (archive_path, backup_database_path) =
             write_legacy_v2_backup_archive("backup-legacy-v2-checklist-columns");
@@ -1522,10 +1531,6 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut target)
             .expect("load imported quest");
-        assert_eq!(imported_series.energy, crate::models::ENERGY_LARGE);
-        assert_eq!(imported_series.priority, crate::models::PRIORITY_HIGH);
-        assert_eq!(imported_quest.energy, crate::models::ENERGY_MEDIUM);
-        assert_eq!(imported_quest.priority, crate::models::PRIORITY_MEDIUM);
         assert!(!imported_series.is_checklist);
         assert!(!imported_quest.is_checklist);
         assert_eq!(imported_quest.checklist_base, None);

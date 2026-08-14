@@ -1,20 +1,4 @@
-CREATE TEMP TABLE v21_quest_series_snapshot AS
-SELECT id, space_id, title, description, repeat_rule, priority, energy, active, created_at, updated_at, is_checklist
-FROM quest_series;
-CREATE TEMP TABLE v21_quests_snapshot AS
-SELECT id, space_id, title, description, status, energy, priority, pinned, due, due_time, repeat_rule,
-       completed_at, order_rank, focus_enter_count, created_at, updated_at, series_id, period_key,
-       is_checklist, checklist_base
-FROM quests;
-CREATE TEMP TABLE v21_series_reminder_templates_snapshot AS
-SELECT id, series_id, kind, mm_offset, created_at
-FROM series_reminder_templates;
-CREATE TEMP TABLE v21_reminders_snapshot AS
-SELECT id, quest_id, type, mm_offset, due_at_utc, created_at, scheduled_notification_id
-FROM reminders;
-CREATE TEMP TABLE v21_focus_history_snapshot AS
-SELECT id, quest_id, space_id, trigger, created_at
-FROM focus_history;
+PRAGMA foreign_keys = OFF;
 
 CREATE TABLE quest_series_replacement (
     id          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))),
@@ -30,10 +14,7 @@ CREATE TABLE quest_series_replacement (
     is_checklist BOOLEAN NOT NULL DEFAULT 0
 );
 
-DROP TABLE quest_series;
-ALTER TABLE quest_series_replacement RENAME TO quest_series;
-
-INSERT INTO quest_series (
+INSERT INTO quest_series_replacement (
     id, space_id, title, description, repeat_rule, priority, energy, active, created_at, updated_at, is_checklist
 )
 SELECT
@@ -42,21 +23,16 @@ SELECT
     title,
     description,
     repeat_rule,
-    CASE
-        WHEN CAST(priority AS TEXT) IN ('2', 'low') THEN 1
-        WHEN CAST(priority AS TEXT) IN ('4', 'urgent', 'high') THEN 3
-        ELSE 2
-    END,
-    CASE
-        WHEN CAST(energy AS TEXT) IN ('1', 'low', 'small') THEN 1
-        WHEN CAST(energy AS TEXT) IN ('3', 'high', 'large') THEN 3
-        ELSE 2
-    END,
+    2,
+    2,
     active,
     created_at,
     updated_at,
     is_checklist
-FROM v21_quest_series_snapshot;
+FROM quest_series;
+
+DROP TABLE quest_series;
+ALTER TABLE quest_series_replacement RENAME TO quest_series;
 
 CREATE TABLE quests_replacement (
     id          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))),
@@ -92,16 +68,8 @@ SELECT
     title,
     description,
     status,
-    CASE
-        WHEN CAST(energy AS TEXT) IN ('1', 'low', 'small') THEN 1
-        WHEN CAST(energy AS TEXT) IN ('3', 'high', 'large') THEN 3
-        ELSE 2
-    END,
-    CASE
-        WHEN CAST(priority AS TEXT) IN ('2', 'low') THEN 1
-        WHEN CAST(priority AS TEXT) IN ('4', 'urgent', 'high') THEN 3
-        ELSE 2
-    END,
+    2,
+    2,
     pinned,
     due,
     due_time,
@@ -115,25 +83,11 @@ SELECT
     period_key,
     is_checklist,
     checklist_base
-FROM v21_quests_snapshot;
+FROM quests;
 
 DROP TABLE quests;
 ALTER TABLE quests_replacement RENAME TO quests;
 CREATE INDEX IF NOT EXISTS idx_quests_status ON quests (status);
 CREATE INDEX IF NOT EXISTS idx_quests_series_period ON quests (series_id, period_key);
 
-INSERT INTO series_reminder_templates (id, series_id, kind, mm_offset, created_at)
-SELECT id, series_id, kind, mm_offset, created_at
-FROM v21_series_reminder_templates_snapshot;
-INSERT INTO reminders (id, quest_id, type, mm_offset, due_at_utc, created_at, scheduled_notification_id)
-SELECT id, quest_id, type, mm_offset, due_at_utc, created_at, scheduled_notification_id
-FROM v21_reminders_snapshot;
-INSERT INTO focus_history (id, quest_id, space_id, trigger, created_at)
-SELECT id, quest_id, space_id, trigger, created_at
-FROM v21_focus_history_snapshot;
-
-DROP TABLE v21_quest_series_snapshot;
-DROP TABLE v21_quests_snapshot;
-DROP TABLE v21_series_reminder_templates_snapshot;
-DROP TABLE v21_reminders_snapshot;
-DROP TABLE v21_focus_history_snapshot;
+PRAGMA foreign_keys = ON;

@@ -44,22 +44,6 @@ pub fn priority_name(value: i64) -> &'static str {
     }
 }
 
-pub fn legacy_energy_to_value(value: &str) -> i64 {
-    match value {
-        "low" | "small" | "1" => ENERGY_SMALL,
-        "high" | "large" | "3" => ENERGY_LARGE,
-        _ => ENERGY_MEDIUM,
-    }
-}
-
-pub fn legacy_priority_to_value(value: &str) -> i64 {
-    match value {
-        "low" | "2" => PRIORITY_LOW,
-        "urgent" | "high" | "4" => PRIORITY_HIGH,
-        _ => PRIORITY_MEDIUM,
-    }
-}
-
 pub(crate) fn serialize_energy<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -272,15 +256,6 @@ pub fn clamp_order_rank(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_priority_mapping_preserves_old_numeric_meanings() {
-        assert_eq!(legacy_priority_to_value("1"), PRIORITY_MEDIUM);
-        assert_eq!(legacy_priority_to_value("2"), PRIORITY_LOW);
-        assert_eq!(legacy_priority_to_value("3"), PRIORITY_MEDIUM);
-        assert_eq!(legacy_priority_to_value("4"), PRIORITY_HIGH);
-        assert_eq!(legacy_priority_to_value("urgent"), PRIORITY_HIGH);
-    }
 
     #[test]
     fn create_input_accepts_named_metadata_and_rejects_numeric_priority() {
