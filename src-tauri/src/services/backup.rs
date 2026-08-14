@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
-use diesel::sql_types::Text;
+use diesel::sql_types::{Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "ui-plane", test))]
@@ -177,6 +177,14 @@ struct TableNameRow {
 struct ColumnNameRow {
     #[diesel(sql_type = Text)]
     name: String,
+}
+
+#[derive(QueryableByName)]
+struct BackupColumnRow {
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    dflt_value: Option<String>,
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -656,9 +664,10 @@ fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
 }
 
 fn migrate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
-    // Archives written by the current schema already have checklist_base. Earlier archives
-    // used the old 1..=4 priority codes, so only they need numeric legacy conversion.
-    let legacy_priority_codes = !backup_has_column(conn, "quests", "checklist_base")?;
+    // Backup v2 archives share their manifest version across the old and new metadata
+    // contracts. The SQLite priority default is the stable discriminator: 1 is legacy,
+    // while v21 writes 2 with the constrained 1..=3 domain.
+    let legacy_priority_codes = backup_uses_legacy_priority_codes(conn)?;
     ensure_backup_column(
         conn,
         "quest_series",
@@ -722,17 +731,24 @@ fn ensure_checklist_activity_table(conn: &mut SqliteConnection) -> Result<(), St
     .map_err(|e| format!("failed to migrate backup schema for checklist_activity: {e}"))
 }
 
-fn backup_has_column(
-    conn: &mut SqliteConnection,
-    table: &str,
-    column: &str,
-) -> Result<bool, String> {
-    let columns = diesel::sql_query(format!("PRAGMA table_info({table})"))
-        .load::<ColumnNameRow>(conn)
-        .map_err(|e| format!("failed to inspect {table} columns: {e}"))?;
-    Ok(columns
-        .into_iter()
-        .any(|candidate| candidate.name == column))
+fn backup_uses_legacy_priority_codes(conn: &mut SqliteConnection) -> Result<bool, String> {
+    let mut defaults = Vec::new();
+    for table in ["quests", "quest_series"] {
+        let columns = diesel::sql_query(format!("PRAGMA table_info({table})"))
+            .load::<BackupColumnRow>(conn)
+            .map_err(|e| format!("failed to inspect {table} priority contract: {e}"))?;
+        let default = columns
+            .into_iter()
+            .find(|column| column.name == "priority")
+            .and_then(|column| column.dflt_value)
+            .ok_or_else(|| format!("backup {table} schema is missing priority default"))?;
+        defaults.push(default);
+    }
+    match defaults.as_slice() {
+        [quests, series] if quests == "1" && series == "1" => Ok(true),
+        [quests, series] if quests == "2" && series == "2" => Ok(false),
+        _ => Err("backup priority schema is unsupported or inconsistent".to_string()),
+    }
 }
 
 fn ensure_backup_column(
@@ -1271,7 +1287,8 @@ mod tests {
                 energy TEXT NOT NULL DEFAULT 'medium',
                 active BOOLEAN NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                is_checklist BOOLEAN NOT NULL DEFAULT 0
             );
             CREATE TABLE quests (
                 id TEXT PRIMARY KEY NOT NULL,
@@ -1291,7 +1308,9 @@ mod tests {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
-                period_key TEXT
+                period_key TEXT,
+                is_checklist BOOLEAN NOT NULL DEFAULT 0,
+                checklist_base TEXT
             );
             ",
         )
@@ -1477,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn import_accepts_legacy_v2_backups_without_checklist_columns() {
+    fn import_accepts_legacy_v2_backups_with_checklist_columns_and_legacy_priority_codes() {
         let _guard = lock_temp_dir_namespace();
         let (archive_path, backup_database_path) =
             write_legacy_v2_backup_archive("backup-legacy-v2-checklist-columns");
