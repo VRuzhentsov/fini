@@ -25,10 +25,26 @@ use crate::services::transport::{BoxDialFuture, Link, Transport, TransportKind};
 type BoxedSink = Pin<Box<dyn Sink<Message, Error = WsError> + Send>>;
 type BoxedSource = Pin<Box<dyn Stream<Item = Result<Message, WsError>> + Send>>;
 
+/// How often `recv()` sends a WebSocket-native `Ping` while otherwise idle.
+/// See `docs/adr/0003-transport-liveness-unified-status-and-manual-switching.md`
+/// Phase 1: this is the whole liveness mechanism for this transport,
+/// self-contained here — `run_session` never knows it exists, it just sees
+/// `recv()` eventually return `None` like any other dead link.
+const PING_INTERVAL: Duration = Duration::from_secs(15);
+/// Consecutive `PING_INTERVAL` ticks with no `Pong` in between before
+/// `recv()` gives up and reports the link dead (~45s: 15s × 3).
+const PING_MISS_LIMIT: u32 = 3;
+
 pub struct TcpWsLink {
     sink: BoxedSink,
     source: BoxedSource,
     peer_addr: Option<String>,
+    ping_interval: tokio::time::Interval,
+    /// How many `PING_INTERVAL` ticks have fired since the last `Pong`
+    /// (or since the link was created, if none has arrived yet). Reset to
+    /// 0 by any inbound `Message::Pong`; `recv()` declares the link dead
+    /// once this reaches `PING_MISS_LIMIT`.
+    missed_pongs: u32,
 }
 
 impl TcpWsLink {
@@ -38,6 +54,8 @@ impl TcpWsLink {
             sink: Box::pin(sink),
             source: Box::pin(source),
             peer_addr: None,
+            ping_interval: tokio::time::interval(PING_INTERVAL),
+            missed_pongs: 0,
         }
     }
 
@@ -52,6 +70,8 @@ impl TcpWsLink {
             sink: Box::pin(sink),
             source: Box::pin(source),
             peer_addr,
+            ping_interval: tokio::time::interval(PING_INTERVAL),
+            missed_pongs: 0,
         }
     }
 }
@@ -82,12 +102,35 @@ impl Link for TcpWsLink {
 
     async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
         loop {
-            match self.source.next().await {
-                Some(Ok(Message::Text(text))) => return Some(Ok(text.as_bytes().to_vec())),
-                Some(Ok(Message::Close(_))) => return None,
-                Some(Ok(_)) => continue,
-                Some(Err(err)) => return Some(Err(err.to_string())),
-                None => return None,
+            tokio::select! {
+                item = self.source.next() => {
+                    match item {
+                        Some(Ok(Message::Text(text))) => return Some(Ok(text.as_bytes().to_vec())),
+                        Some(Ok(Message::Close(_))) => return None,
+                        // tungstenite auto-replies to an inbound Ping on its
+                        // own (queues a Pong for the next write) -- nothing
+                        // to do here beyond letting it pass through. Only an
+                        // inbound Pong is this side's business: it's the
+                        // liveness signal the interval arm below is waiting
+                        // for.
+                        Some(Ok(Message::Pong(_))) => {
+                            self.missed_pongs = 0;
+                            continue;
+                        }
+                        Some(Ok(_)) => continue,
+                        Some(Err(err)) => return Some(Err(err.to_string())),
+                        None => return None,
+                    }
+                }
+                _ = self.ping_interval.tick() => {
+                    if self.missed_pongs >= PING_MISS_LIMIT {
+                        return None;
+                    }
+                    if self.sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        return None;
+                    }
+                    self.missed_pongs += 1;
+                }
             }
         }
     }
@@ -299,6 +342,7 @@ async fn dial_with_backoff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
 
     #[test]
     fn should_dial_only_paired_peers_where_local_id_wins_dialer_rule() {
@@ -308,5 +352,66 @@ mod tests {
         assert!(!should_dial_peer("local-a", "peer-c", &paired, false));
         assert!(!should_dial_peer("peer-z", "peer-b", &paired, false));
         assert!(!should_dial_peer("local-a", "peer-b", &paired, true));
+    }
+
+    async fn free_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
+    }
+
+    /// Regression test for ADR-0003 Phase 1: a peer that completes the WS
+    /// handshake and then goes genuinely silent (still holding the TCP
+    /// connection open, never reading or writing anything else -- unlike
+    /// `Message::Close`, which the pre-existing code already handled) must
+    /// eventually be reported dead, not block `recv()` forever. Paused time
+    /// lets this run in real time without an actual ~45s wait.
+    #[tokio::test(start_paused = true)]
+    async fn recv_reports_the_link_dead_once_pings_go_unanswered() {
+        let port = free_port().await;
+        let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Never read or write again -- a connected-but-unresponsive peer.
+            std::future::pending::<()>().await;
+        });
+
+        let mut link = dial("127.0.0.1".parse().unwrap(), port).await.unwrap();
+
+        match link.recv().await {
+            None => {}
+            other => panic!("expected the link to be reported dead, got {other:?}"),
+        }
+    }
+
+    /// Sibling regression test: a peer that keeps answering (a real
+    /// `tokio-tungstenite` client auto-replies `Pong` to every `Ping`, per
+    /// RFC 6455 -- nothing peer-side needs to do deliberately) must *not*
+    /// be declared dead just because multiple `PING_INTERVAL`s have quietly
+    /// elapsed with no application data in between.
+    #[tokio::test(start_paused = true)]
+    async fn recv_keeps_a_responsive_link_alive_across_several_ping_intervals() {
+        let port = free_port().await;
+        let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Idle long enough for several PING_INTERVAL ticks to fire
+            // (tungstenite auto-replies Pong to each Ping on its own),
+            // then prove the connection is still genuinely usable.
+            tokio::time::sleep(PING_INTERVAL * (PING_MISS_LIMIT + 2)).await;
+            ws.send(Message::Text("still alive".into())).await.unwrap();
+        });
+
+        let mut link = dial("127.0.0.1".parse().unwrap(), port).await.unwrap();
+
+        match link.recv().await {
+            Some(Ok(bytes)) => assert_eq!(bytes, b"still alive"),
+            other => panic!("expected the still-live link to deliver its message, got {other:?}"),
+        }
     }
 }
