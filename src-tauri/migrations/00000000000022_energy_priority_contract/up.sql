@@ -1,0 +1,10 @@
+ALTER TABLE quest_series DROP COLUMN priority;
+ALTER TABLE quest_series DROP COLUMN energy;
+ALTER TABLE quest_series ADD COLUMN priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3));
+ALTER TABLE quest_series ADD COLUMN energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3));
+
+ALTER TABLE quests DROP COLUMN pinned;
+ALTER TABLE quests DROP COLUMN energy;
+ALTER TABLE quests DROP COLUMN priority;
+ALTER TABLE quests ADD COLUMN energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3));
+ALTER TABLE quests ADD COLUMN priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3));

@@ -10,7 +10,6 @@ function quest(input: Partial<Quest> & Pick<Quest, "id" | "title" | "status" | "
     status: input.status,
     energy: input.energy ?? "medium",
     priority: input.priority ?? "medium",
-    pinned: input.pinned ?? false,
     due: input.due ?? null,
     due_time: input.due_time ?? null,
     repeat_rule: input.repeat_rule ?? null,

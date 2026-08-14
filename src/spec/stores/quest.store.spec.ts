@@ -15,7 +15,6 @@ function baseQuest(overrides: Partial<Quest> = {}): Quest {
     status: "active",
     energy: "medium",
     priority: "medium",
-    pinned: false,
     due: null,
     due_time: null,
     repeat_rule: null,

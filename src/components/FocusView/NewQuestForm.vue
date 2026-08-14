@@ -90,7 +90,6 @@ const draftQuest = computed<Quest>(() => ({
   status: "active",
   energy: energy.value,
   priority: priority.value,
-  pinned: false,
   due: due.value,
   due_time: dueTime.value,
   repeat_rule: repeatRule.value,

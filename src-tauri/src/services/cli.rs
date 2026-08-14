@@ -234,8 +234,6 @@ struct QuestUpdateArgs {
     status: Option<String>,
     #[arg(long)]
     space_id: Option<String>,
-    #[arg(long)]
-    pinned: Option<bool>,
     #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due: Option<String>,
     #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
@@ -1141,7 +1139,6 @@ fn update_quest_from_cli(
         priority: args.priority.as_deref().map(|value| {
             crate::models::parse_priority_name(value).expect("clap restricts --priority values")
         }),
-        pinned: args.pinned,
         due: None,
         due_time: None,
         repeat_rule: None,
@@ -1192,7 +1189,6 @@ fn update_quest_status(
             description: None,
             status: Some(status.to_string()),
             space_id: None,
-            pinned: None,
             due: None,
             due_time: None,
             energy: None,

@@ -39,7 +39,6 @@ diesel::table! {
         status      -> Text,
         energy      -> BigInt,
         priority    -> BigInt,
-        pinned      -> Bool,
         due         -> Nullable<Text>,
         due_time    -> Nullable<Text>,
         repeat_rule -> Nullable<Text>,

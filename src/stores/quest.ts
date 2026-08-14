@@ -20,7 +20,6 @@ export interface Quest {
   status: "active" | "completed" | "abandoned";
   energy: Energy;
   priority: Priority;
-  pinned: boolean;
   due: string | null;
   due_time: string | null;
   repeat_rule: string | null;
@@ -65,7 +64,6 @@ export interface UpdateQuestInput {
   status?: "active" | "completed" | "abandoned";
   energy?: Energy;
   priority?: Priority;
-  pinned?: boolean;
   due?: string | null;
   due_time?: string | null;
   repeat_rule?: string | null;

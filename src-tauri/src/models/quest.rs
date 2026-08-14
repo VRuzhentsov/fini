@@ -133,7 +133,6 @@ pub struct Quest {
         deserialize_with = "deserialize_priority"
     )]
     pub priority: i64,
-    pub pinned: bool,
     pub due: Option<String>,
     pub due_time: Option<String>,
     /// JSON-encoded RepeatRule, or null
@@ -229,7 +228,6 @@ pub struct UpdateQuestInput {
     pub energy: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_priority")]
     pub priority: Option<i64>,
-    pub pinned: Option<bool>,
     pub due: Option<String>,
     pub due_time: Option<String>,
     pub repeat_rule: Option<String>,

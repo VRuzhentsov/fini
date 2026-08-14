@@ -9,35 +9,25 @@ Use this skill for Fini SQLite schema changes, Diesel schema updates, data migra
 
 ## Database Design Preference
 
-Fini migrations should leave the database in one clear current state. Do not create permanent compatibility tables, backup tables, shadow copies, or `_old`/`_backup` tables as part of a normal migration. They add schema debt, multiply maintenance paths, and conceal incomplete migrations.
+Fini is in open alpha. Treat the current schema as the only supported schema: do not add legacy mappings, conversion paths, compatibility tables, backup normalization, or rollback compatibility unless the user explicitly asks for them.
 
-When SQLite requires a table rebuild to change a constraint or column type, use a **transient replacement table** only within the migration transaction/script:
-
-1. Create a clearly temporary `<table>_replacement` table with the complete target schema.
-2. Copy rows with explicit transformations for every changed field.
-3. Drop the original table.
-4. Rename the replacement to the canonical table name.
-5. Recreate required indexes and re-enable foreign keys.
-
-The replacement table must not remain after a successful migration. Do not name it `_old`, `_backup`, or present it as retained recovery data.
+Use direct SQLite schema mutations (`ALTER TABLE ... ADD COLUMN`, `DROP COLUMN`, or `RENAME COLUMN`) whenever SQLite supports the required change. Do not use replacement tables for normal Fini schema work. If a required change cannot be made with direct SQLite mutations, stop and obtain an explicit user decision rather than silently introducing a rebuild or compatibility layer.
 
 ## Migration Contract
 
 1. Define the final schema first: types, nullability, defaults, constraints, indexes, and foreign keys.
-2. Map legacy values explicitly in SQL. Unknown or malformed legacy values must follow a documented safe fallback.
-3. Preserve every unaffected column and relationship during a rebuild.
-4. Decide reversibility deliberately. If a down migration is supported, it must recreate the actual prior schema and map values back explicitly; it must not merely execute successfully with the new schema still present.
-5. Do not add backup/compatibility tables to avoid deciding the migration contract. If lossless reversal is impossible, document and approve an irreversible migration instead.
+2. Implement the new contract directly; do not map old values. Use defaults for fields that are newly introduced or intentionally reset.
+3. Preserve unaffected columns and relationships.
+4. Decide reversibility deliberately. A migration may be explicitly irreversible; do not recreate a legacy contract merely to provide rollback.
 
 ## Verification
 
 Before commit:
 
-1. Test a real prior-version database upgraded through the migration; assert schema and migrated rows.
-2. If a down migration exists, test upgrade then downgrade; assert the prior schema and mapped values.
-3. Assert no transient replacement table remains, using `sqlite_master` or equivalent schema inspection.
-4. Update Diesel schema/model code consistently with the final schema.
-5. Run the focused Rust migration test, scoped formatting, and `git diff --check`.
+1. Test a real prior-version database upgraded through the migration; assert the final schema and defaults.
+2. Confirm migrations use direct SQLite mutations only and leave no replacement, backup, shadow, `_old`, or `_backup` tables.
+3. Update Diesel schema/model code consistently with the final schema.
+4. Run the focused Rust migration test, scoped formatting, and `git diff --check`.
 
 Use `SimpleConnection::batch_execute` for complete migration SQL scripts in tests. Do not split SQLite migration scripts on semicolons.
 

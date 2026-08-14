@@ -1,1 +1,0 @@
--- Intentionally irreversible: legacy Energy and Priority contracts are unsupported.

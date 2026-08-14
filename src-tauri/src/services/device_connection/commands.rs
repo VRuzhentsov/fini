@@ -2185,6 +2185,8 @@ mod tests {
         std::mem::forget(dir);
 
         conn.revert_last_migration(db::MIGRATIONS)
+            .expect("revert the irreversible metadata migration marker");
+        conn.revert_last_migration(db::MIGRATIONS)
             .expect("revert the bluetooth_disabled_by_user migration");
 
         diesel::insert_into(paired_devices::table)
