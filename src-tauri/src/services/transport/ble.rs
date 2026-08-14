@@ -778,8 +778,11 @@ pub fn spawn_dial_loop(
         // Network-first: only engage when the peer isn't effectively
         // reachable over the network — mirrors `sim::spawn_fallback_dial_loop`'s
         // `sim_is_preferred` check, but for the real fallback role instead
-        // of the test stand-in.
-        if state.network_effectively_available(peer_id) {
+        // of the test stand-in. ADR-0003 Phase 3: an explicit Bluetooth pin
+        // overrides this too, matching `dial_with_backoff`'s own override
+        // below -- without it here, a pin never gets this far: the retry
+        // task that would apply the override is never even spawned.
+        if state.network_effectively_available(peer_id) && !peer_prefers_bluetooth(&db_path, peer_id) {
             continue;
         }
         // One retry loop per peer, not one per tick: `space_sync_tick`
@@ -835,12 +838,48 @@ fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str, address
     })
 }
 
+/// ADR-0003 Phase 3: has the user explicitly pinned this pair to Bluetooth?
+/// If so, `dial_with_backoff`'s normal "only engage once network is
+/// unreachable" fallback gating is overridden -- an explicit pin means
+/// dial regardless of network's own availability. Also consulted by
+/// `spawn_dial_loop`'s own outer gate (see its doc comment) -- without
+/// that, a Bluetooth pin never even gets a `dial_with_backoff` task spawned
+/// to apply this override in the first place.
+fn peer_prefers_bluetooth(db_path: &std::path::Path, peer_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        crate::services::device_connection::peer_transport_preference(&mut conn, peer_id).as_deref()
+            == Some("bluetooth")
+    })
+}
+
+/// ADR-0003 Phase 3: has the user explicitly pinned this pair to Network?
+/// If so, `dial_with_backoff` must not fall back to Bluetooth just because
+/// network is *momentarily* unreachable -- an explicit pin is sticky, and a
+/// transient blip isn't consent to hand the session to the other transport.
+/// The opposite of `peer_prefers_bluetooth`, not merely its negation: "no
+/// preference at all" must keep the old automatic-fallback behavior, so
+/// this only returns `true` for an explicit `"network"` pin.
+fn peer_prefers_network(db_path: &std::path::Path, peer_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        crate::services::device_connection::peer_transport_preference(&mut conn, peer_id).as_deref()
+            == Some("network")
+    })
+}
+
 async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String, address: String) {
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(30);
 
     loop {
-        if state.has_session(&peer_id) || state.network_effectively_available(&peer_id) {
+        if state.has_session(&peer_id) {
+            return;
+        }
+        if peer_prefers_network(&db_path, &peer_id) {
+            return;
+        }
+        if state.network_effectively_available(&peer_id) && !peer_prefers_bluetooth(&db_path, &peer_id) {
             return;
         }
         // Re-checked every retry, not just at the moment this task was
@@ -880,8 +919,22 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                             );
                             return;
                         }
+                        // Same race, for a Network pin instead of the
+                        // enabled/OS-paired eligibility above: the user
+                        // could pin this peer to Network while this
+                        // connect+auth round trip was in flight, and
+                        // without this check that pin would otherwise be
+                        // silently overridden by the Bluetooth session this
+                        // loop is about to claim.
+                        if peer_prefers_network(&db_path, &peer_id) {
+                            eprintln!(
+                                "[transport][ble] {peer_id} was pinned to Network during the \
+                                 connect/auth handshake; discarding this Bluetooth session"
+                            );
+                            return;
+                        }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx) {
+                        if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx, peer_protocol_version) {
                             session::run_session(
                                 link,
                                 rx,
@@ -897,7 +950,26 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                     }
                     Err(err) => {
                         eprintln!("[transport][ble] auth with {peer_id} failed: {err}");
-                        if err.starts_with("auth rejected") {
+                        // ADR-0003 Phase 3: "bluetooth disabled"/"not
+                        // OS-paired" are not permanent the way "unknown
+                        // device" is -- the user could re-enable, or
+                        // re-pair, at any time. Treating them as ordinary
+                        // failures (record + keep retrying) instead of
+                        // terminal lets bluetooth_dial_failure_count
+                        // actually accumulate here, which is what lets
+                        // tcp_ws::dial_with_backoff's own sticky-Bluetooth-pin
+                        // override eventually give up on a Bluetooth pin
+                        // that's become permanently unreachable on the
+                        // peer's end -- without this, that peer's own
+                        // inbound rejections never surface as failures at
+                        // all, and a Bluetooth-pinned peer whose Bluetooth
+                        // got disabled stays unreachable on every transport
+                        // forever (TCP suppressed by the stale pin, BLE
+                        // rejected outright).
+                        if err.starts_with("auth rejected")
+                            && !err.contains("bluetooth disabled for this pair")
+                            && !err.contains("bluetooth device is not currently OS-paired")
+                        {
                             return; // not paired; don't retry
                         }
                         // Connection-level failure (link dropped mid-auth,
@@ -959,5 +1031,48 @@ mod tests {
             !disabled_again.advertised_manufacturer_data.contains_key(&FINI_MANUFACTURER_ID),
             "must stop advertising the flag once add-mode is left again"
         );
+    }
+
+    fn seeded_preference_db(preferred: Option<&str>) -> std::path::PathBuf {
+        use crate::schema::paired_devices;
+        use diesel::prelude::*;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = open_db_at_path(&db_path);
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+                paired_devices::preferred_transport.eq(preferred),
+            ))
+            .execute(&mut conn)
+            .expect("insert paired device");
+        std::mem::forget(dir);
+        db_path
+    }
+
+    /// Regression test for a P1 review finding on ADR-0003 Phase 3: a
+    /// Bluetooth pin and a Network pin must be mutually exclusive and both
+    /// distinct from "no preference" -- `spawn_dial_loop`'s outer gate and
+    /// `dial_with_backoff`'s inner gate both depend on exactly this
+    /// three-way distinction to apply the pin correctly in either
+    /// direction.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_prefers_bluetooth_and_network_are_mutually_exclusive() {
+        let no_preference = seeded_preference_db(None);
+        assert!(!peer_prefers_bluetooth(&no_preference, "peer-a"));
+        assert!(!peer_prefers_network(&no_preference, "peer-a"));
+
+        let bluetooth_pinned = seeded_preference_db(Some("bluetooth"));
+        assert!(peer_prefers_bluetooth(&bluetooth_pinned, "peer-a"));
+        assert!(!peer_prefers_network(&bluetooth_pinned, "peer-a"));
+
+        let network_pinned = seeded_preference_db(Some("network"));
+        assert!(!peer_prefers_bluetooth(&network_pinned, "peer-a"));
+        assert!(peer_prefers_network(&network_pinned, "peer-a"));
     }
 }

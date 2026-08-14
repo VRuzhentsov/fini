@@ -2780,13 +2780,23 @@ mod tests {
 
         let device_connection = DeviceConnectionState::from_app_data_dir(&app_dir);
         let (tx, mut rx) = mpsc::channel(4);
-        assert!(device_connection.try_claim_session("peer-a", TransportKind::TcpWs, tx));
+        assert!(device_connection.try_claim_session(
+            "peer-a",
+            TransportKind::TcpWs,
+            tx,
+            crate::services::space_sync::types::PROTOCOL_VERSION
+        ));
 
         let tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
         assert_eq!(tick.sent_events, 0);
 
         while let Ok(sent) = rx.try_recv() {
-            if matches!(sent, PeerFrame::SpaceMappingUpdate { .. }) {
+            if matches!(
+                sent,
+                crate::services::space_sync::types::SessionCommand::Forward(
+                    PeerFrame::SpaceMappingUpdate { .. }
+                )
+            ) {
                 panic!("mapping snapshot should not be sent");
             }
         }

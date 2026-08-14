@@ -262,7 +262,42 @@ fn should_dial_peer(
     paired_peer_ids.contains(peer_id) && my_id < peer_id && !has_session
 }
 
-async fn dial_with_backoff(
+/// ADR-0003 Phase 3: has the user explicitly pinned this pair to
+/// Bluetooth? If so, `dial_with_backoff` withdraws its own retries even
+/// while network is genuinely reachable -- an explicit pin overrides the
+/// default network-first order, symmetric with `ble::dial_with_backoff`'s
+/// own override in the other direction.
+fn peer_prefers_bluetooth(db_path: &std::path::Path, peer_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = crate::services::db::open_db_at_path(db_path);
+        crate::services::device_connection::peer_transport_preference(&mut conn, peer_id).as_deref()
+            == Some("bluetooth")
+    })
+}
+
+/// ADR-0003 Phase 3: is Bluetooth *currently* eligible for this peer --
+/// enabled, a stored address, and a live OS bond checked right now? A
+/// separate, more immediate signal than `bluetooth_dial_failure_count`-based
+/// reliability: if the OS bond disappears after a valid Bluetooth pin was
+/// adopted, `bluetooth_dial_candidates` excludes the peer before BLE's own
+/// dial loop ever gets a chance to attempt (and therefore fail) a
+/// connection, so failure-count-based reliability alone would never
+/// demote and this override would suppress Network forever. Checked
+/// alongside (not instead of) `bluetooth_effectively_reliable` -- both
+/// must hold to keep honoring the pin.
+fn peer_bluetooth_is_currently_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = crate::services::db::open_db_at_path(db_path);
+        crate::services::device_connection::peer_is_currently_bluetooth_eligible(&mut conn, peer_id)
+    })
+}
+
+/// `pub(crate)`, not private: `transport::tests` exercises this directly
+/// (bypassing `spawn_dial_loop`'s presence-worker plumbing) to prove its
+/// error-handling distinguishes a genuine rejection from a transport
+/// preference mismatch -- see the regression test for the P1 finding this
+/// guards against.
+pub(crate) async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_id: String,
@@ -274,6 +309,23 @@ async fn dial_with_backoff(
 
     loop {
         if state.has_session(&peer_id) {
+            return;
+        }
+        // ADR-0003 Phase 3: a Bluetooth pin is sticky against a *transient*
+        // reason to second-guess it -- but not indefinitely against
+        // repeated, concrete evidence that Bluetooth has become
+        // permanently unreachable for this peer (disabled, unbonded, out
+        // of range for a long stretch), and not once the OS bond has
+        // outright disappeared (see `peer_bluetooth_is_currently_eligible`'s
+        // own doc comment for why that needs its own direct check, not
+        // just failure-count-based reliability). Once either signal says
+        // Bluetooth genuinely isn't viable, this override steps aside and
+        // lets Network try anyway -- the alternative is a pin that can
+        // never be un-stuck once the pinned transport stops working at all.
+        if peer_prefers_bluetooth(&db_path, &peer_id)
+            && peer_bluetooth_is_currently_eligible(&db_path, &peer_id)
+            && state.bluetooth_effectively_reliable(&peer_id)
+        {
             return;
         }
         let still_present = state
@@ -301,8 +353,28 @@ async fn dial_with_backoff(
                     Ok(peer_protocol_version) => {
                         eprintln!("[transport][tcp_ws] auth OK with {peer_id}");
                         state.record_tcp_dial_success(&peer_id);
+                        // ADR-0003 Phase 3: the inverse of ble.rs's own
+                        // recheck -- the user could pin this peer to
+                        // Bluetooth while this connect+auth round trip was
+                        // in flight, and without this check that pin would
+                        // otherwise be silently overridden by the Network
+                        // session this loop is about to claim. Same
+                        // reliability override as the top-of-loop check
+                        // above: a Bluetooth pin that's become permanently
+                        // unreachable must not keep discarding a Network
+                        // session that just successfully authenticated.
+                        if peer_prefers_bluetooth(&db_path, &peer_id)
+                            && peer_bluetooth_is_currently_eligible(&db_path, &peer_id)
+                            && state.bluetooth_effectively_reliable(&peer_id)
+                        {
+                            eprintln!(
+                                "[transport][tcp_ws] {peer_id} was pinned to Bluetooth during \
+                                 the connect/auth handshake; discarding this Network session"
+                            );
+                            return;
+                        }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx) {
+                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, peer_protocol_version) {
                             session::run_session(
                                 link,
                                 rx,

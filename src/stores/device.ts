@@ -13,6 +13,11 @@ export interface PairedDevice {
   bluetooth_enabled: boolean;
   bluetooth_address: string | null;
   bluetooth_last_verified_at: string | null;
+  // ADR-0003 Phase 3: the user's sticky manual pin, if any -- "network" |
+  // "bluetooth" | null. Independent of `TransportStatus.preferred` (what
+  // the *automatic* dial order would pick); this is what a row click sets.
+  preferred_transport: string | null;
+  preferred_transport_set_at: string | null;
 }
 
 // Mirrors the backend's RowState (device_connection::transport, ADR 0003
@@ -592,6 +597,28 @@ export const useDeviceStore = defineStore("device", () => {
       pairedDevices.value[index] = updated;
     } else {
       pairedDevices.value = [updated, ...pairedDevices.value];
+    }
+    await refreshTransportStatuses(peerDeviceId);
+    return updated;
+  }
+
+  // ADR-0003 Phase 3: pins this pair onto the clicked transport, sticky
+  // until the user clicks a row again (or the peer's own newer pin wins the
+  // last-writer-wins race). The backend command notifies the peer and force-
+  // closes a mismatched live session, if any -- this just persists the
+  // returned row and refreshes what's live, matching setBluetoothTransport's
+  // shape above.
+  async function setPreferredTransport(
+    peerDeviceId: string,
+    kind: "network" | "bluetooth",
+  ): Promise<PairedDevice> {
+    const updated = await invoke<PairedDevice>("device_connection_set_preferred_transport", {
+      peerDeviceId,
+      preferred: kind === "network" ? "tcp_ws" : "bluetooth",
+    });
+    const index = pairedDevices.value.findIndex((device) => device.peer_device_id === peerDeviceId);
+    if (index >= 0) {
+      pairedDevices.value[index] = updated;
     }
     await refreshTransportStatuses(peerDeviceId);
     return updated;
@@ -1333,6 +1360,7 @@ export const useDeviceStore = defineStore("device", () => {
     refreshTransportStatuses,
     refreshLiveConnectedState,
     setBluetoothTransport,
+    setPreferredTransport,
     findBluetoothAddress,
     isSyncingPeer,
     runSpaceSyncTick,
