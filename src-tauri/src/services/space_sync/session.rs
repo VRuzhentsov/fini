@@ -578,54 +578,78 @@ async fn handle_inbound(
             });
         }
         PeerFrame::SwitchTransport { to, requested_at } => {
+            use crate::services::device_connection::TransportPreferenceAdoption;
+
             let db = db_path.clone();
             let peer = peer_device_id.to_string();
-            let (adopted, winning) = tokio::task::block_in_place(|| {
+            let (outcome, winning) = tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                let adopted = crate::services::device_connection::adopt_peer_transport_preference(
+                let outcome = crate::services::device_connection::adopt_peer_transport_preference(
                     &mut conn, &peer, to, &requested_at,
                 );
-                let winning = (!adopted)
-                    .then(|| {
+                let winning = match outcome {
+                    TransportPreferenceAdoption::Adopted => None,
+                    TransportPreferenceAdoption::Stale => {
                         crate::services::device_connection::peer_transport_preference_with_timestamp(
                             &mut conn, &peer,
                         )
-                    })
-                    .flatten();
-                (adopted, winning)
+                    }
+                    // Whatever the timestamp says, this device can't
+                    // support `to` right now, and may have no preference
+                    // of its own recorded at all to fall back on offering
+                    // -- Network is the one transport every peer
+                    // understands, so it's always a safe, concrete
+                    // counter-proposal here. Stamped "now" so it's
+                    // guaranteed to win over the rejected proposal instead
+                    // of silently going unanswered (see this match arm's
+                    // caller-side handling below for why silence would
+                    // otherwise strand the sender).
+                    TransportPreferenceAdoption::Ineligible => {
+                        Some(("network".to_string(), crate::services::db::utc_now()))
+                    }
+                };
+                (outcome, winning)
             });
-            if adopted {
-                // Only ever closes *this* session if the adopted preference
-                // actually won the race and doesn't already match what's
-                // live -- an older/losing `requested_at` changes nothing
-                // here, same as `device_connection_set_preferred_transport_impl`'s
-                // own local force-switch.
-                if state.session_kind(&peer) != Some(to) {
-                    state.request_session_close(&peer);
+            match outcome {
+                TransportPreferenceAdoption::Adopted => {
+                    // Only ever closes *this* session if the adopted
+                    // preference actually won the race and doesn't already
+                    // match what's live -- an older/losing `requested_at`
+                    // changes nothing here, same as `device_connection_
+                    // set_preferred_transport_impl`'s own local force-switch.
+                    if state.session_kind(&peer) != Some(to) {
+                        state.request_session_close(&peer);
+                    }
                 }
-            } else if let Some((preference, winning_requested_at)) = winning {
-                // Rejected -- either the sender's info was stale, or it
-                // proposed a transport this device can't actually adopt
-                // (e.g. Bluetooth disabled locally, see
-                // `adopt_peer_transport_preference`'s own doc comment).
-                // Reply with whichever preference actually won so the
-                // sender can self-correct instead of repeatedly offering
-                // (and this device repeatedly rejecting) the same stale
-                // proposal -- see `run_session`'s startup relay for why it
-                // deliberately doesn't just close unconditionally on a
-                // guess that might itself be the stale one. Only reply
-                // when there's an actual correction to offer: if the
-                // winning target already matches what was proposed (just a
-                // tied/older timestamp for an otherwise-agreed transport),
-                // staying silent avoids an endless reply-to-a-reply loop
-                // between two sides that already agree.
-                let winning_kind = transport_kind_from_preference_string(&preference);
-                if winning_kind != to {
-                    let _ = send_frame(
-                        link,
-                        &PeerFrame::SwitchTransport { to: winning_kind, requested_at: winning_requested_at },
-                    )
-                    .await;
+                TransportPreferenceAdoption::Stale | TransportPreferenceAdoption::Ineligible => {
+                    // Rejected -- either the sender's info was stale, or it
+                    // proposed a transport this device can't actually adopt
+                    // (Bluetooth disabled locally). Reply with whichever
+                    // preference actually applies so the sender can
+                    // self-correct instead of repeatedly offering (and this
+                    // device repeatedly rejecting) the same stale or
+                    // unsupportable proposal -- see `run_session`'s startup
+                    // relay for why it deliberately doesn't just close
+                    // unconditionally on a guess that might itself be
+                    // wrong. Only reply when there's an actual correction
+                    // to offer: if the winning target already matches what
+                    // was proposed (just a tied/older timestamp for an
+                    // otherwise-agreed transport), staying silent avoids an
+                    // endless reply-to-a-reply loop between two sides that
+                    // already agree.
+                    if let Some((preference, winning_requested_at)) = winning {
+                        let winning_kind = transport_kind_from_preference_string(&preference);
+                        if winning_kind != to {
+                            let _ = send_frame(
+                                link,
+                                &PeerFrame::SwitchTransport {
+                                    to: winning_kind,
+                                    requested_at: winning_requested_at,
+                                },
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
         }

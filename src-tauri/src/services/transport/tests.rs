@@ -137,12 +137,17 @@ async fn request_session_close_terminates_a_live_session() {
 }
 
 /// ADR-0003 Phase 3's full command: pinning a peer to a transport different
-/// from the one it's currently live on (a) persists the preference, (b)
-/// sends the peer PeerFrame::SwitchTransport *before* the session closes
-/// (mpsc ordering through the same mailbox `request_session_close` uses),
-/// and (c) actually closes the mismatched local session.
+/// from the one it's currently live on (a) persists the preference and (b)
+/// sends the peer PeerFrame::SwitchTransport. Deliberately does not itself
+/// assert the session then closes -- a P1 finding caught that closing
+/// unilaterally on this side's own guess (even though it's a fresh,
+/// almost-certainly-winning timestamp) can strand a session if the peer
+/// rejects for a reason this side can't predict (e.g. Bluetooth disabled on
+/// the peer's end); actually closing is the *peer's* own adoption's job
+/// (see `session::handle_inbound`), which this raw test client doesn't
+/// exercise.
 #[tokio::test(flavor = "multi_thread")]
-async fn set_preferred_transport_persists_notifies_and_closes_a_mismatched_session() {
+async fn set_preferred_transport_persists_and_notifies_a_mismatched_session() {
     let (server, server_db) = server_state("transport-set-preferred-mismatch");
     seed_paired_device(&server_db, "peer-client");
     let port = free_port().await;
@@ -188,8 +193,9 @@ async fn set_preferred_transport_persists_notifies_and_closes_a_mismatched_sessi
 
     sleep(Duration::from_millis(50)).await;
     assert!(
-        !server.has_session("peer-client"),
-        "a preference that doesn't match the live transport must close the session"
+        server.has_session("peer-client"),
+        "must not close unilaterally on a guess -- only the peer's own adoption \
+         (not exercised by this raw test client) decides that"
     );
 }
 
@@ -508,6 +514,141 @@ async fn conflicting_offline_pins_converge_on_the_newer_one_without_a_reconnect_
         converged,
         "the dialer's own stale Network pin must yield to the responder's newer Bluetooth one"
     );
+}
+
+/// Regression test for a P1 review finding on ADR-0003 Phase 3: a peer
+/// proposing Bluetooth to a device that has Bluetooth disabled locally
+/// can't simply be told "no" via silence -- if this device has no
+/// preference of its own recorded, `adopt_peer_transport_preference`'s
+/// `Ineligible` rejection previously had no stored preference to offer
+/// back either, so the sender never learned to fall back and a live
+/// Network session got force-closed for nothing. Proves the fix: an
+/// explicit Network counter-proposal is sent even with no stored
+/// preference, and the session that received the (rejected) proposal is
+/// *not* force-closed as a side effect of the rejection.
+#[tokio::test(flavor = "multi_thread")]
+async fn ineligible_switch_transport_produces_a_network_fallback_instead_of_silence() {
+    let (server, server_db) = server_state("transport-ineligible-switch-fallback");
+    seed_paired_device(&server_db, "peer-client");
+    // Bluetooth left at test_conn-equivalent default (disabled) for this
+    // pair -- the condition under test.
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    sleep(Duration::from_millis(50)).await;
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::SwitchTransport {
+            to: TransportKind::Bluetooth,
+            requested_at: "2026-04-07T00:00:01Z".to_string(),
+        },
+    )
+    .await
+    .expect("send the (unsupportable) Bluetooth proposal");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for the Network fallback");
+        match recv_frame(link.as_mut()).await {
+            Some(Ok(PeerFrame::SwitchTransport { to, .. })) => {
+                assert_eq!(to, TransportKind::TcpWs, "must fall back to Network, not stay silent");
+                break;
+            }
+            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
+            other => panic!("expected a Network fallback SwitchTransport, got {other:?}"),
+        }
+    }
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        server.has_session("peer-client"),
+        "rejecting an unsupportable proposal must not force-close the live session"
+    );
+}
+
+/// Regression test for a P1 review finding on ADR-0003 Phase 3: disabling
+/// Bluetooth for a pair that was pinned to it must not just clear this
+/// device's own row -- if the peer is the sole deterministic dialer and
+/// still holds the old Bluetooth pin, it never learns to fall back
+/// (Network dial stands down because of its own pin; Bluetooth is now
+/// rejected by this device). Proves
+/// `device_connection_set_bluetooth_transport_with_state_impl` relays the
+/// redirect to a live peer, not just the local DB.
+#[tokio::test(flavor = "multi_thread")]
+async fn disabling_bluetooth_notifies_a_live_peer_to_fall_back_to_network() {
+    let (server, server_db) = server_state("transport-disable-bluetooth-notifies");
+    seed_paired_device(&server_db, "peer-client");
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    sleep(Duration::from_millis(50)).await;
+
+    let mut conn = open_db_at_path(&server_db);
+    diesel::update(paired_devices::table.find("peer-client"))
+        .set(paired_devices::bluetooth_enabled.eq(true))
+        .execute(&mut conn)
+        .expect("enable bluetooth ahead of pinning it");
+    crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut conn,
+        &server,
+        "peer-client".to_string(),
+        Some(TransportKind::Bluetooth),
+    )
+    .expect("pin to bluetooth");
+
+    // Drain the notification this setup step itself sends (pinning to
+    // Bluetooth), so the assertions below only see the disable's own
+    // redirect notification. Skips past a real machine's own Bluetooth
+    // self-report too, same as the other tests in this file.
+    loop {
+        match recv_frame(link.as_mut()).await {
+            Some(Ok(PeerFrame::SwitchTransport { to: TransportKind::Bluetooth, .. })) => break,
+            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
+            other => panic!("expected the setup's own Bluetooth pin notification, got {other:?}"),
+        }
+    }
+
+    let updated = crate::services::device_connection::device_connection_set_bluetooth_transport_with_state_impl(
+        &mut conn,
+        &server,
+        crate::services::device_connection::types::DeviceBluetoothTransportInput {
+            peer_device_id: "peer-client".to_string(),
+            enabled: false,
+            bluetooth_address: None,
+        },
+    )
+    .expect("disable bluetooth");
+    assert_eq!(
+        updated.preferred_transport.as_deref(),
+        Some("network"),
+        "disabling a Bluetooth pin must redirect to Network, not merely clear it"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for the Network redirect");
+        match recv_frame(link.as_mut()).await {
+            Some(Ok(PeerFrame::SwitchTransport { to, .. })) => {
+                assert_eq!(to, TransportKind::TcpWs);
+                break;
+            }
+            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
+            other => panic!("expected a Network redirect SwitchTransport, got {other:?}"),
+        }
+    }
 }
 
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network

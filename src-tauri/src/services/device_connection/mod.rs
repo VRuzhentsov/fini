@@ -40,6 +40,7 @@ pub(crate) use commands::{
     adopt_peer_transport_preference, local_bluetooth_address, normalize_bluetooth_address,
     peer_transport_preference, peer_transport_preference_with_timestamp,
     persist_bluetooth_address_and_maybe_enable, transport_kind_to_preference_string,
+    TransportPreferenceAdoption,
 };
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
@@ -52,7 +53,8 @@ pub use commands::{
     device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
     device_connection_send_pair_request_impl, device_connection_session_transport_impl,
-    device_connection_set_bluetooth_transport_impl, device_connection_set_preferred_transport_impl,
+    device_connection_set_bluetooth_transport_impl, device_connection_set_bluetooth_transport_with_state_impl,
+    device_connection_set_preferred_transport_impl,
     device_connection_transport_statuses_impl, device_connection_unpair_impl,
     device_connection_update_last_seen_impl,
 };
