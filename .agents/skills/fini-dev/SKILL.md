@@ -18,6 +18,12 @@ Keep every development session consistent:
 - Make the smallest correct change.
 - Verify with concrete evidence before reporting success.
 
+## No-Legacy Policy
+
+Fini is in open alpha and has not been publicly released. Treat the current source and schema as the only supported contract: do not add, preserve, or test legacy compatibility for prior Energy/Priority values, sync payloads, backup formats, migrations, or rollback paths unless the user explicitly directs it.
+
+When a contract changes during alpha, implement the new contract directly. Remove obsolete adapters and mappings rather than carrying a compatibility layer for an unreleased predecessor.
+
 ## First-Run Install
 
 Before implementation, debugging, QA, Android, design-to-code, release, documentation changes, or planning that depends on repo context:
