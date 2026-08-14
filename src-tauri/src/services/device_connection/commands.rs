@@ -1389,6 +1389,24 @@ pub fn device_connection_set_bluetooth_transport_impl(
             ))
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
+
+        // ADR-0003 Phase 3: a "bluetooth" pin that survives disabling
+        // Bluetooth for this pair is a stranding hazard -- the Network
+        // dial loop stands down because of the pin, while
+        // `bluetooth_dial_candidates`/the inbound Bluetooth gate now both
+        // exclude this pair, leaving no transport able to ever reconnect.
+        // Clearing it falls back to automatic (network-first) selection,
+        // matching what the user almost certainly wants from "disable
+        // Bluetooth" anyway.
+        if peer_transport_preference(conn, &input.peer_device_id).as_deref() == Some("bluetooth") {
+            diesel::update(paired_devices::table.find(&input.peer_device_id))
+                .set((
+                    paired_devices::preferred_transport.eq(Option::<String>::None),
+                    paired_devices::preferred_transport_set_at.eq(Option::<String>::None),
+                ))
+                .execute(&mut *conn)
+                .map_err(|e| e.to_string())?;
+        }
     }
 
     paired_devices::table
@@ -1511,6 +1529,14 @@ pub fn device_connection_set_preferred_transport(
 /// changes nothing. RFC3339-with-fixed-width-UTC timestamps (this
 /// codebase's `utc_now()` form throughout) compare correctly as plain
 /// strings -- no need to parse them into a real `DateTime`.
+///
+/// Also refuses to adopt a "bluetooth" proposal when Bluetooth isn't
+/// enabled locally for this pair, regardless of timestamp -- adopting it
+/// anyway would abandon Network (the pin says so) while
+/// `bluetooth_dial_candidates`/the inbound Bluetooth gate both still
+/// exclude a disabled pair, stranding it on no transport at all. The peer
+/// proposing Bluetooth has no way to know this device disabled it, so
+/// this device is the only side that can catch it.
 pub fn adopt_peer_transport_preference(
     conn: &mut SqliteConnection,
     peer_device_id: &str,
@@ -1530,6 +1556,16 @@ pub fn adopt_peer_transport_preference(
     }
 
     let preference = transport_kind_to_preference_string(to);
+    if preference == "bluetooth" {
+        let bluetooth_enabled: bool = paired_devices::table
+            .find(peer_device_id)
+            .select(paired_devices::bluetooth_enabled)
+            .first(&mut *conn)
+            .unwrap_or(false);
+        if !bluetooth_enabled {
+            return false;
+        }
+    }
     let _ = diesel::update(paired_devices::table.find(peer_device_id))
         .set((
             paired_devices::preferred_transport.eq(Some(preference)),
@@ -2317,6 +2353,10 @@ mod tests {
     #[test]
     fn adopt_peer_transport_preference_adopts_when_nothing_is_recorded_yet() {
         let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set(paired_devices::bluetooth_enabled.eq(true))
+            .execute(&mut conn)
+            .expect("enable bluetooth for this test");
 
         let adopted =
             adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::Bluetooth, "2026-04-07T00:00:01Z");
@@ -2336,6 +2376,10 @@ mod tests {
     #[test]
     fn adopt_peer_transport_preference_adopts_a_strictly_newer_timestamp() {
         let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set(paired_devices::bluetooth_enabled.eq(true))
+            .execute(&mut conn)
+            .expect("enable bluetooth for this test");
         assert!(adopt_peer_transport_preference(
             &mut conn,
             "peer-a",
@@ -2409,6 +2453,96 @@ mod tests {
             "2026-04-07T00:00:01Z",
         );
         assert!(!adopted, "a tied requested_at must lose");
+
+        let row: PairedDevice = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .expect("load peer row");
+        assert_eq!(row.preferred_transport.as_deref(), Some("network"));
+    }
+
+    /// Regression test for a P1 review finding on ADR-0003 Phase 3: adopting
+    /// a peer-proposed Bluetooth pin while Bluetooth is disabled locally for
+    /// this pair would strand it -- Network stands down because of the pin,
+    /// while `bluetooth_dial_candidates`/the inbound Bluetooth gate both
+    /// still exclude a disabled pair. Regardless of how much newer the
+    /// timestamp is, adoption must refuse and leave the existing preference
+    /// untouched.
+    #[test]
+    fn adopt_peer_transport_preference_refuses_bluetooth_when_disabled_locally() {
+        let mut conn = test_conn();
+        // `test_conn()` leaves bluetooth_enabled at its schema default
+        // (false) -- exactly the condition under test.
+        let adopted = adopt_peer_transport_preference(
+            &mut conn,
+            "peer-a",
+            TransportKind::Bluetooth,
+            "2026-04-07T00:00:01Z",
+        );
+        assert!(!adopted, "must refuse a Bluetooth pin while Bluetooth is disabled locally");
+
+        let row: PairedDevice = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .expect("load peer row");
+        assert_eq!(row.preferred_transport, None);
+        assert_eq!(row.preferred_transport_set_at, None);
+    }
+
+    /// Regression test for the same P1 finding's other half: a pin that was
+    /// legitimately adopted while Bluetooth was enabled must not survive
+    /// the user later disabling Bluetooth for that pair -- otherwise the
+    /// exact same stranding hazard reappears from a different entry point.
+    #[test]
+    fn disabling_bluetooth_clears_an_existing_bluetooth_pin() {
+        let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set(paired_devices::bluetooth_enabled.eq(true))
+            .execute(&mut conn)
+            .expect("enable bluetooth for this test");
+        assert!(adopt_peer_transport_preference(
+            &mut conn,
+            "peer-a",
+            TransportKind::Bluetooth,
+            "2026-04-07T00:00:01Z",
+        ));
+
+        device_connection_set_bluetooth_transport_impl(&mut conn, paired_device_input(false, None))
+            .expect("disable bluetooth");
+
+        let row: PairedDevice = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .expect("load peer row");
+        assert_eq!(
+            row.preferred_transport, None,
+            "a Bluetooth pin must not survive Bluetooth being disabled for this pair"
+        );
+        assert_eq!(row.preferred_transport_set_at, None);
+    }
+
+    /// Sibling of the test above: disabling Bluetooth for a pair that was
+    /// pinned to *Network* must leave that pin alone -- only a Bluetooth
+    /// pin is a stranding hazard here.
+    #[test]
+    fn disabling_bluetooth_leaves_a_network_pin_untouched() {
+        let mut conn = test_conn();
+        diesel::update(paired_devices::table.find("peer-a"))
+            .set(paired_devices::bluetooth_enabled.eq(true))
+            .execute(&mut conn)
+            .expect("enable bluetooth for this test");
+        assert!(adopt_peer_transport_preference(
+            &mut conn,
+            "peer-a",
+            TransportKind::TcpWs,
+            "2026-04-07T00:00:01Z",
+        ));
+
+        device_connection_set_bluetooth_transport_impl(&mut conn, paired_device_input(false, None))
+            .expect("disable bluetooth");
 
         let row: PairedDevice = paired_devices::table
             .find("peer-a")

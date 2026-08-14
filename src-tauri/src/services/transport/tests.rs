@@ -307,13 +307,19 @@ async fn set_preferred_transport_withholds_switch_from_a_peer_on_an_old_protocol
 /// Regression test for a P1 review finding on ADR-0003 Phase 3: a pin set
 /// while the peer isn't connected has nothing to notify or close at that
 /// moment, but the *next* session that establishes on the wrong transport
-/// -- inbound here -- must still relay the correct pin and close, rather
-/// than going live and staying live indefinitely (nothing else ever
-/// revisits an already-claimed session against the preference). Unlike an
-/// outright reject, the connection is accepted normally (`AuthOk`) so the
-/// relay actually has a channel to travel over.
+/// -- inbound here -- must still relay the correct pin, rather than going
+/// live and staying live indefinitely with nobody ever told about the pin
+/// (nothing else ever revisits an already-claimed session against the
+/// preference on its own). Unlike an outright reject, the connection is
+/// accepted normally (`AuthOk`) so the relay actually has a channel to
+/// travel over. Deliberately does *not* assert the session then closes:
+/// closing unconditionally on a guess that could itself be the stale one
+/// is exactly the bug a later finding caught (see
+/// `offline_pin_converges_the_deterministic_dialer_via_the_first_session_established`'s
+/// doc comment) -- actually closing is `handle_inbound`'s job, once the
+/// peer's own adoption settles which side's preference wins.
 #[tokio::test(flavor = "multi_thread")]
-async fn tcp_ws_gate_relays_and_closes_an_inbound_session_that_mismatches_the_local_transport_pin()
+async fn tcp_ws_gate_relays_without_closing_an_inbound_session_that_mismatches_the_local_transport_pin()
 {
     let (server, server_db) = server_state("transport-gate-preference-mismatch");
     seed_paired_device(&server_db, "peer-client");
@@ -343,8 +349,9 @@ async fn tcp_ws_gate_relays_and_closes_an_inbound_session_that_mismatches_the_lo
 
     sleep(Duration::from_millis(50)).await;
     assert!(
-        !server.has_session("peer-client"),
-        "the mismatched session must still close after relaying"
+        server.has_session("peer-client"),
+        "must not close unilaterally on a guess that could itself be the stale side -- \
+         only the peer's own adoption (not exercised by this raw test client) decides that"
     );
 }
 
@@ -365,6 +372,16 @@ async fn offline_pin_converges_the_deterministic_dialer_via_the_first_session_es
     let (dialer, dialer_db) = server_state("transport-offline-pin-converge-dialer");
     seed_paired_device(&responder_db, &dialer.identity.device_id);
     seed_paired_device(&dialer_db, &responder.identity.device_id);
+    // The dialer must have Bluetooth enabled for the responder before it
+    // can adopt a peer-proposed Bluetooth pin -- see
+    // `adopt_peer_transport_preference`'s own eligibility check. Realistic
+    // for this scenario: both sides had already bonded over Bluetooth at
+    // some point, the dialer just doesn't yet know the responder now
+    // *prefers* it.
+    diesel::update(paired_devices::table.find(&responder.identity.device_id))
+        .set(paired_devices::bluetooth_enabled.eq(true))
+        .execute(&mut open_db_at_path(&dialer_db))
+        .expect("enable bluetooth for the responder on the dialer's side");
 
     let mut conn = open_db_at_path(&responder_db);
     crate::services::device_connection::device_connection_set_preferred_transport_impl(
@@ -406,6 +423,90 @@ async fn offline_pin_converges_the_deterministic_dialer_via_the_first_session_es
         converged,
         "the dialer must adopt the responder's offline pin once the relay reaches it, \
          rather than being stuck retrying Network forever"
+    );
+}
+
+/// Regression test for a P1 review finding on ADR-0003 Phase 3: when *both*
+/// sides set conflicting pins while offline (dialer -> "network", older;
+/// responder -> "bluetooth", newer), the session that establishes on the
+/// dialer's own preferred transport (Network -- its own pin doesn't block
+/// that) still carries the responder's *newer* preference in, and the
+/// dialer must adopt it and close, not just keep the session because its
+/// own stale guess happened to match what's live. A design that
+/// unconditionally closed a "mismatch" on the *responder's* own initiative
+/// (the previous version of this fix) would instead have the responder
+/// close every time this session re-establishes, while the dialer's own
+/// stale pin keeps re-offering Network -- neither side ever winning,
+/// forever. This proves that no longer happens: the dialer's preference
+/// converges to the responder's newer one.
+#[tokio::test(flavor = "multi_thread")]
+async fn conflicting_offline_pins_converge_on_the_newer_one_without_a_reconnect_loop() {
+    let (responder, responder_db) = server_state("transport-conflicting-pins-responder");
+    let (dialer, dialer_db) = server_state("transport-conflicting-pins-dialer");
+    seed_paired_device(&responder_db, &dialer.identity.device_id);
+    seed_paired_device(&dialer_db, &responder.identity.device_id);
+    diesel::update(paired_devices::table.find(&responder.identity.device_id))
+        .set(paired_devices::bluetooth_enabled.eq(true))
+        .execute(&mut open_db_at_path(&dialer_db))
+        .expect("enable bluetooth for the responder on the dialer's side");
+
+    // Dialer's own (older, soon-to-be-stale) pin. `utc_now()` only has
+    // second-level precision, so a short real sleep can't reliably
+    // guarantee a strictly earlier timestamp than the responder's pin
+    // below -- backdate it explicitly instead.
+    let mut dialer_conn = open_db_at_path(&dialer_db);
+    crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut dialer_conn,
+        &dialer,
+        responder.identity.device_id.clone(),
+        Some(TransportKind::TcpWs),
+    )
+    .expect("pin the dialer to Network while offline");
+    diesel::update(paired_devices::table.find(&responder.identity.device_id))
+        .set(paired_devices::preferred_transport_set_at.eq(Some("2020-01-01T00:00:00Z")))
+        .execute(&mut dialer_conn)
+        .expect("backdate the dialer's own pin");
+
+    // Responder's own (newer, winning) pin.
+    let mut responder_conn = open_db_at_path(&responder_db);
+    crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut responder_conn,
+        &responder,
+        dialer.identity.device_id.clone(),
+        Some(TransportKind::Bluetooth),
+    )
+    .expect("pin the responder to Bluetooth while offline");
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
+    tokio::spawn(tcp_ws::dial_with_backoff(
+        dialer.clone(),
+        dialer_db.clone(),
+        responder.identity.device_id.clone(),
+        "127.0.0.1".to_string(),
+        port,
+    ));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut converged = false;
+    while tokio::time::Instant::now() < deadline {
+        let mut conn = open_db_at_path(&dialer_db);
+        if crate::services::device_connection::peer_transport_preference(
+            &mut conn,
+            &responder.identity.device_id,
+        ) == Some("bluetooth".to_string())
+        {
+            converged = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        converged,
+        "the dialer's own stale Network pin must yield to the responder's newer Bluetooth one"
     );
 }
 

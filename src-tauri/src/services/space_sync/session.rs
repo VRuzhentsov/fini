@@ -371,6 +371,21 @@ pub async fn run_session(
     // below: a peer that can't decode SwitchTransport is left alone
     // entirely rather than force-closed for something it could never
     // converge on anyway.
+    //
+    // Deliberately does *not* close here, even though the mismatch was
+    // just detected: this side's own record can itself be the stale one
+    // (both peers set conflicting pins while offline, each unaware of the
+    // other). Closing unconditionally on a guess that might be wrong
+    // means the peer -- if it's the deterministic dialer -- just
+    // reconnects on the same transport and gets closed again forever,
+    // never actually converging. `handle_inbound`'s own SwitchTransport
+    // handling is what actually decides whether *this* session needs to
+    // close: it always replies with whichever preference wins, so the
+    // losing side (whichever that turns out to be) ends up adopting the
+    // correct one and, if it now disagrees with a session already open
+    // elsewhere, closing that. If this device's guess was right all
+    // along, the peer's own adoption closes its end, which tears this
+    // side down too via the shared link -- no separate action needed here.
     if peer_protocol_version >= PROTOCOL_VERSION {
         let mismatch = tokio::task::block_in_place(|| {
             let mut conn = open_db_at_path(&db_path);
@@ -387,8 +402,6 @@ pub async fn run_session(
         if let Some((preference, requested_at)) = mismatch {
             let to = transport_kind_from_preference_string(&preference);
             let _ = send_frame(link.as_mut(), &PeerFrame::SwitchTransport { to, requested_at }).await;
-            state.release_session(&peer_device_id);
-            return;
         }
     }
 
@@ -567,19 +580,53 @@ async fn handle_inbound(
         PeerFrame::SwitchTransport { to, requested_at } => {
             let db = db_path.clone();
             let peer = peer_device_id.to_string();
-            let should_close = tokio::task::block_in_place(|| {
+            let (adopted, winning) = tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                crate::services::device_connection::adopt_peer_transport_preference(
+                let adopted = crate::services::device_connection::adopt_peer_transport_preference(
                     &mut conn, &peer, to, &requested_at,
-                )
+                );
+                let winning = (!adopted)
+                    .then(|| {
+                        crate::services::device_connection::peer_transport_preference_with_timestamp(
+                            &mut conn, &peer,
+                        )
+                    })
+                    .flatten();
+                (adopted, winning)
             });
-            // Only ever closes *this* session if the adopted preference
-            // actually won the race and doesn't already match what's live
-            // -- an older/losing `requested_at` changes nothing here, same
-            // as `device_connection_set_preferred_transport_impl`'s own
-            // local force-switch.
-            if should_close && state.session_kind(&peer) != Some(to) {
-                state.request_session_close(&peer);
+            if adopted {
+                // Only ever closes *this* session if the adopted preference
+                // actually won the race and doesn't already match what's
+                // live -- an older/losing `requested_at` changes nothing
+                // here, same as `device_connection_set_preferred_transport_impl`'s
+                // own local force-switch.
+                if state.session_kind(&peer) != Some(to) {
+                    state.request_session_close(&peer);
+                }
+            } else if let Some((preference, winning_requested_at)) = winning {
+                // Rejected -- either the sender's info was stale, or it
+                // proposed a transport this device can't actually adopt
+                // (e.g. Bluetooth disabled locally, see
+                // `adopt_peer_transport_preference`'s own doc comment).
+                // Reply with whichever preference actually won so the
+                // sender can self-correct instead of repeatedly offering
+                // (and this device repeatedly rejecting) the same stale
+                // proposal -- see `run_session`'s startup relay for why it
+                // deliberately doesn't just close unconditionally on a
+                // guess that might itself be the stale one. Only reply
+                // when there's an actual correction to offer: if the
+                // winning target already matches what was proposed (just a
+                // tied/older timestamp for an otherwise-agreed transport),
+                // staying silent avoids an endless reply-to-a-reply loop
+                // between two sides that already agree.
+                let winning_kind = transport_kind_from_preference_string(&preference);
+                if winning_kind != to {
+                    let _ = send_frame(
+                        link,
+                        &PeerFrame::SwitchTransport { to: winning_kind, requested_at: winning_requested_at },
+                    )
+                    .await;
+                }
             }
         }
         PeerFrame::BluetoothAddressUpdate { address } => {
