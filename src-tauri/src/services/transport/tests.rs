@@ -623,6 +623,63 @@ async fn stale_bluetooth_pin_no_longer_blocks_network_once_bluetooth_repeatedly_
     );
 }
 
+/// Regression test for a P1 review finding on ADR-0003 Phase 3: a Bluetooth
+/// pin whose OS bond has disappeared must not suppress Network even with
+/// *zero* recorded dial failures. Failure-count-based reliability alone
+/// can't catch this: `bluetooth_dial_candidates` excludes an ineligible
+/// peer before BLE's own dial loop ever attempts (and therefore records a
+/// failure for) it, so `bluetooth_effectively_reliable` stays `true`
+/// forever. Proves `tcp_ws::dial_with_backoff`'s own direct eligibility
+/// check catches this immediately, without needing any failed attempts
+/// first.
+#[tokio::test(flavor = "multi_thread")]
+async fn bluetooth_pin_with_no_current_eligibility_does_not_block_network_even_with_zero_failures() {
+    let (responder, responder_db) = server_state("transport-ineligible-pin-responder");
+    let (dialer, dialer_db) = server_state("transport-ineligible-pin-dialer");
+    seed_paired_device(&responder_db, &dialer.identity.device_id);
+    seed_paired_device(&dialer_db, &responder.identity.device_id);
+
+    let mut dialer_conn = open_db_at_path(&dialer_db);
+    diesel::update(paired_devices::table.find(&responder.identity.device_id))
+        .set(paired_devices::preferred_transport.eq(Some("bluetooth")))
+        .execute(&mut dialer_conn)
+        .expect("pin the dialer to bluetooth without ever making it eligible");
+    assert_eq!(
+        dialer.bluetooth_dial_failure_count(&responder.identity.device_id),
+        0,
+        "test setup: no dial attempt has ever been made, so failure-count-based \
+         reliability alone would (incorrectly) still say Bluetooth is fine"
+    );
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
+
+    tokio::spawn(tcp_ws::dial_with_backoff(
+        dialer.clone(),
+        dialer_db,
+        responder.identity.device_id.clone(),
+        "127.0.0.1".to_string(),
+        port,
+    ));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut established = false;
+    while tokio::time::Instant::now() < deadline {
+        if dialer.session_kind(&responder.identity.device_id) == Some(TransportKind::TcpWs) {
+            established = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        established,
+        "a Bluetooth pin with no current local eligibility must not suppress Network, \
+         regardless of dial-failure history"
+    );
+}
+
 /// Regression test for a P1 review finding on ADR-0003 Phase 3: a stale
 /// "configured" row (`DeviceView`'s polling only refreshes session
 /// liveness, not full eligibility -- see the frontend's own
@@ -712,6 +769,19 @@ async fn ineligible_switch_transport_produces_a_network_fallback_instead_of_sile
     assert!(
         server.has_session("peer-client"),
         "rejecting an unsupportable proposal must not force-close the live session"
+    );
+
+    // Regression for a P1 finding on top of this one: the Network
+    // counterproposal must also be persisted as this device's *own*
+    // preference, not just sent to the peer -- otherwise this device's own
+    // dial gates would still see a stale "bluetooth" (or no) preference
+    // later, e.g. if it becomes the deterministic dialer after this
+    // session ends.
+    let mut conn = open_db_at_path(&server_db);
+    assert_eq!(
+        crate::services::device_connection::peer_transport_preference(&mut conn, "peer-client"),
+        Some("network".to_string()),
+        "the Network fallback must be persisted locally, not just sent to the peer"
     );
 }
 

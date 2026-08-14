@@ -1475,7 +1475,7 @@ pub fn device_connection_set_bluetooth_transport(
 /// see `refreshLiveConnectedState`'s own doc comment on the frontend), so
 /// a stale "configured" row can stay clickable well after the OS bond
 /// quietly disappears.
-fn peer_is_currently_bluetooth_eligible(conn: &mut SqliteConnection, peer_device_id: &str) -> bool {
+pub(crate) fn peer_is_currently_bluetooth_eligible(conn: &mut SqliteConnection, peer_device_id: &str) -> bool {
     let device: Option<PairedDevice> = paired_devices::table
         .find(peer_device_id)
         .select(PairedDevice::as_select())

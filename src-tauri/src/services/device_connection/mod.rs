@@ -38,9 +38,9 @@ pub use commands::bluetooth_dial_candidates;
 pub(crate) use commands::bluetooth_address_is_os_paired;
 pub(crate) use commands::{
     adopt_peer_transport_preference, local_bluetooth_address, normalize_bluetooth_address,
-    peer_transport_preference, peer_transport_preference_with_timestamp,
-    persist_bluetooth_address_and_maybe_enable, transport_kind_to_preference_string,
-    TransportPreferenceAdoption,
+    peer_is_currently_bluetooth_eligible, peer_transport_preference,
+    peer_transport_preference_with_timestamp, persist_bluetooth_address_and_maybe_enable,
+    transport_kind_to_preference_string, TransportPreferenceAdoption,
 };
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{

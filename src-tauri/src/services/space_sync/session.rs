@@ -605,7 +605,23 @@ async fn handle_inbound(
                     // caller-side handling below for why silence would
                     // otherwise strand the sender).
                     TransportPreferenceAdoption::Ineligible => {
-                        Some(("network".to_string(), crate::services::db::utc_now()))
+                        let winning_requested_at = crate::services::db::utc_now();
+                        // Persisted here too, not just sent -- otherwise
+                        // this device's *own* preference can still say
+                        // "bluetooth" (e.g. a previously-valid pin whose
+                        // bond has since disappeared) even after telling
+                        // the peer to use Network. If this device is later
+                        // the deterministic dialer, its own stale pin
+                        // would then suppress its own Network dial loop
+                        // the same way the peer's did before adopting this
+                        // counterproposal.
+                        let _ = diesel::update(paired_devices::table.find(&peer))
+                            .set((
+                                paired_devices::preferred_transport.eq(Some("network")),
+                                paired_devices::preferred_transport_set_at.eq(Some(winning_requested_at.clone())),
+                            ))
+                            .execute(&mut conn);
+                        Some(("network".to_string(), winning_requested_at))
                     }
                 };
                 (outcome, winning)
