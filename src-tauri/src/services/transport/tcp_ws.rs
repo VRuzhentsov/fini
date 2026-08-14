@@ -309,19 +309,7 @@ pub(crate) async fn dial_with_backoff(
                     }
                     Err(err) => {
                         eprintln!("[transport][tcp_ws] auth with {peer_id} failed: {err}");
-                        // ADR-0003 Phase 3: "transport preference mismatch"
-                        // (the peer's inbound gate rejecting because *it*
-                        // is pinned elsewhere) is not a reason to give up --
-                        // if the peer has the higher device ID it never
-                        // dials at all, so this device is the only side
-                        // that can ever make progress. Recording it as an
-                        // ordinary dial failure lets the existing
-                        // threshold machinery demote Network and hand off
-                        // to ble.rs's own fallback dial loop, the same
-                        // convergence path an unreachable Network already
-                        // uses. Every other "auth rejected" reason (e.g.
-                        // genuinely unpaired) is still terminal.
-                        if err.starts_with("auth rejected") && !err.contains("transport preference mismatch") {
+                        if err.starts_with("auth rejected") {
                             return; // not paired; don't retry
                         }
                         // Connection-level failure (link dropped mid-auth,

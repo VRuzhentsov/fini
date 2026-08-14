@@ -950,14 +950,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                     }
                     Err(err) => {
                         eprintln!("[transport][ble] auth with {peer_id} failed: {err}");
-                        // See tcp_ws::dial_with_backoff's own comment on
-                        // this same carve-out: "transport preference
-                        // mismatch" means the peer just isn't pinned to
-                        // Bluetooth right now, not that it's unreachable or
-                        // unpaired -- still worth recording as an ordinary
-                        // failure so the usual threshold/fallback machinery
-                        // applies, not a reason to stop retrying forever.
-                        if err.starts_with("auth rejected") && !err.contains("transport preference mismatch") {
+                        if err.starts_with("auth rejected") {
                             return; // not paired; don't retry
                         }
                         // Connection-level failure (link dropped mid-auth,

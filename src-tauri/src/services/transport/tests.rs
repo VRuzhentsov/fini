@@ -305,13 +305,16 @@ async fn set_preferred_transport_withholds_switch_from_a_peer_on_an_old_protocol
 }
 
 /// Regression test for a P1 review finding on ADR-0003 Phase 3: a pin set
-/// while the peer isn't connected has nothing to notify or close, but
-/// `run_peer_gate`'s inbound accept path must still refuse to claim a
-/// *later* connection that arrives on the wrong transport -- otherwise a
-/// mismatched session goes live and stays live indefinitely, since nothing
-/// else ever revisits an already-claimed session against the preference.
+/// while the peer isn't connected has nothing to notify or close at that
+/// moment, but the *next* session that establishes on the wrong transport
+/// -- inbound here -- must still relay the correct pin and close, rather
+/// than going live and staying live indefinitely (nothing else ever
+/// revisits an already-claimed session against the preference). Unlike an
+/// outright reject, the connection is accepted normally (`AuthOk`) so the
+/// relay actually has a channel to travel over.
 #[tokio::test(flavor = "multi_thread")]
-async fn tcp_ws_gate_rejects_an_inbound_session_that_mismatches_the_local_transport_pin() {
+async fn tcp_ws_gate_relays_and_closes_an_inbound_session_that_mismatches_the_local_transport_pin()
+{
     let (server, server_db) = server_state("transport-gate-preference-mismatch");
     seed_paired_device(&server_db, "peer-client");
 
@@ -329,30 +332,37 @@ async fn tcp_ws_gate_rejects_an_inbound_session_that_mismatches_the_local_transp
     sleep(Duration::from_millis(100)).await;
 
     let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
-        .expect_err("a Network accept must be rejected while the pair is pinned to Bluetooth");
-    assert!(err.contains("transport preference mismatch"), "got: {err}");
+        .expect("the connection must be accepted normally, not rejected");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::SwitchTransport { to, .. })) => assert_eq!(to, TransportKind::Bluetooth),
+        other => panic!("expected SwitchTransport, got {other:?}"),
+    }
 
     sleep(Duration::from_millis(50)).await;
-    assert!(!server.has_session("peer-client"));
+    assert!(
+        !server.has_session("peer-client"),
+        "the mismatched session must still close after relaying"
+    );
 }
 
 /// Regression test for a P1 review finding on ADR-0003 Phase 3: when a peer
 /// with the higher device ID pins itself to Bluetooth while offline, it
 /// never dials at all (see `should_dial_peer`'s deterministic-dialer
 /// election) -- the *lower*-ID side is the only one that can ever make
-/// progress. Its own `dial_with_backoff` must not treat the resulting
-/// "transport preference mismatch" `AuthFail` as a terminal rejection
-/// (previously indistinguishable from a genuinely unpaired device) -- doing
-/// so would strand the pair forever, since nothing else ever retries. It
-/// must keep recording ordinary dial failures instead, so the existing
-/// threshold/fallback machinery still gets a chance to hand off to
-/// Bluetooth.
+/// progress, and it doesn't yet know about the new pin (nothing could
+/// deliver it while offline). Its own stale "network" pin would otherwise
+/// block Bluetooth fallback forever too (`ble.rs`'s own sticky-pin check).
+/// Proves the actual fix: the first TCP session that manages to establish
+/// at all relays the peer's pin and closes (previous test), and the dialer
+/// receiving that relay adopts it into its own preference -- converging
+/// without either side ever needing to reject or give up.
 #[tokio::test(flavor = "multi_thread")]
-async fn tcp_ws_dial_loop_keeps_retrying_after_a_transport_preference_mismatch() {
-    let (responder, responder_db) = server_state("transport-dial-retry-after-mismatch-responder");
-    let (dialer, dialer_db) = server_state("transport-dial-retry-after-mismatch-dialer");
+async fn offline_pin_converges_the_deterministic_dialer_via_the_first_session_established() {
+    let (responder, responder_db) = server_state("transport-offline-pin-converge-responder");
+    let (dialer, dialer_db) = server_state("transport-offline-pin-converge-dialer");
     seed_paired_device(&responder_db, &dialer.identity.device_id);
     seed_paired_device(&dialer_db, &responder.identity.device_id);
 
@@ -370,28 +380,32 @@ async fn tcp_ws_dial_loop_keeps_retrying_after_a_transport_preference_mismatch()
     sleep(Duration::from_millis(100)).await;
 
     dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
-
     tokio::spawn(tcp_ws::dial_with_backoff(
         dialer.clone(),
-        dialer_db,
+        dialer_db.clone(),
         responder.identity.device_id.clone(),
         "127.0.0.1".to_string(),
         port,
     ));
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut retried = false;
+    let mut converged = false;
     while tokio::time::Instant::now() < deadline {
-        if dialer.tcp_dial_failure_count(&responder.identity.device_id) >= 2 {
-            retried = true;
+        let mut dialer_conn = open_db_at_path(&dialer_db);
+        if crate::services::device_connection::peer_transport_preference(
+            &mut dialer_conn,
+            &responder.identity.device_id,
+        ) == Some("bluetooth".to_string())
+        {
+            converged = true;
             break;
         }
         sleep(Duration::from_millis(50)).await;
     }
     assert!(
-        retried,
-        "must keep recording dial failures (and therefore keep retrying) instead of giving up \
-         after a single transport preference mismatch"
+        converged,
+        "the dialer must adopt the responder's offline pin once the relay reaches it, \
+         rather than being stuck retrying Network forever"
     );
 }
 

@@ -1692,6 +1692,30 @@ pub fn peer_transport_preference(conn: &mut SqliteConnection, peer_id: &str) -> 
         .unwrap_or_default()
 }
 
+/// Like `peer_transport_preference`, but also returns the `requested_at`
+/// it was set with -- `None` unless *both* columns are populated. Used by
+/// `space_sync::session::run_session`'s own relay-on-establish check (see
+/// its doc comment) to reconstruct a faithful `PeerFrame::SwitchTransport`
+/// using the pin's original timestamp, not "now" -- the receiving peer's
+/// last-writer-wins comparison depends on this being the real value.
+pub fn peer_transport_preference_with_timestamp(
+    conn: &mut SqliteConnection,
+    peer_id: &str,
+) -> Option<(String, String)> {
+    let row: (Option<String>, Option<String>) = paired_devices::table
+        .find(peer_id)
+        .select((
+            paired_devices::preferred_transport,
+            paired_devices::preferred_transport_set_at,
+        ))
+        .first(&mut *conn)
+        .ok()?;
+    match row {
+        (Some(preference), Some(requested_at)) => Some((preference, requested_at)),
+        _ => None,
+    }
+}
+
 pub fn device_connection_session_transport_impl(
     state: &DeviceConnectionState,
     peer_device_id: String,

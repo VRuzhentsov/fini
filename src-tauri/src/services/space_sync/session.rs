@@ -133,33 +133,15 @@ fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Op
     }
 }
 
-/// ADR-0003 Phase 3: does `kind` match this pair's explicit transport pin,
-/// if any? `true` when there's no pin at all -- automatic selection is
-/// unconstrained. Both outbound dial loops (`tcp_ws`/`ble`) already gate
-/// on the preference before even attempting to connect, and again right
-/// before claiming to close the connect/auth-window race (see their own
-/// `peer_prefers_bluetooth`/`peer_prefers_network`) -- but the *inbound*
-/// accept path here had no equivalent: a peer that started dialing the
-/// old transport before a pin was set (or hasn't itself converged on it
-/// yet) would otherwise still get claimed here, leaving a
-/// pin-mismatched session live indefinitely, since nothing else ever
-/// revisits an already-claimed session against a later preference
-/// change. Rejecting it here folds into the same convergence path a
-/// mismatched dial already uses: the peer's own `record_tcp_dial_failure`/
-/// `record_bluetooth_dial_failure` from the resulting `AuthFail` eventually
-/// demotes that transport, and its own fallback dial loop tries the pinned
-/// one instead.
-fn check_transport_preference(db_path: &PathBuf, device_id: &str, kind: TransportKind) -> bool {
-    let preference = tokio::task::block_in_place(|| {
-        let mut conn = open_db_at_path(db_path);
-        crate::services::device_connection::peer_transport_preference(&mut conn, device_id)
-    });
+/// Inverse of `transport_kind_to_preference_string`'s (many-to-one) mapping
+/// -- `preferred_transport` is only ever written as "network" or
+/// "bluetooth" by anything that runs over a real wire (see that function's
+/// own doc comment for why Sim/LoRa never appear here in practice), so this
+/// reconstructs the one concrete `TransportKind` each maps back to.
+fn transport_kind_from_preference_string(preference: &str) -> TransportKind {
     match preference {
-        None => true,
-        Some(preference) => {
-            preference
-                == crate::services::device_connection::transport_kind_to_preference_string(kind)
-        }
+        "network" => TransportKind::TcpWs,
+        _ => TransportKind::Bluetooth,
     }
 }
 
@@ -327,17 +309,6 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         }
     }
 
-    if !check_transport_preference(&db_path, &device_id, kind) {
-        let _ = send_frame(
-            link.as_mut(),
-            &PeerFrame::AuthFail {
-                reason: "transport preference mismatch".into(),
-            },
-        )
-        .await;
-        return;
-    }
-
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);
     if !state.try_claim_session(&device_id, kind, tx, peer_protocol_version) {
         let _ = send_frame(
@@ -379,6 +350,48 @@ pub async fn run_session(
     peer_device_id: String,
     peer_protocol_version: u32,
 ) {
+    // ADR-0003 Phase 3: whichever side just established this session,
+    // relay the LOCAL device's own transport preference for this peer if
+    // it mismatches the transport this session actually landed on. This
+    // is what converges a pin set while the peer was offline: nothing
+    // could deliver SwitchTransport at the moment the pin was set (no
+    // live session existed to carry it through -- see
+    // `device_connection_set_preferred_transport_impl`), and a hard
+    // reject at the accept gate can't fix that either -- if the *other*
+    // side is the deterministic dialer and its own stale pin blocks it
+    // from ever trying the correct transport, nothing would ever
+    // establish a session for this relay to ride on. Accepting normally
+    // and relaying here instead means the very first session that
+    // manages to form at all (inbound or outbound, on whichever
+    // transport got there first) delivers the correct pin. Uses the
+    // pin's *original* `requested_at`, not "now" -- the peer's own
+    // last-writer-wins adoption (`adopt_peer_transport_preference`)
+    // depends on comparing against its own possibly-stale timestamp
+    // correctly. Gated on protocol version like the Bluetooth self-report
+    // below: a peer that can't decode SwitchTransport is left alone
+    // entirely rather than force-closed for something it could never
+    // converge on anyway.
+    if peer_protocol_version >= PROTOCOL_VERSION {
+        let mismatch = tokio::task::block_in_place(|| {
+            let mut conn = open_db_at_path(&db_path);
+            crate::services::device_connection::peer_transport_preference_with_timestamp(
+                &mut conn,
+                &peer_device_id,
+            )
+        })
+        .filter(|(preference, _)| {
+            preference.as_str()
+                != crate::services::device_connection::transport_kind_to_preference_string(link.kind())
+        });
+
+        if let Some((preference, requested_at)) = mismatch {
+            let to = transport_kind_from_preference_string(&preference);
+            let _ = send_frame(link.as_mut(), &PeerFrame::SwitchTransport { to, requested_at }).await;
+            state.release_session(&peer_device_id);
+            return;
+        }
+    }
+
     // Self-report our own Bluetooth address once per network session, if
     // this platform can read one at all -- see `PeerFrame::BluetoothAddressUpdate`'s
     // doc comment. Only over the network transport: sending it over an
