@@ -950,7 +950,26 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                     }
                     Err(err) => {
                         eprintln!("[transport][ble] auth with {peer_id} failed: {err}");
-                        if err.starts_with("auth rejected") {
+                        // ADR-0003 Phase 3: "bluetooth disabled"/"not
+                        // OS-paired" are not permanent the way "unknown
+                        // device" is -- the user could re-enable, or
+                        // re-pair, at any time. Treating them as ordinary
+                        // failures (record + keep retrying) instead of
+                        // terminal lets bluetooth_dial_failure_count
+                        // actually accumulate here, which is what lets
+                        // tcp_ws::dial_with_backoff's own sticky-Bluetooth-pin
+                        // override eventually give up on a Bluetooth pin
+                        // that's become permanently unreachable on the
+                        // peer's end -- without this, that peer's own
+                        // inbound rejections never surface as failures at
+                        // all, and a Bluetooth-pinned peer whose Bluetooth
+                        // got disabled stays unreachable on every transport
+                        // forever (TCP suppressed by the stale pin, BLE
+                        // rejected outright).
+                        if err.starts_with("auth rejected")
+                            && !err.contains("bluetooth disabled for this pair")
+                            && !err.contains("bluetooth device is not currently OS-paired")
+                        {
                             return; // not paired; don't retry
                         }
                         // Connection-level failure (link dropped mid-auth,

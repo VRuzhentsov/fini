@@ -251,7 +251,17 @@ pub(crate) async fn dial_with_backoff(
         if state.has_session(&peer_id) {
             return;
         }
-        if peer_prefers_bluetooth(&db_path, &peer_id) {
+        // ADR-0003 Phase 3: a Bluetooth pin is sticky against a *transient*
+        // reason to second-guess it -- but not indefinitely against
+        // repeated, concrete evidence that Bluetooth has become
+        // permanently unreachable for this peer (disabled, unbonded, out
+        // of range for a long stretch). Once `bluetooth_dial_failure_count`
+        // (now incremented for exactly those rejection reasons too, see
+        // ble.rs's own dial_with_backoff) crosses the same threshold that
+        // already demotes automatic selection, this override steps aside
+        // and lets Network try anyway -- the alternative is a pin that can
+        // never be un-stuck once the pinned transport stops working at all.
+        if peer_prefers_bluetooth(&db_path, &peer_id) && state.bluetooth_effectively_reliable(&peer_id) {
             return;
         }
         let still_present = state
@@ -284,8 +294,12 @@ pub(crate) async fn dial_with_backoff(
                         // Bluetooth while this connect+auth round trip was
                         // in flight, and without this check that pin would
                         // otherwise be silently overridden by the Network
-                        // session this loop is about to claim.
-                        if peer_prefers_bluetooth(&db_path, &peer_id) {
+                        // session this loop is about to claim. Same
+                        // reliability override as the top-of-loop check
+                        // above: a Bluetooth pin that's become permanently
+                        // unreachable must not keep discarding a Network
+                        // session that just successfully authenticated.
+                        if peer_prefers_bluetooth(&db_path, &peer_id) && state.bluetooth_effectively_reliable(&peer_id) {
                             eprintln!(
                                 "[transport][tcp_ws] {peer_id} was pinned to Bluetooth during \
                                  the connect/auth handshake; discarding this Network session"

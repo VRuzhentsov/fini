@@ -1465,6 +1465,33 @@ pub fn device_connection_set_bluetooth_transport(
     device_connection_set_bluetooth_transport_with_state_impl(&mut conn, &state, input)
 }
 
+/// Whether `peer_device_id` currently satisfies every precondition
+/// `bluetooth_dial_candidates` itself requires -- Bluetooth enabled, a
+/// normalizable stored address, and a live OS bond checked right now (not
+/// cached). Re-validates a user-driven Bluetooth pin against *current*
+/// reality rather than whatever `DeviceView`'s last full status load
+/// happened to show: its own periodic polling deliberately only refreshes
+/// session liveness, not this heavier eligibility check (performance --
+/// see `refreshLiveConnectedState`'s own doc comment on the frontend), so
+/// a stale "configured" row can stay clickable well after the OS bond
+/// quietly disappears.
+fn peer_is_currently_bluetooth_eligible(conn: &mut SqliteConnection, peer_device_id: &str) -> bool {
+    let device: Option<PairedDevice> = paired_devices::table
+        .find(peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .optional()
+        .unwrap_or(None);
+    let Some(device) = device else { return false };
+    if !device.bluetooth_enabled {
+        return false;
+    }
+    let Some(address) = device.bluetooth_address.as_deref().and_then(normalize_bluetooth_address) else {
+        return false;
+    };
+    bluetooth_address_is_os_paired(&address)
+}
+
 /// ADR-0003 Phase 3: click either transport row to pin this pair to it.
 /// Persists first (so it also governs *future* automatic reconnects, not
 /// just this one), then -- if a session is currently live on some *other*
@@ -1507,6 +1534,15 @@ pub fn device_connection_set_preferred_transport_impl(
         .map_err(|e| e.to_string())?;
     if existing.is_none() {
         return Err("paired device not found".to_string());
+    }
+    if preferred == Some(crate::services::transport::TransportKind::Bluetooth)
+        && !peer_is_currently_bluetooth_eligible(conn, &peer_device_id)
+    {
+        return Err(
+            "Bluetooth is not currently available for this pair -- check it's enabled and \
+             still OS-paired, then try again"
+                .to_string(),
+        );
     }
 
     let now = utc_now();
