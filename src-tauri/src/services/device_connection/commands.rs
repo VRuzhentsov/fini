@@ -1625,13 +1625,18 @@ pub enum TransportPreferenceAdoption {
 /// throughout) compare correctly as plain strings -- no need to parse them
 /// into a real `DateTime`.
 ///
-/// Also refuses to adopt a "bluetooth" proposal when Bluetooth isn't
-/// enabled locally for this pair, regardless of timestamp -- adopting it
-/// anyway would abandon Network (the pin says so) while
+/// Also refuses to adopt a "bluetooth" proposal unless this device is
+/// *currently* eligible for it -- the same enabled/address/live-OS-bond
+/// check `device_connection_set_preferred_transport_impl` applies to a
+/// local click (`peer_is_currently_bluetooth_eligible`), not just the
+/// coarser `bluetooth_enabled` flag alone. A stored `bluetooth_enabled =
+/// true` can outlive the actual OS bond (removed at the OS level without
+/// this device's own row ever being told); adopting on that stale flag
+/// alone would abandon Network (the pin says so) while
 /// `bluetooth_dial_candidates`/the inbound Bluetooth gate both still
-/// exclude a disabled pair, stranding it on no transport at all. The peer
-/// proposing Bluetooth has no way to know this device disabled it, so
-/// this device is the only side that can catch it -- see
+/// exclude a pair with no live bond, stranding it on no transport at all.
+/// The peer proposing Bluetooth has no way to know this device's bond is
+/// gone, so this device is the only side that can catch it -- see
 /// `TransportPreferenceAdoption::Ineligible`.
 pub fn adopt_peer_transport_preference(
     conn: &mut SqliteConnection,
@@ -1652,15 +1657,8 @@ pub fn adopt_peer_transport_preference(
     }
 
     let preference = transport_kind_to_preference_string(to);
-    if preference == "bluetooth" {
-        let bluetooth_enabled: bool = paired_devices::table
-            .find(peer_device_id)
-            .select(paired_devices::bluetooth_enabled)
-            .first(&mut *conn)
-            .unwrap_or(false);
-        if !bluetooth_enabled {
-            return TransportPreferenceAdoption::Ineligible;
-        }
+    if preference == "bluetooth" && !peer_is_currently_bluetooth_eligible(conn, peer_device_id) {
+        return TransportPreferenceAdoption::Ineligible;
     }
     let _ = diesel::update(paired_devices::table.find(peer_device_id))
         .set((
@@ -2448,14 +2446,20 @@ mod tests {
     /// preference with no existing preference recorded locally always wins.
     #[test]
     fn adopt_peer_transport_preference_adopts_when_nothing_is_recorded_yet() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
         let mut conn = test_conn();
         diesel::update(paired_devices::table.find("peer-a"))
-            .set(paired_devices::bluetooth_enabled.eq(true))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
+            ))
             .execute(&mut conn)
             .expect("enable bluetooth for this test");
 
         let outcome =
             adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::Bluetooth, "2026-04-07T00:00:01Z");
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
         assert_eq!(outcome, TransportPreferenceAdoption::Adopted);
 
         let row: PairedDevice = paired_devices::table
@@ -2471,9 +2475,14 @@ mod tests {
     /// and overwrites both the preference and its timestamp.
     #[test]
     fn adopt_peer_transport_preference_adopts_a_strictly_newer_timestamp() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
         let mut conn = test_conn();
         diesel::update(paired_devices::table.find("peer-a"))
-            .set(paired_devices::bluetooth_enabled.eq(true))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
+            ))
             .execute(&mut conn)
             .expect("enable bluetooth for this test");
         assert_eq!(
@@ -2487,6 +2496,7 @@ mod tests {
             TransportKind::Bluetooth,
             "2026-04-07T00:00:02Z",
         );
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
         assert_eq!(outcome, TransportPreferenceAdoption::Adopted, "a newer requested_at must win");
 
         let row: PairedDevice = paired_devices::table
@@ -2591,15 +2601,21 @@ mod tests {
     /// exact same stranding hazard reappears from a different entry point.
     #[test]
     fn disabling_bluetooth_clears_an_existing_bluetooth_pin() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
         let mut conn = test_conn();
         diesel::update(paired_devices::table.find("peer-a"))
-            .set(paired_devices::bluetooth_enabled.eq(true))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
+            ))
             .execute(&mut conn)
             .expect("enable bluetooth for this test");
         assert_eq!(
             adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::Bluetooth, "2026-04-07T00:00:01Z"),
             TransportPreferenceAdoption::Adopted
         );
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 
         device_connection_set_bluetooth_transport_impl(&mut conn, paired_device_input(false, None))
             .expect("disable bluetooth");

@@ -421,10 +421,12 @@ async fn offline_pin_converges_the_deterministic_dialer_via_the_first_session_es
     // its side to satisfy `adopt_peer_transport_preference`'s check once
     // the relay reaches it.
     seed_bluetooth_enabled_peer(&responder_db, &dialer.identity.device_id, "AA:BB:CC:DD:EE:FF");
-    diesel::update(paired_devices::table.find(&responder.identity.device_id))
-        .set(paired_devices::bluetooth_enabled.eq(true))
-        .execute(&mut open_db_at_path(&dialer_db))
-        .expect("enable bluetooth for the responder on the dialer's side");
+    // The dialer's own `adopt_peer_transport_preference` call (triggered
+    // asynchronously, whenever the relay below actually reaches it) needs
+    // the *same* full eligibility -- not just `bluetooth_enabled` -- so
+    // `FINI_BLUETOOTH_PAIRED_ADDRESSES` must stay set for this whole test,
+    // not just the synchronous setup call below.
+    seed_bluetooth_enabled_peer(&dialer_db, &responder.identity.device_id, "AA:BB:CC:DD:EE:FF");
 
     let mut conn = open_db_at_path(&responder_db);
     crate::services::device_connection::device_connection_set_preferred_transport_impl(
@@ -434,7 +436,6 @@ async fn offline_pin_converges_the_deterministic_dialer_via_the_first_session_es
         Some(TransportKind::Bluetooth),
     )
     .expect("pin the responder to Bluetooth while offline");
-    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 
     let port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
@@ -463,6 +464,7 @@ async fn offline_pin_converges_the_deterministic_dialer_via_the_first_session_es
         }
         sleep(Duration::from_millis(50)).await;
     }
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     assert!(
         converged,
         "the dialer must adopt the responder's offline pin once the relay reaches it, \
@@ -493,10 +495,10 @@ async fn conflicting_offline_pins_converge_on_the_newer_one_without_a_reconnect_
     seed_paired_device(&responder_db, &dialer.identity.device_id);
     seed_paired_device(&dialer_db, &responder.identity.device_id);
     seed_bluetooth_enabled_peer(&responder_db, &dialer.identity.device_id, "AA:BB:CC:DD:EE:FF");
-    diesel::update(paired_devices::table.find(&responder.identity.device_id))
-        .set(paired_devices::bluetooth_enabled.eq(true))
-        .execute(&mut open_db_at_path(&dialer_db))
-        .expect("enable bluetooth for the responder on the dialer's side");
+    // Kept live for this whole test, not just the synchronous setup below
+    // -- the dialer's own `adopt_peer_transport_preference` call happens
+    // asynchronously, whenever the relay actually reaches it.
+    seed_bluetooth_enabled_peer(&dialer_db, &responder.identity.device_id, "AA:BB:CC:DD:EE:FF");
 
     // Dialer's own (older, soon-to-be-stale) pin. `utc_now()` only has
     // second-level precision, so a short real sleep can't reliably
@@ -524,7 +526,6 @@ async fn conflicting_offline_pins_converge_on_the_newer_one_without_a_reconnect_
         Some(TransportKind::Bluetooth),
     )
     .expect("pin the responder to Bluetooth while offline");
-    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 
     let port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
@@ -553,6 +554,7 @@ async fn conflicting_offline_pins_converge_on_the_newer_one_without_a_reconnect_
         }
         sleep(Duration::from_millis(50)).await;
     }
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     assert!(
         converged,
         "the dialer's own stale Network pin must yield to the responder's newer Bluetooth one"
