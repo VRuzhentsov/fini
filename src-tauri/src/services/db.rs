@@ -339,6 +339,15 @@ mod tests {
         )
         .execute(&mut conn)
         .expect("seed v20 quest metadata");
+        conn.batch_execute(
+            "UPDATE quests SET series_id = 'series-low' WHERE id = 'quest-low';
+             INSERT INTO reminders (id, quest_id, type) VALUES ('migration-reminder', 'quest-low', 'relative');
+             INSERT INTO focus_history (id, quest_id, space_id, trigger) VALUES
+                ('migration-focus-history', 'quest-low', '1', 'manual');
+             INSERT INTO series_reminder_templates (id, series_id, kind) VALUES
+                ('migration-series-reminder', 'series-low', 'relative');",
+        )
+        .expect("seed v20 dependent rows");
 
         conn.run_pending_migrations(MIGRATIONS)
             .expect("migrate v20 database through v21");
@@ -374,6 +383,35 @@ mod tests {
                 ("series-mid".into(), 2, 2),
             ]
         );
+        #[derive(diesel::QueryableByName)]
+        struct CountRow {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            count: i64,
+        }
+        for (table, id) in [
+            ("reminders", "migration-reminder"),
+            ("focus_history", "migration-focus-history"),
+            ("series_reminder_templates", "migration-series-reminder"),
+        ] {
+            let count: i64 = diesel::sql_query(format!(
+                "SELECT COUNT(*) AS count FROM {table} WHERE id = '{id}'"
+            ))
+            .get_result::<CountRow>(&mut conn)
+            .expect("load dependent row count")
+            .count;
+            assert_eq!(count, 1, "v21 migration must preserve {table} rows");
+        }
+        let series_id: Option<String> = quests::table
+            .find("quest-low")
+            .select(quests::series_id)
+            .first(&mut conn)
+            .expect("load migrated recurring quest series id");
+        assert_eq!(series_id.as_deref(), Some("series-low"));
+        let violations: CountRow =
+            diesel::sql_query("SELECT COUNT(*) AS count FROM pragma_foreign_key_check")
+                .get_result(&mut conn)
+                .expect("check foreign keys");
+        assert_eq!(violations.count, 0, "migration must preserve foreign keys");
         let _ = std::fs::remove_file(db_path);
     }
 
