@@ -240,7 +240,7 @@ async fn dial_with_backoff(
                 Ok(peer_protocol_version) => {
                     eprintln!("[transport][sim] auth OK with {peer_id} via :{port}");
                     let (tx, rx) = tokio::sync::mpsc::channel(64);
-                    if state.try_claim_session(&peer_id, TransportKind::Sim, tx) {
+                    if state.try_claim_session(&peer_id, TransportKind::Sim, tx, peer_protocol_version) {
                         session::run_session(
                             link,
                             rx,

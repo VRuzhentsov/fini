@@ -298,7 +298,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
     }
 
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);
-    if !state.try_claim_session(&device_id, kind, tx) {
+    if !state.try_claim_session(&device_id, kind, tx, peer_protocol_version) {
         let _ = send_frame(
             link.as_mut(),
             &PeerFrame::AuthFail {

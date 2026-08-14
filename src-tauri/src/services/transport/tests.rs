@@ -227,6 +227,83 @@ async fn set_preferred_transport_leaves_an_already_matching_session_alone() {
     );
 }
 
+/// Regression test for a P1 review finding on ADR-0003 Phase 3: a peer on
+/// an older build (protocol version 1, before `PeerFrame::SwitchTransport`
+/// existed) cannot decode the frame -- sending it and force-closing the
+/// session anyway would just have that peer reconnect over whatever
+/// transport it still understands (Network), silently undoing the pin the
+/// moment it lands. Neither the frame nor the close should happen; the
+/// preference is still persisted so this device's own dial loops (and a
+/// future reconnect after the peer upgrades) still honor it.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_preferred_transport_withholds_switch_from_a_peer_on_an_old_protocol_version() {
+    let (server, server_db) = server_state("transport-set-preferred-old-peer");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+
+    // Hand-crafted Auth declaring protocol_version 1 -- a build with Phase
+    // 1/2 (ping/pong, the unified status model) but not yet Phase 3's
+    // SwitchTransport, mirroring the existing no-protocol-version test's
+    // hand-crafted-frame pattern above.
+    let old_auth = serde_json::json!({
+        "type": "auth",
+        "device_id": "peer-client",
+        "peer_device_id": server.identity.device_id,
+        "protocol_version": 1,
+    });
+    let plain = serde_json::to_vec(&old_auth).unwrap();
+    let envelope = crate::services::transport::envelope::FrameEnvelope::new(
+        crate::services::transport::envelope::EncScheme::None,
+        plain,
+    );
+    let bytes = serde_json::to_vec(&envelope).unwrap();
+    link.send(bytes).await.expect("send hand-crafted auth");
+
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::AuthOk { .. })) => {}
+        other => panic!("expected AuthOk, got {other:?}"),
+    }
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::TcpWs));
+
+    let mut conn = open_db_at_path(&server_db);
+    let updated = crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut conn,
+        &server,
+        "peer-client".to_string(),
+        Some(TransportKind::Bluetooth),
+    )
+    .expect("set preferred transport");
+    assert_eq!(
+        updated.preferred_transport.as_deref(),
+        Some("bluetooth"),
+        "the preference must still persist even though the live peer can't be notified"
+    );
+
+    // On a machine with a real Bluetooth controller, `run_session` also
+    // self-reports `PeerFrame::BluetoothAddressUpdate` right after auth for
+    // any peer reporting protocol_version >= 1 -- unrelated to this test's
+    // own concern, so skip past it the same way the mismatch test above does.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
+            Err(_) => break, // timed out waiting -- correctly withheld
+            Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { .. }))) => continue,
+            Ok(other) => panic!("must not send SwitchTransport to a peer on protocol version 1, got {other:?}"),
+        }
+    }
+
+    assert!(
+        server.has_session("peer-client"),
+        "must not force-close a session the peer can't be told to reconnect correctly around"
+    );
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the

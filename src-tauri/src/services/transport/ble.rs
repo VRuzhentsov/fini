@@ -919,8 +919,22 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                             );
                             return;
                         }
+                        // Same race, for a Network pin instead of the
+                        // enabled/OS-paired eligibility above: the user
+                        // could pin this peer to Network while this
+                        // connect+auth round trip was in flight, and
+                        // without this check that pin would otherwise be
+                        // silently overridden by the Bluetooth session this
+                        // loop is about to claim.
+                        if peer_prefers_network(&db_path, &peer_id) {
+                            eprintln!(
+                                "[transport][ble] {peer_id} was pinned to Network during the \
+                                 connect/auth handshake; discarding this Bluetooth session"
+                            );
+                            return;
+                        }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx) {
+                        if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx, peer_protocol_version) {
                             session::run_session(
                                 link,
                                 rx,

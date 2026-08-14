@@ -253,6 +253,12 @@ pub(super) struct DiscoveryRuntime {
     /// lifecycle bus can report which transport is active without a second
     /// lock. See `DeviceConnectionState::try_claim_session`.
     pub peer_session_kind: HashMap<String, TransportKind>,
+    /// The peer's own negotiated `PROTOCOL_VERSION` for each currently
+    /// claimed session (same keys/lifecycle as `peer_session_kind`). ADR-0003
+    /// Phase 3: `device_connection_set_preferred_transport_impl` needs this
+    /// to know whether the live peer can even decode `PeerFrame::SwitchTransport`
+    /// before sending it -- see `DeviceConnectionState::session_protocol_version`.
+    pub peer_session_protocol_version: HashMap<String, u32>,
     /// Consecutive TCP-WS connect/auth failures per peer, reset on success.
     /// Discovery presence alone (`presence`, above) only means a peer's
     /// beacons are reaching us — it says nothing about whether their

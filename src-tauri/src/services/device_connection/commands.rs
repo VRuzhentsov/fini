@@ -1419,6 +1419,16 @@ pub fn device_connection_set_bluetooth_transport(
 /// `preferred: None` only clears the stored pin -- no session is
 /// disturbed and no frame is sent, since there's no concrete target to
 /// switch to or tell the peer about.
+///
+/// Notifying and force-closing are both skipped (leaving the live session
+/// exactly as it is) when the peer's own negotiated `PROTOCOL_VERSION` is
+/// below the one that introduced `PeerFrame::SwitchTransport` -- an older
+/// peer can't decode the frame, and forcing a close it doesn't understand
+/// would just have it reconnect over whatever transport *it* still knows
+/// (typically Network), silently undoing the pin the moment it lands. The
+/// preference is still persisted either way, so a future reconnect after
+/// that peer upgrades (or this device's own dial loops, which consult the
+/// stored preference directly) still honors it.
 pub fn device_connection_set_preferred_transport_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1446,18 +1456,30 @@ pub fn device_connection_set_preferred_transport_impl(
         .map_err(|e| e.to_string())?;
 
     if let Some(kind) = preferred {
-        // Enqueued into the same per-peer mailbox `request_session_close`
-        // uses below, and mpsc preserves send order -- the peer receives
-        // this frame before the local session (if any) actually closes.
-        // Best-effort: `push_to_peer` returning false just means there was
-        // no live session to carry it (nothing to notify), not an error.
-        let _ = state.push_to_peer(
-            &peer_device_id,
-            PeerFrame::SwitchTransport { to: kind, requested_at: now },
-        );
+        // A live peer on an older build can't decode SwitchTransport at
+        // all -- forcing the close anyway would just have it reconnect
+        // over whatever it still understands, undoing this pin the moment
+        // it lands (see this function's doc comment). `None` (no live
+        // session) is *not* gated here: there's nothing to notify or close
+        // either way, so it falls through harmlessly.
+        let peer_understands_switch_transport = state
+            .session_protocol_version(&peer_device_id)
+            .is_none_or(|version| version >= crate::services::space_sync::types::PROTOCOL_VERSION);
 
-        if state.session_kind(&peer_device_id) != Some(kind) {
-            state.request_session_close(&peer_device_id);
+        if peer_understands_switch_transport {
+            // Enqueued into the same per-peer mailbox `request_session_close`
+            // uses below, and mpsc preserves send order -- the peer receives
+            // this frame before the local session (if any) actually closes.
+            // Best-effort: `push_to_peer` returning false just means there was
+            // no live session to carry it (nothing to notify), not an error.
+            let _ = state.push_to_peer(
+                &peer_device_id,
+                PeerFrame::SwitchTransport { to: kind, requested_at: now },
+            );
+
+            if state.session_kind(&peer_device_id) != Some(kind) {
+                state.request_session_close(&peer_device_id);
+            }
         }
     }
 

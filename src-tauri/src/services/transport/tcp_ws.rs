@@ -274,8 +274,21 @@ async fn dial_with_backoff(
                     Ok(peer_protocol_version) => {
                         eprintln!("[transport][tcp_ws] auth OK with {peer_id}");
                         state.record_tcp_dial_success(&peer_id);
+                        // ADR-0003 Phase 3: the inverse of ble.rs's own
+                        // recheck -- the user could pin this peer to
+                        // Bluetooth while this connect+auth round trip was
+                        // in flight, and without this check that pin would
+                        // otherwise be silently overridden by the Network
+                        // session this loop is about to claim.
+                        if peer_prefers_bluetooth(&db_path, &peer_id) {
+                            eprintln!(
+                                "[transport][tcp_ws] {peer_id} was pinned to Bluetooth during \
+                                 the connect/auth handshake; discarding this Network session"
+                            );
+                            return;
+                        }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx) {
+                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, peer_protocol_version) {
                             session::run_session(
                                 link,
                                 rx,

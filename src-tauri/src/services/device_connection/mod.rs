@@ -251,6 +251,7 @@ impl DeviceConnectionState {
         peer_device_id: &str,
         kind: TransportKind,
         sender: SessionSender,
+        protocol_version: u32,
     ) -> bool {
         {
             let Ok(mut guard) = self.runtime.lock() else {
@@ -265,6 +266,9 @@ impl DeviceConnectionState {
             guard
                 .peer_session_kind
                 .insert(peer_device_id.to_string(), kind);
+            guard
+                .peer_session_protocol_version
+                .insert(peer_device_id.to_string(), protocol_version);
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
@@ -279,6 +283,7 @@ impl DeviceConnectionState {
                 return;
             };
             guard.peer_sessions.remove(peer_device_id);
+            guard.peer_session_protocol_version.remove(peer_device_id);
             guard.peer_session_kind.remove(peer_device_id)
         };
         if let Some(kind) = kind {
@@ -294,6 +299,16 @@ impl DeviceConnectionState {
     pub fn session_kind(&self, peer_device_id: &str) -> Option<TransportKind> {
         let guard = self.runtime.lock().ok()?;
         guard.peer_session_kind.get(peer_device_id).copied()
+    }
+
+    /// The peer's own negotiated `PROTOCOL_VERSION` for their currently
+    /// claimed session, if any -- ADR-0003 Phase 3: lets a caller check
+    /// whether the live peer can decode a given frame variant before
+    /// sending it, the same way `run_session`'s own Bluetooth self-report
+    /// gates on `peer_protocol_version` at session start.
+    pub fn session_protocol_version(&self, peer_device_id: &str) -> Option<u32> {
+        let guard = self.runtime.lock().ok()?;
+        guard.peer_session_protocol_version.get(peer_device_id).copied()
     }
 
     /// Whether this device is currently discoverable for pairing —
