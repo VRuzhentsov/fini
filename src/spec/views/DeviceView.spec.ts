@@ -60,19 +60,13 @@ describe("DeviceView mapped spaces sync labels", () => {
       getTransportStatuses: jest.fn().mockReturnValue([
         {
           kind: "network",
-          enabled: true,
-          available: true,
           preferred: true,
-          connected: true,
-          detail: "Available",
+          state: { state: "live" },
         },
         {
           kind: "bluetooth",
-          enabled: true,
-          available: true,
           preferred: false,
-          connected: false,
-          detail: "Available for fallback",
+          state: { state: "configured", reliable: true },
         },
       ]),
       shortDeviceId: jest.fn().mockReturnValue("ce-123"),
@@ -163,7 +157,7 @@ describe("DeviceView mapped spaces sync labels", () => {
     expect(rows[0].text()).toContain("Network");
     expect(rows[0].text()).toContain("preferred");
     expect(rows[1].text()).toContain("Bluetooth");
-    expect(rows[1].text()).toContain("Available for fallback");
+    expect(rows[1].text()).toContain("Ready");
   });
 });
 

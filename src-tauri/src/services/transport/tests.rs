@@ -627,7 +627,7 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
 /// firewall) but who is still discoverable.
 #[test]
 fn network_effectively_available_demotes_after_repeated_tcp_failures() {
-    use crate::services::transport::selection::NETWORK_UNRESPONSIVE_THRESHOLD;
+    use crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD;
 
     let (state, _db) = server_state("transport-network-effectively-available");
 
@@ -638,25 +638,64 @@ fn network_effectively_available_demotes_after_repeated_tcp_failures() {
     // by the existing discovery/pairing tests).
     assert!(!state.network_effectively_available("peer-x"));
 
-    for _ in 0..(NETWORK_UNRESPONSIVE_THRESHOLD - 1) {
+    for _ in 0..(TRANSPORT_UNRESPONSIVE_THRESHOLD - 1) {
         state.record_tcp_dial_failure("peer-x");
     }
     assert_eq!(
         state.tcp_dial_failure_count("peer-x"),
-        NETWORK_UNRESPONSIVE_THRESHOLD - 1,
+        TRANSPORT_UNRESPONSIVE_THRESHOLD - 1,
         "below threshold yet"
     );
 
     state.record_tcp_dial_failure("peer-x");
     assert_eq!(
         state.tcp_dial_failure_count("peer-x"),
-        NETWORK_UNRESPONSIVE_THRESHOLD,
+        TRANSPORT_UNRESPONSIVE_THRESHOLD,
         "at threshold"
     );
 
     // A later success resets the counter (transient blip, not permanent).
     state.record_tcp_dial_success("peer-x");
     assert_eq!(state.tcp_dial_failure_count("peer-x"), 0);
+}
+
+/// Bluetooth's counterpart to the test above (ADR-0003 Phase 2): a fresh
+/// peer with zero attempts is reliable by default -- "no reason to distrust
+/// it" is the bar, not "has been proven to work" -- then demotes once
+/// consecutive failures reach the shared threshold, and a later success
+/// resets it.
+#[test]
+fn bluetooth_effectively_reliable_demotes_after_repeated_failures_and_resets_on_success() {
+    use crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD;
+
+    let (state, _db) = server_state("transport-bluetooth-effectively-reliable");
+
+    assert!(
+        state.bluetooth_effectively_reliable("peer-x"),
+        "a never-attempted peer must default to reliable"
+    );
+
+    for _ in 0..(TRANSPORT_UNRESPONSIVE_THRESHOLD - 1) {
+        state.record_bluetooth_dial_failure("peer-x");
+    }
+    assert!(
+        state.bluetooth_effectively_reliable("peer-x"),
+        "below threshold yet"
+    );
+
+    state.record_bluetooth_dial_failure("peer-x");
+    assert_eq!(
+        state.bluetooth_dial_failure_count("peer-x"),
+        TRANSPORT_UNRESPONSIVE_THRESHOLD
+    );
+    assert!(
+        !state.bluetooth_effectively_reliable("peer-x"),
+        "at threshold, no longer reliable"
+    );
+
+    state.record_bluetooth_dial_success("peer-x");
+    assert_eq!(state.bluetooth_dial_failure_count("peer-x"), 0);
+    assert!(state.bluetooth_effectively_reliable("peer-x"));
 }
 
 /// Regression test: `tcp_dial_failures` must not outlive the Sim session it

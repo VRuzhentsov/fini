@@ -262,4 +262,9 @@ pub(super) struct DiscoveryRuntime {
     /// the network transport is present-but-unusable, not just absent. See
     /// `DeviceConnectionState::network_effectively_available`.
     pub tcp_dial_failures: HashMap<String, u32>,
+    /// Consecutive Bluetooth connect/auth failures per peer, reset on
+    /// success — the same signal `tcp_dial_failures` is, for the other
+    /// transport. See `DeviceConnectionState::bluetooth_effectively_reliable`
+    /// and ADR-0003 Phase 2.
+    pub bluetooth_dial_failures: HashMap<String, u32>,
 }

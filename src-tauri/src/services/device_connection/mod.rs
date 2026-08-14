@@ -54,7 +54,7 @@ pub use commands::{
     device_connection_unpair_impl, device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
-pub use transport::{build_transport_statuses, TransportStatus};
+pub use transport::{build_transport_statuses, TransportStatus, TransportStatusInputs};
 use types::DiscoveryRuntime;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
@@ -318,11 +318,11 @@ impl DeviceConnectionState {
         }
     }
 
-    /// Reserved for UI consumption (live transport-changed/connect/disconnect
-    /// rows) — the draft's `device_connection_transport_statuses` polling
-    /// command remains the UI-facing surface in this PR; wiring a push-based
-    /// subscriber is follow-up work.
-    #[allow(dead_code)]
+    /// Live transport-changed/connect/disconnect rows: `lib.rs`'s
+    /// `forward_session_lifecycle_events` subscribes once at app setup and
+    /// forwards each event to the frontend (ADR-0003 Phase 2).
+    /// `device_connection_transport_statuses` stays the source of truth for
+    /// a one-shot/polled read; this is the push side of the same signal.
     pub fn subscribe_lifecycle(&self) -> tokio::sync::broadcast::Receiver<LifecycleEvent> {
         self.lifecycle_tx.subscribe()
     }
@@ -511,6 +511,46 @@ impl DeviceConnectionState {
     pub fn network_effectively_available(&self, peer_device_id: &str) -> bool {
         self.network_peer_available(peer_device_id)
             && self.tcp_dial_failure_count(peer_device_id)
-                < crate::services::transport::selection::NETWORK_UNRESPONSIVE_THRESHOLD
+                < crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD
+    }
+
+    /// Bluetooth's counterpart to `record_tcp_dial_success` — same shape,
+    /// different map. See ADR-0003 Phase 2.
+    pub fn record_bluetooth_dial_success(&self, peer_device_id: &str) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.bluetooth_dial_failures.remove(peer_device_id);
+        }
+    }
+
+    pub fn record_bluetooth_dial_failure(&self, peer_device_id: &str) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            *guard
+                .bluetooth_dial_failures
+                .entry(peer_device_id.to_string())
+                .or_insert(0) += 1;
+        }
+    }
+
+    pub fn bluetooth_dial_failure_count(&self, peer_device_id: &str) -> u32 {
+        let Ok(guard) = self.runtime.lock() else {
+            return 0;
+        };
+        guard
+            .bluetooth_dial_failures
+            .get(peer_device_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Whether recent Bluetooth connection attempts give reason to distrust
+    /// this transport for this peer right now — the same
+    /// "no reason to distrust it" bar `network_effectively_available` uses
+    /// (a peer with zero attempts yet counts as reliable by default). Feeds
+    /// the `Configured { reliable }` state in the unified status model
+    /// (ADR-0003 Phase 2), not `network_effectively_available` itself,
+    /// which is Network-specific and used for transport *selection*.
+    pub fn bluetooth_effectively_reliable(&self, peer_device_id: &str) -> bool {
+        self.bluetooth_dial_failure_count(peer_device_id)
+            < crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD
     }
 }
