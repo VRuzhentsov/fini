@@ -133,6 +133,36 @@ fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Op
     }
 }
 
+/// ADR-0003 Phase 3: does `kind` match this pair's explicit transport pin,
+/// if any? `true` when there's no pin at all -- automatic selection is
+/// unconstrained. Both outbound dial loops (`tcp_ws`/`ble`) already gate
+/// on the preference before even attempting to connect, and again right
+/// before claiming to close the connect/auth-window race (see their own
+/// `peer_prefers_bluetooth`/`peer_prefers_network`) -- but the *inbound*
+/// accept path here had no equivalent: a peer that started dialing the
+/// old transport before a pin was set (or hasn't itself converged on it
+/// yet) would otherwise still get claimed here, leaving a
+/// pin-mismatched session live indefinitely, since nothing else ever
+/// revisits an already-claimed session against a later preference
+/// change. Rejecting it here folds into the same convergence path a
+/// mismatched dial already uses: the peer's own `record_tcp_dial_failure`/
+/// `record_bluetooth_dial_failure` from the resulting `AuthFail` eventually
+/// demotes that transport, and its own fallback dial loop tries the pinned
+/// one instead.
+fn check_transport_preference(db_path: &PathBuf, device_id: &str, kind: TransportKind) -> bool {
+    let preference = tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        crate::services::device_connection::peer_transport_preference(&mut conn, device_id)
+    });
+    match preference {
+        None => true,
+        Some(preference) => {
+            preference
+                == crate::services::device_connection::transport_kind_to_preference_string(kind)
+        }
+    }
+}
+
 /// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.
 /// Shared by every adapter's dial path. Returns the peer's reported
 /// `PROTOCOL_VERSION` (`0` for a peer running a build from before that
@@ -295,6 +325,17 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             .await;
             return;
         }
+    }
+
+    if !check_transport_preference(&db_path, &device_id, kind) {
+        let _ = send_frame(
+            link.as_mut(),
+            &PeerFrame::AuthFail {
+                reason: "transport preference mismatch".into(),
+            },
+        )
+        .await;
+        return;
     }
 
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);

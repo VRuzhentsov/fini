@@ -39,6 +39,7 @@ pub(crate) use commands::bluetooth_address_is_os_paired;
 pub(crate) use commands::{
     adopt_peer_transport_preference, local_bluetooth_address, normalize_bluetooth_address,
     peer_transport_preference, persist_bluetooth_address_and_maybe_enable,
+    transport_kind_to_preference_string,
 };
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{

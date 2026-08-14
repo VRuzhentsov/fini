@@ -304,6 +304,40 @@ async fn set_preferred_transport_withholds_switch_from_a_peer_on_an_old_protocol
     );
 }
 
+/// Regression test for a P1 review finding on ADR-0003 Phase 3: a pin set
+/// while the peer isn't connected has nothing to notify or close, but
+/// `run_peer_gate`'s inbound accept path must still refuse to claim a
+/// *later* connection that arrives on the wrong transport -- otherwise a
+/// mismatched session goes live and stays live indefinitely, since nothing
+/// else ever revisits an already-claimed session against the preference.
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_ws_gate_rejects_an_inbound_session_that_mismatches_the_local_transport_pin() {
+    let (server, server_db) = server_state("transport-gate-preference-mismatch");
+    seed_paired_device(&server_db, "peer-client");
+
+    let mut conn = open_db_at_path(&server_db);
+    crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut conn,
+        &server,
+        "peer-client".to_string(),
+        Some(TransportKind::Bluetooth),
+    )
+    .expect("set preferred transport ahead of any connection");
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect_err("a Network accept must be rejected while the pair is pinned to Bluetooth");
+    assert!(err.contains("transport preference mismatch"), "got: {err}");
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(!server.has_session("peer-client"));
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the
