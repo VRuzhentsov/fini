@@ -338,6 +338,63 @@ async fn tcp_ws_gate_rejects_an_inbound_session_that_mismatches_the_local_transp
     assert!(!server.has_session("peer-client"));
 }
 
+/// Regression test for a P1 review finding on ADR-0003 Phase 3: when a peer
+/// with the higher device ID pins itself to Bluetooth while offline, it
+/// never dials at all (see `should_dial_peer`'s deterministic-dialer
+/// election) -- the *lower*-ID side is the only one that can ever make
+/// progress. Its own `dial_with_backoff` must not treat the resulting
+/// "transport preference mismatch" `AuthFail` as a terminal rejection
+/// (previously indistinguishable from a genuinely unpaired device) -- doing
+/// so would strand the pair forever, since nothing else ever retries. It
+/// must keep recording ordinary dial failures instead, so the existing
+/// threshold/fallback machinery still gets a chance to hand off to
+/// Bluetooth.
+#[tokio::test(flavor = "multi_thread")]
+async fn tcp_ws_dial_loop_keeps_retrying_after_a_transport_preference_mismatch() {
+    let (responder, responder_db) = server_state("transport-dial-retry-after-mismatch-responder");
+    let (dialer, dialer_db) = server_state("transport-dial-retry-after-mismatch-dialer");
+    seed_paired_device(&responder_db, &dialer.identity.device_id);
+    seed_paired_device(&dialer_db, &responder.identity.device_id);
+
+    let mut conn = open_db_at_path(&responder_db);
+    crate::services::device_connection::device_connection_set_preferred_transport_impl(
+        &mut conn,
+        &responder,
+        dialer.identity.device_id.clone(),
+        Some(TransportKind::Bluetooth),
+    )
+    .expect("pin the responder to Bluetooth while offline");
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
+
+    tokio::spawn(tcp_ws::dial_with_backoff(
+        dialer.clone(),
+        dialer_db,
+        responder.identity.device_id.clone(),
+        "127.0.0.1".to_string(),
+        port,
+    ));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut retried = false;
+    while tokio::time::Instant::now() < deadline {
+        if dialer.tcp_dial_failure_count(&responder.identity.device_id) >= 2 {
+            retried = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        retried,
+        "must keep recording dial failures (and therefore keep retrying) instead of giving up \
+         after a single transport preference mismatch"
+    );
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the

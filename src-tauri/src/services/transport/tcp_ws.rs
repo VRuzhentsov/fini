@@ -232,7 +232,12 @@ fn peer_prefers_bluetooth(db_path: &std::path::Path, peer_id: &str) -> bool {
     })
 }
 
-async fn dial_with_backoff(
+/// `pub(crate)`, not private: `transport::tests` exercises this directly
+/// (bypassing `spawn_dial_loop`'s presence-worker plumbing) to prove its
+/// error-handling distinguishes a genuine rejection from a transport
+/// preference mismatch -- see the regression test for the P1 finding this
+/// guards against.
+pub(crate) async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_id: String,
@@ -304,7 +309,19 @@ async fn dial_with_backoff(
                     }
                     Err(err) => {
                         eprintln!("[transport][tcp_ws] auth with {peer_id} failed: {err}");
-                        if err.starts_with("auth rejected") {
+                        // ADR-0003 Phase 3: "transport preference mismatch"
+                        // (the peer's inbound gate rejecting because *it*
+                        // is pinned elsewhere) is not a reason to give up --
+                        // if the peer has the higher device ID it never
+                        // dials at all, so this device is the only side
+                        // that can ever make progress. Recording it as an
+                        // ordinary dial failure lets the existing
+                        // threshold machinery demote Network and hand off
+                        // to ble.rs's own fallback dial loop, the same
+                        // convergence path an unreachable Network already
+                        // uses. Every other "auth rejected" reason (e.g.
+                        // genuinely unpaired) is still terminal.
+                        if err.starts_with("auth rejected") && !err.contains("transport preference mismatch") {
                             return; // not paired; don't retry
                         }
                         // Connection-level failure (link dropped mid-auth,

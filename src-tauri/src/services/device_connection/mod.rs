@@ -336,6 +336,28 @@ impl DeviceConnectionState {
         }
     }
 
+    /// Test-only: injects a presence entry directly, bypassing the real
+    /// mDNS discovery worker entirely. Lets a test exercise
+    /// `transport::tcp_ws::dial_with_backoff`/`spawn_dial_loop` (both gate
+    /// on `list_presenced_peers`) without standing up real UDP broadcast
+    /// traffic.
+    #[cfg(test)]
+    pub fn note_presence_for_test(&self, peer_device_id: &str, addr: &str, ws_port: u16) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.presence.insert(
+                peer_device_id.to_string(),
+                types::SeenPeer {
+                    hostname: peer_device_id.to_string(),
+                    addr: addr.to_string(),
+                    discovery_port: 0,
+                    ws_port: Some(ws_port),
+                    last_seen_at: crate::services::db::utc_now(),
+                    last_seen_mono: std::time::Instant::now(),
+                },
+            );
+        }
+    }
+
     /// Live transport-changed/connect/disconnect rows: `lib.rs`'s
     /// `forward_session_lifecycle_events` subscribes once at app setup and
     /// forwards each event to the frontend (ADR-0003 Phase 2).
