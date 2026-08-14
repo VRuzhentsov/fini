@@ -40,6 +40,16 @@ const transportStatuses = computed(() => {
   if (!deviceId.value) return [];
   return deviceStore.getTransportStatuses(deviceId.value);
 });
+// A manual pin (device.preferred_transport) always wins over the backend's
+// own "what would automatic selection pick" signal (status.preferred) --
+// once the user has pinned a transport, that's the one actually governing
+// reconnects, and the star should track it, not whichever transport
+// merely happens to be reachable right now.
+const starredTransportKind = computed<"network" | "bluetooth" | null>(() => {
+  const pinned = device.value?.preferred_transport;
+  if (pinned === "network" || pinned === "bluetooth") return pinned;
+  return transportStatuses.value.find((status) => status.preferred)?.kind ?? null;
+});
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() => {
   if (!deviceId.value) return {};
   return deviceStore.getLastSyncedAtBySpace(deviceId.value);
@@ -351,9 +361,9 @@ function rowDetailText(state: DeviceTransportRowState): string {
           <template #start>
             <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
             <StarIcon
-              v-if="status.preferred"
+              v-if="starredTransportKind === status.kind"
               class="ml-1.5 inline-block h-3 w-3 align-text-top opacity-60"
-              aria-label="Automatically preferred"
+              :aria-label="device?.preferred_transport ? 'Pinned' : 'Automatically preferred'"
             />
           </template>
           <template #end>

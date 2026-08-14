@@ -216,7 +216,7 @@ fn should_dial_fallback_peer(my_id: &str, peer_id: &str) -> bool {
     my_id < peer_id
 }
 
-async fn dial_with_backoff(
+pub(crate) async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_id: String,
@@ -226,7 +226,19 @@ async fn dial_with_backoff(
     let max_delay = Duration::from_secs(15);
 
     loop {
-        if state.has_session(&peer_id) || state.network_effectively_available(&peer_id) {
+        if state.has_session(&peer_id) {
+            return;
+        }
+        // ADR-0003 Phase 3: same override as the outer spawn gate above --
+        // re-checked here too, since this loop's own retries can outlive
+        // that one-time snapshot (a preference set after this task started
+        // must still apply on the next retry, not just at spawn time).
+        let network_available = state.network_effectively_available(&peer_id)
+            && crate::services::device_connection::peer_transport_preference(
+                &mut crate::services::db::open_db_at_path(&db_path),
+                &peer_id,
+            ) != Some("bluetooth".to_string());
+        if network_available {
             return;
         }
 

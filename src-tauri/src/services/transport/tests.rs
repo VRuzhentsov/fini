@@ -680,6 +680,50 @@ async fn bluetooth_pin_with_no_current_eligibility_does_not_block_network_even_w
     );
 }
 
+/// Regression test for a P2 review finding on ADR-0003 Phase 3:
+/// `sim::spawn_fallback_dial_loop`'s outer gate already consults the
+/// Bluetooth-pin override, but `dial_with_backoff`'s own retry loop used
+/// to re-check raw `network_effectively_available` on every iteration,
+/// immediately giving up despite the override. Proves the fix by calling
+/// `dial_with_backoff` directly with network reachable but the peer
+/// pinned to Bluetooth: it must still dial and establish, not bail out.
+#[tokio::test(flavor = "multi_thread")]
+async fn sim_dial_loop_honors_the_bluetooth_override_not_just_the_outer_gate() {
+    let (responder, responder_db) = server_state("transport-sim-override-responder");
+    let (dialer, dialer_db) = server_state("transport-sim-override-dialer");
+    seed_paired_device(&responder_db, &dialer.identity.device_id);
+    seed_paired_device(&dialer_db, &responder.identity.device_id);
+    diesel::update(paired_devices::table.find(&responder.identity.device_id))
+        .set(paired_devices::preferred_transport.eq(Some("bluetooth")))
+        .execute(&mut open_db_at_path(&dialer_db))
+        .expect("pin the dialer to bluetooth");
+    // network_effectively_available defaults to true (never attempted, no
+    // failures recorded) -- exactly the "network looks reachable" state
+    // the override must still win over.
+
+    let port = free_port().await;
+    tokio::spawn(sim::run_server(responder.clone(), responder_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
+
+    tokio::spawn(sim::dial_with_backoff(
+        dialer.clone(),
+        dialer_db,
+        responder.identity.device_id.clone(),
+        vec![port],
+    ));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut established = false;
+    while tokio::time::Instant::now() < deadline {
+        if dialer.session_kind(&responder.identity.device_id) == Some(TransportKind::Sim) {
+            established = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(established, "the Bluetooth override must apply inside the retry loop too");
+}
+
 /// Regression test for a P1 review finding on ADR-0003 Phase 3: a stale
 /// "configured" row (`DeviceView`'s polling only refreshes session
 /// liveness, not full eligibility -- see the frontend's own

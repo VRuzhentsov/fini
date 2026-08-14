@@ -51,6 +51,17 @@ pub type SessionSender = mpsc::Sender<SessionCommand>;
 /// -> `0`), which reads as "supports nothing past the original protocol."
 pub const PROTOCOL_VERSION: u32 = 2;
 
+/// The fixed protocol version that introduced `PeerFrame::SwitchTransport`
+/// -- deliberately a separate constant from `PROTOCOL_VERSION` above, not
+/// an alias for it. Every proactive-SwitchTransport gate must compare
+/// against *this*, not the current `PROTOCOL_VERSION`: if a later,
+/// unrelated feature bumps `PROTOCOL_VERSION` again, a peer on version 2
+/// (which understands SwitchTransport fine, just not whatever feature
+/// came after it) must not suddenly fail this check and silently lose
+/// manual transport-handoff support between two otherwise-compatible
+/// builds.
+pub const SWITCH_TRANSPORT_MIN_PROTOCOL_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PeerFrame {

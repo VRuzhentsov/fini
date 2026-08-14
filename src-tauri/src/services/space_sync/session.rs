@@ -386,7 +386,7 @@ pub async fn run_session(
     // elsewhere, closing that. If this device's guess was right all
     // along, the peer's own adoption closes its end, which tears this
     // side down too via the shared link -- no separate action needed here.
-    if peer_protocol_version >= PROTOCOL_VERSION {
+    if peer_protocol_version >= crate::services::space_sync::types::SWITCH_TRANSPORT_MIN_PROTOCOL_VERSION {
         let mismatch = tokio::task::block_in_place(|| {
             let mut conn = open_db_at_path(&db_path);
             crate::services::device_connection::peer_transport_preference_with_timestamp(
@@ -588,7 +588,7 @@ async fn handle_inbound(
                     &mut conn, &peer, to, &requested_at,
                 );
                 let winning = match outcome {
-                    TransportPreferenceAdoption::Adopted => None,
+                    TransportPreferenceAdoption::Adopted | TransportPreferenceAdoption::Failed => None,
                     TransportPreferenceAdoption::Stale => {
                         crate::services::device_connection::peer_transport_preference_with_timestamp(
                             &mut conn, &peer,
@@ -636,6 +636,15 @@ async fn handle_inbound(
                     if state.session_kind(&peer) != Some(to) {
                         state.request_session_close(&peer);
                     }
+                }
+                TransportPreferenceAdoption::Failed => {
+                    // The write itself failed (busy timeout, storage
+                    // error) -- an operational hiccup unrelated to which
+                    // preference should win, so there's nothing coherent
+                    // to reply with and nothing to close. Left to resolve
+                    // itself: the sender's own retry (or the next session
+                    // establishment) gets another chance at the same
+                    // comparison.
                 }
                 TransportPreferenceAdoption::Stale | TransportPreferenceAdoption::Ineligible => {
                     // Rejected -- either the sender's info was stale, or it

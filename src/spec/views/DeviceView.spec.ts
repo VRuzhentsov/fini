@@ -37,6 +37,8 @@ describe("DeviceView mapped spaces sync labels", () => {
         bluetooth_enabled: true,
         bluetooth_address: "AA:BB:CC:DD:EE:FF",
         bluetooth_last_verified_at: "2026-04-07T11:01:00.000Z",
+        preferred_transport: null,
+        preferred_transport_set_at: null,
       }),
       isDeviceOnline: jest.fn().mockReturnValue(true),
       getSpaceSyncStatus: jest.fn().mockReturnValue({
@@ -179,5 +181,40 @@ describe("DeviceView mapped spaces sync labels", () => {
       setPreferredTransport: jest.Mock;
     };
     expect(deviceStore.setPreferredTransport).toHaveBeenCalledWith("peer-device-123", "bluetooth");
+  });
+
+  it("shows the star on the manually pinned transport, not the automatic choice", async () => {
+    const deviceStore = useDeviceStore() as unknown as {
+      findPairedDevice: jest.Mock;
+    };
+    // The mock's transport statuses (set in beforeEach) mark "network" as
+    // the automatic choice (status.preferred), but this pair has been
+    // manually pinned to Bluetooth -- the star must follow the pin.
+    deviceStore.findPairedDevice.mockReturnValue({
+      peer_device_id: "peer-device-123",
+      display_name: "peer-host",
+      paired_at: "2026-04-07T11:00:00.000Z",
+      last_seen_at: "2026-04-07T11:05:00.000Z",
+      pair_state: "paired",
+      bluetooth_enabled: true,
+      bluetooth_address: "AA:BB:CC:DD:EE:FF",
+      bluetooth_last_verified_at: "2026-04-07T11:01:00.000Z",
+      preferred_transport: "bluetooth",
+      preferred_transport_set_at: "2026-04-07T11:02:00.000Z",
+    });
+
+    const wrapper = mount(DeviceView, {
+      global: {
+        stubs: {
+          "router-link": { template: "<a><slot /></a>" },
+        },
+      },
+    });
+
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    expect(rows[0].find("svg").exists()).toBe(false);
+    expect(rows[1].find("svg").exists()).toBe(true);
   });
 });

@@ -1375,38 +1375,48 @@ pub fn device_connection_set_bluetooth_transport_impl(
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
     } else {
-        diesel::update(paired_devices::table.find(&input.peer_device_id))
-            .set((
-                paired_devices::bluetooth_enabled.eq(false),
-                paired_devices::bluetooth_address.eq(Option::<String>::None),
-                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
-                // An explicit opt-out: must stick until the user explicitly
-                // re-enables it above, not just until the next self-report
-                // over a network session re-confirms the (still genuinely
-                // OS-bonded) address -- see
-                // `persist_bluetooth_address_and_maybe_enable`.
-                paired_devices::bluetooth_disabled_by_user.eq(true),
-            ))
-            .execute(&mut *conn)
-            .map_err(|e| e.to_string())?;
-
-        // ADR-0003 Phase 3: a "bluetooth" pin that survives disabling
-        // Bluetooth for this pair is a stranding hazard -- the Network
-        // dial loop stands down because of the pin, while
-        // `bluetooth_dial_candidates`/the inbound Bluetooth gate now both
-        // exclude this pair, leaving no transport able to ever reconnect.
-        // Clearing it falls back to automatic (network-first) selection,
-        // matching what the user almost certainly wants from "disable
-        // Bluetooth" anyway.
-        if peer_transport_preference(conn, &input.peer_device_id).as_deref() == Some("bluetooth") {
+        // One transaction, not two independent statements: if the second
+        // update (clearing a surviving Bluetooth pin) failed after the
+        // first had already committed, the pair would be left with
+        // Bluetooth disabled *and* still pinned to it -- Network stays
+        // suppressed by the pin while Bluetooth candidate selection now
+        // excludes the disabled pair, stranding it. Rolling back the
+        // disable too if the pin clear fails means this function only
+        // ever leaves the two in sync.
+        conn.transaction::<(), diesel::result::Error, _>(|conn| {
             diesel::update(paired_devices::table.find(&input.peer_device_id))
                 .set((
-                    paired_devices::preferred_transport.eq(Option::<String>::None),
-                    paired_devices::preferred_transport_set_at.eq(Option::<String>::None),
+                    paired_devices::bluetooth_enabled.eq(false),
+                    paired_devices::bluetooth_address.eq(Option::<String>::None),
+                    paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
+                    // An explicit opt-out: must stick until the user
+                    // explicitly re-enables it above, not just until the
+                    // next self-report over a network session re-confirms
+                    // the (still genuinely OS-bonded) address -- see
+                    // `persist_bluetooth_address_and_maybe_enable`.
+                    paired_devices::bluetooth_disabled_by_user.eq(true),
                 ))
-                .execute(&mut *conn)
-                .map_err(|e| e.to_string())?;
-        }
+                .execute(conn)?;
+
+            // ADR-0003 Phase 3: a "bluetooth" pin that survives disabling
+            // Bluetooth for this pair is a stranding hazard -- the Network
+            // dial loop stands down because of the pin, while
+            // `bluetooth_dial_candidates`/the inbound Bluetooth gate now
+            // both exclude this pair, leaving no transport able to ever
+            // reconnect. Clearing it falls back to automatic
+            // (network-first) selection, matching what the user almost
+            // certainly wants from "disable Bluetooth" anyway.
+            if peer_transport_preference(conn, &input.peer_device_id).as_deref() == Some("bluetooth") {
+                diesel::update(paired_devices::table.find(&input.peer_device_id))
+                    .set((
+                        paired_devices::preferred_transport.eq(Option::<String>::None),
+                        paired_devices::preferred_transport_set_at.eq(Option::<String>::None),
+                    ))
+                    .execute(conn)?;
+            }
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
     }
 
     paired_devices::table
@@ -1562,9 +1572,9 @@ pub fn device_connection_set_preferred_transport_impl(
         // it lands (see this function's doc comment). `None` (no live
         // session) is *not* gated here: there's nothing to notify or close
         // either way, so it falls through harmlessly.
-        let peer_understands_switch_transport = state
-            .session_protocol_version(&peer_device_id)
-            .is_none_or(|version| version >= crate::services::space_sync::types::PROTOCOL_VERSION);
+        let peer_understands_switch_transport = state.session_protocol_version(&peer_device_id).is_none_or(
+            |version| version >= crate::services::space_sync::types::SWITCH_TRANSPORT_MIN_PROTOCOL_VERSION,
+        );
 
         if peer_understands_switch_transport {
             // Best-effort: `push_to_peer` returning false just means there
@@ -1615,6 +1625,12 @@ pub enum TransportPreferenceAdoption {
     /// transport this device can't actually support right now (Bluetooth
     /// disabled locally) -- refused regardless of how new the timestamp is.
     Ineligible,
+    /// The proposal would have won, but the write itself failed (a busy
+    /// timeout, a storage error) -- distinct from `Stale`: nothing was
+    /// actually persisted, so callers must not report this as `Adopted`.
+    /// Also distinct from replying with a stale-preference counter, since
+    /// the local value is unrelated to why this failed.
+    Failed,
 }
 
 /// Adopts a peer-proposed `PeerFrame::SwitchTransport` if it wins the
@@ -1644,29 +1660,60 @@ pub fn adopt_peer_transport_preference(
     to: crate::services::transport::TransportKind,
     requested_at: &str,
 ) -> TransportPreferenceAdoption {
-    let current_set_at: Option<String> = paired_devices::table
-        .find(peer_device_id)
-        .select(paired_devices::preferred_transport_set_at)
-        .first(&mut *conn)
-        .unwrap_or(None);
-
-    if let Some(current) = &current_set_at {
-        if current.as_str() >= requested_at {
-            return TransportPreferenceAdoption::Stale;
-        }
-    }
-
     let preference = transport_kind_to_preference_string(to);
     if preference == "bluetooth" && !peer_is_currently_bluetooth_eligible(conn, peer_device_id) {
-        return TransportPreferenceAdoption::Ineligible;
+        // Staleness still takes priority in what's *reported*, even
+        // though this proposal is never written either way: a proposal
+        // that's also stale must report `Stale` (and leave whatever's
+        // already stored alone), not `Ineligible` -- `handle_inbound`'s
+        // `Ineligible` handling unconditionally synthesizes and persists
+        // a fresh "network" counter, which would otherwise clobber a
+        // legitimate, already-newer stored preference (of any kind) just
+        // because ineligibility happened to be checked first. This read
+        // is purely informational (nothing is written in this branch
+        // regardless of the answer), so it doesn't need the same
+        // race-closing treatment as the write path below.
+        let current_set_at: Option<String> = paired_devices::table
+            .find(peer_device_id)
+            .select(paired_devices::preferred_transport_set_at)
+            .first(&mut *conn)
+            .unwrap_or(None);
+        return if current_set_at.as_deref().is_some_and(|current| current >= requested_at) {
+            TransportPreferenceAdoption::Stale
+        } else {
+            TransportPreferenceAdoption::Ineligible
+        };
     }
-    let _ = diesel::update(paired_devices::table.find(peer_device_id))
-        .set((
-            paired_devices::preferred_transport.eq(Some(preference)),
-            paired_devices::preferred_transport_set_at.eq(Some(requested_at)),
-        ))
-        .execute(&mut *conn);
-    TransportPreferenceAdoption::Adopted
+
+    // A single atomic conditional UPDATE, not a separate read-then-write:
+    // a local pin click (`device_connection_set_preferred_transport_impl`)
+    // and this peer-proposed adoption run on two independent SQLite
+    // connections and can race. Folding the last-writer-wins comparison
+    // into the UPDATE's own WHERE clause closes the window a read then a
+    // separate write would otherwise leave open for the other side's
+    // write to land in between -- the database resolves the race with one
+    // statement instead of this function racing itself. The affected-row
+    // count doubles as the "did this actually persist" signal: `Ok(0)`
+    // means the row didn't match (stale, or already exactly this value),
+    // never that the write itself failed.
+    let rows_affected = diesel::update(
+        paired_devices::table.filter(paired_devices::peer_device_id.eq(peer_device_id)).filter(
+            paired_devices::preferred_transport_set_at
+                .is_null()
+                .or(paired_devices::preferred_transport_set_at.lt(requested_at)),
+        ),
+    )
+    .set((
+        paired_devices::preferred_transport.eq(Some(preference)),
+        paired_devices::preferred_transport_set_at.eq(Some(requested_at)),
+    ))
+    .execute(&mut *conn);
+
+    match rows_affected {
+        Ok(0) => TransportPreferenceAdoption::Stale,
+        Ok(_) => TransportPreferenceAdoption::Adopted,
+        Err(_) => TransportPreferenceAdoption::Failed,
+    }
 }
 
 /// The "Find via Bluetooth" button on `DeviceView.vue` — Phase 1's discovery
@@ -2656,5 +2703,47 @@ mod tests {
             .first(&mut conn)
             .expect("load peer row");
         assert_eq!(row.preferred_transport.as_deref(), Some("network"));
+    }
+
+    /// Regression test: a Bluetooth proposal that's *both* stale and
+    /// locally ineligible must report `Stale`, not `Ineligible` --
+    /// `handle_inbound`'s `Ineligible` handling unconditionally
+    /// synthesizes and persists a fresh "network" counter, which would
+    /// otherwise clobber an already-newer, perfectly valid stored
+    /// preference just because ineligibility happened to be checked
+    /// first. Bluetooth is deliberately left disabled here (the schema
+    /// default) so the proposal is *also* ineligible, on top of being
+    /// older than what's already stored.
+    #[test]
+    fn adopt_peer_transport_preference_prioritizes_staleness_over_ineligibility() {
+        let mut conn = test_conn();
+        assert_eq!(
+            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::TcpWs, "2026-04-07T00:00:02Z"),
+            TransportPreferenceAdoption::Adopted
+        );
+
+        let outcome = adopt_peer_transport_preference(
+            &mut conn,
+            "peer-a",
+            TransportKind::Bluetooth,
+            "2026-04-07T00:00:01Z",
+        );
+        assert_eq!(
+            outcome,
+            TransportPreferenceAdoption::Stale,
+            "an older proposal must report Stale even when it's also ineligible"
+        );
+
+        let row: PairedDevice = paired_devices::table
+            .find("peer-a")
+            .select(PairedDevice::as_select())
+            .first(&mut conn)
+            .expect("load peer row");
+        assert_eq!(
+            row.preferred_transport.as_deref(),
+            Some("network"),
+            "the existing valid preference must survive untouched"
+        );
+        assert_eq!(row.preferred_transport_set_at.as_deref(), Some("2026-04-07T00:00:02Z"));
     }
 }
