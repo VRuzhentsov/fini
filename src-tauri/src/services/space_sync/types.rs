@@ -20,7 +20,20 @@ pub struct SyncEventEnvelope {
     pub created_at: String,
 }
 
-pub type SessionSender = mpsc::Sender<PeerFrame>;
+/// What can be sent through a claimed session's mailbox (`run_session`'s
+/// `rx`): forward a frame to the peer over the wire, or close this session
+/// locally without one. `Close` exists for exactly one caller --
+/// `DeviceConnectionState::request_session_close`, ADR-0003 Phase 3's
+/// manual transport switch -- every other session end is `run_session`
+/// itself noticing its transport failed (`recv_frame`/`send_frame`
+/// returning an error), not something injected from outside.
+#[derive(Debug)]
+pub enum SessionCommand {
+    Forward(PeerFrame),
+    Close,
+}
+
+pub type SessionSender = mpsc::Sender<SessionCommand>;
 
 /// A message of the transport-neutral Fini peer protocol: pairing handshake
 /// plus authenticated sync. Carried by whichever `Transport`/`Link` is
@@ -36,7 +49,18 @@ pub type SessionSender = mpsc::Sender<PeerFrame>;
 /// other actually supports version-gated frames before sending one; an
 /// older peer's `Auth`/`AuthOk` simply omits the field (`#[serde(default)]`
 /// -> `0`), which reads as "supports nothing past the original protocol."
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// The fixed protocol version that introduced `PeerFrame::SwitchTransport`
+/// -- deliberately a separate constant from `PROTOCOL_VERSION` above, not
+/// an alias for it. Every proactive-SwitchTransport gate must compare
+/// against *this*, not the current `PROTOCOL_VERSION`: if a later,
+/// unrelated feature bumps `PROTOCOL_VERSION` again, a peer on version 2
+/// (which understands SwitchTransport fine, just not whatever feature
+/// came after it) must not suddenly fail this check and silently lose
+/// manual transport-handoff support between two otherwise-compatible
+/// builds.
+pub const SWITCH_TRANSPORT_MIN_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -126,6 +150,25 @@ pub enum PeerFrame {
     /// (`check_paired` -- deliberately not `check_bluetooth_enabled`).
     #[serde(rename = "bluetooth_probe_reply")]
     BluetoothProbeReply { device_id: String },
+    /// ADR-0003 Phase 3: "I just pinned this pair to `to`, do the same on
+    /// your end" -- imperative, not negotiated; there is no accept/reject
+    /// reply. Only ever sent proactively into an already-authenticated
+    /// session (post-`AuthOk`), so it's gated behind `PROTOCOL_VERSION >=
+    /// 2` the same way `BluetoothAddressUpdate` is gated behind `>= 1` --
+    /// an older peer that doesn't understand it would otherwise decode-fail
+    /// and drop the whole session (see `Unknown`'s doc comment). `to` is
+    /// `crate::services::transport::TransportKind` (the same finer-grained
+    /// type `session_kind()` reports), not `device_connection::transport::
+    /// TransportKind` -- avoids a same-named-type import collision, and
+    /// matches what the receiving side actually compares it against.
+    /// `requested_at` (RFC3339) resolves a race if both sides send
+    /// conflicting switches close together: the later timestamp wins on
+    /// both ends.
+    #[serde(rename = "switch_transport")]
+    SwitchTransport {
+        to: crate::services::transport::TransportKind,
+        requested_at: String,
+    },
     /// Catches any `type` tag this build doesn't recognize, instead of
     /// failing to decode outright. Without this, a peer running an older
     /// build that unconditionally receives a newer frame kind (e.g.

@@ -26,8 +26,9 @@ use services::device_connection::{
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_save_paired_device, device_connection_send_pair_request,
     device_connection_send_pair_request_bluetooth, device_connection_session_transport,
-    device_connection_set_bluetooth_transport, device_connection_transport_statuses,
-    device_connection_unpair, device_connection_update_last_seen, DeviceConnectionState,
+    device_connection_set_bluetooth_transport, device_connection_set_preferred_transport,
+    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
+    DeviceConnectionState,
 };
 #[cfg(feature = "ui-plane")]
 use services::notification::{
@@ -193,6 +194,59 @@ fn sync_native_theme(app: AppHandle, theme: String) {
     settings::apply_native_theme(&app, &theme);
 }
 
+/// Payload for `SESSION_CHANGED_EVENT` — ADR-0003 Phase 2. `established`
+/// distinguishes the two `LifecycleEvent` variants; `kind` is the
+/// finer-grained `services::transport::TransportKind` the event itself
+/// carries (TcpWs/Sim/Bluetooth), not `device_connection::transport`'s
+/// coarser Network/Bluetooth row kind — the frontend doesn't need to
+/// interpret it, it's just enough for the listener to log/filter on if it
+/// ever wants to.
+#[cfg(feature = "ui-plane")]
+#[derive(Clone, serde::Serialize)]
+struct SessionChangedEvent {
+    peer_device_id: String,
+    kind: services::transport::TransportKind,
+    established: bool,
+}
+
+#[cfg(feature = "ui-plane")]
+const SESSION_CHANGED_EVENT: &str = "device-connection://session-changed";
+
+/// Forwards `DeviceConnectionState::subscribe_lifecycle()` to the frontend
+/// as they happen, so a session's connect/disconnect reaches the UI faster
+/// than the next `TRANSPORT_STATUS_POLL_INTERVAL_MS` poll (`device.ts`
+/// still polls too — this is a latency improvement, not the sole source of
+/// truth, so a missed/dropped event here self-heals within that poll
+/// window instead of staying wrong indefinitely). See ADR-0003 Phase 2.
+#[cfg(feature = "ui-plane")]
+async fn forward_session_lifecycle_events(
+    mut events: tokio::sync::broadcast::Receiver<services::transport::selection::LifecycleEvent>,
+    app: AppHandle,
+) {
+    use services::transport::selection::LifecycleEvent;
+
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            // Lagged: some events were dropped, but the receiver is still
+            // live -- keep forwarding what arrives next rather than giving
+            // up on the whole subscription. `device.ts`'s poll fallback
+            // covers whatever this specific gap missed.
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        };
+        let payload = match event {
+            LifecycleEvent::SessionEstablished { peer_device_id, kind } => {
+                SessionChangedEvent { peer_device_id, kind, established: true }
+            }
+            LifecycleEvent::SessionEnded { peer_device_id, kind } => {
+                SessionChangedEvent { peer_device_id, kind, established: false }
+            }
+        };
+        let _ = app.emit(SESSION_CHANGED_EVENT, payload);
+    }
+}
+
 #[cfg(feature = "cli-plane")]
 pub fn run_cli() -> i32 {
     services::cli::run(std::env::args().collect())
@@ -296,6 +350,10 @@ pub fn run() {
             sim::maybe_spawn_server(dc_state.clone(), dc_state.db_path.clone());
             #[cfg(target_os = "linux")]
             tauri::async_runtime::spawn(ble::run_server(dc_state.clone(), dc_state.db_path.clone()));
+            tauri::async_runtime::spawn(forward_session_lifecycle_events(
+                dc_state.subscribe_lifecycle(),
+                app_handle.clone(),
+            ));
             app.manage(dc_state);
             Ok(())
         })
@@ -344,6 +402,7 @@ pub fn run() {
             device_connection_save_paired_device,
             device_connection_session_transport,
             device_connection_set_bluetooth_transport,
+            device_connection_set_preferred_transport,
             device_connection_find_bluetooth_address,
             device_connection_send_pair_request_bluetooth,
             device_connection_discover_bluetooth_candidates,

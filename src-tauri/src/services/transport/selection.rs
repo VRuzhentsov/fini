@@ -31,11 +31,14 @@ pub type LifecycleBus = tokio::sync::broadcast::Sender<LifecycleEvent>;
 
 const LIFECYCLE_BUS_CAPACITY: usize = 64;
 
-/// Consecutive TCP-WS dial/auth failures at or above which a presenced peer
-/// is treated as not effectively network-available for transport selection
-/// (see `DeviceConnectionState::network_effectively_available`) — presence
-/// alone doesn't mean the WebSocket port is reachable.
-pub const NETWORK_UNRESPONSIVE_THRESHOLD: u32 = 3;
+/// Consecutive dial/auth failures at or above which a peer is treated as
+/// unreliable on a transport — for Network, that means not effectively
+/// available for transport selection (see
+/// `DeviceConnectionState::network_effectively_available`; presence alone
+/// doesn't mean the WebSocket port is reachable). Shared with Bluetooth's
+/// `bluetooth_effectively_reliable` (ADR-0003 Phase 2), which uses the same
+/// bar for the unified status model but never affects transport selection.
+pub const TRANSPORT_UNRESPONSIVE_THRESHOLD: u32 = 3;
 
 pub fn new_lifecycle_bus() -> LifecycleBus {
     let (tx, _rx) = tokio::sync::broadcast::channel(LIFECYCLE_BUS_CAPACITY);

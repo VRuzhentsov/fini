@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { StarIcon } from "@heroicons/vue/24/solid";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
-import { useDeviceStore } from "../stores/device";
+import { useDeviceStore, type DeviceTransportRowState } from "../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../stores/space";
 import { shortUuid } from "../utils/shortUuid";
+import { formatMacAddress, macAddressHexDigits } from "../utils/macAddress";
 
 const route = useRoute();
 const router = useRouter();
@@ -13,7 +15,16 @@ const deviceStore = useDeviceStore();
 const spaceStore = useSpaceStore();
 const unpairDialog = ref<HTMLDialogElement | null>(null);
 const mappedSelection = ref<string[]>([]);
-const bluetoothAddressInput = ref("");
+// Stores just the raw hex digits (no colons); the input mask formats them
+// with colons on display and strips any pasted/typed separators back out
+// on write, so the user never has to type ":" themselves.
+const bluetoothAddressHexDigits = ref("");
+const bluetoothAddressInput = computed({
+  get: () => formatMacAddress(bluetoothAddressHexDigits.value),
+  set: (value: string) => {
+    bluetoothAddressHexDigits.value = macAddressHexDigits(value);
+  },
+});
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
 const savingBluetoothTransport = ref(false);
@@ -23,6 +34,8 @@ let findBluetoothGeneration = 0;
 const mappingError = ref<string | null>(null);
 const bluetoothTransportError = ref<string | null>(null);
 const mappingsDirty = ref(false);
+const settingPreferredTransport = ref<"network" | "bluetooth" | null>(null);
+const preferredTransportError = ref<string | null>(null);
 
 const deviceId = computed(() => String(route.params.id ?? ""));
 const device = computed(() => deviceStore.findPairedDevice(deviceId.value));
@@ -36,6 +49,16 @@ const presenceLabel = computed(() => (online.value ? "Online" : "Offline"));
 const transportStatuses = computed(() => {
   if (!deviceId.value) return [];
   return deviceStore.getTransportStatuses(deviceId.value);
+});
+// A manual pin (device.preferred_transport) always wins over the backend's
+// own "what would automatic selection pick" signal (status.preferred) --
+// once the user has pinned a transport, that's the one actually governing
+// reconnects, and the star should track it, not whichever transport
+// merely happens to be reachable right now.
+const starredTransportKind = computed<"network" | "bluetooth" | null>(() => {
+  const pinned = device.value?.preferred_transport;
+  if (pinned === "network" || pinned === "bluetooth") return pinned;
+  return transportStatuses.value.find((status) => status.preferred)?.kind ?? null;
 });
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() => {
   if (!deviceId.value) return {};
@@ -221,6 +244,25 @@ async function findViaBluetooth() {
   }
 }
 
+// ADR-0003 Phase 3: click-to-pin. Disabled for Unconfigured (Gray) rows --
+// there's nothing to switch to yet -- but otherwise available regardless of
+// whether the row is already live, matching the grill-me answer that this
+// should "force an immediate switch right now" even when re-clicking the
+// transport that's already preferred/live, rather than being a no-op toggle.
+async function pinTransport(kind: "network" | "bluetooth") {
+  if (!deviceId.value) return;
+  settingPreferredTransport.value = kind;
+  preferredTransportError.value = null;
+
+  try {
+    await deviceStore.setPreferredTransport(deviceId.value, kind);
+  } catch (error) {
+    preferredTransportError.value = String(error);
+  } finally {
+    settingPreferredTransport.value = null;
+  }
+}
+
 function openUnpairDialog() {
   unpairDialog.value?.showModal();
 }
@@ -238,6 +280,35 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
   if (hasPendingSync.value) return "Syncing";
   const lastSynced = lastSyncedLabelBySpace.value[spaceId];
   return lastSynced ? `last synced: ${lastSynced}` : "Mapped";
+}
+
+// ADR 0003 Phase 2: shared four-state model for both transport rows.
+// `live` is the only state that gets a border (ring) -- the sole "this is
+// the transport actually carrying the session right now" signal, replacing
+// the old separate "connected now" text badge. Amber now only means
+// "recently unreliable" (Configured, reliable: false), not "network is
+// just doing the job instead" -- that case is Configured/reliable: true,
+// green with no border.
+function rowDotClass(state: DeviceTransportRowState): string {
+  switch (state.state) {
+    case "live":
+      return "bg-green-500 ring-2 ring-green-600 ring-offset-2 ring-offset-base-200";
+    case "configured":
+      return state.reliable ? "bg-green-500" : "bg-amber-400";
+    case "unconfigured":
+      return "bg-gray-400";
+  }
+}
+
+function rowDetailText(state: DeviceTransportRowState): string {
+  switch (state.state) {
+    case "unconfigured":
+      return state.reason;
+    case "configured":
+      return state.reliable ? "Ready" : "Recently unreliable";
+    case "live":
+      return "Connected now";
+  }
 }
 </script>
 
@@ -289,29 +360,30 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           :key="status.kind"
           data-testid="transport-status-row"
           :data-transport-kind="status.kind"
+          :button="status.state.state !== 'unconfigured'"
+          @click="
+            status.state.state !== 'unconfigured' && settingPreferredTransport === null && void pinTransport(status.kind)
+          "
         >
           <template #leading>
-            <span
-              class="h-2.5 w-2.5 rounded-full"
-              :class="
-                status.connected
-                  ? 'bg-green-500'
-                  : status.available
-                    ? 'bg-amber-400'
-                    : 'bg-gray-400'
-              "
-            />
+            <span class="h-2.5 w-2.5 rounded-full" :class="rowDotClass(status.state)" />
           </template>
           <template #start>
             <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
-            <span v-if="status.preferred" class="ml-2 text-[11px] opacity-60">preferred</span>
-            <span v-if="status.connected" class="ml-2 text-[11px] text-success">connected now</span>
+            <StarIcon
+              v-if="starredTransportKind === status.kind"
+              class="ml-1.5 inline-block h-3 w-3 align-text-top opacity-60"
+              :aria-label="device?.preferred_transport ? 'Pinned' : 'Automatically preferred'"
+            />
           </template>
           <template #end>
-            <span class="text-xs opacity-60">{{ status.detail }}</span>
+            <span class="text-xs opacity-60">
+              {{ settingPreferredTransport === status.kind ? "Switching…" : rowDetailText(status.state) }}
+            </span>
           </template>
         </SettingsListItem>
       </SettingsListGroup>
+      <p v-if="preferredTransportError" class="mt-2 text-xs text-error">{{ preferredTransportError }}</p>
       <div class="mt-3 flex flex-col gap-2">
         <button
           class="btn btn-sm btn-outline w-fit"
@@ -333,6 +405,7 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           class="input input-sm input-bordered"
           data-testid="bluetooth-address-input"
           placeholder="AA:BB:CC:DD:EE:FF"
+          maxlength="17"
           :disabled="savingBluetoothTransport"
         />
         <p class="text-xs opacity-60">

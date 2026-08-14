@@ -253,6 +253,12 @@ pub(super) struct DiscoveryRuntime {
     /// lifecycle bus can report which transport is active without a second
     /// lock. See `DeviceConnectionState::try_claim_session`.
     pub peer_session_kind: HashMap<String, TransportKind>,
+    /// The peer's own negotiated `PROTOCOL_VERSION` for each currently
+    /// claimed session (same keys/lifecycle as `peer_session_kind`). ADR-0003
+    /// Phase 3: `device_connection_set_preferred_transport_impl` needs this
+    /// to know whether the live peer can even decode `PeerFrame::SwitchTransport`
+    /// before sending it -- see `DeviceConnectionState::session_protocol_version`.
+    pub peer_session_protocol_version: HashMap<String, u32>,
     /// Consecutive TCP-WS connect/auth failures per peer, reset on success.
     /// Discovery presence alone (`presence`, above) only means a peer's
     /// beacons are reaching us — it says nothing about whether their
@@ -262,4 +268,9 @@ pub(super) struct DiscoveryRuntime {
     /// the network transport is present-but-unusable, not just absent. See
     /// `DeviceConnectionState::network_effectively_available`.
     pub tcp_dial_failures: HashMap<String, u32>,
+    /// Consecutive Bluetooth connect/auth failures per peer, reset on
+    /// success — the same signal `tcp_dial_failures` is, for the other
+    /// transport. See `DeviceConnectionState::bluetooth_effectively_reliable`
+    /// and ADR-0003 Phase 2.
+    pub bluetooth_dial_failures: HashMap<String, u32>,
 }

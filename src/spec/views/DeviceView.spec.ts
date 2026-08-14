@@ -4,9 +4,10 @@ import DeviceView from "../../views/DeviceView.vue";
 import { useDeviceStore } from "../../stores/device";
 import { useSpaceStore } from "../../stores/space";
 
+const mockRouterPush = jest.fn();
 jest.mock("vue-router", () => ({
   useRoute: () => ({ params: { id: "peer-device-123" } }),
-  useRouter: () => ({ push: jest.fn() }),
+  useRouter: () => ({ push: mockRouterPush }),
 }));
 
 jest.mock("../../stores/device", () => ({
@@ -37,6 +38,8 @@ describe("DeviceView mapped spaces sync labels", () => {
         bluetooth_enabled: true,
         bluetooth_address: "AA:BB:CC:DD:EE:FF",
         bluetooth_last_verified_at: "2026-04-07T11:01:00.000Z",
+        preferred_transport: null,
+        preferred_transport_set_at: null,
       }),
       isDeviceOnline: jest.fn().mockReturnValue(true),
       getSpaceSyncStatus: jest.fn().mockReturnValue({
@@ -59,19 +62,13 @@ describe("DeviceView mapped spaces sync labels", () => {
       getTransportStatuses: jest.fn().mockReturnValue([
         {
           kind: "network",
-          enabled: true,
-          available: true,
           preferred: true,
-          connected: true,
-          detail: "Available",
+          state: { state: "live" },
         },
         {
           kind: "bluetooth",
-          enabled: true,
-          available: true,
           preferred: false,
-          connected: false,
-          detail: "Available for fallback",
+          state: { state: "configured", reliable: true },
         },
       ]),
       shortDeviceId: jest.fn().mockReturnValue("ce-123"),
@@ -81,6 +78,7 @@ describe("DeviceView mapped spaces sync labels", () => {
       refreshSpaceSyncStatus: jest.fn().mockResolvedValue(undefined),
       refreshTransportStatuses: jest.fn().mockResolvedValue(undefined),
       setBluetoothTransport: jest.fn().mockResolvedValue(undefined),
+      setPreferredTransport: jest.fn().mockResolvedValue(undefined),
       saveMappedSpaces: jest.fn().mockResolvedValue(["1", "2", "foo-space-1"]),
       resolveCustomSpaceMapping: jest.fn().mockResolvedValue(undefined),
       unpairDevice: jest.fn().mockResolvedValue(undefined),
@@ -160,8 +158,230 @@ describe("DeviceView mapped spaces sync labels", () => {
     const rows = wrapper.findAll('[data-testid="transport-status-row"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].text()).toContain("Network");
-    expect(rows[0].text()).toContain("preferred");
+    expect(rows[0].find("svg").exists()).toBe(true);
     expect(rows[1].text()).toContain("Bluetooth");
-    expect(rows[1].text()).toContain("Available for fallback");
+    expect(rows[1].text()).toContain("Ready");
+  });
+
+  it("pins a transport when its row is clicked", async () => {
+    const wrapper = mount(DeviceView, {
+      global: {
+        stubs: {
+          "router-link": { template: "<a><slot /></a>" },
+        },
+      },
+    });
+
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    await rows[1].find("button").trigger("click");
+    await flushUi();
+
+    const deviceStore = useDeviceStore() as unknown as {
+      setPreferredTransport: jest.Mock;
+    };
+    expect(deviceStore.setPreferredTransport).toHaveBeenCalledWith("peer-device-123", "bluetooth");
+  });
+
+  it("shows the star on the manually pinned transport, not the automatic choice", async () => {
+    const deviceStore = useDeviceStore() as unknown as {
+      findPairedDevice: jest.Mock;
+    };
+    // The mock's transport statuses (set in beforeEach) mark "network" as
+    // the automatic choice (status.preferred), but this pair has been
+    // manually pinned to Bluetooth -- the star must follow the pin.
+    deviceStore.findPairedDevice.mockReturnValue({
+      peer_device_id: "peer-device-123",
+      display_name: "peer-host",
+      paired_at: "2026-04-07T11:00:00.000Z",
+      last_seen_at: "2026-04-07T11:05:00.000Z",
+      pair_state: "paired",
+      bluetooth_enabled: true,
+      bluetooth_address: "AA:BB:CC:DD:EE:FF",
+      bluetooth_last_verified_at: "2026-04-07T11:01:00.000Z",
+      preferred_transport: "bluetooth",
+      preferred_transport_set_at: "2026-04-07T11:02:00.000Z",
+    });
+
+    const wrapper = mount(DeviceView, {
+      global: {
+        stubs: {
+          "router-link": { template: "<a><slot /></a>" },
+        },
+      },
+    });
+
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    expect(rows[0].find("svg").exists()).toBe(false);
+    expect(rows[1].find("svg").exists()).toBe(true);
+  });
+});
+
+describe("DeviceView Bluetooth manual entry, search, and unpair", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let deviceStoreMock: any;
+
+  beforeEach(() => {
+    // jsdom doesn't implement <dialog>'s showModal/close -- stub them so
+    // openUnpairDialog/confirmUnpair don't throw when this component calls
+    // through the template ref.
+    HTMLDialogElement.prototype.showModal ??= jest.fn();
+    HTMLDialogElement.prototype.close ??= jest.fn();
+    mockRouterPush.mockClear();
+
+    deviceStoreMock = {
+      findPairedDevice: jest.fn().mockReturnValue({
+        peer_device_id: "peer-device-123",
+        display_name: "peer-host",
+        paired_at: "2026-04-07T11:00:00.000Z",
+        last_seen_at: "2026-04-07T11:05:00.000Z",
+        pair_state: "paired",
+        bluetooth_enabled: false,
+        bluetooth_address: null,
+        bluetooth_last_verified_at: null,
+      }),
+      isDeviceOnline: jest.fn().mockReturnValue(true),
+      getSpaceSyncStatus: jest.fn().mockReturnValue({
+        peer_device_id: "peer-device-123",
+        pending_event_count: 0,
+        outbox_event_count: 0,
+        acked_event_count: 0,
+        mapped_space_ids: [],
+        seen_event_count: 0,
+        tombstone_count: 0,
+      }),
+      getLastSyncedAt: jest.fn().mockReturnValue(null),
+      getLastSyncedAtBySpace: jest.fn().mockReturnValue({}),
+      getMappedSpaceIds: jest.fn().mockReturnValue([]),
+      getUnresolvedCustomSpaces: jest.fn().mockReturnValue([]),
+      getTransportStatuses: jest.fn().mockReturnValue([
+        {
+          kind: "network",
+          preferred: true,
+          state: { state: "live" },
+        },
+        {
+          kind: "bluetooth",
+          preferred: false,
+          state: { state: "unconfigured", reason: "Disabled for this Fini pair" },
+        },
+      ]),
+      shortDeviceId: jest.fn().mockReturnValue("ce-123"),
+      hydrate: jest.fn().mockResolvedValue(undefined),
+      runSpaceSyncTick: jest.fn().mockResolvedValue(undefined),
+      loadMappedSpaces: jest.fn().mockResolvedValue([]),
+      refreshSpaceSyncStatus: jest.fn().mockResolvedValue(undefined),
+      refreshTransportStatuses: jest.fn().mockResolvedValue(undefined),
+      refreshLiveConnectedState: jest.fn().mockResolvedValue(undefined),
+      setBluetoothTransport: jest.fn().mockResolvedValue(undefined),
+      findBluetoothAddress: jest.fn(),
+      saveMappedSpaces: jest.fn().mockResolvedValue([]),
+      resolveCustomSpaceMapping: jest.fn().mockResolvedValue(undefined),
+      unpairDevice: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const spaceStoreMock = {
+      spaces: [],
+      fetchSpaces: jest.fn().mockResolvedValue(undefined),
+    };
+
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(deviceStoreMock);
+    (useSpaceStore as unknown as jest.Mock).mockReturnValue(spaceStoreMock);
+  });
+
+  function mountView() {
+    return mount(DeviceView, {
+      global: {
+        stubs: {
+          "router-link": { template: "<a><slot /></a>" },
+        },
+      },
+    });
+  }
+
+  it("masks manually typed input with colons and sends the normalized address on Enable", async () => {
+    const wrapper = mountView();
+    await flushUi();
+
+    const input = wrapper.find('[data-testid="bluetooth-address-input"]');
+    await input.setValue("aabbccddeeff");
+    await flushUi();
+
+    expect((input.element as HTMLInputElement).value).toBe("AA:BB:CC:DD:EE:FF");
+
+    await wrapper.find('[data-testid="enable-bluetooth-transport"]').trigger("click");
+    await flushUi();
+
+    expect(deviceStoreMock.setBluetoothTransport).toHaveBeenCalledWith(
+      "peer-device-123",
+      true,
+      "AA:BB:CC:DD:EE:FF",
+    );
+  });
+
+  it("masks a paste with existing separators the same way as raw digits", async () => {
+    const wrapper = mountView();
+    await flushUi();
+
+    const input = wrapper.find('[data-testid="bluetooth-address-input"]');
+    await input.setValue("aa-bb-cc-dd-ee-ff");
+    await flushUi();
+
+    expect((input.element as HTMLInputElement).value).toBe("AA:BB:CC:DD:EE:FF");
+  });
+
+  it("finds an address via Bluetooth scan and displays it masked", async () => {
+    deviceStoreMock.findBluetoothAddress.mockResolvedValue("AA:BB:CC:DD:EE:FF");
+    const wrapper = mountView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="find-bluetooth-address"]').trigger("click");
+    await flushUi();
+
+    expect(deviceStoreMock.findBluetoothAddress).toHaveBeenCalledWith("peer-device-123");
+    const input = wrapper.find('[data-testid="bluetooth-address-input"]');
+    expect((input.element as HTMLInputElement).value).toBe("AA:BB:CC:DD:EE:FF");
+    expect(wrapper.text()).toContain("Found and confirmed nearby.");
+  });
+
+  it("shows a not-found message when the Bluetooth scan finds nothing", async () => {
+    deviceStoreMock.findBluetoothAddress.mockResolvedValue(null);
+    const wrapper = mountView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="find-bluetooth-address"]').trigger("click");
+    await flushUi();
+
+    expect(wrapper.text()).toContain("Not found within 60s");
+  });
+
+  it("surfaces a scan error instead of a silent not-found", async () => {
+    deviceStoreMock.findBluetoothAddress.mockRejectedValue(new Error("adapter unavailable"));
+    const wrapper = mountView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="find-bluetooth-address"]').trigger("click");
+    await flushUi();
+
+    expect(wrapper.text()).toContain("adapter unavailable");
+    expect(wrapper.text()).not.toContain("Not found within 60s");
+  });
+
+  it("unpairs the device and navigates back to settings on confirm", async () => {
+    const wrapper = mountView();
+    await flushUi();
+
+    const dialog = wrapper.find("dialog");
+    const confirmButton = dialog.findAll("button").find((btn) => btn.text() === "Unpair");
+    expect(confirmButton).toBeTruthy();
+
+    await confirmButton!.trigger("click");
+    await flushUi();
+
+    expect(deviceStoreMock.unpairDevice).toHaveBeenCalledWith("peer-device-123");
+    expect(mockRouterPush).toHaveBeenCalledWith("/settings");
   });
 });

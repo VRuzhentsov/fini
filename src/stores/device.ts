@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { shortUuid } from "../utils/shortUuid";
@@ -12,17 +13,33 @@ export interface PairedDevice {
   bluetooth_enabled: boolean;
   bluetooth_address: string | null;
   bluetooth_last_verified_at: string | null;
+  // ADR-0003 Phase 3: the user's sticky manual pin, if any -- "network" |
+  // "bluetooth" | null. Independent of `TransportStatus.preferred` (what
+  // the *automatic* dial order would pick); this is what a row click sets.
+  preferred_transport: string | null;
+  preferred_transport_set_at: string | null;
 }
+
+// Mirrors the backend's RowState (device_connection::transport, ADR 0003
+// Phase 2): shared shape between the Network and Bluetooth rows.
+// - unconfigured: local preconditions aren't met at all; `reason` is why.
+// - configured: preconditions met, not the live transport right now;
+//   `reliable` is false only after recent consecutive connect failures --
+//   a never-attempted peer defaults to reliable.
+// - live: a session is actually live on this transport right now.
+export type DeviceTransportRowState =
+  | { state: "unconfigured"; reason: string }
+  | { state: "configured"; reliable: boolean }
+  | { state: "live" };
 
 export interface DeviceTransportStatus {
   kind: "network" | "bluetooth";
-  enabled: boolean;
-  available: boolean;
+  // What the automatic dial order would pick next -- independent of
+  // `state`, which reports what's true right now (sticky handoff means
+  // these can legitimately disagree while a session stays live on the
+  // non-preferred transport).
   preferred: boolean;
-  // Live session state for this specific transport right now, distinct
-  // from `available` (precondition met) -- see ADR 0002 Phase 2.
-  connected: boolean;
-  detail: string;
+  state: DeviceTransportRowState;
 }
 
 export interface DiscoveredDevice {
@@ -227,6 +244,12 @@ export const useDeviceStore = defineStore("device", () => {
 
   let discoveryTimer: ReturnType<typeof setInterval> | null = null;
   let presenceTimer: ReturnType<typeof setInterval> | null = null;
+  // Guards against `hydrate()` (called from more than one view's onMounted
+  // over the store's lifetime) registering the same Tauri event listener
+  // twice. Set synchronously, before the `await listen(...)` below, so two
+  // `hydrate()` calls racing each other can't both pass the check before
+  // either's `listen()` call resolves.
+  let sessionChangedListenerStarted = false;
   let mappingUpdateTimer: ReturnType<typeof setInterval> | null = null;
   let bluetoothScanTimer: ReturnType<typeof setTimeout> | null = null;
   let bluetoothScanActive = false;
@@ -500,15 +523,35 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
+  // Applies a fresh liveness check to a previously-loaded row state without
+  // re-deriving `unconfigured`'s `reason` or `configured`'s `reliable` --
+  // this lightweight check doesn't have that information (see
+  // `refreshLiveConnectedState` below). An `unconfigured` row can't become
+  // live and stays as-is; a `configured` row becomes `live` if the check
+  // says so, otherwise keeps its prior reliability; a `live` row that's no
+  // longer live falls back to `configured`/`reliable: true` -- a session
+  // ending isn't itself evidence of unreliability, and the real
+  // reliability signal (recent failure count) isn't something this check
+  // determines, so defaulting to reliable avoids painting amber on
+  // information this function doesn't actually have.
+  function withLiveness(
+    state: DeviceTransportRowState,
+    isLive: boolean,
+  ): DeviceTransportRowState {
+    if (state.state === "unconfigured") return state;
+    if (isLive) return { state: "live" };
+    if (state.state === "configured") return state;
+    return { state: "configured", reliable: true };
+  }
+
   // On Linux, `device_connection_transport_statuses` re-checks OS bond
   // status via a `bluetoothctl` subprocess call on every invocation --
   // fine for a one-shot load, but not something a live-status poll should
   // rerun every few seconds while a device's page stays open (a stalled
   // BlueZ/D-Bus would hold up every other DB-backed command for as long as
   // the view stays mounted). `device_connection_session_transport` reads
-  // only in-memory session state, so this patches just the `connected`
-  // field of whatever was last loaded rather than re-deriving the whole
-  // row set.
+  // only in-memory session state, so this patches just the `state` field
+  // of whatever was last loaded rather than re-deriving the whole row set.
   async function refreshLiveConnectedState(peerDeviceId: string) {
     if (!transportStatusesByPeer.value[peerDeviceId]?.length) return;
 
@@ -520,18 +563,17 @@ export const useDeviceStore = defineStore("device", () => {
       // Re-read *after* the await, not the array captured before it: an
       // enable/disable operation's full refresh (`setBluetoothTransport`)
       // can land while this invoke is pending, and patching on top of the
-      // pre-await snapshot would silently revert `enabled`/`available`/
-      // `detail` back to their stale values -- with nothing else to correct
-      // it afterward for a Bluetooth-only peer, since it never appears in
-      // the network presence snapshot that would otherwise trigger a fresh
-      // full load.
+      // pre-await snapshot would silently revert `state` back to a stale
+      // value -- with nothing else to correct it afterward for a
+      // Bluetooth-only peer, since it never appears in the network
+      // presence snapshot that would otherwise trigger a fresh full load.
       const current = transportStatusesByPeer.value[peerDeviceId];
       if (!current || current.length === 0) return;
       const networkConnected = liveKind === "tcp_ws";
       const bluetoothConnected = liveKind === "bluetooth" || liveKind === "sim";
       transportStatusesByPeer.value[peerDeviceId] = current.map((status) => ({
         ...status,
-        connected: status.kind === "network" ? networkConnected : bluetoothConnected,
+        state: withLiveness(status.state, status.kind === "network" ? networkConnected : bluetoothConnected),
       }));
     } catch (error) {
       console.warn("[device-connection] failed to refresh live connected state", error);
@@ -555,6 +597,28 @@ export const useDeviceStore = defineStore("device", () => {
       pairedDevices.value[index] = updated;
     } else {
       pairedDevices.value = [updated, ...pairedDevices.value];
+    }
+    await refreshTransportStatuses(peerDeviceId);
+    return updated;
+  }
+
+  // ADR-0003 Phase 3: pins this pair onto the clicked transport, sticky
+  // until the user clicks a row again (or the peer's own newer pin wins the
+  // last-writer-wins race). The backend command notifies the peer and force-
+  // closes a mismatched live session, if any -- this just persists the
+  // returned row and refreshes what's live, matching setBluetoothTransport's
+  // shape above.
+  async function setPreferredTransport(
+    peerDeviceId: string,
+    kind: "network" | "bluetooth",
+  ): Promise<PairedDevice> {
+    const updated = await invoke<PairedDevice>("device_connection_set_preferred_transport", {
+      peerDeviceId,
+      preferred: kind === "network" ? "tcp_ws" : "bluetooth",
+    });
+    const index = pairedDevices.value.findIndex((device) => device.peer_device_id === peerDeviceId);
+    if (index >= 0) {
+      pairedDevices.value[index] = updated;
     }
     await refreshTransportStatuses(peerDeviceId);
     return updated;
@@ -933,12 +997,30 @@ export const useDeviceStore = defineStore("device", () => {
     }, MAPPING_UPDATE_POLL_INTERVAL_MS);
   }
 
+  // ADR 0003 Phase 2: pushes `refreshLiveConnectedState` the moment a
+  // session actually connects/disconnects backend-side, instead of relying
+  // solely on `TRANSPORT_STATUS_POLL_INTERVAL_MS`'s next tick. Deliberately
+  // not the sole source of truth -- that poll stays running too, so a
+  // missed/dropped event here self-heals within its interval rather than
+  // leaving the row stuck stale indefinitely.
+  async function startSessionChangedListener() {
+    if (sessionChangedListenerStarted) return;
+    sessionChangedListenerStarted = true;
+    await listen<{ peer_device_id: string; kind: string; established: boolean }>(
+      "device-connection://session-changed",
+      (event) => {
+        void refreshLiveConnectedState(event.payload.peer_device_id);
+      },
+    );
+  }
+
   async function hydrate() {
     await loadPairedDevices();
     await refreshIdentity();
     setDiscovered([]);
     startPresenceLoop();
     startMappingUpdateLoop();
+    void startSessionChangedListener();
     void refreshPresence();
     void refreshDebugStatus();
   }
@@ -1278,6 +1360,7 @@ export const useDeviceStore = defineStore("device", () => {
     refreshTransportStatuses,
     refreshLiveConnectedState,
     setBluetoothTransport,
+    setPreferredTransport,
     findBluetoothAddress,
     isSyncingPeer,
     runSpaceSyncTick,

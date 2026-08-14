@@ -172,10 +172,17 @@ pub fn spawn_fallback_dial_loop(
         // tcp_ws::dial_with_backoff retries that forever without giving up,
         // so gating on presence alone would mean Sim never engages even
         // though the network transport can never actually work here.
-        let order = crate::services::transport::selection::select_dial_order(
-            state.network_effectively_available(peer_id),
-            true,
-        );
+        //
+        // ADR-0003 Phase 3: an explicit Bluetooth pin overrides this too
+        // (Sim stands in for Bluetooth in tests) -- treated as "network
+        // isn't the choice right now" for this decision, same override
+        // shape as `ble::dial_with_backoff`'s own.
+        let network_available = state.network_effectively_available(peer_id)
+            && crate::services::device_connection::peer_transport_preference(
+                &mut crate::services::db::open_db_at_path(&db_path),
+                peer_id,
+            ) != Some("bluetooth".to_string());
+        let order = crate::services::transport::selection::select_dial_order(network_available, true);
         // Network-first: only start a fallback dial when Sim is the
         // *preferred* (first) choice, i.e. network is genuinely
         // unavailable — not merely present somewhere in the order. Checking
@@ -209,7 +216,7 @@ fn should_dial_fallback_peer(my_id: &str, peer_id: &str) -> bool {
     my_id < peer_id
 }
 
-async fn dial_with_backoff(
+pub(crate) async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_id: String,
@@ -219,7 +226,19 @@ async fn dial_with_backoff(
     let max_delay = Duration::from_secs(15);
 
     loop {
-        if state.has_session(&peer_id) || state.network_effectively_available(&peer_id) {
+        if state.has_session(&peer_id) {
+            return;
+        }
+        // ADR-0003 Phase 3: same override as the outer spawn gate above --
+        // re-checked here too, since this loop's own retries can outlive
+        // that one-time snapshot (a preference set after this task started
+        // must still apply on the next retry, not just at spawn time).
+        let network_available = state.network_effectively_available(&peer_id)
+            && crate::services::device_connection::peer_transport_preference(
+                &mut crate::services::db::open_db_at_path(&db_path),
+                &peer_id,
+            ) != Some("bluetooth".to_string());
+        if network_available {
             return;
         }
 
@@ -233,7 +252,7 @@ async fn dial_with_backoff(
                 Ok(peer_protocol_version) => {
                     eprintln!("[transport][sim] auth OK with {peer_id} via :{port}");
                     let (tx, rx) = tokio::sync::mpsc::channel(64);
-                    if state.try_claim_session(&peer_id, TransportKind::Sim, tx) {
+                    if state.try_claim_session(&peer_id, TransportKind::Sim, tx, peer_protocol_version) {
                         session::run_session(
                             link,
                             rx,

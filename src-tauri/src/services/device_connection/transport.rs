@@ -24,23 +24,40 @@ pub struct BluetoothTransportMetadata {
     pub os_paired: bool,
 }
 
+/// Unified per-row status shape (ADR-0003 Phase 2), shared between the
+/// Network and Bluetooth rows: each transport supplies its own condition
+/// logic for which state applies (see `build_transport_statuses`), but the
+/// UI only ever has to render these three cases, for either row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RowState {
+    /// Local preconditions for this transport aren't met at all -- nothing
+    /// to distrust or trust yet, it simply can't carry a session right now.
+    /// `reason` is the transport-specific "why" shown to the user.
+    Unconfigured { reason: String },
+    /// Preconditions are met; not the transport actually carrying the live
+    /// session right now. `reliable` distinguishes "no reason to distrust
+    /// it" (true -- including a peer with zero attempts yet, the same bar
+    /// `network_effectively_available` already used before this ADR) from
+    /// "recent consecutive attempts have failed" (false).
+    Configured { reliable: bool },
+    /// A session is live on this specific transport right now, confirmed by
+    /// `session_kind` -- trustworthy as of ADR-0003 Phase 1, which is what
+    /// makes sure a silently-dead session doesn't linger here.
+    Live,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransportStatus {
     pub kind: TransportKind,
-    pub enabled: bool,
-    pub available: bool,
+    /// What the automatic dial order would pick first on the *next*
+    /// establishment attempt -- independent of `state`, which reports what
+    /// *is* true right now. The two can legitimately disagree: sticky
+    /// handoff (`transport::selection`) means a session already live on one
+    /// transport is kept even if the other becomes preferred while it's
+    /// still up.
     pub preferred: bool,
-    /// Whether an authenticated session is live on *this specific*
-    /// transport right now — distinct from `available`, which only reports
-    /// whether the precondition for one is met. Network is preferred
-    /// whenever both are available (ADR-0001's selection order), so a
-    /// peer can be fully reachable while this is `false` on the Bluetooth
-    /// row because the live session happens to be running over network
-    /// instead — that is expected, not a bug. See
-    /// `docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`
-    /// Phase 2.
-    pub connected: bool,
-    pub detail: String,
+    pub state: RowState,
 }
 
 pub fn select_transport_endpoint(
@@ -68,69 +85,112 @@ pub fn select_transport_endpoint(
 /// `transport::ble` (BlueZ on Linux, GATT via `ble_gatt::backend::android`
 /// on Android, both through `ble-gatt`) is wired up in `lib.rs`/
 /// `space_sync::commands` on both platforms. Everywhere else, status must
-/// never report `available`/`preferred` regardless of stored metadata, or
-/// the Device view would promise a fallback that silently cannot sync.
+/// never report a `Configured`/`Live` Bluetooth row regardless of stored
+/// metadata, or the Device view would promise a fallback that silently
+/// cannot sync.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = true;
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = false;
 
-pub fn build_transport_statuses(
-    network_available: bool,
-    bluetooth_enabled: bool,
-    bluetooth_has_metadata: bool,
-    bluetooth_os_paired: bool,
-    network_connected: bool,
-    bluetooth_connected: bool,
-) -> Vec<TransportStatus> {
-    let bluetooth_ready = BLUETOOTH_ADAPTER_IMPLEMENTED
-        && bluetooth_enabled
-        && bluetooth_has_metadata
-        && bluetooth_os_paired;
+/// Everything `build_transport_statuses` needs, one field per condition it
+/// checks. A named-field struct instead of positional bools deliberately:
+/// this function used to take six, Phase 2 adds two more, and transposing
+/// two same-typed bools at a call site is exactly the class of bug a
+/// struct's field names catch that positional args don't.
+#[derive(Debug, Clone, Copy)]
+pub struct TransportStatusInputs {
+    /// Raw discovery presence (`network_peer_available`) -- "is this
+    /// peer's beacon reaching us right now."
+    pub network_present: bool,
+    /// `network_effectively_available`'s failure-history half: not stuck
+    /// failing to actually connect. Kept separate from `network_present`
+    /// because `Unconfigured` (no presence at all) and `Configured {
+    /// reliable: false }` (presenced, but recently unreachable) are
+    /// different states with different `reason`/no-`reason` shapes.
+    pub network_reliable: bool,
+    pub bluetooth_enabled: bool,
+    pub bluetooth_has_metadata: bool,
+    pub bluetooth_os_paired: bool,
+    /// `bluetooth_effectively_reliable` -- Bluetooth's counterpart to
+    /// `network_reliable`.
+    pub bluetooth_reliable: bool,
+    pub network_connected: bool,
+    pub bluetooth_connected: bool,
+}
+
+pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportStatus> {
+    let TransportStatusInputs {
+        network_present,
+        network_reliable,
+        bluetooth_enabled,
+        bluetooth_has_metadata,
+        bluetooth_os_paired,
+        bluetooth_reliable,
+        network_connected,
+        bluetooth_connected,
+    } = inputs;
+
+    let network_unconfigured_reason = if network_present {
+        None
+    } else {
+        Some("Unavailable".to_string())
+    };
+    let bluetooth_unconfigured_reason =
+        bluetooth_unconfigured_reason(bluetooth_enabled, bluetooth_has_metadata, bluetooth_os_paired);
+
+    // Mirrors what `select_dial_order`'s real callers actually check
+    // (`network_effectively_available`/`bluetooth_effectively_reliable`),
+    // not just raw presence/configuration -- so `preferred` reports what
+    // the next establishment attempt would *actually* pick, not merely
+    // what's nominally configured.
+    let network_selectable = network_present && network_reliable;
+    let bluetooth_selectable = bluetooth_unconfigured_reason.is_none() && bluetooth_reliable;
 
     vec![
         TransportStatus {
             kind: TransportKind::Network,
-            enabled: true,
-            available: network_available,
-            preferred: network_available,
-            connected: network_connected,
-            detail: if network_available {
-                "Available"
-            } else {
-                "Unavailable"
-            }
-            .to_string(),
+            preferred: network_selectable,
+            state: row_state(network_unconfigured_reason, network_connected, network_reliable),
         },
         TransportStatus {
             kind: TransportKind::Bluetooth,
-            enabled: bluetooth_enabled,
-            available: bluetooth_ready,
-            preferred: !network_available && bluetooth_ready,
-            connected: bluetooth_connected,
-            detail: bluetooth_status_detail(
-                bluetooth_enabled,
-                bluetooth_has_metadata,
-                bluetooth_os_paired,
-            ),
+            preferred: !network_selectable && bluetooth_selectable,
+            state: row_state(bluetooth_unconfigured_reason, bluetooth_connected, bluetooth_reliable),
         },
     ]
 }
 
-fn bluetooth_status_detail(enabled: bool, has_metadata: bool, os_paired: bool) -> String {
+/// Shared shape for both rows: given whether (and why) a transport isn't
+/// configured at all, whether it's carrying the live session, and whether
+/// recent attempts on it have been reliable, decide which of the three
+/// `RowState` cases applies. Transport-specific work stays in each
+/// transport's own "why unconfigured" logic (`bluetooth_unconfigured_reason`,
+/// inline for Network above) -- this function only knows the shared shape.
+fn row_state(unconfigured_reason: Option<String>, connected: bool, reliable: bool) -> RowState {
+    if let Some(reason) = unconfigured_reason {
+        return RowState::Unconfigured { reason };
+    }
+    if connected {
+        return RowState::Live;
+    }
+    RowState::Configured { reliable }
+}
+
+fn bluetooth_unconfigured_reason(enabled: bool, has_metadata: bool, os_paired: bool) -> Option<String> {
     if !BLUETOOTH_ADAPTER_IMPLEMENTED {
-        return "Bluetooth transport not implemented yet".to_string();
+        return Some("Bluetooth transport not implemented yet".to_string());
     }
     if !enabled {
-        return "Disabled for this Fini pair".to_string();
+        return Some("Disabled for this Fini pair".to_string());
     }
     if !has_metadata {
-        return "Enable after OS Bluetooth pairing to store reconnect metadata".to_string();
+        return Some("Enable after OS Bluetooth pairing to store reconnect metadata".to_string());
     }
     if !os_paired {
-        return "OS Bluetooth pairing required".to_string();
+        return Some("OS Bluetooth pairing required".to_string());
     }
-    "Available for fallback".to_string()
+    None
 }
 
 #[cfg(test)]
@@ -153,6 +213,29 @@ mod tests {
             enabled: true,
             os_paired: true,
         }
+    }
+
+    /// All inputs "healthy and ready" by default -- individual tests
+    /// override just the field(s) they're exercising.
+    fn ready_inputs() -> TransportStatusInputs {
+        TransportStatusInputs {
+            network_present: true,
+            network_reliable: true,
+            bluetooth_enabled: true,
+            bluetooth_has_metadata: true,
+            bluetooth_os_paired: true,
+            bluetooth_reliable: true,
+            network_connected: false,
+            bluetooth_connected: false,
+        }
+    }
+
+    fn find(statuses: &[TransportStatus], kind: TransportKind) -> TransportStatus {
+        statuses
+            .iter()
+            .find(|status| status.kind == kind)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {kind:?} status row"))
     }
 
     #[test]
@@ -202,114 +285,162 @@ mod tests {
     }
 
     #[test]
-    fn status_marks_network_preferred_when_available() {
-        let both = build_transport_statuses(true, true, true, true, false, false);
-        assert!(both
-            .iter()
-            .any(|status| status.kind == TransportKind::Network && status.preferred));
+    fn network_is_preferred_when_present_and_reliable() {
+        let statuses = build_transport_statuses(ready_inputs());
+        assert!(find(&statuses, TransportKind::Network).preferred);
 
-        let fallback = build_transport_statuses(false, true, true, true, false, false);
-        assert!(!fallback
-            .iter()
-            .any(|status| status.kind == TransportKind::Network && status.preferred));
+        let not_present = build_transport_statuses(TransportStatusInputs {
+            network_present: false,
+            ..ready_inputs()
+        });
+        assert!(!find(&not_present, TransportKind::Network).preferred);
+
+        let unreliable = build_transport_statuses(TransportStatusInputs {
+            network_reliable: false,
+            ..ready_inputs()
+        });
+        assert!(
+            !find(&unreliable, TransportKind::Network).preferred,
+            "recently-unreliable network must not be preferred even while presenced"
+        );
     }
 
-    /// Phase 2 of ADR 0002: `connected` reports live session state per row,
-    /// independent of `available`/`preferred` — a row can be available but
-    /// not currently connected (network reachable, no session established
-    /// yet), or connected on one transport while the other reports
-    /// available too (Bluetooth configured and bonded, but the live
-    /// session happens to be running over network since network is always
-    /// preferred when both are available).
+    /// ADR-0003 Phase 2: `Live` reports the actual session per row,
+    /// independent of `Configured`/reliability -- a row can be `Configured`
+    /// but not `Live` (network reachable, no session established yet), or
+    /// `Live` on one transport while the other reports `Configured` too
+    /// (Bluetooth ready and bonded, but the live session happens to be
+    /// running over network since network is always preferred when both
+    /// are available).
     #[test]
-    fn connected_reflects_live_session_state_independent_of_availability() {
-        let statuses = build_transport_statuses(true, true, true, true, true, false);
-        let network = statuses
-            .iter()
-            .find(|status| status.kind == TransportKind::Network)
-            .expect("network status row");
-        let bluetooth = statuses
-            .iter()
-            .find(|status| status.kind == TransportKind::Bluetooth)
-            .expect("bluetooth status row");
-        assert!(network.connected, "network row should report the live session");
-        assert!(bluetooth.available, "bluetooth stays available even while not the live transport");
-        assert!(!bluetooth.connected, "bluetooth row must not claim a session it isn't carrying");
+    fn live_reflects_the_actual_session_independent_of_configuration() {
+        let network_live = build_transport_statuses(TransportStatusInputs {
+            network_connected: true,
+            ..ready_inputs()
+        });
+        let network = find(&network_live, TransportKind::Network);
+        let bluetooth = find(&network_live, TransportKind::Bluetooth);
+        assert_eq!(network.state, RowState::Live);
+        assert_eq!(
+            bluetooth.state,
+            RowState::Configured { reliable: true },
+            "bluetooth stays Configured, not Live, while network carries the session"
+        );
 
-        let bluetooth_live = build_transport_statuses(true, true, true, true, false, true);
-        let bluetooth = bluetooth_live
-            .iter()
-            .find(|status| status.kind == TransportKind::Bluetooth)
-            .expect("bluetooth status row");
-        assert!(bluetooth.connected, "bluetooth row should report a live Bluetooth session");
+        let bluetooth_live = build_transport_statuses(TransportStatusInputs {
+            bluetooth_connected: true,
+            ..ready_inputs()
+        });
+        assert_eq!(
+            find(&bluetooth_live, TransportKind::Bluetooth).state,
+            RowState::Live
+        );
     }
 
-    /// No Bluetooth `Transport`/`Link` adapter is registered on this platform
-    /// (see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc comment), so a Bluetooth
-    /// session can never actually establish there. Status must report
-    /// `available`/`preferred: false` regardless of how complete the stored
+    /// No Bluetooth `Transport`/`Link` adapter is registered on this
+    /// platform (see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc comment), so a
+    /// Bluetooth session can never actually establish there. Status must
+    /// report `Unconfigured` regardless of how complete the stored
     /// enablement metadata is, or the Device view would promise a fallback
     /// that silently cannot sync. On Linux/Android, where the real adapter
-    /// (`transport::ble`) is wired up, full metadata *should* report ready —
-    /// see `bluetooth_is_available_with_full_metadata_where_implemented`
+    /// (`transport::ble`) is wired up, full metadata *should* report
+    /// `Configured` -- see `bluetooth_is_configured_with_full_metadata_where_implemented`
     /// below.
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     #[test]
-    fn bluetooth_is_never_reported_available_without_a_registered_adapter() {
-        for (network_available, enabled, has_metadata, os_paired) in [
-            (true, true, true, true),
-            (false, true, true, true),
-        ] {
-            let statuses =
-                build_transport_statuses(network_available, enabled, has_metadata, os_paired, false, false);
-            let bluetooth = statuses
-                .iter()
-                .find(|status| status.kind == TransportKind::Bluetooth)
-                .expect("bluetooth status row");
-            assert!(!bluetooth.available, "bluetooth must not report available");
+    fn bluetooth_is_never_configured_without_a_registered_adapter() {
+        for network_present in [true, false] {
+            let statuses = build_transport_statuses(TransportStatusInputs {
+                network_present,
+                ..ready_inputs()
+            });
+            let bluetooth = find(&statuses, TransportKind::Bluetooth);
+            assert!(
+                matches!(bluetooth.state, RowState::Unconfigured { .. }),
+                "bluetooth must report Unconfigured, got {:?}",
+                bluetooth.state
+            );
             assert!(!bluetooth.preferred, "bluetooth must not report preferred");
         }
     }
 
     /// Mirror of the above for platforms where `transport::ble` is a real,
     /// registered adapter (Linux, Android): full enablement metadata should
-    /// now report Bluetooth ready, and preferred exactly when network is
-    /// not.
+    /// now report Bluetooth `Configured`, and preferred exactly when
+    /// network isn't selectable.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn bluetooth_is_available_with_full_metadata_where_implemented() {
-        let fallback = build_transport_statuses(false, true, true, true, false, false);
-        let bluetooth = fallback
-            .iter()
-            .find(|status| status.kind == TransportKind::Bluetooth)
-            .expect("bluetooth status row");
-        assert!(bluetooth.available, "bluetooth should report available");
+    fn bluetooth_is_configured_with_full_metadata_where_implemented() {
+        let fallback = build_transport_statuses(TransportStatusInputs {
+            network_present: false,
+            ..ready_inputs()
+        });
+        let bluetooth = find(&fallback, TransportKind::Bluetooth);
+        assert_eq!(bluetooth.state, RowState::Configured { reliable: true });
         assert!(bluetooth.preferred, "bluetooth should be preferred when network is absent");
 
-        let both = build_transport_statuses(true, true, true, true, false, false);
-        let bluetooth = both
-            .iter()
-            .find(|status| status.kind == TransportKind::Bluetooth)
-            .expect("bluetooth status row");
-        assert!(bluetooth.available, "bluetooth should still report available");
+        let both = build_transport_statuses(ready_inputs());
+        let bluetooth = find(&both, TransportKind::Bluetooth);
+        assert_eq!(bluetooth.state, RowState::Configured { reliable: true });
         assert!(!bluetooth.preferred, "network should be preferred when both are available");
     }
 
-    /// Incomplete metadata must still gate availability even with a real
+    /// Incomplete metadata must still gate configuration even with a real
     /// adapter registered.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn bluetooth_still_requires_full_metadata_where_implemented() {
-        for (enabled, has_metadata, os_paired) in
-            [(false, true, true), (true, false, true), (true, true, false)]
-        {
-            let statuses =
-                build_transport_statuses(false, enabled, has_metadata, os_paired, false, false);
-            let bluetooth = statuses
-                .iter()
-                .find(|status| status.kind == TransportKind::Bluetooth)
-                .expect("bluetooth status row");
-            assert!(!bluetooth.available, "incomplete metadata must not report available");
+        for inputs in [
+            TransportStatusInputs {
+                bluetooth_enabled: false,
+                ..ready_inputs()
+            },
+            TransportStatusInputs {
+                bluetooth_has_metadata: false,
+                ..ready_inputs()
+            },
+            TransportStatusInputs {
+                bluetooth_os_paired: false,
+                ..ready_inputs()
+            },
+        ] {
+            let statuses = build_transport_statuses(TransportStatusInputs {
+                network_present: false,
+                ..inputs
+            });
+            let bluetooth = find(&statuses, TransportKind::Bluetooth);
+            assert!(
+                matches!(bluetooth.state, RowState::Unconfigured { .. }),
+                "incomplete metadata must report Unconfigured, got {:?}",
+                bluetooth.state
+            );
         }
+    }
+
+    /// ADR-0003 Phase 2's actual new behavior: a `Configured` transport
+    /// with recent consecutive failures reports `reliable: false`
+    /// (renders amber), distinct from both `Unconfigured` (gray) and a
+    /// trustworthy `Configured`/`Live` (green).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn unreliable_configured_bluetooth_is_distinguishable_from_reliable() {
+        let unreliable = build_transport_statuses(TransportStatusInputs {
+            network_present: false,
+            bluetooth_reliable: false,
+            ..ready_inputs()
+        });
+        assert_eq!(
+            find(&unreliable, TransportKind::Bluetooth).state,
+            RowState::Configured { reliable: false }
+        );
+
+        let reliable = build_transport_statuses(TransportStatusInputs {
+            network_present: false,
+            ..ready_inputs()
+        });
+        assert_eq!(
+            find(&reliable, TransportKind::Bluetooth).state,
+            RowState::Configured { reliable: true }
+        );
     }
 }

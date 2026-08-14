@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::services::space_sync::types::{PeerFrame, SessionSender, SyncEventEnvelope};
+use crate::services::space_sync::types::{PeerFrame, SessionCommand, SessionSender, SyncEventEnvelope};
 use crate::services::transport::selection::{new_lifecycle_bus, LifecycleBus, LifecycleEvent};
 use crate::services::transport::TransportKind;
 
@@ -29,15 +29,18 @@ pub use commands::{
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_save_paired_device, device_connection_send_pair_request,
     device_connection_send_pair_request_bluetooth, device_connection_session_transport,
-    device_connection_set_bluetooth_transport, device_connection_transport_statuses,
-    device_connection_unpair, device_connection_update_last_seen,
+    device_connection_set_bluetooth_transport, device_connection_set_preferred_transport,
+    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) use commands::bluetooth_address_is_os_paired;
 pub(crate) use commands::{
-    local_bluetooth_address, normalize_bluetooth_address, persist_bluetooth_address_and_maybe_enable,
+    adopt_peer_transport_preference, local_bluetooth_address, normalize_bluetooth_address,
+    peer_is_currently_bluetooth_eligible, peer_transport_preference,
+    peer_transport_preference_with_timestamp, persist_bluetooth_address_and_maybe_enable,
+    transport_kind_to_preference_string, TransportPreferenceAdoption,
 };
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
@@ -50,11 +53,13 @@ pub use commands::{
     device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
     device_connection_send_pair_request_impl, device_connection_session_transport_impl,
-    device_connection_set_bluetooth_transport_impl, device_connection_transport_statuses_impl,
-    device_connection_unpair_impl, device_connection_update_last_seen_impl,
+    device_connection_set_bluetooth_transport_impl, device_connection_set_bluetooth_transport_with_state_impl,
+    device_connection_set_preferred_transport_impl,
+    device_connection_transport_statuses_impl, device_connection_unpair_impl,
+    device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
-pub use transport::{build_transport_statuses, TransportStatus};
+pub use transport::{build_transport_statuses, TransportStatus, TransportStatusInputs};
 use types::DiscoveryRuntime;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
@@ -249,6 +254,7 @@ impl DeviceConnectionState {
         peer_device_id: &str,
         kind: TransportKind,
         sender: SessionSender,
+        protocol_version: u32,
     ) -> bool {
         {
             let Ok(mut guard) = self.runtime.lock() else {
@@ -263,6 +269,9 @@ impl DeviceConnectionState {
             guard
                 .peer_session_kind
                 .insert(peer_device_id.to_string(), kind);
+            guard
+                .peer_session_protocol_version
+                .insert(peer_device_id.to_string(), protocol_version);
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
@@ -277,6 +286,7 @@ impl DeviceConnectionState {
                 return;
             };
             guard.peer_sessions.remove(peer_device_id);
+            guard.peer_session_protocol_version.remove(peer_device_id);
             guard.peer_session_kind.remove(peer_device_id)
         };
         if let Some(kind) = kind {
@@ -292,6 +302,16 @@ impl DeviceConnectionState {
     pub fn session_kind(&self, peer_device_id: &str) -> Option<TransportKind> {
         let guard = self.runtime.lock().ok()?;
         guard.peer_session_kind.get(peer_device_id).copied()
+    }
+
+    /// The peer's own negotiated `PROTOCOL_VERSION` for their currently
+    /// claimed session, if any -- ADR-0003 Phase 3: lets a caller check
+    /// whether the live peer can decode a given frame variant before
+    /// sending it, the same way `run_session`'s own Bluetooth self-report
+    /// gates on `peer_protocol_version` at session start.
+    pub fn session_protocol_version(&self, peer_device_id: &str) -> Option<u32> {
+        let guard = self.runtime.lock().ok()?;
+        guard.peer_session_protocol_version.get(peer_device_id).copied()
     }
 
     /// Whether this device is currently discoverable for pairing —
@@ -318,11 +338,33 @@ impl DeviceConnectionState {
         }
     }
 
-    /// Reserved for UI consumption (live transport-changed/connect/disconnect
-    /// rows) — the draft's `device_connection_transport_statuses` polling
-    /// command remains the UI-facing surface in this PR; wiring a push-based
-    /// subscriber is follow-up work.
-    #[allow(dead_code)]
+    /// Test-only: injects a presence entry directly, bypassing the real
+    /// mDNS discovery worker entirely. Lets a test exercise
+    /// `transport::tcp_ws::dial_with_backoff`/`spawn_dial_loop` (both gate
+    /// on `list_presenced_peers`) without standing up real UDP broadcast
+    /// traffic.
+    #[cfg(test)]
+    pub fn note_presence_for_test(&self, peer_device_id: &str, addr: &str, ws_port: u16) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.presence.insert(
+                peer_device_id.to_string(),
+                types::SeenPeer {
+                    hostname: peer_device_id.to_string(),
+                    addr: addr.to_string(),
+                    discovery_port: 0,
+                    ws_port: Some(ws_port),
+                    last_seen_at: crate::services::db::utc_now(),
+                    last_seen_mono: std::time::Instant::now(),
+                },
+            );
+        }
+    }
+
+    /// Live transport-changed/connect/disconnect rows: `lib.rs`'s
+    /// `forward_session_lifecycle_events` subscribes once at app setup and
+    /// forwards each event to the frontend (ADR-0003 Phase 2).
+    /// `device_connection_transport_statuses` stays the source of truth for
+    /// a one-shot/polled read; this is the push side of the same signal.
     pub fn subscribe_lifecycle(&self) -> tokio::sync::broadcast::Receiver<LifecycleEvent> {
         self.lifecycle_tx.subscribe()
     }
@@ -333,7 +375,30 @@ impl DeviceConnectionState {
             Err(_) => return false,
         };
         if let Some(sender) = guard.peer_sessions.get(peer_device_id) {
-            sender.try_send(msg).is_ok()
+            sender.try_send(SessionCommand::Forward(msg)).is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Forces the peer's currently claimed session (whichever transport
+    /// it's on) closed, without a transport-level failure -- ADR-0003
+    /// Phase 3's manual transport switch is the only caller. A deliberate,
+    /// narrowly-scoped exception to ADR-0001's sticky-handoff invariant
+    /// ("selection only happens at session establishment... kept until it
+    /// drops"): every other session end is `run_session` itself noticing
+    /// its transport failed. `run_session`'s own `release_session` call at
+    /// the end of its loop (unconditional, regardless of why the loop
+    /// exited) still fires normally once it processes this -- the next
+    /// `space_sync_tick`'s dial loop picks the peer back up and honors
+    /// whatever `preferred_transport` is now set to.
+    pub fn request_session_close(&self, peer_device_id: &str) -> bool {
+        let guard = match self.runtime.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        if let Some(sender) = guard.peer_sessions.get(peer_device_id) {
+            sender.try_send(SessionCommand::Close).is_ok()
         } else {
             false
         }
@@ -511,6 +576,46 @@ impl DeviceConnectionState {
     pub fn network_effectively_available(&self, peer_device_id: &str) -> bool {
         self.network_peer_available(peer_device_id)
             && self.tcp_dial_failure_count(peer_device_id)
-                < crate::services::transport::selection::NETWORK_UNRESPONSIVE_THRESHOLD
+                < crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD
+    }
+
+    /// Bluetooth's counterpart to `record_tcp_dial_success` — same shape,
+    /// different map. See ADR-0003 Phase 2.
+    pub fn record_bluetooth_dial_success(&self, peer_device_id: &str) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.bluetooth_dial_failures.remove(peer_device_id);
+        }
+    }
+
+    pub fn record_bluetooth_dial_failure(&self, peer_device_id: &str) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            *guard
+                .bluetooth_dial_failures
+                .entry(peer_device_id.to_string())
+                .or_insert(0) += 1;
+        }
+    }
+
+    pub fn bluetooth_dial_failure_count(&self, peer_device_id: &str) -> u32 {
+        let Ok(guard) = self.runtime.lock() else {
+            return 0;
+        };
+        guard
+            .bluetooth_dial_failures
+            .get(peer_device_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Whether recent Bluetooth connection attempts give reason to distrust
+    /// this transport for this peer right now — the same
+    /// "no reason to distrust it" bar `network_effectively_available` uses
+    /// (a peer with zero attempts yet counts as reliable by default). Feeds
+    /// the `Configured { reliable }` state in the unified status model
+    /// (ADR-0003 Phase 2), not `network_effectively_available` itself,
+    /// which is Network-specific and used for transport *selection*.
+    pub fn bluetooth_effectively_reliable(&self, peer_device_id: &str) -> bool {
+        self.bluetooth_dial_failure_count(peer_device_id)
+            < crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD
     }
 }
