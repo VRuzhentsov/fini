@@ -66,6 +66,12 @@ Rules:
 - Keep data shaping and eligibility logic outside the template.
 - Use stable keys derived from domain IDs when available.
 
+## Component Extraction
+
+When adding a new template block that exceeds roughly ten lines of HTML, extract it into a focused child component instead of expanding the parent view. Keep the parent responsible for form/lifecycle orchestration and pass the narrow draft state and events the child needs.
+
+The child component must still follow these `renderFlags` rules for its own conditional sections. Do not use extraction to hide direct conditional-rendering logic from review.
+
 ## Testing Expectations
 
 When adding or changing render flags:

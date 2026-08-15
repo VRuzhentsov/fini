@@ -20,7 +20,7 @@ Expanded metadata state:
 [ Date / reminder ] [ Less ]                            [ Send ]
 ```
 
-The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input. Metadata expands in place so the draft still feels like one Quest being completed, not a separate form.
+The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input. Metadata details (description, Energy, Priority, and checklist drafting) are isolated in [[NewQuestDetails]]. `renderFlags` owns all non-trivial conditional sections in the composer; form draft state remains in refs in this component.
 
 ## Space selector
 
