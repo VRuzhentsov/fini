@@ -1,6 +1,9 @@
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::models::quest::{
+    deserialize_energy, deserialize_priority, serialize_energy, serialize_priority,
+};
 use crate::schema::quest_series;
 
 #[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
@@ -12,8 +15,16 @@ pub struct QuestSeries {
     pub title: String,
     pub description: Option<String>,
     pub repeat_rule: String,
+    #[serde(
+        serialize_with = "serialize_priority",
+        deserialize_with = "deserialize_priority"
+    )]
     pub priority: i64,
-    pub energy: String,
+    #[serde(
+        serialize_with = "serialize_energy",
+        deserialize_with = "deserialize_energy"
+    )]
+    pub energy: i64,
     pub active: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -32,7 +43,7 @@ pub struct CreateSeriesInput {
     pub description: Option<String>,
     pub repeat_rule: String,
     pub priority: i64,
-    pub energy: String,
+    pub energy: i64,
     #[serde(default)]
     pub is_checklist: bool,
 }

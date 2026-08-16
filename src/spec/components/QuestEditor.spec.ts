@@ -10,8 +10,7 @@ function baseQuest(overrides: Partial<Quest> = {}): Quest {
     description: null,
     status: "active",
     energy: "medium",
-    priority: 1,
-    pinned: false,
+    priority: "medium",
     due: null,
     due_time: null,
     repeat_rule: null,
@@ -34,6 +33,27 @@ const defaultProps = {
 };
 
 describe("QuestEditor checklist rendering", () => {
+  it("exposes accessible Energy and Priority selects and emits named metadata patches", async () => {
+    const wrapper = mount(QuestEditor, {
+      props: { ...defaultProps, quest: baseQuest() },
+    });
+
+    const energy = wrapper.find<HTMLSelectElement>('[data-testid="quest-editor-energy"]');
+    const priority = wrapper.find<HTMLSelectElement>('[data-testid="quest-editor-priority"]');
+    expect(energy.exists()).toBe(true);
+    expect(priority.exists()).toBe(true);
+    expect(energy.attributes("aria-label")).toBe("Quest energy");
+    expect(priority.attributes("aria-label")).toBe("Quest priority");
+    expect(energy.element.value).toBe("medium");
+    expect(priority.element.value).toBe("medium");
+    expect(energy.findAll("option").map((option) => option.attributes("value"))).toEqual(["small", "medium", "large"]);
+    expect(priority.findAll("option").map((option) => option.attributes("value"))).toEqual(["low", "medium", "high"]);
+
+    await energy.setValue("small");
+    await priority.setValue("high");
+    expect(wrapper.emitted("update")).toEqual([[{ energy: "small" }], [{ priority: "high" }]]);
+  });
+
   it("renders the prose textarea, not the checklist section, for a non-checklist quest", () => {
     const wrapper = mount(QuestEditor, {
       props: { ...defaultProps, quest: baseQuest({ is_checklist: false, description: "notes" }) },

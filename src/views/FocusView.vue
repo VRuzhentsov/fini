@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch } from "vue";
-import { useQuestStore, type Quest } from "../stores/quest";
+import { priorityWeight, useQuestStore, type Quest } from "../stores/quest";
 import { useSpaceStore } from "../stores/space";
 import { useDeviceStore } from "../stores/device";
 import ActiveQuestPanel from "../components/FocusView/ActiveQuestPanel.vue";
@@ -96,7 +96,7 @@ const backlog = computed(() => {
       if (aHasDue !== bHasDue) return bHasDue - aHasDue;
       if (a.due && b.due && a.due !== b.due) return a.due.localeCompare(b.due);
       if (a.order_rank !== b.order_rank) return a.order_rank - b.order_rank;
-      if (a.priority !== b.priority) return b.priority - a.priority;
+      if (a.priority !== b.priority) return priorityWeight(b.priority) - priorityWeight(a.priority);
       return a.created_at.localeCompare(b.created_at);
     });
 });

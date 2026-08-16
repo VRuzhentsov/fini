@@ -579,8 +579,8 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             title TEXT NOT NULL,
             description TEXT,
             repeat_rule TEXT NOT NULL,
-            priority INTEGER NOT NULL DEFAULT 1,
-            energy TEXT NOT NULL DEFAULT 'medium',
+            priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
+            energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
             active BOOLEAN NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -592,9 +592,8 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             title TEXT NOT NULL,
             description TEXT,
             status TEXT NOT NULL DEFAULT 'active',
-            energy TEXT NOT NULL DEFAULT 'medium',
-            priority INTEGER NOT NULL DEFAULT 1,
-            pinned BOOLEAN NOT NULL DEFAULT 0,
+            energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
+            priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
             due TEXT,
             due_time TEXT,
             repeat_rule TEXT,
@@ -1020,7 +1019,6 @@ fn insert_quest(
             quests::status.eq(&quest.status),
             quests::energy.eq(&quest.energy),
             quests::priority.eq(quest.priority),
-            quests::pinned.eq(quest.pinned),
             quests::due.eq(&quest.due),
             quests::due_time.eq(&quest.due_time),
             quests::repeat_rule.eq(&quest.repeat_rule),
@@ -1144,7 +1142,6 @@ fn upsert_quest_for_import(
                 quests::status.eq(&quest.status),
                 quests::energy.eq(&quest.energy),
                 quests::priority.eq(quest.priority),
-                quests::pinned.eq(quest.pinned),
                 quests::due.eq(&quest.due),
                 quests::due_time.eq(&quest.due_time),
                 quests::repeat_rule.eq(&quest.repeat_rule),
@@ -1227,7 +1224,6 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         status: quest.status.clone(),
         energy: quest.energy.clone(),
         priority: quest.priority,
-        pinned: quest.pinned,
         due: quest.due.clone(),
         due_time: quest.due_time.clone(),
         repeat_rule: quest.repeat_rule.clone(),
@@ -1318,8 +1314,8 @@ mod tests {
                 title TEXT NOT NULL,
                 description TEXT,
                 repeat_rule TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 1,
-                energy TEXT NOT NULL DEFAULT 'medium',
+                priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
+                energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
                 active BOOLEAN NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -1330,10 +1326,9 @@ mod tests {
                 title TEXT NOT NULL,
                 description TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
-                energy TEXT NOT NULL DEFAULT 'medium',
-                priority INTEGER NOT NULL DEFAULT 1,
-                pinned BOOLEAN NOT NULL DEFAULT 0,
-                due TEXT,
+                energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
+                priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
+                    due TEXT,
                 due_time TEXT,
                 repeat_rule TEXT,
                 completed_at TEXT,
@@ -1365,16 +1360,16 @@ mod tests {
                     active, created_at, updated_at
                 ) VALUES (
                     'legacy-series', '1', 'Legacy series', '- [ ] Template item',
-                    '{\"type\":\"daily\"}', 2, 'medium', 1,
+                    '{\"type\":\"daily\"}', 2, 2, 1,
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
                 );
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key
                 ) VALUES (
                     'legacy-quest', '1', 'Legacy quest', '- [ ] Existing item', 'active',
-                    'medium', 2, 0, NULL, NULL, NULL, NULL, 0, 0,
+                    'medium', 2, NULL, NULL, NULL, NULL, 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
                     'legacy-series', '2026-01-01'
                 );
@@ -1504,7 +1499,8 @@ mod tests {
     }
 
     #[test]
-    fn import_accepts_legacy_v2_backups_without_checklist_columns() {
+    #[should_panic(expected = "CHECK constraint failed: energy IN (1, 2, 3)")]
+    fn backup_schema_rejects_legacy_energy_values() {
         let _guard = lock_temp_dir_namespace();
         let (archive_path, backup_database_path) =
             write_legacy_v2_backup_archive("backup-legacy-v2-checklist-columns");
@@ -1548,12 +1544,12 @@ mod tests {
             .batch_execute(
                 r#"
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key, is_checklist, checklist_base
                 ) VALUES (
                     'checklist-quest', '1', 'Packed list',
-                    '- [x] Charger <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    '- [x] Charger <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
                     '- [x] Charger <!--k=item-1-->'
@@ -1608,12 +1604,12 @@ mod tests {
             .batch_execute(
                 r#"
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key, is_checklist, checklist_base
                 ) VALUES (
                     'replace-activity-quest', '1', 'Backup title',
-                    '- [x] Backup item <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    '- [x] Backup item <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
                     '- [x] Backup item <!--k=item-1-->'
@@ -1637,12 +1633,12 @@ mod tests {
             .batch_execute(
                 r#"
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key, is_checklist, checklist_base
                 ) VALUES (
                     'replace-activity-quest', '1', 'Local title',
-                    '- [x] Local item <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    '- [x] Local item <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z', NULL, NULL, 1,
                     '- [x] Local item <!--k=item-1-->'
@@ -1700,12 +1696,12 @@ mod tests {
             .batch_execute(
                 r#"
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key, is_checklist, checklist_base
                 ) VALUES (
                     'base-quest', '1', 'Pack bag',
-                    '- [ ] headphones <!--k=a1-->', 'active', 'medium', 1, 0,
+                    '- [ ] headphones <!--k=a1-->', 'active', 2, 2,
                     NULL, NULL, NULL, NULL, 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, NULL, 1,
                     'stale-backup-base'
@@ -1723,12 +1719,12 @@ mod tests {
             .batch_execute(
                 r#"
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key, is_checklist, checklist_base
                 ) VALUES (
                     'base-quest', '1', 'Pack bag',
-                    '- [ ] headphones <!--k=a1-->', 'active', 'medium', 1, 0,
+                    '- [ ] headphones <!--k=a1-->', 'active', 2, 2,
                     NULL, NULL, NULL, NULL, 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, NULL, 1,
                     'current-local-base'
@@ -1745,7 +1741,8 @@ mod tests {
             preflight.conflicts
         );
 
-        apply_import(&mut target, &out_path, &[], &[]).expect("import with no conflicts to resolve");
+        apply_import(&mut target, &out_path, &[], &[])
+            .expect("import with no conflicts to resolve");
 
         let imported: Quest = quests::table
             .find("base-quest")
@@ -1774,12 +1771,12 @@ mod tests {
             .batch_execute(
                 r#"
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key, is_checklist, checklist_base
                 ) VALUES (
                     'activity-conflict-quest', '1', 'Packed list',
-                    '- [x] Charger <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    '- [x] Charger <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
                     '- [x] Charger <!--k=item-1-->'
@@ -1803,12 +1800,12 @@ mod tests {
             .batch_execute(
                 r#"
                 INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority, pinned,
+                    id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
                     created_at, updated_at, series_id, period_key, is_checklist, checklist_base
                 ) VALUES (
                     'activity-conflict-quest', '1', 'Packed list',
-                    '- [x] Charger <!--k=item-1-->', 'completed', 'medium', 1, 0,
+                    '- [x] Charger <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
                     '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
                     '- [x] Charger <!--k=item-1-->'

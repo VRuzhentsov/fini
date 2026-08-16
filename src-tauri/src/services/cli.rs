@@ -194,6 +194,10 @@ struct QuestCreateArgs {
     due: Option<String>,
     #[arg(long)]
     due_time: Option<String>,
+    #[arg(long, value_parser = ["small", "medium", "large"], default_value = "medium", help = "Quest effort estimate")]
+    energy: String,
+    #[arg(long, value_parser = ["low", "medium", "high"], default_value = "medium", help = "Quest urgency/importance")]
+    priority: String,
     #[arg(long)]
     repeat_rule: Option<String>,
     #[arg(
@@ -230,12 +234,14 @@ struct QuestUpdateArgs {
     status: Option<String>,
     #[arg(long)]
     space_id: Option<String>,
-    #[arg(long)]
-    pinned: Option<bool>,
     #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due: Option<String>,
     #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     due_time: Option<String>,
+    #[arg(long, value_parser = ["small", "medium", "large"], help = "Quest effort estimate; omit to preserve")]
+    energy: Option<String>,
+    #[arg(long, value_parser = ["low", "medium", "high"], help = "Quest urgency/importance; omit to preserve")]
+    priority: Option<String>,
     #[arg(long, help = "Text, or literal null to clear; omit to preserve")]
     repeat_rule: Option<String>,
     #[arg(
@@ -881,8 +887,10 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 space_id: args.space_id.unwrap_or_else(|| "1".to_string()),
                 title: args.title,
                 description,
-                energy: "medium".to_string(),
-                priority: 1,
+                energy: crate::models::parse_energy_name(&args.energy)
+                    .expect("clap restricts --energy values"),
+                priority: crate::models::parse_priority_name(&args.priority)
+                    .expect("clap restricts --priority values"),
                 due: args.due,
                 due_time: args.due_time,
                 repeat_rule: args
@@ -1028,11 +1036,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 // occurrence was moved to another space, peers mapped only to the destination
                 // space must still receive the template update, matching the Tauri
                 // update_series_checklist command's emit_series_checklist_template_sync.
-                if let Ok(series) = crate::schema::quest_series::table
-                    .find(&args.series_id)
-                    .select(crate::models::QuestSeries::as_select())
-                    .first::<crate::models::QuestSeries>(&mut conn)
-                {
+                if let Ok(series) = QuestService::new(&mut conn).get_series(&args.series_id) {
                     let payload = serde_json::to_string(&series).ok();
                     let _ = emit_sync_event(
                         &mut conn,
@@ -1129,9 +1133,12 @@ fn update_quest_from_cli(
         title: args.title,
         description: None,
         status: args.status.clone(),
-        energy: None,
-        priority: None,
-        pinned: args.pinned,
+        energy: args.energy.as_deref().map(|value| {
+            crate::models::parse_energy_name(value).expect("clap restricts --energy values")
+        }),
+        priority: args.priority.as_deref().map(|value| {
+            crate::models::parse_priority_name(value).expect("clap restricts --priority values")
+        }),
         due: None,
         due_time: None,
         repeat_rule: None,
@@ -1182,9 +1189,10 @@ fn update_quest_status(
             description: None,
             status: Some(status.to_string()),
             space_id: None,
-            pinned: None,
             due: None,
             due_time: None,
+            energy: None,
+            priority: None,
             repeat_rule: None,
             repeat: None,
             order_rank: None,
@@ -1858,6 +1866,180 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn quest_metadata_parser_accepts_named_values_uses_create_defaults_and_rejects_invalid_values()
+    {
+        let create_default = Cli::try_parse_from(["fini", "quest", "create", "--title", "Default"])
+            .expect("parse create defaults");
+        let create_named = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Named",
+            "--energy",
+            "large",
+            "--priority",
+            "high",
+        ])
+        .expect("parse named create metadata");
+        let update_named = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "update",
+            "--id",
+            "quest-1",
+            "--energy",
+            "small",
+            "--priority",
+            "low",
+        ])
+        .expect("parse named update metadata");
+
+        match create_default.command {
+            Some(Command::Quest {
+                command: QuestCommand::Create(args),
+            }) => {
+                assert_eq!(args.energy, "medium");
+                assert_eq!(args.priority, "medium");
+            }
+            _ => panic!("expected quest create defaults"),
+        }
+        match create_named.command {
+            Some(Command::Quest {
+                command: QuestCommand::Create(args),
+            }) => {
+                assert_eq!(args.energy, "large");
+                assert_eq!(args.priority, "high");
+            }
+            _ => panic!("expected named quest create"),
+        }
+        match update_named.command {
+            Some(Command::Quest {
+                command: QuestCommand::Update(args),
+            }) => {
+                assert_eq!(args.energy.as_deref(), Some("small"));
+                assert_eq!(args.priority.as_deref(), Some("low"));
+            }
+            _ => panic!("expected named quest update"),
+        }
+
+        for command in [
+            vec![
+                "fini", "quest", "create", "--title", "Bad", "--energy", "tiny",
+            ],
+            vec![
+                "fini",
+                "quest",
+                "create",
+                "--title",
+                "Bad",
+                "--priority",
+                "urgent",
+            ],
+            vec![
+                "fini", "quest", "update", "--id", "quest-1", "--energy", "high",
+            ],
+            vec![
+                "fini",
+                "quest",
+                "update",
+                "--id",
+                "quest-1",
+                "--priority",
+                "4",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(command).is_err());
+        }
+    }
+
+    #[test]
+    fn quest_metadata_handler_serializes_named_values_for_create_and_update() {
+        let _guard = ENV_LOCK.lock().expect("lock env");
+        let db_path = temp_db_path("cli-quest-metadata-handler");
+        std::env::set_var("FINI_DB_PATH", &db_path);
+
+        let ctx = CliContext::new()
+            .unwrap_or_else(|error| panic!("initialize isolated CLI database: {}", error.message));
+        let create = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "create",
+            "--title",
+            "Ship release",
+            "--energy",
+            "large",
+            "--priority",
+            "high",
+        ])
+        .expect("parse metadata create");
+        let create_command = match create.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest create command"),
+        };
+        let created = handle_quest(&ctx, create_command)
+            .unwrap_or_else(|error| panic!("create quest with metadata: {}", error.message));
+        assert_eq!(created["energy"], "large");
+        assert_eq!(created["priority"], "high");
+        let id = created["id"].as_str().expect("created id").to_string();
+
+        let update = Cli::try_parse_from([
+            "fini",
+            "quest",
+            "update",
+            "--id",
+            &id,
+            "--energy",
+            "small",
+            "--priority",
+            "low",
+        ])
+        .expect("parse metadata update");
+        let update_command = match update.command {
+            Some(Command::Quest { command }) => command,
+            _ => panic!("expected quest update command"),
+        };
+        let updated = handle_quest(&ctx, update_command)
+            .unwrap_or_else(|error| panic!("update quest metadata: {}", error.message));
+        assert_eq!(updated["energy"], "small");
+        assert_eq!(updated["priority"], "low");
+
+        std::env::remove_var("FINI_DB_PATH");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn quest_metadata_help_lists_named_values_defaults_and_update_preservation() {
+        let mut create = Cli::command();
+        let create_help = create
+            .find_subcommand_mut("quest")
+            .expect("quest command")
+            .find_subcommand_mut("create")
+            .expect("quest create command")
+            .render_long_help()
+            .to_string();
+        assert!(create_help.contains("--energy <ENERGY>"));
+        assert!(create_help.contains("[default: medium]"));
+        assert!(create_help.contains("small"));
+        assert!(create_help.contains("large"));
+        assert!(create_help.contains("--priority <PRIORITY>"));
+        assert!(create_help.contains("low"));
+        assert!(create_help.contains("high"));
+
+        let mut update = Cli::command();
+        let update_help = update
+            .find_subcommand_mut("quest")
+            .expect("quest command")
+            .find_subcommand_mut("update")
+            .expect("quest update command")
+            .render_long_help()
+            .to_string();
+        assert!(update_help.contains("--energy <ENERGY>"));
+        assert!(update_help.contains("--priority <PRIORITY>"));
+        assert!(update_help.contains("omit to preserve"));
+    }
+
+    #[test]
     fn nullable_update_argument_distinguishes_omitted_text_empty_and_literal_null() {
         use crate::models::QuestFieldPatch;
 
@@ -2146,30 +2328,25 @@ mod tests {
             "a1",
             "a genuinely new line must not collide with an existing id"
         );
-        assert_ne!(
-            items.iter().find(|it| it.text == "lunch").unwrap().id,
-            "a2",
-        );
+        assert_ne!(items.iter().find(|it| it.text == "lunch").unwrap().id, "a2",);
     }
 
     #[test]
     fn normalize_future_template_matches_the_series_template_not_this_occurrence_only_edits() {
         // The occurrence renamed "headphones" to "wireless headphones" via a "this occurrence"
         // scoped edit — that never touched the series template, which still says "headphones".
-        let series_template = crate::services::checklist::serialize(&[
-            crate::services::checklist::ChecklistItem {
+        let series_template =
+            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
                 checked: true,
-            },
-        ]);
-        let occurrence_only_rename = crate::services::checklist::serialize(&[
-            crate::services::checklist::ChecklistItem {
+            }]);
+        let occurrence_only_rename =
+            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
                 id: "a1".into(),
                 text: "wireless headphones".into(),
                 checked: true,
-            },
-        ]);
+            }]);
 
         // Raw future-template input retypes the *template's* original text.
         let raw = "- [ ] headphones";
@@ -2183,8 +2360,10 @@ mod tests {
         );
 
         // Matching against the (stale) occurrence text instead would have missed entirely.
-        let normalized_against_occurrence = normalize_future_template(raw, Some(&occurrence_only_rename));
-        let items_against_occurrence = crate::services::checklist::parse(&normalized_against_occurrence);
+        let normalized_against_occurrence =
+            normalize_future_template(raw, Some(&occurrence_only_rename));
+        let items_against_occurrence =
+            crate::services::checklist::parse(&normalized_against_occurrence);
         assert_ne!(
             items_against_occurrence[0].id, "a1",
             "sanity check: matching against the renamed occurrence text does NOT find the id — \
@@ -2212,8 +2391,7 @@ mod tests {
         let items = crate::services::checklist::parse(&normalized);
 
         assert_eq!(items.len(), 2);
-        let ids: std::collections::HashSet<&str> =
-            items.iter().map(|it| it.id.as_str()).collect();
+        let ids: std::collections::HashSet<&str> = items.iter().map(|it| it.id.as_str()).collect();
         assert_eq!(
             ids,
             std::collections::HashSet::from(["a1", "a2"]),

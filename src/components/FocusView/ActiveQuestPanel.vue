@@ -19,6 +19,7 @@ const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
 const HOLD_MS = 900;
+const PRIORITIES = ["low", "medium", "high"] as const;
 let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
 
@@ -121,6 +122,12 @@ function onContextMenu(e: MouseEvent) {
   contextMenu.open(e, items);
 }
 
+function cyclePriority() {
+  const idx = PRIORITIES.indexOf(props.quest.priority);
+  const next = PRIORITIES[(idx + 1) % PRIORITIES.length];
+  store.updateQuest(props.quest.id, { priority: next });
+}
+
 function spaceName(): string {
   return spaceStore.spaces.find((s) => s.id === props.quest.space_id)?.name ?? "";
 }
@@ -212,7 +219,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     @set-focus="store.setFocusQuest(quest.id)"
     @collapse="expanded = false"
     @open-reminder="reminderOpen = true"
-    @cycle-priority="store.updateQuest(quest.id, { priority: quest.priority >= 4 ? 1 : quest.priority + 1 })"
+    @cycle-priority="cyclePriority"
     @more="onContextMenu"
     @toggle-checklist-item="onToggleChecklistItem"
     @add-checklist-item="onAddChecklistItem"

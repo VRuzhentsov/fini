@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useQuestStore, type Quest } from "../../stores/quest";
+import { useQuestStore, type Energy, type Priority, type Quest } from "../../stores/quest";
 import { useSpaceStore } from "../../stores/space";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import {
@@ -13,6 +13,8 @@ import {
 } from "@heroicons/vue/24/outline";
 import { serializeChecklist, type ChecklistItem } from "../../utils/checklist";
 import ChecklistEditor from "../ChecklistEditor.vue";
+import QuestEnergySelector from "../QuestEnergySelector.vue";
+import QuestPrioritySelector from "../QuestPrioritySelector.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -32,6 +34,8 @@ const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
 const repeatRule = ref<string | null>(null);
+const energy = ref<Energy>("medium");
+const priority = ref<Priority>("medium");
 const reminderOpen = ref(false);
 const metadataExpanded = ref(false);
 const isSubmitting = ref(false);
@@ -41,12 +45,23 @@ const hasMetadataDraft = computed(
   () =>
     description.value.trim().length > 0 ||
     checklistItems.value.length > 0 ||
+    energy.value !== "medium" ||
+    priority.value !== "medium" ||
     !!due.value ||
     !!dueTime.value ||
     !!repeatRule.value,
 );
 
 const isExpanded = computed(() => metadataExpanded.value);
+
+const renderFlags = computed(() => ({
+  metadataSection: isExpanded.value,
+  descriptionField: !isChecklistMode.value,
+  checklistEditor: isChecklistMode.value,
+  clearReminderControl: reminderText.value.length > 0,
+  expandedIcon: isExpanded.value,
+  reminderMenu: reminderOpen.value && !isSubmitting.value,
+}));
 
 const hasDraftContent = computed(
   () =>
@@ -84,9 +99,8 @@ const draftQuest = computed<Quest>(() => ({
     ? serializeChecklist(checklistItems.value) || null
     : description.value.trim() || null,
   status: "active",
-  energy: "medium",
-  priority: 1,
-  pinned: false,
+  energy: energy.value,
+  priority: priority.value,
   due: due.value,
   due_time: dueTime.value,
   repeat_rule: repeatRule.value,
@@ -216,6 +230,8 @@ async function onSubmit() {
       // An empty checklist is still a checklist: its first item may be added later.
       is_checklist: isChecklistMode.value,
       space_id: selectedSpaceId.value,
+      energy: energy.value,
+      priority: priority.value,
       due: due.value,
       due_time: dueTime.value,
       repeat_rule: repeatRule.value,
@@ -225,6 +241,8 @@ async function onSubmit() {
     description.value = "";
     isChecklistMode.value = false;
     checklistItems.value = [];
+    energy.value = "medium";
+    priority.value = "medium";
     clearReminder();
     metadataExpanded.value = false;
   } finally {
@@ -258,9 +276,9 @@ async function onSubmit() {
         />
       </div>
 
-      <div v-if="isExpanded" class="flex flex-col gap-2 border-t border-base-300 pt-2">
+      <div v-if="renderFlags.metadataSection" class="flex flex-col gap-2 border-t border-base-300 pt-2">
         <textarea
-          v-if="!isChecklistMode"
+          v-if="renderFlags.descriptionField"
           v-model="description"
           data-testid="new-quest-description"
           class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
@@ -269,8 +287,23 @@ async function onSubmit() {
           :disabled="isSubmitting"
         />
 
+        <div class="grid grid-cols-2 gap-2">
+          <QuestEnergySelector
+            v-model="energy"
+            class="form-control text-xs"
+            test-id="new-quest-energy"
+            :disabled="isSubmitting"
+          />
+          <QuestPrioritySelector
+            v-model="priority"
+            class="form-control text-xs"
+            test-id="new-quest-priority"
+            :disabled="isSubmitting"
+          />
+        </div>
+
         <ChecklistEditor
-          v-else
+          v-if="renderFlags.checklistEditor"
           ref="checklistEditorRef"
           v-model:items="checklistItems"
           mode="draft"
@@ -295,7 +328,7 @@ async function onSubmit() {
             <span class="truncate">{{ reminderText || "Date" }}</span>
           </button>
           <button
-            v-if="reminderText"
+            v-if="renderFlags.clearReminderControl"
             type="button"
             data-testid="new-quest-clear-reminder"
             class="btn btn-ghost btn-xs btn-square"
@@ -326,7 +359,7 @@ async function onSubmit() {
             :disabled="isSubmitting"
             @click="toggleExpanded"
           >
-            <ChevronUpIcon v-if="isExpanded" class="size-4" />
+            <ChevronUpIcon v-if="renderFlags.expandedIcon" class="size-4 -scale-y-100" />
             <ChevronDownIcon v-else class="size-4" />
             <span>{{ isExpanded ? "Less" : "More" }}</span>
           </button>
@@ -346,7 +379,7 @@ async function onSubmit() {
   </div>
 
   <ReminderMenu
-    v-if="reminderOpen && !isSubmitting"
+    v-if="renderFlags.reminderMenu"
     :quest="draftQuest"
     @close="onReminderClose"
     @save="onReminderSave"

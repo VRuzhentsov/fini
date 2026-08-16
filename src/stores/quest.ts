@@ -3,7 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { ref } from "vue";
 import { parseChecklist, serializeChecklist } from "../utils/checklist";
 
-export type Energy = "low" | "medium" | "high";
+export type Energy = "small" | "medium" | "large";
+export type Priority = "low" | "medium" | "high";
+
+export function priorityWeight(priority: Priority): number {
+  if (priority === "high") return 3;
+  if (priority === "low") return 1;
+  return 2;
+}
 
 export interface Quest {
   id: string;
@@ -12,8 +19,7 @@ export interface Quest {
   description: string | null;
   status: "active" | "completed" | "abandoned";
   energy: Energy;
-  priority: number;
-  pinned: boolean;
+  priority: Priority;
   due: string | null;
   due_time: string | null;
   repeat_rule: string | null;
@@ -43,7 +49,7 @@ export interface CreateQuestInput {
   title: string;
   description?: string | null;
   energy?: Energy;
-  priority?: number;
+  priority?: Priority;
   due?: string | null;
   due_time?: string | null;
   repeat_rule?: string | null;
@@ -57,8 +63,7 @@ export interface UpdateQuestInput {
   description?: string | null;
   status?: "active" | "completed" | "abandoned";
   energy?: Energy;
-  priority?: number;
-  pinned?: boolean;
+  priority?: Priority;
   due?: string | null;
   due_time?: string | null;
   repeat_rule?: string | null;

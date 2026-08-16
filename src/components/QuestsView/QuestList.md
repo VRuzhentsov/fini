@@ -21,7 +21,7 @@ Checkbox + title.
 ### Expanded
 
 - Header: checkbox, editable title, Focus indicator/action, collapse
-- Body: editable description
+- Body: editable description plus accessible Energy (Small / Medium / Large) and Priority (Low / Medium / High) controls
 - Footer:
   - Left: due/time/repeat summary (opens [[ReminderMenu]])
   - Right: attachment (future), labels (future), priority, more menu
@@ -35,7 +35,7 @@ Checkbox + title.
 | Abandon | Sets `status = abandoned` |
 | Delete | Permanent delete with confirmation |
 
-Energy is stored but hidden from MVP controls.
+Energy is a quest effort estimate (Small / Medium / Large) and Priority is urgency (Low / Medium / High); both default to Medium. Priority participates in ordering as high > medium > low after overdue and order-rank precedence.
 
 ## History rows
 
