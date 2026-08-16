@@ -244,6 +244,10 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
                     },
                 )
                 .await;
+                // Do not drop a TCP/WebSocket connection immediately after
+                // writing the reply: that can reset the stream before the
+                // peer reads its reply. Wait briefly for the scanner to close.
+                let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
             }
             return;
         }
