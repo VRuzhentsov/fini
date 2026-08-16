@@ -359,7 +359,7 @@ async function onSubmit() {
             :disabled="isSubmitting"
             @click="toggleExpanded"
           >
-            <ChevronUpIcon v-if="renderFlags.expandedIcon" class="size-4" />
+            <ChevronUpIcon v-if="renderFlags.expandedIcon" class="size-4 -scale-y-100" />
             <ChevronDownIcon v-else class="size-4" />
             <span>{{ isExpanded ? "Less" : "More" }}</span>
           </button>

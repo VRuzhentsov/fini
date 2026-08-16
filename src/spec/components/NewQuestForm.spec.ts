@@ -161,6 +161,7 @@ describe("NewQuestForm", () => {
     await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
 
     expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="new-quest-expand"] svg').classes()).toContain("-scale-y-100");
     expect(wrapper.find('[data-testid="new-quest-focus-toggle"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="new-quest-keep-adding"]').exists()).toBe(false);
     expect((wrapper.find('[data-testid="chat-input"]').element as HTMLInputElement).value).toBe("Capture fast quest");
