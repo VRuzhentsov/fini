@@ -12,7 +12,9 @@ import {
   XMarkIcon,
 } from "@heroicons/vue/24/outline";
 import { serializeChecklist, type ChecklistItem } from "../../utils/checklist";
-import NewQuestDetails from "./NewQuestDetails.vue";
+import ChecklistEditor from "../ChecklistEditor.vue";
+import QuestEnergySelector from "../QuestEnergySelector.vue";
+import QuestPrioritySelector from "../QuestPrioritySelector.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -27,7 +29,7 @@ const description = ref("");
 // checklist item on submit.
 const isChecklistMode = ref(false);
 const checklistItems = ref<ChecklistItem[]>([]);
-const detailsRef = ref<InstanceType<typeof NewQuestDetails> | null>(null);
+const checklistEditorRef = ref<InstanceType<typeof ChecklistEditor> | null>(null);
 const selectedSpaceId = ref(spaceStore.selectedSpaceId ?? "1");
 const due = ref<string | null>(null);
 const dueTime = ref<string | null>(null);
@@ -54,6 +56,8 @@ const isExpanded = computed(() => metadataExpanded.value);
 
 const renderFlags = computed(() => ({
   metadataSection: isExpanded.value,
+  descriptionField: !isChecklistMode.value,
+  checklistEditor: isChecklistMode.value,
   clearReminderControl: reminderText.value.length > 0,
   expandedIcon: isExpanded.value,
   reminderMenu: reminderOpen.value && !isSubmitting.value,
@@ -213,7 +217,7 @@ async function onSubmit() {
   const value = title.value.trim();
   if (!value || isSubmitting.value) return;
   // Capture whatever's still sitting in the "add item" input (e.g. submit clicked without Enter).
-  if (isChecklistMode.value) detailsRef.value?.flushPendingChecklistItem();
+  if (isChecklistMode.value) checklistEditorRef.value?.flushPendingItem();
   const descriptionValue = isChecklistMode.value
     ? serializeChecklist(checklistItems.value) || null
     : description.value.trim() || null;
@@ -272,17 +276,43 @@ async function onSubmit() {
         />
       </div>
 
-      <NewQuestDetails
-        v-if="renderFlags.metadataSection"
-        ref="detailsRef"
-        v-model:description="description"
-        v-model:energy="energy"
-        v-model:priority="priority"
-        v-model:checklist-items="checklistItems"
-        :is-checklist-mode="isChecklistMode"
-        :disabled="isSubmitting"
-        @toggle-checklist-item="onToggleChecklistItem"
-      />
+      <div v-if="renderFlags.metadataSection" class="flex flex-col gap-2 border-t border-base-300 pt-2">
+        <textarea
+          v-if="renderFlags.descriptionField"
+          v-model="description"
+          data-testid="new-quest-description"
+          class="textarea textarea-ghost min-h-11 resize-none overflow-y-auto p-0 text-sm leading-snug focus:outline-none"
+          placeholder="Description"
+          rows="2"
+          :disabled="isSubmitting"
+        />
+
+        <div class="grid grid-cols-2 gap-2">
+          <QuestEnergySelector
+            v-model="energy"
+            class="form-control text-xs"
+            test-id="new-quest-energy"
+            :disabled="isSubmitting"
+          />
+          <QuestPrioritySelector
+            v-model="priority"
+            class="form-control text-xs"
+            test-id="new-quest-priority"
+            :disabled="isSubmitting"
+          />
+        </div>
+
+        <ChecklistEditor
+          v-if="renderFlags.checklistEditor"
+          ref="checklistEditorRef"
+          v-model:items="checklistItems"
+          mode="draft"
+          data-testid="new-quest-checklist"
+          add-item-test-id="new-quest-checklist-item-input"
+          :disabled="isSubmitting"
+          @toggle-item="onToggleChecklistItem"
+        />
+      </div>
 
       <div class="flex items-center justify-between gap-2 pt-1">
         <div class="flex min-w-0 flex-wrap items-center gap-1">

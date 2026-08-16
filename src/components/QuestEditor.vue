@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { ChecklistActivity, Energy, Priority, Quest, UpdateQuestInput } from "../stores/quest";
+import type { ChecklistActivity, Quest, UpdateQuestInput } from "../stores/quest";
 import { SPACE_COLOR_CLASS } from "../stores/space";
 import { parseChecklist } from "../utils/checklist";
 import {
@@ -12,6 +12,8 @@ import {
   ExclamationCircleIcon,
 } from "@heroicons/vue/24/outline";
 import ActionsBtn from "./ActionsBtn.vue";
+import QuestEnergySelector from "./QuestEnergySelector.vue";
+import QuestPrioritySelector from "./QuestPrioritySelector.vue";
 import ChecklistEditor from "./ChecklistEditor.vue";
 
 const props = defineProps<{
@@ -67,14 +69,6 @@ function saveTitle() {
 function saveDescription() {
   const value = description.value.trim() || null;
   if (value !== props.quest.description) emit("update", { description: value });
-}
-
-function updateEnergy(event: Event) {
-  emit("update", { energy: (event.target as HTMLSelectElement).value as Energy });
-}
-
-function updatePriority(event: Event) {
-  emit("update", { priority: (event.target as HTMLSelectElement).value as Priority });
 }
 
 function onTitleKeydown(event: KeyboardEvent) {
@@ -228,34 +222,20 @@ const renderFlags = computed(() => ({
     <p v-else-if="renderFlags.proseReadonly" class="quest-editor-desc readonly">{{ quest.description }}</p>
 
     <div class="quest-editor-metadata">
-      <label class="quest-editor-metadata-field">
-        <span>Energy</span>
-        <select
-          data-testid="quest-editor-energy"
-          aria-label="Quest energy"
-          :value="quest.energy"
-          :disabled="quest.status !== 'active'"
-          @change="updateEnergy"
-        >
-          <option value="small">Small</option>
-          <option value="medium">Medium</option>
-          <option value="large">Large</option>
-        </select>
-      </label>
-      <label class="quest-editor-metadata-field">
-        <span>Priority</span>
-        <select
-          data-testid="quest-editor-priority"
-          aria-label="Quest priority"
-          :value="quest.priority"
-          :disabled="quest.status !== 'active'"
-          @change="updatePriority"
-        >
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-        </select>
-      </label>
+      <QuestEnergySelector
+        class="quest-editor-metadata-field"
+        :model-value="quest.energy"
+        test-id="quest-editor-energy"
+        :disabled="quest.status !== 'active'"
+        @update:model-value="emit('update', { energy: $event })"
+      />
+      <QuestPrioritySelector
+        class="quest-editor-metadata-field"
+        :model-value="quest.priority"
+        test-id="quest-editor-priority"
+        :disabled="quest.status !== 'active'"
+        @update:model-value="emit('update', { priority: $event })"
+      />
     </div>
 
     <div class="quest-editor-footer">

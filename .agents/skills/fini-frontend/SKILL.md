@@ -68,9 +68,9 @@ Rules:
 
 ## Component Extraction
 
-When adding a new template block that exceeds roughly ten lines of HTML, extract it into a focused child component instead of expanding the parent view. Keep the parent responsible for form/lifecycle orchestration and pass the narrow draft state and events the child needs.
+When adding a new template block that exceeds roughly ten lines of HTML, first extract reusable semantic controls (for example, the Energy and Priority selectors shared by create and edit views) into focused child components instead of expanding the parent view. Do not split one coherent form section into a generic `*Details` wrapper merely to meet the line threshold; keep its local layout with the owning form when that is clearer.
 
-The child component must still follow these `renderFlags` rules for its own conditional sections. Do not use extraction to hide direct conditional-rendering logic from review.
+Keep the parent responsible for form/lifecycle orchestration and pass narrow state and events to shared controls. Every extracted component must still follow these `renderFlags` rules for its own conditional sections. Do not use extraction to hide direct conditional-rendering logic from review.
 
 ## Testing Expectations
 
