@@ -59,30 +59,49 @@ pub fn open_db_at_path(path: &Path) -> SqliteConnection {
 }
 
 pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
+    // Retries the whole open (connect + pragmas + migration check), not
+    // just one query inside it: a CI-only "database is locked" failure
+    // ADR-0003's dual-connection revision surfaced (a new DB round-trip on
+    // every session claim/release, `DeviceConnectionState::
+    // bluetooth_primary_eligibility`) survived both a `busy_timeout` bump
+    // (5000 -> 15000) and a `journal_mode` change (WAL -> DELETE for test
+    // builds) with zero effect on real CI runners, while passing reliably
+    // in a local reproduction of the same container image both times --
+    // meaning SQLite's own busy-retry isn't resolving whatever this
+    // actually is under GitHub-hosted runners' specific load/IO
+    // characteristics (observed CI runs taking ~4-8x longer wall-clock
+    // than the same suite locally). An application-level retry here is
+    // the more robust fix precisely because it doesn't depend on
+    // diagnosing SQLite's internal locking correctly -- it just accepts
+    // that a transient "locked"/"busy" open can happen and tries again
+    // shortly after, which is safe: `try_open_db_at_path` has made no
+    // partial writes to retry over, it can only fail before or during the
+    // connect/pragma/migration-check sequence.
+    let mut last_err = String::new();
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
+        }
+        match try_open_db_at_path_once(path) {
+            Ok(conn) => return Ok(conn),
+            Err(err) => {
+                let retriable = err.contains("database is locked") || err.contains("database is busy");
+                last_err = err;
+                if !retriable {
+                    return Err(last_err);
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
+fn try_open_db_at_path_once(path: &Path) -> Result<SqliteConnection, String> {
     let mut conn = SqliteConnection::establish(path.to_str().ok_or("database path is not UTF-8")?)
         .map_err(|err| format!("failed to open database: {err}"))?;
-    // WAL mode relies on shared-memory (mmap'd `-shm` file) locking for
-    // cross-connection coordination, which is unreliable on some
-    // container/overlay filesystems -- raising `busy_timeout` (15000, up
-    // from 5000, ADR-0003's dual-connection revision added a new DB
-    // round-trip on every session claim/release) didn't fix a CI-only
-    // "database is locked" failure this revision surfaced, which pointed
-    // here: the lock genuinely never clears under CI's containerized FS,
-    // it's not merely slow. Every test opens its own uniquely-named,
-    // single-test-only temp file (`temp_db_path`) with only a handful of
-    // short-lived connections -- none of the concurrent-writer-throughput
-    // benefits WAL exists for actually apply -- so test builds use the
-    // plain rollback journal instead, whose locking is ordinary POSIX
-    // `fcntl` and doesn't depend on mmap working correctly on the
-    // filesystem underneath. Production (a real user's local disk) keeps
-    // WAL. `cfg!(test)`, not `#[cfg(test)]`: this function itself must stay
-    // the one shared code path production and tests both call through.
-    let journal_mode = if cfg!(test) { "DELETE" } else { "WAL" };
-    diesel::sql_query(format!(
-        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = {journal_mode}; PRAGMA busy_timeout = 15000;"
-    ))
-    .execute(&mut conn)
-    .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
+    diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 15000;")
+        .execute(&mut conn)
+        .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
     ensure_database_schema_is_supported(&mut conn)?;
     conn.run_pending_migrations(MIGRATIONS)
         .map_err(|err| format!("failed to run database migrations: {err}"))?;
