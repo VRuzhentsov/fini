@@ -21,14 +21,19 @@ pub struct SyncEventEnvelope {
 }
 
 /// What can be sent through a claimed session's mailbox (`run_session`'s
-/// `rx`): forward a frame to the peer over the wire. ADR-0003 revision:
-/// the old `Close` variant (a manual transport switch force-closing the
-/// non-preferred session) no longer has a reason to exist -- both
-/// transports stay connected regardless of which is primary, so a pin
-/// change just relabels which one is primary; nothing needs closing.
+/// `rx`): forward a frame to the peer over the wire, or close this session
+/// locally without one. ADR-0003 revision: a pin change alone no longer
+/// needs `Close` (both transports stay connected regardless of which is
+/// primary) -- but an explicit user action that makes a transport
+/// *ineligible* still does: `device_connection_set_bluetooth_transport_
+/// with_state_impl`'s disable path uses this to actually tear down a live
+/// Bluetooth/Sim session the moment Bluetooth is turned off for a pair,
+/// not just stop counting it toward primary selection. See
+/// `DeviceConnectionState::close_session_on`.
 #[derive(Debug)]
 pub enum SessionCommand {
     Forward(PeerFrame),
+    Close,
 }
 
 pub type SessionSender = mpsc::Sender<SessionCommand>;

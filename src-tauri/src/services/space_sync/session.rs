@@ -409,6 +409,13 @@ pub async fn run_session(
                             break;
                         }
                     }
+                    // Deliberately no frame sent to the peer here -- unlike
+                    // the old Phase-3 SwitchTransport-driven close, there's
+                    // no negotiated handoff for the peer to expect; this is
+                    // just this device unilaterally deciding a transport it
+                    // no longer wants to use (Bluetooth disabled for the
+                    // pair) should stop being live. See `close_session_on`.
+                    SessionCommand::Close => break,
                 }
             }
             _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {

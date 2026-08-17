@@ -329,6 +329,114 @@ async fn disabling_bluetooth_redirects_the_pin_to_network_and_flips_primary() {
     );
 }
 
+/// Regression test for a second P1 review finding on this PR: disabling
+/// Bluetooth while a `TransportKind::Bluetooth` session is already live
+/// must not let that session win primary-transport fallback later, even in
+/// the window before its own async teardown (`close_session_on`'s
+/// fire-and-forget `SessionCommand::Close`) has been processed --
+/// otherwise `push_to_peer` could resume real application traffic over a
+/// transport the user just explicitly turned off, violating
+/// `specs/device-connect/README.md`'s "disabling ... prevents future
+/// Bluetooth use" contract. Deliberately does *not* sleep between disabling
+/// and dropping Network, so this exercises `recompute_primary_locked`'s
+/// `bluetooth_enabled` exclusion directly rather than depending on the
+/// async close having (or not having) already run. Uses `AsBluetooth`
+/// (real Bluetooth-kind claiming, unlike the sibling test above's `Sim`) --
+/// `bluetooth_enabled` deliberately only excludes the real `Bluetooth`
+/// kind, not `Sim`/`LoRa`, which aren't governed by that column at all
+/// (see `recompute_primary_locked`'s own doc comment), so this needs the
+/// real kind to exercise the check meaningfully.
+#[tokio::test(flavor = "multi_thread")]
+async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_session_closes() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "127.0.0.1");
+
+    let (server, server_db) = server_state("transport-disable-bluetooth-excludes-fallback");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("127.0.0.1")),
+            ))
+            .execute(&mut conn)
+            .expect("enable bluetooth for seeded peer");
+    }
+
+    let tcp_port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), tcp_port));
+
+    let ble_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ble_port = ble_listener.local_addr().unwrap().port();
+    let gate_server = server.clone();
+    let gate_db = server_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = ble_listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_server, gate_db).await;
+    });
+    sleep(Duration::from_millis(100)).await;
+
+    let mut tcp_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port).await.expect("dial tcp");
+    session::perform_client_auth(tcp_link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("tcp auth should succeed for paired device");
+
+    let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
+    let mut ble_link: Box<dyn Link> = Box::new(sim::SimLink::new(ble_stream));
+    session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
+    sleep(Duration::from_millis(50)).await;
+
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+
+    // Network is primary by default (network-first) -- the common
+    // real-world case for this finding: disabling Bluetooth from Settings
+    // while a healthy Network session is already carrying traffic, not the
+    // pinned case the sibling test above covers.
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
+
+    let mut conn = open_db_at_path(&server_db);
+    crate::services::device_connection::device_connection_set_bluetooth_transport_with_state_impl(
+        &mut conn,
+        &server,
+        crate::services::device_connection::types::DeviceBluetoothTransportInput {
+            peer_device_id: "peer-client".to_string(),
+            enabled: false,
+            bluetooth_address: None,
+        },
+    )
+    .expect("disable bluetooth");
+
+    // Network drops immediately after -- no sleep, so the Bluetooth
+    // session's own `run_session` loop has not necessarily processed the
+    // `Close` command `close_session_on` just sent it. Without
+    // `recompute_primary_locked`'s `bluetooth_enabled` exclusion, this
+    // falls back to the still-technically-connected Bluetooth session.
+    server.release_session("peer-client", TransportKind::TcpWs, &server_db);
+
+    assert_eq!(
+        server.primary_transport("peer-client"),
+        None,
+        "a disabled pair's Bluetooth session must never win primary fallback, even while \
+         it's still technically connected"
+    );
+
+    // The other half of the fix: `close_session_on` must actually tear the
+    // session down, not just get excluded from primary selection forever
+    // while the connection (and its ping/pong) keeps running underneath.
+    sleep(Duration::from_millis(100)).await;
+    assert!(
+        !server.has_session_on("peer-client", TransportKind::Bluetooth),
+        "the disabled pair's Bluetooth session must actually close, not just stop counting \
+         toward primary"
+    );
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the
@@ -879,6 +987,26 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
         !server.transport_reliable("peer-client", TransportKind::TcpWs),
         "a freshly claimed session must not already be green"
     );
+    // Regression test for a P1 review finding on this PR: the lightweight
+    // live-poll surface (`device_connection_transport_liveness`) must
+    // reflect this amber-not-green state too, not just `primary` -- the
+    // whole point of it existing is to let a Bluetooth-only peer's row
+    // (never covered by the network-presence-gated full poll) stay
+    // current without the OS-bond-check cost.
+    let liveness_before = crate::services::device_connection::device_connection_transport_liveness_impl(
+        &server,
+        "peer-client".to_string(),
+    );
+    let network_liveness_before = liveness_before
+        .iter()
+        .find(|l| l.kind == crate::services::device_connection::RowTransportKind::Network)
+        .expect("network liveness row");
+    assert!(network_liveness_before.connected);
+    assert!(network_liveness_before.primary);
+    assert!(
+        network_liveness_before.code.is_some(),
+        "must carry an amber code before the ping/ack proof completes, not None (green)"
+    );
 
     // Drive the client side of the ping/ack exchange directly (this test
     // doesn't run a full peer-side `run_session` loop): reply to the
@@ -903,6 +1031,20 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
     assert!(
         server.transport_reliable("peer-client", TransportKind::TcpWs),
         "green once both directions of the ping/ack proof are complete"
+    );
+
+    let liveness_after = crate::services::device_connection::device_connection_transport_liveness_impl(
+        &server,
+        "peer-client".to_string(),
+    );
+    let network_liveness_after = liveness_after
+        .iter()
+        .find(|l| l.kind == crate::services::device_connection::RowTransportKind::Network)
+        .expect("network liveness row");
+    assert!(
+        network_liveness_after.code.is_none(),
+        "the lightweight live-poll surface must also report green (code: None) once the \
+         ping/ack proof completes, not stay frozen at the pre-proof amber snapshot"
     );
 }
 

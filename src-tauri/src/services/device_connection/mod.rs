@@ -30,7 +30,8 @@ pub use commands::{
     device_connection_save_paired_device, device_connection_send_pair_request,
     device_connection_send_pair_request_bluetooth, device_connection_session_transport,
     device_connection_set_bluetooth_transport, device_connection_set_preferred_transport,
-    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
+    device_connection_transport_liveness, device_connection_transport_statuses, device_connection_unpair,
+    device_connection_update_last_seen,
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
@@ -53,11 +54,20 @@ pub use commands::{
     device_connection_send_pair_request_impl, device_connection_session_transport_impl,
     device_connection_set_bluetooth_transport_impl, device_connection_set_bluetooth_transport_with_state_impl,
     device_connection_set_preferred_transport_impl,
-    device_connection_transport_statuses_impl, device_connection_unpair_impl,
-    device_connection_update_last_seen_impl,
+    device_connection_transport_liveness_impl, device_connection_transport_statuses_impl,
+    device_connection_unpair_impl, device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
-pub use transport::{build_transport_statuses, TransportStatus, TransportStatusInputs};
+// `RowTransportKind`, not bare `TransportKind`: this crate already has
+// `crate::services::transport::TransportKind` (TcpWs/Sim/Bluetooth/LoRa),
+// and re-exporting this module's own coarser Network/Bluetooth enum under
+// the same bare name would collide for any external caller that needs
+// both in scope at once (e.g. `transport::tests`, which imports the
+// fine-grained one already).
+pub use transport::{
+    build_transport_statuses, TransportKind as RowTransportKind, TransportLiveness, TransportStatus,
+    TransportStatusCode, TransportStatusInputs,
+};
 use types::DiscoveryRuntime;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
@@ -266,8 +276,9 @@ impl DeviceConnectionState {
             }
             guard.peer_sessions.insert(key.clone(), sender);
             guard.peer_transport_ack.insert(key, types::TransportAckState::default());
-            let pinned_to_bluetooth = Self::pinned_to_bluetooth(db_path, peer_device_id);
-            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth);
+            let (pinned_to_bluetooth, bluetooth_enabled) =
+                Self::bluetooth_primary_eligibility(db_path, peer_device_id);
+            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
@@ -286,8 +297,9 @@ impl DeviceConnectionState {
                 return; // wasn't claimed on this transport; nothing to release
             }
             guard.peer_transport_ack.remove(&key);
-            let pinned_to_bluetooth = Self::pinned_to_bluetooth(db_path, peer_device_id);
-            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth);
+            let (pinned_to_bluetooth, bluetooth_enabled) =
+                Self::bluetooth_primary_eligibility(db_path, peer_device_id);
+            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
             peer_device_id: peer_device_id.to_string(),
@@ -295,41 +307,68 @@ impl DeviceConnectionState {
         });
     }
 
-    /// Reads `preferred_transport` for `peer_device_id` from `db_path` --
-    /// a plain, explicit path, not `self.db_path`: every other DB-touching
-    /// helper in this module (`check_paired`, etc.) takes the caller's own
-    /// `db_path` rather than trusting a field on `self`, and callers here
-    /// (dial loops, `run_peer_gate`/`run_session`) already have the correct
-    /// one in scope from their own parameters.
-    fn pinned_to_bluetooth(db_path: &Path, peer_device_id: &str) -> bool {
+    /// Reads `preferred_transport`/`bluetooth_enabled` for `peer_device_id`
+    /// from `db_path` -- a plain, explicit path, not `self.db_path`: every
+    /// other DB-touching helper in this module (`check_paired`, etc.) takes
+    /// the caller's own `db_path` rather than trusting a field on `self`,
+    /// and callers here (dial loops, `run_peer_gate`/`run_session`) already
+    /// have the correct one in scope from their own parameters.
+    fn bluetooth_primary_eligibility(db_path: &Path, peer_device_id: &str) -> (bool, bool) {
         tokio::task::block_in_place(|| {
             let mut conn = crate::services::db::open_db_at_path(db_path);
-            commands::peer_transport_preference(&mut conn, peer_device_id).as_deref() == Some("bluetooth")
+            let pinned_to_bluetooth =
+                commands::peer_transport_preference(&mut conn, peer_device_id).as_deref() == Some("bluetooth");
+            let bluetooth_enabled = commands::peer_bluetooth_enabled(&mut conn, peer_device_id);
+            (pinned_to_bluetooth, bluetooth_enabled)
         })
     }
 
     /// Recomputes and stores which transport is *primary* for
     /// `peer_device_id`, given which transports currently have a claimed
-    /// session and `pinned_to_bluetooth` (the caller's own read of
-    /// `preferred_transport`). Network wins whenever it's connected, unless
-    /// the pair is explicitly pinned to Bluetooth and Bluetooth is
-    /// connected. A pin to a transport that isn't connected yet falls back
-    /// to whatever *is* connected -- there's nothing to make primary
-    /// otherwise. Called after every claim or release (and, via
-    /// `refresh_primary`, every manual pin change), so this is always a
-    /// pure function of current connection state, not something that can
-    /// drift or need manual invalidation.
+    /// session, `pinned_to_bluetooth` (the caller's own read of
+    /// `preferred_transport`), and `bluetooth_enabled` (the caller's own
+    /// read of the pair's Bluetooth toggle). Network wins whenever it's
+    /// connected, unless the pair is explicitly pinned to Bluetooth and
+    /// Bluetooth is connected. A pin to a transport that isn't connected
+    /// yet falls back to whatever *is* connected -- there's nothing to make
+    /// primary otherwise.
+    ///
+    /// `bluetooth_enabled` excludes Bluetooth from candidacy entirely
+    /// (neither pinned nor fallback) regardless of whether a session for it
+    /// still happens to be in `peer_sessions` -- a P1 review finding on
+    /// this PR: disabling Bluetooth while a session is already live doesn't
+    /// synchronously remove it (`close_session_on` tears it down
+    /// asynchronously, via the mailbox), so without this check a session
+    /// disabled moments ago could still win the fallback race and have
+    /// `push_to_peer` resume real traffic over a transport the user just
+    /// turned off. This check is what actually closes that race -- the
+    /// async teardown then just catches up and removes the now-provably-
+    /// never-primary entry from `peer_sessions` shortly after.
+    ///
+    /// Called after every claim or release (and, via `refresh_primary`,
+    /// every manual pin change), so this is always a pure function of
+    /// current connection state, not something that can drift or need
+    /// manual invalidation.
     fn recompute_primary_locked(
         &self,
         guard: &mut types::DiscoveryRuntime,
         peer_device_id: &str,
         pinned_to_bluetooth: bool,
+        bluetooth_enabled: bool,
     ) {
         let network_connected = guard
             .peer_sessions
             .contains_key(&(peer_device_id.to_string(), TransportKind::TcpWs));
+        // `bluetooth_enabled` only ever gates the real `Bluetooth` kind --
+        // `Sim`/`LoRa` aren't governed by that DB column at all (the
+        // accept/dial gates never check it for them either, see
+        // `run_peer_gate`'s `kind == TransportKind::Bluetooth` guard), so
+        // excluding them here would silently break every Sim-based test's
+        // existing assumption that a claimed Sim session can become
+        // primary.
         let bluetooth_connected = [TransportKind::Bluetooth, TransportKind::Sim, TransportKind::LoRa]
             .into_iter()
+            .filter(|kind| *kind != TransportKind::Bluetooth || bluetooth_enabled)
             .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
 
         let pick = if pinned_to_bluetooth && bluetooth_connected.is_some() {
@@ -356,9 +395,9 @@ impl DeviceConnectionState {
     /// pin change must be reflected immediately (both rows already
     /// connected, nothing to reconnect), not only whenever a transport
     /// happens to reconnect next.
-    pub fn refresh_primary(&self, peer_device_id: &str, pinned_to_bluetooth: bool) {
+    pub fn refresh_primary(&self, peer_device_id: &str, pinned_to_bluetooth: bool, bluetooth_enabled: bool) {
         let Ok(mut guard) = self.runtime.lock() else { return };
-        self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth);
+        self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
     }
 
     /// Which transport is *primary* for this peer right now -- the one
@@ -560,6 +599,30 @@ impl DeviceConnectionState {
             .peer_sessions
             .keys()
             .any(|(id, _)| id == peer_device_id)
+    }
+
+    /// Forces the peer's currently claimed session on this specific
+    /// transport closed, without a transport-level failure. The only
+    /// caller is `device_connection_set_bluetooth_transport_with_state_impl`'s
+    /// disable path: a still-open Bluetooth (or Sim, its test stand-in)
+    /// session must actually stop -- not just stop counting toward primary
+    /// selection (`recompute_primary_locked` already excludes a disabled
+    /// pair's Bluetooth from that, closing the race between this and the
+    /// async teardown below) -- to honor `specs/device-connect/README.md`'s
+    /// "disabling ... prevents future Bluetooth use" contract. Best-effort:
+    /// `false` just means there was no live session on this transport to
+    /// close, not an error. Fire-and-forget via the mailbox -- the actual
+    /// teardown (and `release_session`) happens once `run_session`'s loop
+    /// processes it, not synchronously with this call.
+    pub fn close_session_on(&self, peer_device_id: &str, kind: TransportKind) -> bool {
+        let guard = match self.runtime.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        match guard.peer_sessions.get(&(peer_device_id.to_string(), kind)) {
+            Some(sender) => sender.try_send(SessionCommand::Close).is_ok(),
+            None => false,
+        }
     }
 
     #[cfg(any(feature = "ui-plane", test))]

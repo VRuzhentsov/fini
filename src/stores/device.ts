@@ -545,21 +545,33 @@ export const useDeviceStore = defineStore("device", () => {
   // fine for a one-shot load, but not something a live-status poll should
   // rerun every few seconds while a device's page stays open (a stalled
   // BlueZ/D-Bus would hold up every other DB-backed command for as long as
-  // the view stays mounted). `device_connection_session_transport` reads
-  // only in-memory session state (which transport is primary right now),
-  // so this patches just the `primary` field of whatever was last loaded
-  // rather than re-deriving the whole row set -- `state` (gray/amber/
-  // green) is left as last-known until the next full poll, same as
-  // before; this lightweight check doesn't have the ping/ack proof needed
-  // to re-derive it.
+  // the view stays mounted). `device_connection_transport_liveness` is the
+  // lightweight sibling: in-memory only, no DB read, no subprocess -- but
+  // (unlike the plain-primary-only signal this used to read) it also
+  // carries each row's current ping/ack `code`, so this patches both
+  // `primary` and `state` from it. Fixes a P1 review finding: green/amber
+  // is a continuously-reproven proof that can lapse or complete
+  // independent of `primary`, and a Bluetooth-only peer never appears in
+  // the network-presence-gated poll that would otherwise trigger a fresh
+  // full `refreshTransportStatuses` load -- without this, such a peer's
+  // row could stay frozen amber indefinitely after the backend proved it
+  // green, or vice versa. `unconfigured` rows are left alone when not
+  // connected: this lightweight check doesn't know *why* (disabled? not
+  // paired? out of range?), only the heavier poll does -- same
+  // self-healing-within-a-few-seconds philosophy as the push/poll split
+  // above, not a new gap.
   async function refreshLiveConnectedState(peerDeviceId: string) {
     if (!transportStatusesByPeer.value[peerDeviceId]?.length) return;
 
     try {
-      const primaryKind = await invoke<"tcp_ws" | "sim" | "bluetooth" | "lo_ra" | null>(
-        "device_connection_session_transport",
-        { peerDeviceId },
-      );
+      const liveness = await invoke<
+        Array<{
+          kind: "network" | "bluetooth";
+          connected: boolean;
+          primary: boolean;
+          code: TransportStatusCode | null;
+        }>
+      >("device_connection_transport_liveness", { peerDeviceId });
       // Re-read *after* the await, not the array captured before it: an
       // enable/disable operation's full refresh (`setBluetoothTransport`)
       // can land while this invoke is pending, and patching on top of the
@@ -569,12 +581,22 @@ export const useDeviceStore = defineStore("device", () => {
       // presence snapshot that would otherwise trigger a fresh full load.
       const current = transportStatusesByPeer.value[peerDeviceId];
       if (!current || current.length === 0) return;
-      const networkPrimary = primaryKind === "tcp_ws";
-      const bluetoothPrimary = primaryKind === "bluetooth" || primaryKind === "sim";
-      transportStatusesByPeer.value[peerDeviceId] = current.map((status) => ({
-        ...status,
-        primary: status.kind === "network" ? networkPrimary : bluetoothPrimary,
-      }));
+      const byKind = new Map(liveness.map((entry) => [entry.kind, entry]));
+      transportStatusesByPeer.value[peerDeviceId] = current.map((status) => {
+        const entry = byKind.get(status.kind);
+        if (!entry) return status;
+        if (status.state.state === "unconfigured" && !entry.connected) {
+          return { ...status, primary: entry.primary };
+        }
+        return {
+          ...status,
+          primary: entry.primary,
+          state: {
+            state: "configured",
+            code: entry.connected ? entry.code : { code: "awaiting_first_ack" },
+          },
+        };
+      });
     } catch (error) {
       console.warn("[device-connection] failed to refresh live connected state", error);
     }

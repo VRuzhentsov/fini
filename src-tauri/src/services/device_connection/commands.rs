@@ -23,7 +23,9 @@ use crate::services::device_connection::types::{
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::device_connection::DeviceConnectionState;
-use crate::services::device_connection::{build_transport_statuses, TransportStatus, TransportStatusInputs};
+use crate::services::device_connection::{
+    build_transport_statuses, TransportLiveness, TransportStatus, TransportStatusCode, TransportStatusInputs,
+};
 use crate::services::space_sync::types::PeerFrame;
 use crate::services::transport::TransportKind;
 
@@ -1426,32 +1428,50 @@ pub fn device_connection_set_bluetooth_transport_impl(
 }
 
 /// Like `device_connection_set_bluetooth_transport_impl`, but additionally
-/// propagates a disable to a peer that was pinned to Bluetooth -- the
-/// `_impl` function alone only clears this device's own row (a safe,
-/// notification-free fallback for callers with no live
-/// `DeviceConnectionState`, e.g. cli-plane); this one has one, so it can
-/// also tell the *peer* to stop expecting Bluetooth. Without this, only
-/// this device's own preference converges: if the peer is the sole
-/// deterministic dialer, it never learns to fall back off a pin this
-/// device just made permanently unreachable. Takes a plain
-/// `&DeviceConnectionState` (not `tauri::State`) so it's directly
-/// unit-testable the same way every other `_impl` function here is.
+/// acts on a live `DeviceConnectionState` -- the `_impl` function alone
+/// only writes this device's own row (a safe fallback for callers with no
+/// live state, e.g. cli-plane); this one has one, so a disable can also:
+///
+/// 1. Redirect an existing Bluetooth pin to an explicit Network pin
+///    (rather than merely clearing to "no preference"), reusing
+///    `device_connection_set_preferred_transport_impl`'s own
+///    `refresh_primary` call -- without this, a pair pinned to Bluetooth
+///    would fall back to automatic selection, which is *usually* Network
+///    anyway, but not guaranteed if Network also happens to be down.
+/// 2. Close any live Bluetooth (or Sim, its test stand-in) session for this
+///    peer outright (`close_session_on`) -- a P1 review finding: without
+///    this, an already-connected session doesn't just linger cosmetically,
+///    it can still win primary-transport fallback (if Network later drops)
+///    and have `push_to_peer` resume real application traffic over a
+///    transport the user explicitly just turned off, violating
+///    `specs/device-connect/README.md`'s "disabling ... prevents future
+///    Bluetooth use" contract. `recompute_primary_locked`'s own
+///    `bluetooth_enabled` check (see its doc comment) closes the race
+///    between this fire-and-forget close and its own async teardown; this
+///    call is what makes the connection actually stop, not just stop
+///    counting.
+///
+/// Takes a plain `&DeviceConnectionState` (not `tauri::State`) so it's
+/// directly unit-testable the same way every other `_impl` function here
+/// is.
 pub fn device_connection_set_bluetooth_transport_with_state_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
     input: DeviceBluetoothTransportInput,
 ) -> Result<PairedDevice, String> {
     let peer_device_id = input.peer_device_id.clone();
-    let disabling_a_bluetooth_pin = !input.enabled
-        && peer_transport_preference(&mut *conn, &peer_device_id).as_deref() == Some("bluetooth");
+    let disabling = !input.enabled;
+    let disabling_a_bluetooth_pin =
+        disabling && peer_transport_preference(&mut *conn, &peer_device_id).as_deref() == Some("bluetooth");
 
     let updated = device_connection_set_bluetooth_transport_impl(&mut *conn, input)?;
 
+    if disabling {
+        state.close_session_on(&peer_device_id, crate::services::transport::TransportKind::Bluetooth);
+        state.close_session_on(&peer_device_id, crate::services::transport::TransportKind::Sim);
+    }
+
     if disabling_a_bluetooth_pin {
-        // Redirects to an explicit Network pin (rather than merely
-        // clearing to "no preference") so this reuses `device_connection_
-        // set_preferred_transport_impl`'s existing peer-notification path
-        // -- the one concrete transport every peer can fall back to.
         return device_connection_set_preferred_transport_impl(
             conn,
             state,
@@ -1521,9 +1541,9 @@ pub fn device_connection_set_preferred_transport_impl(
         .first(&mut *conn)
         .optional()
         .map_err(|e| e.to_string())?;
-    if existing.is_none() {
+    let Some(existing) = existing else {
         return Err("paired device not found".to_string());
-    }
+    };
     if preferred == Some(crate::services::transport::TransportKind::Bluetooth)
         && !peer_is_currently_bluetooth_eligible(conn, &peer_device_id)
     {
@@ -1545,7 +1565,7 @@ pub fn device_connection_set_preferred_transport_impl(
         .map_err(|e| e.to_string())?;
 
     let pinned_to_bluetooth = preferred.is_some_and(|kind| kind != crate::services::transport::TransportKind::TcpWs);
-    state.refresh_primary(&peer_device_id, pinned_to_bluetooth);
+    state.refresh_primary(&peer_device_id, pinned_to_bluetooth, existing.bluetooth_enabled);
 
     paired_devices::table
         .find(&peer_device_id)
@@ -1620,6 +1640,63 @@ pub async fn device_connection_find_bluetooth_address(
     }
 }
 
+/// The pure in-memory half of `TransportStatusInputs` -- everything
+/// `has_session_on`/`primary_transport`/`transport_liveness_code` can
+/// answer without a DB read or an OS-level check. Shared by
+/// `device_connection_transport_statuses_impl` (which adds the DB-backed
+/// preconditions on top) and `device_connection_transport_liveness_impl`
+/// (which is *only* this -- the lightweight live-poll surface). Keeping
+/// this in one place is what makes the two commands' Sim/Bluetooth kind
+/// resolution impossible to drift apart.
+struct TransportLivenessSnapshot {
+    network_connected: bool,
+    network_primary: bool,
+    network_code: Option<TransportStatusCode>,
+    bluetooth_connected: bool,
+    bluetooth_primary: bool,
+    bluetooth_code: Option<TransportStatusCode>,
+}
+
+fn transport_liveness_snapshot(state: &DeviceConnectionState, peer_device_id: &str) -> TransportLivenessSnapshot {
+    // ADR-0003 revision: both transports can have a claimed session at
+    // once now, so "the live transport" no longer exists as a single
+    // value -- each row checks its own `has_session_on`.
+    // `crate::services::transport::TransportKind` (TcpWs/Sim/Bluetooth/
+    // LoRa) is finer-grained than this module's own Network/Bluetooth
+    // kind; `Sim` reads the same as `Bluetooth` here -- it exists
+    // specifically to stand in for Bluetooth's role in tests/E2E (see
+    // `transport::tests`'s own doc comment).
+    use crate::services::transport::TransportKind as WireTransportKind;
+    let network_connected = state.has_session_on(peer_device_id, WireTransportKind::TcpWs);
+    let bluetooth_connected = state.has_session_on(peer_device_id, WireTransportKind::Bluetooth)
+        || state.has_session_on(peer_device_id, WireTransportKind::Sim);
+    let bluetooth_wire_kind = if state.has_session_on(peer_device_id, WireTransportKind::Sim) {
+        WireTransportKind::Sim
+    } else {
+        WireTransportKind::Bluetooth
+    };
+
+    let primary = state.primary_transport(peer_device_id);
+    let network_primary = primary == Some(WireTransportKind::TcpWs);
+    let bluetooth_primary = matches!(primary, Some(WireTransportKind::Bluetooth) | Some(WireTransportKind::Sim));
+
+    let network_code = network_connected
+        .then(|| state.transport_liveness_code(peer_device_id, WireTransportKind::TcpWs))
+        .flatten();
+    let bluetooth_code = bluetooth_connected
+        .then(|| state.transport_liveness_code(peer_device_id, bluetooth_wire_kind))
+        .flatten();
+
+    TransportLivenessSnapshot {
+        network_connected,
+        network_primary,
+        network_code,
+        bluetooth_connected,
+        bluetooth_primary,
+        bluetooth_code,
+    }
+}
+
 pub fn device_connection_transport_statuses_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1642,46 +1719,19 @@ pub fn device_connection_transport_statuses_impl(
         .map(|address| bluetooth_address_is_os_paired(&address))
         .unwrap_or(false);
 
-    // ADR-0003 revision: both transports can have a claimed session at
-    // once now, so "the live transport" no longer exists as a single
-    // value -- each row checks its own `has_session_on`.
-    // `crate::services::transport::TransportKind` (TcpWs/Sim/Bluetooth/
-    // LoRa) is finer-grained than this module's own Network/Bluetooth
-    // kind; `Sim` reads the same as `Bluetooth` here -- it exists
-    // specifically to stand in for Bluetooth's role in tests/E2E (see
-    // `transport::tests`'s own doc comment).
-    use crate::services::transport::TransportKind as WireTransportKind;
-    let network_connected = state.has_session_on(&peer_device_id, WireTransportKind::TcpWs);
-    let bluetooth_connected = state.has_session_on(&peer_device_id, WireTransportKind::Bluetooth)
-        || state.has_session_on(&peer_device_id, WireTransportKind::Sim);
-    let bluetooth_wire_kind = if state.has_session_on(&peer_device_id, WireTransportKind::Sim) {
-        WireTransportKind::Sim
-    } else {
-        WireTransportKind::Bluetooth
-    };
-
-    let primary = state.primary_transport(&peer_device_id);
-    let network_primary = primary == Some(WireTransportKind::TcpWs);
-    let bluetooth_primary = matches!(primary, Some(WireTransportKind::Bluetooth) | Some(WireTransportKind::Sim));
-
-    let network_code = network_connected
-        .then(|| state.transport_liveness_code(&peer_device_id, WireTransportKind::TcpWs))
-        .flatten();
-    let bluetooth_code = bluetooth_connected
-        .then(|| state.transport_liveness_code(&peer_device_id, bluetooth_wire_kind))
-        .flatten();
+    let snapshot = transport_liveness_snapshot(state, &peer_device_id);
 
     Ok(build_transport_statuses(TransportStatusInputs {
         network_present: state.network_peer_available(&peer_device_id),
         bluetooth_enabled: paired.bluetooth_enabled,
         bluetooth_has_metadata,
         bluetooth_os_paired,
-        network_connected,
-        bluetooth_connected,
-        network_primary,
-        bluetooth_primary,
-        network_code,
-        bluetooth_code,
+        network_connected: snapshot.network_connected,
+        bluetooth_connected: snapshot.bluetooth_connected,
+        network_primary: snapshot.network_primary,
+        bluetooth_primary: snapshot.bluetooth_primary,
+        network_code: snapshot.network_code,
+        bluetooth_code: snapshot.bluetooth_code,
     }))
 }
 
@@ -1694,6 +1744,49 @@ pub fn device_connection_transport_statuses(
 ) -> Result<Vec<TransportStatus>, String> {
     let mut conn = db.0.lock().unwrap();
     device_connection_transport_statuses_impl(&mut conn, &state, peer_device_id)
+}
+
+/// Lightweight sibling of `device_connection_transport_statuses`: no DB
+/// read, no OS-level bond check, just `has_session_on`/`primary_transport`/
+/// `transport_liveness_code` for each row. Meant to be polled far more
+/// often than the heavy version -- see `TransportLiveness`'s own doc
+/// comment for the P1 review finding this exists to fix (the live poll
+/// previously only refreshed `primary`, leaving green/amber frozen).
+pub fn device_connection_transport_liveness_impl(
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+) -> Vec<TransportLiveness> {
+    let snapshot = transport_liveness_snapshot(state, &peer_device_id);
+    // The coarse, device_connection-local `TransportKind` (Network/
+    // Bluetooth) `TransportLiveness`/`TransportStatus` are keyed by --
+    // distinct from this file's bare `TransportKind` import
+    // (`crate::services::transport::TransportKind`, TcpWs/Sim/Bluetooth/
+    // LoRa), which `transport_liveness_snapshot` already resolved down to
+    // Network/Bluetooth booleans above.
+    use super::transport::TransportKind as RowTransportKind;
+    vec![
+        TransportLiveness {
+            kind: RowTransportKind::Network,
+            connected: snapshot.network_connected,
+            primary: snapshot.network_primary,
+            code: snapshot.network_code,
+        },
+        TransportLiveness {
+            kind: RowTransportKind::Bluetooth,
+            connected: snapshot.bluetooth_connected,
+            primary: snapshot.bluetooth_primary,
+            code: snapshot.bluetooth_code,
+        },
+    ]
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_transport_liveness(
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+) -> Vec<TransportLiveness> {
+    device_connection_transport_liveness_impl(&state, peer_device_id)
 }
 
 /// Every paired peer eligible for a Bluetooth dial attempt right now:
@@ -1734,6 +1827,21 @@ pub fn peer_transport_preference(conn: &mut SqliteConnection, peer_id: &str) -> 
         .select(paired_devices::preferred_transport)
         .first::<Option<String>>(&mut *conn)
         .unwrap_or_default()
+}
+
+/// The coarse `bluetooth_enabled` toggle alone -- not a live OS-bond check
+/// (unlike `peer_is_currently_bluetooth_eligible`). Used by
+/// `DeviceConnectionState::bluetooth_primary_eligibility` to exclude a
+/// disabled pair's Bluetooth session from primary-transport candidacy
+/// (see `recompute_primary_locked`'s own doc comment for the P1 review
+/// finding this closes). A missing/unpaired row reads as disabled, failing
+/// closed the same direction `check_bluetooth_enabled` does.
+pub fn peer_bluetooth_enabled(conn: &mut SqliteConnection, peer_id: &str) -> bool {
+    paired_devices::table
+        .find(peer_id)
+        .select(paired_devices::bluetooth_enabled)
+        .first::<bool>(&mut *conn)
+        .unwrap_or(false)
 }
 
 pub fn device_connection_session_transport_impl(

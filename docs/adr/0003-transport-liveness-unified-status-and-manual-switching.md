@@ -301,7 +301,7 @@ order; otherwise falls through to today's unchanged network-first
 
 ## Revision — dual-connection liveness, primary transport, and error codes
 
-### The bug
+### Observation
 
 Phase 2's `Configured { reliable }` bit came from `tcp_dial_failure_count`/
 `bluetooth_dial_failure_count` — counters incremented only by whichever
@@ -310,28 +310,29 @@ dialer rule: `my_id < peer_id` dials, the other side only ever accepts).
 The accepting side never dials that peer on that transport, so its own
 failure count for it is permanently zero — it has no way to ever observe
 the other side's dial failures, or lack thereof. Two peers of the same
-pair were therefore structurally guaranteed to be able to disagree on
-whether a transport was "reliable": Android (a Bluetooth central, dialing)
-could accumulate real failures and read amber, while Linux (the peripheral,
-only ever accepting) stayed permanently "reliable" and read green — for
-the *same* physical link. Sticky handoff made this worse in the meantime,
-too: `Live`'s definition (`session_kind(peer_id) == Some(kind)`) reflects
-whichever transport happened to win session establishment, not any
-ongoing proof that it's still healthy in both directions.
+pair are therefore structurally able to disagree on whether a transport is
+"reliable": a Bluetooth central, dialing, can accumulate real failures and
+read amber, while the peripheral on the other end, only ever accepting,
+stays permanently "reliable" and reads green — for the *same* physical
+link. Sticky handoff compounds this: `Live`'s definition
+(`session_kind(peer_id) == Some(kind)`) reflects whichever transport
+happened to win session establishment, not any ongoing proof that it's
+still healthy in both directions.
 
-### The fix: stop tracking dial failures, prove liveness directly — per transport, continuously
+The underlying issue is that `reliable` infers health from an indirect,
+asymmetric side-channel (dial outcomes) rather than the two peers directly
+proving to each other, right now, that traffic flows both ways. Sharing
+failure counts over the wire would remove the asymmetry but leave a
+*sticky* signal — proven once, trusted indefinitely — which is a weaker
+guarantee than the color implies.
 
-The root cause is that `reliable` was inferring health from an indirect,
-asymmetric side-channel (dial outcomes) instead of the two peers directly
-proving to each other, right now, that traffic flows both ways. Fixing
-just the asymmetry (e.g. sharing failure counts over the wire) would still
-leave a *sticky* signal — proven once, trusted indefinitely — which is a
-weaker guarantee than the color implies. The revision replaces the
-failure-counter model with a continuously-reproven, symmetric,
-per-transport bidirectional ping/ack proof, and removes the "one live
+### Decision
+
+Replace the failure-counter model with a continuously-reproven, symmetric,
+per-transport bidirectional ping/ack proof, and retire the "one live
 session per peer" assumption (ADR-0001's sticky-handoff invariant) that
 made a single `Live` bit meaningful in the first place: **both Network and
-Bluetooth now stay connected to a peer simultaneously**, each independently
+Bluetooth stay connected to a peer simultaneously**, each independently
 gray → amber → green, with a separate "primary" flag marking which one
 carries real application traffic.
 

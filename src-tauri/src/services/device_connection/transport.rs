@@ -94,6 +94,29 @@ pub struct TransportStatus {
     pub state: RowState,
 }
 
+/// Lightweight, in-memory-only per-transport liveness -- the same signal
+/// `TransportStatus`/`RowState` carries, minus everything that needs a DB
+/// read or an OS-level check (`bluetooth_enabled`, has-metadata, OS-paired,
+/// `network_present`). `device_connection_session_transport`'s live-poll
+/// sibling: fixes a P1 review finding where the live poll only refreshed
+/// `primary` and left `code` frozen at whatever the last full
+/// `device_connection_transport_statuses` poll saw -- fine under the old
+/// model (a claimed session *was* the full liveness signal), wrong under
+/// this one, where green/amber is a continuously-reproven ping/ack proof
+/// that can lapse (or complete) independent of `primary` and independent
+/// of anything the network-presence-gated full poll would notice for a
+/// Bluetooth-only peer. `connected: false` means "no session on this
+/// transport" -- `code` is `None` in that case too (nothing to say without
+/// the heavier check that knows *why*); the frontend leaves `state` as
+/// last-known rather than inferring `Unconfigured` from this alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransportLiveness {
+    pub kind: TransportKind,
+    pub connected: bool,
+    pub primary: bool,
+    pub code: Option<TransportStatusCode>,
+}
+
 pub fn select_transport_endpoint(
     peer_device_id: &str,
     network_endpoint: Option<TransportEndpoint>,
