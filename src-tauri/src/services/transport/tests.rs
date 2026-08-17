@@ -643,6 +643,56 @@ async fn release_session_removes_before_its_own_db_read_can_block_it() {
     let _ = handle.await;
 }
 
+/// Regression test for a second P1 review finding on the same fix: with
+/// removal now ordered before the DB read, `peer_primary_transport` must
+/// never keep pointing at the just-removed session for the read's
+/// duration (or forever, if it panics) -- `push_to_peer` reads that map
+/// directly, so a dangling reference would silently stop all application
+/// traffic even while a perfectly healthy *other* transport stays
+/// connected. Points the DB read at the same doomed path as the sibling
+/// test above.
+#[tokio::test(flavor = "multi_thread")]
+async fn release_session_reselects_primary_from_runtime_state_without_waiting_on_the_db() {
+    let (server, server_db) = server_state("transport-release-reselects-primary");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set(paired_devices::bluetooth_enabled.eq(true))
+            .execute(&mut conn)
+            .expect("enable bluetooth for seeded peer");
+    }
+
+    let (tcp_tx, _tcp_rx) = tokio::sync::mpsc::channel(4);
+    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tcp_tx, &server_db));
+    let (ble_tx, _ble_rx) = tokio::sync::mpsc::channel(4);
+    assert!(server.try_claim_session("peer-client", TransportKind::Bluetooth, ble_tx, &server_db));
+
+    assert_eq!(
+        server.primary_transport("peer-client"),
+        Some(TransportKind::TcpWs),
+        "network wins by default with both connected"
+    );
+
+    let doomed_db_path = std::path::PathBuf::from("/nonexistent-directory-for-fini-tests/fini.db");
+    let peer = "peer-client".to_string();
+    let server_for_task = server.clone();
+    let handle = tokio::spawn(async move {
+        server_for_task.release_session(&peer, TransportKind::TcpWs, &doomed_db_path);
+    });
+
+    sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        server.primary_transport("peer-client"),
+        Some(TransportKind::Bluetooth),
+        "primary must fail over to the still-connected Bluetooth session immediately, not \
+         keep pointing at the just-removed Network one while the DB read is still (doomed to \
+         be) in flight"
+    );
+
+    let _ = handle.await;
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the

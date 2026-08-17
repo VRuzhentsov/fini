@@ -342,6 +342,21 @@ impl DeviceConnectionState {
                 return; // wasn't claimed on this transport; nothing to release
             }
             guard.peer_transport_ack.remove(&key);
+            // A P1 review finding on the removal-before-DB-read fix above:
+            // without this, `peer_primary_transport` can keep pointing at
+            // the session just removed for the *entire* duration of the
+            // fallible read below (up to ~75s across retries, or forever
+            // if `open_db_at_path` ultimately panics) -- and `push_to_peer`
+            // reads `peer_primary_transport` directly, so it would return
+            // `false` for every send in the meantime even when the *other*
+            // transport is still healthily connected. This reselects from
+            // runtime state alone (no DB, atomic with the removal, so
+            // there's no window at all) whenever the current primary no
+            // longer has a claimed session; `recompute_primary_locked`
+            // below only ever *refines* this once the pin is known, never
+            // corrects a dangling reference, since there isn't one left
+            // to correct.
+            Self::reselect_primary_from_runtime_only(&mut guard, peer_device_id);
             true
         };
         debug_assert!(removed);
@@ -353,6 +368,36 @@ impl DeviceConnectionState {
             Self::bluetooth_primary_eligibility(db_path, peer_device_id);
         if let Ok(mut guard) = self.runtime.lock() {
             self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
+        }
+    }
+
+    /// DB-free primary reselection: if the peer's current primary no
+    /// longer has a claimed session (e.g. it was just removed), picks
+    /// whatever transport *is* still connected instead -- Network
+    /// preferred, matching the default no-pin rule -- or clears primary
+    /// entirely if nothing is connected. Ignores the manual pin
+    /// deliberately: this only exists to guarantee `peer_primary_transport`
+    /// never dangles, not to make the pin-aware choice, which
+    /// `recompute_primary_locked` still owns and applies moments later
+    /// once the (fallible, DB-backed) pin read completes.
+    fn reselect_primary_from_runtime_only(guard: &mut types::DiscoveryRuntime, peer_device_id: &str) {
+        let still_valid = guard
+            .peer_primary_transport
+            .get(peer_device_id)
+            .is_some_and(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
+        if still_valid {
+            return;
+        }
+        let fallback = [TransportKind::TcpWs, TransportKind::Bluetooth, TransportKind::Sim, TransportKind::LoRa]
+            .into_iter()
+            .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
+        match fallback {
+            Some(kind) => {
+                guard.peer_primary_transport.insert(peer_device_id.to_string(), kind);
+            }
+            None => {
+                guard.peer_primary_transport.remove(peer_device_id);
+            }
         }
     }
 
