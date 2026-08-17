@@ -182,18 +182,6 @@ async function restore(id: string) {
   await store.updateQuest(id, { status: "active" });
 }
 
-// ── Priority ──────────────────────────────────────────────────────────────────
-
-const PRIORITIES = ["low", "medium", "high"] as const;
-const PRIORITY_LABELS: Record<Quest["priority"], string> = { low: "Low", medium: "Medium", high: "High" };
-const PRIORITY_COLORS: Record<Quest["priority"], string> = { low: "oklch(var(--color-success))", medium: "oklch(var(--color-warning))", high: "oklch(var(--color-error))" };
-
-async function cyclePriority(quest: Quest) {
-  const idx = PRIORITIES.indexOf(quest.priority);
-  const next = PRIORITIES[(idx + 1) % PRIORITIES.length];
-  await store.updateQuest(quest.id, { priority: next });
-}
-
 // ── Reminder menu ─────────────────────────────────────────────────────────────
 
 const reminderQuestId = ref<string | null>(null);
@@ -350,8 +338,6 @@ function formatTimestamp(quest: Quest): string {
         :quest="quest"
         :space-name="spaceName(quest)"
         :is-focus="store.activeQuest?.id === quest.id"
-        :priority-color="PRIORITY_COLORS[quest.priority]"
-        :priority-label="PRIORITY_LABELS[quest.priority]"
         :reminder-text="pillText(quest)"
         :timestamp-text="quest.status !== 'active' ? formatTimestamp(quest) : ''"
         :is-recurring="!!quest.series_id"
@@ -363,7 +349,6 @@ function formatTimestamp(quest: Quest): string {
         @set-focus="setFocus(quest)"
         @collapse="toggle(quest.id)"
         @open-reminder="reminderQuestId = quest.id"
-        @cycle-priority="cyclePriority(quest)"
         @more="openMore($event, quest)"
         @toggle-checklist-item="(itemId, checked) => onToggleChecklistItem(quest, itemId, checked)"
         @add-checklist-item="onAddChecklistItem(quest, $event)"

@@ -8,6 +8,7 @@ import { useReminderNotifications } from "../../composables/useReminderNotificat
 import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
 import ChecklistEditor from "../ChecklistEditor.vue";
 import QuestEditor from "../QuestEditor.vue";
+import QuestMetadataButton from "../QuestMetadataButton.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import RecurrenceScopeSheet from "../QuestsView/RecurrenceScopeSheet.vue";
 
@@ -19,7 +20,6 @@ const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
 const HOLD_MS = 900;
-const PRIORITIES = ["low", "medium", "high"] as const;
 let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
 
@@ -122,12 +122,6 @@ function onContextMenu(e: MouseEvent) {
   contextMenu.open(e, items);
 }
 
-function cyclePriority() {
-  const idx = PRIORITIES.indexOf(props.quest.priority);
-  const next = PRIORITIES[(idx + 1) % PRIORITIES.length];
-  store.updateQuest(props.quest.id, { priority: next });
-}
-
 function spaceName(): string {
   return spaceStore.spaces.find((s) => s.id === props.quest.space_id)?.name ?? "";
 }
@@ -208,8 +202,6 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     :quest="quest"
     :space-name="spaceName()"
     is-focus
-    :priority-color="'oklch(var(--color-warning))'"
-    :priority-label="'Priority'"
     :reminder-text="quest.due ? 'Date set' : 'Date'"
     :is-recurring="!!quest.series_id"
     @contextmenu="onContextMenu"
@@ -219,7 +211,6 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     @set-focus="store.setFocusQuest(quest.id)"
     @collapse="expanded = false"
     @open-reminder="reminderOpen = true"
-    @cycle-priority="cyclePriority"
     @more="onContextMenu"
     @toggle-checklist-item="onToggleChecklistItem"
     @add-checklist-item="onAddChecklistItem"
@@ -231,6 +222,8 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     <div class="active-quest-top">
       <button class="active-quest-title" @click="expanded = true">{{ quest.title }}</button>
       <div class="active-quest-meta">
+        <QuestMetadataButton v-if="quest.energy !== 'medium'" kind="energy" :model-value="quest.energy" readonly />
+        <QuestMetadataButton v-if="quest.priority !== 'medium'" kind="priority" :model-value="quest.priority" readonly />
         <span v-if="quest.focus_enter_count > 1" class="badge badge-xs">Focus {{ quest.focus_enter_count }}</span>
         <span class="badge badge-xs active-quest-space" :class="spaceCss()">{{ spaceName() }}</span>
         <button
