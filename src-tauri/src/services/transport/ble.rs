@@ -24,10 +24,10 @@
 //! `device_connection::commands::bluetooth_address_is_os_paired` already
 //! checks for the enable command.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 #[cfg(target_os = "linux")]
@@ -778,6 +778,9 @@ pub fn spawn_dial_loop(
         if !should_dial_peer(&my_id, peer_id, state.has_session_on(peer_id, TransportKind::Bluetooth)) {
             continue;
         }
+        if is_backing_off(&dial_backoff_until().lock().unwrap(), peer_id, Instant::now()) {
+            continue;
+        }
         // One retry loop per peer, not one per tick: `space_sync_tick`
         // (and therefore this function) runs every few seconds from the
         // frontend, and `dial_with_backoff` itself already loops with
@@ -806,6 +809,40 @@ fn in_flight_dials() -> &'static StdMutex<HashSet<String>> {
     static IN_FLIGHT: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
     IN_FLIGHT.get_or_init(|| StdMutex::new(HashSet::new()))
 }
+
+/// Peers whose Bluetooth dial should not be retried before this instant --
+/// a P1 review finding: `dial_with_backoff` giving up terminally (a
+/// rejection that won't resolve itself by retrying sooner, e.g. a pre-v3
+/// peer's own sticky-single-session code rejecting our now-unconditional
+/// Bluetooth attempt with "session already active on another transport"
+/// while it already has a Network session with us) used to just clear
+/// `in_flight_dials`' guard and let the very next `space_sync_tick`
+/// (every few seconds) spawn a brand new attempt -- a continuous
+/// connect/reject/disconnect cycle for as long as the peer stays on an
+/// incompatible build (or, pre-existing and not new to this PR: for any
+/// peer that outright doesn't recognize us as paired). Entries are never
+/// removed once their deadline passes -- `spawn_dial_loop`'s own check
+/// just stops treating them as blocking, so there's nothing to clean up.
+fn dial_backoff_until() -> &'static StdMutex<HashMap<String, Instant>> {
+    static BACKOFF: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
+    BACKOFF.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// Pure decision `spawn_dial_loop` delegates to -- split out so it's
+/// directly unit-testable with synthetic timestamps, the same way
+/// `should_dial_peer` is: `ble::dial` talks to real Bluetooth hardware, so
+/// an end-to-end integration test of the backoff (actually rejecting a
+/// dial and observing the next tick skip it) isn't constructible in this
+/// test environment.
+fn is_backing_off(backoff: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
+    backoff.get(peer_id).is_some_and(|until| now < *until)
+}
+
+/// How long a terminal rejection suppresses further Bluetooth dial
+/// attempts for that peer. Fixed, not exponential -- still a 20x reduction
+/// in attempt frequency against `space_sync_tick`'s few-second cadence,
+/// without needing to persist a growing failure count anywhere.
+const DIAL_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Deterministic dialer rule, mirroring `tcp_ws::should_dial_peer`/
 /// `sim::should_dial_fallback_peer`: exactly one side of a pair ever
@@ -900,6 +937,14 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                             && !err.contains("bluetooth disabled for this pair")
                             && !err.contains("bluetooth device is not currently OS-paired")
                         {
+                            // Not just "don't retry within this task" --
+                            // `spawn_dial_loop` would otherwise spawn a
+                            // fresh one on the very next tick regardless.
+                            // See `dial_backoff_until`'s own doc comment.
+                            dial_backoff_until()
+                                .lock()
+                                .unwrap()
+                                .insert(peer_id.clone(), Instant::now() + DIAL_BACKOFF);
                             return; // not paired; don't retry
                         }
                     }
@@ -925,6 +970,32 @@ mod tests {
         assert!(!should_dial_peer("peer-b", "local-a", false));
         assert!(!should_dial_peer("local-a", "peer-b", true));
         assert!(!should_dial_peer("same-id", "same-id", false));
+    }
+
+    /// Regression test for a P1 review finding: a terminal auth rejection
+    /// (e.g. a pre-v3 peer's own sticky-single-session code rejecting our
+    /// now-unconditional Bluetooth dial) must suppress `spawn_dial_loop`
+    /// from immediately spawning a fresh attempt against that peer on the
+    /// very next tick, not just stop the one task that just failed.
+    #[test]
+    fn dial_backoff_suppresses_a_peer_until_its_deadline_passes() {
+        let mut backoff = HashMap::new();
+        let now = Instant::now();
+        assert!(!is_backing_off(&backoff, "peer-a", now), "no entry yet -- must not back off");
+
+        backoff.insert("peer-a".to_string(), now + Duration::from_secs(60));
+        assert!(
+            is_backing_off(&backoff, "peer-a", now),
+            "within the backoff window -- must skip"
+        );
+        assert!(
+            !is_backing_off(&backoff, "peer-b", now),
+            "a different peer's entry must not affect this one"
+        );
+        assert!(
+            !is_backing_off(&backoff, "peer-a", now + Duration::from_secs(61)),
+            "once the deadline passes, the peer is eligible again"
+        );
     }
 
     /// `add_mode_sender` is a process-global singleton (mirrors the real
