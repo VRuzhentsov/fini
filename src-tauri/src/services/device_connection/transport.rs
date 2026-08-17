@@ -47,6 +47,16 @@ pub enum TransportStatusCode {
     /// Bluetooth row, `Unconfigured`: has metadata, but the OS isn't
     /// currently bonded to it.
     BluetoothNotOsPaired,
+    /// `Configured`, amber: preconditions are met but no session is
+    /// claimed on this transport yet -- a dial is presumably in flight (or
+    /// about to be). Distinct from `AwaitingFirstAck`: that means a session
+    /// *is* claimed and the ping/ack proof just hasn't completed its first
+    /// round yet, which the frontend surfaces as "Connected -- waiting for
+    /// the first ping/ack exchange." Reporting that same text here would be
+    /// actively misleading for the common case of a presenced peer whose
+    /// WebSocket port is unreachable -- no session has ever existed, let
+    /// alone one about to prove itself.
+    Connecting,
     /// `Configured`, amber: a session is claimed on this transport but the
     /// bidirectional ping/ack proof hasn't completed even once yet.
     AwaitingFirstAck,
@@ -227,7 +237,7 @@ fn row_state(
     }
     if !connected {
         return RowState::Configured {
-            code: Some(TransportStatusCode::AwaitingFirstAck),
+            code: Some(TransportStatusCode::Connecting),
         };
     }
     RowState::Configured { code }
@@ -347,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transport_with_no_session_reports_unconfigured_or_awaiting_first_ack() {
+    fn a_transport_with_no_session_reports_unconfigured_or_connecting() {
         let not_present = build_transport_statuses(TransportStatusInputs {
             network_present: false,
             ..ready_inputs()
@@ -360,12 +370,16 @@ mod tests {
         );
 
         // Present but not yet connected: not unconfigured (preconditions
-        // are met), but not green either -- no ping/ack proof exists yet.
+        // are met), but no session claimed yet either -- a P1 review
+        // finding on this PR: this must not report `AwaitingFirstAck`
+        // (which implies a session *is* claimed and only the ping/ack
+        // proof is pending), or a peer whose WebSocket port is
+        // permanently unreachable would misleadingly read as "connected."
         let presenced_only = build_transport_statuses(ready_inputs());
         assert_eq!(
             find(&presenced_only, TransportKind::Network).state,
             RowState::Configured {
-                code: Some(TransportStatusCode::AwaitingFirstAck)
+                code: Some(TransportStatusCode::Connecting)
             }
         );
     }
@@ -462,7 +476,7 @@ mod tests {
         assert_eq!(
             bluetooth.state,
             RowState::Configured {
-                code: Some(TransportStatusCode::AwaitingFirstAck)
+                code: Some(TransportStatusCode::Connecting)
             }
         );
     }

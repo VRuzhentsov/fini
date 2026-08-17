@@ -32,6 +32,7 @@ export type TransportStatusCode =
   | { code: "bluetooth_disabled" }
   | { code: "bluetooth_no_address" }
   | { code: "bluetooth_not_os_paired" }
+  | { code: "connecting" }
   | { code: "awaiting_first_ack" }
   | { code: "ping_missed"; count: number };
 
@@ -593,7 +594,7 @@ export const useDeviceStore = defineStore("device", () => {
           primary: entry.primary,
           state: {
             state: "configured",
-            code: entry.connected ? entry.code : { code: "awaiting_first_ack" },
+            code: entry.connected ? entry.code : { code: "connecting" },
           },
         };
       });

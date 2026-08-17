@@ -256,4 +256,35 @@ describe("device store transport liveness", () => {
       code: { code: "bluetooth_disabled" },
     });
   });
+
+  // Regression test for a P2 review finding: a configured-but-not-yet-
+  // connected transport (dial in flight, no session claimed) must report
+  // "connecting", not "awaiting_first_ack" -- that code specifically means
+  // a session *is* claimed and the ping/ack proof just hasn't completed
+  // its first round, which the UI renders as "Connected -- waiting for the
+  // first ping/ack exchange." Reporting that for an entirely unconnected
+  // row (e.g. presenced but the WebSocket port is unreachable) would be
+  // misleading.
+  it("reports connecting, not awaiting_first_ack, for a configured row with no session yet", async () => {
+    (invoke as unknown as jest.Mock).mockResolvedValueOnce([
+      { kind: "network", primary: false, state: { state: "configured", code: null } },
+      {
+        kind: "bluetooth",
+        primary: false,
+        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+      },
+    ]);
+
+    const store = useDeviceStore();
+    await store.refreshTransportStatuses("peer-1");
+
+    (invoke as unknown as jest.Mock).mockResolvedValueOnce([
+      { kind: "network", connected: false, primary: false, code: null },
+      { kind: "bluetooth", connected: false, primary: false, code: null },
+    ]);
+    await store.refreshLiveConnectedState("peer-1");
+
+    const [network] = store.getTransportStatuses("peer-1");
+    expect(network.state).toEqual({ state: "configured", code: { code: "connecting" } });
+  });
 });

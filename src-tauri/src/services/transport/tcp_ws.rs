@@ -231,7 +231,16 @@ pub(crate) async fn run_server_on_port(
 /// session already exists on Bluetooth, or because the peer is pinned to
 /// Bluetooth -- both transports dial and stay connected independently now,
 /// regardless of the pin (the pin only decides which connected transport
-/// is primary, see `DeviceConnectionState::recompute_primary_locked`).
+/// is primary, see `DeviceConnectionState::recompute_primary_locked`). A P1
+/// review finding on this same revision: this is exactly why an in-flight
+/// guard is now required here too (mirroring `ble::spawn_dial_loop`'s own,
+/// pre-existing one) -- a peer that's presenced but whose WebSocket port is
+/// permanently unreachable used to have Network's dial loop stand down for
+/// good the instant *any* transport connected (the old any-transport
+/// `has_session` check); now Network keeps trying indefinitely on its own
+/// merits, so without this guard every tick would spawn *another*
+/// concurrent `dial_with_backoff` retry loop for the same peer on top of
+/// the ones already running.
 pub fn spawn_dial_loop(
     state: &DeviceConnectionState,
     db_path: PathBuf,
@@ -249,13 +258,24 @@ pub fn spawn_dial_loop(
         ) {
             continue;
         }
+        if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
+            continue;
+        }
         let state = state.clone();
         let db_path = db_path.clone();
-        let peer_id_clone = peer_id.clone();
+        let peer_id = peer_id.clone();
         tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id_clone, addr, ws_port).await;
+            dial_with_backoff(state, db_path, peer_id.clone(), addr, ws_port).await;
+            in_flight_dials().lock().unwrap().remove(&peer_id);
         });
     }
+}
+
+/// Peers with a `dial_with_backoff` task currently running. Mirrors
+/// `ble::spawn_dial_loop`'s own guard of the same name/shape.
+fn in_flight_dials() -> &'static std::sync::Mutex<HashSet<String>> {
+    static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    IN_FLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
 }
 
 fn should_dial_peer(

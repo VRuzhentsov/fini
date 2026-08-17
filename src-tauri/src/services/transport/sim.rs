@@ -152,7 +152,8 @@ pub(crate) async fn run_server(state: DeviceConnectionState, db_path: PathBuf, p
 /// `tcp_ws::spawn_dial_loop`/`should_dial_peer`. ADR-0003 revision: dials
 /// unconditionally now, independent of Network's own state or the pin --
 /// both transports stay connected regardless (see
-/// `tcp_ws::spawn_dial_loop`'s own doc comment).
+/// `tcp_ws::spawn_dial_loop`'s own doc comment, including why the
+/// in-flight guard below is required now too).
 pub fn spawn_fallback_dial_loop(
     state: &DeviceConnectionState,
     db_path: PathBuf,
@@ -172,14 +173,25 @@ pub fn spawn_fallback_dial_loop(
         if state.has_session_on(peer_id, TransportKind::Sim) {
             continue;
         }
+        if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
+            continue;
+        }
         let state = state.clone();
         let db_path = db_path.clone();
         let peer_id = peer_id.clone();
         let ports = candidate_ports.clone();
         tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id, ports).await;
+            dial_with_backoff(state, db_path, peer_id.clone(), ports).await;
+            in_flight_dials().lock().unwrap().remove(&peer_id);
         });
     }
+}
+
+/// Peers with a `dial_with_backoff` task currently running. Mirrors
+/// `ble::spawn_dial_loop`'s own guard of the same name/shape.
+fn in_flight_dials() -> &'static std::sync::Mutex<HashSet<String>> {
+    static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    IN_FLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
 }
 
 /// Deterministic dialer rule for the fallback role, mirroring

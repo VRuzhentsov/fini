@@ -61,20 +61,26 @@ pub fn open_db_at_path(path: &Path) -> SqliteConnection {
 pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
     let mut conn = SqliteConnection::establish(path.to_str().ok_or("database path is not UTF-8")?)
         .map_err(|err| format!("failed to open database: {err}"))?;
-    // busy_timeout: 15000, not 5000 -- ADR-0003's dual-connection revision
-    // added a new DB round-trip on every session claim/release
-    // (`DeviceConnectionState::bluetooth_primary_eligibility`, feeding
-    // `recompute_primary_locked`), which under CI's containerized/overlay
-    // filesystem (slower fsync/lock latency than a native disk) was enough
-    // extra concurrent short-lived-connection churn to occasionally exceed
-    // 5s and surface as "database is locked" -- observed in CI, not
-    // reproducible locally across several runs. A single panicking test
-    // also poisons any `std::sync::Mutex` it holds (e.g.
-    // `BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK`), which is why one lock
-    // timeout was seen taking down an unrelated second test too.
-    diesel::sql_query(
-        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 15000;",
-    )
+    // WAL mode relies on shared-memory (mmap'd `-shm` file) locking for
+    // cross-connection coordination, which is unreliable on some
+    // container/overlay filesystems -- raising `busy_timeout` (15000, up
+    // from 5000, ADR-0003's dual-connection revision added a new DB
+    // round-trip on every session claim/release) didn't fix a CI-only
+    // "database is locked" failure this revision surfaced, which pointed
+    // here: the lock genuinely never clears under CI's containerized FS,
+    // it's not merely slow. Every test opens its own uniquely-named,
+    // single-test-only temp file (`temp_db_path`) with only a handful of
+    // short-lived connections -- none of the concurrent-writer-throughput
+    // benefits WAL exists for actually apply -- so test builds use the
+    // plain rollback journal instead, whose locking is ordinary POSIX
+    // `fcntl` and doesn't depend on mmap working correctly on the
+    // filesystem underneath. Production (a real user's local disk) keeps
+    // WAL. `cfg!(test)`, not `#[cfg(test)]`: this function itself must stay
+    // the one shared code path production and tests both call through.
+    let journal_mode = if cfg!(test) { "DELETE" } else { "WAL" };
+    diesel::sql_query(format!(
+        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = {journal_mode}; PRAGMA busy_timeout = 15000;"
+    ))
     .execute(&mut conn)
     .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
     ensure_database_schema_is_supported(&mut conn)?;

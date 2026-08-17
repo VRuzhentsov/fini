@@ -19,6 +19,8 @@ export function transportStatusText(code: TransportStatusCode): string {
       return "No Bluetooth address stored yet -- pair over OS Bluetooth or use Find via Bluetooth.";
     case "bluetooth_not_os_paired":
       return "OS Bluetooth pairing is required.";
+    case "connecting":
+      return "Trying to connect -- no session established yet.";
     case "awaiting_first_ack":
       return "Connected -- waiting for the first ping/ack exchange to confirm the link.";
     case "ping_missed":
