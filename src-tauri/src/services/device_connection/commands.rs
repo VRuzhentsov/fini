@@ -1398,14 +1398,13 @@ pub fn device_connection_set_bluetooth_transport_impl(
                 ))
                 .execute(conn)?;
 
-            // ADR-0003 Phase 3: a "bluetooth" pin that survives disabling
-            // Bluetooth for this pair is a stranding hazard -- the Network
-            // dial loop stands down because of the pin, while
+            // A "bluetooth" pin that survives disabling Bluetooth for this
+            // pair can never actually be honored as primary --
             // `bluetooth_dial_candidates`/the inbound Bluetooth gate now
-            // both exclude this pair, leaving no transport able to ever
-            // reconnect. Clearing it falls back to automatic
-            // (network-first) selection, matching what the user almost
-            // certainly wants from "disable Bluetooth" anyway.
+            // both exclude this pair, so Bluetooth can never reconnect to
+            // become primary again. Clearing it falls back to automatic
+            // (network-first) primary selection, matching what the user
+            // almost certainly wants from "disable Bluetooth" anyway.
             if peer_transport_preference(conn, &input.peer_device_id).as_deref() == Some("bluetooth") {
                 diesel::update(paired_devices::table.find(&input.peer_device_id))
                     .set((
@@ -1502,34 +1501,14 @@ pub(crate) fn peer_is_currently_bluetooth_eligible(conn: &mut SqliteConnection, 
     bluetooth_address_is_os_paired(&address)
 }
 
-/// ADR-0003 Phase 3: click either transport row to pin this pair to it.
-/// Persists first (so it also governs *future* automatic reconnects, not
-/// just this one), then -- if a session is currently live on some *other*
-/// transport -- tells the peer first (while that session can still carry
-/// the frame). Deliberately bypasses ADR-0001's sticky-handoff invariant
-/// for this one user-initiated case; the next `space_sync_tick`'s dial
-/// loop picks the peer back up on whichever transport `select_dial_order`
-/// now prefers. `preferred: None` only clears the stored pin -- no session
-/// is disturbed and no frame is sent, since there's no concrete target to
-/// switch to or tell the peer about.
-///
-/// Deliberately does *not* force-close the local session itself, even
-/// though this pin is a fresh, almost-certainly-winning timestamp:
-/// `session::handle_inbound`'s own adoption of the frame just sent is
-/// what actually closes it (on the *peer's* side, which propagates back
-/// via the shared link) -- mirrors `run_session`'s own startup relay,
-/// which learned the hard way that closing unilaterally on a guess (this
-/// device's own freshness assumption could occasionally lose a genuine
-/// race, or the peer could reject for an unrelated reason like Bluetooth
-/// being disabled) can strand a healthy session instead of just switching
-/// it, if the peer never gets a chance to actually agree first.
-///
-/// Notifying is skipped (leaving the live session exactly as it is) when
-/// the peer's own negotiated `PROTOCOL_VERSION` is below the one that
-/// introduced `PeerFrame::SwitchTransport` -- an older peer can't decode
-/// the frame at all. The preference is still persisted either way, so a
-/// future reconnect after that peer upgrades (or this device's own dial
-/// loops, which consult the stored preference directly) still honors it.
+/// ADR-0003 revision: click either transport row to pin this pair to it.
+/// Persists the pin (so it governs future automatic reconnects too), then
+/// immediately re-runs primary-transport selection (`refresh_primary`) so
+/// the UI reflects it without waiting for a reconnect -- both transports
+/// stay connected regardless of the pin now, so there's nothing to switch
+/// or force-close, only which already-connected one is primary.
+/// `preferred: None` clears the stored pin, falling back to the automatic
+/// network-first rule.
 pub fn device_connection_set_preferred_transport_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1560,34 +1539,13 @@ pub fn device_connection_set_preferred_transport_impl(
         .set((
             paired_devices::preferred_transport
                 .eq(preferred.map(transport_kind_to_preference_string)),
-            paired_devices::preferred_transport_set_at.eq(Some(now.clone())),
+            paired_devices::preferred_transport_set_at.eq(Some(now)),
         ))
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    if let Some(kind) = preferred {
-        // A live peer on an older build can't decode SwitchTransport at
-        // all -- forcing the close anyway would just have it reconnect
-        // over whatever it still understands, undoing this pin the moment
-        // it lands (see this function's doc comment). `None` (no live
-        // session) is *not* gated here: there's nothing to notify or close
-        // either way, so it falls through harmlessly.
-        let peer_understands_switch_transport = state.session_protocol_version(&peer_device_id).is_none_or(
-            |version| version >= crate::services::space_sync::types::SWITCH_TRANSPORT_MIN_PROTOCOL_VERSION,
-        );
-
-        if peer_understands_switch_transport {
-            // Best-effort: `push_to_peer` returning false just means there
-            // was no live session to carry it (nothing to notify), not an
-            // error. Closing (if warranted) happens on the peer's own
-            // adoption of this frame, not here -- see this function's doc
-            // comment.
-            let _ = state.push_to_peer(
-                &peer_device_id,
-                PeerFrame::SwitchTransport { to: kind, requested_at: now },
-            );
-        }
-    }
+    let pinned_to_bluetooth = preferred.is_some_and(|kind| kind != crate::services::transport::TransportKind::TcpWs);
+    state.refresh_primary(&peer_device_id, pinned_to_bluetooth);
 
     paired_devices::table
         .find(&peer_device_id)
@@ -1606,114 +1564,6 @@ pub fn device_connection_set_preferred_transport(
 ) -> Result<PairedDevice, String> {
     let mut conn = db.0.lock().unwrap();
     device_connection_set_preferred_transport_impl(&mut conn, &state, peer_device_id, preferred)
-}
-
-/// Result of `adopt_peer_transport_preference` -- distinguishes *why* a
-/// proposal wasn't adopted, since `session::handle_inbound` reacts
-/// differently to each: a `Stale` rejection has an existing preference to
-/// offer back; an `Ineligible` one doesn't necessarily have one recorded
-/// at all, but still owes the sender *something* actionable rather than
-/// silence (see `handle_inbound`'s own doc comment).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransportPreferenceAdoption {
-    /// The proposal won the last-writer-wins race and was persisted.
-    Adopted,
-    /// An existing preference is at least as new -- the proposal changes
-    /// nothing.
-    Stale,
-    /// The proposal would have won on timestamp alone, but names a
-    /// transport this device can't actually support right now (Bluetooth
-    /// disabled locally) -- refused regardless of how new the timestamp is.
-    Ineligible,
-    /// The proposal would have won, but the write itself failed (a busy
-    /// timeout, a storage error) -- distinct from `Stale`: nothing was
-    /// actually persisted, so callers must not report this as `Adopted`.
-    /// Also distinct from replying with a stale-preference counter, since
-    /// the local value is unrelated to why this failed.
-    Failed,
-}
-
-/// Adopts a peer-proposed `PeerFrame::SwitchTransport` if it wins the
-/// last-writer-wins race against whatever preference (if any) this device
-/// already has recorded for the peer -- a `requested_at` that isn't
-/// strictly newer than what's already stored is ignored. RFC3339-with-
-/// fixed-width-UTC timestamps (this codebase's `utc_now()` form
-/// throughout) compare correctly as plain strings -- no need to parse them
-/// into a real `DateTime`.
-///
-/// Also refuses to adopt a "bluetooth" proposal unless this device is
-/// *currently* eligible for it -- the same enabled/address/live-OS-bond
-/// check `device_connection_set_preferred_transport_impl` applies to a
-/// local click (`peer_is_currently_bluetooth_eligible`), not just the
-/// coarser `bluetooth_enabled` flag alone. A stored `bluetooth_enabled =
-/// true` can outlive the actual OS bond (removed at the OS level without
-/// this device's own row ever being told); adopting on that stale flag
-/// alone would abandon Network (the pin says so) while
-/// `bluetooth_dial_candidates`/the inbound Bluetooth gate both still
-/// exclude a pair with no live bond, stranding it on no transport at all.
-/// The peer proposing Bluetooth has no way to know this device's bond is
-/// gone, so this device is the only side that can catch it -- see
-/// `TransportPreferenceAdoption::Ineligible`.
-pub fn adopt_peer_transport_preference(
-    conn: &mut SqliteConnection,
-    peer_device_id: &str,
-    to: crate::services::transport::TransportKind,
-    requested_at: &str,
-) -> TransportPreferenceAdoption {
-    let preference = transport_kind_to_preference_string(to);
-    if preference == "bluetooth" && !peer_is_currently_bluetooth_eligible(conn, peer_device_id) {
-        // Staleness still takes priority in what's *reported*, even
-        // though this proposal is never written either way: a proposal
-        // that's also stale must report `Stale` (and leave whatever's
-        // already stored alone), not `Ineligible` -- `handle_inbound`'s
-        // `Ineligible` handling unconditionally synthesizes and persists
-        // a fresh "network" counter, which would otherwise clobber a
-        // legitimate, already-newer stored preference (of any kind) just
-        // because ineligibility happened to be checked first. This read
-        // is purely informational (nothing is written in this branch
-        // regardless of the answer), so it doesn't need the same
-        // race-closing treatment as the write path below.
-        let current_set_at: Option<String> = paired_devices::table
-            .find(peer_device_id)
-            .select(paired_devices::preferred_transport_set_at)
-            .first(&mut *conn)
-            .unwrap_or(None);
-        return if current_set_at.as_deref().is_some_and(|current| current >= requested_at) {
-            TransportPreferenceAdoption::Stale
-        } else {
-            TransportPreferenceAdoption::Ineligible
-        };
-    }
-
-    // A single atomic conditional UPDATE, not a separate read-then-write:
-    // a local pin click (`device_connection_set_preferred_transport_impl`)
-    // and this peer-proposed adoption run on two independent SQLite
-    // connections and can race. Folding the last-writer-wins comparison
-    // into the UPDATE's own WHERE clause closes the window a read then a
-    // separate write would otherwise leave open for the other side's
-    // write to land in between -- the database resolves the race with one
-    // statement instead of this function racing itself. The affected-row
-    // count doubles as the "did this actually persist" signal: `Ok(0)`
-    // means the row didn't match (stale, or already exactly this value),
-    // never that the write itself failed.
-    let rows_affected = diesel::update(
-        paired_devices::table.filter(paired_devices::peer_device_id.eq(peer_device_id)).filter(
-            paired_devices::preferred_transport_set_at
-                .is_null()
-                .or(paired_devices::preferred_transport_set_at.lt(requested_at)),
-        ),
-    )
-    .set((
-        paired_devices::preferred_transport.eq(Some(preference)),
-        paired_devices::preferred_transport_set_at.eq(Some(requested_at)),
-    ))
-    .execute(&mut *conn);
-
-    match rows_affected {
-        Ok(0) => TransportPreferenceAdoption::Stale,
-        Ok(_) => TransportPreferenceAdoption::Adopted,
-        Err(_) => TransportPreferenceAdoption::Failed,
-    }
 }
 
 /// The "Find via Bluetooth" button on `DeviceView.vue` — Phase 1's discovery
@@ -1792,30 +1642,46 @@ pub fn device_connection_transport_statuses_impl(
         .map(|address| bluetooth_address_is_os_paired(&address))
         .unwrap_or(false);
 
-    // Phase 2 of ADR 0002: `session_kind` reports the *live* transport
-    // (services::transport::TransportKind — TcpWs/Sim/Bluetooth/LoRa), a
-    // finer-grained enum than this module's own Network/Bluetooth kind.
-    // `Sim` maps to the Bluetooth row: it exists specifically to stand in
-    // for Bluetooth's fallback role in tests/E2E (see
-    // `transport::tests`'s own doc comment), so a live Sim session should
-    // read the same way a live Bluetooth session would.
-    let live_kind = state.session_kind(&peer_device_id);
-    let network_connected = live_kind == Some(crate::services::transport::TransportKind::TcpWs);
-    let bluetooth_connected = matches!(
-        live_kind,
-        Some(crate::services::transport::TransportKind::Bluetooth)
-            | Some(crate::services::transport::TransportKind::Sim)
-    );
+    // ADR-0003 revision: both transports can have a claimed session at
+    // once now, so "the live transport" no longer exists as a single
+    // value -- each row checks its own `has_session_on`.
+    // `crate::services::transport::TransportKind` (TcpWs/Sim/Bluetooth/
+    // LoRa) is finer-grained than this module's own Network/Bluetooth
+    // kind; `Sim` reads the same as `Bluetooth` here -- it exists
+    // specifically to stand in for Bluetooth's role in tests/E2E (see
+    // `transport::tests`'s own doc comment).
+    use crate::services::transport::TransportKind as WireTransportKind;
+    let network_connected = state.has_session_on(&peer_device_id, WireTransportKind::TcpWs);
+    let bluetooth_connected = state.has_session_on(&peer_device_id, WireTransportKind::Bluetooth)
+        || state.has_session_on(&peer_device_id, WireTransportKind::Sim);
+    let bluetooth_wire_kind = if state.has_session_on(&peer_device_id, WireTransportKind::Sim) {
+        WireTransportKind::Sim
+    } else {
+        WireTransportKind::Bluetooth
+    };
+
+    let primary = state.primary_transport(&peer_device_id);
+    let network_primary = primary == Some(WireTransportKind::TcpWs);
+    let bluetooth_primary = matches!(primary, Some(WireTransportKind::Bluetooth) | Some(WireTransportKind::Sim));
+
+    let network_code = network_connected
+        .then(|| state.transport_liveness_code(&peer_device_id, WireTransportKind::TcpWs))
+        .flatten();
+    let bluetooth_code = bluetooth_connected
+        .then(|| state.transport_liveness_code(&peer_device_id, bluetooth_wire_kind))
+        .flatten();
 
     Ok(build_transport_statuses(TransportStatusInputs {
         network_present: state.network_peer_available(&peer_device_id),
-        network_reliable: state.network_effectively_available(&peer_device_id),
         bluetooth_enabled: paired.bluetooth_enabled,
         bluetooth_has_metadata,
         bluetooth_os_paired,
-        bluetooth_reliable: state.bluetooth_effectively_reliable(&peer_device_id),
         network_connected,
         bluetooth_connected,
+        network_primary,
+        bluetooth_primary,
+        network_code,
+        bluetooth_code,
     }))
 }
 
@@ -1853,14 +1719,15 @@ pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<(String, St
         .collect()
 }
 
-/// ADR-0003 Phase 3: this peer's manually-pinned transport preference, if
-/// any -- `"network"`/`"bluetooth"` (`transport_kind_to_preference_string`'s
-/// stored form), or `None` for pure automatic selection. Used by each
-/// transport's own dial-gating logic (`tcp_ws::should_dial_peer`,
-/// `ble::dial_with_backoff`, `sim::spawn_fallback_dial_loop`) to override
-/// the default network-first order when the user has explicitly pinned the
-/// other one. A missing/unpaired row reads the same as no preference,
-/// matching every other `unwrap_or_default`-style read in this module.
+/// This peer's manually-pinned transport preference, if any --
+/// `"network"`/`"bluetooth"` (`transport_kind_to_preference_string`'s
+/// stored form), or `None` for pure automatic primary selection. Both
+/// transports dial/connect unconditionally regardless of this pin (ADR-0003
+/// revision) -- it's consulted only by `DeviceConnectionState::
+/// recompute_primary_locked`, to decide which already-connected transport
+/// counts as primary. A missing/unpaired row reads the same as no
+/// preference, matching every other `unwrap_or_default`-style read in this
+/// module.
 pub fn peer_transport_preference(conn: &mut SqliteConnection, peer_id: &str) -> Option<String> {
     paired_devices::table
         .find(peer_id)
@@ -1869,41 +1736,16 @@ pub fn peer_transport_preference(conn: &mut SqliteConnection, peer_id: &str) -> 
         .unwrap_or_default()
 }
 
-/// Like `peer_transport_preference`, but also returns the `requested_at`
-/// it was set with -- `None` unless *both* columns are populated. Used by
-/// `space_sync::session::run_session`'s own relay-on-establish check (see
-/// its doc comment) to reconstruct a faithful `PeerFrame::SwitchTransport`
-/// using the pin's original timestamp, not "now" -- the receiving peer's
-/// last-writer-wins comparison depends on this being the real value.
-pub fn peer_transport_preference_with_timestamp(
-    conn: &mut SqliteConnection,
-    peer_id: &str,
-) -> Option<(String, String)> {
-    let row: (Option<String>, Option<String>) = paired_devices::table
-        .find(peer_id)
-        .select((
-            paired_devices::preferred_transport,
-            paired_devices::preferred_transport_set_at,
-        ))
-        .first(&mut *conn)
-        .ok()?;
-    match row {
-        (Some(preference), Some(requested_at)) => Some((preference, requested_at)),
-        _ => None,
-    }
-}
-
 pub fn device_connection_session_transport_impl(
     state: &DeviceConnectionState,
     peer_device_id: String,
 ) -> Option<TransportKind> {
-    state.session_kind(&peer_device_id)
+    state.primary_transport(&peer_device_id)
 }
 
-/// Which transport (if any) the currently claimed session with a peer is
-/// using. Debug/test surface proving the sticky single-session invariant
-/// end-to-end through the real app binary — see
-/// `specs/e2e/actors/tests/peer-sync-over-sim.spec.ts`.
+/// Which transport (if any) is currently primary for a peer. Debug/test
+/// surface proving per-transport claiming end-to-end through the real app
+/// binary — see `specs/e2e/actors/tests/peer-sync-over-sim.spec.ts`.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_session_transport(
@@ -2491,180 +2333,21 @@ mod tests {
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
-    /// ADR-0003 Phase 3's last-writer-wins race resolution: a peer-proposed
-    /// preference with no existing preference recorded locally always wins.
-    #[test]
-    fn adopt_peer_transport_preference_adopts_when_nothing_is_recorded_yet() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth for this test");
-
-        let outcome =
-            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::Bluetooth, "2026-04-07T00:00:01Z");
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-        assert_eq!(outcome, TransportPreferenceAdoption::Adopted);
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(row.preferred_transport.as_deref(), Some("bluetooth"));
-        assert_eq!(row.preferred_transport_set_at.as_deref(), Some("2026-04-07T00:00:01Z"));
-    }
-
-    /// A strictly newer `requested_at` than what's already recorded wins
-    /// and overwrites both the preference and its timestamp.
-    #[test]
-    fn adopt_peer_transport_preference_adopts_a_strictly_newer_timestamp() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth for this test");
-        assert_eq!(
-            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::TcpWs, "2026-04-07T00:00:01Z"),
-            TransportPreferenceAdoption::Adopted
-        );
-
-        let outcome = adopt_peer_transport_preference(
-            &mut conn,
-            "peer-a",
-            TransportKind::Bluetooth,
-            "2026-04-07T00:00:02Z",
-        );
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-        assert_eq!(outcome, TransportPreferenceAdoption::Adopted, "a newer requested_at must win");
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(row.preferred_transport.as_deref(), Some("bluetooth"));
-        assert_eq!(row.preferred_transport_set_at.as_deref(), Some("2026-04-07T00:00:02Z"));
-    }
-
-    /// An older `requested_at` than what's already recorded loses and must
-    /// leave the existing preference untouched.
-    #[test]
-    fn adopt_peer_transport_preference_rejects_an_older_timestamp() {
-        let mut conn = test_conn();
-        assert_eq!(
-            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::TcpWs, "2026-04-07T00:00:02Z"),
-            TransportPreferenceAdoption::Adopted
-        );
-
-        let outcome = adopt_peer_transport_preference(
-            &mut conn,
-            "peer-a",
-            TransportKind::Bluetooth,
-            "2026-04-07T00:00:01Z",
-        );
-        assert_eq!(outcome, TransportPreferenceAdoption::Stale, "an older requested_at must lose");
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(row.preferred_transport.as_deref(), Some("network"));
-        assert_eq!(row.preferred_transport_set_at.as_deref(), Some("2026-04-07T00:00:02Z"));
-    }
-
-    /// A tied `requested_at` also loses -- the comparison is `>=`, not `>`,
-    /// so the side that already recorded a value keeps it rather than the
-    /// two racing writers flapping the preference back and forth forever.
-    #[test]
-    fn adopt_peer_transport_preference_rejects_an_equal_timestamp() {
-        let mut conn = test_conn();
-        assert_eq!(
-            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::TcpWs, "2026-04-07T00:00:01Z"),
-            TransportPreferenceAdoption::Adopted
-        );
-
-        let outcome = adopt_peer_transport_preference(
-            &mut conn,
-            "peer-a",
-            TransportKind::Bluetooth,
-            "2026-04-07T00:00:01Z",
-        );
-        assert_eq!(outcome, TransportPreferenceAdoption::Stale, "a tied requested_at must lose");
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(row.preferred_transport.as_deref(), Some("network"));
-    }
-
-    /// Regression test for a P1 review finding on ADR-0003 Phase 3: adopting
-    /// a peer-proposed Bluetooth pin while Bluetooth is disabled locally for
-    /// this pair would strand it -- Network stands down because of the pin,
-    /// while `bluetooth_dial_candidates`/the inbound Bluetooth gate both
-    /// still exclude a disabled pair. Regardless of how much newer the
-    /// timestamp is, adoption must refuse and leave the existing preference
-    /// untouched.
-    #[test]
-    fn adopt_peer_transport_preference_refuses_bluetooth_when_disabled_locally() {
-        let mut conn = test_conn();
-        // `test_conn()` leaves bluetooth_enabled at its schema default
-        // (false) -- exactly the condition under test.
-        let outcome = adopt_peer_transport_preference(
-            &mut conn,
-            "peer-a",
-            TransportKind::Bluetooth,
-            "2026-04-07T00:00:01Z",
-        );
-        assert_eq!(
-            outcome,
-            TransportPreferenceAdoption::Ineligible,
-            "must refuse a Bluetooth pin while Bluetooth is disabled locally"
-        );
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(row.preferred_transport, None);
-        assert_eq!(row.preferred_transport_set_at, None);
-    }
-
-    /// Regression test for the same P1 finding's other half: a pin that was
-    /// legitimately adopted while Bluetooth was enabled must not survive
-    /// the user later disabling Bluetooth for that pair -- otherwise the
-    /// exact same stranding hazard reappears from a different entry point.
+    /// Regression test for a P1 review finding on ADR-0003 Phase 2/3: a
+    /// Bluetooth pin must not survive the user later disabling Bluetooth
+    /// for that pair -- Network would otherwise stand down for a pin that
+    /// can no longer be honored, stranding the pair on no transport at all.
     #[test]
     fn disabling_bluetooth_clears_an_existing_bluetooth_pin() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
         let mut conn = test_conn();
         diesel::update(paired_devices::table.find("peer-a"))
             .set((
                 paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
+                paired_devices::preferred_transport.eq(Some("bluetooth")),
+                paired_devices::preferred_transport_set_at.eq(Some("2026-04-07T00:00:01Z")),
             ))
             .execute(&mut conn)
-            .expect("enable bluetooth for this test");
-        assert_eq!(
-            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::Bluetooth, "2026-04-07T00:00:01Z"),
-            TransportPreferenceAdoption::Adopted
-        );
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+            .expect("enable bluetooth and pin it for this test");
 
         device_connection_set_bluetooth_transport_impl(&mut conn, paired_device_input(false, None))
             .expect("disable bluetooth");
@@ -2688,13 +2371,13 @@ mod tests {
     fn disabling_bluetooth_leaves_a_network_pin_untouched() {
         let mut conn = test_conn();
         diesel::update(paired_devices::table.find("peer-a"))
-            .set(paired_devices::bluetooth_enabled.eq(true))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::preferred_transport.eq(Some("network")),
+                paired_devices::preferred_transport_set_at.eq(Some("2026-04-07T00:00:01Z")),
+            ))
             .execute(&mut conn)
-            .expect("enable bluetooth for this test");
-        assert_eq!(
-            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::TcpWs, "2026-04-07T00:00:01Z"),
-            TransportPreferenceAdoption::Adopted
-        );
+            .expect("enable bluetooth and pin network for this test");
 
         device_connection_set_bluetooth_transport_impl(&mut conn, paired_device_input(false, None))
             .expect("disable bluetooth");
@@ -2705,48 +2388,6 @@ mod tests {
             .first(&mut conn)
             .expect("load peer row");
         assert_eq!(row.preferred_transport.as_deref(), Some("network"));
-    }
-
-    /// Regression test: a Bluetooth proposal that's *both* stale and
-    /// locally ineligible must report `Stale`, not `Ineligible` --
-    /// `handle_inbound`'s `Ineligible` handling unconditionally
-    /// synthesizes and persists a fresh "network" counter, which would
-    /// otherwise clobber an already-newer, perfectly valid stored
-    /// preference just because ineligibility happened to be checked
-    /// first. Bluetooth is deliberately left disabled here (the schema
-    /// default) so the proposal is *also* ineligible, on top of being
-    /// older than what's already stored.
-    #[test]
-    fn adopt_peer_transport_preference_prioritizes_staleness_over_ineligibility() {
-        let mut conn = test_conn();
-        assert_eq!(
-            adopt_peer_transport_preference(&mut conn, "peer-a", TransportKind::TcpWs, "2026-04-07T00:00:02Z"),
-            TransportPreferenceAdoption::Adopted
-        );
-
-        let outcome = adopt_peer_transport_preference(
-            &mut conn,
-            "peer-a",
-            TransportKind::Bluetooth,
-            "2026-04-07T00:00:01Z",
-        );
-        assert_eq!(
-            outcome,
-            TransportPreferenceAdoption::Stale,
-            "an older proposal must report Stale even when it's also ineligible"
-        );
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(
-            row.preferred_transport.as_deref(),
-            Some("network"),
-            "the existing valid preference must survive untouched"
-        );
-        assert_eq!(row.preferred_transport_set_at.as_deref(), Some("2026-04-07T00:00:02Z"));
     }
 
     #[test]

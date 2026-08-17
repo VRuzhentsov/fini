@@ -21,16 +21,14 @@ pub struct SyncEventEnvelope {
 }
 
 /// What can be sent through a claimed session's mailbox (`run_session`'s
-/// `rx`): forward a frame to the peer over the wire, or close this session
-/// locally without one. `Close` exists for exactly one caller --
-/// `DeviceConnectionState::request_session_close`, ADR-0003 Phase 3's
-/// manual transport switch -- every other session end is `run_session`
-/// itself noticing its transport failed (`recv_frame`/`send_frame`
-/// returning an error), not something injected from outside.
+/// `rx`): forward a frame to the peer over the wire. ADR-0003 revision:
+/// the old `Close` variant (a manual transport switch force-closing the
+/// non-preferred session) no longer has a reason to exist -- both
+/// transports stay connected regardless of which is primary, so a pin
+/// change just relabels which one is primary; nothing needs closing.
 #[derive(Debug)]
 pub enum SessionCommand {
     Forward(PeerFrame),
-    Close,
 }
 
 pub type SessionSender = mpsc::Sender<SessionCommand>;
@@ -49,18 +47,17 @@ pub type SessionSender = mpsc::Sender<SessionCommand>;
 /// other actually supports version-gated frames before sending one; an
 /// older peer's `Auth`/`AuthOk` simply omits the field (`#[serde(default)]`
 /// -> `0`), which reads as "supports nothing past the original protocol."
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
-/// The fixed protocol version that introduced `PeerFrame::SwitchTransport`
-/// -- deliberately a separate constant from `PROTOCOL_VERSION` above, not
-/// an alias for it. Every proactive-SwitchTransport gate must compare
-/// against *this*, not the current `PROTOCOL_VERSION`: if a later,
-/// unrelated feature bumps `PROTOCOL_VERSION` again, a peer on version 2
-/// (which understands SwitchTransport fine, just not whatever feature
-/// came after it) must not suddenly fail this check and silently lose
-/// manual transport-handoff support between two otherwise-compatible
-/// builds.
-pub const SWITCH_TRANSPORT_MIN_PROTOCOL_VERSION: u32 = 2;
+/// The fixed protocol version that introduced `PeerFrame::Ping`/`Pong`
+/// (ADR-0003 revision) -- deliberately a separate constant from
+/// `PROTOCOL_VERSION` above, not an alias for it, for the same reason
+/// `BluetoothAddressUpdate`'s `>= 1` gate is: if a later, unrelated feature
+/// bumps `PROTOCOL_VERSION` again, a peer on version 3 (which understands
+/// Ping/Pong fine, just not whatever feature came after it) must not
+/// suddenly fail this check and silently lose the ability to ever reach
+/// green.
+pub const PING_MIN_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -150,25 +147,22 @@ pub enum PeerFrame {
     /// (`check_paired` -- deliberately not `check_bluetooth_enabled`).
     #[serde(rename = "bluetooth_probe_reply")]
     BluetoothProbeReply { device_id: String },
-    /// ADR-0003 Phase 3: "I just pinned this pair to `to`, do the same on
-    /// your end" -- imperative, not negotiated; there is no accept/reject
-    /// reply. Only ever sent proactively into an already-authenticated
-    /// session (post-`AuthOk`), so it's gated behind `PROTOCOL_VERSION >=
-    /// 2` the same way `BluetoothAddressUpdate` is gated behind `>= 1` --
-    /// an older peer that doesn't understand it would otherwise decode-fail
-    /// and drop the whole session (see `Unknown`'s doc comment). `to` is
-    /// `crate::services::transport::TransportKind` (the same finer-grained
-    /// type `session_kind()` reports), not `device_connection::transport::
-    /// TransportKind` -- avoids a same-named-type import collision, and
-    /// matches what the receiving side actually compares it against.
-    /// `requested_at` (RFC3339) resolves a race if both sides send
-    /// conflicting switches close together: the later timestamp wins on
-    /// both ends.
-    #[serde(rename = "switch_transport")]
-    SwitchTransport {
-        to: crate::services::transport::TransportKind,
-        requested_at: String,
-    },
+    /// ADR-0003 revision: app-level liveness proof, sent on *every*
+    /// connected transport (not just the primary one) every `PING_INTERVAL`
+    /// -- see `session::run_session`'s ping loop and
+    /// `TransportAckState`'s doc comment for the full green/amber
+    /// bookkeeping this drives. Gated behind `PROTOCOL_VERSION >=
+    /// PING_MIN_PROTOCOL_VERSION` the same way `BluetoothAddressUpdate` is
+    /// gated behind `>= 1` -- an older peer that doesn't understand it
+    /// would otherwise decode-fail and drop the whole session (see
+    /// `Unknown`'s doc comment); such a peer's transports simply stay
+    /// amber forever, which is the correct (if degraded) outcome for a
+    /// pre-upgrade peer rather than a dropped connection.
+    #[serde(rename = "ping")]
+    Ping,
+    /// Reply to an inbound `Ping`, sent immediately.
+    #[serde(rename = "pong")]
+    Pong,
     /// Catches any `type` tag this build doesn't recognize, instead of
     /// failing to decode outright. Without this, a peer running an older
     /// build that unconditionally receives a newer frame kind (e.g.

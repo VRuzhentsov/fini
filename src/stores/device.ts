@@ -13,32 +13,49 @@ export interface PairedDevice {
   bluetooth_enabled: boolean;
   bluetooth_address: string | null;
   bluetooth_last_verified_at: string | null;
-  // ADR-0003 Phase 3: the user's sticky manual pin, if any -- "network" |
-  // "bluetooth" | null. Independent of `TransportStatus.preferred` (what
-  // the *automatic* dial order would pick); this is what a row click sets.
+  // The user's sticky manual pin, if any -- "network" | "bluetooth" | null.
+  // Independent of `TransportStatus.primary` (which already-connected
+  // transport is actually carrying traffic right now); this is what a row
+  // click sets.
   preferred_transport: string | null;
   preferred_transport_set_at: string | null;
 }
 
-// Mirrors the backend's RowState (device_connection::transport, ADR 0003
-// Phase 2): shared shape between the Network and Bluetooth rows.
-// - unconfigured: local preconditions aren't met at all; `reason` is why.
-// - configured: preconditions met, not the live transport right now;
-//   `reliable` is false only after recent consecutive connect failures --
-//   a never-attempted peer defaults to reliable.
-// - live: a session is actually live on this transport right now.
+// Mirrors the backend's TransportStatusCode (device_connection::transport,
+// ADR-0003 revision) -- a machine-readable reason, not display text. See
+// `../utils/transportStatusCodes.ts` for the code -> English lookup (the
+// only place text is attached to these; swap that file for a locale-aware
+// lookup when i18n lands).
+export type TransportStatusCode =
+  | { code: "network_unavailable" }
+  | { code: "bluetooth_not_supported" }
+  | { code: "bluetooth_disabled" }
+  | { code: "bluetooth_no_address" }
+  | { code: "bluetooth_not_os_paired" }
+  | { code: "awaiting_first_ack" }
+  | { code: "ping_missed"; count: number };
+
+// Mirrors the backend's RowState (device_connection::transport, ADR-0003
+// revision): shared shape between the Network and Bluetooth rows. Gray ->
+// amber -> green, per row, independent of which transport is primary:
+// - unconfigured: local preconditions aren't met at all (gray); `code` is
+//   why.
+// - configured, code present: preconditions met and a session is claimed,
+//   but the bidirectional ping/ack proof isn't currently complete (amber).
+// - configured, code null: the ping/ack proof is currently complete
+//   (green). "Currently" -- this isn't sticky, a lapsed proof falls back
+//   to amber on its own even without the transport disconnecting.
 export type DeviceTransportRowState =
-  | { state: "unconfigured"; reason: string }
-  | { state: "configured"; reliable: boolean }
-  | { state: "live" };
+  | { state: "unconfigured"; code: TransportStatusCode }
+  | { state: "configured"; code: TransportStatusCode | null };
 
 export interface DeviceTransportStatus {
   kind: "network" | "bluetooth";
-  // What the automatic dial order would pick next -- independent of
-  // `state`, which reports what's true right now (sticky handoff means
-  // these can legitimately disagree while a session stays live on the
-  // non-preferred transport).
-  preferred: boolean;
+  // Whether this is the transport currently carrying real application
+  // traffic -- independent of `state`. Both rows can be green at once;
+  // only one is ever primary. Network wins whenever connected, unless
+  // pinned to Bluetooth.
+  primary: boolean;
   state: DeviceTransportRowState;
 }
 
@@ -523,40 +540,23 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  // Applies a fresh liveness check to a previously-loaded row state without
-  // re-deriving `unconfigured`'s `reason` or `configured`'s `reliable` --
-  // this lightweight check doesn't have that information (see
-  // `refreshLiveConnectedState` below). An `unconfigured` row can't become
-  // live and stays as-is; a `configured` row becomes `live` if the check
-  // says so, otherwise keeps its prior reliability; a `live` row that's no
-  // longer live falls back to `configured`/`reliable: true` -- a session
-  // ending isn't itself evidence of unreliability, and the real
-  // reliability signal (recent failure count) isn't something this check
-  // determines, so defaulting to reliable avoids painting amber on
-  // information this function doesn't actually have.
-  function withLiveness(
-    state: DeviceTransportRowState,
-    isLive: boolean,
-  ): DeviceTransportRowState {
-    if (state.state === "unconfigured") return state;
-    if (isLive) return { state: "live" };
-    if (state.state === "configured") return state;
-    return { state: "configured", reliable: true };
-  }
-
   // On Linux, `device_connection_transport_statuses` re-checks OS bond
   // status via a `bluetoothctl` subprocess call on every invocation --
   // fine for a one-shot load, but not something a live-status poll should
   // rerun every few seconds while a device's page stays open (a stalled
   // BlueZ/D-Bus would hold up every other DB-backed command for as long as
   // the view stays mounted). `device_connection_session_transport` reads
-  // only in-memory session state, so this patches just the `state` field
-  // of whatever was last loaded rather than re-deriving the whole row set.
+  // only in-memory session state (which transport is primary right now),
+  // so this patches just the `primary` field of whatever was last loaded
+  // rather than re-deriving the whole row set -- `state` (gray/amber/
+  // green) is left as last-known until the next full poll, same as
+  // before; this lightweight check doesn't have the ping/ack proof needed
+  // to re-derive it.
   async function refreshLiveConnectedState(peerDeviceId: string) {
     if (!transportStatusesByPeer.value[peerDeviceId]?.length) return;
 
     try {
-      const liveKind = await invoke<"tcp_ws" | "sim" | "bluetooth" | "lo_ra" | null>(
+      const primaryKind = await invoke<"tcp_ws" | "sim" | "bluetooth" | "lo_ra" | null>(
         "device_connection_session_transport",
         { peerDeviceId },
       );
@@ -569,11 +569,11 @@ export const useDeviceStore = defineStore("device", () => {
       // presence snapshot that would otherwise trigger a fresh full load.
       const current = transportStatusesByPeer.value[peerDeviceId];
       if (!current || current.length === 0) return;
-      const networkConnected = liveKind === "tcp_ws";
-      const bluetoothConnected = liveKind === "bluetooth" || liveKind === "sim";
+      const networkPrimary = primaryKind === "tcp_ws";
+      const bluetoothPrimary = primaryKind === "bluetooth" || primaryKind === "sim";
       transportStatusesByPeer.value[peerDeviceId] = current.map((status) => ({
         ...status,
-        state: withLiveness(status.state, status.kind === "network" ? networkConnected : bluetoothConnected),
+        primary: status.kind === "network" ? networkPrimary : bluetoothPrimary,
       }));
     } catch (error) {
       console.warn("[device-connection] failed to refresh live connected state", error);
@@ -602,12 +602,11 @@ export const useDeviceStore = defineStore("device", () => {
     return updated;
   }
 
-  // ADR-0003 Phase 3: pins this pair onto the clicked transport, sticky
-  // until the user clicks a row again (or the peer's own newer pin wins the
-  // last-writer-wins race). The backend command notifies the peer and force-
-  // closes a mismatched live session, if any -- this just persists the
-  // returned row and refreshes what's live, matching setBluetoothTransport's
-  // shape above.
+  // Pins this pair onto the clicked transport, sticky until the user clicks
+  // a row again. Both transports stay connected regardless of the pin --
+  // the backend command just persists it and re-runs primary selection, so
+  // there's nothing to force-close; this just persists the returned row and
+  // refreshes what's primary, matching setBluetoothTransport's shape above.
   async function setPreferredTransport(
     peerDeviceId: string,
     kind: "network" | "bluetooth",

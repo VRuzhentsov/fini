@@ -26,15 +26,15 @@ pub struct PairedDevice {
     /// disable the moment the peer reconnects (`specs/device-connect/README.md`'s
     /// disable contract).
     pub bluetooth_disabled_by_user: bool,
-    /// ADR-0003 Phase 3: a manually-pinned transport ("network"/"bluetooth",
+    /// A manually-pinned transport ("network"/"bluetooth",
     /// `device_connection::transport::TransportKind`'s serde form), or
-    /// `None` for pure automatic network-first selection -- every
-    /// pre-existing row's default. Persisted so it also governs *future*
-    /// automatic reconnects, not just the one that set it.
+    /// `None` for pure automatic network-first primary selection -- every
+    /// pre-existing row's default. Both transports stay connected
+    /// regardless of this pin (ADR-0003 revision); it only decides which
+    /// already-connected one is primary. Persisted so it also governs
+    /// *future* automatic reconnects, not just the one that set it.
     pub preferred_transport: Option<String>,
-    /// When `preferred_transport` was last set, locally or adopted from a
-    /// peer's `PeerFrame::SwitchTransport` -- the last-writer-wins
-    /// timestamp for resolving two nearly-simultaneous switches.
+    /// When `preferred_transport` was last set.
     pub preferred_transport_set_at: Option<String>,
 }
 

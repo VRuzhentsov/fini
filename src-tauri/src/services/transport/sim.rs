@@ -1,6 +1,6 @@
 //! The Sim transport: a deterministic, radio-free adapter used by Rust
-//! integration tests and Playwright E2E to prove transport selection,
-//! Bluetooth-role fallback, and sticky handoff without real hardware. It
+//! integration tests and Playwright E2E to prove transport selection and
+//! the dual-connection/ping-ack liveness model without real hardware. It
 //! implements the same `Link` port as every other adapter (raw TCP +
 //! length-delimited framing instead of a WebSocket upgrade), so exercising
 //! it exercises the real gate/session code in `space_sync::session` — this
@@ -144,12 +144,15 @@ pub(crate) async fn run_server(state: DeviceConnectionState, db_path: PathBuf, p
     }
 }
 
-/// Fallback dial loop: for every paired peer with no active session and no
-/// available network transport, try each configured Sim peer port. No-op
-/// unless `FINI_SIM_PEER_PORTS` is set. Playing the "Bluetooth fallback"
-/// role for this PR's test/E2E coverage — see module docs. Applies
+/// Dial loop: for every paired peer with no active session on this
+/// transport, try each configured Sim peer port. No-op unless
+/// `FINI_SIM_PEER_PORTS` is set. Playing the Bluetooth role for this PR's
+/// test/E2E coverage — see module docs. Applies
 /// `should_dial_fallback_peer`'s deterministic dialer rule, mirroring
-/// `tcp_ws::spawn_dial_loop`/`should_dial_peer`.
+/// `tcp_ws::spawn_dial_loop`/`should_dial_peer`. ADR-0003 revision: dials
+/// unconditionally now, independent of Network's own state or the pin --
+/// both transports stay connected regardless (see
+/// `tcp_ws::spawn_dial_loop`'s own doc comment).
 pub fn spawn_fallback_dial_loop(
     state: &DeviceConnectionState,
     db_path: PathBuf,
@@ -166,31 +169,7 @@ pub fn spawn_fallback_dial_loop(
         if !should_dial_fallback_peer(&my_id, peer_id) {
             continue;
         }
-        // network_effectively_available, not raw presence: a peer's
-        // discovery beacons can keep arriving while its WebSocket port is
-        // permanently unreachable (bind failure, firewall) —
-        // tcp_ws::dial_with_backoff retries that forever without giving up,
-        // so gating on presence alone would mean Sim never engages even
-        // though the network transport can never actually work here.
-        //
-        // ADR-0003 Phase 3: an explicit Bluetooth pin overrides this too
-        // (Sim stands in for Bluetooth in tests) -- treated as "network
-        // isn't the choice right now" for this decision, same override
-        // shape as `ble::dial_with_backoff`'s own.
-        let network_available = state.network_effectively_available(peer_id)
-            && crate::services::device_connection::peer_transport_preference(
-                &mut crate::services::db::open_db_at_path(&db_path),
-                peer_id,
-            ) != Some("bluetooth".to_string());
-        let order = crate::services::transport::selection::select_dial_order(network_available, true);
-        // Network-first: only start a fallback dial when Sim is the
-        // *preferred* (first) choice, i.e. network is genuinely
-        // unavailable — not merely present somewhere in the order. Checking
-        // `contains` instead of `first` would race the fallback dial
-        // against the network dial whenever both are configured, letting
-        // Sim win the claim despite network being available.
-        let sim_is_preferred = order.first() == Some(&TransportKind::Sim);
-        if state.has_session(peer_id) || !sim_is_preferred {
+        if state.has_session_on(peer_id, TransportKind::Sim) {
             continue;
         }
         let state = state.clone();
@@ -226,19 +205,7 @@ pub(crate) async fn dial_with_backoff(
     let max_delay = Duration::from_secs(15);
 
     loop {
-        if state.has_session(&peer_id) {
-            return;
-        }
-        // ADR-0003 Phase 3: same override as the outer spawn gate above --
-        // re-checked here too, since this loop's own retries can outlive
-        // that one-time snapshot (a preference set after this task started
-        // must still apply on the next retry, not just at spawn time).
-        let network_available = state.network_effectively_available(&peer_id)
-            && crate::services::device_connection::peer_transport_preference(
-                &mut crate::services::db::open_db_at_path(&db_path),
-                &peer_id,
-            ) != Some("bluetooth".to_string());
-        if network_available {
+        if state.has_session_on(&peer_id, TransportKind::Sim) {
             return;
         }
 
@@ -252,7 +219,7 @@ pub(crate) async fn dial_with_backoff(
                 Ok(peer_protocol_version) => {
                     eprintln!("[transport][sim] auth OK with {peer_id} via :{port}");
                     let (tx, rx) = tokio::sync::mpsc::channel(64);
-                    if state.try_claim_session(&peer_id, TransportKind::Sim, tx, peer_protocol_version) {
+                    if state.try_claim_session(&peer_id, TransportKind::Sim, tx, &db_path) {
                         session::run_session(
                             link,
                             rx,
@@ -263,16 +230,6 @@ pub(crate) async fn dial_with_backoff(
                         )
                         .await;
                         eprintln!("[transport][sim] session with {peer_id} ended");
-                        // tcp_ws::dial_with_backoff gives up (and stops
-                        // updating the failure counter) the instant any
-                        // session exists, so tcp_dial_failures is frozen at
-                        // whatever it was when this Sim session claimed —
-                        // stale by the time it ends, however long later that
-                        // is. Clear it here so the next establishment cycle
-                        // gets an uncontested, network-first attempt rather
-                        // than racing a fresh tcp_ws dial against a Sim
-                        // fallback still armed by a stale failure count.
-                        state.record_tcp_dial_success(&peer_id);
                     }
                     return;
                 }

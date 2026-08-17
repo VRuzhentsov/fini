@@ -2,7 +2,16 @@
 
 ## Status
 
-Proposed. Three phases, in dependency order:
+Phases 1–3 shipped in v0.3.0. **Phases 2 and 3 are superseded by the
+"Revision" section below**, added after a real-world bug surfaced post-
+release: two paired devices could show different colors (amber on one,
+green on the other) for what should have been one shared, symmetric
+connection. The revision keeps Phase 1 (WebSocket-native ping/pong)
+unchanged and replaces Phase 2's failure-counter reliability model and
+Phase 3's `SwitchTransport` negotiation outright — read Phases 2/3 below
+for the historical reasoning that motivated the original per-row state
+machine and manual-pin feature, then the Revision section for what
+actually ships now. Three original phases, in dependency order:
 
 1. **Liveness detection** — a WebSocket-native ping/pong heartbeat, self-
    contained inside the Network `Link` implementation, so a silently-dead
@@ -290,6 +299,141 @@ transport is currently viable, it's the sole/first entry in the dial
 order; otherwise falls through to today's unchanged network-first
 `select_dial_order(network_available, fallback_available)` behavior.
 
+## Revision — dual-connection liveness, primary transport, and error codes
+
+### The bug
+
+Phase 2's `Configured { reliable }` bit came from `tcp_dial_failure_count`/
+`bluetooth_dial_failure_count` — counters incremented only by whichever
+side actually *dials* a given transport for a given peer (the deterministic
+dialer rule: `my_id < peer_id` dials, the other side only ever accepts).
+The accepting side never dials that peer on that transport, so its own
+failure count for it is permanently zero — it has no way to ever observe
+the other side's dial failures, or lack thereof. Two peers of the same
+pair were therefore structurally guaranteed to be able to disagree on
+whether a transport was "reliable": Android (a Bluetooth central, dialing)
+could accumulate real failures and read amber, while Linux (the peripheral,
+only ever accepting) stayed permanently "reliable" and read green — for
+the *same* physical link. Sticky handoff made this worse in the meantime,
+too: `Live`'s definition (`session_kind(peer_id) == Some(kind)`) reflects
+whichever transport happened to win session establishment, not any
+ongoing proof that it's still healthy in both directions.
+
+### The fix: stop tracking dial failures, prove liveness directly — per transport, continuously
+
+The root cause is that `reliable` was inferring health from an indirect,
+asymmetric side-channel (dial outcomes) instead of the two peers directly
+proving to each other, right now, that traffic flows both ways. Fixing
+just the asymmetry (e.g. sharing failure counts over the wire) would still
+leave a *sticky* signal — proven once, trusted indefinitely — which is a
+weaker guarantee than the color implies. The revision replaces the
+failure-counter model with a continuously-reproven, symmetric,
+per-transport bidirectional ping/ack proof, and removes the "one live
+session per peer" assumption (ADR-0001's sticky-handoff invariant) that
+made a single `Live` bit meaningful in the first place: **both Network and
+Bluetooth now stay connected to a peer simultaneously**, each independently
+gray → amber → green, with a separate "primary" flag marking which one
+carries real application traffic.
+
+**Per-(peer, transport) session claiming**, not per-peer. `try_claim_session`
+now succeeds independently for each transport — a live Bluetooth session no
+longer blocks Network from also being claimed for the same peer, and vice
+versa. Each transport's own dial loop (`tcp_ws::spawn_dial_loop`,
+`ble::spawn_dial_loop`, `sim::spawn_fallback_dial_loop`) now dials
+unconditionally whenever it doesn't already have a session with a peer on
+*its own* transport — no more standing down because the other transport is
+already connected, or because the pair is pinned to the other transport.
+This is what "maintain a real parallel connection on standby" means: the
+non-primary transport isn't merely capped at amber and left idle, it's a
+fully live, continuously-proven connection that happens not to carry
+application traffic right now.
+
+**Bidirectional ping/ack proof** (`PeerFrame::Ping`/`Pong`, replacing dial
+failure counts as the reliability signal): every connected transport
+exchanges an app-level `Ping` every 15s (`session::APP_PING_INTERVAL`,
+matching Phase 1's WS-native cadence for consistency, though this is a
+separate layer on top of it — Phase 1's ping stays, doing the same job it
+always did, detecting a silently-dead `Link` at the transport level; this
+new one proves the *application* protocol is flowing, symmetrically, in
+both directions). `TransportAckState` (`device_connection::types`) tracks,
+per (peer, transport): `own_ping_acked` (this device's own outbound ping
+was answered) and `peer_ping_received` (this device received and answered
+an inbound ping from the peer). **Green requires both true, right now** —
+"continuously re-proven," not "proven once and trusted until something
+explicitly says otherwise": 3 consecutive missed cycles on either side
+(reusing Phase 1's 15s/3-miss shape) flips the corresponding flag back to
+false, with no separate signal required to notice the lapse. Both peers
+run the identical protocol at the same cadence, so a healthy link
+converges both sides to green within about one interval of each other —
+there is no scenario where one peer can be stuck green while its actual
+peer reads amber for the same link, because neither side's green depends
+on anything the other side alone controls.
+
+**"Primary" transport** replaces `Live`/the old sticky "which transport is
+the session on" concept. Recomputed automatically after every claim or
+release (`DeviceConnectionState::recompute_primary_locked`): Network wins
+whenever it's connected, unless the pair is pinned to Bluetooth (and
+Bluetooth is connected), in which case Bluetooth wins — otherwise whichever
+transport is connected wins, or neither if none is. This is a pure function
+of current connection state and the stored pin, not something that can
+drift or need manual invalidation, and it reuses the *exact* selection
+rule Phase 3 originally used for dial ordering ("Same rule as today, just
+relabeled") — the only change is what it's selecting between (an
+already-connected transport to treat as primary, not a transport to dial
+next).
+
+**`SwitchTransport` negotiation is gone, not adapted.** Phase 3's whole
+negotiation machinery — the wire frame, `TransportPreferenceAdoption`,
+`adopt_peer_transport_preference`, the last-writer-wins timestamp race, the
+run_session startup relay — existed to force-close a live session on one
+transport and (re)dial the other, because only one session could ever be
+live at a time. With both transports always connected regardless of the
+pin, there's nothing left to negotiate or force-close: a pin change
+(`device_connection_set_preferred_transport_impl`) just persists the new
+`preferred_transport` value and calls
+`DeviceConnectionState::refresh_primary`, which re-runs the same selection
+rule immediately. **ADR-0001's sticky-handoff invariant is fully retired**,
+not narrowly excepted the way Phase 3 treated it — "at most one
+authenticated session live per peer" was already false the moment both
+transports connect independently; nothing in the current design depends on
+it.
+
+**`TransportStatusCode` replaces every free-text `reason: String`**
+(`device_connection::transport`). `RowState` collapses from the original
+three-way `Unconfigured`/`Configured`/`Live` to two cases, since "live" is
+now the orthogonal `primary` flag rather than a row state:
+
+```rust
+enum RowState {
+    Unconfigured { code: TransportStatusCode },
+    Configured { code: Option<TransportStatusCode> },  // None = green
+}
+
+enum TransportStatusCode {
+    NetworkUnavailable, BluetoothNotSupported, BluetoothDisabled,
+    BluetoothNoAddress, BluetoothNotOsPaired,
+    AwaitingFirstAck, PingMissed { count: u32 },
+}
+```
+
+The frontend renders an "i" icon with a daisyUI tooltip next to any row
+carrying a code, looking up display text in `utils/transportStatusCodes.ts`
+— the only place English text is attached to a code. The `code` tag itself
+(the backend's `#[serde(tag = "code", rename_all = "snake_case")]`
+discriminant) is the stable key a future locale table keys translations
+off of, without any backend change required to add a language.
+
+### What Phase 1 still does, unchanged
+
+WebSocket-native ping/pong (Phase 1, above) is untouched — it remains the
+mechanism that detects a genuinely dead `Link` at the transport level for
+Network (Bluetooth's own GATT disconnect callback still covers that job on
+its side). The new app-level `Ping`/`Pong` is a different, higher layer:
+it proves the *authenticated session* is exchanging traffic in both
+directions, which a merely-alive `Link` doesn't by itself guarantee (e.g. a
+link that's technically open but whose peer's `run_session` task has
+wedged).
+
 ## Consequences
 
 - Phase 1 adds no wire protocol at all — `Message::Ping`/`Pong` are
@@ -298,30 +442,37 @@ order; otherwise falls through to today's unchanged network-first
   build on the other end of a `TcpWsLink` still responds to WS-level
   `Ping`s exactly the same (that's `tungstenite`'s job, unrelated to
   Fini's own protocol versioning), so this phase is safe against every
-  peer, old or new, automatically. Phase 3's `SwitchTransport` frame is
-  the one addition in this ADR that *does* need the treatment
-  `BluetoothAddressUpdate` got in ADR-0002: gated on `peer_protocol_version`
-  learned during `Auth`/`AuthOk`, never sent proactively to a peer that
-  hasn't proven it understands it.
+  peer, old or new, automatically.
 - Phase 1 changes real behavior for every existing **Network** session
   (Bluetooth is already correct, unchanged): a currently-live TcpWs
   session that goes silent will now be torn down within ~45s instead of
   persisting indefinitely. This is the intended fix, not a side effect to
   guard against.
-- Phase 3 is a genuine, deliberate exception to ADR-0001's sticky-handoff
-  invariant ("selection only happens at session establishment ... kept
-  until it drops") — worth flagging explicitly since that invariant is
-  documented and tested (`transport::selection`'s module doc comment,
-  `select_dial_order`'s test suite) as a load-bearing simplification
-  ("duplicated or lost sync events structurally impossible"). The
-  exception is scoped as narrowly as possible: only a manual,
-  user-initiated click ever tears down a live session outside of a real
-  transport failure.
-- Phase 2's `bluetooth_effectively_reliable()` reuses `paired_devices`
-  metadata already loaded per status check; no additional DB round-trip
-  beyond what `device_connection_transport_statuses_impl` already does.
+- **Superseded by the Revision above**: Phase 3's `SwitchTransport`
+  negotiation, its exception to ADR-0001's sticky-handoff invariant, and
+  Phase 2's dial-failure-counter reliability model (`tcp_dial_failure_count`
+  / `bluetooth_dial_failure_count` / `*_effectively_reliable`/`_available`)
+  no longer exist in the codebase — the invariant they carved a narrow
+  exception into is itself retired, and the counters are replaced outright
+  by the ping/ack proof. Historical reasoning for why Phase 3 originally
+  needed that exception is left in place above for context, not as a
+  description of current behavior.
+- The new app-level `Ping`/`Pong` (the Revision) needs the same treatment
+  `BluetoothAddressUpdate` got in ADR-0002 and `SwitchTransport` had:
+  gated on `peer_protocol_version` learned during `Auth`/`AuthOk`, never
+  sent proactively to a peer that hasn't proven it understands it. A peer
+  on an older build simply never reaches green on any transport
+  (`AwaitingFirstAck` forever) rather than having its session torn down —
+  a degraded but correct outcome during a mixed-version rollout.
+- Mixed-version pairs (one side upgraded, one still on the pre-revision
+  sticky single-session model) degrade gracefully but not symmetrically:
+  the old-build side still enforces "one session per peer" on its own
+  accept path, so the pair gets at most one working transport until both
+  sides upgrade — not a regression for a single point release with both
+  ends controlled by the same user, not specifically engineered around
+  further.
 - No change to `specs/device-connect/README.md`'s trust model: pairing
-  and disable/unpair semantics are untouched by this ADR. `Ping`/`Pong`
-  and `SwitchTransport` are only ever exchanged on an already-authenticated
-  session (post-`AuthOk`), same trust level as `SyncEvent`/`Ack`, not the
-  pre-auth discovery-metadata tier `PairRequest`/`DiscoveryHello` sit at.
+  and disable/unpair semantics are untouched by this ADR. `Ping`/`Pong` is
+  only ever exchanged on an already-authenticated session (post-`AuthOk`),
+  same trust level as `SyncEvent`/`Ack`, not the pre-auth discovery-
+  metadata tier `PairRequest`/`DiscoveryHello` sit at.

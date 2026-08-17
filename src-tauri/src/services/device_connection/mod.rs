@@ -37,10 +37,8 @@ pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) use commands::bluetooth_address_is_os_paired;
 pub(crate) use commands::{
-    adopt_peer_transport_preference, local_bluetooth_address, normalize_bluetooth_address,
-    peer_is_currently_bluetooth_eligible, peer_transport_preference,
-    peer_transport_preference_with_timestamp, persist_bluetooth_address_and_maybe_enable,
-    transport_kind_to_preference_string, TransportPreferenceAdoption,
+    local_bluetooth_address, normalize_bluetooth_address, peer_transport_preference,
+    persist_bluetooth_address_and_maybe_enable,
 };
 #[cfg(any(feature = "cli-plane", test))]
 pub use commands::{
@@ -243,35 +241,33 @@ impl DeviceConnectionState {
             .collect()
     }
 
-    /// Enforces the sticky single-session invariant: succeeds (and claims
-    /// the peer's session slot) only if no session is currently active for
-    /// `peer_device_id`, on any transport. Callers must check the return
-    /// value — on `false`, the caller's link must not proceed to `AuthOk`/
-    /// the session loop. See `crate::services::transport::selection` for
-    /// the network-first/sticky-handoff rules this protects.
+    /// ADR-0003 revision: sessions are claimed *per transport*, not one per
+    /// peer -- both Network and Bluetooth can be (and normally are) live at
+    /// once. Succeeds (and claims this specific `(peer, kind)` slot) only if
+    /// no session already exists on *this* transport for `peer_device_id`;
+    /// a session already live on the *other* transport is no longer a
+    /// reason to refuse. Callers must check the return value the same way
+    /// as before -- on `false`, the caller's link must not proceed to
+    /// `AuthOk`/the session loop.
     pub fn try_claim_session(
         &self,
         peer_device_id: &str,
         kind: TransportKind,
         sender: SessionSender,
-        protocol_version: u32,
+        db_path: &Path,
     ) -> bool {
         {
             let Ok(mut guard) = self.runtime.lock() else {
                 return false;
             };
-            if guard.peer_sessions.contains_key(peer_device_id) {
+            let key = (peer_device_id.to_string(), kind);
+            if guard.peer_sessions.contains_key(&key) {
                 return false;
             }
-            guard
-                .peer_sessions
-                .insert(peer_device_id.to_string(), sender);
-            guard
-                .peer_session_kind
-                .insert(peer_device_id.to_string(), kind);
-            guard
-                .peer_session_protocol_version
-                .insert(peer_device_id.to_string(), protocol_version);
+            guard.peer_sessions.insert(key.clone(), sender);
+            guard.peer_transport_ack.insert(key, types::TransportAckState::default());
+            let pinned_to_bluetooth = Self::pinned_to_bluetooth(db_path, peer_device_id);
+            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth);
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
@@ -280,38 +276,201 @@ impl DeviceConnectionState {
         true
     }
 
-    pub fn release_session(&self, peer_device_id: &str) {
-        let kind = {
+    pub fn release_session(&self, peer_device_id: &str, kind: TransportKind, db_path: &Path) {
+        {
             let Ok(mut guard) = self.runtime.lock() else {
                 return;
             };
-            guard.peer_sessions.remove(peer_device_id);
-            guard.peer_session_protocol_version.remove(peer_device_id);
-            guard.peer_session_kind.remove(peer_device_id)
+            let key = (peer_device_id.to_string(), kind);
+            if guard.peer_sessions.remove(&key).is_none() {
+                return; // wasn't claimed on this transport; nothing to release
+            }
+            guard.peer_transport_ack.remove(&key);
+            let pinned_to_bluetooth = Self::pinned_to_bluetooth(db_path, peer_device_id);
+            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth);
+        }
+        let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
+            peer_device_id: peer_device_id.to_string(),
+            kind,
+        });
+    }
+
+    /// Reads `preferred_transport` for `peer_device_id` from `db_path` --
+    /// a plain, explicit path, not `self.db_path`: every other DB-touching
+    /// helper in this module (`check_paired`, etc.) takes the caller's own
+    /// `db_path` rather than trusting a field on `self`, and callers here
+    /// (dial loops, `run_peer_gate`/`run_session`) already have the correct
+    /// one in scope from their own parameters.
+    fn pinned_to_bluetooth(db_path: &Path, peer_device_id: &str) -> bool {
+        tokio::task::block_in_place(|| {
+            let mut conn = crate::services::db::open_db_at_path(db_path);
+            commands::peer_transport_preference(&mut conn, peer_device_id).as_deref() == Some("bluetooth")
+        })
+    }
+
+    /// Recomputes and stores which transport is *primary* for
+    /// `peer_device_id`, given which transports currently have a claimed
+    /// session and `pinned_to_bluetooth` (the caller's own read of
+    /// `preferred_transport`). Network wins whenever it's connected, unless
+    /// the pair is explicitly pinned to Bluetooth and Bluetooth is
+    /// connected. A pin to a transport that isn't connected yet falls back
+    /// to whatever *is* connected -- there's nothing to make primary
+    /// otherwise. Called after every claim or release (and, via
+    /// `refresh_primary`, every manual pin change), so this is always a
+    /// pure function of current connection state, not something that can
+    /// drift or need manual invalidation.
+    fn recompute_primary_locked(
+        &self,
+        guard: &mut types::DiscoveryRuntime,
+        peer_device_id: &str,
+        pinned_to_bluetooth: bool,
+    ) {
+        let network_connected = guard
+            .peer_sessions
+            .contains_key(&(peer_device_id.to_string(), TransportKind::TcpWs));
+        let bluetooth_connected = [TransportKind::Bluetooth, TransportKind::Sim, TransportKind::LoRa]
+            .into_iter()
+            .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
+
+        let pick = if pinned_to_bluetooth && bluetooth_connected.is_some() {
+            bluetooth_connected
+        } else if network_connected {
+            Some(TransportKind::TcpWs)
+        } else {
+            bluetooth_connected
         };
-        if let Some(kind) = kind {
-            let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
-                peer_device_id: peer_device_id.to_string(),
-                kind,
-            });
+
+        match pick {
+            Some(kind) => {
+                guard.peer_primary_transport.insert(peer_device_id.to_string(), kind);
+            }
+            None => {
+                guard.peer_primary_transport.remove(peer_device_id);
+            }
         }
     }
 
-    /// Which transport carries the peer's currently claimed session, if any.
-    /// Exposed via `device_connection_session_transport`.
-    pub fn session_kind(&self, peer_device_id: &str) -> Option<TransportKind> {
-        let guard = self.runtime.lock().ok()?;
-        guard.peer_session_kind.get(peer_device_id).copied()
+    /// Re-runs primary-transport selection for `peer_device_id` right now,
+    /// without waiting for the next claim/release event. The only external
+    /// caller is `device_connection_set_preferred_transport_impl`: a manual
+    /// pin change must be reflected immediately (both rows already
+    /// connected, nothing to reconnect), not only whenever a transport
+    /// happens to reconnect next.
+    pub fn refresh_primary(&self, peer_device_id: &str, pinned_to_bluetooth: bool) {
+        let Ok(mut guard) = self.runtime.lock() else { return };
+        self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth);
     }
 
-    /// The peer's own negotiated `PROTOCOL_VERSION` for their currently
-    /// claimed session, if any -- ADR-0003 Phase 3: lets a caller check
-    /// whether the live peer can decode a given frame variant before
-    /// sending it, the same way `run_session`'s own Bluetooth self-report
-    /// gates on `peer_protocol_version` at session start.
-    pub fn session_protocol_version(&self, peer_device_id: &str) -> Option<u32> {
+    /// Which transport is *primary* for this peer right now -- the one
+    /// carrying real application traffic, reported as `RowState::Live`.
+    /// `None` means neither transport is currently connected. Exposed via
+    /// `device_connection_session_transport`. Renamed from the old
+    /// `session_kind` (ADR-0003 revision: there can be a session on each
+    /// transport at once now, so "the" session no longer names a single
+    /// thing -- this specifically means the *primary* one).
+    pub fn primary_transport(&self, peer_device_id: &str) -> Option<TransportKind> {
         let guard = self.runtime.lock().ok()?;
-        guard.peer_session_protocol_version.get(peer_device_id).copied()
+        guard.peer_primary_transport.get(peer_device_id).copied()
+    }
+
+    /// Whether a session is currently claimed on this specific transport
+    /// for this peer -- independent of whether it's primary. Dial loops use
+    /// this (not `primary_transport`) to decide whether they still need to
+    /// keep trying: each transport now dials/connects independently of the
+    /// other's state.
+    pub fn has_session_on(&self, peer_device_id: &str, kind: TransportKind) -> bool {
+        let Ok(guard) = self.runtime.lock() else {
+            return false;
+        };
+        guard.peer_sessions.contains_key(&(peer_device_id.to_string(), kind))
+    }
+
+    /// `run_session`'s ping-interval tick, called just before it sends a
+    /// fresh `Ping`: accounts for an unanswered previous ping and a stale
+    /// inbound-ping streak (see `TransportAckState`'s doc comment for the
+    /// exact 3-miss decay rule), then marks a ping as newly outstanding.
+    /// No-op if this (peer, transport) has no claimed session -- the
+    /// session may have just ended between the tick firing and this call.
+    pub(super) fn note_ping_tick(&self, peer_device_id: &str, kind: TransportKind) {
+        let Ok(mut guard) = self.runtime.lock() else { return };
+        let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind)) else {
+            return;
+        };
+        if ack.own_ping_awaiting_pong {
+            ack.consecutive_missed_own_pings += 1;
+            if ack.consecutive_missed_own_pings >= 3 {
+                ack.own_ping_acked = false;
+            }
+        }
+        ack.ticks_since_peer_ping += 1;
+        if ack.ticks_since_peer_ping >= 3 {
+            ack.peer_ping_received = false;
+        }
+        ack.own_ping_awaiting_pong = true;
+    }
+
+    /// A `Pong` answering this device's own outstanding `Ping` arrived.
+    pub(super) fn note_pong_received(&self, peer_device_id: &str, kind: TransportKind) {
+        let Ok(mut guard) = self.runtime.lock() else { return };
+        if let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind)) {
+            ack.own_ping_acked = true;
+            ack.own_ping_awaiting_pong = false;
+            ack.consecutive_missed_own_pings = 0;
+        }
+    }
+
+    /// An inbound `Ping` from the peer arrived (the caller replies with a
+    /// `Pong` separately -- this just records the proof).
+    pub(super) fn note_ping_received(&self, peer_device_id: &str, kind: TransportKind) {
+        let Ok(mut guard) = self.runtime.lock() else { return };
+        if let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind)) {
+            ack.peer_ping_received = true;
+            ack.ticks_since_peer_ping = 0;
+        }
+    }
+
+    /// Green: both directions of the ping/ack exchange are currently
+    /// proven for this (peer, transport). `false` (amber) whenever a
+    /// session is claimed but the bidirectional proof hasn't completed yet
+    /// or has lapsed; also `false` if there's no session on this transport
+    /// at all (gray -- callers distinguish gray from amber via
+    /// `has_session_on`).
+    pub fn transport_reliable(&self, peer_device_id: &str, kind: TransportKind) -> bool {
+        let Ok(guard) = self.runtime.lock() else { return false };
+        guard
+            .peer_transport_ack
+            .get(&(peer_device_id.to_string(), kind))
+            .map(|ack| ack.own_ping_acked && ack.peer_ping_received)
+            .unwrap_or(false)
+    }
+
+    /// The amber reason for this (peer, transport)'s connected-but-not-yet-
+    /// green state, or `None` once it's actually green. `None` is also
+    /// returned (meaningless to the caller either way) when there's no
+    /// session on this transport at all -- callers only call this once
+    /// `has_session_on` is already known true, matching how
+    /// `build_transport_statuses` uses it.
+    pub fn transport_liveness_code(
+        &self,
+        peer_device_id: &str,
+        kind: TransportKind,
+    ) -> Option<transport::TransportStatusCode> {
+        let guard = self.runtime.lock().ok()?;
+        let ack = guard.peer_transport_ack.get(&(peer_device_id.to_string(), kind))?;
+        if ack.own_ping_acked && ack.peer_ping_received {
+            return None;
+        }
+        let never_proven = !ack.own_ping_acked
+            && !ack.peer_ping_received
+            && ack.consecutive_missed_own_pings == 0
+            && ack.ticks_since_peer_ping == 0;
+        if never_proven {
+            Some(transport::TransportStatusCode::AwaitingFirstAck)
+        } else {
+            Some(transport::TransportStatusCode::PingMissed {
+                count: ack.consecutive_missed_own_pings.max(ack.ticks_since_peer_ping),
+            })
+        }
     }
 
     /// Whether this device is currently discoverable for pairing —
@@ -369,46 +528,38 @@ impl DeviceConnectionState {
         self.lifecycle_tx.subscribe()
     }
 
+    /// Sends application traffic (SyncEvent, BootstrapStart, etc.) over the
+    /// peer's *primary* transport. `Ping`/`Pong` don't go through this --
+    /// `run_session`'s ping/ack loop already owns its `Link` directly and
+    /// sends on it inline, since every connected transport exchanges those
+    /// on its own, not just the primary one.
     pub fn push_to_peer(&self, peer_device_id: &str, msg: PeerFrame) -> bool {
         let guard = match self.runtime.lock() {
             Ok(g) => g,
             Err(_) => return false,
         };
-        if let Some(sender) = guard.peer_sessions.get(peer_device_id) {
-            sender.try_send(SessionCommand::Forward(msg)).is_ok()
-        } else {
-            false
-        }
-    }
-
-    /// Forces the peer's currently claimed session (whichever transport
-    /// it's on) closed, without a transport-level failure -- ADR-0003
-    /// Phase 3's manual transport switch is the only caller. A deliberate,
-    /// narrowly-scoped exception to ADR-0001's sticky-handoff invariant
-    /// ("selection only happens at session establishment... kept until it
-    /// drops"): every other session end is `run_session` itself noticing
-    /// its transport failed. `run_session`'s own `release_session` call at
-    /// the end of its loop (unconditional, regardless of why the loop
-    /// exited) still fires normally once it processes this -- the next
-    /// `space_sync_tick`'s dial loop picks the peer back up and honors
-    /// whatever `preferred_transport` is now set to.
-    pub fn request_session_close(&self, peer_device_id: &str) -> bool {
-        let guard = match self.runtime.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
+        let Some(kind) = guard.peer_primary_transport.get(peer_device_id).copied() else {
+            return false;
         };
-        if let Some(sender) = guard.peer_sessions.get(peer_device_id) {
-            sender.try_send(SessionCommand::Close).is_ok()
-        } else {
-            false
+        match guard.peer_sessions.get(&(peer_device_id.to_string(), kind)) {
+            Some(sender) => sender.try_send(SessionCommand::Forward(msg)).is_ok(),
+            None => false,
         }
     }
 
+    /// True if the peer has a claimed session on *any* transport.
+    /// ADR-0003 revision: with both transports independently connectable,
+    /// "has a session" no longer implies a single transport -- callers that
+    /// need to know *which* transport should use `has_session_on` or
+    /// `primary_transport` instead.
     pub fn has_session(&self, peer_device_id: &str) -> bool {
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
-        guard.peer_sessions.contains_key(peer_device_id)
+        guard
+            .peer_sessions
+            .keys()
+            .any(|(id, _)| id == peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -528,94 +679,16 @@ impl DeviceConnectionState {
     }
 
     /// Raw discovery presence: is this peer's beacon reaching us right now?
-    /// This says nothing about whether their WebSocket port is actually
-    /// reachable — see `network_effectively_available` for the check that
-    /// matters for transport *selection*.
+    /// ADR-0003 revision: this is now the *only* network-availability
+    /// signal that matters for dialing -- `tcp_ws::spawn_dial_loop` dials
+    /// unconditionally whenever a peer is presenced and has no session on
+    /// this transport yet, rather than withdrawing in favor of Bluetooth.
+    /// Consulted by `TransportStatusCode::NetworkUnavailable`'s gray-row
+    /// determination too.
     pub fn network_peer_available(&self, peer_device_id: &str) -> bool {
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
         guard.presence.contains_key(peer_device_id)
-    }
-
-    pub fn record_tcp_dial_success(&self, peer_device_id: &str) {
-        if let Ok(mut guard) = self.runtime.lock() {
-            guard.tcp_dial_failures.remove(peer_device_id);
-        }
-    }
-
-    pub fn record_tcp_dial_failure(&self, peer_device_id: &str) {
-        if let Ok(mut guard) = self.runtime.lock() {
-            *guard
-                .tcp_dial_failures
-                .entry(peer_device_id.to_string())
-                .or_insert(0) += 1;
-        }
-    }
-
-    pub fn tcp_dial_failure_count(&self, peer_device_id: &str) -> u32 {
-        let Ok(guard) = self.runtime.lock() else {
-            return 0;
-        };
-        guard
-            .tcp_dial_failures
-            .get(peer_device_id)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// Network availability for *transport selection* purposes: present
-    /// (discoverable) **and** not stuck failing to actually connect.
-    /// Presence alone (`network_peer_available`) can stay true while the
-    /// peer's WebSocket port is unreachable (bind failure, firewall) —
-    /// `tcp_ws::dial_with_backoff` retries forever in that case and never
-    /// gives up, so without this check `select_dial_order` would forever
-    /// treat network as available and the Sim fallback role would never
-    /// engage, even though the network transport can never actually work
-    /// for this peer.
-    pub fn network_effectively_available(&self, peer_device_id: &str) -> bool {
-        self.network_peer_available(peer_device_id)
-            && self.tcp_dial_failure_count(peer_device_id)
-                < crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD
-    }
-
-    /// Bluetooth's counterpart to `record_tcp_dial_success` — same shape,
-    /// different map. See ADR-0003 Phase 2.
-    pub fn record_bluetooth_dial_success(&self, peer_device_id: &str) {
-        if let Ok(mut guard) = self.runtime.lock() {
-            guard.bluetooth_dial_failures.remove(peer_device_id);
-        }
-    }
-
-    pub fn record_bluetooth_dial_failure(&self, peer_device_id: &str) {
-        if let Ok(mut guard) = self.runtime.lock() {
-            *guard
-                .bluetooth_dial_failures
-                .entry(peer_device_id.to_string())
-                .or_insert(0) += 1;
-        }
-    }
-
-    pub fn bluetooth_dial_failure_count(&self, peer_device_id: &str) -> u32 {
-        let Ok(guard) = self.runtime.lock() else {
-            return 0;
-        };
-        guard
-            .bluetooth_dial_failures
-            .get(peer_device_id)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// Whether recent Bluetooth connection attempts give reason to distrust
-    /// this transport for this peer right now — the same
-    /// "no reason to distrust it" bar `network_effectively_available` uses
-    /// (a peer with zero attempts yet counts as reliable by default). Feeds
-    /// the `Configured { reliable }` state in the unified status model
-    /// (ADR-0003 Phase 2), not `network_effectively_available` itself,
-    /// which is Network-specific and used for transport *selection*.
-    pub fn bluetooth_effectively_reliable(&self, peer_device_id: &str) -> bool {
-        self.bluetooth_dial_failure_count(peer_device_id)
-            < crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD
     }
 }

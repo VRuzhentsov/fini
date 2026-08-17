@@ -1,10 +1,11 @@
 //! End-to-end proof that the transport abstraction works: two independent
 //! adapters (`tcp_ws`, `sim`) carry the exact same `session::run_peer_gate`/
-//! `run_session` engine, the sticky single-session invariant holds across
-//! them, and both satisfy the `Transport` trait polymorphically. This is
-//! the protocol-level coverage referenced by the E2E topology matrix in
-//! `specs/e2e/transports.md` — it proves selection/fallback/handoff
-//! semantics without needing a real Android runtime or a real radio.
+//! `run_session` engine, both transports can be simultaneously connected
+//! for the same peer (ADR-0003 revision), and both satisfy the `Transport`
+//! trait polymorphically. This is the protocol-level coverage referenced by
+//! the E2E topology matrix in `specs/e2e/transports.md` — it proves
+//! per-transport claiming/primary-selection semantics without needing a
+//! real Android runtime or a real radio.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -116,71 +117,39 @@ async fn tcp_ws_gate_accepts_paired_device_and_claims_session_as_network() {
 
     sleep(Duration::from_millis(50)).await;
     assert_eq!(
-        server.session_kind("peer-client"),
+        server.primary_transport("peer-client"),
         Some(TransportKind::TcpWs)
     );
 }
 
-/// Regression test for ADR-0003 Phase 3's core new mechanism: before this,
-/// nothing could ever end a live `run_session` loop except the loop itself
-/// noticing its own transport failed. `request_session_close` is the first
-/// external caller of the mailbox's new `SessionCommand::Close` -- proves
-/// it actually reaches and terminates a genuinely live session, not just
-/// that the method compiles.
+/// ADR-0003 revision: pinning a peer to a transport different from the one
+/// currently primary just flips which already-connected transport is
+/// primary -- no wire frame, no session disturbed on either transport,
+/// since both stay connected regardless of the pin.
 #[tokio::test(flavor = "multi_thread")]
-async fn request_session_close_terminates_a_live_session() {
-    let (server, server_db) = server_state("transport-request-close");
-    seed_paired_device(&server_db, "peer-client");
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
-        .await
-        .expect("auth should succeed for paired device");
-    sleep(Duration::from_millis(50)).await;
-    assert!(server.has_session("peer-client"), "session must be live before closing it");
-
-    assert!(
-        server.request_session_close("peer-client"),
-        "must find a mailbox to send Close through"
-    );
-    sleep(Duration::from_millis(50)).await;
-    assert!(
-        !server.has_session("peer-client"),
-        "Close must actually terminate run_session's loop, not just be accepted into the mailbox"
-    );
-}
-
-/// ADR-0003 Phase 3's full command: pinning a peer to a transport different
-/// from the one it's currently live on (a) persists the preference and (b)
-/// sends the peer PeerFrame::SwitchTransport. Deliberately does not itself
-/// assert the session then closes -- a P1 finding caught that closing
-/// unilaterally on this side's own guess (even though it's a fresh,
-/// almost-certainly-winning timestamp) can strand a session if the peer
-/// rejects for a reason this side can't predict (e.g. Bluetooth disabled on
-/// the peer's end); actually closing is the *peer's* own adoption's job
-/// (see `session::handle_inbound`), which this raw test client doesn't
-/// exercise.
-#[tokio::test(flavor = "multi_thread")]
-async fn set_preferred_transport_persists_and_notifies_a_mismatched_session() {
+async fn set_preferred_transport_flips_primary_without_disturbing_either_session() {
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
     std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
-    let (server, server_db) = server_state("transport-set-preferred-mismatch");
+    let (server, server_db) = server_state("transport-set-preferred-flips-primary");
     seed_paired_device(&server_db, "peer-client");
     seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    let tcp_port = free_port().await;
+    let sim_port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), tcp_port));
+    tokio::spawn(sim::run_server(server.clone(), server_db.clone(), sim_port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+    let mut tcp_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port).await.expect("dial tcp");
+    session::perform_client_auth(tcp_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
-        .expect("auth should succeed for paired device");
+        .expect("tcp auth should succeed for paired device");
+    let mut sim_link = AsBluetooth(sim::dial(sim_port).await.expect("dial sim"));
+    session::perform_client_auth(&mut sim_link, "peer-client", &server.identity.device_id)
+        .await
+        .expect("sim (bluetooth-kind) auth should succeed for paired device");
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::TcpWs));
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
 
     let mut conn = open_db_at_path(&server_db);
     let updated = crate::services::device_connection::device_connection_set_preferred_transport_impl(
@@ -194,545 +163,34 @@ async fn set_preferred_transport_persists_and_notifies_a_mismatched_session() {
     assert_eq!(updated.preferred_transport.as_deref(), Some("bluetooth"));
     assert!(updated.preferred_transport_set_at.is_some());
 
-    // The frame must arrive on the wire before this side tears the
-    // connection down underneath it. On a machine with a real Bluetooth
-    // controller, `run_session` also unconditionally self-reports
-    // `PeerFrame::BluetoothAddressUpdate` right after auth (independent of
-    // this test's own concerns) -- skip past any such frames rather than
-    // asserting on exact frame order between two independent features.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for SwitchTransport");
-        match recv_frame(link.as_mut()).await {
-            Some(Ok(PeerFrame::SwitchTransport { to, .. })) => {
-                assert_eq!(to, TransportKind::Bluetooth);
-                break;
-            }
-            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
-            other => panic!("expected SwitchTransport, got {other:?}"),
-        }
-    }
-
-    sleep(Duration::from_millis(50)).await;
-    assert!(
-        server.has_session("peer-client"),
-        "must not close unilaterally on a guess -- only the peer's own adoption \
-         (not exercised by this raw test client) decides that"
-    );
-}
-
-/// Sibling of the test above: pinning a peer to the transport it's *already*
-/// live on must not disturb the session at all -- no reason to tear down
-/// and immediately re-establish the exact same connection.
-#[tokio::test(flavor = "multi_thread")]
-async fn set_preferred_transport_leaves_an_already_matching_session_alone() {
-    let (server, server_db) = server_state("transport-set-preferred-match");
-    seed_paired_device(&server_db, "peer-client");
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
-        .await
-        .expect("auth should succeed for paired device");
-    sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::TcpWs));
-
-    let mut conn = open_db_at_path(&server_db);
-    crate::services::device_connection::device_connection_set_preferred_transport_impl(
-        &mut conn,
-        &server,
-        "peer-client".to_string(),
-        Some(TransportKind::TcpWs),
-    )
-    .expect("set preferred transport");
-
-    sleep(Duration::from_millis(50)).await;
-    assert!(
-        server.has_session("peer-client"),
-        "pinning the already-live transport must not close the session"
-    );
-}
-
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: a peer on
-/// an older build (protocol version 1, before `PeerFrame::SwitchTransport`
-/// existed) cannot decode the frame -- sending it and force-closing the
-/// session anyway would just have that peer reconnect over whatever
-/// transport it still understands (Network), silently undoing the pin the
-/// moment it lands. Neither the frame nor the close should happen; the
-/// preference is still persisted so this device's own dial loops (and a
-/// future reconnect after the peer upgrades) still honor it.
-#[tokio::test(flavor = "multi_thread")]
-async fn set_preferred_transport_withholds_switch_from_a_peer_on_an_old_protocol_version() {
-    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
-    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-    let (server, server_db) = server_state("transport-set-preferred-old-peer");
-    seed_paired_device(&server_db, "peer-client");
-    seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-
-    // Hand-crafted Auth declaring protocol_version 1 -- a build with Phase
-    // 1/2 (ping/pong, the unified status model) but not yet Phase 3's
-    // SwitchTransport, mirroring the existing no-protocol-version test's
-    // hand-crafted-frame pattern above.
-    let old_auth = serde_json::json!({
-        "type": "auth",
-        "device_id": "peer-client",
-        "peer_device_id": server.identity.device_id,
-        "protocol_version": 1,
-    });
-    let plain = serde_json::to_vec(&old_auth).unwrap();
-    let envelope = crate::services::transport::envelope::FrameEnvelope::new(
-        crate::services::transport::envelope::EncScheme::None,
-        plain,
-    );
-    let bytes = serde_json::to_vec(&envelope).unwrap();
-    link.send(bytes).await.expect("send hand-crafted auth");
-
-    match recv_frame(link.as_mut()).await {
-        Some(Ok(PeerFrame::AuthOk { .. })) => {}
-        other => panic!("expected AuthOk, got {other:?}"),
-    }
-    sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::TcpWs));
-
-    let mut conn = open_db_at_path(&server_db);
-    let updated = crate::services::device_connection::device_connection_set_preferred_transport_impl(
-        &mut conn,
-        &server,
-        "peer-client".to_string(),
-        Some(TransportKind::Bluetooth),
-    )
-    .expect("set preferred transport");
-    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    // The server-side session actually claims under the real wire kind
+    // (`Sim`, standing in for Bluetooth here) -- `AsBluetooth` only affects
+    // what the *client* reports, not what `run_peer_gate`'s accept side
+    // sees from its own `link.kind()`. `transport_kind_to_preference_string`
+    // collapses Sim/Bluetooth/LoRa to the same "bluetooth" pin either way.
     assert_eq!(
-        updated.preferred_transport.as_deref(),
-        Some("bluetooth"),
-        "the preference must still persist even though the live peer can't be notified"
+        server.primary_transport("peer-client"),
+        Some(TransportKind::Sim),
+        "primary must flip immediately, without waiting for a reconnect"
     );
-
-    // On a machine with a real Bluetooth controller, `run_session` also
-    // self-reports `PeerFrame::BluetoothAddressUpdate` right after auth for
-    // any peer reporting protocol_version >= 1 -- unrelated to this test's
-    // own concern, so skip past it the same way the mismatch test above does.
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
-            Err(_) => break, // timed out waiting -- correctly withheld
-            Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { .. }))) => continue,
-            Ok(other) => panic!("must not send SwitchTransport to a peer on protocol version 1, got {other:?}"),
-        }
-    }
-
     assert!(
-        server.has_session("peer-client"),
-        "must not force-close a session the peer can't be told to reconnect correctly around"
+        server.has_session_on("peer-client", TransportKind::TcpWs),
+        "the Network session must stay connected -- only primary-ness changed"
+    );
+    assert!(
+        server.has_session_on("peer-client", TransportKind::Sim),
+        "the bluetooth-role session must stay connected"
     );
 }
 
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: a pin set
-/// while the peer isn't connected has nothing to notify or close at that
-/// moment, but the *next* session that establishes on the wrong transport
-/// -- inbound here -- must still relay the correct pin, rather than going
-/// live and staying live indefinitely with nobody ever told about the pin
-/// (nothing else ever revisits an already-claimed session against the
-/// preference on its own). Unlike an outright reject, the connection is
-/// accepted normally (`AuthOk`) so the relay actually has a channel to
-/// travel over. Deliberately does *not* assert the session then closes:
-/// closing unconditionally on a guess that could itself be the stale one
-/// is exactly the bug a later finding caught (see
-/// `offline_pin_converges_the_deterministic_dialer_via_the_first_session_established`'s
-/// doc comment) -- actually closing is `handle_inbound`'s job, once the
-/// peer's own adoption settles which side's preference wins.
-#[tokio::test(flavor = "multi_thread")]
-async fn tcp_ws_gate_relays_without_closing_an_inbound_session_that_mismatches_the_local_transport_pin()
-{
-    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
-    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-    let (server, server_db) = server_state("transport-gate-preference-mismatch");
-    seed_paired_device(&server_db, "peer-client");
-    seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
-
-    let mut conn = open_db_at_path(&server_db);
-    crate::services::device_connection::device_connection_set_preferred_transport_impl(
-        &mut conn,
-        &server,
-        "peer-client".to_string(),
-        Some(TransportKind::Bluetooth),
-    )
-    .expect("set preferred transport ahead of any connection");
-    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
-        .await
-        .expect("the connection must be accepted normally, not rejected");
-
-    match recv_frame(link.as_mut()).await {
-        Some(Ok(PeerFrame::SwitchTransport { to, .. })) => assert_eq!(to, TransportKind::Bluetooth),
-        other => panic!("expected SwitchTransport, got {other:?}"),
-    }
-
-    sleep(Duration::from_millis(50)).await;
-    assert!(
-        server.has_session("peer-client"),
-        "must not close unilaterally on a guess that could itself be the stale side -- \
-         only the peer's own adoption (not exercised by this raw test client) decides that"
-    );
-}
-
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: when a peer
-/// with the higher device ID pins itself to Bluetooth while offline, it
-/// never dials at all (see `should_dial_peer`'s deterministic-dialer
-/// election) -- the *lower*-ID side is the only one that can ever make
-/// progress, and it doesn't yet know about the new pin (nothing could
-/// deliver it while offline). Its own stale "network" pin would otherwise
-/// block Bluetooth fallback forever too (`ble.rs`'s own sticky-pin check).
-/// Proves the actual fix: the first TCP session that manages to establish
-/// at all relays the peer's pin and closes (previous test), and the dialer
-/// receiving that relay adopts it into its own preference -- converging
-/// without either side ever needing to reject or give up.
-#[tokio::test(flavor = "multi_thread")]
-async fn offline_pin_converges_the_deterministic_dialer_via_the_first_session_established() {
-    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
-    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-    let (responder, responder_db) = server_state("transport-offline-pin-converge-responder");
-    let (dialer, dialer_db) = server_state("transport-offline-pin-converge-dialer");
-    seed_paired_device(&responder_db, &dialer.identity.device_id);
-    seed_paired_device(&dialer_db, &responder.identity.device_id);
-    // Both sides had already bonded over Bluetooth at some point -- the
-    // dialer just doesn't yet know the responder now *prefers* it. The
-    // responder needs this on its own side too, to satisfy
-    // `device_connection_set_preferred_transport_impl`'s own current-
-    // eligibility check when pinning itself below; the dialer needs it on
-    // its side to satisfy `adopt_peer_transport_preference`'s check once
-    // the relay reaches it.
-    seed_bluetooth_enabled_peer(&responder_db, &dialer.identity.device_id, "AA:BB:CC:DD:EE:FF");
-    // The dialer's own `adopt_peer_transport_preference` call (triggered
-    // asynchronously, whenever the relay below actually reaches it) needs
-    // the *same* full eligibility -- not just `bluetooth_enabled` -- so
-    // `FINI_BLUETOOTH_PAIRED_ADDRESSES` must stay set for this whole test,
-    // not just the synchronous setup call below.
-    seed_bluetooth_enabled_peer(&dialer_db, &responder.identity.device_id, "AA:BB:CC:DD:EE:FF");
-
-    let mut conn = open_db_at_path(&responder_db);
-    crate::services::device_connection::device_connection_set_preferred_transport_impl(
-        &mut conn,
-        &responder,
-        dialer.identity.device_id.clone(),
-        Some(TransportKind::Bluetooth),
-    )
-    .expect("pin the responder to Bluetooth while offline");
-
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-
-    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
-    tokio::spawn(tcp_ws::dial_with_backoff(
-        dialer.clone(),
-        dialer_db.clone(),
-        responder.identity.device_id.clone(),
-        "127.0.0.1".to_string(),
-        port,
-    ));
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut converged = false;
-    while tokio::time::Instant::now() < deadline {
-        let mut dialer_conn = open_db_at_path(&dialer_db);
-        if crate::services::device_connection::peer_transport_preference(
-            &mut dialer_conn,
-            &responder.identity.device_id,
-        ) == Some("bluetooth".to_string())
-        {
-            converged = true;
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    assert!(
-        converged,
-        "the dialer must adopt the responder's offline pin once the relay reaches it, \
-         rather than being stuck retrying Network forever"
-    );
-}
-
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: when *both*
-/// sides set conflicting pins while offline (dialer -> "network", older;
-/// responder -> "bluetooth", newer), the session that establishes on the
-/// dialer's own preferred transport (Network -- its own pin doesn't block
-/// that) still carries the responder's *newer* preference in, and the
-/// dialer must adopt it and close, not just keep the session because its
-/// own stale guess happened to match what's live. A design that
-/// unconditionally closed a "mismatch" on the *responder's* own initiative
-/// (the previous version of this fix) would instead have the responder
-/// close every time this session re-establishes, while the dialer's own
-/// stale pin keeps re-offering Network -- neither side ever winning,
-/// forever. This proves that no longer happens: the dialer's preference
-/// converges to the responder's newer one.
-#[tokio::test(flavor = "multi_thread")]
-async fn conflicting_offline_pins_converge_on_the_newer_one_without_a_reconnect_loop() {
-    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
-    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-    let (responder, responder_db) = server_state("transport-conflicting-pins-responder");
-    let (dialer, dialer_db) = server_state("transport-conflicting-pins-dialer");
-    seed_paired_device(&responder_db, &dialer.identity.device_id);
-    seed_paired_device(&dialer_db, &responder.identity.device_id);
-    seed_bluetooth_enabled_peer(&responder_db, &dialer.identity.device_id, "AA:BB:CC:DD:EE:FF");
-    // Kept live for this whole test, not just the synchronous setup below
-    // -- the dialer's own `adopt_peer_transport_preference` call happens
-    // asynchronously, whenever the relay actually reaches it.
-    seed_bluetooth_enabled_peer(&dialer_db, &responder.identity.device_id, "AA:BB:CC:DD:EE:FF");
-
-    // Dialer's own (older, soon-to-be-stale) pin. `utc_now()` only has
-    // second-level precision, so a short real sleep can't reliably
-    // guarantee a strictly earlier timestamp than the responder's pin
-    // below -- backdate it explicitly instead.
-    let mut dialer_conn = open_db_at_path(&dialer_db);
-    crate::services::device_connection::device_connection_set_preferred_transport_impl(
-        &mut dialer_conn,
-        &dialer,
-        responder.identity.device_id.clone(),
-        Some(TransportKind::TcpWs),
-    )
-    .expect("pin the dialer to Network while offline");
-    diesel::update(paired_devices::table.find(&responder.identity.device_id))
-        .set(paired_devices::preferred_transport_set_at.eq(Some("2020-01-01T00:00:00Z")))
-        .execute(&mut dialer_conn)
-        .expect("backdate the dialer's own pin");
-
-    // Responder's own (newer, winning) pin.
-    let mut responder_conn = open_db_at_path(&responder_db);
-    crate::services::device_connection::device_connection_set_preferred_transport_impl(
-        &mut responder_conn,
-        &responder,
-        dialer.identity.device_id.clone(),
-        Some(TransportKind::Bluetooth),
-    )
-    .expect("pin the responder to Bluetooth while offline");
-
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-
-    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
-    tokio::spawn(tcp_ws::dial_with_backoff(
-        dialer.clone(),
-        dialer_db.clone(),
-        responder.identity.device_id.clone(),
-        "127.0.0.1".to_string(),
-        port,
-    ));
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut converged = false;
-    while tokio::time::Instant::now() < deadline {
-        let mut conn = open_db_at_path(&dialer_db);
-        if crate::services::device_connection::peer_transport_preference(
-            &mut conn,
-            &responder.identity.device_id,
-        ) == Some("bluetooth".to_string())
-        {
-            converged = true;
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    assert!(
-        converged,
-        "the dialer's own stale Network pin must yield to the responder's newer Bluetooth one"
-    );
-}
-
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: a
-/// Bluetooth pin must not block Network *forever* once Bluetooth has
-/// demonstrably become permanently unreachable for this peer (disabled on
-/// the peer's end, repeatedly rejecting every connect attempt) -- sticky
-/// only means "don't second-guess on a transient blip," not "never
-/// reconsider even after every alternative also stops working." Proves
-/// `tcp_ws::dial_with_backoff`'s own override: once
-/// `bluetooth_dial_failure_count` has crossed the same threshold that
-/// already demotes automatic selection, a Bluetooth pin no longer
-/// suppresses the Network dial loop, and a real Network session
-/// establishes despite the pin.
-#[tokio::test(flavor = "multi_thread")]
-async fn stale_bluetooth_pin_no_longer_blocks_network_once_bluetooth_repeatedly_fails() {
-    use crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD;
-
-    let (responder, responder_db) = server_state("transport-stale-bluetooth-pin-responder");
-    let (dialer, dialer_db) = server_state("transport-stale-bluetooth-pin-dialer");
-    seed_paired_device(&responder_db, &dialer.identity.device_id);
-    seed_paired_device(&dialer_db, &responder.identity.device_id);
-
-    let mut dialer_conn = open_db_at_path(&dialer_db);
-    diesel::update(paired_devices::table.find(&responder.identity.device_id))
-        .set(paired_devices::preferred_transport.eq(Some("bluetooth")))
-        .execute(&mut dialer_conn)
-        .expect("pin the dialer to bluetooth directly (bypassing the impl's own eligibility check)");
-
-    for _ in 0..TRANSPORT_UNRESPONSIVE_THRESHOLD {
-        dialer.record_bluetooth_dial_failure(&responder.identity.device_id);
-    }
-    assert!(
-        !dialer.bluetooth_effectively_reliable(&responder.identity.device_id),
-        "test setup: bluetooth must look unreliable before dial_with_backoff is exercised"
-    );
-
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
-
-    tokio::spawn(tcp_ws::dial_with_backoff(
-        dialer.clone(),
-        dialer_db,
-        responder.identity.device_id.clone(),
-        "127.0.0.1".to_string(),
-        port,
-    ));
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut established = false;
-    while tokio::time::Instant::now() < deadline {
-        if dialer.session_kind(&responder.identity.device_id) == Some(TransportKind::TcpWs) {
-            established = true;
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        established,
-        "a Bluetooth pin that's demonstrably unreliable must not suppress Network forever"
-    );
-}
-
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: a Bluetooth
-/// pin whose OS bond has disappeared must not suppress Network even with
-/// *zero* recorded dial failures. Failure-count-based reliability alone
-/// can't catch this: `bluetooth_dial_candidates` excludes an ineligible
-/// peer before BLE's own dial loop ever attempts (and therefore records a
-/// failure for) it, so `bluetooth_effectively_reliable` stays `true`
-/// forever. Proves `tcp_ws::dial_with_backoff`'s own direct eligibility
-/// check catches this immediately, without needing any failed attempts
-/// first.
-#[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_pin_with_no_current_eligibility_does_not_block_network_even_with_zero_failures() {
-    let (responder, responder_db) = server_state("transport-ineligible-pin-responder");
-    let (dialer, dialer_db) = server_state("transport-ineligible-pin-dialer");
-    seed_paired_device(&responder_db, &dialer.identity.device_id);
-    seed_paired_device(&dialer_db, &responder.identity.device_id);
-
-    let mut dialer_conn = open_db_at_path(&dialer_db);
-    diesel::update(paired_devices::table.find(&responder.identity.device_id))
-        .set(paired_devices::preferred_transport.eq(Some("bluetooth")))
-        .execute(&mut dialer_conn)
-        .expect("pin the dialer to bluetooth without ever making it eligible");
-    assert_eq!(
-        dialer.bluetooth_dial_failure_count(&responder.identity.device_id),
-        0,
-        "test setup: no dial attempt has ever been made, so failure-count-based \
-         reliability alone would (incorrectly) still say Bluetooth is fine"
-    );
-
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
-
-    tokio::spawn(tcp_ws::dial_with_backoff(
-        dialer.clone(),
-        dialer_db,
-        responder.identity.device_id.clone(),
-        "127.0.0.1".to_string(),
-        port,
-    ));
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut established = false;
-    while tokio::time::Instant::now() < deadline {
-        if dialer.session_kind(&responder.identity.device_id) == Some(TransportKind::TcpWs) {
-            established = true;
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        established,
-        "a Bluetooth pin with no current local eligibility must not suppress Network, \
-         regardless of dial-failure history"
-    );
-}
-
-/// Regression test for a P2 review finding on ADR-0003 Phase 3:
-/// `sim::spawn_fallback_dial_loop`'s outer gate already consults the
-/// Bluetooth-pin override, but `dial_with_backoff`'s own retry loop used
-/// to re-check raw `network_effectively_available` on every iteration,
-/// immediately giving up despite the override. Proves the fix by calling
-/// `dial_with_backoff` directly with network reachable but the peer
-/// pinned to Bluetooth: it must still dial and establish, not bail out.
-#[tokio::test(flavor = "multi_thread")]
-async fn sim_dial_loop_honors_the_bluetooth_override_not_just_the_outer_gate() {
-    let (responder, responder_db) = server_state("transport-sim-override-responder");
-    let (dialer, dialer_db) = server_state("transport-sim-override-dialer");
-    seed_paired_device(&responder_db, &dialer.identity.device_id);
-    seed_paired_device(&dialer_db, &responder.identity.device_id);
-    diesel::update(paired_devices::table.find(&responder.identity.device_id))
-        .set(paired_devices::preferred_transport.eq(Some("bluetooth")))
-        .execute(&mut open_db_at_path(&dialer_db))
-        .expect("pin the dialer to bluetooth");
-    // network_effectively_available defaults to true (never attempted, no
-    // failures recorded) -- exactly the "network looks reachable" state
-    // the override must still win over.
-
-    let port = free_port().await;
-    tokio::spawn(sim::run_server(responder.clone(), responder_db.clone(), port));
-    sleep(Duration::from_millis(100)).await;
-
-    tokio::spawn(sim::dial_with_backoff(
-        dialer.clone(),
-        dialer_db,
-        responder.identity.device_id.clone(),
-        vec![port],
-    ));
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut established = false;
-    while tokio::time::Instant::now() < deadline {
-        if dialer.session_kind(&responder.identity.device_id) == Some(TransportKind::Sim) {
-            established = true;
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    assert!(established, "the Bluetooth override must apply inside the retry loop too");
-}
-
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: a stale
-/// "configured" row (`DeviceView`'s polling only refreshes session
-/// liveness, not full eligibility -- see the frontend's own
-/// `refreshLiveConnectedState` doc comment) can stay clickable well after
-/// the OS Bluetooth bond quietly disappears. `device_connection_set_
-/// preferred_transport_impl` must re-validate current eligibility itself
-/// rather than trusting the click -- persisting and announcing a pin that
-/// can never actually connect just relocates the stranding hazard instead
-/// of preventing it.
+/// Regression test for a P1 review finding: a stale "configured" row
+/// (`DeviceView`'s polling only refreshes session liveness, not full
+/// eligibility -- see the frontend's own `refreshLiveConnectedState` doc
+/// comment) can stay clickable well after the OS Bluetooth bond quietly
+/// disappears. `device_connection_set_preferred_transport_impl` must
+/// re-validate current eligibility itself rather than trusting the click --
+/// persisting and announcing a pin that can never actually connect just
+/// relocates the stranding hazard instead of preventing it.
 #[tokio::test(flavor = "multi_thread")]
 async fn set_preferred_transport_refuses_a_bluetooth_pin_when_not_currently_eligible() {
     let (server, server_db) = server_state("transport-set-preferred-bluetooth-ineligible");
@@ -759,100 +217,81 @@ async fn set_preferred_transport_refuses_a_bluetooth_pin_when_not_currently_elig
     assert_eq!(row.preferred_transport, None, "a refused pin must not be persisted");
 }
 
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: a peer
-/// proposing Bluetooth to a device that has Bluetooth disabled locally
-/// can't simply be told "no" via silence -- if this device has no
-/// preference of its own recorded, `adopt_peer_transport_preference`'s
-/// `Ineligible` rejection previously had no stored preference to offer
-/// back either, so the sender never learned to fall back and a live
-/// Network session got force-closed for nothing. Proves the fix: an
-/// explicit Network counter-proposal is sent even with no stored
-/// preference, and the session that received the (rejected) proposal is
-/// *not* force-closed as a side effect of the rejection.
+/// ADR-0003 revision: both transports now dial/accept and stay connected
+/// independent of the manual pin -- the pin only decides which
+/// already-connected transport is primary. Proves the network dial loop
+/// still establishes a session for a peer explicitly pinned to Bluetooth,
+/// with no override/eligibility gating needed on the dial path itself.
 #[tokio::test(flavor = "multi_thread")]
-async fn ineligible_switch_transport_produces_a_network_fallback_instead_of_silence() {
-    let (server, server_db) = server_state("transport-ineligible-switch-fallback");
-    seed_paired_device(&server_db, "peer-client");
-    // Bluetooth left at test_conn-equivalent default (disabled) for this
-    // pair -- the condition under test.
+async fn network_dial_establishes_regardless_of_a_bluetooth_pin() {
+    let (responder, responder_db) = server_state("transport-network-dial-ignores-pin-responder");
+    let (dialer, dialer_db) = server_state("transport-network-dial-ignores-pin-dialer");
+    seed_paired_device(&responder_db, &dialer.identity.device_id);
+    seed_paired_device(&dialer_db, &responder.identity.device_id);
+
+    let mut dialer_conn = open_db_at_path(&dialer_db);
+    diesel::update(paired_devices::table.find(&responder.identity.device_id))
+        .set(paired_devices::preferred_transport.eq(Some("bluetooth")))
+        .execute(&mut dialer_conn)
+        .expect("pin the dialer to bluetooth directly (bypassing the impl's own eligibility check)");
 
     let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
     sleep(Duration::from_millis(100)).await;
+    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", port);
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
-        .await
-        .expect("auth should succeed for paired device");
-    sleep(Duration::from_millis(50)).await;
+    tokio::spawn(tcp_ws::dial_with_backoff(
+        dialer.clone(),
+        dialer_db,
+        responder.identity.device_id.clone(),
+        "127.0.0.1".to_string(),
+        port,
+    ));
 
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::SwitchTransport {
-            to: TransportKind::Bluetooth,
-            requested_at: "2026-04-07T00:00:01Z".to_string(),
-        },
-    )
-    .await
-    .expect("send the (unsupportable) Bluetooth proposal");
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for the Network fallback");
-        match recv_frame(link.as_mut()).await {
-            Some(Ok(PeerFrame::SwitchTransport { to, .. })) => {
-                assert_eq!(to, TransportKind::TcpWs, "must fall back to Network, not stay silent");
-                break;
-            }
-            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
-            other => panic!("expected a Network fallback SwitchTransport, got {other:?}"),
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut established = false;
+    while tokio::time::Instant::now() < deadline {
+        if dialer.has_session_on(&responder.identity.device_id, TransportKind::TcpWs) {
+            established = true;
+            break;
         }
+        sleep(Duration::from_millis(50)).await;
     }
-
-    sleep(Duration::from_millis(50)).await;
     assert!(
-        server.has_session("peer-client"),
-        "rejecting an unsupportable proposal must not force-close the live session"
-    );
-
-    // Regression for a P1 finding on top of this one: the Network
-    // counterproposal must also be persisted as this device's *own*
-    // preference, not just sent to the peer -- otherwise this device's own
-    // dial gates would still see a stale "bluetooth" (or no) preference
-    // later, e.g. if it becomes the deterministic dialer after this
-    // session ends.
-    let mut conn = open_db_at_path(&server_db);
-    assert_eq!(
-        crate::services::device_connection::peer_transport_preference(&mut conn, "peer-client"),
-        Some("network".to_string()),
-        "the Network fallback must be persisted locally, not just sent to the peer"
+        established,
+        "a Bluetooth pin must not suppress the Network dial loop"
     );
 }
 
-/// Regression test for a P1 review finding on ADR-0003 Phase 3: disabling
-/// Bluetooth for a pair that was pinned to it must not just clear this
-/// device's own row -- if the peer is the sole deterministic dialer and
-/// still holds the old Bluetooth pin, it never learns to fall back
-/// (Network dial stands down because of its own pin; Bluetooth is now
-/// rejected by this device). Proves
-/// `device_connection_set_bluetooth_transport_with_state_impl` relays the
-/// redirect to a live peer, not just the local DB.
+/// Regression test for a P1 review finding: disabling Bluetooth for a pair
+/// that was pinned to it must not leave this device pinned to a transport
+/// that can never reconnect -- `device_connection_set_bluetooth_transport_
+/// with_state_impl` must redirect the pin to Network, which immediately
+/// becomes primary since it's already connected (no wire notification
+/// needed any more: both transports stay connected regardless of the pin,
+/// so there's nothing to relay to the peer).
 #[tokio::test(flavor = "multi_thread")]
-async fn disabling_bluetooth_notifies_a_live_peer_to_fall_back_to_network() {
+async fn disabling_bluetooth_redirects_the_pin_to_network_and_flips_primary() {
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
     std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
-    let (server, server_db) = server_state("transport-disable-bluetooth-notifies");
+    let (server, server_db) = server_state("transport-disable-bluetooth-redirects");
     seed_paired_device(&server_db, "peer-client");
 
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    let tcp_port = free_port().await;
+    let sim_port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), tcp_port));
+    tokio::spawn(sim::run_server(server.clone(), server_db.clone(), sim_port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+    let mut tcp_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port).await.expect("dial tcp");
+    session::perform_client_auth(tcp_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
-        .expect("auth should succeed for paired device");
+        .expect("tcp auth should succeed for paired device");
+    let mut sim_link = AsBluetooth(sim::dial(sim_port).await.expect("dial sim"));
+    session::perform_client_auth(&mut sim_link, "peer-client", &server.identity.device_id)
+        .await
+        .expect("sim (bluetooth-kind) auth should succeed for paired device");
     sleep(Duration::from_millis(50)).await;
 
     let mut conn = open_db_at_path(&server_db);
@@ -865,18 +304,8 @@ async fn disabling_bluetooth_notifies_a_live_peer_to_fall_back_to_network() {
     )
     .expect("pin to bluetooth");
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-
-    // Drain the notification this setup step itself sends (pinning to
-    // Bluetooth), so the assertions below only see the disable's own
-    // redirect notification. Skips past a real machine's own Bluetooth
-    // self-report too, same as the other tests in this file.
-    loop {
-        match recv_frame(link.as_mut()).await {
-            Some(Ok(PeerFrame::SwitchTransport { to: TransportKind::Bluetooth, .. })) => break,
-            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
-            other => panic!("expected the setup's own Bluetooth pin notification, got {other:?}"),
-        }
-    }
+    // See the sibling test above for why this is `Sim`, not `Bluetooth`.
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Sim));
 
     let updated = crate::services::device_connection::device_connection_set_bluetooth_transport_with_state_impl(
         &mut conn,
@@ -893,19 +322,11 @@ async fn disabling_bluetooth_notifies_a_live_peer_to_fall_back_to_network() {
         Some("network"),
         "disabling a Bluetooth pin must redirect to Network, not merely clear it"
     );
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for the Network redirect");
-        match recv_frame(link.as_mut()).await {
-            Some(Ok(PeerFrame::SwitchTransport { to, .. })) => {
-                assert_eq!(to, TransportKind::TcpWs);
-                break;
-            }
-            Some(Ok(PeerFrame::BluetoothAddressUpdate { .. })) => continue,
-            other => panic!("expected a Network redirect SwitchTransport, got {other:?}"),
-        }
-    }
+    assert_eq!(
+        server.primary_transport("peer-client"),
+        Some(TransportKind::TcpWs),
+        "primary must flip to the already-connected Network session immediately"
+    );
 }
 
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
@@ -1050,11 +471,22 @@ async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_sess
     // Simulates a controller swap while this session stays live.
     std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "11:22:33:44:55:66");
 
-    match tokio::time::timeout(Duration::from_millis(500), recv_frame(link.as_mut())).await {
-        Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { address }))) => {
-            assert_eq!(address, "11:22:33:44:55:66");
+    // The session's own app-level ping/ack loop (ADR-0003 revision) also
+    // runs concurrently now -- skip past any incidental `Ping` (replying
+    // `Pong`, same as a real peer would) while waiting for the refresh.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
+            Ok(Some(Ok(PeerFrame::BluetoothAddressUpdate { address }))) => {
+                assert_eq!(address, "11:22:33:44:55:66");
+                break;
+            }
+            Ok(Some(Ok(PeerFrame::Ping))) => {
+                let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
+            }
+            other => panic!("expected a refreshed BluetoothAddressUpdate after the address changed, got {other:?}"),
         }
-        other => panic!("expected a refreshed BluetoothAddressUpdate after the address changed, got {other:?}"),
     }
 
     std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
@@ -1189,16 +621,19 @@ async fn sim_gate_accepts_paired_device_and_claims_session_in_bluetooth_fallback
         .expect("auth should succeed for paired device");
 
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::Sim));
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Sim));
 }
 
-/// The core handoff-safety guarantee: at most one authenticated session can
-/// ever be live for a peer, regardless of which transport it arrives on.
-/// This is what makes duplicated/lost sync events structurally impossible
-/// (`specs/space-sync/README.md`).
+/// ADR-0003 revision's core new guarantee: both Network and Bluetooth can
+/// be simultaneously connected and claimed for the same peer -- Network
+/// becomes primary (it wins whenever connected), but the Sim (playing
+/// Bluetooth's role) session is not rejected or torn down; it stays live,
+/// connected but not primary. This is what makes green a per-transport,
+/// continuously-reproven property rather than something borrowed from
+/// whichever session happens to be "the" one.
 #[tokio::test(flavor = "multi_thread")]
-async fn sticky_single_session_rejects_a_concurrent_second_claim() {
-    let (server, server_db) = server_state("transport-sticky");
+async fn both_transports_can_be_simultaneously_connected_for_the_same_peer() {
+    let (server, server_db) = server_state("transport-dual-connect");
     seed_paired_device(&server_db, "peer-client");
     let tcp_port = free_port().await;
     let sim_port = free_port().await;
@@ -1210,7 +645,6 @@ async fn sticky_single_session_rejects_a_concurrent_second_claim() {
     tokio::spawn(sim::run_server(server.clone(), server_db.clone(), sim_port));
     sleep(Duration::from_millis(100)).await;
 
-    // First session claims via TcpWs and is kept open (link held, not dropped).
     let mut first_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port)
         .await
         .expect("dial tcp_ws");
@@ -1219,28 +653,28 @@ async fn sticky_single_session_rejects_a_concurrent_second_claim() {
         .expect("first session should authenticate");
     sleep(Duration::from_millis(50)).await;
     assert_eq!(
-        server.session_kind("peer-client"),
+        server.primary_transport("peer-client"),
         Some(TransportKind::TcpWs)
     );
 
-    // Second attempt, over Sim, must be rejected while the first is live —
-    // sticky handoff means no mid-session transport migration.
+    // A second connection on a *different* transport must be accepted, not
+    // rejected -- the old sticky single-session invariant no longer holds.
     let mut second_link = sim::dial(sim_port).await.expect("dial sim");
-    let err = session::perform_client_auth(
-        second_link.as_mut(),
-        "peer-client",
-        &server.identity.device_id,
-    )
-    .await
-    .expect_err("second concurrent session must be rejected");
-    assert!(err.contains("session already active"));
+    session::perform_client_auth(second_link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("a session on a second transport must also be accepted");
+    sleep(Duration::from_millis(50)).await;
 
-    // The first session is still the one on record.
+    assert!(server.has_session_on("peer-client", TransportKind::TcpWs));
+    assert!(server.has_session_on("peer-client", TransportKind::Sim));
     assert_eq!(
-        server.session_kind("peer-client"),
-        Some(TransportKind::TcpWs)
+        server.primary_transport("peer-client"),
+        Some(TransportKind::TcpWs),
+        "network stays primary even once bluetooth/sim also connects"
     );
+
     drop(first_link);
+    drop(second_link);
 }
 
 /// Both adapters implement the same `Transport` port polymorphically — the
@@ -1421,147 +855,54 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     assert!(outgoing[0].code.chars().all(|ch| ch.is_ascii_digit()));
 }
 
-/// Regression test: discovery presence alone must not make selection treat
-/// a peer as network-available forever. `network_peer_available` only
-/// reflects that beacons are arriving; `tcp_ws::dial_with_backoff` retries
-/// a connect/auth failure indefinitely without giving up as long as
-/// presence holds, so without `network_effectively_available` factoring in
-/// bounded failures, `sim::spawn_fallback_dial_loop` would never engage for
-/// a peer whose WebSocket port is permanently unreachable (bind failure,
-/// firewall) but who is still discoverable.
-#[test]
-fn network_effectively_available_demotes_after_repeated_tcp_failures() {
-    use crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD;
-
-    let (state, _db) = server_state("transport-network-effectively-available");
-
-    // No presence at all: never effectively available regardless of failures
-    // (this test can't inject synthetic presence — that's owned by the
-    // discovery worker's internal state — so it verifies the failure-count
-    // threshold mechanics directly; presence itself is exercised end-to-end
-    // by the existing discovery/pairing tests).
-    assert!(!state.network_effectively_available("peer-x"));
-
-    for _ in 0..(TRANSPORT_UNRESPONSIVE_THRESHOLD - 1) {
-        state.record_tcp_dial_failure("peer-x");
-    }
-    assert_eq!(
-        state.tcp_dial_failure_count("peer-x"),
-        TRANSPORT_UNRESPONSIVE_THRESHOLD - 1,
-        "below threshold yet"
-    );
-
-    state.record_tcp_dial_failure("peer-x");
-    assert_eq!(
-        state.tcp_dial_failure_count("peer-x"),
-        TRANSPORT_UNRESPONSIVE_THRESHOLD,
-        "at threshold"
-    );
-
-    // A later success resets the counter (transient blip, not permanent).
-    state.record_tcp_dial_success("peer-x");
-    assert_eq!(state.tcp_dial_failure_count("peer-x"), 0);
-}
-
-/// Bluetooth's counterpart to the test above (ADR-0003 Phase 2): a fresh
-/// peer with zero attempts is reliable by default -- "no reason to distrust
-/// it" is the bar, not "has been proven to work" -- then demotes once
-/// consecutive failures reach the shared threshold, and a later success
-/// resets it.
-#[test]
-fn bluetooth_effectively_reliable_demotes_after_repeated_failures_and_resets_on_success() {
-    use crate::services::transport::selection::TRANSPORT_UNRESPONSIVE_THRESHOLD;
-
-    let (state, _db) = server_state("transport-bluetooth-effectively-reliable");
-
-    assert!(
-        state.bluetooth_effectively_reliable("peer-x"),
-        "a never-attempted peer must default to reliable"
-    );
-
-    for _ in 0..(TRANSPORT_UNRESPONSIVE_THRESHOLD - 1) {
-        state.record_bluetooth_dial_failure("peer-x");
-    }
-    assert!(
-        state.bluetooth_effectively_reliable("peer-x"),
-        "below threshold yet"
-    );
-
-    state.record_bluetooth_dial_failure("peer-x");
-    assert_eq!(
-        state.bluetooth_dial_failure_count("peer-x"),
-        TRANSPORT_UNRESPONSIVE_THRESHOLD
-    );
-    assert!(
-        !state.bluetooth_effectively_reliable("peer-x"),
-        "at threshold, no longer reliable"
-    );
-
-    state.record_bluetooth_dial_success("peer-x");
-    assert_eq!(state.bluetooth_dial_failure_count("peer-x"), 0);
-    assert!(state.bluetooth_effectively_reliable("peer-x"));
-}
-
-/// Regression test: `tcp_dial_failures` must not outlive the Sim session it
-/// caused. `tcp_ws::dial_with_backoff` stops updating the counter the
-/// instant any session exists (it gives up as soon as `has_session` is
-/// true), so once a Sim fallback session claims, the failure count is
-/// frozen at whatever it was — stale by the time that session eventually
-/// ends. Without resetting it there, the *next* establishment cycle would
-/// see a stale "network unresponsive" verdict and start a fresh Sim
-/// fallback dial concurrently with a fresh tcp_ws dial, racing for the
-/// claim despite the underlying network condition being unknown/possibly
-/// recovered — contrary to "the next session selection returns to
-/// network-first order" (`specs/space-sync/README.md`).
+/// ADR-0003 revision: green is per-transport and earned by a bidirectional
+/// `Ping`/`Pong` exchange, not borrowed from dial-failure history. A freshly
+/// claimed session has no ack proof yet (amber, `AwaitingFirstAck`); once
+/// `run_session`'s ping loop exchanges at least one round trip on a real
+/// two-sided session, it becomes green (`transport_reliable`). Uses a short
+/// `FINI_APP_PING_INTERVAL_MS`-independent wait since the loop's first tick
+/// fires immediately.
 #[tokio::test(flavor = "multi_thread")]
-async fn tcp_failure_count_resets_after_a_sim_session_ends() {
-    let (dialer, dialer_db) = server_state("transport-sim-failure-reset-dialer");
-    let peer_id = "peer-fake-server".to_string();
-    seed_paired_device(&dialer_db, &peer_id);
+async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_round_trip() {
+    let (server, server_db) = server_state("transport-ping-ack-green");
+    seed_paired_device(&server_db, "peer-client");
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
+    sleep(Duration::from_millis(100)).await;
 
-    // Pre-seed failures as if tcp_ws had already given up on this peer,
-    // triggering the Sim fallback role.
-    for _ in 0..(3 + 2) {
-        dialer.record_tcp_dial_failure(&peer_id);
-    }
-    assert!(dialer.tcp_dial_failure_count(&peer_id) >= 3);
-
-    // A minimal fake "server": accept one connection, speak just enough of
-    // the peer protocol to authenticate, then close — simulating the Sim
-    // session ending shortly after establishing, without needing the full
-    // sim::run_server accept loop (this test only has one dialer, so there's
-    // no mutual-dial race to worry about — see should_dial_fallback_peer's
-    // own direct test for that).
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        let Ok((stream, _addr)) = listener.accept().await else {
-            return;
-        };
-        let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
-        if let Some(Ok(PeerFrame::Auth { .. })) = recv_frame(link.as_mut()).await {
-            let _ = send_frame(link.as_mut(), &PeerFrame::AuthOk { protocol_version: 1 }).await;
-        }
-        // link drops here, closing the connection right after handshake.
-    });
-
-    std::env::set_var("FINI_SIM_PEER_PORTS", port.to_string());
-    let paired_peer_ids: std::collections::HashSet<String> = [peer_id.clone()].into_iter().collect();
-    sim::spawn_fallback_dial_loop(&dialer, dialer_db.clone(), &paired_peer_ids);
-    std::env::remove_var("FINI_SIM_PEER_PORTS");
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut reset = false;
-    while tokio::time::Instant::now() < deadline {
-        if dialer.tcp_dial_failure_count(&peer_id) == 0 {
-            reset = true;
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+    sleep(Duration::from_millis(50)).await;
     assert!(
-        reset,
-        "tcp_dial_failures should be cleared once the Sim session it caused ends"
+        !server.transport_reliable("peer-client", TransportKind::TcpWs),
+        "a freshly claimed session must not already be green"
+    );
+
+    // Drive the client side of the ping/ack exchange directly (this test
+    // doesn't run a full peer-side `run_session` loop): reply to the
+    // server's own Ping, and send one of our own for the server to ack.
+    send_frame(link.as_mut(), &PeerFrame::Ping).await.expect("send ping");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut got_pong = false;
+    let mut got_ping = false;
+    while tokio::time::Instant::now() < deadline && !(got_pong && got_ping) {
+        match tokio::time::timeout(Duration::from_millis(200), recv_frame(link.as_mut())).await {
+            Ok(Some(Ok(PeerFrame::Pong))) => got_pong = true,
+            Ok(Some(Ok(PeerFrame::Ping))) => {
+                got_ping = true;
+                let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
+            }
+            _ => {}
+        }
+    }
+    assert!(got_pong && got_ping, "expected a full bidirectional ping/ack round trip");
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        server.transport_reliable("peer-client", TransportKind::TcpWs),
+        "green once both directions of the ping/ack proof are complete"
     );
 }
 
@@ -1677,7 +1018,7 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
         .expect("a bluetooth-enabled, bonded paired device should authenticate over a Bluetooth-kind link");
 
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.session_kind("peer-client"), Some(TransportKind::Bluetooth));
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Bluetooth));
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }

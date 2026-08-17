@@ -226,7 +226,12 @@ pub(crate) async fn run_server_on_port(
 
 /// Call from `space_sync_tick`: ensure an outbound session exists for every
 /// paired, presenced peer where `self.device_id < peer.device_id`
-/// (deterministic dialer rule) and no session (on any transport) is active.
+/// (deterministic dialer rule) and no session on *this* transport is
+/// active yet. ADR-0003 revision: no longer withdraws just because a
+/// session already exists on Bluetooth, or because the peer is pinned to
+/// Bluetooth -- both transports dial and stay connected independently now,
+/// regardless of the pin (the pin only decides which connected transport
+/// is primary, see `DeviceConnectionState::recompute_primary_locked`).
 pub fn spawn_dial_loop(
     state: &DeviceConnectionState,
     db_path: PathBuf,
@@ -240,7 +245,7 @@ pub fn spawn_dial_loop(
             my_id.as_str(),
             peer_id.as_str(),
             paired_peer_ids,
-            state.has_session(&peer_id),
+            state.has_session_on(&peer_id, TransportKind::TcpWs),
         ) {
             continue;
         }
@@ -262,36 +267,6 @@ fn should_dial_peer(
     paired_peer_ids.contains(peer_id) && my_id < peer_id && !has_session
 }
 
-/// ADR-0003 Phase 3: has the user explicitly pinned this pair to
-/// Bluetooth? If so, `dial_with_backoff` withdraws its own retries even
-/// while network is genuinely reachable -- an explicit pin overrides the
-/// default network-first order, symmetric with `ble::dial_with_backoff`'s
-/// own override in the other direction.
-fn peer_prefers_bluetooth(db_path: &std::path::Path, peer_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = crate::services::db::open_db_at_path(db_path);
-        crate::services::device_connection::peer_transport_preference(&mut conn, peer_id).as_deref()
-            == Some("bluetooth")
-    })
-}
-
-/// ADR-0003 Phase 3: is Bluetooth *currently* eligible for this peer --
-/// enabled, a stored address, and a live OS bond checked right now? A
-/// separate, more immediate signal than `bluetooth_dial_failure_count`-based
-/// reliability: if the OS bond disappears after a valid Bluetooth pin was
-/// adopted, `bluetooth_dial_candidates` excludes the peer before BLE's own
-/// dial loop ever gets a chance to attempt (and therefore fail) a
-/// connection, so failure-count-based reliability alone would never
-/// demote and this override would suppress Network forever. Checked
-/// alongside (not instead of) `bluetooth_effectively_reliable` -- both
-/// must hold to keep honoring the pin.
-fn peer_bluetooth_is_currently_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = crate::services::db::open_db_at_path(db_path);
-        crate::services::device_connection::peer_is_currently_bluetooth_eligible(&mut conn, peer_id)
-    })
-}
-
 /// `pub(crate)`, not private: `transport::tests` exercises this directly
 /// (bypassing `spawn_dial_loop`'s presence-worker plumbing) to prove its
 /// error-handling distinguishes a genuine rejection from a transport
@@ -308,24 +283,7 @@ pub(crate) async fn dial_with_backoff(
     let max_delay = Duration::from_secs(30);
 
     loop {
-        if state.has_session(&peer_id) {
-            return;
-        }
-        // ADR-0003 Phase 3: a Bluetooth pin is sticky against a *transient*
-        // reason to second-guess it -- but not indefinitely against
-        // repeated, concrete evidence that Bluetooth has become
-        // permanently unreachable for this peer (disabled, unbonded, out
-        // of range for a long stretch), and not once the OS bond has
-        // outright disappeared (see `peer_bluetooth_is_currently_eligible`'s
-        // own doc comment for why that needs its own direct check, not
-        // just failure-count-based reliability). Once either signal says
-        // Bluetooth genuinely isn't viable, this override steps aside and
-        // lets Network try anyway -- the alternative is a pin that can
-        // never be un-stuck once the pinned transport stops working at all.
-        if peer_prefers_bluetooth(&db_path, &peer_id)
-            && peer_bluetooth_is_currently_eligible(&db_path, &peer_id)
-            && state.bluetooth_effectively_reliable(&peer_id)
-        {
+        if state.has_session_on(&peer_id, TransportKind::TcpWs) {
             return;
         }
         let still_present = state
@@ -352,29 +310,8 @@ pub(crate) async fn dial_with_backoff(
                 {
                     Ok(peer_protocol_version) => {
                         eprintln!("[transport][tcp_ws] auth OK with {peer_id}");
-                        state.record_tcp_dial_success(&peer_id);
-                        // ADR-0003 Phase 3: the inverse of ble.rs's own
-                        // recheck -- the user could pin this peer to
-                        // Bluetooth while this connect+auth round trip was
-                        // in flight, and without this check that pin would
-                        // otherwise be silently overridden by the Network
-                        // session this loop is about to claim. Same
-                        // reliability override as the top-of-loop check
-                        // above: a Bluetooth pin that's become permanently
-                        // unreachable must not keep discarding a Network
-                        // session that just successfully authenticated.
-                        if peer_prefers_bluetooth(&db_path, &peer_id)
-                            && peer_bluetooth_is_currently_eligible(&db_path, &peer_id)
-                            && state.bluetooth_effectively_reliable(&peer_id)
-                        {
-                            eprintln!(
-                                "[transport][tcp_ws] {peer_id} was pinned to Bluetooth during \
-                                 the connect/auth handshake; discarding this Network session"
-                            );
-                            return;
-                        }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, peer_protocol_version) {
+                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, &db_path) {
                             session::run_session(
                                 link,
                                 rx,
@@ -393,16 +330,11 @@ pub(crate) async fn dial_with_backoff(
                         if err.starts_with("auth rejected") {
                             return; // not paired; don't retry
                         }
-                        // Connection-level failure (link dropped mid-auth,
-                        // etc.), not a rejection — counts toward "network
-                        // present but not actually reachable."
-                        state.record_tcp_dial_failure(&peer_id);
                     }
                 }
             }
             Err(err) => {
                 eprintln!("[transport][tcp_ws] connect to {peer_id} failed: {err}");
-                state.record_tcp_dial_failure(&peer_id);
             }
         }
 
