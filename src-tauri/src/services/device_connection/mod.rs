@@ -298,21 +298,42 @@ impl DeviceConnectionState {
             peer_device_id: peer_device_id.to_string(),
             kind,
         });
+        // Re-validate Bluetooth specifically -- a P1 review finding: the
+        // pre-lock read above is a time-of-check/time-of-use window. If
+        // Bluetooth gets disabled for this pair *between* that read and
+        // this claim landing, `close_session_on` (the disable path's own
+        // teardown) can run and find nothing to close yet, and this claim
+        // then commits with a now-stale `bluetooth_enabled = true`
+        // snapshot -- surviving the opt-out. Self-corrects by tearing down
+        // what was just claimed if Bluetooth is (now) disabled, narrowing
+        // the race to the much smaller window between this second read and
+        // a *new* disable landing -- which `close_session_on`'s own retry
+        // (see its doc comment) still catches, since the session exists by
+        // then. `Sim`/`LoRa` don't need this: they aren't gated by
+        // `bluetooth_enabled` at all (see `recompute_primary_locked`'s doc
+        // comment).
+        if kind == TransportKind::Bluetooth {
+            let (_, still_enabled) = Self::bluetooth_primary_eligibility(db_path, peer_device_id);
+            if !still_enabled {
+                self.close_session_on(peer_device_id, kind);
+            }
+        }
         true
     }
 
     pub fn release_session(&self, peer_device_id: &str, kind: TransportKind, db_path: &Path) {
-        // Same "DB read outside the lock" fix as `try_claim_session` --
-        // see its doc comment. `peer_sessions.remove` below re-checks
-        // presence after re-acquiring the lock, so a release racing with
-        // this unlocked window still behaves correctly (a concurrent
-        // second release of the same key just becomes a no-op).
-        if !self.has_session_on(peer_device_id, kind) {
-            return;
-        }
-        let (pinned_to_bluetooth, bluetooth_enabled) =
-            Self::bluetooth_primary_eligibility(db_path, peer_device_id);
-        {
+        // Removal happens *before* the DB read, not after -- a P1 review
+        // finding: with the DB read (up to ~75s worst case across 5
+        // retries against a 15s busy_timeout each) ordered first, a dead
+        // session stayed `has_session_on == true` for the whole retry
+        // window, stalling reconnect loops (`should_dial_peer`'s own
+        // `has_session_on` check) and leaving `push_to_peer` route traffic
+        // into a link that already stopped processing frames. Removal
+        // itself needs no DB access, so nothing about making it prompt
+        // costs anything; only the *primary recompute* genuinely depends
+        // on a fresh read, and that can safely lag a beat behind removal
+        // becoming visible.
+        let removed = {
             let Ok(mut guard) = self.runtime.lock() else {
                 return;
             };
@@ -321,12 +342,18 @@ impl DeviceConnectionState {
                 return; // wasn't claimed on this transport; nothing to release
             }
             guard.peer_transport_ack.remove(&key);
-            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
-        }
+            true
+        };
+        debug_assert!(removed);
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
             peer_device_id: peer_device_id.to_string(),
             kind,
         });
+        let (pinned_to_bluetooth, bluetooth_enabled) =
+            Self::bluetooth_primary_eligibility(db_path, peer_device_id);
+        if let Ok(mut guard) = self.runtime.lock() {
+            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
+        }
     }
 
     /// Reads `preferred_transport`/`bluetooth_enabled` for `peer_device_id`

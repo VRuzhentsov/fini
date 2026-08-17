@@ -561,6 +561,88 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
     );
 }
 
+/// Regression test for a P1 review finding: `try_claim_session`'s
+/// pre-lock `bluetooth_enabled` read is a time-of-check/time-of-use
+/// window -- a disable landing between that read and the claim being
+/// committed would otherwise let a Bluetooth session survive with a
+/// stale "enabled" snapshot. `bluetooth_enabled` defaults to `false`
+/// (the schema default, and every real disable ends there too), so
+/// claiming with it never having been enabled at all exercises the same
+/// post-commit self-correction path. Runs a minimal fake `run_session`
+/// consumer (just enough to react to `SessionCommand::Close`, matching
+/// what `close_session_on` actually needs downstream) since there's no
+/// real link/gate in this test to drive one.
+#[tokio::test(flavor = "multi_thread")]
+async fn claiming_a_bluetooth_session_while_disabled_self_corrects() {
+    let (server, server_db) = server_state("transport-claim-bluetooth-disabled-self-corrects");
+    seed_paired_device(&server_db, "peer-client");
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let consumer_server = server.clone();
+    let consumer_db = server_db.clone();
+    tokio::spawn(async move {
+        while let Some(command) = rx.recv().await {
+            if matches!(command, crate::services::space_sync::types::SessionCommand::Close) {
+                consumer_server.release_session("peer-client", TransportKind::Bluetooth, &consumer_db);
+                break;
+            }
+        }
+    });
+
+    assert!(server.try_claim_session("peer-client", TransportKind::Bluetooth, tx, &server_db));
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut closed = false;
+    while tokio::time::Instant::now() < deadline {
+        if !server.has_session_on("peer-client", TransportKind::Bluetooth) {
+            closed = true;
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        closed,
+        "a claim landing while bluetooth is disabled must self-correct, not survive"
+    );
+}
+
+/// Regression test for a P1 review finding: `release_session` used to do
+/// its (potentially slow, now-retrying) DB read *before* actually
+/// removing the session from `peer_sessions`, so a dead session stayed
+/// `has_session_on == true` for the whole retry window -- stalling
+/// reconnect loops and leaving `push_to_peer` route into a closed link.
+/// Points `db_path` at a directory that can never exist, so the trailing
+/// DB read (which only feeds primary recompute, not the removal itself)
+/// fails fast and predictably -- proving removal doesn't wait on it, and
+/// wouldn't even if it hung or panicked.
+#[tokio::test(flavor = "multi_thread")]
+async fn release_session_removes_before_its_own_db_read_can_block_it() {
+    let (server, server_db) = server_state("transport-release-removes-before-db-read");
+    seed_paired_device(&server_db, "peer-client");
+    let (tx, _rx) = tokio::sync::mpsc::channel(4);
+    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tx, &server_db));
+    assert!(server.has_session_on("peer-client", TransportKind::TcpWs));
+
+    let doomed_db_path = std::path::PathBuf::from("/nonexistent-directory-for-fini-tests/fini.db");
+    let peer = "peer-client".to_string();
+    let server_for_task = server.clone();
+    let handle = tokio::spawn(async move {
+        server_for_task.release_session(&peer, TransportKind::TcpWs, &doomed_db_path);
+    });
+
+    sleep(Duration::from_millis(20)).await;
+    assert!(
+        !server.has_session_on("peer-client", TransportKind::TcpWs),
+        "removal must not wait on (or depend on the success of) the DB read that only feeds \
+         primary recompute"
+    );
+    // Let the doomed background task finish (it panics on the unopenable
+    // path once its own DB portion runs) without that panic failing this
+    // test -- `JoinHandle::await` surfaces a panicking task as `Err`, not
+    // as a propagated panic here.
+    let _ = handle.await;
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the
