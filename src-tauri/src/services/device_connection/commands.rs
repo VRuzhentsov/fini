@@ -1469,6 +1469,19 @@ pub fn device_connection_set_bluetooth_transport_with_state_impl(
     if disabling {
         state.close_session_on(&peer_device_id, crate::services::transport::TransportKind::Bluetooth);
         state.close_session_on(&peer_device_id, crate::services::transport::TransportKind::Sim);
+        if !disabling_a_bluetooth_pin {
+            // `disabling_a_bluetooth_pin` already gets an equivalent
+            // `refresh_primary` call below, via `device_connection_
+            // set_preferred_transport_impl` -- this covers the unpinned
+            // case, a P1 review finding: without it, a peer that happened
+            // to have Bluetooth as primary (Network down at the time)
+            // would keep it as primary in memory -- and `push_to_peer`
+            // would keep routing real traffic there -- until some
+            // unrelated claim/release event happened to trigger a
+            // recompute, rather than the instant this disable takes
+            // effect.
+            state.refresh_primary(&peer_device_id, false, false);
+        }
     }
 
     if disabling_a_bluetooth_pin {

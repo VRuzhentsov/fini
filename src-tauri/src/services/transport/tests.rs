@@ -244,8 +244,6 @@ async fn network_dial_establishes_regardless_of_a_bluetooth_pin() {
         dialer.clone(),
         dialer_db,
         responder.identity.device_id.clone(),
-        "127.0.0.1".to_string(),
-        port,
     ));
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -260,6 +258,58 @@ async fn network_dial_establishes_regardless_of_a_bluetooth_pin() {
     assert!(
         established,
         "a Bluetooth pin must not suppress the Network dial loop"
+    );
+}
+
+/// Regression test for a P1 review finding: the in-flight-dial guard added
+/// to `spawn_dial_loop` means a peer's retry task is never re-spawned with
+/// fresh data while one is already running -- so `dial_with_backoff` must
+/// itself notice when the peer's presenced endpoint changes and adopt it,
+/// not keep retrying whatever address it happened to see on its first
+/// iteration. Seeds presence at a dead port first (so the first attempt
+/// fails fast), then updates presence to a real listening server mid-retry
+/// and confirms the loop picks up the new endpoint on its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn dial_with_backoff_adopts_a_changed_endpoint_mid_retry() {
+    let (responder, responder_db) = server_state("transport-dial-adopts-changed-endpoint-responder");
+    let (dialer, dialer_db) = server_state("transport-dial-adopts-changed-endpoint-dialer");
+    seed_paired_device(&responder_db, &dialer.identity.device_id);
+    seed_paired_device(&dialer_db, &responder.identity.device_id);
+
+    // A bound-then-dropped port: connecting to it fails fast (connection
+    // refused) rather than hanging, so the first retry iteration completes
+    // quickly without needing to wait out a real timeout.
+    let dead_port = free_port().await;
+    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", dead_port);
+
+    tokio::spawn(tcp_ws::dial_with_backoff(
+        dialer.clone(),
+        dialer_db,
+        responder.identity.device_id.clone(),
+    ));
+    sleep(Duration::from_millis(200)).await;
+    assert!(
+        !dialer.has_session_on(&responder.identity.device_id, TransportKind::TcpWs),
+        "must not have established anything against the dead port"
+    );
+
+    let real_port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), real_port));
+    sleep(Duration::from_millis(100)).await;
+    dialer.note_presence_for_test(&responder.identity.device_id, "127.0.0.1", real_port);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut established = false;
+    while tokio::time::Instant::now() < deadline {
+        if dialer.has_session_on(&responder.identity.device_id, TransportKind::TcpWs) {
+            established = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        established,
+        "the retry loop must adopt the peer's updated endpoint instead of retrying the stale one forever"
     );
 }
 
@@ -434,6 +484,80 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
         !server.has_session_on("peer-client", TransportKind::Bluetooth),
         "the disabled pair's Bluetooth session must actually close, not just stop counting \
          toward primary"
+    );
+}
+
+/// Regression test for a third P1 review finding on this PR: disabling
+/// Bluetooth for a peer with *no pin at all* (the common case -- most
+/// pairs are never pinned) must still recompute primary immediately, not
+/// only in the pinned-to-Bluetooth case the sibling test above already
+/// covers. Network is never brought up in this test at all, so Bluetooth
+/// is primary purely by "it's the only thing connected" -- exactly the
+/// unpinned scenario `device_connection_set_bluetooth_transport_with_
+/// state_impl`'s own `disabling_a_bluetooth_pin` branch used to skip
+/// calling `refresh_primary` for.
+#[tokio::test(flavor = "multi_thread")]
+async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "127.0.0.1");
+
+    let (server, server_db) = server_state("transport-disable-unpinned-bluetooth-flips-primary");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set((
+                paired_devices::bluetooth_enabled.eq(true),
+                paired_devices::bluetooth_address.eq(Some("127.0.0.1")),
+            ))
+            .execute(&mut conn)
+            .expect("enable bluetooth for seeded peer");
+    }
+
+    let ble_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ble_port = ble_listener.local_addr().unwrap().port();
+    let gate_server = server.clone();
+    let gate_db = server_db.clone();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = ble_listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        session::run_peer_gate(link, gate_server, gate_db).await;
+    });
+    sleep(Duration::from_millis(100)).await;
+
+    let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
+    let mut ble_link: Box<dyn Link> = Box::new(sim::SimLink::new(ble_stream));
+    session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
+    sleep(Duration::from_millis(50)).await;
+    std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+
+    assert_eq!(
+        server.primary_transport("peer-client"),
+        Some(TransportKind::Bluetooth),
+        "bluetooth should be primary -- it's the only connected transport, and unpinned"
+    );
+
+    let mut conn = open_db_at_path(&server_db);
+    crate::services::device_connection::device_connection_set_bluetooth_transport_with_state_impl(
+        &mut conn,
+        &server,
+        crate::services::device_connection::types::DeviceBluetoothTransportInput {
+            peer_device_id: "peer-client".to_string(),
+            enabled: false,
+            bluetooth_address: None,
+        },
+    )
+    .expect("disable bluetooth");
+
+    assert_eq!(
+        server.primary_transport("peer-client"),
+        None,
+        "primary must be recomputed synchronously on disable even with no pin involved, not \
+         left stale until an unrelated claim/release event happens to trigger a recompute"
     );
 }
 

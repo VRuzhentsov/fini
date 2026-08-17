@@ -266,6 +266,22 @@ impl DeviceConnectionState {
         sender: SessionSender,
         db_path: &Path,
     ) -> bool {
+        // Fast-path pre-check, and the DB read below, both happen *before*
+        // taking `self.runtime`'s lock -- a P1 review finding: this read
+        // (now retried up to 5x against a 15s busy_timeout each, see
+        // `db::try_open_db_at_path`) used to run *while the lock was held*,
+        // which could block every other peer's sends/ping-bookkeeping/
+        // status reads for over a minute, and would poison the lock for
+        // the rest of the process if `open_db_at_path` panicked mid-hold.
+        // The real insert below re-checks `contains_key` after
+        // re-acquiring the lock, so a claim racing with this unlocked
+        // window is still refused correctly, not just optimistically
+        // skipped.
+        if self.has_session_on(peer_device_id, kind) {
+            return false;
+        }
+        let (pinned_to_bluetooth, bluetooth_enabled) =
+            Self::bluetooth_primary_eligibility(db_path, peer_device_id);
         {
             let Ok(mut guard) = self.runtime.lock() else {
                 return false;
@@ -276,8 +292,6 @@ impl DeviceConnectionState {
             }
             guard.peer_sessions.insert(key.clone(), sender);
             guard.peer_transport_ack.insert(key, types::TransportAckState::default());
-            let (pinned_to_bluetooth, bluetooth_enabled) =
-                Self::bluetooth_primary_eligibility(db_path, peer_device_id);
             self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
@@ -288,6 +302,16 @@ impl DeviceConnectionState {
     }
 
     pub fn release_session(&self, peer_device_id: &str, kind: TransportKind, db_path: &Path) {
+        // Same "DB read outside the lock" fix as `try_claim_session` --
+        // see its doc comment. `peer_sessions.remove` below re-checks
+        // presence after re-acquiring the lock, so a release racing with
+        // this unlocked window still behaves correctly (a concurrent
+        // second release of the same key just becomes a no-op).
+        if !self.has_session_on(peer_device_id, kind) {
+            return;
+        }
+        let (pinned_to_bluetooth, bluetooth_enabled) =
+            Self::bluetooth_primary_eligibility(db_path, peer_device_id);
         {
             let Ok(mut guard) = self.runtime.lock() else {
                 return;
@@ -297,8 +321,6 @@ impl DeviceConnectionState {
                 return; // wasn't claimed on this transport; nothing to release
             }
             guard.peer_transport_ack.remove(&key);
-            let (pinned_to_bluetooth, bluetooth_enabled) =
-                Self::bluetooth_primary_eligibility(db_path, peer_device_id);
             self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
@@ -609,20 +631,40 @@ impl DeviceConnectionState {
     /// selection (`recompute_primary_locked` already excludes a disabled
     /// pair's Bluetooth from that, closing the race between this and the
     /// async teardown below) -- to honor `specs/device-connect/README.md`'s
-    /// "disabling ... prevents future Bluetooth use" contract. Best-effort:
-    /// `false` just means there was no live session on this transport to
-    /// close, not an error. Fire-and-forget via the mailbox -- the actual
-    /// teardown (and `release_session`) happens once `run_session`'s loop
-    /// processes it, not synchronously with this call.
+    /// "disabling ... prevents future Bluetooth use" contract. `false`
+    /// means there was no live session on this transport to close (not an
+    /// error) *or* delivery failed after retrying -- see the P1 review
+    /// finding this retry addresses: the mailbox is bounded (64) and
+    /// shared with data frames (`SessionCommand::Forward`), so a burst of
+    /// application traffic right when a disable happens could otherwise
+    /// silently drop the `Close` and leave the session claimed (and
+    /// possibly primary) after the DB already says it's disabled. Clones
+    /// the sender and retries outside the lock -- never sleeps while
+    /// holding `self.runtime`, matching `try_claim_session`/
+    /// `release_session`'s own fix for the same class of problem.
+    /// Fire-and-forget once accepted into the mailbox: the actual teardown
+    /// (and `release_session`) happens once `run_session`'s loop processes
+    /// it, not synchronously with this call.
     pub fn close_session_on(&self, peer_device_id: &str, kind: TransportKind) -> bool {
-        let guard = match self.runtime.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
+        let sender = {
+            let guard = match self.runtime.lock() {
+                Ok(g) => g,
+                Err(_) => return false,
+            };
+            match guard.peer_sessions.get(&(peer_device_id.to_string(), kind)) {
+                Some(sender) => sender.clone(),
+                None => return false,
+            }
         };
-        match guard.peer_sessions.get(&(peer_device_id.to_string(), kind)) {
-            Some(sender) => sender.try_send(SessionCommand::Close).is_ok(),
-            None => false,
+        for attempt in 0..5 {
+            if sender.try_send(SessionCommand::Close).is_ok() {
+                return true;
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1) as u64));
+            }
         }
+        false
     }
 
     #[cfg(any(feature = "ui-plane", test))]

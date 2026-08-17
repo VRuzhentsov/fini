@@ -249,7 +249,7 @@ pub fn spawn_dial_loop(
     let my_id = state.identity.device_id.clone();
     let peers = state.list_presenced_peers();
 
-    for (peer_id, addr, ws_port) in peers {
+    for (peer_id, _addr, _ws_port) in peers {
         if !should_dial_peer(
             my_id.as_str(),
             peer_id.as_str(),
@@ -265,7 +265,7 @@ pub fn spawn_dial_loop(
         let db_path = db_path.clone();
         let peer_id = peer_id.clone();
         tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id.clone(), addr, ws_port).await;
+            dial_with_backoff(state, db_path, peer_id.clone()).await;
             in_flight_dials().lock().unwrap().remove(&peer_id);
         });
     }
@@ -292,12 +292,20 @@ fn should_dial_peer(
 /// error-handling distinguishes a genuine rejection from a transport
 /// preference mismatch -- see the regression test for the P1 finding this
 /// guards against.
+///
+/// Re-reads the peer's current `(addr, ws_port)` from presence on *every*
+/// retry, not just once at spawn time -- a P1 review finding: with the
+/// in-flight guard above now suppressing `spawn_dial_loop` from ever
+/// re-spawning this peer while a task is already running for it, a stale
+/// captured endpoint would otherwise keep this loop dialing an address the
+/// peer stopped advertising indefinitely, even after discovery already
+/// has the peer's real, current one -- exactly what `ble::dial_with_backoff`
+/// already avoids by re-checking `is_still_bluetooth_eligible` (which reads
+/// the current address) on every iteration.
 pub(crate) async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_id: String,
-    addr: String,
-    ws_port: u16,
 ) {
     let mut delay = Duration::from_secs(1);
     let max_delay = Duration::from_secs(30);
@@ -306,13 +314,13 @@ pub(crate) async fn dial_with_backoff(
         if state.has_session_on(&peer_id, TransportKind::TcpWs) {
             return;
         }
-        let still_present = state
+        let Some((_, addr, ws_port)) = state
             .list_presenced_peers()
             .into_iter()
-            .any(|(id, _, _)| id == peer_id);
-        if !still_present {
-            return;
-        }
+            .find(|(id, _, _)| *id == peer_id)
+        else {
+            return; // no longer presenced
+        };
 
         let Ok(target_addr) = addr.parse::<IpAddr>() else {
             eprintln!("[transport][tcp_ws] invalid peer addr '{addr}'");
