@@ -9,9 +9,9 @@ different things at different layers. This table is the honest mapping.
 
 | Layer | What it proves | Runs on |
 |---|---|---|
-| Rust integration tests (`services::transport::tests`) | Transport-neutral: network-first selection, auth-gate rejects un-authed inbound, sticky single-session invariant, Bluetooth-fallback-role handoff, no duplicated/lost events. Runtime-agnostic — identical Rust runs on every OS, so this is the proof that holds for android-linux, android-android, linux-linux, and windows-android alike; there is no "android-ness" at the protocol layer. | Every PR, GitHub-hosted (`make pr-gate-be-unit`) |
-| Playwright `actors` project, `transport-selection.spec.ts` | Real app binaries, real network transport: paired actors with network available claim `tcp_ws`, never fall back. | Every PR, GitHub-hosted (`make pr-gate-e2e`) |
-| Playwright `actors-sim` project, `peer-sync-over-sim.spec.ts` | Real app binaries, network transport genuinely disabled (`FINI_DISCOVERY_DISABLED=1`): session claims `sim` (playing the Bluetooth-fallback role), an approved Space replicates over it, no new consent prompt, session stays sticky across ticks. | Every PR, GitHub-hosted (`make pr-gate-e2e`, chained in `scripts/e2e-runner.sh`) |
+| Rust integration tests (`services::transport::tests`) | Transport-neutral: per-(peer, transport) session claiming, auth-gate rejects un-authed inbound, both transports connect and prove liveness independently via ping/ack, primary-transport selection, no duplicated/lost events. Runtime-agnostic — identical Rust runs on every OS, so this is the proof that holds for android-linux, android-android, linux-linux, and windows-android alike; there is no "android-ness" at the protocol layer. | Every PR, GitHub-hosted (`make pr-gate-be-unit`) |
+| Playwright `actors` project, `transport-selection.spec.ts` | Real app binaries, real network transport: paired actors with network available claim `tcp_ws` as primary. | Every PR, GitHub-hosted (`make pr-gate-e2e`) |
+| Playwright `actors-sim` project, `peer-sync-over-sim.spec.ts` | Real app binaries, network transport genuinely disabled (`FINI_DISCOVERY_DISABLED=1`): session claims `sim` (standing in for Bluetooth), an approved Space replicates over it, no new consent prompt, session stays claimed across ticks. | Every PR, GitHub-hosted (`make pr-gate-e2e`, chained in `scripts/e2e-runner.sh`) |
 | `android-emulator-e2e` CI job | Single Android emulator: app boots, notification channel exists. Not a cross-device sync test. | Every PR, GitHub-hosted |
 | Real Bluetooth, real second device | The topologies as literally described in the ticket. | Local only (`make e2e-bt-local`, PR B) — no device lab, no self-hosted runner |
 
@@ -35,7 +35,7 @@ The Rust integration test layer is deliberately runtime-agnostic *by
 construction* — `space_sync::session` and `services::transport` have no
 `cfg(target_os = ...)` branches — so once the real Bluetooth adapter (PR B)
 exists, the exact same tests, run on the exact same CI, prove the exact same
-selection/auth-gate/sticky-handoff semantics for it. What CI cannot do is
+selection/auth-gate/dual-connection-liveness semantics for it. What CI cannot do is
 prove the *radio* works; that is what `make e2e-bt-local` (manual, this
 machine + a real Android device) is for, and why it stays out of the PR
 gate rather than being faked into looking automated.

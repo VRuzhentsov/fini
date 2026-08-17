@@ -2,12 +2,14 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { StarIcon } from "@heroicons/vue/24/solid";
+import { InformationCircleIcon } from "@heroicons/vue/24/outline";
 import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
 import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
-import { useDeviceStore, type DeviceTransportRowState } from "../stores/device";
+import { useDeviceStore, type DeviceTransportStatus } from "../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../stores/space";
 import { shortUuid } from "../utils/shortUuid";
 import { formatMacAddress, macAddressHexDigits } from "../utils/macAddress";
+import { transportStatusText } from "../utils/transportStatusCodes";
 
 const route = useRoute();
 const router = useRouter();
@@ -51,14 +53,14 @@ const transportStatuses = computed(() => {
   return deviceStore.getTransportStatuses(deviceId.value);
 });
 // A manual pin (device.preferred_transport) always wins over the backend's
-// own "what would automatic selection pick" signal (status.preferred) --
+// own primary-selection signal (status.primary) for display purposes --
 // once the user has pinned a transport, that's the one actually governing
-// reconnects, and the star should track it, not whichever transport
-// merely happens to be reachable right now.
+// which becomes primary once connected, and the star should track it, not
+// whichever transport happens to already be primary right now.
 const starredTransportKind = computed<"network" | "bluetooth" | null>(() => {
   const pinned = device.value?.preferred_transport;
   if (pinned === "network" || pinned === "bluetooth") return pinned;
-  return transportStatuses.value.find((status) => status.preferred)?.kind ?? null;
+  return transportStatuses.value.find((status) => status.primary)?.kind ?? null;
 });
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() => {
   if (!deviceId.value) return {};
@@ -282,33 +284,32 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
   return lastSynced ? `last synced: ${lastSynced}` : "Mapped";
 }
 
-// ADR 0003 Phase 2: shared four-state model for both transport rows.
-// `live` is the only state that gets a border (ring) -- the sole "this is
-// the transport actually carrying the session right now" signal, replacing
-// the old separate "connected now" text badge. Amber now only means
-// "recently unreliable" (Configured, reliable: false), not "network is
-// just doing the job instead" -- that case is Configured/reliable: true,
-// green with no border.
-function rowDotClass(state: DeviceTransportRowState): string {
-  switch (state.state) {
-    case "live":
-      return "bg-green-500 ring-2 ring-green-600 ring-offset-2 ring-offset-base-200";
-    case "configured":
-      return state.reliable ? "bg-green-500" : "bg-amber-400";
-    case "unconfigured":
-      return "bg-gray-400";
-  }
+// ADR-0003 revision: gray -> amber -> green per row, independent of which
+// transport is primary. The ring (border) is `primary`'s own signal --
+// "this is the transport actually carrying application traffic right
+// now" -- so a row can be green and unbordered (connected, healthy, just
+// not the one in use) or bordered while still amber (chosen as primary
+// the moment it connected, before its first ping/ack cycle completed).
+function rowDotClass(status: DeviceTransportStatus): string {
+  if (status.state.state === "unconfigured") return "bg-gray-400";
+  const isGreen = status.state.code === null;
+  const color = isGreen ? "bg-green-500" : "bg-amber-400";
+  if (!status.primary) return color;
+  const ring = isGreen ? "ring-green-600" : "ring-amber-500";
+  return `${color} ring-2 ${ring} ring-offset-2 ring-offset-base-200`;
 }
 
-function rowDetailText(state: DeviceTransportRowState): string {
-  switch (state.state) {
-    case "unconfigured":
-      return state.reason;
-    case "configured":
-      return state.reliable ? "Ready" : "Recently unreliable";
-    case "live":
-      return "Connected now";
-  }
+function rowDetailText(status: DeviceTransportStatus): string {
+  if (status.state.state === "unconfigured") return "Unavailable";
+  if (status.state.code !== null) return "Connecting…";
+  return status.primary ? "Connected now" : "Ready";
+}
+
+// The "i" tooltip only has something to say when there's a code to explain
+// -- a fully green, primary-or-not row has no error to surface.
+function rowStatusTooltip(status: DeviceTransportStatus): string | null {
+  const code = status.state.code;
+  return code ? transportStatusText(code) : null;
 }
 </script>
 
@@ -362,11 +363,13 @@ function rowDetailText(state: DeviceTransportRowState): string {
           :data-transport-kind="status.kind"
           :button="status.state.state !== 'unconfigured'"
           @click="
-            status.state.state !== 'unconfigured' && settingPreferredTransport === null && void pinTransport(status.kind)
+            status.state.state !== 'unconfigured' &&
+            settingPreferredTransport === null &&
+            void pinTransport(status.kind)
           "
         >
           <template #leading>
-            <span class="h-2.5 w-2.5 rounded-full" :class="rowDotClass(status.state)" />
+            <span class="h-2.5 w-2.5 rounded-full" :class="rowDotClass(status)" />
           </template>
           <template #start>
             <span class="font-medium">{{ status.kind === "network" ? "Network" : "Bluetooth" }}</span>
@@ -375,10 +378,21 @@ function rowDetailText(state: DeviceTransportRowState): string {
               class="ml-1.5 inline-block h-3 w-3 align-text-top opacity-60"
               :aria-label="device?.preferred_transport ? 'Pinned' : 'Automatically preferred'"
             />
+            <div
+              v-if="rowStatusTooltip(status)"
+              class="tooltip tooltip-right ml-1 inline-block align-text-top"
+              :data-tip="rowStatusTooltip(status)"
+            >
+              <InformationCircleIcon
+                class="size-4 opacity-60"
+                :aria-label="rowStatusTooltip(status) ?? undefined"
+                data-testid="transport-status-info"
+              />
+            </div>
           </template>
           <template #end>
             <span class="text-xs opacity-60">
-              {{ settingPreferredTransport === status.kind ? "Switching…" : rowDetailText(status.state) }}
+              {{ settingPreferredTransport === status.kind ? "Switching…" : rowDetailText(status) }}
             </span>
           </template>
         </SettingsListItem>

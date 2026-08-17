@@ -230,6 +230,39 @@ pub(super) struct SeenPeer {
     pub last_seen_mono: Instant,
 }
 
+/// ADR-0003 revision: per-(peer, transport) bidirectional ping/ack proof.
+/// "Green" (`DeviceConnectionState::transport_reliable`) requires both
+/// `own_ping_acked` and `peer_ping_received` true -- this device's own
+/// outbound ping was acked (proves this device can send *and* receive), and
+/// this device has received a ping from the peer and replied (proves the
+/// peer's own send reaches this device). Both sides run the identical
+/// protocol at the same 15s cadence (`PING_INTERVAL`), so a healthy link
+/// converges both peers to green within one interval of each other without
+/// needing an explicit shared/synced value beyond the ping/pong itself.
+/// "Continuously re-proven": neither flag is sticky. Each is cleared after
+/// 3 consecutive missed cycles on its own side -- reusing Phase 1's
+/// interval/threshold shape -- so a link that stops actually exchanging
+/// pings decays back to amber within ~45s even if the underlying transport
+/// never reports a hard disconnect.
+#[derive(Debug, Clone, Default)]
+pub(super) struct TransportAckState {
+    /// True once a `Pong` has answered this device's own most recent `Ping`.
+    pub own_ping_acked: bool,
+    /// True while a `Ping` this device sent is still awaiting its `Pong` --
+    /// distinguishes "haven't sent one yet" from "sent one, no reply yet"
+    /// so the tick handler knows whether a miss occurred.
+    pub own_ping_awaiting_pong: bool,
+    /// Consecutive tick cycles where an outstanding own-ping went unanswered.
+    /// Reset to 0 on any `Pong`; at 3, `own_ping_acked` flips to false.
+    pub consecutive_missed_own_pings: u32,
+    /// True while an inbound `Ping` from the peer has been seen recently
+    /// enough (within `PING_MISS_THRESHOLD` ticks).
+    pub peer_ping_received: bool,
+    /// Ticks elapsed since the last inbound `Ping` from the peer. Reset to
+    /// 0 whenever one arrives; at 3, `peer_ping_received` flips to false.
+    pub ticks_since_peer_ping: u32,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct DiscoveryRuntime {
     pub add_mode_enabled: bool,
@@ -247,30 +280,32 @@ pub(super) struct DiscoveryRuntime {
     pub incoming_space_sync_ends: HashMap<String, IncomingSpaceSyncEnd>,
     pub incoming_sync_events: HashMap<String, SyncEventEnvelope>,
     pub incoming_sync_acks: HashMap<String, IncomingSyncAck>,
-    pub peer_sessions: HashMap<String, SessionSender>,
-    /// Which transport carries each peer's currently claimed session. Kept
-    /// alongside `peer_sessions` (same keys) so status commands and the
-    /// lifecycle bus can report which transport is active without a second
-    /// lock. See `DeviceConnectionState::try_claim_session`.
-    pub peer_session_kind: HashMap<String, TransportKind>,
-    /// The peer's own negotiated `PROTOCOL_VERSION` for each currently
-    /// claimed session (same keys/lifecycle as `peer_session_kind`). ADR-0003
-    /// Phase 3: `device_connection_set_preferred_transport_impl` needs this
-    /// to know whether the live peer can even decode `PeerFrame::SwitchTransport`
-    /// before sending it -- see `DeviceConnectionState::session_protocol_version`.
-    pub peer_session_protocol_version: HashMap<String, u32>,
-    /// Consecutive TCP-WS connect/auth failures per peer, reset on success.
-    /// Discovery presence alone (`presence`, above) only means a peer's
-    /// beacons are reaching us — it says nothing about whether their
-    /// WebSocket port is actually reachable (bind failure, firewall). This
-    /// is what lets `network_effectively_available` distinguish "present"
-    /// from "actually connectable" so the Sim fallback role can engage when
-    /// the network transport is present-but-unusable, not just absent. See
-    /// `DeviceConnectionState::network_effectively_available`.
-    pub tcp_dial_failures: HashMap<String, u32>,
-    /// Consecutive Bluetooth connect/auth failures per peer, reset on
-    /// success — the same signal `tcp_dial_failures` is, for the other
-    /// transport. See `DeviceConnectionState::bluetooth_effectively_reliable`
-    /// and ADR-0003 Phase 2.
-    pub bluetooth_dial_failures: HashMap<String, u32>,
+    /// ADR-0003 revision: one session *per transport*, not one per peer --
+    /// both Network and Bluetooth stay connected simultaneously so either
+    /// can earn a real (not remembered) green. Keyed by `(peer_device_id,
+    /// TransportKind)`. See `DeviceConnectionState::try_claim_session`.
+    pub peer_sessions: HashMap<(String, TransportKind), SessionSender>,
+    /// Which transport is *primary* for each peer -- the one carrying real
+    /// application traffic (SyncEvent, BootstrapEnd, etc.), reported as
+    /// `RowState::Live`. Both transports can be connected and green at
+    /// once; only one is ever primary. `None` until at least one transport
+    /// has claimed a session for this peer.
+    pub peer_primary_transport: HashMap<String, TransportKind>,
+    /// Per-(peer, transport) bidirectional ping/ack state -- see
+    /// `PeerFrame::Ping`/`Pong` and `DeviceConnectionState::transport_ack_state`.
+    pub peer_transport_ack: HashMap<(String, TransportKind), TransportAckState>,
+    /// Last-known `bluetooth_enabled` per peer, written every time
+    /// `recompute_primary_locked` runs (it already reads this from the DB
+    /// for its own purposes). A P1 review finding: `reselect_primary_from_
+    /// runtime_only` -- the DB-free fallback `release_session` uses so
+    /// `peer_primary_transport` never dangles while a fallible DB read is
+    /// still in flight -- otherwise has no way to know Bluetooth was *just*
+    /// disabled (its session may still be in `peer_sessions`, since
+    /// `close_session_on`'s `Close` is delivered asynchronously) and could
+    /// pick it as the fallback primary anyway. Missing entry is treated as
+    /// `false` (fail closed, matching the disable contract's own
+    /// direction) -- self-corrects within one DB-backed recompute either
+    /// way, so a brief false negative here is far cheaper than a false
+    /// positive routing real traffic over an opted-out transport.
+    pub peer_bluetooth_enabled_cache: HashMap<String, bool>,
 }

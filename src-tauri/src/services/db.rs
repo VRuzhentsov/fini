@@ -59,13 +59,49 @@ pub fn open_db_at_path(path: &Path) -> SqliteConnection {
 }
 
 pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
+    // Retries the whole open (connect + pragmas + migration check), not
+    // just one query inside it: a CI-only "database is locked" failure
+    // ADR-0003's dual-connection revision surfaced (a new DB round-trip on
+    // every session claim/release, `DeviceConnectionState::
+    // bluetooth_primary_eligibility`) survived both a `busy_timeout` bump
+    // (5000 -> 15000) and a `journal_mode` change (WAL -> DELETE for test
+    // builds) with zero effect on real CI runners, while passing reliably
+    // in a local reproduction of the same container image both times --
+    // meaning SQLite's own busy-retry isn't resolving whatever this
+    // actually is under GitHub-hosted runners' specific load/IO
+    // characteristics (observed CI runs taking ~4-8x longer wall-clock
+    // than the same suite locally). An application-level retry here is
+    // the more robust fix precisely because it doesn't depend on
+    // diagnosing SQLite's internal locking correctly -- it just accepts
+    // that a transient "locked"/"busy" open can happen and tries again
+    // shortly after, which is safe: `try_open_db_at_path` has made no
+    // partial writes to retry over, it can only fail before or during the
+    // connect/pragma/migration-check sequence.
+    let mut last_err = String::new();
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(200 * attempt as u64));
+        }
+        match try_open_db_at_path_once(path) {
+            Ok(conn) => return Ok(conn),
+            Err(err) => {
+                let retriable = err.contains("database is locked") || err.contains("database is busy");
+                last_err = err;
+                if !retriable {
+                    return Err(last_err);
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
+fn try_open_db_at_path_once(path: &Path) -> Result<SqliteConnection, String> {
     let mut conn = SqliteConnection::establish(path.to_str().ok_or("database path is not UTF-8")?)
         .map_err(|err| format!("failed to open database: {err}"))?;
-    diesel::sql_query(
-        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
-    )
-    .execute(&mut conn)
-    .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
+    diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 15000;")
+        .execute(&mut conn)
+        .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
     ensure_database_schema_is_supported(&mut conn)?;
     conn.run_pending_migrations(MIGRATIONS)
         .map_err(|err| format!("failed to run database migrations: {err}"))?;

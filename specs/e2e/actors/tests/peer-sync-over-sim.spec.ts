@@ -51,8 +51,9 @@ test('peer session establishes over Sim transport when network is unavailable, a
   await expectNoIncomingSpaceSyncDialog(actorA);
   await expectNoIncomingSpaceSyncDialog(actorB);
 
-  // Session claim is sticky: still the same transport after further ticks,
-  // never re-negotiated mid-session.
+  // Sim stays primary across further ticks: with Network genuinely
+  // disabled for this test, primary-transport selection has nothing else
+  // to pick.
   await actorA.invoke('space_sync_tick');
   const kindOnAAfterTick = await actorA.invoke<string>('device_connection_session_transport', {
     peerDeviceId: syncedB.identity.device_id,

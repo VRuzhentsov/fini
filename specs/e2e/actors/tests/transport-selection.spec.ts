@@ -3,12 +3,12 @@ import { ensureSyncedActors } from '../helpers/device-sync.ts';
 
 /**
  * Companion to `peer-sync-over-sim.spec.ts`: proves the network-first half
- * of transport selection in the real app. Normal actors (network transport
- * available, the default/common case) must claim their session as `tcp_ws`
- * — never falling back — via the same `device_connection_session_transport`
- * surface the Sim-fallback test asserts `sim` on. Together the two specs
- * prove selection end-to-end: network preferred when available, fallback
- * only when it genuinely is not. See `specs/e2e/transports.md`.
+ * of primary-transport selection in the real app. Normal actors (network
+ * transport available, the default/common case) must report `tcp_ws` as
+ * primary via the same `device_connection_session_transport` surface the
+ * Sim test asserts `sim` on. Together the two specs prove primary
+ * selection end-to-end: network wins whenever it's connected. See
+ * `specs/e2e/transports.md`.
  */
 test('paired actors with network available claim their session as the network transport', async ({
   actorA,
