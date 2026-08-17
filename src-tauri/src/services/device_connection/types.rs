@@ -294,4 +294,18 @@ pub(super) struct DiscoveryRuntime {
     /// Per-(peer, transport) bidirectional ping/ack state -- see
     /// `PeerFrame::Ping`/`Pong` and `DeviceConnectionState::transport_ack_state`.
     pub peer_transport_ack: HashMap<(String, TransportKind), TransportAckState>,
+    /// Last-known `bluetooth_enabled` per peer, written every time
+    /// `recompute_primary_locked` runs (it already reads this from the DB
+    /// for its own purposes). A P1 review finding: `reselect_primary_from_
+    /// runtime_only` -- the DB-free fallback `release_session` uses so
+    /// `peer_primary_transport` never dangles while a fallible DB read is
+    /// still in flight -- otherwise has no way to know Bluetooth was *just*
+    /// disabled (its session may still be in `peer_sessions`, since
+    /// `close_session_on`'s `Close` is delivered asynchronously) and could
+    /// pick it as the fallback primary anyway. Missing entry is treated as
+    /// `false` (fail closed, matching the disable contract's own
+    /// direction) -- self-corrects within one DB-backed recompute either
+    /// way, so a brief false negative here is far cheaper than a false
+    /// positive routing real traffic over an opted-out transport.
+    pub peer_bluetooth_enabled_cache: HashMap<String, bool>,
 }

@@ -693,6 +693,68 @@ async fn release_session_reselects_primary_from_runtime_state_without_waiting_on
     let _ = handle.await;
 }
 
+/// Regression test for a second P1 review finding on the DB-free
+/// fallback: it must not pick a Bluetooth session that's already been
+/// disabled but hasn't been torn down yet (`close_session_on`'s `Close`
+/// is delivered asynchronously, so the session can still be sitting in
+/// `peer_sessions` for a beat). Disables Bluetooth first (which updates
+/// `peer_bluetooth_enabled_cache` immediately via the normal DB-backed
+/// `refresh_primary` path), deliberately without draining the mailbox (no
+/// `run_session` consumer exists in this test), then ends the *other*
+/// transport against a doomed DB path to exercise the DB-free fallback
+/// specifically.
+#[tokio::test(flavor = "multi_thread")]
+async fn reselect_primary_excludes_a_just_disabled_bluetooth_session() {
+    let (server, server_db) = server_state("transport-reselect-excludes-disabled-bluetooth");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set(paired_devices::bluetooth_enabled.eq(true))
+            .execute(&mut conn)
+            .expect("enable bluetooth for seeded peer");
+    }
+
+    let (tcp_tx, _tcp_rx) = tokio::sync::mpsc::channel(4);
+    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tcp_tx, &server_db));
+    let (ble_tx, _ble_rx) = tokio::sync::mpsc::channel(4);
+    assert!(server.try_claim_session("peer-client", TransportKind::Bluetooth, ble_tx, &server_db));
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
+
+    let mut conn = open_db_at_path(&server_db);
+    crate::services::device_connection::device_connection_set_bluetooth_transport_with_state_impl(
+        &mut conn,
+        &server,
+        crate::services::device_connection::types::DeviceBluetoothTransportInput {
+            peer_device_id: "peer-client".to_string(),
+            enabled: false,
+            bluetooth_address: None,
+        },
+    )
+    .expect("disable bluetooth");
+    assert!(
+        server.has_session_on("peer-client", TransportKind::Bluetooth),
+        "the Bluetooth session must still be present -- its async Close hasn't been processed"
+    );
+
+    let doomed_db_path = std::path::PathBuf::from("/nonexistent-directory-for-fini-tests/fini.db");
+    let peer = "peer-client".to_string();
+    let server_for_task = server.clone();
+    let handle = tokio::spawn(async move {
+        server_for_task.release_session(&peer, TransportKind::TcpWs, &doomed_db_path);
+    });
+
+    sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        server.primary_transport("peer-client"),
+        None,
+        "the DB-free fallback must not pick the still-claimed but already-disabled Bluetooth \
+         session as primary"
+    );
+
+    let _ = handle.await;
+}
+
 /// Regression test for Phase 1 of ADR 0002: whichever side of a network
 /// session can read its own real Bluetooth address self-reports it via
 /// `PeerFrame::BluetoothAddressUpdate`, once, right after auth. Here the

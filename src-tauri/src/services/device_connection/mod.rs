@@ -380,6 +380,20 @@ impl DeviceConnectionState {
     /// never dangles, not to make the pin-aware choice, which
     /// `recompute_primary_locked` still owns and applies moments later
     /// once the (fallible, DB-backed) pin read completes.
+    ///
+    /// Bluetooth candidacy still respects `peer_bluetooth_enabled_cache`
+    /// (last-known, not fresh) -- a P1 review finding: without this, a
+    /// Bluetooth session disabled moments ago but not yet torn down
+    /// (`close_session_on`'s `Close` is delivered asynchronously) would
+    /// still be sitting in `peer_sessions` and could get picked as the
+    /// fallback primary here, resuming `push_to_peer` traffic over an
+    /// opted-out transport until the next DB-backed recompute corrects it
+    /// -- or indefinitely, if that read panics. A missing cache entry
+    /// fails closed (treated as disabled): self-corrects on the very next
+    /// DB-backed recompute either way, so a brief false negative here costs
+    /// far less than a false positive would. `Sim`/`LoRa` are exempt, same
+    /// as `recompute_primary_locked`'s own exclusion -- they aren't
+    /// governed by `bluetooth_enabled` at all.
     fn reselect_primary_from_runtime_only(guard: &mut types::DiscoveryRuntime, peer_device_id: &str) {
         let still_valid = guard
             .peer_primary_transport
@@ -388,8 +402,14 @@ impl DeviceConnectionState {
         if still_valid {
             return;
         }
+        let bluetooth_enabled = guard
+            .peer_bluetooth_enabled_cache
+            .get(peer_device_id)
+            .copied()
+            .unwrap_or(false);
         let fallback = [TransportKind::TcpWs, TransportKind::Bluetooth, TransportKind::Sim, TransportKind::LoRa]
             .into_iter()
+            .filter(|kind| *kind != TransportKind::Bluetooth || bluetooth_enabled)
             .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
         match fallback {
             Some(kind) => {
@@ -450,6 +470,11 @@ impl DeviceConnectionState {
         pinned_to_bluetooth: bool,
         bluetooth_enabled: bool,
     ) {
+        // Feeds `reselect_primary_from_runtime_only`'s DB-free fallback --
+        // see its own doc comment and `peer_bluetooth_enabled_cache`'s.
+        guard
+            .peer_bluetooth_enabled_cache
+            .insert(peer_device_id.to_string(), bluetooth_enabled);
         let network_connected = guard
             .peer_sessions
             .contains_key(&(peer_device_id.to_string(), TransportKind::TcpWs));
