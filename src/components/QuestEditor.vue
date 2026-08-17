@@ -1,27 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { ChecklistActivity, Quest, UpdateQuestInput } from "../stores/quest";
+import type { ChecklistActivity, Energy, Priority, Quest, UpdateQuestInput } from "../stores/quest";
 import { SPACE_COLOR_CLASS } from "../stores/space";
 import { parseChecklist } from "../utils/checklist";
 import {
   PaperClipIcon,
   TagIcon,
-  FlagIcon,
   ClockIcon,
   ChevronUpIcon,
   ExclamationCircleIcon,
 } from "@heroicons/vue/24/outline";
 import ActionsBtn from "./ActionsBtn.vue";
-import QuestEnergySelector from "./QuestEnergySelector.vue";
-import QuestPrioritySelector from "./QuestPrioritySelector.vue";
+import QuestMetadataButton from "./QuestMetadataButton.vue";
 import ChecklistEditor from "./ChecklistEditor.vue";
 
 const props = defineProps<{
   quest: Quest;
   spaceName: string;
   isFocus?: boolean;
-  priorityColor: string;
-  priorityLabel: string;
   reminderText?: string;
   timestampText?: string;
   /** Post-completion audit trail (issue #128) — only meaningful for checklist quests. */
@@ -38,7 +34,6 @@ const emit = defineEmits<{
   setFocus: [];
   collapse: [];
   openReminder: [];
-  cyclePriority: [];
   more: [event: MouseEvent];
   toggleChecklistItem: [itemId: string, checked: boolean];
   addChecklistItem: [text: string];
@@ -221,23 +216,6 @@ const renderFlags = computed(() => ({
     />
     <p v-else-if="renderFlags.proseReadonly" class="quest-editor-desc readonly">{{ quest.description }}</p>
 
-    <div class="quest-editor-metadata">
-      <QuestEnergySelector
-        class="quest-editor-metadata-field"
-        :model-value="quest.energy"
-        test-id="quest-editor-energy"
-        :disabled="quest.status !== 'active'"
-        @update:model-value="emit('update', { energy: $event })"
-      />
-      <QuestPrioritySelector
-        class="quest-editor-metadata-field"
-        :model-value="quest.priority"
-        test-id="quest-editor-priority"
-        :disabled="quest.status !== 'active'"
-        @update:model-value="emit('update', { priority: $event })"
-      />
-    </div>
-
     <div class="quest-editor-footer">
       <button
         v-if="quest.status === 'active'"
@@ -255,14 +233,18 @@ const renderFlags = computed(() => ({
         <template v-if="quest.status === 'active'">
           <button class="quest-editor-icon disabled" disabled title="Attachment"><PaperClipIcon /></button>
           <button class="quest-editor-icon disabled" disabled title="Label"><TagIcon /></button>
-          <button
-            class="quest-editor-icon"
-            :style="{ color: priorityColor }"
-            :title="priorityLabel"
-            @click.stop="emit('cyclePriority')"
-          >
-            <FlagIcon />
-          </button>
+          <QuestMetadataButton
+            kind="energy"
+            :model-value="quest.energy"
+            test-id="quest-editor-energy"
+            @update:model-value="emit('update', { energy: $event as Energy })"
+          />
+          <QuestMetadataButton
+            kind="priority"
+            :model-value="quest.priority"
+            test-id="quest-editor-priority"
+            @update:model-value="emit('update', { priority: $event as Priority })"
+          />
         </template>
         <ActionsBtn title="More" @click.stop="emit('more', $event)" />
       </div>
@@ -406,10 +388,6 @@ const renderFlags = computed(() => ({
 
 .quest-editor-desc::placeholder { color: var(--fg-5); }
 .quest-editor-desc.readonly { min-height: 0; margin: 0; }
-
-.quest-editor-metadata { display: flex; gap: 0.75rem; }
-.quest-editor-metadata-field { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--fg-3); font-size: 0.75rem; }
-.quest-editor-metadata-field select { min-width: 6rem; padding: 0.25rem; color: var(--fg-1); background: var(--color-base-200); border: 1px solid var(--color-border-soft); border-radius: 6px; }
 
 .quest-editor-footer {
   display: flex;

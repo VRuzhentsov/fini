@@ -13,8 +13,7 @@ import {
 } from "@heroicons/vue/24/outline";
 import { serializeChecklist, type ChecklistItem } from "../../utils/checklist";
 import ChecklistEditor from "../ChecklistEditor.vue";
-import QuestEnergySelector from "../QuestEnergySelector.vue";
-import QuestPrioritySelector from "../QuestPrioritySelector.vue";
+import QuestMetadataButton from "../QuestMetadataButton.vue";
 import ReminderMenu from "../QuestsView/ReminderMenu.vue";
 import SpacePicker from "../SpacePicker.vue";
 
@@ -287,21 +286,6 @@ async function onSubmit() {
           :disabled="isSubmitting"
         />
 
-        <div class="grid grid-cols-2 gap-2">
-          <QuestEnergySelector
-            v-model="energy"
-            class="form-control text-xs"
-            test-id="new-quest-energy"
-            :disabled="isSubmitting"
-          />
-          <QuestPrioritySelector
-            v-model="priority"
-            class="form-control text-xs"
-            test-id="new-quest-priority"
-            :disabled="isSubmitting"
-          />
-        </div>
-
         <ChecklistEditor
           v-if="renderFlags.checklistEditor"
           ref="checklistEditorRef"
@@ -351,6 +335,20 @@ async function onSubmit() {
             <CheckCircleIcon class="size-5" />
             <span>Checklist</span>
           </button>
+          <QuestMetadataButton
+            kind="energy"
+            :model-value="energy"
+            test-id="new-quest-energy"
+            :disabled="isSubmitting"
+            @update:model-value="energy = $event as Energy"
+          />
+          <QuestMetadataButton
+            kind="priority"
+            :model-value="priority"
+            test-id="new-quest-priority"
+            :disabled="isSubmitting"
+            @update:model-value="priority = $event as Priority"
+          />
           <button
             type="button"
             data-testid="new-quest-expand"
@@ -359,8 +357,8 @@ async function onSubmit() {
             :disabled="isSubmitting"
             @click="toggleExpanded"
           >
-            <ChevronUpIcon v-if="renderFlags.expandedIcon" class="size-4 -scale-y-100" />
-            <ChevronDownIcon v-else class="size-4" />
+            <ChevronDownIcon v-if="renderFlags.expandedIcon" class="size-4" />
+            <ChevronUpIcon v-else class="size-4" />
             <span>{{ isExpanded ? "Less" : "More" }}</span>
           </button>
         </div>
