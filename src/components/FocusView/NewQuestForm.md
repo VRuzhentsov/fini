@@ -8,7 +8,7 @@ Collapsed quick-create state:
 
 ```
 [ title input                                  ] [ Space ▾ ]
-[ Date ] [ More ]                                        [ Send ]
+[ Date ] [ Checklist ] [ ⚡ ] [ 🚩 ] [ More ]              [ Send ]
 ```
 
 Expanded metadata state:
@@ -17,10 +17,10 @@ Expanded metadata state:
 [ title input                                  ] [ Space ▾ ]
 [ description textarea                                      ]
 [ shortcut hint                                             ]
-[ Date / reminder ] [ Less ]                            [ Send ]
+[ Date / reminder ] [ Checklist ] [ ⚡ ] [ 🚩 ] [ Less ]    [ Send ]
 ```
 
-The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input. The shared [[QuestEnergySelector]] and [[QuestPrioritySelector]] keep metadata controls aligned with the editor; `renderFlags` owns all non-trivial conditional sections while form draft state remains in refs in this component.
+The composer uses the same compact card language as [[QuestEditor]] instead of the bottom chat-only input. The shared `QuestMetadataButton` (energy `⚡` / priority `🚩` cycling mini-buttons) keeps metadata controls aligned with the editor and is always visible in the footer row, collapsed or expanded, not gated behind "More"; `renderFlags` owns all non-trivial conditional sections while form draft state remains in refs in this component.
 
 ## Space selector
 
