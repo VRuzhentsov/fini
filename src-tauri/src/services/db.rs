@@ -61,8 +61,19 @@ pub fn open_db_at_path(path: &Path) -> SqliteConnection {
 pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
     let mut conn = SqliteConnection::establish(path.to_str().ok_or("database path is not UTF-8")?)
         .map_err(|err| format!("failed to open database: {err}"))?;
+    // busy_timeout: 15000, not 5000 -- ADR-0003's dual-connection revision
+    // added a new DB round-trip on every session claim/release
+    // (`DeviceConnectionState::bluetooth_primary_eligibility`, feeding
+    // `recompute_primary_locked`), which under CI's containerized/overlay
+    // filesystem (slower fsync/lock latency than a native disk) was enough
+    // extra concurrent short-lived-connection churn to occasionally exceed
+    // 5s and surface as "database is locked" -- observed in CI, not
+    // reproducible locally across several runs. A single panicking test
+    // also poisons any `std::sync::Mutex` it holds (e.g.
+    // `BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK`), which is why one lock
+    // timeout was seen taking down an unrelated second test too.
     diesel::sql_query(
-        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
+        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 15000;",
     )
     .execute(&mut conn)
     .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
