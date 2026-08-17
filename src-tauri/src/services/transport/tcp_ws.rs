@@ -5,11 +5,11 @@
 //! here because that worker already runs continuously and is the thing the
 //! rest of `device_connection` (add-device UI, etc.) also depends on.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
@@ -258,6 +258,9 @@ pub fn spawn_dial_loop(
         ) {
             continue;
         }
+        if is_backing_off(&dial_backoff_until().lock().unwrap(), &peer_id, Instant::now()) {
+            continue;
+        }
         if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
             continue;
         }
@@ -276,6 +279,27 @@ pub fn spawn_dial_loop(
 fn in_flight_dials() -> &'static std::sync::Mutex<HashSet<String>> {
     static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
     IN_FLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+/// Peers whose Network dial should not be retried before this instant.
+/// Mirrors `ble::dial_backoff_until`/`DIAL_BACKOFF`/`is_backing_off` --
+/// same P1 finding, same fix, other transport: a pre-v3 peer that already
+/// has a Bluetooth session rejects our now-unconditional Network dial via
+/// its own sticky-single-session code, and without this, the very next
+/// `space_sync_tick` would spawn a fresh attempt against it immediately,
+/// cycling connect/reject/disconnect indefinitely whenever Network becomes
+/// available after Bluetooth.
+fn dial_backoff_until() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
+    static BACKOFF: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = std::sync::OnceLock::new();
+    BACKOFF.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+const DIAL_BACKOFF: Duration = Duration::from_secs(60);
+
+/// See `ble::is_backing_off`'s own doc comment for why this is split out
+/// as a pure, directly-unit-testable function.
+fn is_backing_off(backoff: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
+    backoff.get(peer_id).is_some_and(|until| now < *until)
 }
 
 fn should_dial_peer(
@@ -356,6 +380,14 @@ pub(crate) async fn dial_with_backoff(
                     Err(err) => {
                         eprintln!("[transport][tcp_ws] auth with {peer_id} failed: {err}");
                         if err.starts_with("auth rejected") {
+                            // Not just "don't retry within this task" --
+                            // `spawn_dial_loop` would otherwise spawn a
+                            // fresh one on the very next tick regardless.
+                            // See `dial_backoff_until`'s own doc comment.
+                            dial_backoff_until()
+                                .lock()
+                                .unwrap()
+                                .insert(peer_id.clone(), Instant::now() + DIAL_BACKOFF);
                             return; // not paired; don't retry
                         }
                     }
@@ -384,6 +416,33 @@ mod tests {
         assert!(!should_dial_peer("local-a", "peer-c", &paired, false));
         assert!(!should_dial_peer("peer-z", "peer-b", &paired, false));
         assert!(!should_dial_peer("local-a", "peer-b", &paired, true));
+    }
+
+    /// Regression test for a P1 review finding: a terminal auth rejection
+    /// (e.g. a pre-v3 peer's own sticky-single-session code rejecting our
+    /// now-unconditional Network dial while it already has a Bluetooth
+    /// session with us) must suppress `spawn_dial_loop` from immediately
+    /// spawning a fresh attempt against that peer on the very next tick.
+    /// Mirrors `ble::dial_backoff_suppresses_a_peer_until_its_deadline_passes`.
+    #[test]
+    fn dial_backoff_suppresses_a_peer_until_its_deadline_passes() {
+        let mut backoff = HashMap::new();
+        let now = Instant::now();
+        assert!(!is_backing_off(&backoff, "peer-a", now), "no entry yet -- must not back off");
+
+        backoff.insert("peer-a".to_string(), now + Duration::from_secs(60));
+        assert!(
+            is_backing_off(&backoff, "peer-a", now),
+            "within the backoff window -- must skip"
+        );
+        assert!(
+            !is_backing_off(&backoff, "peer-b", now),
+            "a different peer's entry must not affect this one"
+        );
+        assert!(
+            !is_backing_off(&backoff, "peer-a", now + Duration::from_secs(61)),
+            "once the deadline passes, the peer is eligible again"
+        );
     }
 
     async fn free_port() -> u16 {
