@@ -93,6 +93,7 @@ describe("recurring checklist item text scope", () => {
       props: { quests: [quest] },
       global: {
         stubs: {
+          QuestListItem: false,
           QuestEditor: questEditorStub,
           RecurrenceScopeSheet: recurrenceScopeSheetStub,
           ReminderMenu: true,
@@ -137,6 +138,7 @@ describe("recurring checklist item text scope", () => {
       props: { quests: [quest] },
       global: {
         stubs: {
+          QuestListItem: false,
           QuestEditor: questEditorStub,
           RecurrenceScopeSheet: recurrenceScopeSheetStub,
           ReminderMenu: true,
@@ -171,6 +173,7 @@ describe("recurring checklist item text scope", () => {
       props: { quests: [quest] },
       global: {
         stubs: {
+          QuestListItem: false,
           QuestEditor: questEditorStub,
           RecurrenceScopeSheet: recurrenceScopeSheetStub,
           ReminderMenu: true,
