@@ -21,6 +21,7 @@ import {
 import ReminderMenu from "./ReminderMenu.vue";
 import RecurrenceScopeSheet from "./RecurrenceScopeSheet.vue";
 import QuestEditor from "../QuestEditor.vue";
+import QuestMetadataButton from "../QuestMetadataButton.vue";
 
 const props = defineProps<{
   quests: Quest[];
@@ -341,6 +342,8 @@ function formatTimestamp(quest: Quest): string {
           <CheckCircleIcon class="size-3" />
           {{ checklistBadgeText(quest) }}
         </span>
+        <QuestMetadataButton v-if="quest.status === 'active' && quest.energy !== 'medium'" kind="energy" :model-value="quest.energy" readonly />
+        <QuestMetadataButton v-if="quest.status === 'active' && quest.priority !== 'medium'" kind="priority" :model-value="quest.priority" readonly />
         <span class="quest-space-badge badge badge-xs" :class="spaceCss(quest)">{{ spaceName(quest) }}</span>
       </div>
 

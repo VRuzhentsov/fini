@@ -10,6 +10,8 @@ use tauri::{Manager, State};
 use crate::models::Space;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::UpdateQuestInput;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::models::UpdateQuestCommandInput;
 use crate::models::{CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries};
 use crate::models::{CreateQuestInput, QuestFieldPatch, QuestUpdatePatch};
 use crate::repositories::quest::QuestRepository;
@@ -40,7 +42,59 @@ struct RepeatRule {
     end_after: Option<i64>,
 }
 
-fn compute_next_due(current_due: &NaiveDate, rule: &RepeatRule) -> Option<NaiveDate> {
+/// Maps the two-letter weekday tokens the UI uses ("Mo".."Su") to `chrono::Weekday`.
+fn parse_weekday_token(s: &str) -> Option<chrono::Weekday> {
+    use chrono::Weekday;
+    match s {
+        "Mo" => Some(Weekday::Mon),
+        "Tu" => Some(Weekday::Tue),
+        "We" => Some(Weekday::Wed),
+        "Th" => Some(Weekday::Thu),
+        "Fr" => Some(Weekday::Fri),
+        "Sa" => Some(Weekday::Sat),
+        "Su" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+/// Number of ISO weeks between the Monday of `anchor`'s week and the Monday of `date`'s week.
+/// `date` is assumed to be on or after `anchor` (only ever called with forward-scanned dates).
+fn weeks_since_anchor(anchor: &NaiveDate, date: &NaiveDate) -> i64 {
+    use chrono::Datelike;
+    let anchor_monday = *anchor - chrono::Duration::days(anchor.weekday().num_days_from_monday() as i64);
+    let date_monday = *date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
+    (date_monday - anchor_monday).num_days() / 7
+}
+
+/// Next date strictly after `current_due` whose weekday is in `days` and whose week is `interval`
+/// weeks (or a multiple thereof) from `week_anchor`'s week. Bounded so a malformed/empty `days`
+/// can never loop forever.
+fn next_weekday_occurrence(
+    current_due: &NaiveDate,
+    week_anchor: &NaiveDate,
+    interval: i64,
+    days: &[chrono::Weekday],
+) -> Option<NaiveDate> {
+    use chrono::Datelike;
+    let interval = interval.max(1);
+    let max_scan_days = interval * 7 + 7;
+    let mut candidate = *current_due + chrono::Duration::days(1);
+    for _ in 0..max_scan_days {
+        if days.contains(&candidate.weekday())
+            && weeks_since_anchor(week_anchor, &candidate) % interval == 0
+        {
+            return Some(candidate);
+        }
+        candidate += chrono::Duration::days(1);
+    }
+    None
+}
+
+fn compute_next_due(
+    current_due: &NaiveDate,
+    rule: &RepeatRule,
+    week_anchor: &NaiveDate,
+) -> Option<NaiveDate> {
     use chrono::{Datelike, Months, Weekday};
 
     match rule.preset.as_deref() {
@@ -64,6 +118,16 @@ fn compute_next_due(current_due: &NaiveDate, rule: &RepeatRule) -> Option<NaiveD
         Some("yearly") => current_due.checked_add_months(Months::new(12)),
         Some("custom") => {
             let interval = rule.interval.unwrap_or(1).max(1);
+            let days: Vec<Weekday> = rule
+                .days_of_week
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|token| parse_weekday_token(token))
+                .collect();
+            if !days.is_empty() {
+                return next_weekday_occurrence(current_due, week_anchor, interval, &days);
+            }
             match rule.unit.as_deref() {
                 Some("day") => Some(*current_due + chrono::Duration::days(interval)),
                 Some("week") => Some(*current_due + chrono::Duration::weeks(interval)),
@@ -160,7 +224,17 @@ pub fn generate_next_occurrence(
         .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
         .unwrap_or_else(|| Utc::now().date_naive());
 
-    let next_due = match compute_next_due(&current_due, &rule) {
+    // Anchor for the days_of_week+interval week cadence: the earliest occurrence's due date in
+    // the series. Stable across the series' lifetime, unlike the series row's own `created_at`
+    // (which, for a lazily-backfilled series, is completion time — not the first due date).
+    let week_anchor = QuestRepository::new(conn)
+        .min_series_period_key(&series_id)
+        .ok()
+        .flatten()
+        .and_then(|key| NaiveDate::parse_from_str(&key, "%Y-%m-%d").ok())
+        .unwrap_or(current_due);
+
+    let next_due = match compute_next_due(&current_due, &rule, &week_anchor) {
         Some(d) => d,
         None => return Ok(None),
     };
@@ -1483,16 +1557,16 @@ pub fn update_quest(
     state: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
     id: String,
-    input: UpdateQuestInput,
+    input: UpdateQuestCommandInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
     let previous = QuestService::new(&mut conn).get(&id)?;
     let previous_status = previous.status.clone();
     let previous_space_id = previous.space_id.clone();
 
-    let update_result = QuestService::new(&mut conn).update_with_origin(
+    let update_result = QuestService::new(&mut conn).update_patch_with_origin(
         &id,
-        input,
+        input.into_patch(),
         Some(&device_connection.identity.device_id),
     )?;
     let mut quest = update_result.quest;
@@ -2511,6 +2585,195 @@ mod tests {
         assert_eq!(
             series_exists, 1,
             "series record must persist after deleting occurrence"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn update_quest_command_input_null_actually_clears_due_due_time_and_repeat_rule() {
+        let db_path = temp_db_path("update-command-input-clears-fields");
+        let mut conn = open_db_at_path(&db_path);
+
+        let id = insert_active_quest(
+            &mut conn,
+            "Clearable reminder",
+            2,
+            "2026-04-06T10:00:00Z",
+            Some("2026-04-10"),
+            Some("09:00"),
+        );
+        diesel::update(quests::table.find(&id))
+            .set(quests::repeat_rule.eq(Some(r#"{"preset":"weekly"}"#)))
+            .execute(&mut conn)
+            .expect("seed repeat_rule");
+
+        let command_input: crate::models::UpdateQuestCommandInput = serde_json::from_str(
+            r#"{"due":null,"due_time":null,"repeat_rule":null}"#,
+        )
+        .expect("clear payload must deserialize");
+        QuestService::new(&mut conn)
+            .update_patch_with_origin(&id, command_input.into_patch(), None)
+            .expect("clearing update must succeed");
+
+        let cleared: Quest = quests::table
+            .find(&id)
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("reload cleared quest");
+        assert_eq!(cleared.due, None, "explicit null must clear due");
+        assert_eq!(cleared.due_time, None, "explicit null must clear due_time");
+        assert_eq!(
+            cleared.repeat_rule, None,
+            "explicit null must clear repeat_rule"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn update_quest_command_input_omitted_fields_leave_due_and_repeat_rule_untouched() {
+        let db_path = temp_db_path("update-command-input-preserves-omitted-fields");
+        let mut conn = open_db_at_path(&db_path);
+
+        let id = insert_active_quest(
+            &mut conn,
+            "Untouched reminder",
+            2,
+            "2026-04-06T10:00:00Z",
+            Some("2026-04-10"),
+            Some("09:00"),
+        );
+        diesel::update(quests::table.find(&id))
+            .set(quests::repeat_rule.eq(Some(r#"{"preset":"weekly"}"#)))
+            .execute(&mut conn)
+            .expect("seed repeat_rule");
+
+        let command_input: crate::models::UpdateQuestCommandInput =
+            serde_json::from_str(r#"{"priority":"high"}"#)
+                .expect("partial payload must deserialize");
+        QuestService::new(&mut conn)
+            .update_patch_with_origin(&id, command_input.into_patch(), None)
+            .expect("partial update must succeed");
+
+        let updated: Quest = quests::table
+            .find(&id)
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("reload updated quest");
+        assert_eq!(
+            updated.priority,
+            crate::models::PRIORITY_HIGH,
+            "priority must be applied"
+        );
+        assert_eq!(
+            updated.due.as_deref(),
+            Some("2026-04-10"),
+            "omitted due must be left unchanged"
+        );
+        assert_eq!(
+            updated.due_time.as_deref(),
+            Some("09:00"),
+            "omitted due_time must be left unchanged"
+        );
+        assert_eq!(
+            updated.repeat_rule.as_deref(),
+            Some(r#"{"preset":"weekly"}"#),
+            "omitted repeat_rule must be left unchanged"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    fn complete_and_generate_next(conn: &mut SqliteConnection, quest_id: &str) -> Option<Quest> {
+        diesel::update(quests::table.find(quest_id))
+            .set(quests::status.eq("completed"))
+            .execute(conn)
+            .expect("complete occurrence");
+        let completed: Quest = quests::table
+            .find(quest_id)
+            .select(Quest::as_select())
+            .first(conn)
+            .expect("reload completed quest");
+        generate_next_occurrence(conn, &completed).expect("generate next occurrence")
+    }
+
+    #[test]
+    fn recurring_custom_interval_without_weekdays_uses_unit_step() {
+        let db_path = temp_db_path("recurring-custom-unit-step");
+        let mut conn = open_db_at_path(&db_path);
+
+        let repeat_rule = r#"{"preset":"custom","interval":2,"unit":"week"}"#;
+        diesel::insert_into(quests::table)
+            .values((
+                quests::space_id.eq("1"),
+                quests::title.eq("Biweekly custom"),
+                quests::status.eq("active"),
+                quests::due.eq("2026-04-06"),
+                quests::repeat_rule.eq(repeat_rule),
+                quests::created_at.eq("2026-04-06T10:00:00Z"),
+                quests::updated_at.eq("2026-04-06T10:00:00Z"),
+            ))
+            .execute(&mut conn)
+            .expect("insert custom-interval quest");
+
+        let first: Quest = quests::table
+            .filter(quests::title.eq("Biweekly custom"))
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("load first occurrence");
+
+        let next = complete_and_generate_next(&mut conn, &first.id)
+            .expect("next occurrence must be generated");
+        assert_eq!(
+            next.due.as_deref(),
+            Some("2026-04-20"),
+            "empty days_of_week must fall back to plain interval*unit stepping"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn recurring_custom_weekly_by_weekday_honors_interval_and_anchor() {
+        let db_path = temp_db_path("recurring-custom-weekday-interval");
+        let mut conn = open_db_at_path(&db_path);
+
+        // 2026-04-06 is a Monday; anchor week == this quest's own creation week.
+        let repeat_rule = r#"{"preset":"custom","interval":2,"unit":"day","days_of_week":["Mo","We"]}"#;
+        diesel::insert_into(quests::table)
+            .values((
+                quests::space_id.eq("1"),
+                quests::title.eq("Every 2 weeks Mon/Wed"),
+                quests::status.eq("active"),
+                quests::due.eq("2026-04-06"),
+                quests::repeat_rule.eq(repeat_rule),
+                quests::created_at.eq("2026-04-06T10:00:00Z"),
+                quests::updated_at.eq("2026-04-06T10:00:00Z"),
+            ))
+            .execute(&mut conn)
+            .expect("insert weekday-interval quest");
+
+        let first: Quest = quests::table
+            .filter(quests::title.eq("Every 2 weeks Mon/Wed"))
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .expect("load first occurrence");
+
+        let second = complete_and_generate_next(&mut conn, &first.id)
+            .expect("second occurrence must be generated");
+        assert_eq!(
+            second.due.as_deref(),
+            Some("2026-04-08"),
+            "Wednesday of the same (anchor) week is still an active week"
+        );
+
+        let third = complete_and_generate_next(&mut conn, &second.id)
+            .expect("third occurrence must be generated");
+        assert_eq!(
+            third.due.as_deref(),
+            Some("2026-04-20"),
+            "the intervening week is skipped; next active week's Monday is 2 weeks after the anchor"
         );
 
         let _ = std::fs::remove_file(db_path);
