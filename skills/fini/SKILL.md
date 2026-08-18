@@ -77,7 +77,7 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 - `space_id` defaults to `"1"` (Personal) if not provided
 - `status` starts as `active`
 - `energy` defaults to `medium`
-- `priority` defaults to `1`
+- `priority` defaults to `medium`
 
 ### Due Dates
 
@@ -94,9 +94,9 @@ Users may rename built-ins or create custom spaces. Always fetch fresh data via 
 
 When a user asks which quests to take next, distinguish urgency from the value of spending time on a quest. Do not equate a quick completion with a good completion.
 
-1. Preserve deadline and consequence obligations first: due today, then recently overdue, then older overdue. Do not treat Fini's stored `priority` field as a reliable triage ranking until the product implements that behavior.
+1. Preserve deadline and consequence obligations first: due today, then recently overdue, then older overdue. Within the same deadline band, use the stored `priority` (`high`, `medium`, `low`) as a ranking signal; it must not displace a more urgent deadline.
 2. For candidate selection, identify whether each quest is a deadline/consequence task, removes a blocker, is high-impact strategic work, is maintenance/admin, or is low-value. A blocker can be the best next choice when it unlocks multiple worthwhile outcomes.
-3. Use energy only to place selected work in the day: high-impact work needing concentration belongs in a peak-energy slot; quick high-value work fits between deep-work blocks; mechanical/admin work is a low-energy or batch option. Energy must not promote a low-value quest over a more urgent or impactful one.
+3. Use the quest's stored `energy` (`small`, `medium`, `large`) to place selected work in the day: high-impact work needing concentration belongs in a peak-energy slot; quick high-value work fits between deep-work blocks; mechanical/admin work is a low-energy or batch option. Energy must not promote a low-value quest over a more urgent or impactful one; read only the stored value.
 4. Keep the daily commitment small: one Main outcome, one or two Must items (deadline/consequence or blockers), then only a few Quick or Low-energy fallback items. Recommend at most two simultaneous work streams: one cognitively heavy and one small/admin.
 5. This guidance is read-only. Creating a Fini quest still requires the applicable workflow and the user's explicit authorization.
 
