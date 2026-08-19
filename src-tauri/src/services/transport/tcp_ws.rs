@@ -5,11 +5,11 @@
 //! here because that worker already runs continuously and is the thing the
 //! rest of `device_connection` (add-device UI, etc.) also depends on.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
@@ -226,7 +226,21 @@ pub(crate) async fn run_server_on_port(
 
 /// Call from `space_sync_tick`: ensure an outbound session exists for every
 /// paired, presenced peer where `self.device_id < peer.device_id`
-/// (deterministic dialer rule) and no session (on any transport) is active.
+/// (deterministic dialer rule) and no session on *this* transport is
+/// active yet. ADR-0003 revision: no longer withdraws just because a
+/// session already exists on Bluetooth, or because the peer is pinned to
+/// Bluetooth -- both transports dial and stay connected independently now,
+/// regardless of the pin (the pin only decides which connected transport
+/// is primary, see `DeviceConnectionState::recompute_primary_locked`). A P1
+/// review finding on this same revision: this is exactly why an in-flight
+/// guard is now required here too (mirroring `ble::spawn_dial_loop`'s own,
+/// pre-existing one) -- a peer that's presenced but whose WebSocket port is
+/// permanently unreachable used to have Network's dial loop stand down for
+/// good the instant *any* transport connected (the old any-transport
+/// `has_session` check); now Network keeps trying indefinitely on its own
+/// merits, so without this guard every tick would spawn *another*
+/// concurrent `dial_with_backoff` retry loop for the same peer on top of
+/// the ones already running.
 pub fn spawn_dial_loop(
     state: &DeviceConnectionState,
     db_path: PathBuf,
@@ -235,22 +249,57 @@ pub fn spawn_dial_loop(
     let my_id = state.identity.device_id.clone();
     let peers = state.list_presenced_peers();
 
-    for (peer_id, addr, ws_port) in peers {
+    for (peer_id, _addr, _ws_port) in peers {
         if !should_dial_peer(
             my_id.as_str(),
             peer_id.as_str(),
             paired_peer_ids,
-            state.has_session(&peer_id),
+            state.has_session_on(&peer_id, TransportKind::TcpWs),
         ) {
+            continue;
+        }
+        if is_backing_off(&dial_backoff_until().lock().unwrap(), &peer_id, Instant::now()) {
+            continue;
+        }
+        if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
             continue;
         }
         let state = state.clone();
         let db_path = db_path.clone();
-        let peer_id_clone = peer_id.clone();
+        let peer_id = peer_id.clone();
         tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id_clone, addr, ws_port).await;
+            dial_with_backoff(state, db_path, peer_id.clone()).await;
+            in_flight_dials().lock().unwrap().remove(&peer_id);
         });
     }
+}
+
+/// Peers with a `dial_with_backoff` task currently running. Mirrors
+/// `ble::spawn_dial_loop`'s own guard of the same name/shape.
+fn in_flight_dials() -> &'static std::sync::Mutex<HashSet<String>> {
+    static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    IN_FLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
+/// Peers whose Network dial should not be retried before this instant.
+/// Mirrors `ble::dial_backoff_until`/`DIAL_BACKOFF`/`is_backing_off` --
+/// same P1 finding, same fix, other transport: a pre-v3 peer that already
+/// has a Bluetooth session rejects our now-unconditional Network dial via
+/// its own sticky-single-session code, and without this, the very next
+/// `space_sync_tick` would spawn a fresh attempt against it immediately,
+/// cycling connect/reject/disconnect indefinitely whenever Network becomes
+/// available after Bluetooth.
+fn dial_backoff_until() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
+    static BACKOFF: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = std::sync::OnceLock::new();
+    BACKOFF.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+const DIAL_BACKOFF: Duration = Duration::from_secs(60);
+
+/// See `ble::is_backing_off`'s own doc comment for why this is split out
+/// as a pure, directly-unit-testable function.
+fn is_backing_off(backoff: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
+    backoff.get(peer_id).is_some_and(|until| now < *until)
 }
 
 fn should_dial_peer(
@@ -262,79 +311,40 @@ fn should_dial_peer(
     paired_peer_ids.contains(peer_id) && my_id < peer_id && !has_session
 }
 
-/// ADR-0003 Phase 3: has the user explicitly pinned this pair to
-/// Bluetooth? If so, `dial_with_backoff` withdraws its own retries even
-/// while network is genuinely reachable -- an explicit pin overrides the
-/// default network-first order, symmetric with `ble::dial_with_backoff`'s
-/// own override in the other direction.
-fn peer_prefers_bluetooth(db_path: &std::path::Path, peer_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = crate::services::db::open_db_at_path(db_path);
-        crate::services::device_connection::peer_transport_preference(&mut conn, peer_id).as_deref()
-            == Some("bluetooth")
-    })
-}
-
-/// ADR-0003 Phase 3: is Bluetooth *currently* eligible for this peer --
-/// enabled, a stored address, and a live OS bond checked right now? A
-/// separate, more immediate signal than `bluetooth_dial_failure_count`-based
-/// reliability: if the OS bond disappears after a valid Bluetooth pin was
-/// adopted, `bluetooth_dial_candidates` excludes the peer before BLE's own
-/// dial loop ever gets a chance to attempt (and therefore fail) a
-/// connection, so failure-count-based reliability alone would never
-/// demote and this override would suppress Network forever. Checked
-/// alongside (not instead of) `bluetooth_effectively_reliable` -- both
-/// must hold to keep honoring the pin.
-fn peer_bluetooth_is_currently_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = crate::services::db::open_db_at_path(db_path);
-        crate::services::device_connection::peer_is_currently_bluetooth_eligible(&mut conn, peer_id)
-    })
-}
-
 /// `pub(crate)`, not private: `transport::tests` exercises this directly
 /// (bypassing `spawn_dial_loop`'s presence-worker plumbing) to prove its
 /// error-handling distinguishes a genuine rejection from a transport
 /// preference mismatch -- see the regression test for the P1 finding this
 /// guards against.
+///
+/// Re-reads the peer's current `(addr, ws_port)` from presence on *every*
+/// retry, not just once at spawn time -- a P1 review finding: with the
+/// in-flight guard above now suppressing `spawn_dial_loop` from ever
+/// re-spawning this peer while a task is already running for it, a stale
+/// captured endpoint would otherwise keep this loop dialing an address the
+/// peer stopped advertising indefinitely, even after discovery already
+/// has the peer's real, current one -- exactly what `ble::dial_with_backoff`
+/// already avoids by re-checking `is_still_bluetooth_eligible` (which reads
+/// the current address) on every iteration.
 pub(crate) async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_id: String,
-    addr: String,
-    ws_port: u16,
 ) {
     let mut delay = Duration::from_secs(1);
     let max_delay = Duration::from_secs(30);
 
     loop {
-        if state.has_session(&peer_id) {
+        if state.has_session_on(&peer_id, TransportKind::TcpWs) {
             return;
         }
-        // ADR-0003 Phase 3: a Bluetooth pin is sticky against a *transient*
-        // reason to second-guess it -- but not indefinitely against
-        // repeated, concrete evidence that Bluetooth has become
-        // permanently unreachable for this peer (disabled, unbonded, out
-        // of range for a long stretch), and not once the OS bond has
-        // outright disappeared (see `peer_bluetooth_is_currently_eligible`'s
-        // own doc comment for why that needs its own direct check, not
-        // just failure-count-based reliability). Once either signal says
-        // Bluetooth genuinely isn't viable, this override steps aside and
-        // lets Network try anyway -- the alternative is a pin that can
-        // never be un-stuck once the pinned transport stops working at all.
-        if peer_prefers_bluetooth(&db_path, &peer_id)
-            && peer_bluetooth_is_currently_eligible(&db_path, &peer_id)
-            && state.bluetooth_effectively_reliable(&peer_id)
-        {
-            return;
-        }
-        let still_present = state
+        let Some((_, addr, ws_port)) = state
             .list_presenced_peers()
             .into_iter()
-            .any(|(id, _, _)| id == peer_id);
-        if !still_present {
-            return;
-        }
+            .find(|(id, _, _)| *id == peer_id)
+        else {
+            return; // no longer presenced
+        };
 
         let Ok(target_addr) = addr.parse::<IpAddr>() else {
             eprintln!("[transport][tcp_ws] invalid peer addr '{addr}'");
@@ -352,29 +362,8 @@ pub(crate) async fn dial_with_backoff(
                 {
                     Ok(peer_protocol_version) => {
                         eprintln!("[transport][tcp_ws] auth OK with {peer_id}");
-                        state.record_tcp_dial_success(&peer_id);
-                        // ADR-0003 Phase 3: the inverse of ble.rs's own
-                        // recheck -- the user could pin this peer to
-                        // Bluetooth while this connect+auth round trip was
-                        // in flight, and without this check that pin would
-                        // otherwise be silently overridden by the Network
-                        // session this loop is about to claim. Same
-                        // reliability override as the top-of-loop check
-                        // above: a Bluetooth pin that's become permanently
-                        // unreachable must not keep discarding a Network
-                        // session that just successfully authenticated.
-                        if peer_prefers_bluetooth(&db_path, &peer_id)
-                            && peer_bluetooth_is_currently_eligible(&db_path, &peer_id)
-                            && state.bluetooth_effectively_reliable(&peer_id)
-                        {
-                            eprintln!(
-                                "[transport][tcp_ws] {peer_id} was pinned to Bluetooth during \
-                                 the connect/auth handshake; discarding this Network session"
-                            );
-                            return;
-                        }
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, peer_protocol_version) {
+                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, &db_path) {
                             session::run_session(
                                 link,
                                 rx,
@@ -391,18 +380,21 @@ pub(crate) async fn dial_with_backoff(
                     Err(err) => {
                         eprintln!("[transport][tcp_ws] auth with {peer_id} failed: {err}");
                         if err.starts_with("auth rejected") {
+                            // Not just "don't retry within this task" --
+                            // `spawn_dial_loop` would otherwise spawn a
+                            // fresh one on the very next tick regardless.
+                            // See `dial_backoff_until`'s own doc comment.
+                            dial_backoff_until()
+                                .lock()
+                                .unwrap()
+                                .insert(peer_id.clone(), Instant::now() + DIAL_BACKOFF);
                             return; // not paired; don't retry
                         }
-                        // Connection-level failure (link dropped mid-auth,
-                        // etc.), not a rejection — counts toward "network
-                        // present but not actually reachable."
-                        state.record_tcp_dial_failure(&peer_id);
                     }
                 }
             }
             Err(err) => {
                 eprintln!("[transport][tcp_ws] connect to {peer_id} failed: {err}");
-                state.record_tcp_dial_failure(&peer_id);
             }
         }
 
@@ -424,6 +416,33 @@ mod tests {
         assert!(!should_dial_peer("local-a", "peer-c", &paired, false));
         assert!(!should_dial_peer("peer-z", "peer-b", &paired, false));
         assert!(!should_dial_peer("local-a", "peer-b", &paired, true));
+    }
+
+    /// Regression test for a P1 review finding: a terminal auth rejection
+    /// (e.g. a pre-v3 peer's own sticky-single-session code rejecting our
+    /// now-unconditional Network dial while it already has a Bluetooth
+    /// session with us) must suppress `spawn_dial_loop` from immediately
+    /// spawning a fresh attempt against that peer on the very next tick.
+    /// Mirrors `ble::dial_backoff_suppresses_a_peer_until_its_deadline_passes`.
+    #[test]
+    fn dial_backoff_suppresses_a_peer_until_its_deadline_passes() {
+        let mut backoff = HashMap::new();
+        let now = Instant::now();
+        assert!(!is_backing_off(&backoff, "peer-a", now), "no entry yet -- must not back off");
+
+        backoff.insert("peer-a".to_string(), now + Duration::from_secs(60));
+        assert!(
+            is_backing_off(&backoff, "peer-a", now),
+            "within the backoff window -- must skip"
+        );
+        assert!(
+            !is_backing_off(&backoff, "peer-b", now),
+            "a different peer's entry must not affect this one"
+        );
+        assert!(
+            !is_backing_off(&backoff, "peer-a", now + Duration::from_secs(61)),
+            "once the deadline passes, the peer is eligible again"
+        );
     }
 
     async fn free_port() -> u16 {

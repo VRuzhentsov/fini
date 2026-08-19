@@ -161,13 +161,14 @@ describe("NewQuestForm", () => {
     await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
 
     expect(wrapper.find('[data-testid="new-quest-description"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="new-quest-expand"] svg').classes()).toContain("-scale-y-100");
+    expect(wrapper.find('[data-testid="new-quest-expand"]').attributes("aria-expanded")).toBe("true");
+    expect(wrapper.find('[data-testid="new-quest-expand"]').text()).toContain("Less");
     expect(wrapper.find('[data-testid="new-quest-focus-toggle"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="new-quest-keep-adding"]').exists()).toBe(false);
     expect((wrapper.find('[data-testid="chat-input"]').element as HTMLInputElement).value).toBe("Capture fast quest");
   });
 
-  it("uses accessible named Energy and Priority selectors to create a quest", async () => {
+  it("uses accessible energy and priority mini-buttons, always visible, to create a quest", async () => {
     const wrapper = mount(NewQuestForm, {
       global: {
         stubs: {
@@ -177,19 +178,17 @@ describe("NewQuestForm", () => {
     });
 
     await wrapper.find('[data-testid="chat-input"]').setValue("Plan focused work");
-    await wrapper.find('[data-testid="new-quest-expand"]').trigger("click");
 
-    const energy = wrapper.find<HTMLSelectElement>('[data-testid="new-quest-energy"]');
-    const priority = wrapper.find<HTMLSelectElement>('[data-testid="new-quest-priority"]');
-    expect(energy.attributes("aria-label")).toBe("Quest energy");
-    expect(priority.attributes("aria-label")).toBe("Quest priority");
-    expect(energy.element.value).toBe("medium");
-    expect(priority.element.value).toBe("medium");
-    expect(energy.findAll("option").map((option) => option.attributes("value"))).toEqual(["small", "medium", "large"]);
-    expect(priority.findAll("option").map((option) => option.attributes("value"))).toEqual(["low", "medium", "high"]);
+    // Always visible in the footer, even while the composer is still collapsed.
+    const energy = wrapper.find('[data-testid="new-quest-energy"]');
+    const priority = wrapper.find('[data-testid="new-quest-priority"]');
+    expect(energy.attributes("aria-label")).toBe("Quest energy: Medium");
+    expect(priority.attributes("aria-label")).toBe("Quest priority: Medium");
 
-    await energy.setValue("large");
-    await priority.setValue("high");
+    await energy.trigger("pointerdown");
+    await energy.trigger("pointerup");
+    await priority.trigger("pointerdown");
+    await priority.trigger("pointerup");
     await wrapper.find("form").trigger("submit");
 
     expect(createQuest).toHaveBeenCalledWith(expect.objectContaining({

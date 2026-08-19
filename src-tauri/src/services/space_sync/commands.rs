@@ -1084,8 +1084,9 @@ pub fn space_sync_tick_impl(
         .load(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    // Ensure a session is open for peers where we are the dialer: network
-    // first, Sim (Bluetooth-fallback role) only when network is unavailable.
+    // Ensure a session is open on every transport independently for peers
+    // where we are the dialer (ADR-0003 revision: both connect
+    // unconditionally, regardless of each other's state).
     let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
     tcp_ws::spawn_dial_loop(
         device_connection,
@@ -2613,8 +2614,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(app_dir);
     }
 
-    #[test]
-    fn space_sync_tick_does_not_replay_mapping_snapshot_when_session_appears() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn space_sync_tick_does_not_replay_mapping_snapshot_when_session_appears() {
         let db_path = temp_db_path("tick-does-not-replay-mapping-snapshot");
         let app_dir = temp_app_dir("tick-does-not-replay-mapping-snapshot");
         let mut conn = open_db_at_path(&db_path);
@@ -2646,7 +2647,7 @@ mod tests {
             "peer-a",
             TransportKind::TcpWs,
             tx,
-            crate::services::space_sync::types::PROTOCOL_VERSION
+            &db_path,
         ));
 
         let tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();

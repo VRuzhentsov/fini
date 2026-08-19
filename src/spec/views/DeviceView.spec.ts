@@ -62,13 +62,13 @@ describe("DeviceView mapped spaces sync labels", () => {
       getTransportStatuses: jest.fn().mockReturnValue([
         {
           kind: "network",
-          preferred: true,
-          state: { state: "live" },
+          primary: true,
+          state: { state: "configured", code: null },
         },
         {
           kind: "bluetooth",
-          preferred: false,
-          state: { state: "configured", reliable: true },
+          primary: false,
+          state: { state: "configured", code: null },
         },
       ]),
       shortDeviceId: jest.fn().mockReturnValue("ce-123"),
@@ -189,8 +189,8 @@ describe("DeviceView mapped spaces sync labels", () => {
       findPairedDevice: jest.Mock;
     };
     // The mock's transport statuses (set in beforeEach) mark "network" as
-    // the automatic choice (status.preferred), but this pair has been
-    // manually pinned to Bluetooth -- the star must follow the pin.
+    // primary (status.primary), but this pair has been manually pinned to
+    // Bluetooth -- the star must follow the pin.
     deviceStore.findPairedDevice.mockReturnValue({
       peer_device_id: "peer-device-123",
       display_name: "peer-host",
@@ -260,13 +260,13 @@ describe("DeviceView Bluetooth manual entry, search, and unpair", () => {
       getTransportStatuses: jest.fn().mockReturnValue([
         {
           kind: "network",
-          preferred: true,
-          state: { state: "live" },
+          primary: true,
+          state: { state: "configured", code: null },
         },
         {
           kind: "bluetooth",
-          preferred: false,
-          state: { state: "unconfigured", reason: "Disabled for this Fini pair" },
+          primary: false,
+          state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
         },
       ]),
       shortDeviceId: jest.fn().mockReturnValue("ce-123"),

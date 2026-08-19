@@ -1,14 +1,15 @@
-//! Transport selection and the sticky single-session handoff invariant.
+//! Peer connection lifecycle events.
 //!
-//! Rule (from `specs/space-sync/README.md`): network is preferred when
-//! available; Bluetooth (in this PR, played by the `Sim` adapter — see
-//! `crate::services::transport::sim`) is a fallback only. Handoff is
-//! **sticky**: selection only happens at session establishment. A live
-//! session on any transport is kept until it drops; the *next*
-//! establishment attempt re-applies network-first ordering. This makes
-//! duplicated or lost sync events structurally impossible, because at most
-//! one authenticated session can ever be live for a peer at once — see
-//! `DeviceConnectionState::try_claim_session`.
+//! ADR-0003 revision: the sticky single-session handoff invariant this
+//! module used to document and enforce ("selection only happens at session
+//! establishment; a live session on any transport is kept until it drops")
+//! no longer holds. Both Network and Bluetooth now dial/accept and stay
+//! connected independently of each other -- see
+//! `DeviceConnectionState::try_claim_session` (per-(peer, transport)
+//! claiming) and `DeviceConnectionState::recompute_primary_locked` (which
+//! of the connected transports carries real traffic). What's left here is
+//! just the lifecycle event bus every adapter's session loop reports
+//! through.
 
 use crate::services::transport::TransportKind;
 
@@ -31,60 +32,7 @@ pub type LifecycleBus = tokio::sync::broadcast::Sender<LifecycleEvent>;
 
 const LIFECYCLE_BUS_CAPACITY: usize = 64;
 
-/// Consecutive dial/auth failures at or above which a peer is treated as
-/// unreliable on a transport — for Network, that means not effectively
-/// available for transport selection (see
-/// `DeviceConnectionState::network_effectively_available`; presence alone
-/// doesn't mean the WebSocket port is reachable). Shared with Bluetooth's
-/// `bluetooth_effectively_reliable` (ADR-0003 Phase 2), which uses the same
-/// bar for the unified status model but never affects transport selection.
-pub const TRANSPORT_UNRESPONSIVE_THRESHOLD: u32 = 3;
-
 pub fn new_lifecycle_bus() -> LifecycleBus {
     let (tx, _rx) = tokio::sync::broadcast::channel(LIFECYCLE_BUS_CAPACITY);
     tx
-}
-
-/// Network-first dial order for establishing a new session with a peer.
-/// Pure function: `network_available` and `fallback_available` are the
-/// caller's current presence/enablement snapshot for that peer, one flag
-/// per candidate transport role. Establishment-only — never called while a
-/// session is already live (see the module-level sticky-handoff rule).
-pub fn select_dial_order(network_available: bool, fallback_available: bool) -> Vec<TransportKind> {
-    let mut order = Vec::new();
-    if network_available {
-        order.push(TransportKind::TcpWs);
-    }
-    if fallback_available {
-        order.push(TransportKind::Sim);
-    }
-    order
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn network_first_when_both_available() {
-        assert_eq!(
-            select_dial_order(true, true),
-            vec![TransportKind::TcpWs, TransportKind::Sim]
-        );
-    }
-
-    #[test]
-    fn falls_back_when_network_unavailable() {
-        assert_eq!(select_dial_order(false, true), vec![TransportKind::Sim]);
-    }
-
-    #[test]
-    fn empty_when_neither_available() {
-        assert_eq!(select_dial_order(false, false), Vec::<TransportKind>::new());
-    }
-
-    #[test]
-    fn network_only_when_fallback_not_enabled() {
-        assert_eq!(select_dial_order(true, false), vec![TransportKind::TcpWs]);
-    }
 }
