@@ -122,7 +122,7 @@ mod android_lazy {
             match self.inner().await {
                 Ok(backend) => backend.capabilities().await,
                 Err(err) => {
-                    eprintln!("[transport][ble] android backend construction failed: {err}");
+                    log::warn!("[transport][ble] android backend construction failed: {err}");
                     CapabilityReport::default()
                 }
             }
@@ -678,14 +678,14 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         let backend = match backend().await {
             Ok(backend) => backend,
             Err(err) => {
-                eprintln!("[transport][ble] adapter unavailable, retrying in {delay:?}: {err}");
+                log::warn!("[transport][ble] adapter unavailable, retrying in {delay:?}: {err}");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(max_delay);
                 continue;
             }
         };
         if !backend.capabilities().await.peripheral {
-            eprintln!(
+            log::warn!(
                 "[transport][ble] adapter has no peripheral support; retrying in {delay:?} \
                  in case a different adapter becomes available"
             );
@@ -712,13 +712,13 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         let mut incoming = match datagram::serve(backend, &datagram_config()).await {
             Ok(stream) => stream,
             Err(err) => {
-                eprintln!("[transport][ble] advertise failed, retrying in {delay:?}: {err}");
+                log::warn!("[transport][ble] advertise failed, retrying in {delay:?}: {err}");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(max_delay);
                 continue;
             }
         };
-        eprintln!("[transport][ble] advertising, awaiting centrals");
+        log::info!("[transport][ble] advertising, awaiting centrals");
         delay = Duration::from_secs(2);
 
         let mut restarting_for_add_mode_change = false;
@@ -732,7 +732,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                     tokio::spawn(session::run_peer_gate(link, state, db_path));
                 }
                 _ = add_mode_rx.changed() => {
-                    eprintln!("[transport][ble] add-mode changed; re-advertising");
+                    log::info!("[transport][ble] add-mode changed; re-advertising");
                     restarting_for_add_mode_change = true;
                     break;
                 }
@@ -752,7 +752,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         // under it) rather than a caller closing it or an add-mode change
         // — nothing else here ever drops the stream deliberately. Retry
         // rather than leaving the peripheral role dead.
-        eprintln!("[transport][ble] serve stream ended unexpectedly; retrying in {delay:?}");
+        log::warn!("[transport][ble] serve stream ended unexpectedly; retrying in {delay:?}");
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(max_delay);
     }
@@ -884,7 +884,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
         // entirely in the meantime — a setting meant to stop future
         // Bluetooth use silently not taking effect.
         if !is_still_bluetooth_eligible(&db_path, &peer_id, &address) {
-            eprintln!(
+            log::info!(
                 "[transport][ble] {peer_id} is no longer Bluetooth-enabled/OS-paired; \
                  stopping dial retries"
             );
@@ -897,7 +897,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                     .await
                 {
                     Ok(peer_protocol_version) => {
-                        eprintln!("[transport][ble] auth OK with {peer_id} via {address}");
+                        log::info!("[transport][ble] auth OK with {peer_id} via {address}");
                         // The connect+auth round trip is real wall-clock time
                         // during which the user could disable Bluetooth or
                         // unpair entirely; without this, a disable/unpair
@@ -906,7 +906,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                         // same eligibility check the top of this loop uses,
                         // right before claiming, to close that window.
                         if !is_still_bluetooth_eligible(&db_path, &peer_id, &address) {
-                            eprintln!(
+                            log::info!(
                                 "[transport][ble] {peer_id} became ineligible during the \
                                  connect/auth handshake; discarding this session"
                             );
@@ -923,12 +923,12 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                                 peer_protocol_version,
                             )
                             .await;
-                            eprintln!("[transport][ble] session with {peer_id} ended");
+                            log::info!("[transport][ble] session with {peer_id} ended");
                         }
                         delay = Duration::from_secs(2);
                     }
                     Err(err) => {
-                        eprintln!("[transport][ble] auth with {peer_id} failed: {err}");
+                        log::warn!("[transport][ble] auth with {peer_id} failed: {err}");
                         // "bluetooth disabled"/"not OS-paired" are not
                         // permanent the way "unknown device" is -- the user
                         // could re-enable, or re-pair, at any time. Keep
@@ -951,7 +951,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 }
             }
             Err(err) => {
-                eprintln!("[transport][ble] connect to {peer_id} ({address}) failed: {err}");
+                log::warn!("[transport][ble] connect to {peer_id} ({address}) failed: {err}");
             }
         }
 

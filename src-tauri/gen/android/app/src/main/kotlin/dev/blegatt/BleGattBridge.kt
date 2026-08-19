@@ -20,6 +20,8 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import java.util.UUID
@@ -82,6 +84,13 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     /// "verify this GATT still owns the address, then publish" atomic — and
     /// that pair is exactly where a cancellation and retry can interleave.
     private val gattLock = Any()
+    /// Schedules GATT-busy retries (see `GATT_BUSY_MAX_RETRIES`) off
+    /// whichever thread the rejected call happened to run on -- often a
+    /// Tokio worker thread arriving via JNI, which must not itself block on
+    /// a sleep. `gattLock` is bridge-wide (covers every connected peer), so
+    /// a retry's backoff must also happen without holding it, or one peer's
+    /// busy backoff would stall every other peer's GATT operations too.
+    private val retryHandler = Handler(Looper.getMainLooper())
     private val connectedGatts = ConcurrentHashMap<String, BluetoothGatt>()
     /// Rust's session id for the GATT currently owning each address.
     ///
@@ -514,46 +523,151 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     private fun findCharacteristic(address: String, characteristicUuid: String): BluetoothGattCharacteristic? =
         pendingCharacteristics[address]?.get(characteristicUuid)
 
+    /// Runnables for a GATT-busy retry that has been scheduled but has not
+    /// fired yet -- present *only* for that window, never for an id whose
+    /// underlying platform call already returned `true` and is genuinely
+    /// in flight awaiting its real `onCharacteristicRead`/`onCharacteristicWrite`/
+    /// `onDescriptorWrite` callback. Removed either by `cancelPendingOperation`
+    /// or by the retry itself -- both under `gattLock`, see
+    /// `cancelPendingOperation`'s own comment for why that matters.
+    private val pendingRetries = ConcurrentHashMap<Long, Runnable>()
+
+    /// Called by Rust when a pending read/write/subscribe future is dropped
+    /// before its result arrived (a `timeout`, a losing `select!` branch) --
+    /// see `PendingOpGuard`/`SubscribeGuard`'s Drop impls on the Rust side.
+    /// Without this, a GATT-busy retry already scheduled via `retryHandler`
+    /// when the rejection happened has no way to learn its request was
+    /// abandoned: it fires anyway once the stack stops being busy,
+    /// transmitting the abandoned payload over the air.
+    ///
+    /// Three P1 review findings shaped this method, in order:
+    /// 1. Removing the id from the pending-id queue unconditionally
+    ///    corrupts FIFO matching for an id whose call had *already* been
+    ///    accepted by the platform and was genuinely in flight -- that
+    ///    entry must survive untouched for the real callback to find.
+    /// 2. Cancelling only the `Runnable` without also removing the queue
+    ///    entry leaves a permanent orphan for an id that really was only
+    ///    scheduled, never issued -- no real callback is ever coming for
+    ///    it, so left in place it silently swallows the *next* same-kind
+    ///    request's callback instead.
+    /// 3. Removing the `pendingRetries` entry from inside the retry's own
+    ///    `Runnable`, before it entered `synchronized(gattLock)`, left a
+    ///    window where a concurrent cancellation could see nothing left
+    ///    to cancel and return early while the retry -- already past that
+    ///    point -- fired anyway. `gattLock` is the actual correctness
+    ///    mechanism now: both this method and each `attempt*` (for
+    ///    `attempt > 0`, see their own first line) perform their
+    ///    `pendingRetries.remove` as the very first thing *inside* the
+    ///    lock, so whichever side acquires it first is unconditionally
+    ///    the one that gets to act. `Handler.removeCallbacks` below is
+    ///    only an optimisation that skips a wasted dispatch in the common
+    ///    case -- if the retry's `Runnable` ran anyway, its own
+    ///    `pendingRetries.remove` would find nothing and abort the same
+    ///    way `cancelPendingOperation` finding nothing here does.
+    fun cancelPendingOperation(requestId: Long): Unit = synchronized(gattLock) {
+        val retry = pendingRetries.remove(requestId) ?: return
+        retryHandler.removeCallbacks(retry)
+        for (queue in pendingWriteIds.values) synchronized(queue) { queue.remove(requestId) }
+        for (queue in pendingReadIds.values) synchronized(queue) { queue.remove(requestId) }
+        for (queue in pendingSubscribeIds.values) synchronized(queue) { queue.remove(requestId) }
+    }
+
     /// Every failure path must report back. An early `return` here leaves
     /// the Rust side's oneshot unresolved and its caller awaiting forever —
     /// and unknown UUIDs or incomplete service discovery are ordinary
     /// errors, not exotic ones.
     fun readCharacteristic(
         address: String, characteristicUuid: String, requestId: Long, session: Long,
+    ) = attemptRead(address, characteristicUuid, requestId, session, attempt = 0)
+
+    /// Same GATT-busy retry as `attemptWrite`/`attemptSubscribe` — see
+    /// `GATT_BUSY_MAX_RETRIES`'s doc comment. `gatt.readCharacteristic()` is
+    /// exactly as subject to the one-outstanding-op rule as the write path.
+    private fun attemptRead(
+        address: String, characteristicUuid: String, requestId: Long, session: Long, attempt: Int,
     ): Unit = synchronized(gattLock) {
+        // Must be the very first thing done under gattLock -- see
+        // cancelPendingOperation's doc comment (finding 3). A `null` here
+        // means cancellation already claimed this attempt; Rust has
+        // stopped listening, so there is nothing left to do.
+        if (attempt > 0 && pendingRetries.remove(requestId) == null) return
         if (gattSessions[address] != session) {
+            if (attempt > 0) {
+                pendingReadIds[address]?.let { queue -> synchronized(queue) { queue.remove(requestId) } }
+            }
             onCharacteristicRead(nativeHandle, requestId, address, characteristicUuid, ByteArray(0), false)
             return
         }
         val gatt = connectedGatts[address]
         val characteristic = findCharacteristic(address, characteristicUuid)
         val queue = pendingReadIds.getOrPut(address) { ArrayDeque() }
-        synchronized(queue) { queue.addLast(requestId) }
-        if (gatt == null || characteristic == null || !gatt.readCharacteristic(characteristic)) {
+        if (attempt == 0) {
+            synchronized(queue) { queue.addLast(requestId) }
+        }
+        if (gatt == null || characteristic == null) {
             Log.w(TAG, "readCharacteristic could not start: $address/$characteristicUuid")
             // Remove this id specifically: another operation's may be queued
             // ahead of it and must not be consumed by this failure.
             synchronized(queue) { queue.remove(requestId) }
             onCharacteristicRead(nativeHandle, requestId, address, characteristicUuid, ByteArray(0), false)
+            return
+        }
+        if (!gatt.readCharacteristic(characteristic)) {
+            if (attempt < GATT_BUSY_MAX_RETRIES) {
+                Log.w(
+                    TAG,
+                    "readCharacteristic rejected by the stack, retrying " +
+                        "(${attempt + 1}/$GATT_BUSY_MAX_RETRIES): $address/$characteristicUuid",
+                )
+                val retry = Runnable { attemptRead(address, characteristicUuid, requestId, session, attempt + 1) }
+                pendingRetries[requestId] = retry
+                retryHandler.postDelayed(retry, gattBusyRetryDelayMs(attempt + 1))
+            } else {
+                Log.w(TAG, "readCharacteristic rejected by the stack after $attempt retries: $address/$characteristicUuid")
+                synchronized(queue) { queue.remove(requestId) }
+                onCharacteristicRead(nativeHandle, requestId, address, characteristicUuid, ByteArray(0), false)
+            }
         }
     }
 
     /// `withoutResponse` selects ATT Write Command over Write Request —
     /// materially faster for bulk transfer, at the cost of the peer silently
     /// dropping writes it can't keep up with. See `models::WriteType`.
-    @Suppress("DEPRECATION")
     fun writeCharacteristic(
         address: String, characteristicUuid: String, value: ByteArray, withoutResponse: Boolean,
         requestId: Long, session: Long,
+    ) = attemptWrite(address, characteristicUuid, value, withoutResponse, requestId, session, attempt = 0)
+
+    /// See `GATT_BUSY_MAX_RETRIES`'s doc comment for why a `false` return
+    /// here gets retried rather than reported as failure immediately.
+    /// `requestId` is queued once, on `attempt == 0` — a retry reuses the
+    /// same slot rather than adding a second entry, since it's still the
+    /// same logical write as far as `onCharacteristicWrite`'s FIFO matching
+    /// is concerned; the platform never actually started the earlier
+    /// attempt, so there is nothing for it to complete out of order with.
+    @Suppress("DEPRECATION")
+    private fun attemptWrite(
+        address: String, characteristicUuid: String, value: ByteArray, withoutResponse: Boolean,
+        requestId: Long, session: Long, attempt: Int,
     ): Unit = synchronized(gattLock) {
+        // Must be the very first thing done under gattLock -- see
+        // cancelPendingOperation's doc comment (finding 3). A `null` here
+        // means cancellation already claimed this attempt; Rust has
+        // stopped listening, so there is nothing left to do.
+        if (attempt > 0 && pendingRetries.remove(requestId) == null) return
         if (gattSessions[address] != session) {
+            if (attempt > 0) {
+                pendingWriteIds[address]?.let { queue -> synchronized(queue) { queue.remove(requestId) } }
+            }
             onCharacteristicWriteResult(nativeHandle, requestId, address, characteristicUuid, false)
             return
         }
         val gatt = connectedGatts[address]
         val characteristic = findCharacteristic(address, characteristicUuid)
         val queue = pendingWriteIds.getOrPut(address) { ArrayDeque() }
-        synchronized(queue) { queue.addLast(requestId) }
+        if (attempt == 0) {
+            synchronized(queue) { queue.addLast(requestId) }
+        }
         if (gatt == null || characteristic == null) {
             Log.w(TAG, "writeCharacteristic could not start: $address/$characteristicUuid")
             synchronized(queue) { queue.remove(requestId) }
@@ -567,16 +681,49 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
         }
         characteristic.value = value
         if (!gatt.writeCharacteristic(characteristic)) {
-            Log.w(TAG, "writeCharacteristic rejected by the stack: $address/$characteristicUuid")
-            synchronized(queue) { queue.remove(requestId) }
-            onCharacteristicWriteResult(nativeHandle, requestId, address, characteristicUuid, false)
+            if (attempt < GATT_BUSY_MAX_RETRIES) {
+                Log.w(
+                    TAG,
+                    "writeCharacteristic rejected by the stack, retrying " +
+                        "(${attempt + 1}/$GATT_BUSY_MAX_RETRIES): $address/$characteristicUuid",
+                )
+                val retry = Runnable {
+                    attemptWrite(address, characteristicUuid, value, withoutResponse, requestId, session, attempt + 1)
+                }
+                pendingRetries[requestId] = retry
+                retryHandler.postDelayed(retry, gattBusyRetryDelayMs(attempt + 1))
+            } else {
+                Log.w(TAG, "writeCharacteristic rejected by the stack after $attempt retries: $address/$characteristicUuid")
+                synchronized(queue) { queue.remove(requestId) }
+                onCharacteristicWriteResult(nativeHandle, requestId, address, characteristicUuid, false)
+            }
         }
     }
 
     fun subscribeCharacteristic(
         address: String, characteristicUuid: String, requestId: Long, session: Long,
+    ) = attemptSubscribe(address, characteristicUuid, requestId, session, attempt = 0)
+
+    /// Same GATT-busy retry as `attemptWrite` — see `GATT_BUSY_MAX_RETRIES`'s
+    /// doc comment. Only the descriptor write (`gatt.writeDescriptor`) is a
+    /// real over-the-air GATT operation subject to the platform's
+    /// one-outstanding-op rule; `setCharacteristicNotification` is purely
+    /// local bookkeeping and re-running it on a retry is harmless.
+    @Suppress("DEPRECATION")
+    private fun attemptSubscribe(
+        address: String, characteristicUuid: String, requestId: Long, session: Long, attempt: Int,
     ): Unit = synchronized(gattLock) {
+        // Must be the very first thing done under gattLock -- see
+        // cancelPendingOperation's doc comment (finding 3). A `null` here
+        // means cancellation already claimed this attempt; Rust has
+        // stopped listening, so there is nothing left to do.
+        if (attempt > 0 && pendingRetries.remove(requestId) == null) return
         if (gattSessions[address] != session) {
+            if (attempt > 0) {
+                pendingSubscribeIds["$address/$characteristicUuid"]?.let { queue ->
+                    synchronized(queue) { queue.remove(requestId) }
+                }
+            }
             onSubscribed(nativeHandle, requestId, address, characteristicUuid, false)
             return
         }
@@ -586,7 +733,9 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
         // status as the new attempt's completion.
         val subscribeQueue =
             pendingSubscribeIds.getOrPut("$address/$characteristicUuid") { ArrayDeque() }
-        synchronized(subscribeQueue) { subscribeQueue.addLast(requestId) }
+        if (attempt == 0) {
+            synchronized(subscribeQueue) { subscribeQueue.addLast(requestId) }
+        }
         val gatt = connectedGatts[address]
         val characteristic = findCharacteristic(address, characteristicUuid)
         val cccd = characteristic?.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
@@ -606,13 +755,25 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
             onSubscribed(nativeHandle, requestId, address, characteristicUuid, false)
             return
         }
-        @Suppress("DEPRECATION")
         cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        @Suppress("DEPRECATION")
         if (!gatt.writeDescriptor(cccd)) {
-            Log.w(TAG, "subscribe descriptor write rejected: $address/$characteristicUuid")
-            synchronized(subscribeQueue) { subscribeQueue.remove(requestId) }
-            onSubscribed(nativeHandle, requestId, address, characteristicUuid, false)
+            if (attempt < GATT_BUSY_MAX_RETRIES) {
+                Log.w(
+                    TAG,
+                    "subscribe descriptor write rejected by the stack, retrying " +
+                        "(${attempt + 1}/$GATT_BUSY_MAX_RETRIES): $address/$characteristicUuid",
+                )
+                val retry = Runnable { attemptSubscribe(address, characteristicUuid, requestId, session, attempt + 1) }
+                pendingRetries[requestId] = retry
+                retryHandler.postDelayed(retry, gattBusyRetryDelayMs(attempt + 1))
+            } else {
+                Log.w(
+                    TAG,
+                    "subscribe descriptor write rejected by the stack after $attempt retries: $address/$characteristicUuid",
+                )
+                synchronized(subscribeQueue) { subscribeQueue.remove(requestId) }
+                onSubscribed(nativeHandle, requestId, address, characteristicUuid, false)
+            }
         }
     }
 
@@ -623,6 +784,12 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     fun startAdvertising(
         serviceUuid: String, characteristicUuids: Array<String>, readable: BooleanArray, writable: BooleanArray,
         notifiable: BooleanArray, initialValues: Array<ByteArray>,
+        // Same parallel-array flattening `onPeerDiscovered` uses on the read
+        // side, mirrored here for the write side: a `java.util.HashMap`
+        // across JNI costs several reflective calls per entry, and the Rust
+        // side would have to walk it back out again either way.
+        manufacturerIds: IntArray, manufacturerValues: Array<ByteArray>,
+        serviceDataUuids: Array<String>, serviceDataValues: Array<ByteArray>,
     ) {
         // Tear down any predecessor first. This bridge holds a single
         // `gattServer`/`advertiseCallback` pair, so starting without
@@ -679,7 +846,10 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                         return
                     }
                     Log.d(TAG, "onServiceAdded ok, starting advertisement")
-                    beginAdvertising(advertiser, serviceUuid, generation)
+                    beginAdvertising(
+                        advertiser, serviceUuid, generation,
+                        manufacturerIds, manufacturerValues, serviceDataUuids, serviceDataValues,
+                    )
                 }
             }
 
@@ -997,15 +1167,27 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     private fun beginAdvertising(
         advertiser: android.bluetooth.le.BluetoothLeAdvertiser, serviceUuid: String,
         generation: Long,
+        manufacturerIds: IntArray, manufacturerValues: Array<ByteArray>,
+        serviceDataUuids: Array<String>, serviceDataValues: Array<ByteArray>,
     ) {
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setConnectable(true)
             .build()
-        val data = AdvertiseData.Builder()
+        val dataBuilder = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(UUID.fromString(serviceUuid)))
             .setIncludeDeviceName(false)
-            .build()
+        // Legacy advertisements are capped at 31 bytes total, and the
+        // service UUID above already spends most of that -- callers are
+        // responsible for keeping this small (see GattServiceSpec's own
+        // doc comment on manufacturer_data/service_data).
+        for (i in manufacturerIds.indices) {
+            dataBuilder.addManufacturerData(manufacturerIds[i], manufacturerValues[i])
+        }
+        for (i in serviceDataUuids.indices) {
+            dataBuilder.addServiceData(ParcelUuid(UUID.fromString(serviceDataUuids[i])), serviceDataValues[i])
+        }
+        val data = dataBuilder.build()
         val callback = object : AdvertiseCallback() {
             override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
                 // A stop/restart can leave this callback running against a
@@ -1311,5 +1493,44 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
         /// confused with a real controller error.
         private const val ADVERTISE_ERROR_UNAVAILABLE: Int = 100
         private const val ADVERTISE_ERROR_SERVICE_REJECTED: Int = 101
+
+        /// Android allows exactly one outstanding GATT operation per
+        /// connection (an MTU request, a characteristic read/write, a
+        /// descriptor write); calling the platform API for a new one before
+        /// the previous op's callback has landed makes it return `false`
+        /// immediately -- before anything is attempted over the air, not a
+        /// protocol-level rejection. Confirmed on real hardware (2026-08-17,
+        /// see ble-gatt/docs/hardware-verification.md) as reliably
+        /// reproducible under external radio contention -- a classic-profile
+        /// reconnect sharing the same radio -- even with a correctly
+        /// declared, fully-writable characteristic and zero bytes ever sent
+        /// on the air. That's exactly the transient condition the platform
+        /// expects callers to retry, not a hard failure, so `attemptWrite`/
+        /// `attemptRead`/`attemptSubscribe` back off and retry a bounded
+        /// number of times before reporting failure and tearing down the
+        /// link.
+        ///
+        /// A P1 review finding on the original flat 3 x 200ms schedule
+        /// (~600ms total): the busy window measured on that same real
+        /// hardware run was 3.7-3.8 seconds, not milliseconds -- every one
+        /// of those three retries fired while the stack was still busy, so
+        /// the write failed exactly as it would have with no retry at all.
+        /// `gattBusyRetryDelayMs` below instead backs off exponentially,
+        /// capped, giving a ~7s cumulative window (200+400+800+1600+2000+
+        /// 2000ms) that comfortably covers the measured worst case with
+        /// margin, while still giving up well short of the ~35-45s full
+        /// reconnect-and-reauthenticate cycle this exists to avoid paying
+        /// for on every transient stall.
+        private const val GATT_BUSY_MAX_RETRIES = 6
+        private const val GATT_BUSY_RETRY_BASE_DELAY_MS = 200L
+        private const val GATT_BUSY_RETRY_MAX_DELAY_MS = 2000L
+
+        /// `attempt` is the *upcoming* attempt number (1-indexed: the first
+        /// retry is 1, matching `attempt + 1` at each call site) -- delay
+        /// doubles each time, capped, so it's cheap to retry a genuinely
+        /// brief stall quickly without spending the whole budget on retries
+        /// fired too early to have any chance during a sustained one.
+        private fun gattBusyRetryDelayMs(attempt: Int): Long =
+            (GATT_BUSY_RETRY_BASE_DELAY_MS shl (attempt - 1)).coerceAtMost(GATT_BUSY_RETRY_MAX_DELAY_MS)
     }
 }
