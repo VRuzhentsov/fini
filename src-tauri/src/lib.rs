@@ -256,6 +256,24 @@ pub fn run_cli() -> i32 {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        // Registered first, and unconditionally (not gated on
+        // `debug_assertions`) -- on Android that guard is exactly what
+        // makes a release build silent: `tauri-plugin-log` is what routes
+        // records (both `ble_gatt`'s own, and fini's) to logcat there, and
+        // a debug-only registration means a release install has no logger
+        // installed at all, so every `log::info!`/`warn!`/`error!` call
+        // anywhere in the process -- ble-gatt's included -- is silently
+        // dropped rather than merely quiet. See ble-gatt's own
+        // docs/logging.md, which already assumes this is wired up here.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

@@ -196,16 +196,16 @@ pub(crate) async fn run_server_on_port(
     let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
         Ok(l) => l,
         Err(err) => {
-            eprintln!("[transport][tcp_ws] failed to bind :{port}: {err}");
+            log::error!("[transport][tcp_ws] failed to bind :{port}: {err}");
             return;
         }
     };
-    eprintln!("[transport][tcp_ws] listening on :{port}");
+    log::info!("[transport][tcp_ws] listening on :{port}");
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                eprintln!("[transport][tcp_ws] connection from {addr}");
+                log::info!("[transport][tcp_ws] connection from {addr}");
                 let state = state.clone();
                 let db_path = db_path.clone();
                 let peer_addr = Some(addr.ip().to_string());
@@ -215,11 +215,11 @@ pub(crate) async fn run_server_on_port(
                             let link: Box<dyn Link> = Box::new(TcpWsLink::new_plain(ws, peer_addr));
                             session::run_peer_gate(link, state, db_path).await;
                         }
-                        Err(err) => eprintln!("[transport][tcp_ws] WS handshake failed: {err}"),
+                        Err(err) => log::warn!("[transport][tcp_ws] WS handshake failed: {err}"),
                     }
                 });
             }
-            Err(err) => eprintln!("[transport][tcp_ws] accept error: {err}"),
+            Err(err) => log::warn!("[transport][tcp_ws] accept error: {err}"),
         }
     }
 }
@@ -347,7 +347,7 @@ pub(crate) async fn dial_with_backoff(
         };
 
         let Ok(target_addr) = addr.parse::<IpAddr>() else {
-            eprintln!("[transport][tcp_ws] invalid peer addr '{addr}'");
+            log::warn!("[transport][tcp_ws] invalid peer addr '{addr}'");
             return;
         };
 
@@ -361,7 +361,7 @@ pub(crate) async fn dial_with_backoff(
                 .await
                 {
                     Ok(peer_protocol_version) => {
-                        eprintln!("[transport][tcp_ws] auth OK with {peer_id}");
+                        log::info!("[transport][tcp_ws] auth OK with {peer_id}");
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
                         if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, &db_path) {
                             session::run_session(
@@ -373,12 +373,12 @@ pub(crate) async fn dial_with_backoff(
                                 peer_protocol_version,
                             )
                             .await;
-                            eprintln!("[transport][tcp_ws] session with {peer_id} ended");
+                            log::info!("[transport][tcp_ws] session with {peer_id} ended");
                         }
                         delay = Duration::from_secs(1);
                     }
                     Err(err) => {
-                        eprintln!("[transport][tcp_ws] auth with {peer_id} failed: {err}");
+                        log::warn!("[transport][tcp_ws] auth with {peer_id} failed: {err}");
                         if err.starts_with("auth rejected") {
                             // Not just "don't retry within this task" --
                             // `spawn_dial_loop` would otherwise spawn a
@@ -394,7 +394,7 @@ pub(crate) async fn dial_with_backoff(
                 }
             }
             Err(err) => {
-                eprintln!("[transport][tcp_ws] connect to {peer_id} failed: {err}");
+                log::warn!("[transport][tcp_ws] connect to {peer_id} failed: {err}");
             }
         }
 
