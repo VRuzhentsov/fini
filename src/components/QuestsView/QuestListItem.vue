@@ -3,11 +3,15 @@ import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   useQuestStore,
+  statusLabel,
+  dueBadgeClass,
+  smartDueLabel,
   type ChecklistActivity,
   type Quest,
   type UpdateQuestInput,
 } from "../../stores/quest";
-import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
+import { useSpaceStore, spaceName, spaceCss } from "../../stores/space";
+import { formatDue, formatTime } from "../../utils/date";
 import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
@@ -32,18 +36,6 @@ const { t } = useI18n();
 const spaceStore = useSpaceStore();
 const contextMenu = useContextMenu();
 const { ensureReminderNotificationsAllowed } = useReminderNotifications();
-
-function spaceName(): string {
-  return spaceStore.spaces.find((s) => s.id === props.quest.space_id)?.name ?? "";
-}
-
-function spaceCss(): string {
-  return SPACE_COLOR_CLASS[props.quest.space_id] ?? "";
-}
-
-function statusLabel(): string {
-  return props.quest.status === "completed" ? "Completed" : "Abandoned";
-}
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
@@ -193,39 +185,6 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
 
-function formatDue(due: string): string {
-  const date = new Date(due + "T00:00:00");
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function localDateStr(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function smartDueLabel(): string {
-  if (!props.quest.due) return "";
-  const now = new Date();
-  const todayStr = localDateStr(now);
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = localDateStr(tomorrow);
-  const time = props.quest.due_time ? `, ${formatTime(props.quest.due_time)}` : "";
-  if (props.quest.due === todayStr) return t("quest.today") + time;
-  if (props.quest.due === tomorrowStr) return t("quest.tomorrow") + time;
-  return formatDue(props.quest.due) + time;
-}
-
-function dueBadgeClass(): string {
-  if (!props.quest.due) return "";
-  const todayStr = localDateStr(new Date());
-  if (props.quest.due < todayStr) return "badge-error";
-  if (props.quest.due === todayStr) return "badge-success";
-  return "badge-ghost";
-}
-
 function formatRepeat(repeatRule: string): string {
   try {
     const rule = JSON.parse(repeatRule);
@@ -241,11 +200,6 @@ function formatRepeat(repeatRule: string): string {
     const days = (rule.days_of_week as string[] | undefined)?.join(",") ?? "";
     return `every ${n} ${unit}${n > 1 ? "s" : ""}${days ? ` (${days})` : ""}`;
   } catch { return ""; }
-}
-
-function formatTime(time: string): string {
-  const [h, m] = time.split(":").map(Number);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function pillText(): string {
@@ -286,10 +240,10 @@ function pillText(): string {
       v-if="quest.status !== 'active'"
       class="quest-status-badge"
       :class="quest.status"
-    >{{ statusLabel() }} · {{ formatTimestamp(quest.completed_at ?? quest.updated_at) }}</span>
+    >{{ statusLabel(quest.status as 'completed' | 'abandoned') }} · {{ formatTimestamp(quest.completed_at ?? quest.updated_at) }}</span>
 
-    <span v-if="quest.due && quest.status === 'active'" class="quest-due-badge" :class="dueBadgeClass()">
-      {{ smartDueLabel() }}
+    <span v-if="quest.due && quest.status === 'active'" class="quest-due-badge" :class="dueBadgeClass(quest.due)">
+      {{ smartDueLabel(quest.due, quest.due_time, t('quest.today'), t('quest.tomorrow')) }}
       <ArrowPathIcon v-if="quest.repeat_rule" class="size-3.5" />
     </span>
     <span v-else-if="quest.repeat_rule && quest.status === 'active'" class="quest-repeat-badge">
@@ -303,14 +257,14 @@ function pillText(): string {
     </span>
     <QuestMetadataButton v-if="quest.status === 'active' && quest.energy !== 'medium'" kind="energy" :model-value="quest.energy" readonly />
     <QuestMetadataButton v-if="quest.status === 'active' && quest.priority !== 'medium'" kind="priority" :model-value="quest.priority" readonly />
-    <span class="quest-space-badge badge badge-xs" :class="spaceCss()">{{ spaceName() }}</span>
+    <span class="quest-space-badge badge badge-xs" :class="spaceCss(quest.space_id)">{{ spaceName(spaceStore.spaces, quest.space_id) }}</span>
   </div>
 
   <!-- Expanded: full editor for standalone quests -->
   <QuestEditor
     v-else
     :quest="quest"
-    :space-name="spaceName()"
+    :space-name="spaceName(spaceStore.spaces, quest.space_id)"
     :is-focus="store.activeQuest?.id === quest.id"
     :reminder-text="pillText()"
     :timestamp-text="quest.status !== 'active' ? formatTimestamp(quest.completed_at ?? quest.updated_at) : ''"
