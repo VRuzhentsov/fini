@@ -145,6 +145,9 @@ const repeatOn = ref(false);
 const repeatAmount = ref(1);
 const repeatUnit = ref<RepeatUnit>("day");
 const repeatDays = ref<Set<string>>(new Set());
+// Preserved verbatim from the loaded rule (this menu has no UI to edit them) so re-saving a
+// bounded recurrence — even just to change its date or time — doesn't silently make it unbounded.
+const repeatEndFields = ref<{ end?: string; end_date?: string; end_after?: number }>({});
 
 function loadRepeatState(rule: string | null) {
   if (!rule) {
@@ -153,7 +156,13 @@ function loadRepeatState(rule: string | null) {
   }
   try {
     const r = JSON.parse(rule);
+    if (r.end !== undefined) repeatEndFields.value.end = r.end;
+    if (r.end_date !== undefined) repeatEndFields.value.end_date = r.end_date;
+    if (r.end_after !== undefined) repeatEndFields.value.end_after = r.end_after;
     switch (r.preset) {
+      case "none":
+        repeatOn.value = false;
+        return;
       case "daily":
         repeatAmount.value = 1; repeatUnit.value = "day"; repeatDays.value = new Set();
         break;
@@ -239,12 +248,16 @@ function toggleRepeatDay(day: string) {
 
 function serializeRepeatRule(): string | null {
   if (!repeatOn.value) return null;
-  const days = orderedRepeatDays.value;
+  // Weekdays are only meaningful (and only shown) for the Day unit — the backend reads
+  // days_of_week ahead of unit whenever it's present, so a stale selection from a unit the user
+  // has since switched away from must not be serialized.
+  const days = repeatUnit.value === "day" ? orderedRepeatDays.value : [];
   return JSON.stringify({
     preset: "custom",
     interval: repeatAmount.value,
     unit: repeatUnit.value,
     ...(days.length ? { days_of_week: days } : {}),
+    ...repeatEndFields.value,
   });
 }
 
@@ -286,13 +299,23 @@ function sanitizeDigitsInput(event: Event) {
   el.value = el.value.replace(/\D/g, "").slice(0, 2);
 }
 
-function normalizeHourInput(event: Event) {
+// Only sanitize while typing — committing (and re-padding) on every keystroke fights a controlled
+// `:value` binding: after one digit the field re-renders as "0N", and `maxlength="2"` then rejects
+// the second digit the user meant to type. Commit the parsed value on blur/Enter instead (matching
+// the reference design's own bindDirectInput), so "14" can actually be typed.
+function onHourInput(event: Event) {
   sanitizeDigitsInput(event);
+}
+
+function onMinuteInput(event: Event) {
+  sanitizeDigitsInput(event);
+}
+
+function commitHourInput(event: Event) {
   timeHour.value = (event.target as HTMLInputElement).value;
 }
 
-function normalizeMinuteInput(event: Event) {
-  sanitizeDigitsInput(event);
+function commitMinuteInput(event: Event) {
   timeMinute.value = (event.target as HTMLInputElement).value;
 }
 
@@ -452,7 +475,8 @@ function onDone() {
                 maxlength="2"
                 aria-label="Hour"
                 :value="String(timeHour).padStart(2, '0')"
-                @input="normalizeHourInput"
+                @input="onHourInput"
+                @blur="commitHourInput"
                 @keydown="onTimeKeydown($event, 'hour')"
                 @focus="($event.target as HTMLInputElement).select()"
               />
@@ -469,7 +493,8 @@ function onDone() {
                 maxlength="2"
                 aria-label="Minute"
                 :value="String(timeMinute).padStart(2, '0')"
-                @input="normalizeMinuteInput"
+                @input="onMinuteInput"
+                @blur="commitMinuteInput"
                 @keydown="onTimeKeydown($event, 'minute')"
                 @focus="($event.target as HTMLInputElement).select()"
               />
