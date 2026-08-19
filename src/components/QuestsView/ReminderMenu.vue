@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import type { Quest } from "../../stores/quest";
 import {
   StarIcon,
@@ -294,29 +294,43 @@ const timeValueLabel = computed(() =>
   showTime.value ? `${String(timeHour.value).padStart(2, "0")}:${String(timeMinute.value).padStart(2, "0")}` : "—"
 );
 
-function sanitizeDigitsInput(event: Event) {
-  const el = event.target as HTMLInputElement;
-  el.value = el.value.replace(/\D/g, "").slice(0, 2);
-}
+// The hour/minute fields are backed by their own draft refs rather than deriving `:value`
+// straight from timeHour/timeMinute. A plain one-way `:value="String(timeHour)..."` binding plus
+// a raw `el.value = ...` sanitizer looks fine in isolation, but Vue's DOM patcher compares the
+// *actual* `el.value` against the reactive prop on every re-render of this vnode (not just when
+// that prop changes) and force-overwrites on mismatch — so typing into the minute field gets
+// silently reverted the instant anything else in the component triggers a re-render (e.g. the
+// hour field committing on blur when focus moves to minute). Routing all edits through a real ref
+// keeps Vue's own bookkeeping in sync with the DOM, so it never needs to "correct" it.
+const hourDraft = ref(String(timeHour.value).padStart(2, "0"));
+const minuteDraft = ref(String(timeMinute.value).padStart(2, "0"));
 
-// Only sanitize while typing — committing (and re-padding) on every keystroke fights a controlled
-// `:value` binding: after one digit the field re-renders as "0N", and `maxlength="2"` then rejects
-// the second digit the user meant to type. Commit the parsed value on blur/Enter instead (matching
-// the reference design's own bindDirectInput), so "14" can actually be typed.
+watch(timeHour, (h) => { hourDraft.value = String(h).padStart(2, "0"); });
+watch(timeMinute, (m) => { minuteDraft.value = String(m).padStart(2, "0"); });
+
 function onHourInput(event: Event) {
-  sanitizeDigitsInput(event);
+  hourDraft.value = (event.target as HTMLInputElement).value.replace(/\D/g, "").slice(0, 2);
 }
 
 function onMinuteInput(event: Event) {
-  sanitizeDigitsInput(event);
+  minuteDraft.value = (event.target as HTMLInputElement).value.replace(/\D/g, "").slice(0, 2);
 }
 
-function commitHourInput(event: Event) {
-  timeHour.value = (event.target as HTMLInputElement).value;
+// Commit is normally driven by blur (matching the reference design's own bindDirectInput) so a
+// partially-typed "1" isn't clamped/re-padded to "01" before the second digit lands. Done also
+// flushes the drafts (see onDone) in case the field never blurs before Done is clicked.
+function commitHourInput() {
+  timeHour.value = hourDraft.value;
 }
 
-function commitMinuteInput(event: Event) {
-  timeMinute.value = (event.target as HTMLInputElement).value;
+function commitMinuteInput() {
+  timeMinute.value = minuteDraft.value;
+}
+
+function flushTimeInputs() {
+  if (!showTime.value) return;
+  timeHour.value = hourDraft.value;
+  timeMinute.value = minuteDraft.value;
 }
 
 function incHour() { timeHour.value = wrapTimePart(timeHour.value + 1, 23); }
@@ -365,6 +379,7 @@ function onClear() {
 }
 
 function onDone() {
+  flushTimeInputs();
   emit("save", {
     due: localDue.value,
     due_time: showTime.value ? localDueTime.value : null,
@@ -474,7 +489,7 @@ function onDone() {
                 inputmode="numeric"
                 maxlength="2"
                 aria-label="Hour"
-                :value="String(timeHour).padStart(2, '0')"
+                :value="hourDraft"
                 @input="onHourInput"
                 @blur="commitHourInput"
                 @keydown="onTimeKeydown($event, 'hour')"
@@ -492,7 +507,7 @@ function onDone() {
                 inputmode="numeric"
                 maxlength="2"
                 aria-label="Minute"
-                :value="String(timeMinute).padStart(2, '0')"
+                :value="minuteDraft"
                 @input="onMinuteInput"
                 @blur="commitMinuteInput"
                 @keydown="onTimeKeydown($event, 'minute')"

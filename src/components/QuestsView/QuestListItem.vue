@@ -13,6 +13,7 @@ import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { ArrowPathIcon, CheckCircleIcon } from "@heroicons/vue/24/outline";
 import { checklistCounts, newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
+import { formatTimestamp } from "../../utils/timestamp";
 import ReminderMenu from "./ReminderMenu.vue";
 import RecurrenceScopeSheet from "./RecurrenceScopeSheet.vue";
 import QuestEditor from "../QuestEditor.vue";
@@ -261,17 +262,6 @@ function pillText(): string {
   return parts.join(", ");
 }
 
-function formatTimestamp(): string {
-  const raw = props.quest.completed_at ?? props.quest.updated_at;
-  const date = new Date(raw);
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-  const time = date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-  if (date.toDateString() === today.toDateString()) return `Today, ${time}`;
-  if (date.toDateString() === yesterday.toDateString()) return `Yesterday, ${time}`;
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + `, ${time}`;
-}
 </script>
 
 <template>
@@ -296,7 +286,7 @@ function formatTimestamp(): string {
       v-if="quest.status !== 'active'"
       class="quest-status-badge"
       :class="quest.status"
-    >{{ statusLabel() }} · {{ formatTimestamp() }}</span>
+    >{{ statusLabel() }} · {{ formatTimestamp(quest.completed_at ?? quest.updated_at) }}</span>
 
     <span v-if="quest.due && quest.status === 'active'" class="quest-due-badge" :class="dueBadgeClass()">
       {{ smartDueLabel() }}
@@ -323,7 +313,7 @@ function formatTimestamp(): string {
     :space-name="spaceName()"
     :is-focus="store.activeQuest?.id === quest.id"
     :reminder-text="pillText()"
-    :timestamp-text="quest.status !== 'active' ? formatTimestamp() : ''"
+    :timestamp-text="quest.status !== 'active' ? formatTimestamp(quest.completed_at ?? quest.updated_at) : ''"
     :is-recurring="!!quest.series_id"
     :checklist-activity="checklistActivity"
     @contextmenu="onContextMenu"
