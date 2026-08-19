@@ -47,6 +47,9 @@ fini-issue-topics.json
 .env
 .env.*
 
+# Claude Code local overrides
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
