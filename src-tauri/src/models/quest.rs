@@ -194,6 +194,20 @@ impl<T> Default for QuestFieldPatch<T> {
     }
 }
 
+/// A missing JSON key deserializes via `#[serde(default)]` to `Unchanged` (this impl is never
+/// called); a present `null` deserializes here to `Clear`; a present value deserializes to `Set`.
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for QuestFieldPatch<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => QuestFieldPatch::Set(value),
+            None => QuestFieldPatch::Clear,
+        })
+    }
+}
+
 /// Explicit nullable update contract. Transport adapters map omitted values,
 /// ordinary text (including empty text), and literal null to these variants.
 pub struct QuestUpdatePatch {
@@ -235,6 +249,57 @@ pub struct UpdateQuestInput {
     pub is_checklist: Option<bool>,
 }
 
+/// Wire-level input for the `update_quest` Tauri command. Unlike `UpdateQuestInput`
+/// (a plain `AsChangeset` where JSON `null` and an omitted key are indistinguishable —
+/// both become `None`, meaning "leave unchanged"), `description`/`due`/`due_time`/
+/// `repeat_rule` here use `QuestFieldPatch` so an explicit JSON `null` is distinguishable
+/// from an omitted key and actually clears the column. Mirrors the CLI's existing
+/// `QuestUpdatePatch` contract (see `services::cli::update_quest_from_cli`).
+#[derive(Deserialize)]
+pub struct UpdateQuestCommandInput {
+    pub space_id: Option<String>,
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: QuestFieldPatch<String>,
+    pub status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_energy")]
+    pub energy: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_priority")]
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub due: QuestFieldPatch<String>,
+    #[serde(default)]
+    pub due_time: QuestFieldPatch<String>,
+    #[serde(default)]
+    pub repeat_rule: QuestFieldPatch<String>,
+    pub order_rank: Option<f64>,
+    pub is_checklist: Option<bool>,
+}
+
+impl UpdateQuestCommandInput {
+    pub fn into_patch(self) -> QuestUpdatePatch {
+        QuestUpdatePatch {
+            input: UpdateQuestInput {
+                space_id: self.space_id,
+                title: self.title,
+                description: None,
+                status: self.status,
+                energy: self.energy,
+                priority: self.priority,
+                due: None,
+                due_time: None,
+                repeat_rule: None,
+                order_rank: self.order_rank,
+                is_checklist: self.is_checklist,
+            },
+            description: self.description,
+            due: self.due,
+            due_time: self.due_time,
+            repeat_rule: self.repeat_rule,
+        }
+    }
+}
+
 pub fn default_priority() -> i64 {
     PRIORITY_MEDIUM
 }
@@ -254,6 +319,36 @@ pub fn clamp_order_rank(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_command_input_distinguishes_omitted_null_and_set_for_clearable_fields() {
+        let omitted: UpdateQuestCommandInput =
+            serde_json::from_str(r#"{"priority":"high"}"#).expect("omitted keys must deserialize");
+        assert_eq!(omitted.due, QuestFieldPatch::Unchanged);
+        assert_eq!(omitted.due_time, QuestFieldPatch::Unchanged);
+        assert_eq!(omitted.repeat_rule, QuestFieldPatch::Unchanged);
+        assert_eq!(omitted.description, QuestFieldPatch::Unchanged);
+
+        let cleared: UpdateQuestCommandInput = serde_json::from_str(
+            r#"{"due":null,"due_time":null,"repeat_rule":null,"description":null}"#,
+        )
+        .expect("explicit null must deserialize");
+        assert_eq!(cleared.due, QuestFieldPatch::Clear);
+        assert_eq!(cleared.due_time, QuestFieldPatch::Clear);
+        assert_eq!(cleared.repeat_rule, QuestFieldPatch::Clear);
+        assert_eq!(cleared.description, QuestFieldPatch::Clear);
+
+        let set: UpdateQuestCommandInput = serde_json::from_str(
+            r#"{"due":"2026-05-01","due_time":"09:00","repeat_rule":"{\"preset\":\"daily\"}"}"#,
+        )
+        .expect("explicit values must deserialize");
+        assert_eq!(set.due, QuestFieldPatch::Set("2026-05-01".to_string()));
+        assert_eq!(set.due_time, QuestFieldPatch::Set("09:00".to_string()));
+        assert_eq!(
+            set.repeat_rule,
+            QuestFieldPatch::Set(r#"{"preset":"daily"}"#.to_string())
+        );
+    }
 
     #[test]
     fn create_input_accepts_named_metadata_and_rejects_numeric_priority() {

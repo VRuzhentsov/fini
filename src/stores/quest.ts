@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { ref } from "vue";
 import { parseChecklist, serializeChecklist } from "../utils/checklist";
+import { localDateStr, formatDue, formatTime } from "../utils/date";
 
 export type Energy = "small" | "medium" | "large";
 export type Priority = "low" | "medium" | "high";
@@ -10,6 +11,40 @@ export function priorityWeight(priority: Priority): number {
   if (priority === "high") return 3;
   if (priority === "low") return 1;
   return 2;
+}
+
+/** Label for a non-active quest's status badge. Active quests have no status label. */
+export function statusLabel(status: "completed" | "abandoned"): string {
+  return status === "completed" ? "Completed" : "Abandoned";
+}
+
+/** Due-badge color class: overdue, due today, or upcoming. Empty when there's no due date. */
+export function dueBadgeClass(due: string | null): string {
+  if (!due) return "";
+  const todayStr = localDateStr(new Date());
+  if (due < todayStr) return "badge-error";
+  if (due === todayStr) return "badge-success";
+  return "badge-ghost";
+}
+
+/** "Today, 2:30 PM" / "Tomorrow" / "Jan 5, 2:30 PM" — `todayLabel`/`tomorrowLabel` are the
+ * caller's translated strings, keeping this function free of an i18n dependency. */
+export function smartDueLabel(
+  due: string | null,
+  dueTime: string | null,
+  todayLabel: string,
+  tomorrowLabel: string,
+): string {
+  if (!due) return "";
+  const now = new Date();
+  const todayStr = localDateStr(now);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = localDateStr(tomorrow);
+  const time = dueTime ? `, ${formatTime(dueTime)}` : "";
+  if (due === todayStr) return todayLabel + time;
+  if (due === tomorrowStr) return tomorrowLabel + time;
+  return formatDue(due) + time;
 }
 
 export interface Quest {

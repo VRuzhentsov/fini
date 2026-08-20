@@ -21,6 +21,14 @@ export function isBuiltinSpace(id: string): boolean {
   return (BUILTIN_SPACE_IDS as readonly string[]).includes(id);
 }
 
+export function spaceName(spaces: Space[], spaceId: string): string {
+  return spaces.find((s) => s.id === spaceId)?.name ?? "";
+}
+
+export function spaceCss(spaceId: string): string {
+  return SPACE_COLOR_CLASS[spaceId] ?? "";
+}
+
 export const useSpaceStore = defineStore("space", () => {
   const spaces = ref<Space[]>([]);
   const loading = ref(false);

@@ -172,6 +172,18 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
+    /// Earliest `period_key` (a `YYYY-MM-DD` due date) among a series' occurrences, active or
+    /// historical. Used as the week-parity anchor for `days_of_week`+`interval` recurrence —
+    /// stable across the series' lifetime regardless of when the series row itself was created
+    /// (which, for lazily-backfilled series, is completion time, not the first due date).
+    pub fn min_series_period_key(&mut self, series_id: &str) -> Result<Option<String>, String> {
+        quests::table
+            .filter(quests::series_id.eq(series_id))
+            .select(diesel::dsl::min(quests::period_key))
+            .first(self.conn)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn deactivate_series(&mut self, series_id: &str) -> Result<(), String> {
         diesel::update(quest_series::table.find(series_id))
             .set(quest_series::active.eq(false))
