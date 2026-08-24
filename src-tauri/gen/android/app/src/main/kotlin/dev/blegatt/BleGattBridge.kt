@@ -101,6 +101,19 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     /// is verified on *this* side instead, under the same lock that resolves
     /// the GATT, which makes validation and initiation one transition.
     private val gattSessions = ConcurrentHashMap<String, Long>()
+    /// Addresses whose connection priority has already been dropped back to
+    /// BALANCED after their first successful post-connect write. See the doc
+    /// comment on `requestConnectionPriority(CONNECTION_PRIORITY_HIGH)` in
+    /// `connect()` -- HIGH is requested only to get the connect/auth
+    /// bootstrap (subscribe, then the first characteristic write) through a
+    /// busy radio reliably, not held for a session's full lifetime. fini's
+    /// sessions are long-lived, so leaving HIGH in effect permanently would
+    /// mean a materially shorter connection interval -- more radio wakeups,
+    /// more battery drain -- for the entire session, not just the moment
+    /// that needed it. Cleared alongside the other per-address state on
+    /// disconnect (both sites below), so a reconnect to the same address
+    /// re-triggers the bootstrap treatment instead of silently skipping it.
+    private val priorityLowered = ConcurrentHashMap.newKeySet<String>()
 
     /// Session id per central attached to our GATT server.
     ///
@@ -323,6 +336,10 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                         // the shortest connection interval it can offer, so our own
                         // operations get serviced on the next event instead of
                         // losing the race to unrelated background BLE traffic.
+                        // Temporary, not permanent: `onCharacteristicWrite` drops
+                        // this back to BALANCED after the first successful write,
+                        // once the bootstrap this exists to protect is done -- see
+                        // `priorityLowered`'s doc comment.
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         // Ask for the largest MTU the spec allows before
                         // discovering services. The peer decides the real
@@ -359,6 +376,7 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                                 connectedGatts.remove(address)
                                 gattSessions.remove(address)
                                 pendingCharacteristics.remove(address)
+                                priorityLowered.remove(address)
                                 clearPendingOperations(address)
                                 // Fires for unsolicited drops too (out of
                                 // range, peer powered off), which is the
@@ -411,6 +429,7 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                             connectedGatts.remove(address)
                             gattSessions.remove(address)
                             pendingCharacteristics.remove(address)
+                            priorityLowered.remove(address)
                             clearPendingOperations(address)
                             onDisconnected(nativeHandle, address, false)
                             false
@@ -468,6 +487,16 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                     nativeHandle, requestId, address, characteristic.uuid.toString(),
                     status == BluetoothGatt.GATT_SUCCESS
                 )
+                // First successful write since connect: the latency-sensitive
+                // bootstrap window CONNECTION_PRIORITY_HIGH exists to protect
+                // is over, so drop back to BALANCED rather than holding the
+                // shorter connection interval for this session's full,
+                // long-lived remainder. `priorityLowered.add` is the
+                // once-only gate (it returns false on every later write, once
+                // this address is already in the set).
+                if (status == BluetoothGatt.GATT_SUCCESS && priorityLowered.add(address)) {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                }
                 }
             }
 
