@@ -341,6 +341,26 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                         // once the bootstrap this exists to protect is done -- see
                         // `priorityLowered`'s doc comment.
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                        // Bounded fallback for the P1 above `onCharacteristicWrite`
+                        // is meant to close: a receive-only or otherwise
+                        // write-less connection never reaches that callback, so
+                        // without this HIGH would hold for the connection's
+                        // entire lifetime. Guarantees BALANCED resumes within
+                        // PRIORITY_BOOTSTRAP_TIMEOUT_MS regardless of whether a
+                        // write ever happens. `priorityLowered.add` is the same
+                        // once-only gate `onCharacteristicWrite` uses, so
+                        // whichever path -- a write, or this timeout -- gets
+                        // there first makes the other a no-op; the `gattLock`
+                        // ownership check matters because 10s is easily long
+                        // enough for this connection to have been superseded or
+                        // torn down by the time this fires.
+                        retryHandler.postDelayed({
+                            synchronized(gattLock) {
+                                if (connectedGatts[address] === gatt && priorityLowered.add(address)) {
+                                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                                }
+                            }
+                        }, PRIORITY_BOOTSTRAP_TIMEOUT_MS)
                         // Ask for the largest MTU the spec allows before
                         // discovering services. The peer decides the real
                         // value and reports it via onMtuChanged; until then
@@ -1570,6 +1590,21 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
         private const val GATT_BUSY_MAX_RETRIES = 6
         private const val GATT_BUSY_RETRY_BASE_DELAY_MS = 200L
         private const val GATT_BUSY_RETRY_MAX_DELAY_MS = 2000L
+
+        /// A P1 review finding on the original CONNECTION_PRIORITY_HIGH fix:
+        /// dropping back to BALANCED only from `onCharacteristicWrite` never
+        /// fires for a connection that stays idle or only receives
+        /// notifications -- `datagram::connect` subscribes but does not
+        /// guarantee a bootstrap write, so a receive-only or delayed-first-
+        /// send session would hold HIGH's shorter connection interval (more
+        /// radio wakeups, more battery drain) for its entire lifetime with no
+        /// write ever arriving to end it. This bounds that exposure
+        /// regardless of whether a write happens at all. 10s, not the 7s
+        /// `GATT_BUSY_MAX_RETRIES` write-retry budget itself: connect + MTU +
+        /// service discovery + subscribe all happen *before* that budget's
+        /// clock even starts, so the timeout needs headroom above it, not to
+        /// equal it.
+        private const val PRIORITY_BOOTSTRAP_TIMEOUT_MS = 10_000L
 
         /// `attempt` is the *upcoming* attempt number (1-indexed: the first
         /// retry is 1, matching `attempt + 1` at each call site) -- delay
