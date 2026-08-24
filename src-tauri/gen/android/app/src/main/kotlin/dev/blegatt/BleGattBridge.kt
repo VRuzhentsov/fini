@@ -336,31 +336,24 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                         // the shortest connection interval it can offer, so our own
                         // operations get serviced on the next event instead of
                         // losing the race to unrelated background BLE traffic.
-                        // Temporary, not permanent: `onCharacteristicWrite` drops
-                        // this back to BALANCED after the first successful write,
-                        // once the bootstrap this exists to protect is done -- see
-                        // `priorityLowered`'s doc comment.
+                        // Temporary, not permanent: dropped back to BALANCED once
+                        // the bootstrap this exists to protect is done -- see
+                        // `priorityLowered`'s doc comment on *where* that happens
+                        // and why it is deliberately not scheduled from here. A
+                        // P1 review finding on an earlier version of this fix:
+                        // scheduling the revert-to-BALANCED fallback from this
+                        // exact point (connect time) let MTU negotiation, service
+                        // discovery, and CCCD subscription -- each individually
+                        // unbounded, and subscription can itself retry for up to
+                        // GATT_BUSY_MAX_RETRIES's ~7s -- eat into the fallback's
+                        // own countdown before the write it's meant to protect
+                        // even started, so the fallback could fire *during* that
+                        // write's retry window and recreate the exact "Still
+                        // connecting..." failure this whole fix exists to solve.
+                        // HIGH still gets requested immediately here regardless
+                        // -- it also speeds up this MTU/discovery/subscribe
+                        // sequence itself, not just the write after it.
                         gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
-                        // Bounded fallback for the P1 above `onCharacteristicWrite`
-                        // is meant to close: a receive-only or otherwise
-                        // write-less connection never reaches that callback, so
-                        // without this HIGH would hold for the connection's
-                        // entire lifetime. Guarantees BALANCED resumes within
-                        // PRIORITY_BOOTSTRAP_TIMEOUT_MS regardless of whether a
-                        // write ever happens. `priorityLowered.add` is the same
-                        // once-only gate `onCharacteristicWrite` uses, so
-                        // whichever path -- a write, or this timeout -- gets
-                        // there first makes the other a no-op; the `gattLock`
-                        // ownership check matters because 10s is easily long
-                        // enough for this connection to have been superseded or
-                        // torn down by the time this fires.
-                        retryHandler.postDelayed({
-                            synchronized(gattLock) {
-                                if (connectedGatts[address] === gatt && priorityLowered.add(address)) {
-                                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
-                                }
-                            }
-                        }, PRIORITY_BOOTSTRAP_TIMEOUT_MS)
                         // Ask for the largest MTU the spec allows before
                         // discovering services. The peer decides the real
                         // value and reports it via onMtuChanged; until then
@@ -566,6 +559,28 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                     characteristicUuid,
                     status == BluetoothGatt.GATT_SUCCESS,
                 )
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    // Anchored here, not at `STATE_CONNECTED` -- see that
+                    // callback's doc comment for the P1 this fixes. Subscribe
+                    // just succeeded, which is exactly the moment before Rust
+                    // attempts the first characteristic write this priority
+                    // bump exists to protect, so the full
+                    // PRIORITY_BOOTSTRAP_TIMEOUT_MS window starts now,
+                    // comfortably covering that write's own up-to-~7s
+                    // GATT_BUSY_MAX_RETRIES budget with margin rather than
+                    // racing it. Bounded fallback for connections that never
+                    // reach `onCharacteristicWrite` at all (idle/receive-only);
+                    // `priorityLowered.add` is the same once-only gate that
+                    // callback uses, so whichever happens first -- a write, or
+                    // this timeout -- makes the other a no-op.
+                    retryHandler.postDelayed({
+                        synchronized(gattLock) {
+                            if (connectedGatts[address] === gatt && priorityLowered.add(address)) {
+                                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                            }
+                        }
+                    }, PRIORITY_BOOTSTRAP_TIMEOUT_MS)
+                }
                 }
             }
         }
