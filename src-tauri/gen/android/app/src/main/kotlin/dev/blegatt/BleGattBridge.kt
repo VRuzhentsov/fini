@@ -101,6 +101,35 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     /// is verified on *this* side instead, under the same lock that resolves
     /// the GATT, which makes validation and initiation one transition.
     private val gattSessions = ConcurrentHashMap<String, Long>()
+    /// Addresses whose connection priority has been *finally* dropped back
+    /// to BALANCED by the bootstrap-priority fallback (see
+    /// `rearmPriorityFallback`) actually firing. Once an address is in this
+    /// set, bootstrap is considered over for good: later writes do not
+    /// re-arm the fallback or request HIGH again, since by then they are
+    /// ordinary long-lived-session traffic, not bootstrap. See the doc
+    /// comment on `requestConnectionPriority(CONNECTION_PRIORITY_HIGH)` in
+    /// `connect()` -- HIGH is requested only to get the connect/auth
+    /// bootstrap through a busy radio reliably, not held for a session's
+    /// full lifetime. fini's sessions are long-lived, so leaving HIGH in
+    /// effect permanently would mean a materially shorter connection
+    /// interval -- more radio wakeups, more battery drain -- for the entire
+    /// session, not just the moment that needed it. Cleared alongside the
+    /// other per-address state on disconnect (both sites below), so a
+    /// reconnect to the same address re-triggers the bootstrap treatment
+    /// instead of silently skipping it.
+    private val priorityLowered = ConcurrentHashMap.newKeySet<String>()
+    /// The currently scheduled (not yet fired) bootstrap-priority fallback
+    /// per address, if any. See `rearmPriorityFallback`'s doc comment: a
+    /// P1 review finding on an earlier version of this fix pointed out that
+    /// a *fixed* one-shot deadline from subscribe time is not actually
+    /// bounded above a fragmented bootstrap message, since each fragment
+    /// gets its own up-to-~7s retry budget and fragments are sent
+    /// sequentially -- so the fixed deadline could fire mid-retry on a later
+    /// fragment. This tracks the one outstanding fallback so a new write can
+    /// cancel and replace it with a fresh one, turning it into an idle
+    /// timeout (fires `PRIORITY_BOOTSTRAP_TIMEOUT_MS` after the *last*
+    /// bootstrap write started, not a fixed point after subscribe).
+    private val priorityFallbacks = ConcurrentHashMap<String, Runnable>()
 
     /// Session id per central attached to our GATT server.
     ///
@@ -307,6 +336,40 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
+                        // Default connection priority (BALANCED) lets Android's
+                        // scheduler give background BLE activity on the shared
+                        // radio -- Nearby/Fast Pair scanning, other apps' GATT
+                        // servers -- an equal or greater claim on connection-event
+                        // time than this link. Live production capture
+                        // (2026-08-23, Pixel 6 Pro) showed the very first
+                        // characteristic write after connect+subscribe rejected
+                        // locally by the stack for the *entire* 7s retry budget on
+                        // every attempt, with `dumpsys bluetooth_manager` showing a
+                        // concurrent system GATT server (com.google.uid.shared,
+                        // tag=nearby_presence) registered on the same adapter --
+                        // exactly the shared-radio contention this priority bump
+                        // exists to outrank. Requesting HIGH asks the platform for
+                        // the shortest connection interval it can offer, so our own
+                        // operations get serviced on the next event instead of
+                        // losing the race to unrelated background BLE traffic.
+                        // Temporary, not permanent: dropped back to BALANCED once
+                        // the bootstrap this exists to protect is done -- see
+                        // `priorityLowered`'s doc comment on *where* that happens
+                        // and why it is deliberately not scheduled from here. A
+                        // P1 review finding on an earlier version of this fix:
+                        // scheduling the revert-to-BALANCED fallback from this
+                        // exact point (connect time) let MTU negotiation, service
+                        // discovery, and CCCD subscription -- each individually
+                        // unbounded, and subscription can itself retry for up to
+                        // GATT_BUSY_MAX_RETRIES's ~7s -- eat into the fallback's
+                        // own countdown before the write it's meant to protect
+                        // even started, so the fallback could fire *during* that
+                        // write's retry window and recreate the exact "Still
+                        // connecting..." failure this whole fix exists to solve.
+                        // HIGH still gets requested immediately here regardless
+                        // -- it also speeds up this MTU/discovery/subscribe
+                        // sequence itself, not just the write after it.
+                        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         // Ask for the largest MTU the spec allows before
                         // discovering services. The peer decides the real
                         // value and reports it via onMtuChanged; until then
@@ -342,6 +405,8 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                                 connectedGatts.remove(address)
                                 gattSessions.remove(address)
                                 pendingCharacteristics.remove(address)
+                                priorityLowered.remove(address)
+                                priorityFallbacks.remove(address)?.let { retryHandler.removeCallbacks(it) }
                                 clearPendingOperations(address)
                                 // Fires for unsolicited drops too (out of
                                 // range, peer powered off), which is the
@@ -394,6 +459,8 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                             connectedGatts.remove(address)
                             gattSessions.remove(address)
                             pendingCharacteristics.remove(address)
+                            priorityLowered.remove(address)
+                            priorityFallbacks.remove(address)?.let { retryHandler.removeCallbacks(it) }
                             clearPendingOperations(address)
                             onDisconnected(nativeHandle, address, false)
                             false
@@ -500,6 +567,18 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                     characteristicUuid,
                     status == BluetoothGatt.GATT_SUCCESS,
                 )
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    // Anchored here, not at `STATE_CONNECTED` -- see that
+                    // callback's doc comment for the P1 this fixes. Subscribe
+                    // just succeeded, which is exactly the moment before Rust
+                    // attempts the first characteristic write this priority
+                    // bump exists to protect, so the fallback's window starts
+                    // now. Re-armed again on every subsequent write in
+                    // `attemptWrite` -- see `rearmPriorityFallback`'s doc
+                    // comment for why a single fixed deadline from here isn't
+                    // enough on its own for a fragmented bootstrap message.
+                    rearmPriorityFallback(address, gatt)
+                }
                 }
             }
         }
@@ -673,6 +752,13 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
             synchronized(queue) { queue.remove(requestId) }
             onCharacteristicWriteResult(nativeHandle, requestId, address, characteristicUuid, false)
             return
+        }
+        // Only for a genuinely new write (`attempt == 0`), not a GATT-busy
+        // retry of the same one -- see `rearmPriorityFallback`'s doc comment
+        // for why a fragmented bootstrap message needs the fallback pushed
+        // out on every new fragment, not just once at subscribe time.
+        if (attempt == 0) {
+            rearmPriorityFallback(address, gatt)
         }
         characteristic.writeType = if (withoutResponse) {
             BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
@@ -1264,6 +1350,58 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
         pendingSubscribeIds.keys.removeAll { it.startsWith("$address/") }
     }
 
+    /// (Re)arms the bounded bootstrap-priority fallback for `address`,
+    /// cancelling whichever one was previously scheduled first. Called once
+    /// on subscribe success and again on every new write thereafter
+    /// (`attempt == 0` in `attemptWrite`), which turns a single fixed
+    /// deadline into an idle timeout: it only actually fires
+    /// `PRIORITY_BOOTSTRAP_TIMEOUT_MS` after the *last* write was issued, not
+    /// a fixed point after subscribe. A P1 review finding on the earlier
+    /// fixed-deadline version: the app-level bootstrap message can be
+    /// fragmented across several characteristic writes under a small
+    /// negotiated MTU, each with its own up-to-~7s `GATT_BUSY_MAX_RETRIES`
+    /// budget, sent sequentially -- a fixed deadline measured from subscribe
+    /// time is not actually bounded above that whole sequence and could fire
+    /// mid-retry on a later fragment. Re-arming on every new write instead
+    /// keeps pushing the deadline out for as long as bootstrap keeps
+    /// actively sending, and only lets it fire once that stops.
+    ///
+    /// No-op once `priorityLowered` already holds `address`: that means an
+    /// earlier fallback already fired and bootstrap is considered over for
+    /// good, so a write after that point is ordinary session traffic and
+    /// must not re-request HIGH.
+    private fun rearmPriorityFallback(address: String, gatt: BluetoothGatt) {
+        if (priorityLowered.contains(address)) return
+        priorityFallbacks.remove(address)?.let { retryHandler.removeCallbacks(it) }
+        // A P1 review finding on the first version of this re-arming scheme:
+        // `Handler.removeCallbacks` above only stops a callback still
+        // *waiting* to run -- if the previous fallback had already been
+        // dispatched and was merely blocked on `gattLock` (e.g. by this very
+        // call, made from inside a `synchronized(gattLock)` block elsewhere),
+        // removing it here does nothing, and it can still acquire the lock
+        // *after* this new one is installed below, unconditionally remove
+        // the replacement it knows nothing about, and revert priority mid-
+        // retry on the new fragment. `lateinit` lets the runnable capture its
+        // own identity so it can check, first thing under the lock, whether
+        // it is still the map's current entry for this address -- the same
+        // compare-and-act discipline `cancelPendingOperation`'s doc comment
+        // (finding 3) already established for the identical race on
+        // `pendingRetries`. Only the runnable that wins that comparison acts;
+        // a superseded one is a no-op.
+        lateinit var fallback: Runnable
+        fallback = Runnable {
+            synchronized(gattLock) {
+                if (priorityFallbacks[address] !== fallback) return@Runnable
+                priorityFallbacks.remove(address)
+                if (connectedGatts[address] === gatt && priorityLowered.add(address)) {
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                }
+            }
+        }
+        priorityFallbacks[address] = fallback
+        retryHandler.postDelayed(fallback, PRIORITY_BOOTSTRAP_TIMEOUT_MS)
+    }
+
     fun closeAll() {
         for (gatt in connectedGatts.values) {
             try {
@@ -1524,6 +1662,21 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
         private const val GATT_BUSY_MAX_RETRIES = 6
         private const val GATT_BUSY_RETRY_BASE_DELAY_MS = 200L
         private const val GATT_BUSY_RETRY_MAX_DELAY_MS = 2000L
+
+        /// A P1 review finding on the original CONNECTION_PRIORITY_HIGH fix:
+        /// dropping back to BALANCED only from `onCharacteristicWrite` never
+        /// fires for a connection that stays idle or only receives
+        /// notifications -- `datagram::connect` subscribes but does not
+        /// guarantee a bootstrap write, so a receive-only or delayed-first-
+        /// send session would hold HIGH's shorter connection interval (more
+        /// radio wakeups, more battery drain) for its entire lifetime with no
+        /// write ever arriving to end it. This bounds that exposure
+        /// regardless of whether a write happens at all. 10s, not the 7s
+        /// `GATT_BUSY_MAX_RETRIES` write-retry budget itself: connect + MTU +
+        /// service discovery + subscribe all happen *before* that budget's
+        /// clock even starts, so the timeout needs headroom above it, not to
+        /// equal it.
+        private const val PRIORITY_BOOTSTRAP_TIMEOUT_MS = 10_000L
 
         /// `attempt` is the *upcoming* attempt number (1-indexed: the first
         /// retry is 1, matching `attempt + 1` at each call site) -- delay
