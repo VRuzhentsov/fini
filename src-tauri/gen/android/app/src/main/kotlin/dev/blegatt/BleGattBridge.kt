@@ -102,10 +102,10 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     /// the GATT, which makes validation and initiation one transition.
     private val gattSessions = ConcurrentHashMap<String, Long>()
     /// Addresses whose connection priority has already been dropped back to
-    /// BALANCED after their first successful post-connect write. See the doc
-    /// comment on `requestConnectionPriority(CONNECTION_PRIORITY_HIGH)` in
-    /// `connect()` -- HIGH is requested only to get the connect/auth
-    /// bootstrap (subscribe, then the first characteristic write) through a
+    /// BALANCED by the bounded bootstrap-timeout fallback scheduled in
+    /// `onDescriptorWrite`. See the doc comment on
+    /// `requestConnectionPriority(CONNECTION_PRIORITY_HIGH)` in `connect()`
+    /// -- HIGH is requested only to get the connect/auth bootstrap through a
     /// busy radio reliably, not held for a session's full lifetime. fini's
     /// sessions are long-lived, so leaving HIGH in effect permanently would
     /// mean a materially shorter connection interval -- more radio wakeups,
@@ -113,6 +113,17 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     /// that needed it. Cleared alongside the other per-address state on
     /// disconnect (both sites below), so a reconnect to the same address
     /// re-triggers the bootstrap treatment instead of silently skipping it.
+    ///
+    /// Deliberately *not* also dropped on the first successful
+    /// `onCharacteristicWrite` (an earlier version of this fix did that): a
+    /// P1 review finding pointed out that the app-level bootstrap message
+    /// (the `Auth` frame) can itself be fragmented across several
+    /// characteristic writes when the negotiated MTU is small, and ending
+    /// the boost after just the first fragment would expose every remaining
+    /// fragment to the same contention this fix exists to survive. The
+    /// bounded timeout is the only revert path, sized with margin over the
+    /// write-retry budget precisely so it does not need write-level
+    /// granularity to know when bootstrap is "done".
     private val priorityLowered = ConcurrentHashMap.newKeySet<String>()
 
     /// Session id per central attached to our GATT server.
@@ -500,16 +511,6 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                     nativeHandle, requestId, address, characteristic.uuid.toString(),
                     status == BluetoothGatt.GATT_SUCCESS
                 )
-                // First successful write since connect: the latency-sensitive
-                // bootstrap window CONNECTION_PRIORITY_HIGH exists to protect
-                // is over, so drop back to BALANCED rather than holding the
-                // shorter connection interval for this session's full,
-                // long-lived remainder. `priorityLowered.add` is the
-                // once-only gate (it returns false on every later write, once
-                // this address is already in the set).
-                if (status == BluetoothGatt.GATT_SUCCESS && priorityLowered.add(address)) {
-                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
-                }
                 }
             }
 
@@ -568,11 +569,12 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                     // PRIORITY_BOOTSTRAP_TIMEOUT_MS window starts now,
                     // comfortably covering that write's own up-to-~7s
                     // GATT_BUSY_MAX_RETRIES budget with margin rather than
-                    // racing it. Bounded fallback for connections that never
-                    // reach `onCharacteristicWrite` at all (idle/receive-only);
-                    // `priorityLowered.add` is the same once-only gate that
-                    // callback uses, so whichever happens first -- a write, or
-                    // this timeout -- makes the other a no-op.
+                    // racing it. This is the *only* revert path -- see
+                    // `priorityLowered`'s doc comment for why an earlier
+                    // per-write revert was removed (it ended the boost after
+                    // just the first fragment of a multi-write bootstrap
+                    // message). `priorityLowered.add` still guards against
+                    // scheduling more than one of these per connection.
                     retryHandler.postDelayed({
                         synchronized(gattLock) {
                             if (connectedGatts[address] === gatt && priorityLowered.add(address)) {
