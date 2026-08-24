@@ -1373,8 +1373,25 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     private fun rearmPriorityFallback(address: String, gatt: BluetoothGatt) {
         if (priorityLowered.contains(address)) return
         priorityFallbacks.remove(address)?.let { retryHandler.removeCallbacks(it) }
-        val fallback = Runnable {
+        // A P1 review finding on the first version of this re-arming scheme:
+        // `Handler.removeCallbacks` above only stops a callback still
+        // *waiting* to run -- if the previous fallback had already been
+        // dispatched and was merely blocked on `gattLock` (e.g. by this very
+        // call, made from inside a `synchronized(gattLock)` block elsewhere),
+        // removing it here does nothing, and it can still acquire the lock
+        // *after* this new one is installed below, unconditionally remove
+        // the replacement it knows nothing about, and revert priority mid-
+        // retry on the new fragment. `lateinit` lets the runnable capture its
+        // own identity so it can check, first thing under the lock, whether
+        // it is still the map's current entry for this address -- the same
+        // compare-and-act discipline `cancelPendingOperation`'s doc comment
+        // (finding 3) already established for the identical race on
+        // `pendingRetries`. Only the runnable that wins that comparison acts;
+        // a superseded one is a no-op.
+        lateinit var fallback: Runnable
+        fallback = Runnable {
             synchronized(gattLock) {
+                if (priorityFallbacks[address] !== fallback) return@Runnable
                 priorityFallbacks.remove(address)
                 if (connectedGatts[address] === gatt && priorityLowered.add(address)) {
                     gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
