@@ -307,6 +307,23 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
+                        // Default connection priority (BALANCED) lets Android's
+                        // scheduler give background BLE activity on the shared
+                        // radio -- Nearby/Fast Pair scanning, other apps' GATT
+                        // servers -- an equal or greater claim on connection-event
+                        // time than this link. Live production capture
+                        // (2026-08-23, Pixel 6 Pro) showed the very first
+                        // characteristic write after connect+subscribe rejected
+                        // locally by the stack for the *entire* 7s retry budget on
+                        // every attempt, with `dumpsys bluetooth_manager` showing a
+                        // concurrent system GATT server (com.google.uid.shared,
+                        // tag=nearby_presence) registered on the same adapter --
+                        // exactly the shared-radio contention this priority bump
+                        // exists to outrank. Requesting HIGH asks the platform for
+                        // the shortest connection interval it can offer, so our own
+                        // operations get serviced on the next event instead of
+                        // losing the race to unrelated background BLE traffic.
+                        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                         // Ask for the largest MTU the spec allows before
                         // discovering services. The peer decides the real
                         // value and reports it via onMtuChanged; until then
