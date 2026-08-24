@@ -727,6 +727,17 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                 channel = incoming.next() => {
                     let Some(channel) = channel else { break; };
                     let link: Box<dyn Link> = Box::new(BleLink::new(channel));
+                    // Mirrors tcp_ws's/sim's "connection from {addr}" accept
+                    // log -- without this, `run_peer_gate`'s own auth-outcome
+                    // logging (added alongside this) has no matching "an
+                    // attempt arrived at all" line to pair with, so a link
+                    // that dies before ever sending an Auth frame (e.g. lost
+                    // at the GATT layer before the first read) would leave no
+                    // trace here that anything was accepted.
+                    log::info!(
+                        "[transport][ble] central connected: {}",
+                        link.peer_addr().unwrap_or_default()
+                    );
                     let state = state.clone();
                     let db_path = db_path.clone();
                     tokio::spawn(session::run_peer_gate(link, state, db_path));
