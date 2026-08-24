@@ -247,6 +247,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             protocol_version,
         } => (device_id, peer_device_id, protocol_version),
         _ => {
+            log::warn!("[space_sync][gate] {kind:?} link from {from_addr}: expected auth first, got a different frame");
             let _ = send_frame(
                 link.as_mut(),
                 &PeerFrame::AuthFail {
@@ -258,7 +259,14 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
         }
     };
 
+    log::info!("[space_sync][gate] {kind:?} auth attempt from {device_id} via {from_addr}");
+
     if peer_device_id != state.identity.device_id {
+        log::warn!(
+            "[space_sync][gate] {kind:?} auth from {device_id} rejected: wrong target device \
+             ({peer_device_id}, expected {})",
+            state.identity.device_id
+        );
         let _ = send_frame(
             link.as_mut(),
             &PeerFrame::AuthFail {
@@ -270,6 +278,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
     }
 
     if !check_paired(&db_path, &device_id) {
+        log::warn!("[space_sync][gate] {kind:?} auth from {device_id} rejected: unknown device (not paired)");
         let _ = send_frame(
             link.as_mut(),
             &PeerFrame::AuthFail {
@@ -282,6 +291,9 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
 
     if kind == TransportKind::Bluetooth {
         if !check_bluetooth_enabled(&db_path, &device_id) {
+            log::warn!(
+                "[space_sync][gate] bluetooth auth from {device_id} rejected: bluetooth disabled for this pair"
+            );
             let _ = send_frame(
                 link.as_mut(),
                 &PeerFrame::AuthFail {
@@ -292,6 +304,9 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             return;
         }
         if !check_bluetooth_bond(&db_path, &device_id, link.peer_addr().as_deref()) {
+            log::warn!(
+                "[space_sync][gate] bluetooth auth from {device_id} rejected: not currently OS-paired"
+            );
             let _ = send_frame(
                 link.as_mut(),
                 &PeerFrame::AuthFail {
@@ -305,6 +320,16 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
 
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);
     if !state.try_claim_session(&device_id, kind, tx, &db_path) {
+        // If this fires repeatedly for a peer that has no other live session
+        // on this transport (check `device_connection_debug_status` / the
+        // sibling session logs), the claim is stale -- a slot never released
+        // by a prior session that ended without going through
+        // `release_session` (e.g. a panic in `run_session`'s inbound-frame
+        // handling). That's a "stuck connecting forever" shape from the
+        // gate's own side, not just the dial loop's.
+        log::warn!(
+            "[space_sync][gate] {kind:?} auth from {device_id} rejected: session already active on this transport"
+        );
         let _ = send_frame(
             link.as_mut(),
             &PeerFrame::AuthFail {
@@ -324,10 +349,12 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
     .await
     .is_err()
     {
+        log::warn!("[space_sync][gate] {kind:?} auth OK for {device_id} but AuthOk send failed; releasing claim");
         state.release_session(&device_id, kind, &db_path);
         return;
     }
 
+    log::info!("[space_sync][gate] {kind:?} auth OK for {device_id}; starting session");
     run_session(link, rx, state, db_path, device_id, peer_protocol_version).await;
 }
 
