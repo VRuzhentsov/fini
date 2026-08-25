@@ -9,11 +9,12 @@ jest.mock("vue-i18n", () => ({
 }));
 
 jest.mock("../../stores/quest", () => ({
+  ...jest.requireActual("../../stores/quest"),
   useQuestStore: jest.fn(),
 }));
 
 jest.mock("../../stores/space", () => ({
-  SPACE_COLOR_CLASS: { "1": "space-personal" },
+  ...jest.requireActual("../../stores/space"),
   useSpaceStore: () => ({ spaces: [{ id: "1", name: "Personal" }] }),
 }));
 
@@ -93,6 +94,7 @@ describe("recurring checklist item text scope", () => {
       props: { quests: [quest] },
       global: {
         stubs: {
+          QuestListItem: false,
           QuestEditor: questEditorStub,
           RecurrenceScopeSheet: recurrenceScopeSheetStub,
           ReminderMenu: true,
@@ -137,6 +139,7 @@ describe("recurring checklist item text scope", () => {
       props: { quests: [quest] },
       global: {
         stubs: {
+          QuestListItem: false,
           QuestEditor: questEditorStub,
           RecurrenceScopeSheet: recurrenceScopeSheetStub,
           ReminderMenu: true,
@@ -171,6 +174,7 @@ describe("recurring checklist item text scope", () => {
       props: { quests: [quest] },
       global: {
         stubs: {
+          QuestListItem: false,
           QuestEditor: questEditorStub,
           RecurrenceScopeSheet: recurrenceScopeSheetStub,
           ReminderMenu: true,

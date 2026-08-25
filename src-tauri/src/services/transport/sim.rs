@@ -242,8 +242,15 @@ pub(crate) async fn dial_with_backoff(
                         )
                         .await;
                         eprintln!("[transport][sim] session with {peer_id} ended");
+                        return;
                     }
-                    return;
+                    // Lost the claim race (e.g. the peer's inbound accept claimed a session on
+                    // this same peer+transport first) — this auth'd link is now redundant, not a
+                    // failure to retry from scratch. Fall through to backoff so the next loop
+                    // iteration's has_session_on check (which should now see the winning session)
+                    // short-circuits, instead of this task silently exiting and leaving nothing
+                    // to notice if that session never actually materializes.
+                    eprintln!("[transport][sim] lost claim race with {peer_id} via :{port}");
                 }
                 Err(_) => continue, // wrong-guess port, or peer not yet listening
             }

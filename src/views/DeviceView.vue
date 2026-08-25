@@ -94,6 +94,37 @@ const hasMappingChanges = computed(() => {
 const TRANSPORT_STATUS_POLL_INTERVAL_MS = 5_000;
 let transportStatusTimer: ReturnType<typeof setInterval> | null = null;
 
+// Drives the "stuck connecting" timeout below. Updated on the same 5s tick
+// that already polls live state -- no need for a finer-grained clock than
+// that to notice a 30s threshold has passed.
+const now = ref(Date.now());
+const CONNECTING_TIMEOUT_MS = 30_000;
+// First-seen timestamp per row, keyed by transport kind -- this view only
+// ever shows the two rows for one device, so kind alone is enough. Reset on
+// device navigation (see the `deviceId` watcher below) so a slow row on one
+// device doesn't report as instantly "stuck" on the next.
+const connectingSince = ref<Partial<Record<DeviceTransportStatus["kind"], number>>>({});
+
+watch(
+  transportStatuses,
+  (statuses) => {
+    for (const status of statuses) {
+      const connecting = status.state.state === "configured" && status.state.code?.code === "connecting";
+      if (connecting) {
+        if (!(status.kind in connectingSince.value)) connectingSince.value[status.kind] = Date.now();
+      } else {
+        delete connectingSince.value[status.kind];
+      }
+    }
+  },
+  { immediate: true },
+);
+
+function isStuckConnecting(status: DeviceTransportStatus): boolean {
+  const since = connectingSince.value[status.kind];
+  return status.state.code?.code === "connecting" && since !== undefined && now.value - since > CONNECTING_TIMEOUT_MS;
+}
+
 onMounted(() => {
   void deviceStore.hydrate();
   void spaceStore.fetchSpaces();
@@ -114,6 +145,7 @@ onMounted(() => {
   // for as long as it stays open -- only the live "connected" state
   // actually needs to be fresh here.
   transportStatusTimer = setInterval(() => {
+    now.value = Date.now();
     if (deviceId.value) void deviceStore.refreshLiveConnectedState(deviceId.value);
   }, TRANSPORT_STATUS_POLL_INTERVAL_MS);
 });
@@ -138,6 +170,7 @@ watch(deviceId, () => {
   findingBluetoothAddress.value = false;
   bluetoothFindResult.value = null;
   bluetoothTransportError.value = null;
+  connectingSince.value = {};
 });
 
 watch(savedMappedSelection, (next) => {
@@ -301,15 +334,24 @@ function rowDotClass(status: DeviceTransportStatus): string {
 
 function rowDetailText(status: DeviceTransportStatus): string {
   if (status.state.state === "unconfigured") return "Unavailable";
-  if (status.state.code !== null) return "Connecting…";
+  if (status.state.code !== null) return isStuckConnecting(status) ? "Still connecting…" : "Connecting…";
   return status.primary ? "Connected now" : "Ready";
 }
 
 // The "i" tooltip only has something to say when there's a code to explain
-// -- a fully green, primary-or-not row has no error to surface.
+// -- a fully green, primary-or-not row has no error to surface. Past the
+// 30s timeout, "connecting" specifically swaps its usual (accurate but
+// static) explanation for something actionable, since by then the plain
+// "no session established yet" text has stopped telling the user anything
+// new -- see `CONNECTING_TIMEOUT_MS`/`isStuckConnecting`.
 function rowStatusTooltip(status: DeviceTransportStatus): string | null {
   const code = status.state.code;
-  return code ? transportStatusText(code) : null;
+  if (!code) return null;
+  if (isStuckConnecting(status)) {
+    const peerHint = status.kind === "bluetooth" ? "Bluetooth is on for both devices" : "both devices are on the same network";
+    return `Still trying after 30+ seconds. Check that the peer device is powered on, nearby, and that ${peerHint}.`;
+  }
+  return transportStatusText(code);
 }
 </script>
 
@@ -380,7 +422,7 @@ function rowStatusTooltip(status: DeviceTransportStatus): string | null {
             />
             <div
               v-if="rowStatusTooltip(status)"
-              class="tooltip tooltip-right ml-1 inline-block align-text-top"
+              class="tooltip tooltip-bottom ml-1 inline-block align-text-top"
               :data-tip="rowStatusTooltip(status)"
             >
               <InformationCircleIcon

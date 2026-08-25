@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import type { Quest } from "../../stores/quest";
 import {
   StarIcon,
   CalendarDaysIcon,
+  MagnifyingGlassIcon,
   ArrowPathIcon,
   ClockIcon,
-  PlusIcon,
   XMarkIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
-  ChevronDoubleLeftIcon,
-  ChevronDoubleRightIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
 } from "@heroicons/vue/24/outline";
 
 const props = defineProps<{ quest: Quest }>();
@@ -24,10 +24,8 @@ const emit = defineEmits<{
 
 const localDue = ref<string | null>(props.quest.due ?? null);
 const localDueTime = ref<string | null>(props.quest.due_time ?? null);
-const localRepeatRule = ref<string | null>(props.quest.repeat_rule ?? null);
 
 const showTime = ref(!!props.quest.due_time);
-const showRepeat = ref(false);
 
 // ── Close behaviour ────────────────────────────────────────────────────────────
 
@@ -62,12 +60,14 @@ function nextWeekDate() {
   return toDateStr(d);
 }
 
-function formatDue(due: string): string {
-  const date = new Date(due + "T00:00:00");
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
 // ── Inline calendar ────────────────────────────────────────────────────────────
+
+interface CalCell {
+  day: number;
+  month: number;
+  year: number;
+  adjacent: boolean;
+}
 
 const today = new Date();
 const calYear = ref(
@@ -78,25 +78,43 @@ const calMonth = ref(
 );
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const DAY_LABELS = ["Su","Mo","Tu","We","Th","Fr","Sa"];
+const DAY_LABELS = ["Mo","Tu","We","Th","Fr","Sa","Su"];
 
-const calDays = computed(() => {
-  const firstDay = new Date(calYear.value, calMonth.value, 1).getDay();
-  const daysInMonth = new Date(calYear.value, calMonth.value + 1, 0).getDate();
-  const cells: (number | null)[] = Array(firstDay).fill(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  while (cells.length % 7 !== 0) cells.push(null);
+const calDays = computed<CalCell[]>(() => {
+  const y = calYear.value;
+  const m = calMonth.value;
+  // Monday-first offset: JS getDay() is Sunday-first (0-6), shift so Monday = 0.
+  const firstDayIdx = (new Date(y, m, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const daysInPrevMonth = new Date(y, m, 0).getDate();
+  const prevMonth = m === 0 ? 11 : m - 1;
+  const prevYear = m === 0 ? y - 1 : y;
+  const nextMonthIdx = m === 11 ? 0 : m + 1;
+  const nextYear = m === 11 ? y + 1 : y;
+
+  const cells: CalCell[] = [];
+  for (let i = firstDayIdx - 1; i >= 0; i--) {
+    cells.push({ day: daysInPrevMonth - i, month: prevMonth, year: prevYear, adjacent: true });
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ day: d, month: m, year: y, adjacent: false });
+  }
+  let nextDay = 1;
+  while (cells.length % 7 !== 0) {
+    cells.push({ day: nextDay, month: nextMonthIdx, year: nextYear, adjacent: true });
+    nextDay++;
+  }
   return cells;
 });
 
-function calDateStr(day: number): string {
-  const m = String(calMonth.value + 1).padStart(2, "0");
-  const d = String(day).padStart(2, "0");
-  return `${calYear.value}-${m}-${d}`;
+function cellDateStr(cell: CalCell): string {
+  const m = String(cell.month + 1).padStart(2, "0");
+  const d = String(cell.day).padStart(2, "0");
+  return `${cell.year}-${m}-${d}`;
 }
 
-function isToday(day: number): boolean {
-  return calDateStr(day) === toDateStr(today);
+function isToday(cell: CalCell): boolean {
+  return cellDateStr(cell) === toDateStr(today);
 }
 
 function prevMonth() {
@@ -109,50 +127,138 @@ function nextMonth() {
   else calMonth.value++;
 }
 
-function pickDay(day: number) {
-  localDue.value = calDateStr(day);
+function pickCell(cell: CalCell) {
+  localDue.value = cellDateStr(cell);
+  if (cell.adjacent) {
+    calMonth.value = cell.month;
+    calYear.value = cell.year;
+  }
 }
 
 // ── Repeat ─────────────────────────────────────────────────────────────────────
 
-const REPEAT_PRESETS = [
-  { value: "daily",    label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekends", label: "Weekends" },
-  { value: "weekly",   label: "Every week" },
-  { value: "monthly",  label: "Every month" },
-  { value: "yearly",   label: "Every year" },
-];
+type RepeatUnit = "day" | "week" | "month" | "year";
+const WEEKDAY_TOKENS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"] as const;
+const UNIT_LABEL: Record<RepeatUnit, string> = { day: "day", week: "week", month: "month", year: "year" };
 
-const currentRepeatPreset = computed<string | null>(() => {
-  if (!localRepeatRule.value) return null;
-  try { return JSON.parse(localRepeatRule.value).preset ?? null; } catch { return null; }
-});
+const repeatOn = ref(false);
+const repeatAmount = ref(1);
+const repeatUnit = ref<RepeatUnit>("day");
+const repeatDays = ref<Set<string>>(new Set());
+// Preserved verbatim from the loaded rule (this menu has no UI to edit them) so re-saving a
+// bounded recurrence — even just to change its date or time — doesn't silently make it unbounded.
+const repeatEndFields = ref<{ end?: string; end_date?: string; end_after?: number }>({});
 
-const repeatSummary = computed<string>(() => {
-  if (!localRepeatRule.value) return "";
+function loadRepeatState(rule: string | null) {
+  if (!rule) {
+    repeatOn.value = false;
+    return;
+  }
   try {
-    const r = JSON.parse(localRepeatRule.value);
-    const labels: Record<string, string> = {
-      daily: "every day", weekdays: "weekdays", weekends: "weekends",
-      weekly: "every week", monthly: "every month", yearly: "every year",
-    };
-    const preset = r.preset;
-    if (preset && preset !== "none" && preset !== "custom") return labels[preset] ?? preset;
-    const n = r.interval ?? 1;
-    const unit = r.unit ?? "week";
-    return `every ${n} ${unit}${n > 1 ? "s" : ""}`;
-  } catch { return ""; }
-});
-
-function setRepeatPreset(preset: string) {
-  localRepeatRule.value = JSON.stringify({ preset });
-  showRepeat.value = false;
+    const r = JSON.parse(rule);
+    if (r.end !== undefined) repeatEndFields.value.end = r.end;
+    if (r.end_date !== undefined) repeatEndFields.value.end_date = r.end_date;
+    if (r.end_after !== undefined) repeatEndFields.value.end_after = r.end_after;
+    switch (r.preset) {
+      case "none":
+        repeatOn.value = false;
+        return;
+      case "daily":
+        repeatAmount.value = 1; repeatUnit.value = "day"; repeatDays.value = new Set();
+        break;
+      case "weekly":
+        repeatAmount.value = 1; repeatUnit.value = "week"; repeatDays.value = new Set();
+        break;
+      case "monthly":
+        repeatAmount.value = 1; repeatUnit.value = "month"; repeatDays.value = new Set();
+        break;
+      case "yearly":
+        repeatAmount.value = 1; repeatUnit.value = "year"; repeatDays.value = new Set();
+        break;
+      case "weekdays":
+        repeatAmount.value = 1; repeatUnit.value = "day"; repeatDays.value = new Set(["Mo", "Tu", "We", "Th", "Fr"]);
+        break;
+      case "weekends":
+        repeatAmount.value = 1; repeatUnit.value = "day"; repeatDays.value = new Set(["Sa", "Su"]);
+        break;
+      default: {
+        const interval = Math.max(1, Math.min(99, Number(r.interval) || 1));
+        const unit: RepeatUnit = (["day", "week", "month", "year"] as string[]).includes(r.unit) ? r.unit : "day";
+        const days: string[] = Array.isArray(r.days_of_week)
+          ? r.days_of_week.filter((d: unknown) => (WEEKDAY_TOKENS as readonly string[]).includes(d as string))
+          : [];
+        repeatAmount.value = interval;
+        repeatUnit.value = unit;
+        repeatDays.value = new Set(days);
+        break;
+      }
+    }
+    repeatOn.value = true;
+  } catch {
+    repeatOn.value = false;
+  }
 }
 
-function clearRepeat() {
-  localRepeatRule.value = null;
-  showRepeat.value = false;
+loadRepeatState(props.quest.repeat_rule ?? null);
+
+const orderedRepeatDays = computed(() => WEEKDAY_TOKENS.filter((d) => repeatDays.value.has(d)));
+
+const repeatSummary = computed<string>(() => {
+  if (!repeatOn.value) return "";
+  const n = repeatAmount.value;
+  const days = orderedRepeatDays.value;
+  const byWeekday = repeatUnit.value === "day" && days.length > 0;
+  let base: string;
+  if (byWeekday) {
+    base = n === 1 ? "Every" : `Every ${n}`;
+    base += ` · ${days.join(", ")}`;
+  } else {
+    base = n === 1 ? `Every ${UNIT_LABEL[repeatUnit.value]}` : `Every ${n} ${UNIT_LABEL[repeatUnit.value]}s`;
+  }
+  return base;
+});
+
+function toggleRepeatOn() {
+  repeatOn.value = !repeatOn.value;
+}
+
+function decRepeatAmount() {
+  repeatAmount.value = Math.max(1, repeatAmount.value - 1);
+}
+
+function incRepeatAmount() {
+  repeatAmount.value = Math.min(99, repeatAmount.value + 1);
+}
+
+function normalizeRepeatAmountInput(event: Event) {
+  const n = parseInt((event.target as HTMLInputElement).value, 10);
+  repeatAmount.value = Number.isFinite(n) ? Math.min(99, Math.max(1, n)) : 1;
+}
+
+function setRepeatUnit(unit: RepeatUnit) {
+  repeatUnit.value = unit;
+}
+
+function toggleRepeatDay(day: string) {
+  const next = new Set(repeatDays.value);
+  if (next.has(day)) next.delete(day);
+  else next.add(day);
+  repeatDays.value = next;
+}
+
+function serializeRepeatRule(): string | null {
+  if (!repeatOn.value) return null;
+  // Weekdays are only meaningful (and only shown) for the Day unit — the backend reads
+  // days_of_week ahead of unit whenever it's present, so a stale selection from a unit the user
+  // has since switched away from must not be serialized.
+  const days = repeatUnit.value === "day" ? orderedRepeatDays.value : [];
+  return JSON.stringify({
+    preset: "custom",
+    interval: repeatAmount.value,
+    unit: repeatUnit.value,
+    ...(days.length ? { days_of_week: days } : {}),
+    ...repeatEndFields.value,
+  });
 }
 
 // ── Time ───────────────────────────────────────────────────────────────────────
@@ -160,6 +266,10 @@ function clearRepeat() {
 function clampTimePart(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+function wrapTimePart(value: number, max: number): number {
+  return ((value % (max + 1)) + (max + 1)) % (max + 1);
 }
 
 const timeHour = computed({
@@ -180,12 +290,70 @@ const timeMinute = computed({
   },
 });
 
-function normalizeHourInput(event: Event) {
-  timeHour.value = (event.target as HTMLInputElement).value;
+const timeValueLabel = computed(() =>
+  showTime.value ? `${String(timeHour.value).padStart(2, "0")}:${String(timeMinute.value).padStart(2, "0")}` : "—"
+);
+
+// The hour/minute fields are backed by their own draft refs rather than deriving `:value`
+// straight from timeHour/timeMinute. A plain one-way `:value="String(timeHour)..."` binding plus
+// a raw `el.value = ...` sanitizer looks fine in isolation, but Vue's DOM patcher compares the
+// *actual* `el.value` against the reactive prop on every re-render of this vnode (not just when
+// that prop changes) and force-overwrites on mismatch — so typing into the minute field gets
+// silently reverted the instant anything else in the component triggers a re-render (e.g. the
+// hour field committing on blur when focus moves to minute). Routing all edits through a real ref
+// keeps Vue's own bookkeeping in sync with the DOM, so it never needs to "correct" it.
+const hourDraft = ref(String(timeHour.value).padStart(2, "0"));
+const minuteDraft = ref(String(timeMinute.value).padStart(2, "0"));
+
+watch(timeHour, (h) => { hourDraft.value = String(h).padStart(2, "0"); });
+watch(timeMinute, (m) => { minuteDraft.value = String(m).padStart(2, "0"); });
+
+function onHourInput(event: Event) {
+  hourDraft.value = (event.target as HTMLInputElement).value.replace(/\D/g, "").slice(0, 2);
 }
 
-function normalizeMinuteInput(event: Event) {
-  timeMinute.value = (event.target as HTMLInputElement).value;
+function onMinuteInput(event: Event) {
+  minuteDraft.value = (event.target as HTMLInputElement).value.replace(/\D/g, "").slice(0, 2);
+}
+
+// Commit is normally driven by blur (matching the reference design's own bindDirectInput) so a
+// partially-typed "1" isn't clamped/re-padded to "01" before the second digit lands. Done also
+// flushes the drafts (see onDone) in case the field never blurs before Done is clicked.
+function commitHourInput() {
+  timeHour.value = hourDraft.value;
+}
+
+function commitMinuteInput() {
+  timeMinute.value = minuteDraft.value;
+}
+
+function flushTimeInputs() {
+  if (!showTime.value) return;
+  timeHour.value = hourDraft.value;
+  timeMinute.value = minuteDraft.value;
+}
+
+function incHour() { timeHour.value = wrapTimePart(timeHour.value + 1, 23); }
+function decHour() { timeHour.value = wrapTimePart(timeHour.value - 1, 23); }
+function incMinute() { timeMinute.value = wrapTimePart(timeMinute.value + 1, 59); }
+function decMinute() { timeMinute.value = wrapTimePart(timeMinute.value - 1, 59); }
+
+function onTimeKeydown(event: KeyboardEvent, part: "hour" | "minute") {
+  const input = event.target as HTMLInputElement;
+  if (event.key === "Enter") {
+    input.blur();
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    if (part === "hour") incHour(); else incMinute();
+    input.select();
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    if (part === "hour") decHour(); else decMinute();
+    input.select();
+  }
 }
 
 function defaultDueTime(): string {
@@ -211,10 +379,11 @@ function onClear() {
 }
 
 function onDone() {
+  flushTimeInputs();
   emit("save", {
     due: localDue.value,
     due_time: showTime.value ? localDueTime.value : null,
-    repeat_rule: localRepeatRule.value,
+    repeat_rule: serializeRepeatRule(),
   });
 }
 </script>
@@ -230,167 +399,183 @@ function onDone() {
       style="padding-bottom: env(safe-area-inset-bottom)"
       @click.stop
     >
-      <!-- ── Repeat sub-sheet ── -->
-      <template v-if="showRepeat">
-        <div class="flex items-center gap-2 px-4 py-3 border-b border-base-content/10">
-          <button class="btn btn-ghost btn-xs btn-square" @click="showRepeat = false">
-            <ChevronLeftIcon class="size-4" />
+      <div class="reminder-panel-header">
+        <label class="reminder-search">
+          <MagnifyingGlassIcon class="size-4 opacity-50" />
+          <input type="text" placeholder="Type a date…" />
+        </label>
+        <button data-testid="reminder-close" class="btn btn-ghost btn-xs btn-square" aria-label="Close reminder" @click="emit('close')">
+          <XMarkIcon class="size-4" />
+        </button>
+      </div>
+
+      <div class="reminder-panel-body">
+
+        <!-- Quick picks -->
+        <div class="flex gap-2 px-3 py-3 border-b border-base-content/10 flex-wrap">
+          <button
+            data-testid="reminder-today"
+            class="btn btn-sm rounded-full gap-1"
+            :class="localDue === todayDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
+            @click="localDue = todayDate()"
+          >
+            <StarIcon class="size-3" /> Today
           </button>
-          <span class="font-semibold flex-1">Repeat</span>
-          <button class="btn btn-ghost btn-xs" @click="clearRepeat">Clear</button>
-          <button data-testid="reminder-close" class="btn btn-ghost btn-xs btn-square" aria-label="Close reminder" @click="emit('close')">
-            <XMarkIcon class="size-4" />
+          <button
+            data-testid="reminder-tomorrow"
+            class="btn btn-sm rounded-full gap-1"
+            :class="localDue === tomorrowDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
+            @click="localDue = tomorrowDate()"
+          >
+            <CalendarDaysIcon class="size-3" /> Tomorrow
+          </button>
+          <button
+            data-testid="reminder-next-week"
+            class="btn btn-sm rounded-full gap-1"
+            :class="localDue === nextWeekDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
+            @click="localDue = nextWeekDate()"
+          >
+            <CalendarDaysIcon class="size-3" /> Next week
           </button>
         </div>
-        <ul class="reminder-panel-body menu px-2 py-2 gap-1">
-          <li v-for="preset in REPEAT_PRESETS" :key="preset.value">
-            <a
-              class="flex items-center"
-              :class="{ 'active': currentRepeatPreset === preset.value }"
-              @click="setRepeatPreset(preset.value)"
-            >
-              <ArrowPathIcon class="size-4 mr-2" />
-              {{ preset.label }}
-            </a>
-          </li>
-        </ul>
-      </template>
 
-      <!-- ── Main sheet ── -->
-      <template v-else>
-        <div class="reminder-panel-header">
-          <label class="reminder-search">
-            <CalendarDaysIcon class="size-4 opacity-50" />
-            <input type="text" placeholder="Type a date…" />
-          </label>
-          <button data-testid="reminder-close" class="btn btn-ghost btn-xs btn-square" aria-label="Close reminder" @click="emit('close')">
-            <XMarkIcon class="size-4" />
-          </button>
+        <!-- Calendar -->
+        <div class="px-3 py-3 border-b border-base-content/10">
+          <div class="mb-2 flex items-center justify-between">
+            <button class="reminder-month-button" @click="prevMonth" aria-label="Previous month"><ChevronLeftIcon class="size-4" /></button>
+            <span class="text-sm font-medium">{{ MONTH_NAMES[calMonth] }} {{ calYear }}</span>
+            <button class="reminder-month-button" @click="nextMonth" aria-label="Next month"><ChevronRightIcon class="size-4" /></button>
+          </div>
+          <div class="grid grid-cols-7 pb-2">
+            <span
+              v-for="label in DAY_LABELS" :key="label"
+              class="text-center text-xs opacity-40 py-1"
+            >{{ label }}</span>
+          </div>
+          <div class="grid grid-cols-7 gap-y-1">
+            <button
+              v-for="(cell, i) in calDays" :key="i"
+              class="cal-day"
+              :class="{
+                selected: localDue === cellDateStr(cell),
+                today: isToday(cell),
+                adjacent: cell.adjacent,
+              }"
+              @click="pickCell(cell)"
+            >{{ cell.day }}</button>
+          </div>
         </div>
 
-        <div class="reminder-panel-body">
-
-          <!-- Quick picks -->
-          <div class="flex gap-2 px-3 py-3 border-b border-base-content/10 flex-wrap">
-            <button
-              data-testid="reminder-today"
-              class="btn btn-sm rounded-full gap-1"
-              :class="localDue === todayDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
-              @click="localDue = todayDate()"
-            >
-              <StarIcon class="size-3" /> Today
-            </button>
-            <button
-              data-testid="reminder-tomorrow"
-              class="btn btn-sm rounded-full gap-1"
-              :class="localDue === tomorrowDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
-              @click="localDue = tomorrowDate()"
-            >
-              <CalendarDaysIcon class="size-3" /> Tomorrow
-            </button>
-            <button
-              data-testid="reminder-next-week"
-              class="btn btn-sm rounded-full gap-1"
-              :class="localDue === nextWeekDate() ? 'btn-primary' : 'btn-ghost bg-base-300'"
-              @click="localDue = nextWeekDate()"
-            >
-              <CalendarDaysIcon class="size-3" /> Next week
-            </button>
-          </div>
-
-          <div class="px-3 py-3 border-b border-base-content/10">
-            <div class="mb-2 flex items-center justify-between">
-              <button class="reminder-month-button" @click="prevMonth"><ChevronDoubleLeftIcon class="size-4" /></button>
-              <span class="text-sm font-medium">{{ MONTH_NAMES[calMonth] }} {{ calYear }}</span>
-              <button class="reminder-month-button" @click="nextMonth"><ChevronDoubleRightIcon class="size-4" /></button>
-            </div>
-            <div class="grid grid-cols-7 pb-2">
-              <span
-                v-for="label in DAY_LABELS" :key="label"
-                class="text-center text-xs opacity-40 py-1"
-              >{{ label }}</span>
-            </div>
-            <div class="grid grid-cols-7 gap-y-1">
-              <button
-                v-for="(day, i) in calDays" :key="i"
-                :disabled="!day"
-                class="h-9 w-full rounded-lg text-sm flex items-center justify-center disabled:opacity-0 transition-colors"
-                :class="day ? [
-                  localDue === calDateStr(day) ? 'bg-primary text-primary-content font-semibold' :
-                  isToday(day) ? 'text-success font-semibold hover:bg-base-200' :
-                  'hover:bg-base-200'
-                ] : []"
-                @click="day && pickDay(day)"
-              >{{ day }}</button>
-            </div>
-          </div>
-
-          <div class="border-b border-base-content/10 flex items-center gap-2 px-4 py-2">
-            <CalendarDaysIcon class="size-4 opacity-60 shrink-0" />
-            <button
-              v-if="localDue"
-              class="btn btn-xs rounded-full btn-ghost bg-base-300 gap-1"
-              @click="localDue = null"
-            >
-              {{ formatDue(localDue) }}
-              <XMarkIcon class="size-3" />
-            </button>
-            <span class="flex-1 py-1 text-sm opacity-60">{{ localDue ? "Selected date" : "Choose a date above" }}</span>
-          </div>
-
-          <!-- Repeat -->
-          <div class="border-b border-base-content/10">
-            <button
-              class="flex items-center w-full gap-3 px-4 py-3 hover:bg-base-300 transition-colors"
-              @click="showRepeat = true"
-            >
-              <ArrowPathIcon class="size-4 opacity-60" />
-              <span class="flex-1 text-sm text-left">{{ repeatSummary || "Repeat" }}</span>
-              <ChevronRightIcon class="size-4 opacity-40" />
-            </button>
-          </div>
-
-          <!-- Time -->
-          <div class="border-b border-base-content/10">
-            <div class="flex items-center gap-3 px-4 py-3">
-              <ClockIcon class="size-4 opacity-60" />
-              <span class="flex-1 text-sm">Time</span>
-              <button data-testid="reminder-toggle-time" class="btn btn-ghost btn-xs btn-square" @click="toggleTime">
-                <span class="sr-only">Toggle time</span>
-                <XMarkIcon v-if="showTime" class="size-4" />
-                <PlusIcon v-else class="size-4" />
-              </button>
-            </div>
-            <div v-if="showTime" class="flex items-center gap-2 px-4 pb-3">
+        <!-- Time -->
+        <div class="border-b border-base-content/10">
+          <button
+            type="button"
+            data-testid="reminder-toggle-time"
+            class="flex items-center w-full gap-3 px-4 py-3 hover:bg-base-300 transition-colors"
+            @click="toggleTime"
+          >
+            <ClockIcon class="size-4 opacity-60 shrink-0" />
+            <span class="flex-1 text-sm text-left">Time</span>
+            <span class="text-sm" :class="showTime ? 'text-success font-semibold' : 'opacity-40'">{{ timeValueLabel }}</span>
+            <ChevronDownIcon class="size-3.5 opacity-40 transition-transform shrink-0" :class="{ 'rotate-180': showTime }" />
+          </button>
+          <div v-if="showTime" class="rem-time-picker flex items-center justify-center gap-3 pb-3">
+            <div class="rem-time-field">
+              <button type="button" class="rem-time-step" aria-label="Increase hour" @click="incHour"><ChevronUpIcon class="size-3.5" /></button>
               <input
-                class="input input-bordered input-sm flex-1"
+                class="rem-time-num"
                 data-testid="reminder-hour"
-                type="number"
-                min="0"
-                max="23"
-                :value="timeHour"
-                @input="normalizeHourInput"
+                type="text"
+                inputmode="numeric"
+                maxlength="2"
+                aria-label="Hour"
+                :value="hourDraft"
+                @input="onHourInput"
+                @blur="commitHourInput"
+                @keydown="onTimeKeydown($event, 'hour')"
+                @focus="($event.target as HTMLInputElement).select()"
               />
-              <span class="font-semibold opacity-50">:</span>
+              <button type="button" class="rem-time-step" aria-label="Decrease hour" @click="decHour"><ChevronDownIcon class="size-3.5" /></button>
+            </div>
+            <span class="text-lg font-bold opacity-50">:</span>
+            <div class="rem-time-field">
+              <button type="button" class="rem-time-step" aria-label="Increase minute" @click="incMinute"><ChevronUpIcon class="size-3.5" /></button>
               <input
-                class="input input-bordered input-sm flex-1"
+                class="rem-time-num"
                 data-testid="reminder-minute"
-                type="number"
-                min="0"
-                max="59"
-                :value="timeMinute"
-                @input="normalizeMinuteInput"
+                type="text"
+                inputmode="numeric"
+                maxlength="2"
+                aria-label="Minute"
+                :value="minuteDraft"
+                @input="onMinuteInput"
+                @blur="commitMinuteInput"
+                @keydown="onTimeKeydown($event, 'minute')"
+                @focus="($event.target as HTMLInputElement).select()"
               />
+              <button type="button" class="rem-time-step" aria-label="Decrease minute" @click="decMinute"><ChevronDownIcon class="size-3.5" /></button>
             </div>
           </div>
         </div>
 
-        <!-- Actions -->
-        <div class="reminder-panel-actions flex gap-3 px-4 py-4">
-          <button data-testid="reminder-clear" class="btn flex-1 btn-error btn-outline" @click="onClear">Clear</button>
-          <button data-testid="reminder-done" class="btn flex-1 btn-primary" @click="onDone">Done</button>
+        <!-- Repeat -->
+        <div class="border-b border-base-content/10">
+          <div class="flex items-center gap-3 px-4 py-3">
+            <ArrowPathIcon class="size-4 opacity-60 shrink-0" />
+            <span class="flex-1 text-sm">Repeat</span>
+            <span class="text-sm" :class="repeatOn ? 'text-success font-semibold' : 'opacity-40'">{{ repeatSummary || "Off" }}</span>
+            <button
+              type="button"
+              class="rem-switch"
+              role="switch"
+              :aria-checked="repeatOn"
+              aria-label="Toggle repeat"
+              data-testid="reminder-repeat-toggle"
+              @click="toggleRepeatOn"
+            >
+              <span class="rem-switch-knob" />
+            </button>
+          </div>
+          <div v-if="repeatOn" class="px-4 pb-3 flex flex-col gap-2.5">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-sm opacity-60 shrink-0">Every</span>
+              <div class="rem-amount">
+                <button type="button" class="rem-amt-btn" aria-label="Decrease" @click="decRepeatAmount">−</button>
+                <input
+                  type="number"
+                  class="rem-amt-input"
+                  min="1"
+                  max="99"
+                  inputmode="numeric"
+                  :value="repeatAmount"
+                  @input="normalizeRepeatAmountInput"
+                />
+                <button type="button" class="rem-amt-btn" aria-label="Increase" @click="incRepeatAmount">+</button>
+              </div>
+              <div class="rem-unit">
+                <button type="button" :aria-pressed="repeatUnit === 'day'" @click="setRepeatUnit('day')">Day</button>
+                <button type="button" :aria-pressed="repeatUnit === 'week'" @click="setRepeatUnit('week')">Week</button>
+                <button type="button" :aria-pressed="repeatUnit === 'month'" @click="setRepeatUnit('month')">Month</button>
+                <button type="button" :aria-pressed="repeatUnit === 'year'" @click="setRepeatUnit('year')">Year</button>
+              </div>
+            </div>
+            <div v-if="repeatUnit === 'day'" class="rem-weekdays">
+              <button
+                v-for="wd in WEEKDAY_TOKENS" :key="wd"
+                type="button"
+                :aria-pressed="repeatDays.has(wd)"
+                @click="toggleRepeatDay(wd)"
+              >{{ wd[0] }}</button>
+            </div>
+          </div>
         </div>
-      </template>
+      </div>
+
+      <!-- Actions -->
+      <div class="reminder-panel-actions flex gap-3 px-4 py-4">
+        <button data-testid="reminder-clear" class="btn flex-1 btn-error btn-outline" @click="onClear">Clear</button>
+        <button data-testid="reminder-done" class="btn flex-1 btn-primary" @click="onDone">Done</button>
+      </div>
     </div>
   </Teleport>
 </template>
@@ -472,5 +657,231 @@ function onDone() {
 .reminder-month-button:hover {
   color: var(--fg-1);
   background: var(--color-base-200);
+}
+
+/* Calendar day cells: circular, ring on today, filled on selected. */
+.cal-day {
+  aspect-ratio: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--fg-1);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 9999px;
+  transition: background-color 120ms;
+}
+
+.cal-day:hover {
+  background: var(--color-base-200);
+}
+
+.cal-day.adjacent {
+  color: var(--fg-5);
+  font-weight: 500;
+}
+
+.cal-day.today {
+  color: var(--color-success);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1.5px var(--color-success);
+}
+
+.cal-day.selected {
+  color: var(--color-primary-content);
+  background: var(--color-primary);
+  box-shadow: none;
+}
+
+/* Time hour/minute steppers. */
+.rem-time-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 52px;
+  padding: 4px 6px;
+  background: var(--color-base-200);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 10px;
+}
+
+.rem-time-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 2px;
+  color: var(--fg-4);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.rem-time-step:hover {
+  color: var(--fg-1);
+  background: var(--color-base-300);
+}
+
+.rem-time-num {
+  width: 100%;
+  padding: 2px 0;
+  color: var(--fg-1);
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.rem-time-num:focus {
+  color: var(--color-primary);
+}
+
+/* Repeat on/off switch. */
+.rem-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  background: var(--color-base-300);
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.rem-switch-knob {
+  width: 16px;
+  height: 16px;
+  background: var(--color-base-100);
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 140ms;
+}
+
+.rem-switch[aria-checked="true"] {
+  background: var(--color-primary);
+}
+
+.rem-switch[aria-checked="true"] .rem-switch-knob {
+  transform: translateX(14px);
+}
+
+/* Repeat amount stepper + unit segmented control. */
+.rem-amount {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 8px;
+}
+
+.rem-amt-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 30px;
+  color: var(--fg-2);
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--color-base-200);
+  border: 0;
+  cursor: pointer;
+}
+
+.rem-amt-btn:hover {
+  background: var(--color-base-300);
+}
+
+.rem-amt-input {
+  width: 32px;
+  height: 30px;
+  color: var(--fg-1);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  background: var(--color-base-100);
+  border: 0;
+  border-left: 1px solid var(--color-border-soft);
+  border-right: 1px solid var(--color-border-soft);
+  outline: none;
+}
+
+.rem-amt-input::-webkit-outer-spin-button,
+.rem-amt-input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.rem-unit {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-base-200);
+  border-radius: 8px;
+}
+
+.rem-unit button {
+  padding: 7px 9px;
+  color: var(--fg-3);
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.rem-unit button:hover {
+  color: var(--fg-1);
+}
+
+.rem-unit button[aria-pressed="true"] {
+  color: var(--fg-1);
+  background: var(--color-base-100);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* Repeat weekday picker. */
+.rem-weekdays {
+  display: flex;
+  gap: 4px;
+}
+
+.rem-weekdays button {
+  flex: 1;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--fg-3);
+  font-size: 12px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid var(--color-border-soft);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.rem-weekdays button:hover {
+  background: var(--color-base-200);
+}
+
+.rem-weekdays button[aria-pressed="true"] {
+  color: var(--color-primary-content);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 </style>

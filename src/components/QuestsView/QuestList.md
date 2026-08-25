@@ -1,6 +1,6 @@
 # QuestList
 
-Shared list UI used by [[FocusView]] (active backlog section) and [[HistoryView]]. Rendering adapts per `quest.status`.
+Shared list container used by [[FocusView]] (active backlog section) and [[HistoryView]]. Renders one [[QuestListItem]] per quest; owns only the accordion (one row expanded at a time) and nothing about how a row looks or behaves.
 
 ## Props
 
@@ -8,58 +8,12 @@ Shared list UI used by [[FocusView]] (active backlog section) and [[HistoryView]
 |---|---|---|
 | `quests` | `Quest[]` | Quest rows to display |
 
-## Row states
+## Accordion
 
-Each row supports collapsed and expanded states. One row can be expanded at a time.
-
-## Active quests
-
-### Collapsed
-
-Checkbox + title.
-
-### Expanded
-
-- Header: checkbox, editable title, Focus indicator/action, collapse
-- Body: editable description plus accessible Energy (Small / Medium / Large) and Priority (Low / Medium / High) controls
-- Footer:
-  - Left: due/time/repeat summary (opens [[ReminderMenu]])
-  - Right: attachment (future), labels (future), priority, more menu
-
-### Active row actions
-
-| Action | Behavior |
-|---|---|
-| Complete | Sets `status = completed` |
-| Set Focus | Appends manual focus event in [[FocusHistory]] |
-| Abandon | Sets `status = abandoned` |
-| Delete | Permanent delete with confirmation |
-
-Energy is a quest effort estimate (Small / Medium / Large) and Priority is urgency (Low / Medium / High); both default to Medium. Priority participates in ordering as high > medium > low after overdue and order-rank precedence.
-
-## History rows
-
-### Collapsed
-
-Checked checkbox (green completed / amber abandoned), timestamp badge, struck-through title.
-
-### Expanded
-
-- Header: checked checkbox, title, timestamp, collapse
-- Body: read-only description
-- Footer menu: Make active, Delete
-
-Deleting from history is permanent and requires confirmation.
-
-## Context menu
-
-Right-click a quest row to open [[ContextMenu]] via `useContextMenu()` with "Move to space" submenu.
+`expandedId` tracks which single quest (if any) is expanded. Each `QuestListItem` receives `:expanded="expandedId === quest.id"` and emits `toggle` (no payload); the list flips `expandedId` between that quest's id and `null`. This is the only state the list owns — everything else (row rendering, row actions, checklist scope, reminders) lives in `QuestListItem`.
 
 ## Dependencies
 
 | Dep | Role |
 |---|---|
-| [[quest.ts]] | `updateQuest`, `deleteQuest` |
-| [[ReminderMenu]] | Due date / time / repeat controls |
-| [[ContextMenu]] | Right-click menus (via `useContextMenu()`) |
-| [[buildQuestMenu]] | Standard context-menu items |
+| [[QuestListItem]] | Renders each row's collapsed/expanded state and behavior |
