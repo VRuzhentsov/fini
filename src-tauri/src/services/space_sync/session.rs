@@ -426,13 +426,17 @@ pub async fn run_session(
     loop {
         tokio::select! {
             inbound = recv_frame(link.as_mut()) => {
-                let Some(Ok(frame)) = inbound else { break };
+                let Some(Ok(frame)) = inbound else {
+                    log::info!("[space_sync][session] {kind:?} session with {peer_device_id} ending: inbound recv failed or closed");
+                    break;
+                };
                 handle_inbound(frame, link.as_mut(), &state, &db_path, &peer_device_id).await;
             }
             Some(command) = rx.recv() => {
                 match command {
                     SessionCommand::Forward(frame) => {
                         if send_frame(link.as_mut(), &frame).await.is_err() {
+                            log::info!("[space_sync][session] {kind:?} session with {peer_device_id} ending: outbound Forward send failed");
                             break;
                         }
                     }
@@ -442,7 +446,10 @@ pub async fn run_session(
                     // just this device unilaterally deciding a transport it
                     // no longer wants to use (Bluetooth disabled for the
                     // pair) should stop being live. See `close_session_on`.
-                    SessionCommand::Close => break,
+                    SessionCommand::Close => {
+                        log::info!("[space_sync][session] {kind:?} session with {peer_device_id} ending: explicit SessionCommand::Close");
+                        break;
+                    }
                 }
             }
             _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {
@@ -462,6 +469,7 @@ pub async fn run_session(
             _ = ping_interval.tick(), if ping_enabled => {
                 state.note_ping_tick(&peer_device_id, kind);
                 if send_frame(link.as_mut(), &PeerFrame::Ping).await.is_err() {
+                    log::info!("[space_sync][session] {kind:?} session with {peer_device_id} ending: ping send failed");
                     break;
                 }
             }

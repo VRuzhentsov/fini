@@ -278,6 +278,9 @@ impl DeviceConnectionState {
         // window is still refused correctly, not just optimistically
         // skipped.
         if self.has_session_on(peer_device_id, kind) {
+            log::info!(
+                "[device_connection][claim] {kind:?} claim for {peer_device_id} refused: already has a session (fast-path check)"
+            );
             return false;
         }
         let (pinned_to_bluetooth, bluetooth_enabled) =
@@ -288,12 +291,16 @@ impl DeviceConnectionState {
             };
             let key = (peer_device_id.to_string(), kind);
             if guard.peer_sessions.contains_key(&key) {
+                log::info!(
+                    "[device_connection][claim] {kind:?} claim for {peer_device_id} refused: lost the claim race (locked check)"
+                );
                 return false;
             }
             guard.peer_sessions.insert(key.clone(), sender);
             guard.peer_transport_ack.insert(key, types::TransportAckState::default());
             self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
         }
+        log::info!("[device_connection][claim] {kind:?} session claimed for {peer_device_id}");
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
             kind,
@@ -339,6 +346,9 @@ impl DeviceConnectionState {
             };
             let key = (peer_device_id.to_string(), kind);
             if guard.peer_sessions.remove(&key).is_none() {
+                log::info!(
+                    "[device_connection][claim] {kind:?} release for {peer_device_id} was a no-op: nothing claimed on this transport"
+                );
                 return; // wasn't claimed on this transport; nothing to release
             }
             guard.peer_transport_ack.remove(&key);
@@ -360,6 +370,7 @@ impl DeviceConnectionState {
             true
         };
         debug_assert!(removed);
+        log::info!("[device_connection][claim] {kind:?} session released for {peer_device_id}");
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
             peer_device_id: peer_device_id.to_string(),
             kind,
