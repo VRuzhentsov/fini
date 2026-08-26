@@ -414,7 +414,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=d8de96abc582b47f388d1e4713578217636a7355#d8de96abc582b47f388d1e4713578217636a7355"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=b2eddc1da42c161ec56e6150763e3dec09bb745d#b2eddc1da42c161ec56e6150763e3dec09bb745d"
 dependencies = [
  "async-trait",
  "bluer",
@@ -422,6 +422,8 @@ dependencies = [
  "jni",
  "log",
  "ndk-context",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
