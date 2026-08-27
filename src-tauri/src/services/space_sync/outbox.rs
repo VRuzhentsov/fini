@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::models::CreateSyncOutboxEntry;
 use crate::schema::sync_outbox;
-use crate::services::db::utc_now;
+use crate::services::db::sync_timestamp;
 
 use super::types::SyncEventEnvelope;
 
@@ -55,7 +55,7 @@ pub fn emit_sync_event(
         space_id,
         op_type,
         payload,
-        utc_now(),
+        sync_timestamp(),
     )
 }
 

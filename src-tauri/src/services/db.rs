@@ -23,6 +23,20 @@ pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+/// Same instant as `utc_now`, but to millisecond precision. Needed
+/// specifically for sync-event ordering (`sync_outbox.updated_at`, compared
+/// by `space_sync::merge::incoming_wins`): two events that are genuinely
+/// sequential -- e.g. a quest created on one device, then edited there or
+/// on a peer moments later -- can otherwise land in the same whole second,
+/// tying on `utc_now()`'s second-only precision and falling through to the
+/// origin-device-id tie-break, which has nothing to do with which edit is
+/// actually newer. Confirmed via the actors-ble/actors-sim e2e lanes: a
+/// create-then-immediate-edit sequence intermittently landed in the same
+/// second, and the objectively later edit silently lost the tie.
+pub fn sync_timestamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
 pub fn db_default_path() -> PathBuf {
     if let Ok(p) = std::env::var("FINI_DB_PATH") {
         return PathBuf::from(p);
