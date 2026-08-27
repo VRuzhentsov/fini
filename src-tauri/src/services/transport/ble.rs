@@ -303,6 +303,10 @@ async fn backend() -> Result<Arc<dyn Backend>, String> {
     static BACKEND: OnceCell<Arc<dyn Backend>> = OnceCell::const_new();
     BACKEND
         .get_or_try_init(|| async {
+            #[cfg(feature = "devtools")]
+            if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
+                return mock_backend(&endpoint).await;
+            }
             match tokio::time::timeout(BACKEND_INIT_TIMEOUT, LinuxBackend::new()).await {
                 Ok(Ok(backend)) => Ok(Arc::new(backend) as Arc<dyn Backend>),
                 Ok(Err(err)) => Err(err.to_string()),
@@ -313,6 +317,36 @@ async fn backend() -> Result<Arc<dyn Backend>, String> {
         })
         .await
         .map(Arc::clone)
+}
+
+/// The `actors-ble` e2e lane's radio: a `MockBackend` talking to a
+/// cross-process broker instead of BlueZ, so two real `fini-app` processes
+/// can prove this file's dial/peripheral/session-claim code path without
+/// hardware. See `specs/e2e/actors/helpers/ble-sync.ts` and ble-gatt's
+/// `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
+///
+/// Both the `devtools` feature gate above (off in release builds) and this
+/// env var must be true for a process to ever reach this branch -- an env
+/// var alone can never redirect a shipped binary onto a socket.
+#[cfg(all(target_os = "linux", feature = "devtools"))]
+async fn mock_backend(endpoint: &str) -> Result<Arc<dyn Backend>, String> {
+    use ble_gatt::backend::mock::{MockBackend, MockNetwork};
+    use ble_gatt::CapabilityReport;
+
+    // Reuses the existing "fake local adapter address" escape hatch
+    // (`device_connection::commands::local_bluetooth_address`'s own env
+    // override) rather than adding a second one -- the harness already sets
+    // this per actor for the self-report path.
+    let address = std::env::var("FINI_LOCAL_BLUETOOTH_ADDRESS")
+        .map_err(|_| "FINI_BLE_MOCK_BROKER is set but FINI_LOCAL_BLUETOOTH_ADDRESS is not".to_string())?;
+    let network = MockNetwork::remote(endpoint)
+        .await
+        .map_err(|err| format!("ble mock broker connect to {endpoint} failed: {err}"))?;
+    Ok(Arc::new(MockBackend::new(
+        PeerAddress(address),
+        network,
+        CapabilityReport { central: true, peripheral: true },
+    )) as Arc<dyn Backend>)
 }
 
 /// One `LazyAndroidBackend` for the process's lifetime. Building the wrapper
@@ -1040,4 +1074,56 @@ mod tests {
         );
     }
 
+    /// Serializes tests that set `FINI_LOCAL_BLUETOOTH_ADDRESS`/
+    /// `FINI_BLE_MOCK_BROKER` -- process-global env vars, unsafe to mutate
+    /// from parallel test threads. Mirrors `BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK`
+    /// in `device_connection::commands`.
+    #[cfg(all(target_os = "linux", feature = "devtools"))]
+    static MOCK_BACKEND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Proves `mock_backend` actually round-trips through a real socket to a
+    /// real `MockNetwork::serve` broker, not just that it compiles -- the
+    /// same connect+advertise+scan shape `ble-gatt`'s own
+    /// `tests/mock_broker.rs` exercises, but through fini's injection point
+    /// (`FINI_BLE_MOCK_BROKER`/`FINI_LOCAL_BLUETOOTH_ADDRESS`) instead of
+    /// calling `MockNetwork::remote` directly. This is what the `actors-ble`
+    /// e2e lane's two real `fini-app` processes will each do at startup.
+    #[cfg(all(target_os = "linux", feature = "devtools"))]
+    #[tokio::test]
+    async fn mock_backend_connects_to_a_broker_and_reports_full_capabilities() {
+        let _guard = MOCK_BACKEND_ENV_LOCK.lock().unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback broker port");
+        let broker_addr = listener.local_addr().expect("local_addr");
+        tokio::spawn(async move {
+            let _ = ble_gatt::backend::mock::MockNetwork::serve(listener).await;
+        });
+
+        std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:00:00:01");
+        let result = mock_backend(&broker_addr.to_string()).await;
+        std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+
+        let backend = result.expect("mock_backend should connect to the broker");
+        let capabilities = backend.capabilities().await;
+        assert!(capabilities.central && capabilities.peripheral);
+    }
+
+    /// The one precondition `mock_backend` itself enforces: without a local
+    /// address there is nothing to identify this peer as on the mock radio,
+    /// and the error must name which env var is missing rather than panic
+    /// or silently pick something.
+    #[cfg(all(target_os = "linux", feature = "devtools"))]
+    #[tokio::test]
+    async fn mock_backend_requires_a_local_bluetooth_address() {
+        let _guard = MOCK_BACKEND_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
+
+        let err = match mock_backend("127.0.0.1:1").await {
+            Ok(_) => panic!("must fail without a local address"),
+            Err(err) => err,
+        };
+        assert!(err.contains("FINI_LOCAL_BLUETOOTH_ADDRESS"));
+    }
 }
