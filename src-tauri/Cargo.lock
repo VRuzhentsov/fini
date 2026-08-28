@@ -414,7 +414,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=b2eddc1da42c161ec56e6150763e3dec09bb745d#b2eddc1da42c161ec56e6150763e3dec09bb745d"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=4139db405738194e7bc18915c7c9b977ded12ccf#4139db405738194e7bc18915c7c9b977ded12ccf"
 dependencies = [
  "async-trait",
  "bluer",
@@ -1699,6 +1699,7 @@ name = "fini"
 version = "0.3.4"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "ble-gatt",
  "chrono",
  "clap",

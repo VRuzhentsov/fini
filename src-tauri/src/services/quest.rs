@@ -19,7 +19,7 @@ use crate::schema::{checklist_activity, focus_history, settings};
 #[cfg(test)]
 use crate::schema::{quest_series, quests};
 use crate::services::checklist;
-use crate::services::db::utc_now;
+use crate::services::db::{sync_timestamp, utc_now};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
 #[cfg(any(feature = "ui-plane", test))]
@@ -501,9 +501,9 @@ fn emit_quest_sync_events(
         return emit_checklist_activity_sync_events(conn, origin_device_id, quest);
     }
 
-    let delete_updated_at = utc_now();
+    let delete_updated_at = sync_timestamp();
     let upsert_updated_at = (Utc::now() + chrono::Duration::seconds(1))
-        .format("%Y-%m-%dT%H:%M:%SZ")
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string();
 
     emit_sync_event_at(

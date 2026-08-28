@@ -58,4 +58,10 @@ sleep 1
 status=0
 DISPLAY=:99 npm run test:e2e:ci || status=$?
 DISPLAY=:99 npm run test:e2e:ci:sim || status=$?
+# actors-ble's actors set FINI_BLE_MOCK_BROKER, which routes ble.rs's
+# backend() to the cross-process mock radio instead of LinuxBackend::new()
+# -- so unlike the other two lanes, this one needs neither the D-Bus bus
+# started above nor bluetoothd (which, per this script's own comment,
+# can't run here anyway).
+DISPLAY=:99 npm run test:e2e:ci:ble || status=$?
 exit "$status"

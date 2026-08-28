@@ -90,6 +90,14 @@ COPY index.html ./
 RUN npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- --bin fini-app && \
     test -x src-tauri/target/debug/fini-app && \
     cp src-tauri/target/debug/fini-app /workspace/fini-app && \
+    # actors-ble's shared radio -- see specs/e2e/actors/helpers/ble-sync.ts.
+    # Not built by the `tauri build` invocation above (that only targets
+    # `--bin fini-app`), so a separate `cargo build` for it here, same
+    # target dir/features so it shares the already-compiled dependency
+    # graph rather than rebuilding it.
+    cargo build --manifest-path src-tauri/Cargo.toml --bin ble-mock-broker --features ui-plane,devtools && \
+    test -x src-tauri/target/debug/ble-mock-broker && \
+    cp src-tauri/target/debug/ble-mock-broker /workspace/ble-mock-broker && \
     rm -rf src-tauri/target
 
 FROM ubuntu:24.04 AS runtime-base
@@ -162,6 +170,7 @@ COPY --from=playwright-browsers /root/.cache/ms-playwright /root/.cache/ms-playw
 
 COPY --from=app-build-ui-dev /workspace/fini-app /usr/local/bin/fini-app
 COPY --from=app-build-cli-dev /workspace/fini /usr/local/bin/fini
+COPY --from=app-build-ui-dev /workspace/ble-mock-broker /usr/local/bin/ble-mock-broker
 COPY --from=app-build-ui-dev /workspace/dist ./dist
 
 WORKDIR /app
@@ -179,6 +188,7 @@ ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
     FINI_E2E_ROOT=/app/test-results/fini-e2e-runs \
     FINI_APP_BINARY=/usr/local/bin/fini-app \
     FINI_CLI_BINARY=/usr/local/bin/fini \
+    FINI_BLE_MOCK_BROKER_BINARY=/usr/local/bin/ble-mock-broker \
     FINI_E2E_CONTAINER_RUNNER=1 \
     TZ=UTC
 

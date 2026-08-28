@@ -1,7 +1,9 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
 
@@ -26,6 +28,38 @@ use crate::services::transport::TransportKind;
 use crate::services::transport::{sim, tcp_ws};
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
+
+/// Minimum interval between successive resend attempts of the *same*
+/// unacked sync event -- see the resend loop in `space_sync_tick_impl` for
+/// why this exists (a P1 finding from the actors-ble e2e lane: sustained
+/// per-tick resends of one small event overwhelmed the BLE mock's
+/// peripheral-role inbound reassembly queue and made it defensively
+/// disconnect+reconnect the session, losing exactly the ack that would
+/// have stopped the resends). Comfortably above the fastest tick cadence
+/// either a test or `MAPPING_UPDATE_POLL_INTERVAL_MS` (3s, in
+/// `src/stores/device.ts`) ever calls this at, so a healthy connection
+/// never waits meaningfully longer for a resend than it does today.
+const EVENT_RESEND_COOLDOWN: Duration = Duration::from_secs(5);
+
+/// Process-local, not persisted: resend pacing only matters within one
+/// running process's lifetime, and an entry for an event this process
+/// never sees again (acked, or the peer unpaired) is a few dozen bytes --
+/// not worth a DB column or explicit eviction for what a desktop app's
+/// process lifetime already bounds.
+///
+/// Keyed by `(peer_device_id, event_id)`, not `event_id` alone: one
+/// `sync_outbox` event can be pending for multiple peers at once (a space
+/// mapped to more than one peer), and each peer's delivery is independent.
+/// An `event_id`-only key let one peer's attempts suppress delivery to
+/// every other peer -- worst case, an offline peer's failed attempts kept
+/// refreshing the cooldown and a connected peer never got the event. Fixed
+/// by the peer in the key, and by only recording an attempt once
+/// `send_sync_event_to_peer` actually succeeds (a failed send must not
+/// start the cooldown).
+fn event_resend_tracker() -> &'static Mutex<HashMap<(String, String), Instant>> {
+    static TRACKER: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
+    TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SpaceSyncStatus {
@@ -1153,11 +1187,37 @@ pub fn space_sync_tick_impl(
         }
 
         let mut sent_events = 0usize;
-        for event in pending.iter().take(MAX_EVENTS_PER_PEER_PER_TICK) {
+        let mut resend_tracker = event_resend_tracker().lock().unwrap();
+        for event in pending.iter() {
+            if sent_events >= MAX_EVENTS_PER_PEER_PER_TICK {
+                break;
+            }
+            // An unacked event stays in `pending` on every tick until it's
+            // acked -- without this gate, a peer that's merely slow to ack
+            // (or whose transport can't drain as fast as this tick fires)
+            // gets the identical full event re-queued every single tick.
+            // Found via the actors-ble e2e lane: sustained resends of one
+            // small event, every ~1s, overwhelmed the BLE mock's peripheral-
+            // role inbound reassembly queue and made it defensively
+            // disconnect+reconnect the session -- losing exactly the ack
+            // that would have stopped the resends, a self-inflicted retry
+            // storm. Not BLE-specific in cause (this loop has never rate-
+            // limited resends against any transport); BLE's small per-
+            // fragment budget on the peripheral role just made the ceiling
+            // low enough to hit it inside a single test run.
+            let now = Instant::now();
+            let tracker_key = (peer_device_id.clone(), event.event_id.clone());
+            if let Some(&last_sent) = resend_tracker.get(&tracker_key) {
+                if now.duration_since(last_sent) < EVENT_RESEND_COOLDOWN {
+                    continue;
+                }
+            }
             if send_sync_event_to_peer(&device_connection, &peer_device_id, event).is_ok() {
+                resend_tracker.insert(tracker_key, now);
                 sent_events += 1;
             }
         }
+        drop(resend_tracker);
 
         sent_events_total += sent_events;
         if sent_events > 0 {
