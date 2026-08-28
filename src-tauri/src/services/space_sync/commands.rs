@@ -46,8 +46,18 @@ const EVENT_RESEND_COOLDOWN: Duration = Duration::from_secs(5);
 /// never sees again (acked, or the peer unpaired) is a few dozen bytes --
 /// not worth a DB column or explicit eviction for what a desktop app's
 /// process lifetime already bounds.
-fn event_resend_tracker() -> &'static Mutex<HashMap<String, Instant>> {
-    static TRACKER: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+///
+/// Keyed by `(peer_device_id, event_id)`, not `event_id` alone: one
+/// `sync_outbox` event can be pending for multiple peers at once (a space
+/// mapped to more than one peer), and each peer's delivery is independent.
+/// An `event_id`-only key let one peer's attempts suppress delivery to
+/// every other peer -- worst case, an offline peer's failed attempts kept
+/// refreshing the cooldown and a connected peer never got the event. Fixed
+/// by the peer in the key, and by only recording an attempt once
+/// `send_sync_event_to_peer` actually succeeds (a failed send must not
+/// start the cooldown).
+fn event_resend_tracker() -> &'static Mutex<HashMap<(String, String), Instant>> {
+    static TRACKER: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
     TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1196,13 +1206,14 @@ pub fn space_sync_tick_impl(
             // fragment budget on the peripheral role just made the ceiling
             // low enough to hit it inside a single test run.
             let now = Instant::now();
-            if let Some(&last_sent) = resend_tracker.get(&event.event_id) {
+            let tracker_key = (peer_device_id.clone(), event.event_id.clone());
+            if let Some(&last_sent) = resend_tracker.get(&tracker_key) {
                 if now.duration_since(last_sent) < EVENT_RESEND_COOLDOWN {
                     continue;
                 }
             }
-            resend_tracker.insert(event.event_id.clone(), now);
             if send_sync_event_to_peer(&device_connection, &peer_device_id, event).is_ok() {
+                resend_tracker.insert(tracker_key, now);
                 sent_events += 1;
             }
         }
