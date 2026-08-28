@@ -11,15 +11,21 @@ different things at different layers. This table is the honest mapping.
 |---|---|---|
 | Rust integration tests (`services::transport::tests`) | Transport-neutral: per-(peer, transport) session claiming, auth-gate rejects un-authed inbound, both transports connect and prove liveness independently via ping/ack, primary-transport selection, no duplicated/lost events. Runtime-agnostic — identical Rust runs on every OS, so this is the proof that holds for android-linux, android-android, linux-linux, and windows-android alike; there is no "android-ness" at the protocol layer. | Every PR, GitHub-hosted (`make pr-gate-be-unit`) |
 | Playwright `actors` project, `transport-selection.spec.ts` | Real app binaries, real network transport: paired actors with network available claim `tcp_ws` as primary. | Every PR, GitHub-hosted (`make pr-gate-e2e`) |
-| Playwright `actors-sim` project, `peer-sync-over-sim.spec.ts` | Real app binaries, network transport genuinely disabled (`FINI_DISCOVERY_DISABLED=1`): session claims `sim` (standing in for Bluetooth), an approved Space replicates over it, no new consent prompt, session stays claimed across ticks. | Every PR, GitHub-hosted (`make pr-gate-e2e`, chained in `scripts/e2e-runner.sh`) |
+| Playwright `actors-sim` project, `peer-sync-over-sim.spec.ts` | Real app binaries, network transport genuinely disabled (`FINI_DISCOVERY_DISABLED=1`): session claims `sim` (standing in for Bluetooth over a plain loopback TCP `Link`), an approved Space replicates over it, no new consent prompt, session stays claimed across ticks. Exercises transport-selection/session/liveness generically, not the real BLE code path. | Every PR, GitHub-hosted (`make pr-gate-e2e`, chained in `scripts/e2e-runner.sh`) |
+| Playwright `actors-ble` project, `peer-sync-over-ble.spec.ts` | Real app binaries, network disabled, drive the actual `ble.rs` code path (dial loop, peripheral advertise/accept, session claim, GATT central/peripheral roles with real asymmetric fragment budgets) against a cross-process **mock radio** (`ble-gatt`'s `mock-broker` feature — a standalone broker process two `fini-app`s connect to, injected via `FINI_BLE_MOCK_BROKER` behind `devtools`). Connect → both sides report `state: "configured", code: null` ("green," the exact liveness signal the "Still connecting…" bug got wrong) → a single quest converges both ways. Not a radio/RF proof (see below) — it is a real protocol/session/liveness/UI proof, on the real Bluetooth code path, that Sim alone never exercised. | Every PR, GitHub-hosted (`make pr-gate-e2e`, chained in `scripts/e2e-runner.sh`) |
 | `android-emulator-e2e` CI job | Single Android emulator: app boots, notification channel exists. Not a cross-device sync test. | Every PR, GitHub-hosted |
-| Real Bluetooth, real second device | The topologies as literally described in the ticket. | Local only (`make e2e-bt-local`, PR B) — no device lab, no self-hosted runner |
+| Real Bluetooth, real second device | The topologies as literally described in the ticket — real RF, real radio contention, real adapter behavior (e.g. the `CONNECTION_PRIORITY_HIGH` class of bug). Not something a mock radio can prove regardless of how faithfully it models the GATT protocol. | Local only (`make e2e-bt-local`, PR B) — no device lab, no self-hosted runner |
 
 ## Why real cross-device/cross-radio topologies aren't a PR gate
 
 - GitHub-hosted runners have no Bluetooth radio. There is no way to run a
   real BLE/RFCOMM link between two processes on the same runner, let alone
-  across two runners.
+  across two runners. `actors-ble`'s mock broker closes the protocol/session/
+  liveness/UI gap this left (see the row above) but is explicit about not
+  claiming to close the radio gap — no virtual Bluetooth controller
+  available on GitHub-hosted CI (Bumble, `btvirt`, the Android emulator's
+  netsim) reproduces real RF contention either, so that bug class stays a
+  hardware problem regardless of which mock backs the protocol layer.
 - The Android emulator needs KVM, only available on Linux GitHub-hosted
   runners; running two emulators in one job to sync with each other is
   possible but heavy and flaky, and still wouldn't have a real radio.
