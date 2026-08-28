@@ -2,12 +2,14 @@ import { expect, test as base } from '@playwright/test';
 import { PluginClient, TauriPage } from '@srsholmes/tauri-playwright';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { createConnection } from 'net';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { resetActorsUi } from './helpers/teardown.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const DEFAULT_APP_BINARY = join(REPO_ROOT, 'src-tauri/target/debug-e2e/debug/fini-app');
+const DEFAULT_BLE_BROKER_BINARY = join(REPO_ROOT, 'src-tauri/target/debug-e2e/debug/ble-mock-broker');
 const DEFAULT_RUN_ROOT = join(REPO_ROOT, 'tmp', 'fini-e2e-actors');
 const DEFAULT_ACTOR_WAIT_SECS = 60;
 const DEFAULT_BASE_DISCOVERY_PORT = 46_000 + Math.floor(Math.random() * 500);
@@ -55,13 +57,50 @@ function actorSlugs(): string[] {
  * with the network transport made genuinely unavailable
  * (`FINI_DISCOVERY_DISABLED=1` — no mDNS, no UDP presence) and the Sim
  * transport configured instead, so fallback/selection is proven against a
- * real second transport rather than raced against presence timing. See
+ * real second transport rather than raced against presence timing. 'ble'
+ * is the same idea one layer deeper: network disabled the same way, but
+ * actors dial the real `ble.rs` code path against a cross-process mock
+ * radio (`ble-gatt`'s `mock-broker` feature) instead of the Sim transport's
+ * plain TCP stand-in — see `helpers/ble-sync.ts` and
+ * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`. See
  * `specs/e2e/transports.md`.
  */
-export type ActorTransport = 'network' | 'sim';
+export type ActorTransport = 'network' | 'sim' | 'ble';
 
 function actorTransport(): ActorTransport {
-  return process.env.FINI_E2E_TRANSPORT === 'sim' ? 'sim' : 'network';
+  if (process.env.FINI_E2E_TRANSPORT === 'sim') return 'sim';
+  if (process.env.FINI_E2E_TRANSPORT === 'ble') return 'ble';
+  return 'network';
+}
+
+/**
+ * Deterministic per-actor fake Bluetooth address for the `ble` lane's mock
+ * radio. Doesn't need to look like a real BLE address (`ble-gatt`'s
+ * `PeerAddress` is a plain string) — just stable and unique per actor index
+ * so `FINI_LOCAL_BLUETOOTH_ADDRESS`/`FINI_BLUETOOTH_PAIRED_ADDRESSES` agree
+ * on who's who without any coordination step between actor processes.
+ */
+function fakeBluetoothAddress(index: number): string {
+  return `AA:BB:CC:00:00:${(index + 1).toString(16).padStart(2, '0').toUpperCase()}`;
+}
+
+/**
+ * Clear of the discovery/ws range (`baseDiscoveryPort + index*2` and
+ * `+1`) and the sim range (`baseDiscoveryPort + slugCount*2 + 1000..
+ * +1000+slugCount-1`) computed above -- one broker shared by every actor,
+ * not one per actor, so this doesn't take an index.
+ */
+function bleBrokerPort(baseDiscoveryPort: number, slugCount: number): number {
+  return baseDiscoveryPort + slugCount * 2 + 2000;
+}
+
+function resolveBleBrokerBinaryPath(): string {
+  const binary = process.env.FINI_BLE_MOCK_BROKER_BINARY ?? DEFAULT_BLE_BROKER_BINARY;
+  if (!existsSync(binary)) {
+    throw new Error(`ble-mock-broker binary not found: ${binary}`);
+  }
+
+  return binary;
 }
 
 function resolveAppBinaryPath(): string {
@@ -165,7 +204,22 @@ function spawnActorProcess(
           FINI_SIM_TRANSPORT_PORT: String(simPort),
           FINI_SIM_PEER_PORTS: peerSimPorts,
         }
-      : {};
+      : transport === 'ble'
+        ? {
+            FINI_DISCOVERY_DISABLED: '1',
+            FINI_BLE_MOCK_BROKER: `127.0.0.1:${bleBrokerPort(baseDiscoveryPort, slugs.length)}`,
+            FINI_LOCAL_BLUETOOTH_ADDRESS: fakeBluetoothAddress(index),
+            // Everyone *else's* fake address -- what `bluetooth_dial_candidates`'
+            // OS-bond check needs to treat every peer as already bonded (see
+            // `FINI_BLUETOOTH_PAIRED_ADDRESSES`'s own doc comment in
+            // `device_connection::commands`).
+            FINI_BLUETOOTH_PAIRED_ADDRESSES: slugs
+              .map((_, peerIndex) => peerIndex)
+              .filter((peerIndex) => peerIndex !== index)
+              .map(fakeBluetoothAddress)
+              .join(','),
+          }
+        : {};
 
   const child = spawn(binaryPath, [], {
     env: {
@@ -233,7 +287,7 @@ async function waitForActorSocket(state: ActorProcessState, timeoutMs: number): 
   throw new Error(actorDebugMessage(state, `Actor socket did not appear within ${timeoutMs}ms`));
 }
 
-async function stopActorProcess(state: ActorProcessState): Promise<void> {
+async function stopActorProcess(state: { child: ChildProcessWithoutNullStreams }): Promise<void> {
   if (state.child.exitCode !== null || state.child.signalCode !== null) {
     return;
   }
@@ -255,6 +309,66 @@ async function stopActorProcess(state: ActorProcessState): Promise<void> {
   });
 }
 
+interface BleBrokerState {
+  child: ChildProcessWithoutNullStreams;
+  logPath: string;
+  port: number;
+}
+
+/**
+ * The `ble` lane's shared radio -- one broker process per worker, spawned
+ * before any actor so the dial loop has somewhere to connect to from the
+ * start (not strictly required: `ble.rs`'s `backend()` OnceCell leaves
+ * itself empty and retries on failure, same as a real unavailable adapter,
+ * so a broker that comes up a beat late self-heals on the next tick -- but
+ * starting it first avoids the retry noise). See `helpers/ble-sync.ts`.
+ */
+function spawnBleBroker(runRoot: string, runId: string, port: number): BleBrokerState {
+  const logPath = join(runRoot, runId, 'ble-mock-broker.log');
+  const binaryPath = resolveBleBrokerBinaryPath();
+
+  const child = spawn(binaryPath, [], {
+    env: { ...process.env, FINI_BLE_MOCK_BROKER_LISTEN: `127.0.0.1:${port}` },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  appendFileSync(logPath, `[${new Date().toISOString()}] spawn ble-mock-broker on 127.0.0.1:${port}\n`);
+  child.stdout.on('data', (chunk) => appendFileSync(logPath, chunk));
+  child.stderr.on('data', (chunk) => appendFileSync(logPath, chunk));
+
+  return { child, logPath, port };
+}
+
+async function waitForBleBrokerReady(state: BleBrokerState, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (state.child.exitCode !== null || state.child.signalCode !== null) {
+      throw new Error(`ble-mock-broker exited before it was ready -- see ${state.logPath}`);
+    }
+
+    const listening = await new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host: '127.0.0.1', port: state.port }, () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (listening) {
+      return;
+    }
+
+    await delay(100);
+  }
+
+  throw new Error(
+    `ble-mock-broker did not start listening on 127.0.0.1:${state.port} within ${timeoutMs}ms -- see ${state.logPath}`,
+  );
+}
+
 async function createActorSession(): Promise<ActorSession> {
   const slugs = actorSlugs();
   if (slugs.length < 2) {
@@ -274,6 +388,12 @@ async function createActorSession(): Promise<ActorSession> {
 
   console.log(`FINI_E2E_RUN_ROOT=${sessionRoot}`);
   console.log(`FINI_E2E_APP_BINARY=${binaryPath}`);
+
+  let bleBroker: BleBrokerState | null = null;
+  if (actorTransport() === 'ble') {
+    bleBroker = spawnBleBroker(runRoot, runId, bleBrokerPort(resolveBaseDiscoveryPort(), slugs.length));
+    await waitForBleBrokerReady(bleBroker, waitMs);
+  }
 
   const actorStates = slugs.map((slug, index) =>
     spawnActorProcess(runId, runRoot, socketDir, slugs, slug, index, binaryPath),
@@ -302,6 +422,17 @@ async function createActorSession(): Promise<ActorSession> {
     for (const state of actorStates.reverse()) {
       try {
         await stopActorProcess(state);
+      } catch {
+        // Best-effort process shutdown only.
+      }
+    }
+
+    if (bleBroker) {
+      try {
+        // After the actors, not before -- nothing left needs the radio by
+        // this point, and stopping it first would just make their own
+        // shutdown noisier (in-flight dial attempts failing to connect).
+        await stopActorProcess(bleBroker);
       } catch {
         // Best-effort process shutdown only.
       }

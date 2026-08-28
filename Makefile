@@ -284,6 +284,7 @@ e2e-headed:
 	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
 	app_bin_path="$$e2e_target_dir/debug/fini-app"; \
 	cli_bin_path="$$e2e_target_dir/debug/fini"; \
+	ble_broker_bin_path="$$e2e_target_dir/debug/ble-mock-broker"; \
 	mkdir -p "$(FINI_SCRATCH_DIR)"; \
 	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
 	cp src-tauri/capabilities/default.json "$$capability_backup"; \
@@ -295,8 +296,10 @@ e2e-headed:
 	restore_capability; \
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin ble-mock-broker --features ui-plane,devtools; \
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=sim FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-sim
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=sim FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-sim; \
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
 
 # Build/update the published headless runtime image locally.
 runtime-image:
