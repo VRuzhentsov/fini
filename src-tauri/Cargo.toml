@@ -26,17 +26,6 @@ name = "fini-app"
 path = "src/desktop.rs"
 required-features = ["ui-plane"]
 
-[[bin]]
-# The shared "radio" the `actors-ble` e2e lane's two `fini-app` processes
-# connect to instead of a real Bluetooth adapter -- see
-# specs/e2e/actors/helpers/ble-sync.ts and ble-gatt's docs/adr/0004. Gated on
-# `devtools` (off in release builds) for the same containment reason
-# `ble.rs`'s mock backend branch is: an env var alone must never be able to
-# redirect a shipped binary onto a socket.
-name = "ble-mock-broker"
-path = "src/bin/ble_mock_broker.rs"
-required-features = ["devtools"]
-
 [patch.crates-io]
 sherpa-onnx-sys = { path = "patches/sherpa-onnx-sys" }
 

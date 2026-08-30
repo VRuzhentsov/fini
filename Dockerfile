@@ -90,15 +90,16 @@ COPY index.html ./
 RUN npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- --bin fini-app && \
     test -x src-tauri/target/debug/fini-app && \
     cp src-tauri/target/debug/fini-app /workspace/fini-app && \
-    # actors-ble's shared radio -- see specs/e2e/actors/helpers/ble-sync.ts.
-    # Not built by the `tauri build` invocation above (that only targets
-    # `--bin fini-app`), so a separate `cargo build` for it here, same
-    # target dir/features so it shares the already-compiled dependency
-    # graph rather than rebuilding it.
-    cargo build --manifest-path src-tauri/Cargo.toml --bin ble-mock-broker --features ui-plane,devtools && \
-    test -x src-tauri/target/debug/ble-mock-broker && \
-    cp src-tauri/target/debug/ble-mock-broker /workspace/ble-mock-broker && \
     rm -rf src-tauri/target
+
+# actors-ble's shared radio -- see specs/e2e/actors/helpers/ble-sync.ts. Its
+# own crate (see ble-mock-broker/Cargo.toml for why), so built separately
+# from fini-app above.
+COPY ble-mock-broker ./ble-mock-broker
+RUN cargo build --manifest-path ble-mock-broker/Cargo.toml && \
+    test -x ble-mock-broker/target/debug/ble-mock-broker && \
+    cp ble-mock-broker/target/debug/ble-mock-broker /workspace/ble-mock-broker && \
+    rm -rf ble-mock-broker/target
 
 FROM ubuntu:24.04 AS runtime-base
 

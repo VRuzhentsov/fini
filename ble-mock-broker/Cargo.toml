@@ -1,0 +1,22 @@
+[package]
+name = "ble-mock-broker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "ble-mock-broker"
+path = "src/main.rs"
+
+[dependencies]
+# Same rev as src-tauri/Cargo.toml's ble-gatt pin -- the broker and the two
+# fini-app clients it serves must speak the exact same mock-broker wire
+# protocol. A standalone crate, not a src-tauri `[[bin]]`, on purpose: Tauri's
+# desktop bundler sweeps every `[[bin]]` declared in the bundled crate's
+# Cargo.toml into the AppImage/deb/NSIS output regardless of which cargo
+# features actually built it, so a devtools-only binary declared there breaks
+# every real release build the moment its required feature is off (as it
+# always is in a release build). Living in its own crate keeps it out of
+# src-tauri's Cargo.toml entirely, so Tauri's bundler never sees it.
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4139db405738194e7bc18915c7c9b977ded12ccf", features = ["mock-broker"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
