@@ -231,6 +231,21 @@ jobs:
       - name: Prepare AppImage GTK bundler
         run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
 
+      # `createUpdaterArtifacts: true` in tauri.conf.json means `tauri build`
+      # requires *some* signing key to be present or it refuses to bundle at
+      # all -- but this job only needs to prove the bundle assembles, not
+      # produce a real updater artifact, so a throwaway keypair generated
+      # fresh in this job is enough. Do NOT use the real
+      # TAURI_SIGNING_PRIVATE_KEY/_PASSWORD secrets here: those are the
+      # production updater signing key, meant to be decrypted only for a
+      # trusted release (workflow_dispatch or a signed tag push, both
+      # maintainer-controlled) -- this job runs on every pull_request, whose
+      # checked-out code (via beforeBuildCommand) executes before a human
+      # reviews it, so wiring the real key in here would let a PR exfiltrate
+      # it.
+      - name: Generate ephemeral signing key (PR bundle check only)
+        run: CI=1 npx tauri signer generate --ci -w "$RUNNER_TEMP/pr-bundle-verify.key" -p ""
+
       # Same command release-tag.yml/release-dry-run.yml use to build the
       # real Linux desktop bundle, so any binary this crate declares (see
       # src-tauri/Cargo.toml's `[[bin]]` list) that can't actually be
@@ -244,9 +259,8 @@ jobs:
       # the next binary like it fails a PR instead of a release.
       - name: Build Linux bundles
         env:
-          FINI_TAURI_UPDATER_PUBKEY: ${{ secrets.FINI_TAURI_UPDATER_PUBKEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ runner.temp }}/pr-bundle-verify.key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify AppImage host runtime boundary
