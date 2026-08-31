@@ -244,7 +244,17 @@ jobs:
       # reviews it, so wiring the real key in here would let a PR exfiltrate
       # it.
       - name: Generate ephemeral signing key (PR bundle check only)
-        run: CI=1 npx tauri signer generate --ci -w "$RUNNER_TEMP/pr-bundle-verify.key" -p ""
+        # `tauri build`'s own updater-artifact auto-signing step only reads
+        # TAURI_SIGNING_PRIVATE_KEY as literal key content (confirmed: the
+        # _PATH variant is accepted by the standalone `tauri signer sign`
+        # command but not by this step -- "A public key has been found, but
+        # no private key" even with _PATH set to a valid file). No exposure
+        # concern threading this one through $GITHUB_ENV: it's regenerated
+        # every run and never used for anything but this job.
+        run: |
+          set -euo pipefail
+          CI=1 npx tauri signer generate --ci -w "$RUNNER_TEMP/pr-bundle-verify.key" -p ""
+          { echo "TAURI_SIGNING_PRIVATE_KEY<<KEYEOF"; cat "$RUNNER_TEMP/pr-bundle-verify.key"; echo; echo "KEYEOF"; } >> "$GITHUB_ENV"
 
       # Same command release-tag.yml/release-dry-run.yml use to build the
       # real Linux desktop bundle, so any binary this crate declares (see
@@ -259,7 +269,6 @@ jobs:
       # the next binary like it fails a PR instead of a release.
       - name: Build Linux bundles
         env:
-          TAURI_SIGNING_PRIVATE_KEY_PATH: ${{ runner.temp }}/pr-bundle-verify.key
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm -- --bin fini-app
 
