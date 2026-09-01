@@ -316,6 +316,16 @@ impl DeviceConnectionState {
             let (_, still_enabled) = Self::bluetooth_primary_eligibility(db_path, peer_device_id);
             if !still_enabled {
                 self.close_session_on(peer_device_id, kind);
+            } else {
+                // A P1 review finding: `ble::check_accepting_side_
+                // exhaustion`'s own session-based clearing only runs on the
+                // next `space_sync_tick` (a few seconds out) -- a session
+                // that authenticates and then drops again *within* one tick
+                // interval was never observed as connected by that poll,
+                // leaving a stale `dial_exhausted` entry in place
+                // indefinitely. Clearing right here, at the actual claim
+                // event, doesn't wait for a poll to notice.
+                crate::services::transport::ble::note_bluetooth_session_claimed(peer_device_id);
             }
         }
         true

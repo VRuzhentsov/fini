@@ -932,6 +932,23 @@ pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
     dial_exhausted().lock().unwrap().contains(peer_id)
 }
 
+/// Called from `DeviceConnectionState::try_claim_session` whenever a
+/// Bluetooth session is actually claimed, regardless of which side dialed --
+/// a P1 review finding on top of `check_accepting_side_exhaustion`'s own
+/// session-branch: that only runs on the next `space_sync_tick` (a few
+/// seconds out), so a session that authenticates and then drops again
+/// *within* one tick interval was never observed as connected by the poll,
+/// leaving a stale `dial_exhausted` entry (and `accepting_side_
+/// unconnected_since` timestamp) in place indefinitely -- `spawn_dial_loop`
+/// then kept skipping the peer even after the poll eventually ran. This is
+/// the same clearing `check_accepting_side_exhaustion` already does, just
+/// triggered by the actual claim event instead of waiting for a poll to
+/// observe it.
+pub fn note_bluetooth_session_claimed(peer_id: &str) {
+    dial_exhausted().lock().unwrap().remove(peer_id);
+    accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
+}
+
 /// Drops every per-peer Bluetooth dial tracker this file keeps in process
 /// memory, keyed by `peer_id` -- called on unpair and on a fresh pairing
 /// (see call sites in `device_connection::commands`). A P2 review finding:
