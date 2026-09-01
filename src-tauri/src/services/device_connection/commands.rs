@@ -166,6 +166,25 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
     bluetooth_address_bond_check(address).unwrap_or(false)
 }
 
+/// Cross-platform-safe wrapper around `transport::ble::is_bluetooth_dial_exhausted`
+/// -- that module only exists on `target_os = "linux"`/`"android"`, so a
+/// bare call from this platform-neutral file wouldn't compile everywhere
+/// this file does. `false` on every other platform: `bluetooth_unconfigured_code`
+/// already returns `BluetoothNotSupported` there first, so this value is
+/// never actually consulted in that case, but a real bool (not an `Option`
+/// forcing every caller to handle a platform that can't happen) keeps
+/// `device_connection_transport_statuses_impl` simple.
+fn bluetooth_dial_exhausted_now(#[allow(unused_variables)] peer_device_id: &str) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        crate::services::transport::ble::is_bluetooth_dial_exhausted(peer_device_id)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        false
+    }
+}
+
 /// Runs `command` with a hard time limit that actually terminates it, not
 /// merely bounds how long a caller waits: `kill_on_drop(true)` makes Tokio
 /// send the kill signal (and reap the process via its own SIGCHLD-driven
@@ -1739,6 +1758,7 @@ pub fn device_connection_transport_statuses_impl(
         bluetooth_enabled: paired.bluetooth_enabled,
         bluetooth_has_metadata,
         bluetooth_os_paired,
+        bluetooth_dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         network_connected: snapshot.network_connected,
         bluetooth_connected: snapshot.bluetooth_connected,
         network_primary: snapshot.network_primary,
@@ -1746,6 +1766,24 @@ pub fn device_connection_transport_statuses_impl(
         network_code: snapshot.network_code,
         bluetooth_code: snapshot.bluetooth_code,
     }))
+}
+
+/// The Device page's "click the Bluetooth row to try again" affordance
+/// (see `TransportStatusCode::BluetoothDialExhausted`'s doc comment): a
+/// no-op everywhere the dial loop wasn't exhausted, so the frontend doesn't
+/// need to guard the call.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_retry_bluetooth_dial(peer_device_id: String) -> Result<(), String> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        crate::services::transport::ble::retry_bluetooth_dial(&peer_device_id);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = peer_device_id;
+    }
+    Ok(())
 }
 
 #[cfg(any(feature = "ui-plane", test))]

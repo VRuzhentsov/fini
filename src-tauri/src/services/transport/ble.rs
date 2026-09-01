@@ -826,6 +826,9 @@ pub fn spawn_dial_loop(
         if is_backing_off(&dial_backoff_until().lock().unwrap(), peer_id, Instant::now()) {
             continue;
         }
+        if is_bluetooth_dial_exhausted(peer_id) {
+            continue;
+        }
         // One retry loop per peer, not one per tick: `space_sync_tick`
         // (and therefore this function) runs every few seconds from the
         // frontend, and `dial_with_backoff` itself already loops with
@@ -889,6 +892,57 @@ fn is_backing_off(backoff: &HashMap<String, Instant>, peer_id: &str, now: Instan
 /// without needing to persist a growing failure count anywhere.
 const DIAL_BACKOFF: Duration = Duration::from_secs(60);
 
+/// How long one continuous streak of connect/auth attempts (see
+/// `dial_with_backoff`'s `streak_deadline`) is allowed to keep retrying
+/// automatically before giving up and requiring an explicit
+/// `retry_bluetooth_dial` call to resume. Distinct from `DIAL_BACKOFF`: that
+/// one is for a *terminal* rejection (the peer explicitly said no); this one
+/// is for a link that never even gets far enough to be rejected -- it just
+/// keeps connecting, sometimes completing GATT setup, and dying before an
+/// `AuthOk`/`AuthFail` ever arrives. Matches the frontend's own
+/// `CONNECTING_TIMEOUT_MS` "stuck" threshold in spirit (see
+/// `DeviceView.vue`), but this one actually stops the background work
+/// instead of only relabelling it -- an indefinite silent retry loop behind
+/// an unchanging "Still connecting..." was the actual user complaint (real
+/// device evidence, 2026-09-01: repeated connect/MTU/discover/subscribe
+/// successes each followed by "connection closed before auth reply" a few
+/// seconds to tens of seconds later, for minutes, with nothing in this
+/// crate or `ble-gatt` ever calling `disconnect()` on any deadline that
+/// would explain it -- a real, unresolved radio-layer instability, not a
+/// bug in this loop's own timeout logic before this constant existed).
+const AUTO_RETRY_WINDOW: Duration = Duration::from_secs(60);
+
+/// Peers whose Bluetooth dial has stopped auto-retrying after
+/// `AUTO_RETRY_WINDOW` of no successful auth. Cleared only by
+/// `retry_bluetooth_dial` (an explicit user action) or by Bluetooth being
+/// disabled and re-enabled for the pair (`device_connection_commands`'s
+/// enable path) -- deliberately *not* on any timer, matching the "wait for
+/// the user to ask again" behavior that's the whole point of giving up in
+/// the first place.
+fn dial_exhausted() -> &'static StdMutex<HashSet<String>> {
+    static EXHAUSTED: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
+    EXHAUSTED.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+/// Whether `peer_id`'s Bluetooth dial is currently paused after exhausting
+/// `AUTO_RETRY_WINDOW` -- consulted when building this peer's
+/// `TransportStatusCode` so the row can show a distinct, honest state
+/// instead of an indefinite "Connecting...".
+pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
+    dial_exhausted().lock().unwrap().contains(peer_id)
+}
+
+/// Resume automatic Bluetooth dial retries for `peer_id` after
+/// `is_bluetooth_dial_exhausted` -- the backend half of the Device page's
+/// "click the row to try again" affordance. A no-op if the peer wasn't
+/// exhausted. Does not dial immediately itself: clearing the flag just lets
+/// the next `spawn_dial_loop` tick (driven by `space_sync_tick`, a few
+/// seconds out at most) spawn a fresh `dial_with_backoff` streak with its
+/// own full `AUTO_RETRY_WINDOW`.
+pub fn retry_bluetooth_dial(peer_id: &str) {
+    dial_exhausted().lock().unwrap().remove(peer_id);
+}
+
 /// Deterministic dialer rule, mirroring `tcp_ws::should_dial_peer`/
 /// `sim::should_dial_fallback_peer`: exactly one side of a pair ever
 /// attempts to dial, so both peers dialling each other in the same tick
@@ -916,6 +970,18 @@ fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str, address
 async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String, address: String) {
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(30);
+    // Real-device evidence (2026-09-01, actual BLE hardware, not the mock
+    // radio): a flaky link can keep connecting, negotiating MTU, and even
+    // completing GATT service discovery, then dying before the app-level
+    // Auth reply arrives -- repeatedly, for minutes, with no code-level
+    // timeout anywhere in this loop or `perform_client_auth` ever calling it
+    // off. Every one of those failed attempts left the UI showing an
+    // unchanging, indefinite "Still connecting..." with no way to tell
+    // whether it was making progress or stuck. Cap how long one continuous
+    // unsuccessful streak auto-retries before giving up and surfacing that
+    // giving-up as a distinct, visible state (`retry_bluetooth_dial`'s doc
+    // comment) instead of retrying forever in the background.
+    let mut streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
 
     loop {
         if state.has_session_on(&peer_id, TransportKind::Bluetooth) {
@@ -933,6 +999,14 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 "[transport][ble] {peer_id} is no longer Bluetooth-enabled/OS-paired; \
                  stopping dial retries"
             );
+            return;
+        }
+        if tokio::time::Instant::now() >= streak_deadline {
+            log::info!(
+                "[transport][ble] {peer_id} did not complete auth within {AUTO_RETRY_WINDOW:?}; \
+                 pausing automatic retries until the user asks again"
+            );
+            dial_exhausted().lock().unwrap().insert(peer_id.clone());
             return;
         }
 
@@ -970,7 +1044,14 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                             .await;
                             log::info!("[transport][ble] session with {peer_id} ended");
                         }
+                        // Auth actually succeeding is real forward progress,
+                        // independent of how long the eventual session lasted
+                        // -- give the next streak (if the session later
+                        // drops) its own full patience window rather than
+                        // carrying over elapsed time from before this proof
+                        // the link *can* work.
                         delay = Duration::from_secs(2);
+                        streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
                     }
                     Err(err) => {
                         log::warn!("[transport][ble] auth with {peer_id} failed: {err}");
