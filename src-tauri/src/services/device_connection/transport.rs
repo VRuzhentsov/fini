@@ -136,6 +136,17 @@ pub struct TransportLiveness {
     pub connected: bool,
     pub primary: bool,
     pub code: Option<TransportStatusCode>,
+    /// `ble::is_bluetooth_dial_exhausted` -- always `false` for the network
+    /// row. A P1 review finding: without this, the 5s live-poll timer
+    /// (`refreshLiveConnectedState`, chosen specifically to avoid this
+    /// struct's heavier DB-backed sibling's `bluetoothctl` subprocess cost
+    /// on every tick) had no way to represent the exhausted state and
+    /// unconditionally rewrote a disconnected row back to "connecting" --
+    /// a Bluetooth-only peer never enters the network-presence-gated path
+    /// that would otherwise trigger a fresh full `device_connection_
+    /// transport_statuses` load to correct it, so the row stayed stuck
+    /// showing "Still connecting..." forever, defeating this whole feature.
+    pub dial_exhausted: bool,
 }
 
 pub fn select_transport_endpoint(

@@ -1821,12 +1821,14 @@ pub fn device_connection_transport_liveness_impl(
             connected: snapshot.network_connected,
             primary: snapshot.network_primary,
             code: snapshot.network_code,
+            dial_exhausted: false,
         },
         TransportLiveness {
             kind: RowTransportKind::Bluetooth,
             connected: snapshot.bluetooth_connected,
             primary: snapshot.bluetooth_primary,
             code: snapshot.bluetooth_code,
+            dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         },
     ]
 }

@@ -542,6 +542,40 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
+  // Single source of truth for how one row absorbs a live-poll entry --
+  // keeps the three-way branch (exhausted / still-unconfigured /
+  // configured) out of the `.map()` call site. `!connected &&
+  // dial_exhausted` takes priority over the plain "leave unconfigured rows
+  // alone" branch below it: a P1 review finding on the first version of
+  // this patch -- without this case, a row that WAS configured
+  // ("Connecting...") when the backend gave up had no way to reflect that
+  // here, so it just kept getting rewritten back to "connecting" by the
+  // fallback branch every 5s, forever.
+  function applyLiveness(
+    status: DeviceTransportStatus,
+    entry: { connected: boolean; primary: boolean; code: TransportStatusCode | null; dial_exhausted: boolean } | undefined,
+  ): DeviceTransportStatus {
+    if (!entry) return status;
+    if (!entry.connected && entry.dial_exhausted) {
+      return {
+        ...status,
+        primary: entry.primary,
+        state: { state: "unconfigured", code: { code: "bluetooth_dial_exhausted" } },
+      };
+    }
+    if (status.state.state === "unconfigured" && !entry.connected) {
+      return { ...status, primary: entry.primary };
+    }
+    return {
+      ...status,
+      primary: entry.primary,
+      state: {
+        state: "configured",
+        code: entry.connected ? entry.code : { code: "connecting" },
+      },
+    };
+  }
+
   // On Linux, `device_connection_transport_statuses` re-checks OS bond
   // status via a `bluetoothctl` subprocess call on every invocation --
   // fine for a one-shot load, but not something a live-status poll should
@@ -572,6 +606,7 @@ export const useDeviceStore = defineStore("device", () => {
           connected: boolean;
           primary: boolean;
           code: TransportStatusCode | null;
+          dial_exhausted: boolean;
         }>
       >("device_connection_transport_liveness", { peerDeviceId });
       // Re-read *after* the await, not the array captured before it: an
@@ -584,21 +619,9 @@ export const useDeviceStore = defineStore("device", () => {
       const current = transportStatusesByPeer.value[peerDeviceId];
       if (!current || current.length === 0) return;
       const byKind = new Map(liveness.map((entry) => [entry.kind, entry]));
-      transportStatusesByPeer.value[peerDeviceId] = current.map((status) => {
-        const entry = byKind.get(status.kind);
-        if (!entry) return status;
-        if (status.state.state === "unconfigured" && !entry.connected) {
-          return { ...status, primary: entry.primary };
-        }
-        return {
-          ...status,
-          primary: entry.primary,
-          state: {
-            state: "configured",
-            code: entry.connected ? entry.code : { code: "connecting" },
-          },
-        };
-      });
+      transportStatusesByPeer.value[peerDeviceId] = current.map((status) =>
+        applyLiveness(status, byKind.get(status.kind)),
+      );
     } catch (error) {
       console.warn("[device-connection] failed to refresh live connected state", error);
     }
