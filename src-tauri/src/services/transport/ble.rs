@@ -932,20 +932,57 @@ pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
     dial_exhausted().lock().unwrap().contains(peer_id)
 }
 
-/// Resume automatic Bluetooth dial retries for `peer_id` after
+/// Resume Bluetooth dial retries for `peer_id` after
 /// `is_bluetooth_dial_exhausted` -- the backend half of the Device page's
-/// "click the row to try again" affordance. A no-op if the peer wasn't
-/// exhausted. Does not dial immediately itself: clearing the flag just lets
-/// the next `spawn_dial_loop` tick (driven by `space_sync_tick`, a few
-/// seconds out at most) spawn a fresh `dial_with_backoff` streak with its
-/// own full `AUTO_RETRY_WINDOW`.
-pub fn retry_bluetooth_dial(peer_id: &str) {
+/// "click the row to try again" affordance. A no-op if the peer is already
+/// connected. Clears both give-up trackers, then spawns a one-off
+/// `dial_with_backoff` streak for `peer_id` directly -- *not* gated by
+/// `should_dial_peer`.
+///
+/// That bypass is the actual fix for a P1 review finding: on the accepting
+/// side of a pair (`my_id > peer_id`), `should_dial_peer` is false forever
+/// -- it's not a fact that changes -- so `spawn_dial_loop` would never spawn
+/// anything for this peer no matter how many ticks pass. Before this, retry
+/// on that side only cleared the flags above and relied on the *next*
+/// `spawn_dial_loop` tick to actually dial, which never came; the row would
+/// just sit on "Connecting..." for another `AUTO_RETRY_WINDOW` and land back
+/// on exhausted with nothing having attempted a connection. `dial_with_backoff`
+/// itself never consults `should_dial_peer` -- it's agnostic about which side
+/// is "supposed" to dial -- so spawning it directly here works for both
+/// sides identically. `in_flight_dials`'s existing guard is what keeps this
+/// safe if an automatic streak (dialing side) or an earlier retry click is
+/// already running for the same peer: the `insert` below just fails and this
+/// becomes a no-op instead of a second concurrent attempt, and
+/// `try_claim_session` inside `dial_with_backoff`/`run_session` is the
+/// existing collision-safety net if both sides' connections happen to
+/// complete auth around the same time.
+pub fn retry_bluetooth_dial(state: &DeviceConnectionState, candidates: &[(String, String)], peer_id: &str) {
     dial_exhausted().lock().unwrap().remove(peer_id);
     // Also give the accepting-side tracker (below) a fresh window: without
-    // this, a peer we never dial (we're the accepting side for it) would
-    // just get marked exhausted again on the very next tick, since its
-    // "unconnected since" clock would still read the distant past.
+    // this, a peer we never dial ourselves (we're the accepting side for
+    // it) would just get marked exhausted again the moment the spawned
+    // attempt below fails, since its "unconnected since" clock would still
+    // read the distant past.
     accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
+
+    if state.has_session_on(peer_id, TransportKind::Bluetooth) {
+        return;
+    }
+    let Some((_, address)) = candidates.iter().find(|(candidate_id, _)| candidate_id == peer_id) else {
+        return;
+    };
+    if !in_flight_dials().lock().unwrap().insert(peer_id.to_string()) {
+        return;
+    }
+
+    let db_path = state.db_path.clone();
+    let state = state.clone();
+    let peer_id = peer_id.to_string();
+    let address = address.clone();
+    tauri::async_runtime::spawn(async move {
+        dial_with_backoff(state, db_path, peer_id.clone(), address).await;
+        in_flight_dials().lock().unwrap().remove(&peer_id);
+    });
 }
 
 /// Per-peer timestamp of the first tick this process observed itself as

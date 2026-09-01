@@ -1512,7 +1512,11 @@ pub fn device_connection_set_bluetooth_transport_with_state_impl(
         // `device_connection_retry_bluetooth_dial` command) so this stays
         // reachable from `cli-plane`/no-feature builds too.
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        crate::services::transport::ble::retry_bluetooth_dial(&peer_device_id);
+        crate::services::transport::ble::retry_bluetooth_dial(
+            state,
+            &bluetooth_dial_candidates(&mut *conn),
+            &peer_device_id,
+        );
     }
 
     if disabling_a_bluetooth_pin {
@@ -1783,17 +1787,26 @@ pub fn device_connection_transport_statuses_impl(
 /// The Device page's "click the Bluetooth row to try again" affordance
 /// (see `TransportStatusCode::BluetoothDialExhausted`'s doc comment): a
 /// no-op everywhere the dial loop wasn't exhausted, so the frontend doesn't
-/// need to guard the call.
+/// need to guard the call. Takes `db`/`state` (not just the peer id) because
+/// `ble::retry_bluetooth_dial` needs the peer's current dial address and a
+/// live `DeviceConnectionState` to spawn a real attempt -- see its own doc
+/// comment for why this now does more than clear flags.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_retry_bluetooth_dial(peer_device_id: String) -> Result<(), String> {
+pub fn device_connection_retry_bluetooth_dial(
+    db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+) -> Result<(), String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        crate::services::transport::ble::retry_bluetooth_dial(&peer_device_id);
+        let mut conn = db.0.lock().unwrap();
+        let candidates = bluetooth_dial_candidates(&mut conn);
+        crate::services::transport::ble::retry_bluetooth_dial(&state, &candidates, &peer_device_id);
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        let _ = peer_device_id;
+        let _ = (db, state, peer_device_id);
     }
     Ok(())
 }
