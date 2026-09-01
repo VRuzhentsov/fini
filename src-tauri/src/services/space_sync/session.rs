@@ -586,13 +586,35 @@ async fn handle_inbound(
             let peer = peer_device_id.to_string();
             tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                if let Err(err) =
-                    crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
+                // Real-device evidence (2026-09-01): this write can land
+                // mid-lock and fail with "database is locked" -- observed
+                // right after a fresh auth, when other per-tick DB activity
+                // (session claim/liveness bookkeeping) is also contending
+                // for the connection. `persist_bluetooth_address_and_maybe_
+                // enable` is idempotent (re-applying the same address/
+                // enabled state is harmless), so a short bounded retry is
+                // safe and matches `try_open_db_at_path`'s own established
+                // "retry on database is locked/busy" pattern for exactly
+                // this class of transient SQLite contention.
+                let mut last_err = String::new();
+                for attempt in 0..3 {
+                    if attempt > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(100 * attempt as u64));
+                    }
+                    match crate::services::device_connection::persist_bluetooth_address_and_maybe_enable(
                         &mut conn, &peer, &address,
-                    )
-                {
-                    eprintln!("[space-sync] persist bluetooth self-report failed: {err}");
+                    ) {
+                        Ok(_) => return,
+                        Err(err) => {
+                            let retriable = err.contains("database is locked") || err.contains("database is busy");
+                            last_err = err;
+                            if !retriable {
+                                break;
+                            }
+                        }
+                    }
                 }
+                eprintln!("[space-sync] persist bluetooth self-report failed: {last_err}");
             });
         }
         // Pre-auth only (handled earlier in run_peer_gate's first-frame
