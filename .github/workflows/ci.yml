@@ -44,6 +44,7 @@ jobs:
               - 'src/**'
               - 'src-tauri/**'
               - 'xtask/**'
+              - 'ble-mock-broker/**'
 
 
   fe-unit-tests:
@@ -186,6 +187,101 @@ jobs:
       - name: Cleanup E2E containers
         if: always()
         run: make pr-gate-e2e-cleanup
+
+  desktop-bundle-linux:
+    name: Desktop Bundle (Linux x64)
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            xdg-utils \
+            patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: pr-desktop-bundle-linux
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Prepare AppImage GTK bundler
+        run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
+
+      # `createUpdaterArtifacts: true` in tauri.conf.json means `tauri build`
+      # requires *some* signing key to be present or it refuses to bundle at
+      # all -- but this job only needs to prove the bundle assembles, not
+      # produce a real updater artifact, so a throwaway keypair generated
+      # fresh in this job is enough. Do NOT use the real
+      # TAURI_SIGNING_PRIVATE_KEY/_PASSWORD secrets here: those are the
+      # production updater signing key, meant to be decrypted only for a
+      # trusted release (workflow_dispatch or a signed tag push, both
+      # maintainer-controlled) -- this job runs on every pull_request, whose
+      # checked-out code (via beforeBuildCommand) executes before a human
+      # reviews it, so wiring the real key in here would let a PR exfiltrate
+      # it.
+      - name: Generate ephemeral signing key (PR bundle check only)
+        # `tauri build`'s own updater-artifact auto-signing step only reads
+        # TAURI_SIGNING_PRIVATE_KEY as literal key content (confirmed: the
+        # _PATH variant is accepted by the standalone `tauri signer sign`
+        # command but not by this step -- "A public key has been found, but
+        # no private key" even with _PATH set to a valid file). No exposure
+        # concern threading this one through $GITHUB_ENV: it's regenerated
+        # every run and never used for anything but this job.
+        run: |
+          set -euo pipefail
+          CI=1 npx tauri signer generate --ci -w "$RUNNER_TEMP/pr-bundle-verify.key" -p ""
+          { echo "TAURI_SIGNING_PRIVATE_KEY<<KEYEOF"; cat "$RUNNER_TEMP/pr-bundle-verify.key"; echo; echo "KEYEOF"; } >> "$GITHUB_ENV"
+
+      # Same command release-tag.yml/release-dry-run.yml use to build the
+      # real Linux desktop bundle, so any binary this crate declares (see
+      # src-tauri/Cargo.toml's `[[bin]]` list) that can't actually be
+      # produced with the release feature set fails here, on every PR --
+      # not only when a real release tag is pushed. Caught exactly this way
+      # once already: a devtools-only `[[bin]]` (`ble-mock-broker`) broke
+      # every desktop bundle job in the v0.3.5 release because Tauri's
+      # bundler sweeps every declared `[[bin]]` into the bundle regardless
+      # of which features actually built it. Fixed by moving that binary to
+      # its own crate (see ble-mock-broker/Cargo.toml); this job exists so
+      # the next binary like it fails a PR instead of a release.
+      - name: Build Linux bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm -- --bin fini-app
+
+      - name: Verify AppImage host runtime boundary
+        run: |
+          set -euo pipefail
+          appimage="$(find "src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage" -type f -name '*.AppImage' -print -quit)"
+          if [ -z "$appimage" ]; then
+            echo "Expected AppImage was not produced" >&2
+            exit 1
+          fi
+          scripts/verify-appimage-host-runtime.sh "$appimage"
 
   android-emulator-e2e:
     name: Android Emulator E2E

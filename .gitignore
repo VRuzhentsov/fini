@@ -16,6 +16,7 @@ dist-ssr
 src-tauri/target/
 src-tauri/src-tauri/target/
 xtask/target/
+ble-mock-broker/target/
 src-tauri/*.db
 
 # Playwright e2e output

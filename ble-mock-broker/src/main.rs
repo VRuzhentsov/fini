@@ -5,12 +5,14 @@
 //! path without hardware. See `specs/e2e/actors/helpers/ble-sync.ts` and
 //! `ble-gatt`'s `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
 //!
+//! Its own crate, not a `src-tauri` `[[bin]]` -- see this crate's
+//! `Cargo.toml` for why.
+//!
 //! Reads `FINI_BLE_MOCK_BROKER_LISTEN` (host:port, e.g. `127.0.0.1:47600`)
 //! and serves until the process is killed. The harness assigns this port
 //! deterministically (see `fixtures.ts`'s `bleBrokerPort`) rather than
 //! letting the OS pick one, since every actor needs to know it up front.
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::main]
 async fn main() {
     let listen = std::env::var("FINI_BLE_MOCK_BROKER_LISTEN")
@@ -19,20 +21,10 @@ async fn main() {
         .await
         .unwrap_or_else(|err| panic!("ble-mock-broker: failed to bind {listen}: {err}"));
     // Plain eprintln!, not `log::` -- this standalone binary installs no
-    // logger (only `fini-app`'s `run()` wires up `tauri-plugin-log`), so a
-    // `log::` call here would be silently discarded by the facade.
+    // logger, so a `log::` call here would be silently discarded.
     eprintln!("[ble-mock-broker] listening on {listen}");
     if let Err(err) = ble_gatt::backend::mock::MockNetwork::serve(listener).await {
         eprintln!("[ble-mock-broker] serve exited: {err}");
         std::process::exit(1);
     }
-}
-
-// `ble-gatt` is only a dependency on Linux/Android (see `Cargo.toml`'s
-// target-gated `[dependencies]` tables) -- this binary still needs to build
-// (just do nothing useful) on other targets so `cargo build --features
-// devtools` doesn't break Windows/macOS builds that never run this lane.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn main() {
-    panic!("ble-mock-broker is only supported on Linux/Android (the actors-ble e2e lane runs Linux-only)");
 }

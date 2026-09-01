@@ -296,7 +296,7 @@ e2e-headed:
 	restore_capability; \
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin ble-mock-broker --features ui-plane,devtools; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path ble-mock-broker/Cargo.toml; \
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors; \
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=sim FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-sim; \
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
