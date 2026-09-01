@@ -68,41 +68,7 @@ Rules:
 
 ### Single named handler per event binding
 
-Avoid branching logic inline in an event binding such as:
-
-```vue
-@click="
-  isRetryable(status)
-    ? void retry()
-    : status.state !== 'unconfigured' && enabled === null && void pin(status.kind)
-"
-```
-
-Instead, expose one named function per binding and put every branch inside it:
-
-```ts
-function handleRowClick(status: RowStatus) {
-  if (isRetryable(status)) {
-    void retry();
-    return;
-  }
-  if (status.state !== "unconfigured" && enabled.value === null) {
-    void pin(status.kind);
-  }
-}
-```
-
-```vue
-@click="handleRowClick(status)"
-```
-
-The same applies to a dynamic prop that's computed from more than one condition (e.g. `:button`, `:disabled` guarding more than a simple two-term boolean, `:class` picking between named states) — give it a named function (`isRowClickable(status)`, `rowActionLabel(status)`) rather than inlining the `&&`/`?:`/multi-term expression in the template. A single two-term `:disabled="a || b"` is fine inline; branching to different function calls or building a multi-part label is not.
-
-Rules:
-
-- One `@click`/`@submit`/etc. binding calls exactly one named function; that function contains all the branching.
-- A prop bound from more than one condition, or from a condition mixed with a function call, gets a named function too.
-- Inside `<script setup>`, refs need `.value` explicitly — unlike the template's auto-unwrap, a plain `ref` read in one of these handler/computed functions without `.value` is a real bug, not a style nit.
+One `@click`/`@submit`/etc. binding calls exactly one named function (`handleRowClick(status)`), with every branch inside that function — not a `?:`/`&&` chain inline in the template. The same applies to a dynamic prop computed from more than one condition (`:button`, `:disabled` beyond a simple two-term boolean, `:class` picking between named states): give it a named function too. A plain two-term `:disabled="a || b"` is fine inline. Inside `<script setup>`, remember refs need `.value` explicitly in these handler functions — the template's auto-unwrap doesn't apply there.
 
 ## Component Extraction
 
