@@ -1010,12 +1010,29 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
             return;
         }
 
-        match dial(&address).await {
-            Ok(mut link) => {
-                match session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id)
-                    .await
+        // The top-of-loop deadline check above only fires between
+        // attempts -- neither `dial` nor `perform_client_auth` has any
+        // timeout of its own (confirmed: `ble_gatt::backend::android::
+        // connect` waits unboundedly on its callback channel, and
+        // `perform_client_auth` waits unboundedly on `recv_frame`), so a
+        // single slow or hung attempt could keep this loop from ever
+        // reaching that check again -- a P1 review finding: real-device
+        // evidence already showed one raw `connect()` alone take ~28s
+        // against the same 60s budget this is supposed to bound. Bound
+        // each attempt by whatever's left of `streak_deadline`, not a
+        // separate fixed timeout, so the advertised total give-up window
+        // holds regardless of how that time gets spent.
+        let connect_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(connect_budget, dial(&address)).await {
+            Ok(Ok(mut link)) => {
+                let auth_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
+                match tokio::time::timeout(
+                    auth_budget,
+                    session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id),
+                )
+                .await
                 {
-                    Ok(peer_protocol_version) => {
+                    Ok(Ok(peer_protocol_version)) => {
                         log::info!("[transport][ble] auth OK with {peer_id} via {address}");
                         // The connect+auth round trip is real wall-clock time
                         // during which the user could disable Bluetooth or
@@ -1053,7 +1070,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                         delay = Duration::from_secs(2);
                         streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         log::warn!("[transport][ble] auth with {peer_id} failed: {err}");
                         // "bluetooth disabled"/"not OS-paired" are not
                         // permanent the way "unknown device" is -- the user
@@ -1074,10 +1091,22 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                             return; // not paired; don't retry
                         }
                     }
+                    Err(_elapsed) => {
+                        log::warn!(
+                            "[transport][ble] auth with {peer_id} timed out waiting for a reply \
+                             within the remaining retry window"
+                        );
+                    }
                 }
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 log::warn!("[transport][ble] connect to {peer_id} ({address}) failed: {err}");
+            }
+            Err(_elapsed) => {
+                log::warn!(
+                    "[transport][ble] connect to {peer_id} ({address}) timed out within the \
+                     remaining retry window"
+                );
             }
         }
 
