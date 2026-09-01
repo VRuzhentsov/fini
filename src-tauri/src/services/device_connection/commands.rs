@@ -1501,6 +1501,18 @@ pub fn device_connection_set_bluetooth_transport_with_state_impl(
             // effect.
             state.refresh_primary(&peer_device_id, false, false);
         }
+    } else {
+        // A P2 review finding: `ble::dial_exhausted`'s own doc comment
+        // already claimed this reset happens on explicit re-enable, but
+        // nothing actually called it -- after a peer exhausted, disabling
+        // and re-enabling Bluetooth just returned straight back to
+        // `BluetoothDialExhausted` and `spawn_dial_loop` kept skipping it,
+        // ignoring the user's fresh enable action entirely. Calls
+        // `ble::retry_bluetooth_dial` directly (not the `ui-plane`-gated
+        // `device_connection_retry_bluetooth_dial` command) so this stays
+        // reachable from `cli-plane`/no-feature builds too.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        crate::services::transport::ble::retry_bluetooth_dial(&peer_device_id);
     }
 
     if disabling_a_bluetooth_pin {

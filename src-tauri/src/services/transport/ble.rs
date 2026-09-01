@@ -941,6 +941,62 @@ pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
 /// own full `AUTO_RETRY_WINDOW`.
 pub fn retry_bluetooth_dial(peer_id: &str) {
     dial_exhausted().lock().unwrap().remove(peer_id);
+    // Also give the accepting-side tracker (below) a fresh window: without
+    // this, a peer we never dial (we're the accepting side for it) would
+    // just get marked exhausted again on the very next tick, since its
+    // "unconnected since" clock would still read the distant past.
+    accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
+}
+
+/// Per-peer timestamp of the first tick this process observed itself as
+/// the *accepting* side (`my_id > peer_id`, so `should_dial_peer` never
+/// spawns a `dial_with_backoff` for it) with no Bluetooth session claimed.
+/// A P1 review finding: `AUTO_RETRY_WINDOW`/`streak_deadline` above only
+/// exist on the dialing side -- without an equivalent here, the accepting
+/// side had no way to ever stop reporting "Connecting..." even after its
+/// peer legitimately gave up dialing and showed "Unavailable" on its own
+/// screen, a real cross-device asymmetry (plausibly the exact gray-vs-
+/// amber mismatch observed between two real paired devices in the field).
+fn accepting_side_unconnected_since() -> &'static StdMutex<HashMap<String, Instant>> {
+    static UNCONNECTED_SINCE: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
+    UNCONNECTED_SINCE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// Called every `space_sync_tick` alongside `spawn_dial_loop`, over the
+/// same candidate list, for the peers *this* process never dials --
+/// gives the passive/accepting side the same "give up after
+/// `AUTO_RETRY_WINDOW`" reporting the dialing side already gets from
+/// `dial_with_backoff`, without needing a new wire message: the accepting
+/// side has no attempt of its own to bound, only the absence of a session
+/// to time. Reuses `dial_exhausted`/`is_bluetooth_dial_exhausted` for the
+/// actual reporting, so every downstream consumer (both status polls, the
+/// frontend's retry affordance) already works identically for both roles.
+pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates: &[(String, String)]) {
+    let my_id = &state.identity.device_id;
+    let now = Instant::now();
+    let mut unconnected_since = accepting_side_unconnected_since().lock().unwrap();
+    for (peer_id, _address) in candidates {
+        if my_id < peer_id {
+            // should_dial_peer's own rule: we dial this one ourselves, so
+            // dial_with_backoff's streak_deadline already covers it.
+            continue;
+        }
+        if state.has_session_on(peer_id, TransportKind::Bluetooth) {
+            unconnected_since.remove(peer_id);
+            // A session existing at all is proof the link can work right
+            // now, regardless of how it got established (the peer could
+            // have dialed in while we still held a stale exhausted flag
+            // from an earlier streak) -- if it drops again later, that's a
+            // fresh streak and deserves its own full window, not an
+            // immediate re-report of exhaustion left over from before.
+            dial_exhausted().lock().unwrap().remove(peer_id);
+            continue;
+        }
+        let since = *unconnected_since.entry(peer_id.clone()).or_insert(now);
+        if now.duration_since(since) >= AUTO_RETRY_WINDOW {
+            dial_exhausted().lock().unwrap().insert(peer_id.clone());
+        }
+    }
 }
 
 /// Deterministic dialer rule, mirroring `tcp_ws::should_dial_peer`/
@@ -1092,10 +1148,21 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                         }
                     }
                     Err(_elapsed) => {
+                        // P2 review finding: falling through to the bottom
+                        // of the loop's unconditional `sleep(delay)` (up to
+                        // `max_delay` = 30s) here meant an attempt that
+                        // consumed the *entire* remaining budget still
+                        // waited another 30s before the top-of-loop deadline
+                        // check could fire -- the advertised 60s give-up
+                        // could take up to 90s in practice. This attempt
+                        // already used up (at least) whatever budget was
+                        // left, so loop back immediately and let that check
+                        // mark exhaustion right away instead.
                         log::warn!(
                             "[transport][ble] auth with {peer_id} timed out waiting for a reply \
                              within the remaining retry window"
                         );
+                        continue;
                     }
                 }
             }
@@ -1103,10 +1170,12 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 log::warn!("[transport][ble] connect to {peer_id} ({address}) failed: {err}");
             }
             Err(_elapsed) => {
+                // Same reasoning as the auth-timeout arm above.
                 log::warn!(
                     "[transport][ble] connect to {peer_id} ({address}) timed out within the \
                      remaining retry window"
                 );
+                continue;
             }
         }
 

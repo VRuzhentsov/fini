@@ -1162,6 +1162,11 @@ pub fn space_sync_tick_impl(
             device_connection.db_path.clone(),
             &candidates,
         );
+        // The dialing side's own give-up timer (`spawn_dial_loop` ->
+        // `dial_with_backoff`'s `AUTO_RETRY_WINDOW`) has no equivalent on
+        // whichever side of each pair never dials -- see this function's
+        // own doc comment for why that mattered in practice.
+        crate::services::transport::ble::check_accepting_side_exhaustion(device_connection, &candidates);
     }
 
     let ticked_at = utc_now();
