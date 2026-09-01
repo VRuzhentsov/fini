@@ -1013,11 +1013,6 @@ pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates
     let now = Instant::now();
     let mut unconnected_since = accepting_side_unconnected_since().lock().unwrap();
     for (peer_id, _address) in candidates {
-        if my_id < peer_id {
-            // should_dial_peer's own rule: we dial this one ourselves, so
-            // dial_with_backoff's streak_deadline already covers it.
-            continue;
-        }
         if state.has_session_on(peer_id, TransportKind::Bluetooth) {
             unconnected_since.remove(peer_id);
             // A session existing at all is proof the link can work right
@@ -1026,7 +1021,26 @@ pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates
             // from an earlier streak) -- if it drops again later, that's a
             // fresh streak and deserves its own full window, not an
             // immediate re-report of exhaustion left over from before.
+            //
+            // A P1 review finding: this check used to run *after* the
+            // `my_id < peer_id` skip below, so it never fired at all on the
+            // dialing side. `retry_bluetooth_dial`'s direct dial bypasses
+            // `should_dial_peer`, so the *accepting* side can now be the one
+            // that establishes a session -- leaving the dialing side's own
+            // stale `dial_exhausted` flag (set by its own earlier
+            // `dial_with_backoff` giving up) never cleared. When that
+            // session later dropped, `spawn_dial_loop` kept honoring the
+            // stale flag and refused to ever dial this peer again,
+            // one-manual-retry-per-session forever. Checking every
+            // candidate's session state before the dialer-role filter below
+            // fixes that for both roles identically.
             dial_exhausted().lock().unwrap().remove(peer_id);
+            continue;
+        }
+        if my_id < peer_id {
+            // should_dial_peer's own rule: we dial this one ourselves, so
+            // dial_with_backoff's streak_deadline already covers the
+            // no-session case.
             continue;
         }
         let since = *unconnected_since.entry(peer_id.clone()).or_insert(now);
@@ -1216,7 +1230,18 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
             }
         }
 
-        tokio::time::sleep(delay).await;
+        // P2 review finding: this sleep is also reached by the two
+        // `Ok(Err(err))` arms above (an ordinary connect failure, or a
+        // retryable auth rejection) -- unlike the `Err(_elapsed)` arms,
+        // those don't `continue` past it, so an ordinary rejection landing
+        // shortly before `streak_deadline` could still sleep the full (up
+        // to 30s) `delay` before the top-of-loop check gets another chance
+        // to run, pushing the advertised 60s give-up noticeably later.
+        // Bound it the same way the connect/auth budgets above are bounded,
+        // rather than duplicating a deadline check into both `Ok(Err(_))`
+        // arms individually.
+        let remaining_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::sleep(delay.min(remaining_budget)).await;
         delay = (delay * 2).min(max_delay);
     }
 }
