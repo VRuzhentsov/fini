@@ -32,6 +32,7 @@ export type TransportStatusCode =
   | { code: "bluetooth_disabled" }
   | { code: "bluetooth_no_address" }
   | { code: "bluetooth_not_os_paired" }
+  | { code: "bluetooth_dial_exhausted" }
   | { code: "connecting" }
   | { code: "awaiting_first_ack" }
   | { code: "ping_missed"; count: number };
@@ -644,6 +645,17 @@ export const useDeviceStore = defineStore("device", () => {
     }
     await refreshTransportStatuses(peerDeviceId);
     return updated;
+  }
+
+  // The Device page's "tap to try again" affordance on a `bluetooth_dial_
+  // exhausted` row (see the backend's `ble::retry_bluetooth_dial` doc
+  // comment): resumes the backend's automatic dial retries for one more
+  // `AUTO_RETRY_WINDOW`. `refreshTransportStatuses` afterward is what makes
+  // the row switch back to "Connecting..." immediately instead of waiting
+  // for the next 5s poll.
+  async function retryBluetoothDial(peerDeviceId: string): Promise<void> {
+    await invoke("device_connection_retry_bluetooth_dial", { peerDeviceId });
+    await refreshTransportStatuses(peerDeviceId);
   }
 
   // Phase 1 of ADR 0002's "Find via Bluetooth" button: scans for up to 60s
@@ -1383,6 +1395,7 @@ export const useDeviceStore = defineStore("device", () => {
     refreshLiveConnectedState,
     setBluetoothTransport,
     setPreferredTransport,
+    retryBluetoothDial,
     findBluetoothAddress,
     isSyncingPeer,
     runSpaceSyncTick,
