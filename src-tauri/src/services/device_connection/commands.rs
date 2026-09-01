@@ -1512,11 +1512,7 @@ pub fn device_connection_set_bluetooth_transport_with_state_impl(
         // `device_connection_retry_bluetooth_dial` command) so this stays
         // reachable from `cli-plane`/no-feature builds too.
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        crate::services::transport::ble::retry_bluetooth_dial(
-            state,
-            &bluetooth_dial_candidates(&mut *conn),
-            &peer_device_id,
-        );
+        crate::services::transport::ble::retry_bluetooth_dial(state, &peer_device_id);
     }
 
     if disabling_a_bluetooth_pin {
@@ -1787,36 +1783,21 @@ pub fn device_connection_transport_statuses_impl(
 /// The Device page's "click the Bluetooth row to try again" affordance
 /// (see `TransportStatusCode::BluetoothDialExhausted`'s doc comment): a
 /// no-op everywhere the dial loop wasn't exhausted, so the frontend doesn't
-/// need to guard the call. Takes `db`/`state` (not just the peer id) because
-/// `ble::retry_bluetooth_dial` needs the peer's current dial address and a
-/// live `DeviceConnectionState` to spawn a real attempt -- see its own doc
-/// comment for why this now does more than clear flags.
+/// need to guard the call. Takes only `state`, not `db` -- `ble::
+/// retry_bluetooth_dial` looks up the peer's dial address itself, off its
+/// own DB connection, on the task it spawns; see its own doc comment for why
+/// this command doesn't (and, per a P2 review finding on an earlier revision
+/// of this command, must not) touch the shared `AppDbConnection` at all.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_retry_bluetooth_dial(
-    db: State<AppDbConnection>,
-    state: State<DeviceConnectionState>,
-    peer_device_id: String,
-) -> Result<(), String> {
+pub fn device_connection_retry_bluetooth_dial(state: State<DeviceConnectionState>, peer_device_id: String) -> Result<(), String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        // A P2 review finding: read this one peer's row while the mutex is
-        // held, then drop the guard before the (slow, no-DB-needed)
-        // `bluetoothctl` bond check -- see `bluetooth_dial_address_for`'s
-        // own doc comment.
-        let address = {
-            let mut conn = db.0.lock().unwrap();
-            bluetooth_dial_address_for(&mut conn, &peer_device_id)
-        };
-        let candidates: Vec<(String, String)> = address
-            .filter(|address| bluetooth_address_is_os_paired(address))
-            .map(|address| vec![(peer_device_id.clone(), address)])
-            .unwrap_or_default();
-        crate::services::transport::ble::retry_bluetooth_dial(&state, &candidates, &peer_device_id);
+        crate::services::transport::ble::retry_bluetooth_dial(&state, &peer_device_id);
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        let _ = (db, state, peer_device_id);
+        let _ = (state, peer_device_id);
     }
     Ok(())
 }
@@ -1898,29 +1879,6 @@ pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<(String, St
             bluetooth_address_is_os_paired(&address).then_some((device.peer_device_id, address))
         })
         .collect()
-}
-
-/// This one peer's row, read while `conn` is held -- the caller then drops
-/// the connection/mutex guard *before* passing the address to
-/// `bluetooth_address_is_os_paired` (a `bluetoothctl` subprocess call with
-/// its own 5s timeout). A P2 review finding on `device_connection_retry_
-/// bluetooth_dial`: that command used to call `bluetooth_dial_candidates`
-/// directly, which runs the OS bond check for *every* Bluetooth-enabled
-/// peer while still holding the shared `AppDbConnection` mutex -- one retry
-/// click could block every other DB-backed Tauri command for up to roughly
-/// 5s per configured peer. Returns `None` for a disabled/unpaired/missing
-/// row, same as `bluetooth_dial_candidates`' own filter.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn bluetooth_dial_address_for(conn: &mut SqliteConnection, peer_id: &str) -> Option<String> {
-    let paired: PairedDevice = paired_devices::table
-        .find(peer_id)
-        .select(PairedDevice::as_select())
-        .first(&mut *conn)
-        .ok()?;
-    if !paired.bluetooth_enabled {
-        return None;
-    }
-    paired.bluetooth_address.as_deref().and_then(normalize_bluetooth_address)
 }
 
 /// This peer's manually-pinned transport preference, if any --

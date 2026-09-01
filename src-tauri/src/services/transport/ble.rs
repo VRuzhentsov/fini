@@ -935,9 +935,9 @@ pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
 /// Resume Bluetooth dial retries for `peer_id` after
 /// `is_bluetooth_dial_exhausted` -- the backend half of the Device page's
 /// "click the row to try again" affordance. A no-op if the peer is already
-/// connected. Clears both give-up trackers, then spawns a one-off
-/// `dial_with_backoff` streak for `peer_id` directly -- *not* gated by
-/// `should_dial_peer`.
+/// connected. Clears both give-up trackers synchronously, then spawns a
+/// one-off `dial_with_backoff` streak for `peer_id` directly -- *not* gated
+/// by `should_dial_peer`.
 ///
 /// That bypass is the actual fix for a P1 review finding: on the accepting
 /// side of a pair (`my_id > peer_id`), `should_dial_peer` is false forever
@@ -956,7 +956,18 @@ pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
 /// `try_claim_session` inside `dial_with_backoff`/`run_session` is the
 /// existing collision-safety net if both sides' connections happen to
 /// complete auth around the same time.
-pub fn retry_bluetooth_dial(state: &DeviceConnectionState, candidates: &[(String, String)], peer_id: &str) {
+///
+/// Deliberately takes no `candidates` list -- two P2 review findings on
+/// earlier revisions of this function both had the same root cause: a
+/// caller reading the peer's dial address via its own DB connection first
+/// (once the shared, Mutex-guarded `AppDbConnection` used by every other
+/// Tauri command), so the OS bond check inside that lookup (a `bluetoothctl`
+/// subprocess call, up to 5s) ran while that shared lock was held. Looking
+/// the address up here instead, on the spawned task, with its own fresh
+/// connection via `open_db_at_path` -- exactly `is_still_bluetooth_eligible`'s
+/// own established pattern -- means neither caller's lock is ever touched by
+/// this at all.
+pub fn retry_bluetooth_dial(state: &DeviceConnectionState, peer_id: &str) {
     dial_exhausted().lock().unwrap().remove(peer_id);
     // Also give the accepting-side tracker (below) a fresh window: without
     // this, a peer we never dial ourselves (we're the accepting side for
@@ -968,9 +979,6 @@ pub fn retry_bluetooth_dial(state: &DeviceConnectionState, candidates: &[(String
     if state.has_session_on(peer_id, TransportKind::Bluetooth) {
         return;
     }
-    let Some((_, address)) = candidates.iter().find(|(candidate_id, _)| candidate_id == peer_id) else {
-        return;
-    };
     if !in_flight_dials().lock().unwrap().insert(peer_id.to_string()) {
         return;
     }
@@ -978,8 +986,18 @@ pub fn retry_bluetooth_dial(state: &DeviceConnectionState, candidates: &[(String
     let db_path = state.db_path.clone();
     let state = state.clone();
     let peer_id = peer_id.to_string();
-    let address = address.clone();
     tauri::async_runtime::spawn(async move {
+        let address = tokio::task::block_in_place(|| {
+            let mut conn = open_db_at_path(&db_path);
+            bluetooth_dial_candidates(&mut conn)
+                .into_iter()
+                .find(|(candidate_id, _)| candidate_id == &peer_id)
+                .map(|(_, address)| address)
+        });
+        let Some(address) = address else {
+            in_flight_dials().lock().unwrap().remove(&peer_id);
+            return;
+        };
         dial_with_backoff(state, db_path, peer_id.clone(), address).await;
         in_flight_dials().lock().unwrap().remove(&peer_id);
     });

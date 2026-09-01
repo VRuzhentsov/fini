@@ -543,28 +543,34 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   // Single source of truth for how one row absorbs a live-poll entry --
-  // keeps the three-way branch (exhausted / still-unconfigured /
-  // configured) out of the `.map()` call site. `!connected &&
-  // dial_exhausted` takes priority over the plain "leave unconfigured rows
-  // alone" branch below it: a P1 review finding on the first version of
-  // this patch -- without this case, a row that WAS configured
-  // ("Connecting...") when the backend gave up had no way to reflect that
-  // here, so it just kept getting rewritten back to "connecting" by the
-  // fallback branch every 5s, forever.
+  // keeps the three-way branch (still-unconfigured / exhausted /
+  // configured) out of the `.map()` call site. The "leave an unconfigured
+  // row alone" branch runs first and wins over `entry.dial_exhausted`: this
+  // backend-only `dial_exhausted` flag is never cleared when Bluetooth gets
+  // disabled (only on explicit retry or re-enable), so a row the heavy poll
+  // has already reported as e.g. `bluetooth_disabled` must keep that more
+  // specific, more authoritative reason -- a P2 review finding: with the
+  // reverse order, disabling Bluetooth right after it exhausted left the
+  // stale in-memory flag clobbering the correctly-reported "disabled" row
+  // back to "exhausted" on the very next 5s poll, making it look retryable
+  // despite the explicit opt-out. A row that WAS configured ("Connecting...")
+  // when the backend gave up still transitions to exhausted correctly here,
+  // since this branch only ever fires for a row already `unconfigured` --
+  // it can't intercept that case.
   function applyLiveness(
     status: DeviceTransportStatus,
     entry: { connected: boolean; primary: boolean; code: TransportStatusCode | null; dial_exhausted: boolean } | undefined,
   ): DeviceTransportStatus {
     if (!entry) return status;
+    if (status.state.state === "unconfigured" && !entry.connected) {
+      return { ...status, primary: entry.primary };
+    }
     if (!entry.connected && entry.dial_exhausted) {
       return {
         ...status,
         primary: entry.primary,
         state: { state: "unconfigured", code: { code: "bluetooth_dial_exhausted" } },
       };
-    }
-    if (status.state.state === "unconfigured" && !entry.connected) {
-      return { ...status, primary: entry.primary };
     }
     return {
       ...status,
