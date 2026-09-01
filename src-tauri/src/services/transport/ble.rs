@@ -932,6 +932,28 @@ pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
     dial_exhausted().lock().unwrap().contains(peer_id)
 }
 
+/// Drops every per-peer Bluetooth dial tracker this file keeps in process
+/// memory, keyed by `peer_id` -- called on unpair and on a fresh pairing
+/// (see call sites in `device_connection::commands`). A P2 review finding:
+/// these are process-global maps/sets, so a peer that exhausted, got
+/// unpaired, and was paired again under the same `peer_device_id` without an
+/// app restart used to come back already exhausted -- `spawn_dial_loop`
+/// would see the stale flag and skip it, and the row would report exhausted
+/// immediately instead of getting a fresh `AUTO_RETRY_WINDOW`.
+/// `paired_devices` itself has no such staleness problem
+/// (`device_connection_unpair_impl` deletes the row outright), only this
+/// crate's own in-memory trackers do. Broader than what `retry_bluetooth_
+/// dial` itself clears (that function's doc comment covers just the two
+/// give-up trackers a retry click is meant to reset): this also drops
+/// `dial_backoff_until`, a *terminal-rejection* backoff that's equally
+/// stale-by-`peer_device_id` across an unpair/re-pair, but that an ordinary
+/// retry click was never meant to bypass.
+pub fn clear_dial_exhaustion(peer_id: &str) {
+    dial_exhausted().lock().unwrap().remove(peer_id);
+    accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
+    dial_backoff_until().lock().unwrap().remove(peer_id);
+}
+
 /// Resume Bluetooth dial retries for `peer_id` after
 /// `is_bluetooth_dial_exhausted` -- the backend half of the Device page's
 /// "click the row to try again" affordance. A no-op if the peer is already

@@ -1213,6 +1213,18 @@ pub fn device_connection_save_paired_device_impl(
     via_bluetooth: bool,
     db_path: std::path::PathBuf,
 ) -> Result<PairedDevice, String> {
+    // A P2 review finding: `ble::dial_exhausted`/`dial_backoff_until`/
+    // `accepting_side_unconnected_since` are process-global, keyed only by
+    // `peer_device_id` -- a peer that exhausted, got unpaired, and was
+    // paired again under the same id (without an app restart) used to come
+    // back already exhausted, with `spawn_dial_loop` skipping it and its row
+    // reporting exhausted immediately instead of getting a fresh
+    // `AUTO_RETRY_WINDOW`. A no-op the vast majority of the time (a peer
+    // that was never exhausted has nothing to clear); see
+    // `device_connection_unpair_impl` for the unpair-side half of this fix.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::transport::ble::clear_dial_exhaustion(&peer_device_id);
+
     let now = utc_now();
 
     let existing: Option<PairedDevice> = paired_devices::table
@@ -1939,6 +1951,10 @@ pub fn device_connection_unpair_impl(
     diesel::delete(paired_devices::table.find(&peer_device_id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
+    // See `device_connection_save_paired_device_impl`'s matching comment --
+    // this is the unpair-side half of the same P2 review finding.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::transport::ble::clear_dial_exhaustion(&peer_device_id);
     Ok(())
 }
 
