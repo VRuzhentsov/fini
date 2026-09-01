@@ -66,6 +66,44 @@ Rules:
 - Keep data shaping and eligibility logic outside the template.
 - Use stable keys derived from domain IDs when available.
 
+### Single named handler per event binding
+
+Avoid branching logic inline in an event binding such as:
+
+```vue
+@click="
+  isRetryable(status)
+    ? void retry()
+    : status.state !== 'unconfigured' && enabled === null && void pin(status.kind)
+"
+```
+
+Instead, expose one named function per binding and put every branch inside it:
+
+```ts
+function handleRowClick(status: RowStatus) {
+  if (isRetryable(status)) {
+    void retry();
+    return;
+  }
+  if (status.state !== "unconfigured" && enabled.value === null) {
+    void pin(status.kind);
+  }
+}
+```
+
+```vue
+@click="handleRowClick(status)"
+```
+
+The same applies to a dynamic prop that's computed from more than one condition (e.g. `:button`, `:disabled` guarding more than a simple two-term boolean, `:class` picking between named states) — give it a named function (`isRowClickable(status)`, `rowActionLabel(status)`) rather than inlining the `&&`/`?:`/multi-term expression in the template. A single two-term `:disabled="a || b"` is fine inline; branching to different function calls or building a multi-part label is not.
+
+Rules:
+
+- One `@click`/`@submit`/etc. binding calls exactly one named function; that function contains all the branching.
+- A prop bound from more than one condition, or from a condition mixed with a function call, gets a named function too.
+- Inside `<script setup>`, refs need `.value` explicitly — unlike the template's auto-unwrap, a plain `ref` read in one of these handler/computed functions without `.value` is a real bug, not a style nit.
+
 ## Component Extraction
 
 When adding a new template block that exceeds roughly ten lines of HTML, first extract reusable semantic controls (for example, the Energy and Priority selectors shared by create and edit views) into focused child components instead of expanding the parent view. Do not split one coherent form section into a generic `*Details` wrapper merely to meet the line threshold; keep its local layout with the owning form when that is clearer.
@@ -86,5 +124,6 @@ Before handing off frontend template changes, check:
 
 - Template conditionals use `renderFlags` for product/platform rendering decisions.
 - Non-trivial list rendering uses a named computed list source.
+- Event bindings call exactly one named function; branching logic lives in that function, not the template.
 - Tests cover important visible and hidden render states.
 - `npm run build` or the relevant frontend test target passes.
