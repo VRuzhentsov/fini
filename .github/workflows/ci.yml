@@ -283,6 +283,74 @@ jobs:
           fi
           scripts/verify-appimage-host-runtime.sh "$appimage"
 
+  # x64 only, not the full arch matrix release-tag.yml builds -- a
+  # `cfg(target_os = "windows")`-class compile break (the reason this job
+  # exists) doesn't vary by architecture, and windows-11-arm runners are
+  # scarcer/costlier for no extra signal here. Mirrors desktop-bundle-linux's
+  # own reasoning: v0.3.7's release tag shipped a Windows-only compile error
+  # (an unguarded `transport::ble` reference -- that module is
+  # linux/android-only) that PR CI never touched, because nothing here built
+  # for Windows at all. Since the release workflow's publish gate waits on
+  # *every* platform artifact, that one Windows failure blocked the whole
+  # release -- including Linux desktop, which had compiled fine on its own.
+  # This job exists so the next break like it fails a PR instead of quietly
+  # blocking a release days later.
+  desktop-bundle-windows:
+    name: Desktop Bundle (Windows x64)
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: pr-desktop-bundle-windows
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # Same ephemeral-key reasoning as desktop-bundle-linux's own step: this
+      # job runs on every pull_request, whose checked-out code executes
+      # before a human reviews it, so the real production
+      # TAURI_SIGNING_PRIVATE_KEY/_PASSWORD secrets must never be wired in
+      # here.
+      - name: Generate ephemeral signing key (PR bundle check only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CI=1 npx tauri signer generate --ci -w "$RUNNER_TEMP/pr-bundle-verify.key" -p ""
+          { echo "TAURI_SIGNING_PRIVATE_KEY<<KEYEOF"; cat "$RUNNER_TEMP/pr-bundle-verify.key"; echo; echo "KEYEOF"; } >> "$GITHUB_ENV"
+
+      # Same command release-tag.yml uses to build the real Windows desktop
+      # bundle (minus the NSIS artifact staging/zipsign steps, which need
+      # the real production secrets and add no compile-correctness signal).
+      - name: Build Windows bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-pc-windows-msvc --bundles nsis -- --bin fini-app
+
+      # A separate `[[bin]]` target (`cli-plane` feature, not `ui-plane`) --
+      # a distinct compilation unit from the bundle above, so it needs its
+      # own check to catch a Windows-only break specific to the CLI binary.
+      - name: Build Windows CLI
+        run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target x86_64-pc-windows-msvc
+
   android-emulator-e2e:
     name: Android Emulator E2E
     needs: changes
