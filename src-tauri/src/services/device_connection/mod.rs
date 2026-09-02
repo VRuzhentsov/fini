@@ -325,6 +325,14 @@ impl DeviceConnectionState {
                 // leaving a stale `dial_exhausted` entry in place
                 // indefinitely. Clearing right here, at the actual claim
                 // event, doesn't wait for a poll to notice.
+                //
+                // `transport::ble` itself is gated to linux/android (real
+                // BLE hardware only) -- a real-release regression: this
+                // call was originally added unguarded, which compiled fine
+                // on Linux (where this was verified) but broke the Windows
+                // build outright, silently blocking that release's publish
+                // gate for every platform, not just Windows.
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 crate::services::transport::ble::note_bluetooth_session_claimed(peer_device_id);
             }
         }
