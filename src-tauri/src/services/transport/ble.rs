@@ -1166,6 +1166,20 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
             return;
         }
         if tokio::time::Instant::now() >= streak_deadline {
+            // A P1 review finding: a session for this peer can be claimed
+            // elsewhere (an inbound connection this process accepts, or the
+            // peer's own direct retry dial) while `is_still_bluetooth_
+            // eligible` above was still scanning -- on Linux that scan can
+            // take up to 5s per Bluetooth-enabled peer. A claim landing in
+            // that window calls `note_bluetooth_session_claimed`, clearing
+            // `dial_exhausted`; without this recheck, this branch would
+            // then blindly write it right back while the just-recovered
+            // session is still live. Re-checking `has_session_on`
+            // immediately before the write, not just at the top of the
+            // loop, closes that TOCTOU window.
+            if state.has_session_on(&peer_id, TransportKind::Bluetooth) {
+                return;
+            }
             log::info!(
                 "[transport][ble] {peer_id} did not complete auth within {AUTO_RETRY_WINDOW:?}; \
                  pausing automatic retries until the user asks again"
