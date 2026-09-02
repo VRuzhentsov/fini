@@ -344,7 +344,11 @@ describe("DeviceView Bluetooth manual entry, search, and unpair", () => {
     expect(deviceStoreMock.findBluetoothAddress).toHaveBeenCalledWith("peer-device-123");
     const input = wrapper.find('[data-testid="bluetooth-address-input"]');
     expect((input.element as HTMLInputElement).value).toBe("AA:BB:CC:DD:EE:FF");
-    expect(wrapper.text()).toContain("Found and confirmed nearby.");
+    // This suite's fixture device (`beforeEach` above) statically reports
+    // bluetooth_enabled: false, unaffected by what findBluetoothAddress
+    // resolves to -- accurately exercising the "found but OS pairing not
+    // yet confirmed" branch, not the "found and already enabled" one.
+    expect(wrapper.text()).toContain("Address found, but OS Bluetooth pairing wasn't confirmed yet.");
   });
 
   it("shows a not-found message when the Bluetooth scan finds nothing", async () => {

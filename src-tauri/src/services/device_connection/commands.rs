@@ -166,6 +166,25 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
     bluetooth_address_bond_check(address).unwrap_or(false)
 }
 
+/// Cross-platform-safe wrapper around `transport::ble::is_bluetooth_dial_exhausted`
+/// -- that module only exists on `target_os = "linux"`/`"android"`, so a
+/// bare call from this platform-neutral file wouldn't compile everywhere
+/// this file does. `false` on every other platform: `bluetooth_unconfigured_code`
+/// already returns `BluetoothNotSupported` there first, so this value is
+/// never actually consulted in that case, but a real bool (not an `Option`
+/// forcing every caller to handle a platform that can't happen) keeps
+/// `device_connection_transport_statuses_impl` simple.
+fn bluetooth_dial_exhausted_now(#[allow(unused_variables)] peer_device_id: &str) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        crate::services::transport::ble::is_bluetooth_dial_exhausted(peer_device_id)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        false
+    }
+}
+
 /// Runs `command` with a hard time limit that actually terminates it, not
 /// merely bounds how long a caller waits: `kill_on_drop(true)` makes Tokio
 /// send the kill signal (and reap the process via its own SIGCHLD-driven
@@ -1194,6 +1213,18 @@ pub fn device_connection_save_paired_device_impl(
     via_bluetooth: bool,
     db_path: std::path::PathBuf,
 ) -> Result<PairedDevice, String> {
+    // A P2 review finding: `ble::dial_exhausted`/`dial_backoff_until`/
+    // `accepting_side_unconnected_since` are process-global, keyed only by
+    // `peer_device_id` -- a peer that exhausted, got unpaired, and was
+    // paired again under the same id (without an app restart) used to come
+    // back already exhausted, with `spawn_dial_loop` skipping it and its row
+    // reporting exhausted immediately instead of getting a fresh
+    // `AUTO_RETRY_WINDOW`. A no-op the vast majority of the time (a peer
+    // that was never exhausted has nothing to clear); see
+    // `device_connection_unpair_impl` for the unpair-side half of this fix.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::transport::ble::clear_dial_exhaustion(&peer_device_id);
+
     let now = utc_now();
 
     let existing: Option<PairedDevice> = paired_devices::table
@@ -1482,6 +1513,18 @@ pub fn device_connection_set_bluetooth_transport_with_state_impl(
             // effect.
             state.refresh_primary(&peer_device_id, false, false);
         }
+    } else {
+        // A P2 review finding: `ble::dial_exhausted`'s own doc comment
+        // already claimed this reset happens on explicit re-enable, but
+        // nothing actually called it -- after a peer exhausted, disabling
+        // and re-enabling Bluetooth just returned straight back to
+        // `BluetoothDialExhausted` and `spawn_dial_loop` kept skipping it,
+        // ignoring the user's fresh enable action entirely. Calls
+        // `ble::retry_bluetooth_dial` directly (not the `ui-plane`-gated
+        // `device_connection_retry_bluetooth_dial` command) so this stays
+        // reachable from `cli-plane`/no-feature builds too.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        crate::services::transport::ble::retry_bluetooth_dial(state, &peer_device_id);
     }
 
     if disabling_a_bluetooth_pin {
@@ -1739,6 +1782,7 @@ pub fn device_connection_transport_statuses_impl(
         bluetooth_enabled: paired.bluetooth_enabled,
         bluetooth_has_metadata,
         bluetooth_os_paired,
+        bluetooth_dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         network_connected: snapshot.network_connected,
         bluetooth_connected: snapshot.bluetooth_connected,
         network_primary: snapshot.network_primary,
@@ -1746,6 +1790,28 @@ pub fn device_connection_transport_statuses_impl(
         network_code: snapshot.network_code,
         bluetooth_code: snapshot.bluetooth_code,
     }))
+}
+
+/// The Device page's "click the Bluetooth row to try again" affordance
+/// (see `TransportStatusCode::BluetoothDialExhausted`'s doc comment): a
+/// no-op everywhere the dial loop wasn't exhausted, so the frontend doesn't
+/// need to guard the call. Takes only `state`, not `db` -- `ble::
+/// retry_bluetooth_dial` looks up the peer's dial address itself, off its
+/// own DB connection, on the task it spawns; see its own doc comment for why
+/// this command doesn't (and, per a P2 review finding on an earlier revision
+/// of this command, must not) touch the shared `AppDbConnection` at all.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_retry_bluetooth_dial(state: State<DeviceConnectionState>, peer_device_id: String) -> Result<(), String> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        crate::services::transport::ble::retry_bluetooth_dial(&state, &peer_device_id);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = (state, peer_device_id);
+    }
+    Ok(())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1783,12 +1849,14 @@ pub fn device_connection_transport_liveness_impl(
             connected: snapshot.network_connected,
             primary: snapshot.network_primary,
             code: snapshot.network_code,
+            dial_exhausted: false,
         },
         TransportLiveness {
             kind: RowTransportKind::Bluetooth,
             connected: snapshot.bluetooth_connected,
             primary: snapshot.bluetooth_primary,
             code: snapshot.bluetooth_code,
+            dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         },
     ]
 }
@@ -1883,6 +1951,10 @@ pub fn device_connection_unpair_impl(
     diesel::delete(paired_devices::table.find(&peer_device_id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
+    // See `device_connection_save_paired_device_impl`'s matching comment --
+    // this is the unpair-side half of the same P2 review finding.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::transport::ble::clear_dial_exhaustion(&peer_device_id);
     Ok(())
 }
 

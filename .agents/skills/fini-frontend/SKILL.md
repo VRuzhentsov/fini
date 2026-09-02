@@ -66,6 +66,10 @@ Rules:
 - Keep data shaping and eligibility logic outside the template.
 - Use stable keys derived from domain IDs when available.
 
+### Single named handler per event binding
+
+One `@click`/`@submit`/etc. binding calls exactly one named function (`handleRowClick(status)`), with every branch inside that function — not a `?:`/`&&` chain inline in the template. The same applies to a dynamic prop computed from more than one condition (`:button`, `:disabled` beyond a simple two-term boolean, `:class` picking between named states): give it a named function too. A plain two-term `:disabled="a || b"` is fine inline. Inside `<script setup>`, remember refs need `.value` explicitly in these handler functions — the template's auto-unwrap doesn't apply there.
+
 ## Component Extraction
 
 When adding a new template block that exceeds roughly ten lines of HTML, first extract reusable semantic controls (for example, the Energy and Priority selectors shared by create and edit views) into focused child components instead of expanding the parent view. Do not split one coherent form section into a generic `*Details` wrapper merely to meet the line threshold; keep its local layout with the owning form when that is clearer.
@@ -86,5 +90,6 @@ Before handing off frontend template changes, check:
 
 - Template conditionals use `renderFlags` for product/platform rendering decisions.
 - Non-trivial list rendering uses a named computed list source.
+- Event bindings call exactly one named function; branching logic lives in that function, not the template.
 - Tests cover important visible and hidden render states.
 - `npm run build` or the relevant frontend test target passes.

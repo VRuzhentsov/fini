@@ -24,11 +24,12 @@ use services::device_connection::{
     device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
     device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
-    device_connection_save_paired_device, device_connection_send_pair_request,
-    device_connection_send_pair_request_bluetooth, device_connection_session_transport,
-    device_connection_set_bluetooth_transport, device_connection_set_preferred_transport,
-    device_connection_transport_liveness, device_connection_transport_statuses, device_connection_unpair,
-    device_connection_update_last_seen, DeviceConnectionState,
+    device_connection_retry_bluetooth_dial, device_connection_save_paired_device,
+    device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
+    device_connection_session_transport, device_connection_set_bluetooth_transport,
+    device_connection_set_preferred_transport, device_connection_transport_liveness,
+    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
+    DeviceConnectionState,
 };
 #[cfg(feature = "ui-plane")]
 use services::notification::{
@@ -426,6 +427,7 @@ pub fn run() {
             device_connection_discover_bluetooth_candidates,
             device_connection_transport_statuses,
             device_connection_transport_liveness,
+            device_connection_retry_bluetooth_dial,
             device_connection_unpair,
             device_connection_update_last_seen,
             device_connection_consume_space_mapping_updates,

@@ -32,6 +32,7 @@ export type TransportStatusCode =
   | { code: "bluetooth_disabled" }
   | { code: "bluetooth_no_address" }
   | { code: "bluetooth_not_os_paired" }
+  | { code: "bluetooth_dial_exhausted" }
   | { code: "connecting" }
   | { code: "awaiting_first_ack" }
   | { code: "ping_missed"; count: number };
@@ -541,6 +542,46 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
+  // Single source of truth for how one row absorbs a live-poll entry --
+  // keeps the three-way branch (still-unconfigured / exhausted /
+  // configured) out of the `.map()` call site. The "leave an unconfigured
+  // row alone" branch runs first and wins over `entry.dial_exhausted`: this
+  // backend-only `dial_exhausted` flag is never cleared when Bluetooth gets
+  // disabled (only on explicit retry or re-enable), so a row the heavy poll
+  // has already reported as e.g. `bluetooth_disabled` must keep that more
+  // specific, more authoritative reason -- a P2 review finding: with the
+  // reverse order, disabling Bluetooth right after it exhausted left the
+  // stale in-memory flag clobbering the correctly-reported "disabled" row
+  // back to "exhausted" on the very next 5s poll, making it look retryable
+  // despite the explicit opt-out. A row that WAS configured ("Connecting...")
+  // when the backend gave up still transitions to exhausted correctly here,
+  // since this branch only ever fires for a row already `unconfigured` --
+  // it can't intercept that case.
+  function applyLiveness(
+    status: DeviceTransportStatus,
+    entry: { connected: boolean; primary: boolean; code: TransportStatusCode | null; dial_exhausted: boolean } | undefined,
+  ): DeviceTransportStatus {
+    if (!entry) return status;
+    if (status.state.state === "unconfigured" && !entry.connected) {
+      return { ...status, primary: entry.primary };
+    }
+    if (!entry.connected && entry.dial_exhausted) {
+      return {
+        ...status,
+        primary: entry.primary,
+        state: { state: "unconfigured", code: { code: "bluetooth_dial_exhausted" } },
+      };
+    }
+    return {
+      ...status,
+      primary: entry.primary,
+      state: {
+        state: "configured",
+        code: entry.connected ? entry.code : { code: "connecting" },
+      },
+    };
+  }
+
   // On Linux, `device_connection_transport_statuses` re-checks OS bond
   // status via a `bluetoothctl` subprocess call on every invocation --
   // fine for a one-shot load, but not something a live-status poll should
@@ -571,6 +612,7 @@ export const useDeviceStore = defineStore("device", () => {
           connected: boolean;
           primary: boolean;
           code: TransportStatusCode | null;
+          dial_exhausted: boolean;
         }>
       >("device_connection_transport_liveness", { peerDeviceId });
       // Re-read *after* the await, not the array captured before it: an
@@ -583,21 +625,9 @@ export const useDeviceStore = defineStore("device", () => {
       const current = transportStatusesByPeer.value[peerDeviceId];
       if (!current || current.length === 0) return;
       const byKind = new Map(liveness.map((entry) => [entry.kind, entry]));
-      transportStatusesByPeer.value[peerDeviceId] = current.map((status) => {
-        const entry = byKind.get(status.kind);
-        if (!entry) return status;
-        if (status.state.state === "unconfigured" && !entry.connected) {
-          return { ...status, primary: entry.primary };
-        }
-        return {
-          ...status,
-          primary: entry.primary,
-          state: {
-            state: "configured",
-            code: entry.connected ? entry.code : { code: "connecting" },
-          },
-        };
-      });
+      transportStatusesByPeer.value[peerDeviceId] = current.map((status) =>
+        applyLiveness(status, byKind.get(status.kind)),
+      );
     } catch (error) {
       console.warn("[device-connection] failed to refresh live connected state", error);
     }
@@ -644,6 +674,17 @@ export const useDeviceStore = defineStore("device", () => {
     }
     await refreshTransportStatuses(peerDeviceId);
     return updated;
+  }
+
+  // The Device page's "tap to try again" affordance on a `bluetooth_dial_
+  // exhausted` row (see the backend's `ble::retry_bluetooth_dial` doc
+  // comment): resumes the backend's automatic dial retries for one more
+  // `AUTO_RETRY_WINDOW`. `refreshTransportStatuses` afterward is what makes
+  // the row switch back to "Connecting..." immediately instead of waiting
+  // for the next 5s poll.
+  async function retryBluetoothDial(peerDeviceId: string): Promise<void> {
+    await invoke("device_connection_retry_bluetooth_dial", { peerDeviceId });
+    await refreshTransportStatuses(peerDeviceId);
   }
 
   // Phase 1 of ADR 0002's "Find via Bluetooth" button: scans for up to 60s
@@ -1383,6 +1424,7 @@ export const useDeviceStore = defineStore("device", () => {
     refreshLiveConnectedState,
     setBluetoothTransport,
     setPreferredTransport,
+    retryBluetoothDial,
     findBluetoothAddress,
     isSyncingPeer,
     runSpaceSyncTick,

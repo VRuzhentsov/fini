@@ -27,11 +27,11 @@ pub use commands::{
     device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
     device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
-    device_connection_save_paired_device, device_connection_send_pair_request,
-    device_connection_send_pair_request_bluetooth, device_connection_session_transport,
-    device_connection_set_bluetooth_transport, device_connection_set_preferred_transport,
-    device_connection_transport_liveness, device_connection_transport_statuses, device_connection_unpair,
-    device_connection_update_last_seen,
+    device_connection_retry_bluetooth_dial, device_connection_save_paired_device,
+    device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
+    device_connection_session_transport, device_connection_set_bluetooth_transport,
+    device_connection_set_preferred_transport, device_connection_transport_liveness,
+    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
@@ -316,6 +316,16 @@ impl DeviceConnectionState {
             let (_, still_enabled) = Self::bluetooth_primary_eligibility(db_path, peer_device_id);
             if !still_enabled {
                 self.close_session_on(peer_device_id, kind);
+            } else {
+                // A P1 review finding: `ble::check_accepting_side_
+                // exhaustion`'s own session-based clearing only runs on the
+                // next `space_sync_tick` (a few seconds out) -- a session
+                // that authenticates and then drops again *within* one tick
+                // interval was never observed as connected by that poll,
+                // leaving a stale `dial_exhausted` entry in place
+                // indefinitely. Clearing right here, at the actual claim
+                // event, doesn't wait for a poll to notice.
+                crate::services::transport::ble::note_bluetooth_session_claimed(peer_device_id);
             }
         }
         true

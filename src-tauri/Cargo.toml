@@ -75,7 +75,7 @@ log = "0.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4139db405738194e7bc18915c7c9b977ded12ccf" }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "e928587" }
 # Only used behind #[cfg(target_os = "linux")] (resume_watcher's sleep/wake
 # watcher, settings.rs's portal theme-change watcher, both over the
 # session/system D-Bus) -- kept target-gated rather than unconditional so
@@ -86,7 +86,7 @@ zbus = { version = "5.14.0", features = ["blocking-api"] }
 zvariant = "5.10.0"
 
 [target.'cfg(target_os = "android")'.dependencies]
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4139db405738194e7bc18915c7c9b977ded12ccf" }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "e928587" }
 tao = "0.35"
 ndk-context = "0.1"
 tokio-stream = "0.1"

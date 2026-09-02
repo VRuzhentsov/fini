@@ -97,6 +97,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
+| Any code change (Rust or TypeScript) where naming, constants/enums vs. literal values, or other cross-domain style choices matter | `fini-code-style`, alongside whichever domain skill governs the surface being touched |
 | Change SQLite schema, Diesel schema, data migrations, migration rollback, or database migration tests | `fini-dev-db`; also load `fini-test` for migration coverage |
 | First-run setup, bootstrap, install, or verification of required sibling project context such as `../fini-wiki/` | `fini-dev-install` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
@@ -138,6 +139,16 @@ Keep repo-local skills, scripts, prompts, and generated artifacts portable acros
 - If a script needs a repository, prefer `FINI_REPO`; otherwise infer the GitHub `owner/repo` from the current checkout's `origin` remote.
 - If a prompt needs a greeting or addressee, use `FINI_DAILY_RECIPIENT` when it is set; otherwise write a neutral report with no personal salutation.
 - Mention bot behavior generically. Do not include concrete bot handles in repo-local skills.
+
+## Instruction Authoring Style
+
+When writing or editing any repo-local skill, `AGENTS.md`/`CLAUDE.md`, spec, or companion doc, describe the behavior an agent should follow, not the behavior it should avoid.
+
+- Write instructions as affirmative, actionable defaults: "Do X", "Use Y", "Prefer Z" — not "Don't do X".
+- State the expected behavior and default first, so the desired outcome is explicit before any exception.
+- Pair a real limitation with what to do instead, in the same instruction, rather than leaving a bare prohibition.
+- Reserve prohibition wording ("never", "do not") for hard safety, security, or compliance constraints — the kind of boundary that has no affirmative substitute.
+- When reviewing or reformatting an existing instruction, prefer rewriting a standalone negative into its affirmative form over adding a second negative sentence next to it.
 
 ## Project Context Rules
 

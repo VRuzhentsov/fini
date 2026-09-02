@@ -31,13 +31,28 @@ const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
 const savingBluetoothTransport = ref(false);
 const findingBluetoothAddress = ref(false);
-const bluetoothFindResult = ref<"found" | "not_found" | null>(null);
+// FOUND_ENABLED: the backend's bond check confirmed OS pairing and enabled
+// the transport as part of the find itself -- pressing "Enable Bluetooth"
+// below is then a no-op, and the UI should say so plainly instead of
+// implying another step is still needed (see `findViaBluetooth`'s doc
+// comment and `persist_bluetooth_address_and_maybe_enable` backend-side).
+// FOUND_NOT_ENABLED: the address was found but the bond check didn't
+// confirm OS pairing, so it genuinely does still need "Enable Bluetooth"
+// pressed once OS pairing is done.
+const BLUETOOTH_FIND_RESULT = {
+  FOUND_ENABLED: "found_enabled",
+  FOUND_NOT_ENABLED: "found_not_enabled",
+  NOT_FOUND: "not_found",
+} as const;
+type BluetoothFindResult = (typeof BLUETOOTH_FIND_RESULT)[keyof typeof BLUETOOTH_FIND_RESULT] | null;
+const bluetoothFindResult = ref<BluetoothFindResult>(null);
 let findBluetoothGeneration = 0;
 const mappingError = ref<string | null>(null);
 const bluetoothTransportError = ref<string | null>(null);
 const mappingsDirty = ref(false);
 const settingPreferredTransport = ref<"network" | "bluetooth" | null>(null);
 const preferredTransportError = ref<string | null>(null);
+const retryingBluetoothDial = ref(false);
 
 const deviceId = computed(() => String(route.params.id ?? ""));
 const device = computed(() => deviceStore.findPairedDevice(deviceId.value));
@@ -47,6 +62,12 @@ const syncStatus = computed(() => {
   return deviceStore.getSpaceSyncStatus(deviceId.value);
 });
 const hasPendingSync = computed(() => (syncStatus.value?.pending_event_count ?? 0) > 0);
+
+// fini-frontend: template render decisions belong in a named renderFlags
+// key, not an ad hoc expression (or function call) inline in `v-if`.
+const renderFlags = computed(() => ({
+  bluetoothFindResult: bluetoothFindResult.value !== null,
+}));
 const presenceLabel = computed(() => (online.value ? "Online" : "Offline"));
 const transportStatuses = computed(() => {
   if (!deviceId.value) return [];
@@ -261,9 +282,14 @@ async function findViaBluetooth() {
     if (generation !== findBluetoothGeneration) return;
     if (address) {
       bluetoothAddressInput.value = address;
-      bluetoothFindResult.value = "found";
+      // `findBluetoothAddress` already reloaded paired-device state above,
+      // so `device` reflects whatever the backend's bond check just
+      // decided -- see `bluetoothFindResult`'s doc comment.
+      bluetoothFindResult.value = device.value?.bluetooth_enabled
+        ? BLUETOOTH_FIND_RESULT.FOUND_ENABLED
+        : BLUETOOTH_FIND_RESULT.FOUND_NOT_ENABLED;
     } else {
-      bluetoothFindResult.value = "not_found";
+      bluetoothFindResult.value = BLUETOOTH_FIND_RESULT.NOT_FOUND;
     }
   } catch (error) {
     if (generation === findBluetoothGeneration) {
@@ -277,6 +303,30 @@ async function findViaBluetooth() {
       findingBluetoothAddress.value = false;
     }
   }
+}
+
+// Single source of truth for the Find-via-Bluetooth result message and its
+// styling -- keeps `bluetoothFindResult`'s three-way branch out of the
+// template. FOUND_ENABLED reads as done (success/green): the backend
+// already enabled the transport as part of the find, so pressing "Enable
+// Bluetooth" below would be a redundant no-op -- the previous copy ("Found
+// and confirmed nearby.") implied more work was needed when there wasn't
+// any, which was the actual source of user confusion this fixes.
+function bluetoothFindResultText(): string | null {
+  switch (bluetoothFindResult.value) {
+    case BLUETOOTH_FIND_RESULT.FOUND_ENABLED:
+      return "Found and enabled — Bluetooth is on for this pair. No further action needed.";
+    case BLUETOOTH_FIND_RESULT.FOUND_NOT_ENABLED:
+      return "Address found, but OS Bluetooth pairing wasn't confirmed yet. Pair in system Bluetooth settings, then press Enable Bluetooth below.";
+    case BLUETOOTH_FIND_RESULT.NOT_FOUND:
+      return "Not found within 60s — make sure the other device is nearby and its Bluetooth is on, or enter its address manually below.";
+    case null:
+      return null;
+  }
+}
+
+function bluetoothFindResultClass(): string {
+  return bluetoothFindResult.value === BLUETOOTH_FIND_RESULT.FOUND_ENABLED ? "text-success" : "opacity-60";
 }
 
 // ADR-0003 Phase 3: click-to-pin. Disabled for Unconfigured (Gray) rows --
@@ -295,6 +345,50 @@ async function pinTransport(kind: "network" | "bluetooth") {
     preferredTransportError.value = String(error);
   } finally {
     settingPreferredTransport.value = null;
+  }
+}
+
+// Real-device evidence (2026-09-01): a flaky Bluetooth link kept retrying
+// silently in the background for minutes with nothing but an unchanging
+// "Still connecting..." to show for it -- the backend now gives up after
+// one minute of no successful auth and reports `bluetooth_dial_exhausted`
+// (gray, "Unavailable") instead of retrying forever. This is the row's
+// "tap to try again" side of that: only meaningful for that one code, on
+// the bluetooth row.
+function isRetryableBluetoothDial(status: DeviceTransportStatus): boolean {
+  return (
+    status.kind === "bluetooth" &&
+    status.state.state === "unconfigured" &&
+    status.state.code.code === "bluetooth_dial_exhausted"
+  );
+}
+
+async function retryBluetoothDial() {
+  if (!deviceId.value || retryingBluetoothDial.value) return;
+  retryingBluetoothDial.value = true;
+  try {
+    await deviceStore.retryBluetoothDial(deviceId.value);
+  } finally {
+    retryingBluetoothDial.value = false;
+  }
+}
+
+// Single source of truth for whether a transport row is interactive at
+// all, so the template's `:button` binding never has to branch itself.
+function isTransportRowClickable(status: DeviceTransportStatus): boolean {
+  return status.state.state !== "unconfigured" || isRetryableBluetoothDial(status);
+}
+
+// Single click handler for every transport row -- keeps the branching (retry
+// vs. pin-as-preferred vs. no-op) out of the template, which only ever calls
+// this one function.
+function handleTransportRowClick(status: DeviceTransportStatus) {
+  if (isRetryableBluetoothDial(status)) {
+    void retryBluetoothDial();
+    return;
+  }
+  if (status.state.state !== "unconfigured" && settingPreferredTransport.value === null) {
+    void pinTransport(status.kind);
   }
 }
 
@@ -336,6 +430,16 @@ function rowDetailText(status: DeviceTransportStatus): string {
   if (status.state.state === "unconfigured") return "Unavailable";
   if (status.state.code !== null) return isStuckConnecting(status) ? "Still connecting…" : "Connecting…";
   return status.primary ? "Connected now" : "Ready";
+}
+
+// Single source of truth for the row's trailing label -- folds in the two
+// transient in-flight states (retrying, switching preferred transport) on
+// top of `rowDetailText`'s steady-state text, so the template just renders
+// this one call.
+function rowActionLabel(status: DeviceTransportStatus): string {
+  if (retryingBluetoothDial.value && isRetryableBluetoothDial(status)) return "Retrying…";
+  if (settingPreferredTransport.value === status.kind) return "Switching…";
+  return rowDetailText(status);
 }
 
 // The "i" tooltip only has something to say when there's a code to explain
@@ -403,12 +507,8 @@ function rowStatusTooltip(status: DeviceTransportStatus): string | null {
           :key="status.kind"
           data-testid="transport-status-row"
           :data-transport-kind="status.kind"
-          :button="status.state.state !== 'unconfigured'"
-          @click="
-            status.state.state !== 'unconfigured' &&
-            settingPreferredTransport === null &&
-            void pinTransport(status.kind)
-          "
+          :button="isTransportRowClickable(status)"
+          @click="handleTransportRowClick(status)"
         >
           <template #leading>
             <span class="h-2.5 w-2.5 rounded-full" :class="rowDotClass(status)" />
@@ -433,9 +533,7 @@ function rowStatusTooltip(status: DeviceTransportStatus): string | null {
             </div>
           </template>
           <template #end>
-            <span class="text-xs opacity-60">
-              {{ settingPreferredTransport === status.kind ? "Switching…" : rowDetailText(status) }}
-            </span>
+            <span class="text-xs opacity-60">{{ rowActionLabel(status) }}</span>
           </template>
         </SettingsListItem>
       </SettingsListGroup>
@@ -447,12 +545,8 @@ function rowStatusTooltip(status: DeviceTransportStatus): string | null {
           :disabled="findingBluetoothAddress"
           @click="void findViaBluetooth()"
         >{{ findingBluetoothAddress ? "Scanning… (up to 60s)" : "Find via Bluetooth" }}</button>
-        <p v-if="bluetoothFindResult === 'found'" class="text-xs text-success">
-          Found and confirmed nearby.
-        </p>
-        <p v-else-if="bluetoothFindResult === 'not_found'" class="text-xs opacity-60">
-          Not found within 60s — make sure the other device is nearby and its Bluetooth is on, or
-          enter its address manually below.
+        <p v-if="renderFlags.bluetoothFindResult" class="text-xs" :class="bluetoothFindResultClass()">
+          {{ bluetoothFindResultText() }}
         </p>
         <label class="text-xs font-medium opacity-70" for="bluetooth-address">Bluetooth address</label>
         <input

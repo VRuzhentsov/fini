@@ -47,6 +47,17 @@ pub enum TransportStatusCode {
     /// Bluetooth row, `Unconfigured`: has metadata, but the OS isn't
     /// currently bonded to it.
     BluetoothNotOsPaired,
+    /// Bluetooth row, `Unconfigured`: preconditions are otherwise met, but
+    /// automatic dial retries gave up after `ble::AUTO_RETRY_WINDOW` of no
+    /// successful auth (real device evidence: a flaky link that connects,
+    /// negotiates MTU, completes service discovery, then dies before the
+    /// app-level Auth reply -- repeatedly, for minutes, with an indefinite
+    /// "Still connecting..." the only visible symptom). Distinct from every
+    /// other `Unconfigured` code: those describe a *precondition* that
+    /// isn't met; this one means the precondition *was* met and dialling
+    /// genuinely tried and failed. The row stays clickable in this state --
+    /// see `ble::retry_bluetooth_dial` -- specifically to resume trying.
+    BluetoothDialExhausted,
     /// `Configured`, amber: preconditions are met but no session is
     /// claimed on this transport yet -- a dial is presumably in flight (or
     /// about to be). Distinct from `AwaitingFirstAck`: that means a session
@@ -125,6 +136,17 @@ pub struct TransportLiveness {
     pub connected: bool,
     pub primary: bool,
     pub code: Option<TransportStatusCode>,
+    /// `ble::is_bluetooth_dial_exhausted` -- always `false` for the network
+    /// row. A P1 review finding: without this, the 5s live-poll timer
+    /// (`refreshLiveConnectedState`, chosen specifically to avoid this
+    /// struct's heavier DB-backed sibling's `bluetoothctl` subprocess cost
+    /// on every tick) had no way to represent the exhausted state and
+    /// unconditionally rewrote a disconnected row back to "connecting" --
+    /// a Bluetooth-only peer never enters the network-presence-gated path
+    /// that would otherwise trigger a fresh full `device_connection_
+    /// transport_statuses` load to correct it, so the row stayed stuck
+    /// showing "Still connecting..." forever, defeating this whole feature.
+    pub dial_exhausted: bool,
 }
 
 pub fn select_transport_endpoint(
@@ -171,6 +193,11 @@ pub struct TransportStatusInputs {
     pub bluetooth_enabled: bool,
     pub bluetooth_has_metadata: bool,
     pub bluetooth_os_paired: bool,
+    /// `ble::is_bluetooth_dial_exhausted` -- whether this peer's automatic
+    /// dial retries have given up after `AUTO_RETRY_WINDOW`. Checked last,
+    /// after every other precondition passes: it only means anything once
+    /// dialling was actually attempted.
+    pub bluetooth_dial_exhausted: bool,
     /// Whether a session is currently claimed on this transport --
     /// `DeviceConnectionState::has_session_on`.
     pub network_connected: bool,
@@ -191,6 +218,7 @@ pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportS
         bluetooth_enabled,
         bluetooth_has_metadata,
         bluetooth_os_paired,
+        bluetooth_dial_exhausted,
         network_connected,
         bluetooth_connected,
         network_primary,
@@ -204,8 +232,12 @@ pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportS
     } else {
         Some(TransportStatusCode::NetworkUnavailable)
     };
-    let bluetooth_unconfigured_code =
-        bluetooth_unconfigured_code(bluetooth_enabled, bluetooth_has_metadata, bluetooth_os_paired);
+    let bluetooth_unconfigured_code = bluetooth_unconfigured_code(
+        bluetooth_enabled,
+        bluetooth_has_metadata,
+        bluetooth_os_paired,
+        bluetooth_dial_exhausted,
+    );
 
     vec![
         TransportStatus {
@@ -247,6 +279,7 @@ fn bluetooth_unconfigured_code(
     enabled: bool,
     has_metadata: bool,
     os_paired: bool,
+    dial_exhausted: bool,
 ) -> Option<TransportStatusCode> {
     if !BLUETOOTH_ADAPTER_IMPLEMENTED {
         return Some(TransportStatusCode::BluetoothNotSupported);
@@ -259,6 +292,9 @@ fn bluetooth_unconfigured_code(
     }
     if !os_paired {
         return Some(TransportStatusCode::BluetoothNotOsPaired);
+    }
+    if dial_exhausted {
+        return Some(TransportStatusCode::BluetoothDialExhausted);
     }
     None
 }
@@ -293,6 +329,7 @@ mod tests {
             bluetooth_enabled: true,
             bluetooth_has_metadata: true,
             bluetooth_os_paired: true,
+            bluetooth_dial_exhausted: false,
             network_connected: false,
             bluetooth_connected: false,
             network_primary: false,
@@ -508,10 +545,39 @@ mod tests {
                 },
                 TransportStatusCode::BluetoothNotOsPaired,
             ),
+            (
+                TransportStatusInputs {
+                    bluetooth_dial_exhausted: true,
+                    ..ready_inputs()
+                },
+                TransportStatusCode::BluetoothDialExhausted,
+            ),
         ] {
             let statuses = build_transport_statuses(inputs);
             let bluetooth = find(&statuses, TransportKind::Bluetooth);
             assert_eq!(bluetooth.state, RowState::Unconfigured { code: expected });
         }
+    }
+
+    /// `bluetooth_dial_exhausted` only takes effect once every earlier
+    /// precondition is already satisfied -- an unmet precondition (e.g.
+    /// disabled) must keep reporting *that* reason, not the exhausted one,
+    /// since exhaustion only means anything once dialling was actually
+    /// attempted.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn dial_exhausted_is_overridden_by_an_earlier_unmet_precondition() {
+        let statuses = build_transport_statuses(TransportStatusInputs {
+            bluetooth_enabled: false,
+            bluetooth_dial_exhausted: true,
+            ..ready_inputs()
+        });
+        let bluetooth = find(&statuses, TransportKind::Bluetooth);
+        assert_eq!(
+            bluetooth.state,
+            RowState::Unconfigured {
+                code: TransportStatusCode::BluetoothDisabled
+            }
+        );
     }
 }
