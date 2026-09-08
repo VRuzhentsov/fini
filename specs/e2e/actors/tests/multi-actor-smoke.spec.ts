@@ -17,8 +17,21 @@ test('runner controls two isolated actors with distinct identities', async ({ ac
   expect(identityA.device_id).toBeTruthy();
   expect(identityB.device_id).toBeTruthy();
   expect(identityA.device_id).not.toBe(identityB.device_id);
-  expect(identityA.hostname).toBe('actor-a');
-  expect(identityB.hostname).toBe('actor-b');
+
+  // Hostname is only the harness's to assert for actors it spawned -- it
+  // sets HOSTNAME to the slug there. An external actor is a real machine or
+  // device that already has its own name, so pinning one would make this
+  // test about the operator's environment rather than about the app.
+  for (const [actor, identity] of [
+    [actorA, identityA],
+    [actorB, identityB],
+  ] as const) {
+    if (actor.kind === 'spawned') {
+      expect(identity.hostname).toBe(actor.slug);
+    } else {
+      expect(identity.hostname).toBeTruthy();
+    }
+  }
 });
 
 async function hasIncomingSyncDialog(page: { evaluate: <T>(script: string) => Promise<T> }): Promise<boolean> {

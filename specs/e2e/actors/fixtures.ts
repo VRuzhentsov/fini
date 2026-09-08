@@ -17,6 +17,17 @@ const DEFAULT_BASE_DISCOVERY_PORT = 46_000 + Math.floor(Math.random() * 500);
 export interface E2EActor {
   slug: string;
   page: TauriPage;
+  /**
+   * Whether this harness owns the app behind the actor.
+   *
+   * Exposed because a few guarantees only hold for 'spawned' actors: the
+   * harness gives those a hostname, a fresh data directory and known ports,
+   * none of which it can impose on an app already running on someone's
+   * device. A spec asserting such a value should say so explicitly rather
+   * than silently assume it -- and specs that assert nothing of the sort run
+   * unchanged against either kind.
+   */
+  kind: 'spawned' | 'external';
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
 
@@ -466,12 +477,14 @@ type ActorSpec =
  */
 class Actor implements E2EActor {
   readonly slug: string;
+  readonly kind: 'spawned' | 'external';
   private readonly provider: ActorProvider;
   private client: PluginClient | null = null;
   private tauriPage: TauriPage | null = null;
 
-  private constructor(slug: string, provider: ActorProvider) {
+  private constructor(slug: string, kind: 'spawned' | 'external', provider: ActorProvider) {
     this.slug = slug;
+    this.kind = kind;
     this.provider = provider;
   }
 
@@ -481,12 +494,16 @@ class Actor implements E2EActor {
       spec.kind === 'spawned'
         ? spawnedActorProvider(spec.slug, spec.spawnState, spec.waitMs, spec.onState)
         : externalActorProvider(spec.slug, spec.port);
-    return new Actor(spec.slug, provider);
+    return new Actor(spec.slug, spec.kind, provider);
   }
 
-  /** Escape hatch for a fully custom backing (a stub, a remote runner, ...). */
-  static fromProvider(provider: ActorProvider): Actor {
-    return new Actor(provider.slug, provider);
+  /**
+   * Escape hatch for a fully custom backing (a stub, a remote runner, ...).
+   * Defaults to 'external' because anything reaching for this is, by
+   * definition, not a process this harness spawned and configured.
+   */
+  static fromProvider(provider: ActorProvider, kind: 'spawned' | 'external' = 'external'): Actor {
+    return new Actor(provider.slug, kind, provider);
   }
 
   get page(): TauriPage {
