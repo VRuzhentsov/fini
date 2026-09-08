@@ -885,8 +885,14 @@ jobs:
     # generate-updater-manifest.mjs already tolerates a missing platform
     # gracefully (it just omits that platform's entry), so a partial
     # artifact set here is not a new failure mode.
+    #
+    # `!cancelled()` is required alongside `always()` -- a P1 review
+    # finding: without it, manually cancelling this workflow run while
+    # build-windows is still in progress (Linux/Android/Docker already
+    # succeeded) would still satisfy every explicit check here, letting
+    # this job publish a real GitHub release despite the cancellation.
     if: |
-      always() &&
+      always() && !cancelled() &&
       needs.validate-tag.result == 'success' &&
       needs.validate-tag.outputs.is_prerelease == 'false' &&
       needs.build-linux.result == 'success' &&
@@ -994,9 +1000,10 @@ jobs:
   publish-prerelease:
     name: Publish Prerelease
     # Same fix, same reasoning as publish-stable's own comment above:
-    # build-windows failing must not block this job either.
+    # build-windows failing must not block this job either, and
+    # `!cancelled()` keeps a manual cancellation actually effective.
     if: |
-      always() &&
+      always() && !cancelled() &&
       needs.validate-tag.result == 'success' &&
       needs.validate-tag.outputs.is_prerelease == 'true' &&
       needs.build-linux.result == 'success' &&
