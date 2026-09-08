@@ -25,7 +25,7 @@ RELEASE_BUNDLES ?= deb,rpm
 # this default has no effect on published release artifacts.
 NO_STRIP ?= true
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-devices android-debug-deploy android-debug-deploy-debug android-release-deploy-local flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices desktop-debug desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local flatpak-install-local
 
 help:
 	@echo ""
@@ -62,7 +62,8 @@ help:
 	@echo "  make android-install-debug  Install bin/fini.apk on connected device"
 	@echo "  make android-install-release-local  Install bin/fini-release.apk on device"
 	@echo "  make android-launch   Launch app on connected device"
-	@echo "  make android-debug-deploy  Build with git-derived version, sign, install, and launch"
+	@echo "  make android-release-deploy-debugsigned  Build release, debug-keystore sign, install, and launch (shares com.fini.app id)"
+	@echo "  make android-debug-deploy  Build the debug variant (separate com.fini.app.debug id) with Tauri logging enabled"
 	@echo "  make android-release-deploy-local  Local release-signed deploy preserving app identity"
 	@echo "  make android-devices  List connected ADB devices"
 	@echo ""
@@ -301,6 +302,142 @@ e2e-headed:
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=sim FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-sim; \
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
 
+# "Fini Debug": a genuinely separate desktop application that lives beside the
+# production "Fini" install instead of replacing it -- the desktop counterpart
+# of com.fini.app.debug on the phone.
+#
+# Separated the same way Tauri separates any two apps: a distinct `identifier`
+# and `productName`, overridden at build time via `--config`. That is what
+# makes the split real rather than cosmetic -- the identifier is what Tauri
+# derives the app data directory from, so "Fini Debug" gets its own database,
+# device identity and pairings automatically, with no environment tricks and
+# no way to accidentally write into production data.
+#
+# Unlike Android (where `--config identifier` is rejected because the
+# generated Gradle project's package directories are tied to it), desktop has
+# no generated project to keep in sync, so the override is clean here.
+#
+# Built with devtools and its frontend baked in (`--no-bundle` still produces
+# a runnable binary), so it starts standalone with a working webview and a
+# Playwright control channel -- a plain `cargo build` binary would expect a
+# Vite dev server and come up blank.
+DESKTOP_DEBUG_IDENTIFIER ?= fini-debug
+DESKTOP_DEBUG_NAME ?= Fini Debug
+DESKTOP_DEBUG_PORT ?= 9224
+DESKTOP_DEBUG_DISCOVERY_PORT ?= 45464
+DESKTOP_DEBUG_WS_PORT ?= 45465
+DESKTOP_DEBUG_TARGET_DIR = $(CURDIR)/src-tauri/target/debug-app
+DESKTOP_DEBUG_BIN = $(DESKTOP_DEBUG_TARGET_DIR)/debug/fini-app
+DESKTOP_DEBUG_CONFIG = {"productName":"$(DESKTOP_DEBUG_NAME)","identifier":"$(DESKTOP_DEBUG_IDENTIFIER)"}
+
+desktop-debug-build:
+	@set -eu; \
+	mkdir -p "$(FINI_SCRATCH_DIR)"; \
+	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
+	cp src-tauri/capabilities/default.json "$$capability_backup"; \
+	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
+	trap restore_capability EXIT INT TERM; \
+	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+	CARGO_TARGET_DIR="$(DESKTOP_DEBUG_TARGET_DIR)" npm run tauri -- build --debug --no-bundle \
+		--features ui-plane,devtools --config '$(DESKTOP_DEBUG_CONFIG)' -- --bin fini-app; \
+	printf 'Built "%s" (identifier %s) at %s\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_IDENTIFIER)" "$(DESKTOP_DEBUG_BIN)"
+
+# Data dir and ports are set here rather than baked into the build config:
+# they are runtime coordinates, not app identity. The separate `identifier`
+# alone would already give this app its own Tauri data directory, but
+# FINI_APP_DATA_DIR is passed explicitly so the location is stated rather than
+# inferred -- this is the database that must never be the production one, so
+# it should be obvious and greppable, not a derived side effect. Ports are
+# shifted for the same practical reason: both apps have to run at once
+# without fighting over :45454/:45455.
+DESKTOP_DEBUG_DATA_DIR ?= $(HOME)/.local/share/fini-debug
+# Broadcasts to the default discovery port as well as its own, so a device
+# that only knows the default -- a phone, which cannot be told otherwise --
+# still receives this app's presence. Listening stays on the shifted port so
+# the production app keeps :45454 to itself.
+DESKTOP_DEBUG_PEER_PORTS ?= 45454,$(DESKTOP_DEBUG_DISCOVERY_PORT)
+desktop-debug:
+	@set -eu; \
+	test -x "$(DESKTOP_DEBUG_BIN)" || $(MAKE) desktop-debug-build; \
+	mkdir -p "$(DESKTOP_DEBUG_DATA_DIR)"; \
+	printf '%s: data=%s devtools=tcp:%s discovery=%s ws=%s\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_DATA_DIR)" "$(DESKTOP_DEBUG_PORT)" "$(DESKTOP_DEBUG_DISCOVERY_PORT)" "$(DESKTOP_DEBUG_WS_PORT)"; \
+	FINI_APP_DATA_DIR="$(DESKTOP_DEBUG_DATA_DIR)" \
+	FINI_DEVTOOLS_TCP_PORT="$(DESKTOP_DEBUG_PORT)" \
+	FINI_DISCOVERY_PORT="$(DESKTOP_DEBUG_DISCOVERY_PORT)" \
+	FINI_DISCOVERY_PEER_PORTS="$(DESKTOP_DEBUG_PEER_PORTS)" \
+	FINI_SPACE_SYNC_WS_PORT="$(DESKTOP_DEBUG_WS_PORT)" \
+	WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+	"$(DESKTOP_DEBUG_BIN)"
+
+# Run the actor suite with a real Android device joined as an actor, against
+# whatever `adb` is pointed at. The phone runs the debug build (see
+# android-debug-deploy) and is *borrowed*, not managed: this never installs,
+# configures or stops it -- only drives it, so its real pairing and radio
+# state are what gets exercised. That is the whole point; no emulator
+# reproduces real BLE behaviour.
+#
+#   make e2e-phone                      # default: actor-a + phone
+#   make e2e-phone E2E_PHONE_SPEC="ble" # -g filter passed to playwright
+#
+# Everything the run needs is set here rather than left to the caller: the
+# E2E binary is built the same way e2e-headed builds it (frontend baked in --
+# a plain `cargo build` binary expects a Vite dev server and would come up
+# blank), devtools capabilities are swapped in and restored, and the adb port
+# forward for the phone's control channel is established.
+# Both actors are apps this target does not own: the desktop "Fini Debug"
+# (make desktop-debug) and the phone's com.fini.app.debug. Nothing is spawned
+# or torn down -- their real pairing, storage and radio state is the thing
+# under test, which is exactly what a spawned throwaway actor cannot give.
+#
+# Deliberately not headful: an external actor's window belongs to whoever
+# started it, and this harness drives it through the plugin channel rather
+# than the screen, so there is nothing to show. Forcing FINI_E2E_HEADFUL here
+# additionally proved able to lock up the desktop session on this machine's
+# GPU path, which is a bad trade for output nobody reads.
+#
+#   make e2e-devices                          # whole actors suite
+#   make e2e-devices E2E_DEVICES_SPEC="sync"  # -g filter
+#
+# Requires both debug apps already running (see desktop-debug and
+# android-debug-deploy).
+E2E_DEVICES_SPEC ?=
+e2e-devices:
+	@set -eu; \
+	adb get-state >/dev/null 2>&1 || (echo "No adb device. Connect the phone and run 'make android-devices'." && exit 1); \
+	adb forward tcp:$(E2E_PHONE_PORT) tcp:$(E2E_PHONE_PORT) >/dev/null; \
+	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices}"; \
+	mkdir -p "$$run_root"; \
+	FINI_E2E_ROOT="$$run_root" \
+	FINI_E2E_ACTORS="desktop,$(E2E_PHONE_ACTOR)" \
+	FINI_E2E_EXTERNAL_ACTORS="desktop=$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	TZ=UTC \
+	npx playwright test --config specs/e2e/playwright.config.ts --project actors $(if $(E2E_DEVICES_SPEC),-g "$(E2E_DEVICES_SPEC)",)
+
+E2E_PHONE_ACTOR ?= phone
+E2E_PHONE_PORT ?= 9223
+E2E_PHONE_SPEC ?= external actor
+e2e-phone:
+	@set -eu; \
+	adb get-state >/dev/null 2>&1 || (echo "No adb device. Connect the phone and run 'make android-devices'." && exit 1); \
+	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-phone}"; \
+	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
+	app_bin_path="$$e2e_target_dir/debug/fini-app"; \
+	mkdir -p "$(FINI_SCRATCH_DIR)" "$$run_root"; \
+	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
+	cp src-tauri/capabilities/default.json "$$capability_backup"; \
+	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
+	trap restore_capability EXIT INT TERM; \
+	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,desktop-updater,devtools --no-bundle -- --bin fini-app; \
+	restore_capability; \
+	trap - EXIT INT TERM; \
+	adb forward tcp:$(E2E_PHONE_PORT) tcp:$(E2E_PHONE_PORT) >/dev/null; \
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 \
+	FINI_E2E_ACTORS="actor-a,$(E2E_PHONE_ACTOR)" \
+	FINI_E2E_EXTERNAL_ACTORS="$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	FINI_APP_BINARY="$$app_bin_path" TZ=UTC \
+	npx playwright test --config specs/e2e/playwright.config.ts --project actors -g "$(E2E_PHONE_SPEC)"
+
 # Build/update the published headless runtime image locally.
 runtime-image:
 	$(MAKE) require-container
@@ -410,6 +547,21 @@ android-build:
 android-build-emulator-e2e:
 	npm run tauri android build -- --features ui-plane --ci --debug --apk --target x86_64
 
+# Runs the same smoke assertions CI runs on the emulator (app process starts,
+# `fini.reminders` notification channel registers), but against whatever
+# device `adb` is currently pointed at and whatever APK is passed in --
+# so the debug build on a real phone can be checked with the same script CI
+# uses, rather than a separate ad-hoc procedure.
+#
+#   make android-e2e-assert ANDROID_E2E_APK=<path> [FINI_E2E_PACKAGE=<id>]
+#
+# FINI_E2E_PACKAGE defaults to the release application id; a debug-buildType
+# APK installs under the `.debug` suffix (tauri.conf.json's
+# bundle.android.debugApplicationIdSuffix) and must set it explicitly.
+android-e2e-assert:
+	@test -n "$(ANDROID_E2E_APK)" || (echo "ANDROID_E2E_APK is not set" && exit 1)
+	ANDROID_E2E_APK="$(ANDROID_E2E_APK)" FINI_E2E_PACKAGE="$(FINI_E2E_PACKAGE)" bash scripts/android-e2e-assert.sh
+
 android-sign-debug:
 	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)
 	@test -n "$(APKSIGNER)" || (echo "apksigner not found under $$ANDROID_HOME/build-tools" && exit 1)
@@ -451,18 +603,56 @@ android-install-release-local:
 android-launch:
 	adb shell am start -n com.fini.app/.MainActivity
 
-android-debug-deploy:
-	@printf 'Android debug version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
+# com.fini.app.debug, not com.fini.app -- android-debug-deploy (below) builds
+# a `debug` buildType APK, which build.gradle.kts's applicationIdSuffix
+# installs as its own package, separate from the Play Store release.
+# android-launch's component name is only ever correct for a
+# release-flavored install (android-release-deploy-debugsigned's and
+# android-release-deploy-local's own use of it).
+android-launch-debug:
+	adb shell am start -n com.fini.app.debug/.MainActivity
+
+# Builds the `release` buildType (no --debug flag), just locally signed with
+# the debug keystore for fast iteration -- so, unlike android-debug-deploy
+# below, this produces a plain com.fini.app APK with NO applicationIdSuffix.
+# Installing it over a Play-Store-signed com.fini.app still hits the same
+# certificate conflict described on android-debug-deploy's own comment.
+# Prefer that target instead when a Play Store install already exists on
+# the device.
+android-release-deploy-debugsigned:
+	@printf 'Android debug-signed release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
 	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-debug
 	$(MAKE) android-install-debug
 	$(MAKE) android-launch
 
-android-debug-deploy-debug:
-	@printf 'Android debug (debug profile) version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --debug --target "$(ANDROID_TARGET)"
+# The true `debug` buildType (--debug flag) -- gets build.gradle.kts's
+# com.fini.app.debug applicationIdSuffix, so it always coexists safely
+# alongside a Play Store com.fini.app install. Also enables Tauri's own
+# Kotlin logging (BuildConfig.DEBUG=true, suppressed in the release
+# profile) -- the target to reach for when diagnosing a silently-failing
+# plugin command, not just for the separate-package safety.
+#
+# Built with `devtools` (not just ui-plane): that feature is what compiles in
+# tauri-plugin-playwright, the control socket every automation surface needs
+# (the actors harness's TAURI_PLAYWRIGHT_SOCKET, and the tauri-mcp
+# driver_session/webview_*/ipc_* tools). Without it the debug build is
+# observable only through logcat -- which is exactly the gap that makes a
+# debug build worth installing in the first place. Safe here precisely
+# because this variant ships under its own `.debug` application id and never
+# replaces the Play Store install.
+android-debug-deploy:
+	@set -eu; \
+	printf 'Android debug (debug profile) version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"; \
+	mkdir -p "$(FINI_SCRATCH_DIR)"; \
+	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
+	cp src-tauri/capabilities/default.json "$$capability_backup"; \
+	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
+	trap restore_capability EXIT INT TERM; \
+	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane,devtools --debug --target "$(ANDROID_TARGET)"
 	adb install -r "src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
-	$(MAKE) android-launch
+	$(MAKE) android-launch-debug
 
 android-release-deploy-local:
 	@printf 'Android local release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"

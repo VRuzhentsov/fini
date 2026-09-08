@@ -27,6 +27,9 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": "all",
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    },
     "icon": [
       "icons/icon.png",
       "icons/32x32.png",

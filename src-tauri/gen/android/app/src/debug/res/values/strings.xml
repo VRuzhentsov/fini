@@ -1,0 +1,10 @@
+<resources>
+    <!-- Overrides src/main's app_name/main_activity_title for debug builds
+         only. Gradle merges src/debug/res over src/main/res automatically.
+         Paired with build.gradle.kts's debug applicationIdSuffix: a distinct
+         label makes the two installs (Play Store "Fini" vs. sideloaded
+         "Fini Debug") visually unambiguous on the home screen, not just
+         distinct at the package-id level. -->
+    <string name="app_name">Fini Debug</string>
+    <string name="main_activity_title">Fini Debug</string>
+</resources>

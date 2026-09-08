@@ -103,9 +103,10 @@ General notes:
   Tauri updater key and manifest.
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle
-  - `make android-debug-deploy` builds, signs, installs, and launches a local debug-keystore APK using git-derived `versionName` and `versionCode`
+  - `make android-release-deploy-debugsigned` builds, signs, installs, and launches a local debug-keystore APK (release buildType, shares `com.fini.app`'s package id) using git-derived `versionName` and `versionCode`
+  - `make android-debug-deploy` builds the true `debug` buildType instead, which installs as its own separate `com.fini.app.debug` package (see `build.gradle.kts`'s `applicationIdSuffix`) -- coexists with a Play Store install with no certificate conflict, and enables Tauri's Kotlin logging
   - `make android-release-deploy-local` performs the same local build/install flow but signs with release-lineage credentials from `ANDROID_KEYSTORE_PATH` or `ANDROID_KEYSTORE_BASE64` plus the matching password and alias env vars
-  - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
+  - local debug-signed output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
 ## Local AppImage build failures on newer Linux toolchains

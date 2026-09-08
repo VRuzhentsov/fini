@@ -229,16 +229,19 @@ The `make release` flow requires a clean `main` branch that matches `origin/main
 ```bash
 make android-build
 
-# git-derived local debug deploy
+# git-derived local debug-signed release deploy (shares com.fini.app's identity)
+make android-release-deploy-debugsigned
+
+# git-derived local true-debug deploy (separate com.fini.app.debug identity)
 make android-debug-deploy
 ```
 
-`make android-debug-deploy` builds a local Android release APK with git-derived version metadata:
+`make android-release-deploy-debugsigned` builds a local Android release APK with git-derived version metadata:
 
 - `versionName`: latest reachable git tag plus short SHA, for example `0.1.18+dev.65be60e`
 - `versionCode`: current epoch seconds, so repeated local installs always upgrade cleanly
 
-The debug deploy flow signs with the local Android debug keystore and installs with `adb install -r`:
+It signs with the local Android debug keystore and installs with `adb install -r`:
 
 ```bash
 make android-sign-debug
@@ -248,7 +251,10 @@ make android-launch
 
 Signed debug APK path: `bin/fini.apk`
 
-If you need a purely local install that can replace a Play-installed `com.fini.app` build without uninstalling, use the local release-signing path instead:
+Because it shares `com.fini.app`'s package id, this install still needs to be certificate-compatible with whatever is already on the device -- it will conflict with a Play-Store-installed `com.fini.app` the same way any differently-signed build of the same package id does. Two options avoid that conflict, for different needs:
+
+- `make android-debug-deploy` builds the actual `debug` buildType, which installs as its own separate `com.fini.app.debug` package (see `src-tauri/gen/android/app/build.gradle.kts`'s `applicationIdSuffix`) -- coexists with a Play Store install indefinitely, no uninstall ever required, and also enables Tauri's Kotlin logging (suppressed in the release profile).
+- If you specifically need a purely local install that can *replace* a Play-installed `com.fini.app` build (matching its identity, not living alongside it) without uninstalling, use the local release-signing path instead:
 
 ```bash
 make android-release-deploy-local

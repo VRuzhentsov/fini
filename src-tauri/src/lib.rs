@@ -81,6 +81,14 @@ use tauri_plugin_autostart::ManagerExt;
 #[cfg(feature = "ui-plane")]
 const THEME_EVENT: &str = "theme://changed";
 
+/// Loopback port the devtools control plane listens on for Android debug
+/// builds. Matches the tauri-mcp `driver_session` tool's own default port, so
+/// `adb forward tcp:9223 tcp:9223` is the only step needed to drive a real
+/// device from the host. Desktop builds use a unix socket instead -- see the
+/// plugin registration in `run` for why Android can't.
+#[cfg(all(feature = "devtools", target_os = "android"))]
+const DEVTOOLS_ANDROID_TCP_PORT: u16 = 9223;
+
 #[cfg(feature = "ui-plane")]
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,14 +300,70 @@ pub fn run() {
         tauri_plugin_autostart::MacosLauncher::LaunchAgent,
         None,
     ));
-    #[cfg(feature = "devtools")]
+    // Desktop: a unix socket by default, whose path the actors harness hands
+    // us per actor (`TAURI_PLAYWRIGHT_SOCKET`, see
+    // specs/e2e/actors/fixtures.ts) -- the harness spawns those processes, so
+    // it can pick a path and know when the socket appears.
+    //
+    // `FINI_DEVTOOLS_TCP_PORT` switches this instance to TCP instead, for a
+    // long-lived debug app the harness does *not* spawn: an external actor is
+    // addressed by port, exactly like a phone reached over `adb forward`, so
+    // a desktop and a device end up equally reachable rather than needing two
+    // different connection styles. Note `socket_path` must be cleared, not
+    // merely accompanied by `tcp_port` -- see the Android arm below for why.
+    #[cfg(all(feature = "devtools", not(target_os = "android")))]
     let builder = {
-        let socket_path = std::env::var("TAURI_PLAYWRIGHT_SOCKET")
-            .unwrap_or_else(|_| "/tmp/tauri-playwright.sock".to_string());
-        builder.plugin(tauri_plugin_playwright::init_with_config(
-            tauri_plugin_playwright::PluginConfig::new().socket_path(&socket_path),
-        ))
+        let tcp_port = std::env::var("FINI_DEVTOOLS_TCP_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok());
+        let config = match tcp_port {
+            Some(port) => tauri_plugin_playwright::PluginConfig {
+                socket_path: None,
+                tcp_port: Some(port),
+                window_label: None,
+            },
+            None => {
+                // Falls back to the user's runtime dir rather than a shared
+                // world-writable /tmp path: the socket is a control channel
+                // into this process, and XDG_RUNTIME_DIR is both the correct
+                // place for one and already per-user and per-session. The
+                // actors harness always passes an explicit path anyway, so
+                // this default only covers a manual run.
+                let socket_path = std::env::var("TAURI_PLAYWRIGHT_SOCKET").unwrap_or_else(|_| {
+                    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|_| std::env::temp_dir());
+                    runtime_dir.join("fini-playwright.sock").to_string_lossy().into_owned()
+                });
+                tauri_plugin_playwright::PluginConfig::new().socket_path(&socket_path)
+            }
+        };
+        builder.plugin(tauri_plugin_playwright::init_with_config(config))
     };
+    // Android: TCP instead. A unix socket is unusable here -- the plugin's
+    // default path lives outside the app sandbox, so binding it fails with
+    // "unix server error: Permission denied (os error 13)", and there is no
+    // way to hand the process a different path anyway (`am start` cannot set
+    // environment variables, unlike the desktop actors harness's spawn). TCP
+    // on loopback is reachable from a host via `adb forward tcp:9223
+    // tcp:9223`, and 9223 is what the tauri-mcp `driver_session` tool
+    // already defaults to.
+    // `socket_path` must be cleared, not just left at its default alongside
+    // `tcp_port`: the plugin's own `server::start` takes the unix branch
+    // whenever `socket_path` is `Some` and *returns* from it, so the TCP
+    // listener is only ever reached when the socket path is `None`. Android
+    // counts as unix, so leaving the default in place means the plugin binds
+    // nothing at all here (it just logs the failed unix bind and stops).
+    // Built as a struct literal because `PluginConfig::new()` seeds
+    // `socket_path` with the desktop default and exposes no setter to unset it.
+    #[cfg(all(feature = "devtools", target_os = "android"))]
+    let builder = builder.plugin(tauri_plugin_playwright::init_with_config(
+        tauri_plugin_playwright::PluginConfig {
+            socket_path: None,
+            tcp_port: Some(DEVTOOLS_ANDROID_TCP_PORT),
+            window_label: None,
+        },
+    ));
     builder
         .setup(|app| {
             let app_handle = app.handle();

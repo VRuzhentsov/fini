@@ -17,7 +17,8 @@ Prove Android behavior with a complete evidence chain:
 
 ## Repo specifics
 
-- Package: `com.fini.app`
+- Package: `com.fini.app` (Play Store release). `make android-debug-deploy` installs the true `debug` buildType as a separate `com.fini.app.debug` package instead (see `src-tauri/gen/android/app/build.gradle.kts`'s `applicationIdSuffix`) -- coexists safely alongside a Play-Store-installed `com.fini.app` on the same device, no certificate conflict, no uninstall ever required. Confirm which one an automation session is actually attached to via `ipc_get_backend_state`'s `app.identifier` before trusting device state.
+- The `mcp___hypothesi_tauri-mcp-server__*` driver_session/webview_*/ipc_* tools can attach to the `com.fini.app.debug` build (it's `devtools`-capable, unlike the Play Store release). Reach for that connection only when genuine IPC-level introspection is actually needed -- prefer plain `adb`/logcat/screenshots for observation and `adb shell input tap` for simple interaction otherwise; the tauri-mcp bridge is resource-heavy and should not be the default interaction path.
 - Preferred runtime commands:
   - `make android-devices`
   - `make android-connect`
@@ -35,12 +36,12 @@ Prove Android behavior with a complete evidence chain:
 
 ## Android debug logging (2026-06-26)
 
-Tauri's Kotlin `Logger` gates ALL log levels — verbose, debug, info, warn, **error** — behind `BuildConfig.DEBUG`. When `BuildConfig.DEBUG = false` (release profile), every `Logger.error()` call in a plugin's catch block is silently dropped. This means plugin exceptions, `invoke.reject()` messages, and command routing errors are invisible in the default `make android-debug-deploy` output.
+Tauri's Kotlin `Logger` gates ALL log levels — verbose, debug, info, warn, **error** — behind `BuildConfig.DEBUG`. When `BuildConfig.DEBUG = false` (release profile), every `Logger.error()` call in a plugin's catch block is silently dropped. This means plugin exceptions, `invoke.reject()` messages, and command routing errors are invisible in the default `make android-release-deploy-debugsigned` output.
 
-**Rule**: when a Tauri plugin command returns `null` or fails silently on Android with no JS-visible error, always reproduce with `make android-debug-deploy-debug` first to enable Tauri Kotlin logs before investigating the Rust or JS side.
+**Rule**: when a Tauri plugin command returns `null` or fails silently on Android with no JS-visible error, always reproduce with `make android-debug-deploy` first to enable Tauri Kotlin logs before investigating the Rust or JS side.
 
-- `make android-debug-deploy` → release profile APK → `BuildConfig.DEBUG=false` → Tauri logs OFF
-- `make android-debug-deploy-debug` → debug profile APK → `BuildConfig.DEBUG=true` → Tauri logs ON
+- `make android-release-deploy-debugsigned` → release buildType APK, debug-keystore signed, shares `com.fini.app`'s package id → `BuildConfig.DEBUG=false` → Tauri logs OFF
+- `make android-debug-deploy` → true debug buildType APK, separate `com.fini.app.debug` package id → `BuildConfig.DEBUG=true` → Tauri logs ON
 
 Logcat filter to isolate Tauri plugin traffic:
 ```
