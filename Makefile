@@ -358,6 +358,12 @@ DESKTOP_DEBUG_DATA_DIR ?= $(HOME)/.local/share/fini-debug
 DESKTOP_DEBUG_PEER_PORTS ?= 45454,$(DESKTOP_DEBUG_DISCOVERY_PORT)
 desktop-debug:
 	@set -eu; \
+	if ss -lnt "sport = :$(DESKTOP_DEBUG_PORT)" 2>/dev/null | grep -q LISTEN; then \
+		printf 'refusing to start: %s is already running (devtools port %s is bound).\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_PORT)" >&2; \
+		printf 'two debug apps would both dial the phone over BLE and make results ambiguous.\n' >&2; \
+		printf 'close the running one first, or override DESKTOP_DEBUG_PORT.\n' >&2; \
+		exit 1; \
+	fi; \
 	test -x "$(DESKTOP_DEBUG_BIN)" || $(MAKE) desktop-debug-build; \
 	mkdir -p "$(DESKTOP_DEBUG_DATA_DIR)"; \
 	printf '%s: data=%s devtools=tcp:%s discovery=%s ws=%s\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_DATA_DIR)" "$(DESKTOP_DEBUG_PORT)" "$(DESKTOP_DEBUG_DISCOVERY_PORT)" "$(DESKTOP_DEBUG_WS_PORT)"; \
