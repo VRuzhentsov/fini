@@ -871,7 +871,27 @@ jobs:
 
   publish-stable:
     name: Publish Stable Release
-    if: needs.validate-tag.outputs.is_prerelease == 'false'
+    # `always()` plus explicit `.result == 'success'` checks, not a plain
+    # boolean -- a bare `if:` expression here still defers to the implicit
+    # `success()` GitHub Actions applies whenever a job has `needs:`,
+    # requiring *every* listed job to succeed before this one even
+    # evaluates its own condition. That's what actually blocked v0.3.7's
+    # release: build-windows failing skipped this job outright, even
+    # though build-linux (and everything downstream of it) had compiled
+    # fine on its own. `build-windows` is deliberately left unchecked here
+    # -- its own build failing must not block Linux/Android/Docker from
+    # publishing. It stays in `needs:` purely so its artifacts (when it
+    # does succeed) are still available to download below;
+    # generate-updater-manifest.mjs already tolerates a missing platform
+    # gracefully (it just omits that platform's entry), so a partial
+    # artifact set here is not a new failure mode.
+    if: |
+      always() &&
+      needs.validate-tag.result == 'success' &&
+      needs.validate-tag.outputs.is_prerelease == 'false' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-android.result == 'success' &&
+      needs.build-docker-image.result == 'success'
     runs-on: ubuntu-latest
     environment: release
     needs:
@@ -973,7 +993,15 @@ jobs:
 
   publish-prerelease:
     name: Publish Prerelease
-    if: needs.validate-tag.outputs.is_prerelease == 'true'
+    # Same fix, same reasoning as publish-stable's own comment above:
+    # build-windows failing must not block this job either.
+    if: |
+      always() &&
+      needs.validate-tag.result == 'success' &&
+      needs.validate-tag.outputs.is_prerelease == 'true' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-android.result == 'success' &&
+      needs.build-docker-image.result == 'success'
     runs-on: ubuntu-latest
     needs:
       - validate-tag
