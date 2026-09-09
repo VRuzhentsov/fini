@@ -1140,11 +1140,30 @@ pub fn space_sync_tick_impl(
         // earliest safe point, so it starts here instead. A no-op on every
         // call after the first, and a no-op entirely on Linux, which
         // already starts it from `.setup()`.
+        // Gated on the Nearby-devices permission actually being held. This
+        // runs from a background sync tick, not a user action, so without the
+        // gate the very first tick after install starts advertising, Android
+        // throws SecurityException("Need android.permission.BLUETOOTH_CONNECT")
+        // out of `startAdvertising`, and the peripheral loop retries it every
+        // 60s forever -- work the user never asked for, failing invisibly.
+        //
+        // Nothing is lost by waiting: the permission prompt belongs to opening
+        // Add Device (see `device_connection_enter_add_mode_impl`), which is
+        // the point the user actually expresses intent to set up a Bluetooth
+        // connection. Once granted, the next tick starts the peripheral. The
+        // check must sit *outside* `start_peripheral_once` because its
+        // `std::sync::Once` would be spent by the first ungranted attempt and
+        // never retried after the user says yes.
         #[cfg(target_os = "android")]
-        crate::services::transport::ble::start_peripheral_once(
-            device_connection.clone(),
-            device_connection.db_path.clone(),
-        );
+        if crate::services::android_context::call_static_context_to_bool(
+            "com.fini.app.BluetoothPairing",
+            "hasPermissions",
+        ) {
+            crate::services::transport::ble::start_peripheral_once(
+                device_connection.clone(),
+                device_connection.db_path.clone(),
+            );
+        }
 
         // Reuse the connection this function was already handed, rather
         // than opening a second one. This runs every space_sync_tick --
