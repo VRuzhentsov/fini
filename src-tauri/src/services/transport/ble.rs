@@ -218,11 +218,21 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// connection but never replies could consume the *entire* remaining scan
 /// budget, starving out every other candidate that might otherwise have
 /// matched sooner -- including the actual peer being searched for.
-/// Deliberately shorter than `AddDeviceView.vue`'s own per-pass scan
-/// duration (`BLUETOOTH_SCAN_DURATION_MS`, currently 4s): a cap that isn't
-/// *materially* shorter than a single pass is no cap at all in practice,
-/// since `remaining.min(...)` just reduces to `remaining` every time.
-const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// Still shorter than `AddDeviceView.vue`'s own per-pass scan duration
+/// (`BLUETOOTH_SCAN_DURATION_MS`, currently 4s), so a slow candidate cannot
+/// quietly consume a whole pass -- but no longer *much* shorter, because the
+/// round trip it caps now has a third stage. `BleLink::send` retries a
+/// `GattBusy` rejection for up to ~1.4s (see its comment), on top of a dial
+/// that measurably takes 1-2s against a real phone. At the previous 1.5s this
+/// budget could not fit dial + retry, so the retry was cut off mid-flight
+/// every time and existed only on paper; the caller dropping the future also
+/// cancels ble-gatt's own connect timeout, which is why those attempts left
+/// no outcome in the logs at all.
+///
+/// The trade this accepts: with several candidates, one silent peer can now
+/// take most of a pass. That is the lesser evil -- a probe too short to ever
+/// complete fails *every* candidate, not just the ones behind a slow one.
+const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
 
 /// `find_peer_address`'s own per-candidate cap, larger than
 /// `CANDIDATE_PROBE_TIMEOUT`: `probe_candidate` tries a legacy
@@ -406,7 +416,48 @@ impl Link for BleLink {
     }
 
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
-        self.channel.send(payload).await.map_err(|err| err.to_string())
+        // Retry `GattBusy` here rather than inside `ble-gatt`: the backend
+        // makes exactly one attempt and classifies a rejection it believes is
+        // transient as `BleError::GattBusy`, deliberately leaving the retry
+        // budget to whoever knows the caller's own deadline. No single
+        // backend-side budget can be right for every caller -- a chain sized
+        // for a generous one silently exceeds a tight one and reads as a
+        // caller-abandoned future rather than an honest failure.
+        //
+        // Sized to the tightest caller on this path: `scan_add_mode_candidates`
+        // gets `BLUETOOTH_SCAN_DURATION_MS` (4s) for the *whole* pass, dial
+        // included, and `find_peer_address` allows `FIND_PEER_CANDIDATE_TIMEOUT`
+        // (4s) per candidate. With a dial typically eating 1-2s of that, the
+        // ~1.4s worst case below still leaves the caller room to fail cleanly
+        // instead of being cut off mid-retry.
+        //
+        // Observed on real hardware: the *first* write on a freshly connected
+        // channel is the one that gets rejected (msg_id=0, fragment 0), while
+        // the `subscribe` moments earlier on the same link succeeds -- so this
+        // covers a genuine just-connected window, not a dead peer.
+        const SEND_RETRY_DELAYS: [Duration; 3] = [
+            Duration::from_millis(150),
+            Duration::from_millis(300),
+            Duration::from_millis(600),
+        ];
+
+        let mut attempt = 0;
+        loop {
+            match self.channel.send(payload.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(ble_gatt::BleError::GattBusy(err)) if attempt < SEND_RETRY_DELAYS.len() => {
+                    log::warn!(
+                        "[transport][ble] send to {} rejected as busy ({err}), retrying ({}/{})",
+                        self.peer_addr,
+                        attempt + 1,
+                        SEND_RETRY_DELAYS.len()
+                    );
+                    tokio::time::sleep(SEND_RETRY_DELAYS[attempt]).await;
+                    attempt += 1;
+                }
+                Err(err) => return Err(err.to_string()),
+            }
+        }
     }
 
     async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
