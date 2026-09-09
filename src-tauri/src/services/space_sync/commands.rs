@@ -1109,10 +1109,103 @@ pub fn space_sync_resolve_custom_space_mapping(
     )
 }
 
+/// How often the sync tick must run at minimum, and how often the Rust-side
+/// keeper below checks whether it has. Matches the frontend's own
+/// `MAPPING_UPDATE_POLL_INTERVAL_MS`, so a webview that is driving ticks
+/// normally keeps the keeper permanently idle.
+const TICK_INTERVAL: Duration = Duration::from_secs(3);
+
+/// When the last tick ran, from any caller -- the frontend command or the
+/// keeper. `None` until the first tick.
+static LAST_TICK_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn note_tick_ran() {
+    let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cell.lock() {
+        *guard = Some(Instant::now());
+    }
+}
+
+fn tick_is_overdue() -> bool {
+    let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
+    match cell.lock() {
+        Ok(guard) => guard.map(|at| at.elapsed() >= TICK_INTERVAL).unwrap_or(true),
+        // Poisoned only if a tick panicked. Ticking again is the safer read:
+        // a stalled sync is worse than one redundant pass.
+        Err(_) => true,
+    }
+}
+
+/// Keeps the sync tick running when the webview stops driving it.
+///
+/// Ticks are scheduled by the frontend (`startMappingUpdateLoop`'s
+/// `setInterval`), which is fine on desktop but not on Android: once the app
+/// is backgrounded the WebView throttles its timers, the ticks stop, and with
+/// them every dial loop, session keepalive and BLE peripheral start that a
+/// tick drives. Observed directly on a Pixel 6 Pro -- backgrounding the app
+/// while pairing over Bluetooth silenced the process completely (not one log
+/// line), and the peer's session died of missed pings.
+///
+/// Deliberately a keeper rather than a replacement scheduler: it only ticks
+/// when nothing else has within `TICK_INTERVAL`, so a foreground webview
+/// driving ticks normally leaves it idle and the work is never doubled. The
+/// frontend keeps its own loop because it also refreshes UI state from each
+/// tick's result, which this cannot do.
+///
+/// Started from the first tick rather than from `.setup()` on purpose: on
+/// Android that first JS-triggered tick is the earliest point the peripheral
+/// role can safely start (see `start_peripheral_once`'s caller below), and
+/// starting a Rust timer any earlier would just reintroduce that problem from
+/// a different thread.
+fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(TICK_INTERVAL).await;
+                if !tick_is_overdue() {
+                    continue;
+                }
+                let state = device_connection.clone();
+                // `space_sync_tick_impl` is blocking (SQLite plus the dial
+                // loops it spawns), so it must not run on the async worker
+                // directly. Opening its own connection from `db_path` is what
+                // every other background path here already does.
+                let result = tokio::task::spawn_blocking(move || {
+                    let mut conn = crate::services::db::open_db_at_path(&state.db_path);
+                    space_sync_tick_impl(&mut conn, &state)
+                })
+                .await;
+                match result {
+                    Ok(Err(err)) => log::warn!("[space_sync][keeper] tick failed: {err}"),
+                    Err(err) => log::warn!("[space_sync][keeper] tick task failed: {err}"),
+                    Ok(Ok(_)) => {}
+                }
+            }
+        });
+    });
+}
+
+/// Starts the Android foreground service that keeps this process alive in the
+/// background. Once per process: `startForegroundService` on an already-running
+/// service just delivers another `onStartCommand`, which is harmless but
+/// pointless to repeat every three seconds.
+#[cfg(target_os = "android")]
+fn start_sync_service_once() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        crate::services::android_context::call_static_context_void(
+            "com.fini.app.SyncForegroundService",
+            "start",
+        );
+    });
+}
+
 pub fn space_sync_tick_impl(
     mut conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
 ) -> Result<SpaceSyncTickResult, String> {
+    note_tick_ran();
     let peer_ids: Vec<String> = paired_devices::table
         .select(paired_devices::peer_device_id)
         .load(&mut *conn)
@@ -1132,6 +1225,19 @@ pub fn space_sync_tick_impl(
         device_connection.db_path.clone(),
         &paired_peer_ids,
     );
+    // Same "first tick is the earliest safe point" reasoning as the
+    // peripheral start below, and a no-op on every call after the first.
+    start_tick_keeper_once(device_connection.clone());
+
+    // The keeper above only decides *who* drives the tick inside this process.
+    // On Android that is not enough on its own: a backgrounded app has its
+    // process frozen or killed, so the loop stops regardless of who owns the
+    // timer. The foreground service is what keeps the process alive at all,
+    // and the persistent notification is both the price Android charges for
+    // that and honest disclosure that Fini is holding a device connection.
+    #[cfg(target_os = "android")]
+    start_sync_service_once();
+
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         // Android must not start the peripheral acceptor from `.setup()`
