@@ -562,11 +562,17 @@ ADB_CONNECT_TIMEOUT ?= 15
 # mounted one it never looked at. Symptom: INSTALL_FAILED_UPDATE_INCOMPATIBLE
 # on the second and every subsequent deploy.
 #
-# --passwd-entry is the belt to GRADLE_OPTS' braces, and the part that actually
-# holds: GRADLE_OPTS reaches the Gradle *client* JVM, but the build runs in a
-# long-lived daemon JVM that does not necessarily inherit it, so the daemon
-# kept resolving user.home its own way. Giving the uid a real passwd entry
-# fixes the resolution at the source, for every JVM in the container.
+# JAVA_TOOL_OPTIONS rather than GRADLE_OPTS, and --passwd-entry alongside it:
+# the build runs in a long-lived Gradle *daemon* JVM, and GRADLE_OPTS reaches
+# only the client, so the daemon kept resolving user.home its own way and kept
+# minting a fresh keystore inside the container. JAVA_TOOL_OPTIONS is read by
+# every JVM that starts in the container, daemon included; the passwd entry
+# fixes the same thing at the OS level for anything that consults getpwuid.
+#
+# To check this is still working, compare the signer of a freshly built APK
+# against the keystore it is supposed to come from -- they must match:
+#   keytool -list -v -keystore ~/.android/debug.keystore -storepass android
+#   $ANDROID_HOME/build-tools/*/apksigner verify --print-certs <apk>
 # Resolved rather than used as-is: on this class of host (Fedora Silverblue and
 # friends) $(HOME) is /home/<user>, a symlink to the real /var/home/<user>.
 # Cargo canonicalises paths it reads back, so a cache mounted only at the
@@ -580,7 +586,7 @@ ANDROID_BUILD_RUN = podman run --rm -t \
 	--userns=keep-id \
 	--passwd-entry "builder:x:$(shell id -u):$(shell id -g):builder:$(ANDROID_BUILD_HOME):/bin/bash" \
 	-e HOME="$(ANDROID_BUILD_HOME)" \
-	-e GRADLE_OPTS="-Duser.home=$(ANDROID_BUILD_HOME)" \
+	-e JAVA_TOOL_OPTIONS="-Duser.home=$(ANDROID_BUILD_HOME)" \
 	-e PATH="$(ANDROID_BUILD_HOME)/.cargo/bin:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 	-e ANDROID_HOME="$(shell readlink -f "$(ANDROID_HOME)")" \
 	-e NDK_HOME="$(shell readlink -f "$(NDK_HOME)")" \
@@ -595,7 +601,7 @@ ANDROID_BUILD_RUN = podman run --rm -t \
 	"$(ANDROID_BUILD_IMAGE)"
 
 android-build-image:
-	podman build -f android-build.Containerfile -t "$(ANDROID_BUILD_IMAGE)" .
+	podman build -f Dockerfile --target android-build -t "$(ANDROID_BUILD_IMAGE)" .
 
 # Fails loudly rather than silently falling back to the host JDK, which would
 # reintroduce exactly the Gradle failure this indirection exists to avoid.
