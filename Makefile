@@ -25,7 +25,7 @@ RELEASE_BUNDLES ?= deb,rpm
 # this default has no effect on published release artifacts.
 NO_STRIP ?= true
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices desktop-debug desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices desktop-debug desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
 
 help:
 	@echo ""
@@ -540,6 +540,52 @@ ANDROID_RELEASE_SIGNED_APK = bin/fini-release.apk
 APKSIGNER = $(lastword $(sort $(wildcard $(ANDROID_HOME)/build-tools/*/apksigner)))
 ADB_CONNECT_TIMEOUT ?= 15
 
+# Gradle half of the Android build runs in a JDK 17 container (see
+# android-build.Containerfile for why). Only the build is containerised: adb
+# stays on the host, where the USB device and adb server are.
+#
+# The repo, SDK/NDK and the cargo/gradle/android caches are bind-mounted at
+# their host paths rather than copied, so cached state is shared with host
+# builds and the image holds no project state. Mounting at the *same* absolute
+# path matters: cargo and gradle both record absolute paths in their caches, so
+# relocating the tree would invalidate them on every switch. `--userns=keep-id`
+# keeps written files owned by the invoking user, and mounting ~/.android keeps
+# one stable debug keystore -- without it the container generates a fresh one
+# per run and every install fails on a signature mismatch.
+# Resolved rather than used as-is: on this class of host (Fedora Silverblue and
+# friends) $(HOME) is /home/<user>, a symlink to the real /var/home/<user>.
+# Cargo canonicalises paths it reads back, so a cache mounted only at the
+# symlinked path is looked up at the real one and appears missing inside the
+# container ("failed to read plugin permissions ... No such file or directory").
+# Mounting at the resolved path makes both spellings agree with $(CURDIR),
+# which is already resolved. On hosts without that symlink this is a no-op.
+ANDROID_BUILD_HOME := $(shell readlink -f "$(HOME)")
+ANDROID_BUILD_IMAGE ?= fini-android-build
+ANDROID_BUILD_RUN = podman run --rm -t \
+	--userns=keep-id \
+	-e HOME="$(ANDROID_BUILD_HOME)" \
+	-e PATH="$(ANDROID_BUILD_HOME)/.cargo/bin:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+	-e ANDROID_HOME="$(shell readlink -f "$(ANDROID_HOME)")" \
+	-e NDK_HOME="$(shell readlink -f "$(NDK_HOME)")" \
+	-e FINI_ANDROID_VERSION_NAME -e FINI_ANDROID_VERSION_CODE \
+	-v "$(CURDIR)":"$(CURDIR)":Z \
+	-v "$(ANDROID_BUILD_HOME)/Android":"$(ANDROID_BUILD_HOME)/Android" \
+	-v "$(ANDROID_BUILD_HOME)/.cargo":"$(ANDROID_BUILD_HOME)/.cargo" \
+	-v "$(ANDROID_BUILD_HOME)/.rustup":"$(ANDROID_BUILD_HOME)/.rustup" \
+	-v "$(ANDROID_BUILD_HOME)/.gradle":"$(ANDROID_BUILD_HOME)/.gradle" \
+	-v "$(ANDROID_BUILD_HOME)/.android":"$(ANDROID_BUILD_HOME)/.android" \
+	-w "$(CURDIR)" \
+	"$(ANDROID_BUILD_IMAGE)"
+
+android-build-image:
+	podman build -f android-build.Containerfile -t "$(ANDROID_BUILD_IMAGE)" .
+
+# Fails loudly rather than silently falling back to the host JDK, which would
+# reintroduce exactly the Gradle failure this indirection exists to avoid.
+android-require-build-image:
+	@podman image exists "$(ANDROID_BUILD_IMAGE)" \
+		|| (echo "Missing image $(ANDROID_BUILD_IMAGE). Run 'make android-build-image' first." && exit 1)
+
 android-connect:
 	@test -n "$(DEVICE_ADDRESS)" || (echo "No device found via adb mdns. Enable wireless debugging on the phone." && exit 1)
 	@timeout "$(ADB_CONNECT_TIMEOUT)s" adb connect $(DEVICE_ADDRESS) || (echo "ADB connect timed out for $(DEVICE_ADDRESS). Re-authorize wireless debugging, reconnect USB, or start an emulator." && exit 1)
@@ -547,9 +593,11 @@ android-connect:
 android-dev: android-connect
 	npm run tauri android dev -- --features ui-plane --host $(HOST_IP)
 
-android-build:
-	npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
+android-build: android-require-build-image
+	$(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 
+# Deliberately NOT containerised: this is the CI lane (ci.yml), where
+# setup-java already provides the right JDK and podman is the wrong tool.
 android-build-emulator-e2e:
 	npm run tauri android build -- --features ui-plane --ci --debug --apk --target x86_64
 
@@ -647,7 +695,7 @@ android-release-deploy-debugsigned:
 # debug build worth installing in the first place. Safe here precisely
 # because this variant ships under its own `.debug` application id and never
 # replaces the Play Store install.
-android-debug-deploy:
+android-debug-deploy: android-require-build-image
 	@set -eu; \
 	printf 'Android debug (debug profile) version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"; \
 	mkdir -p "$(FINI_SCRATCH_DIR)"; \
@@ -656,13 +704,13 @@ android-debug-deploy:
 	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
 	trap restore_capability EXIT INT TERM; \
 	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane,devtools --debug --target "$(ANDROID_TARGET)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane,devtools --debug --target "$(ANDROID_TARGET)"
 	adb install -r "src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
 	$(MAKE) android-launch-debug
 
-android-release-deploy-local:
+android-release-deploy-local: android-require-build-image
 	@printf 'Android local release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-release-local
 	$(MAKE) android-install-release-local
 	$(MAKE) android-launch
