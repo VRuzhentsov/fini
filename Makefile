@@ -552,6 +552,21 @@ ADB_CONNECT_TIMEOUT ?= 15
 # keeps written files owned by the invoking user, and mounting ~/.android keeps
 # one stable debug keystore -- without it the container generates a fresh one
 # per run and every install fails on a signature mismatch.
+#
+# GRADLE_OPTS pins `user.home` because mounting ~/.android is not on its own
+# enough: the Android Gradle Plugin locates the default debug keystore through
+# the JVM's `user.home` system property, which the JVM derives from /etc/passwd
+# for the running uid -- not from $HOME. Under --userns=keep-id that uid has no
+# passwd entry, so `user.home` resolved somewhere else entirely and Gradle
+# generated a brand-new debug keystore on every run, next to a perfectly good
+# mounted one it never looked at. Symptom: INSTALL_FAILED_UPDATE_INCOMPATIBLE
+# on the second and every subsequent deploy.
+#
+# --passwd-entry is the belt to GRADLE_OPTS' braces, and the part that actually
+# holds: GRADLE_OPTS reaches the Gradle *client* JVM, but the build runs in a
+# long-lived daemon JVM that does not necessarily inherit it, so the daemon
+# kept resolving user.home its own way. Giving the uid a real passwd entry
+# fixes the resolution at the source, for every JVM in the container.
 # Resolved rather than used as-is: on this class of host (Fedora Silverblue and
 # friends) $(HOME) is /home/<user>, a symlink to the real /var/home/<user>.
 # Cargo canonicalises paths it reads back, so a cache mounted only at the
@@ -563,7 +578,9 @@ ANDROID_BUILD_HOME := $(shell readlink -f "$(HOME)")
 ANDROID_BUILD_IMAGE ?= fini-android-build
 ANDROID_BUILD_RUN = podman run --rm -t \
 	--userns=keep-id \
+	--passwd-entry "builder:x:$(shell id -u):$(shell id -g):builder:$(ANDROID_BUILD_HOME):/bin/bash" \
 	-e HOME="$(ANDROID_BUILD_HOME)" \
+	-e GRADLE_OPTS="-Duser.home=$(ANDROID_BUILD_HOME)" \
 	-e PATH="$(ANDROID_BUILD_HOME)/.cargo/bin:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 	-e ANDROID_HOME="$(shell readlink -f "$(ANDROID_HOME)")" \
 	-e NDK_HOME="$(shell readlink -f "$(NDK_HOME)")" \
@@ -664,7 +681,13 @@ android-launch:
 # release-flavored install (android-release-deploy-debugsigned's and
 # android-release-deploy-local's own use of it).
 android-launch-debug:
-	adb shell am start -n com.fini.app.debug/.MainActivity
+	# Activity class spelled out rather than the `.MainActivity` shorthand:
+	# that shorthand expands against the *application id*, which the debug
+	# build suffixes to com.fini.app.debug, while the activity itself stays in
+	# the unsuffixed com.fini.app namespace (applicationIdSuffix changes package
+	# identity, not the Kotlin package). The shorthand therefore asks for a
+	# com.fini.app.debug.MainActivity that has never existed.
+	adb shell am start -n com.fini.app.debug/com.fini.app.MainActivity
 
 # Builds the `release` buildType (no --debug flag), just locally signed with
 # the debug keystore for fast iteration -- so, unlike android-debug-deploy
