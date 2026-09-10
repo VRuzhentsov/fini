@@ -726,13 +726,17 @@ impl DeviceConnectionState {
     /// or has lapsed; also `false` if there's no session on this transport
     /// at all (gray -- callers distinguish gray from amber via
     /// `has_session_on`).
+    /// Read off the machine (ADR-0005), not off the ack table: `Live` is the
+    /// one green state by definition, so green can no longer disagree with
+    /// what the link's state says it is. The ack table still feeds the
+    /// transitions that get the machine there -- it is the evidence, not the
+    /// verdict.
     pub fn transport_reliable(&self, peer_device_id: &str, kind: TransportKind) -> bool {
         let Ok(guard) = self.runtime.lock() else { return false };
-        guard
-            .peer_transport_ack
-            .get(&(peer_device_id.to_string(), kind))
-            .map(|ack| ack.own_ping_acked && ack.peer_ping_received)
-            .unwrap_or(false)
+        matches!(
+            guard.peer_link_state.get(&(peer_device_id.to_string(), kind)),
+            Some(link_state::LinkState::Live)
+        )
     }
 
     /// The amber reason for this (peer, transport)'s connected-but-not-yet-
@@ -746,22 +750,37 @@ impl DeviceConnectionState {
         peer_device_id: &str,
         kind: TransportKind,
     ) -> Option<transport::TransportStatusCode> {
+        let key = (peer_device_id.to_string(), kind);
         let guard = self.runtime.lock().ok()?;
-        let ack = guard.peer_transport_ack.get(&(peer_device_id.to_string(), kind))?;
-        if ack.own_ping_acked && ack.peer_ping_received {
-            return None;
-        }
-        let never_proven = !ack.own_ping_acked
-            && !ack.peer_ping_received
-            && ack.consecutive_missed_own_pings == 0
-            && ack.ticks_since_peer_ping == 0;
-        if never_proven {
-            Some(transport::TransportStatusCode::AwaitingFirstAck)
-        } else {
-            Some(transport::TransportStatusCode::PingMissed {
-                count: ack.consecutive_missed_own_pings.max(ack.ticks_since_peer_ping),
-            })
-        }
+        // Which amber applies is now read off the machine's state rather than
+        // re-derived from ack counters (ADR-0005). The two could previously
+        // disagree -- most visibly a session that had been dead for over an
+        // hour still reporting itself connected-but-amber, because the code
+        // described the counters while nothing described the link.
+        let code = match guard.peer_link_state.get(&key)? {
+            link_state::LinkState::Live => return None,
+            link_state::LinkState::Proving { .. } | link_state::LinkState::Authenticating { .. } => {
+                transport::TransportStatusCode::AwaitingFirstAck
+            }
+            link_state::LinkState::Fading { .. } => {
+                // `count` stays sourced from the ack table: it is a measure of
+                // the evidence, not of the state, and the state has no reason
+                // to carry a number the transition never reads.
+                let count = guard
+                    .peer_transport_ack
+                    .get(&key)
+                    .map(|ack| ack.consecutive_missed_own_pings.max(ack.ticks_since_peer_ping))
+                    .unwrap_or(0);
+                transport::TransportStatusCode::PingMissed { count }
+            }
+            // Not a session state: the caller only reaches here once
+            // `has_session_on` is known true, so this is a race between the two
+            // reads. Reporting "waiting for the first ack" is the honest
+            // answer for a session too young or too gone to have proven
+            // anything.
+            _ => transport::TransportStatusCode::AwaitingFirstAck,
+        };
+        Some(code)
     }
 
     /// Whether this device is currently discoverable for pairing —
