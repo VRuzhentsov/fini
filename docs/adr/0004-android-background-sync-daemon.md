@@ -2,11 +2,10 @@
 
 ## Status
 
-Accepted, implemented on `feat/external-actors`. The Rust-side tick keeper is
-verified on Linux; the Android foreground service **compiles but has not been
-verified on a physical device** — the phone was disconnected before the deploy
-could be exercised. Verification steps are listed at the end and must be run
-before this is claimed to work.
+Accepted, implemented on `feat/external-actors`, **verified on a physical
+Pixel 6 Pro** — see Verification below. The daemon does what it was built for.
+A separate BLE defect (simultaneous bidirectional dialling) keeps sessions from
+*staying* up; that is out of this ADR's scope and recorded at the end.
 
 ## Context
 
@@ -98,15 +97,60 @@ is real and should be closed before this ships to users — see below.
 
 ## Verification
 
-Linux, done:
+Linux: `make desktop-debug-build` clean.
 
-- `make desktop-debug-build` clean.
+Android, on a physical Pixel 6 Pro:
 
-Android, **not yet done** (needs a device on USB):
+**The service runs with the right type.** `dumpsys activity services` reports
+`isForeground=true foregroundId=4211 types=0x00000010` (0x10 is
+`FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`) and a notification on channel
+`fini.sync` with `ONGOING_EVENT|NO_CLEAR|FOREGROUND_SERVICE`.
 
-- `make android-debug-deploy`, then background the app and confirm the
-  notification appears and our process keeps logging (the direct inverse of the
-  silent 7,476-line capture above).
-- Confirm a live Bluetooth session survives backgrounding rather than dying of
-  missed pings.
-- Confirm the service restarts after being killed (`adb shell am kill`).
+**The process keeps running while backgrounded.** With the launcher in the
+foreground, our process kept logging its own 60s retry loop — the direct
+inverse of the silent 7,476-line capture that motivated this ADR.
+
+**It reacts to the world while backgrounded.** Bluetooth was toggled on with
+the app still backgrounded; the process noticed on its next retry and brought
+the peripheral up by itself:
+
+```
+00:57:18 advertise: started, generation=2
+00:57:18 serve: advertising accepted, awaiting centrals
+```
+
+**A Bluetooth session establishes and authenticates while backgrounded.** With
+the launcher still foreground, the desktop dialled in and both sides
+authenticated, reaching the green state (`bluetooth: configured, code=null`):
+
+```
+04:59:25 link established session=95, ATT MTU 512, fragment_budget=501
+04:59:26 auth OK with 1a3ae309-... via 58:24:29:D8:0B:72
+```
+
+**The process is protected from background reclamation.** `adb shell am kill`
+left the pid unchanged. That is the expected result rather than a failed test:
+`am kill` only reclaims processes that are safe to kill, and a foreground
+service makes this one not safe to kill. `START_STICKY` covers genuine
+low-memory reclamation, which cannot be forced deterministically, so that path
+remains untested.
+
+## Out of scope: sessions do not stay up
+
+Established sessions degrade to `ping_missed` within ~30s. This is **not** a
+background-lifecycle problem — everything above happened with the app
+backgrounded and the process demonstrably alive. It is a separate BLE defect:
+both peers dial each other, so two links exist for one pair and the second
+supersedes the first.
+
+```
+04:59:25 [central role]    link established session=95  fragment_budget=501
+04:59:26 auth OK
+05:00:35 [peripheral role] accepted central             session=96 fragment_budget=12
+05:00:38 link lost session=96 (peripheral role)
+05:00:38 notify: refusing — session 96 for ... has been superseded
+```
+
+ADR-0003's revision has both transports connect unconditionally, which is right
+for Network but collides on Bluetooth, where a pair should hold one link.
+Tracked separately.
