@@ -1902,3 +1902,86 @@ async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
         other => panic!("a receiver not in add-mode must not reply to DiscoveryHello, got {other:?}"),
     }
 }
+
+/// ADR-0005's opening evidence, as a test of the wiring rather than of the
+/// transition table (which `link_state`'s own tests cover exhaustively).
+///
+/// On real hardware a Bluetooth session lapsed to amber and was still claimed
+/// 1h44m later, refusing every incoming connection from that same peer while
+/// its dial side wound down to exhausted. The row said connected throughout.
+/// Nothing tore the dead link down, because a lapsed proof only recoloured a
+/// row -- there was no transition to carry an effect.
+///
+/// Proves the whole chain now: a lapsed proof enters the grace window, the
+/// session survives it, and once the grace expires the machine emits its
+/// teardown, the session's `Close` is delivered, and the slot is genuinely
+/// released so a later connection can claim it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
+    use crate::services::device_connection::link_state::{LinkEvent, FADE_GRACE};
+
+    let (server, server_db) = server_state("transport-lapsed-proof-tears-down");
+    seed_paired_device(&server_db, "peer-client");
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let consumer_server = server.clone();
+    let consumer_db = server_db.clone();
+    tokio::spawn(async move {
+        while let Some(command) = rx.recv().await {
+            if matches!(command, crate::services::space_sync::types::SessionCommand::Close) {
+                consumer_server.release_session("peer-client", TransportKind::TcpWs, &consumer_db);
+                break;
+            }
+        }
+    });
+
+    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tx, &server_db));
+    let start = std::time::Instant::now();
+    server.submit_link_event_at("peer-client", TransportKind::TcpWs, LinkEvent::ProofComplete, start);
+
+    // The proof lapses. Nothing may be torn down yet: a link that goes quiet
+    // for one cycle is the case the grace window exists to ride out.
+    server.submit_link_event_at("peer-client", TransportKind::TcpWs, LinkEvent::ProofLapsed, start);
+    server.submit_link_event_at(
+        "peer-client",
+        TransportKind::TcpWs,
+        LinkEvent::Tick,
+        start + FADE_GRACE / 2,
+    );
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        server.has_session_on("peer-client", TransportKind::TcpWs),
+        "the session must survive the grace window, not be torn down on the first missed proof"
+    );
+
+    // Grace expires. This is the edge that did not exist.
+    server.submit_link_event_at(
+        "peer-client",
+        TransportKind::TcpWs,
+        LinkEvent::Tick,
+        start + FADE_GRACE,
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut released = false;
+    while tokio::time::Instant::now() < deadline {
+        if !server.has_session_on("peer-client", TransportKind::TcpWs) {
+            released = true;
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        released,
+        "a session whose proof stayed lapsed past the grace window must be torn down, \
+         not left holding the transport's only slot"
+    );
+
+    // The slot is genuinely free again -- the property whose absence made the
+    // original failure permanent rather than merely wrong.
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(4);
+    assert!(
+        server.try_claim_session("peer-client", TransportKind::TcpWs, tx2, &server_db),
+        "a later connection from the same peer must be able to claim the freed slot"
+    );
+}

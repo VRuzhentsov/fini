@@ -25,7 +25,7 @@ use super::transport::TransportStatusCode;
 /// silence. Long enough to ride out a radio glitch without reconnect churn,
 /// short enough that nothing sits dead for an hour -- which is exactly what
 /// happened when this edge did not exist (ADR-0005's opening evidence).
-pub(super) const FADE_GRACE: Duration = Duration::from_secs(30);
+pub(crate) const FADE_GRACE: Duration = Duration::from_secs(30);
 
 /// How long a dial or an auth handshake may run before it is given up on.
 /// Matches `transport::ble::AUTO_RETRY_WINDOW`, whose own doc comment records
@@ -48,7 +48,7 @@ pub(super) const ATTEMPT_WINDOW: Duration = Duration::from_secs(60);
 /// even be stated, because "is there a session" and "is it alive" lived in
 /// separate maps that nothing reconciled.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum LinkState {
+pub(crate) enum LinkState {
     /// Preconditions for this transport aren't met: no adapter, disabled for
     /// this pair, no stored address, not OS-bonded, no network presence.
     /// Nothing to attempt until that changes.
@@ -76,7 +76,7 @@ pub(super) enum LinkState {
 /// Something that happened to the link. Submitted by whichever component
 /// observed it; the machine decides what it means.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum LinkEvent {
+pub(crate) enum LinkEvent {
     /// Preconditions are no longer met (and why).
     PreconditionsLost { reason: TransportStatusCode },
     /// Preconditions are met again.
@@ -121,14 +121,14 @@ pub(super) enum LinkEffect {
 
 impl LinkState {
     /// The starting point for a pair whose preconditions are already met.
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         LinkState::Idle { retry_at: None }
     }
 
     /// The invariant from this type's doc comment, in code. Callers use it to
     /// answer "is a session claimed" instead of consulting a separate map --
     /// that separation is what allowed the two to disagree.
-    pub(super) fn has_session(&self) -> bool {
+    pub(crate) fn has_session(&self) -> bool {
         matches!(
             self,
             LinkState::Authenticating { .. }

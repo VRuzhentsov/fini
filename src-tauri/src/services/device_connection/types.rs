@@ -9,6 +9,7 @@ use crate::services::transport::TransportKind;
 // (TcpWs/Sim/Bluetooth/LoRa, used for `peer_session_kind` below) does at a
 // different granularity -- `DiscoveredDevice.transport` only ever needs
 // "which discovery mechanism found this," not the live-session kind.
+use super::link_state::LinkState;
 use super::transport::TransportKind as DiscoveryTransportKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +286,13 @@ pub(super) struct DiscoveryRuntime {
     /// can earn a real (not remembered) green. Keyed by `(peer_device_id,
     /// TransportKind)`. See `DeviceConnectionState::try_claim_session`.
     pub peer_sessions: HashMap<(String, TransportKind), SessionSender>,
+    /// The owned link state machine per `(peer_device_id, TransportKind)`
+    /// (ADR-0005). Lives beside `peer_sessions` deliberately: a transition and
+    /// a read of the session table then happen under one lock, so the two
+    /// cannot drift the way `peer_sessions` and `peer_transport_ack` used to.
+    /// `peer_sessions` holds the *handle* to a live session; this holds what
+    /// the link's state actually is, and owns every decision about it.
+    pub peer_link_state: HashMap<(String, TransportKind), LinkState>,
     /// Which transport is *primary* for each peer -- the one carrying real
     /// application traffic (SyncEvent, BootstrapEnd, etc.), reported as
     /// `RowState::Live`. Both transports can be connected and green at

@@ -1,5 +1,5 @@
 mod commands;
-mod link_state;
+pub(crate) mod link_state;
 mod runtime;
 mod transport;
 pub(crate) mod types;
@@ -259,6 +259,77 @@ impl DeviceConnectionState {
     /// a session already live on the *other* transport is no longer a
     /// reason to refuse. Callers must check the return value the same way
     /// as before -- on `false`, the caller's link must not proceed to
+    /// Submit an event to this peer's link state machine and carry out
+    /// whatever the transition demands (ADR-0005).
+    ///
+    /// The transition runs under the runtime lock, so it sees the session
+    /// table as it is at that instant, but effects are carried out *after*
+    /// the lock is dropped: sending into a session's command channel while
+    /// holding this lock would let one stalled session block every other
+    /// peer's bookkeeping -- the same class of stall a P1 finding already
+    /// fixed in `try_claim_session` for its DB read.
+    pub(super) fn submit_link_event(
+        &self,
+        peer_device_id: &str,
+        kind: TransportKind,
+        event: link_state::LinkEvent,
+    ) {
+        self.submit_link_event_at(peer_device_id, kind, event, std::time::Instant::now());
+    }
+
+    /// `submit_link_event` with the clock supplied by the caller.
+    ///
+    /// Exists so tests can step the machine past deadlines measured in tens of
+    /// seconds without sleeping for them. The transition function is already
+    /// pure (`LinkState::apply` takes `now`); this keeps that property intact
+    /// all the way out to the effect boundary, which is the half that actually
+    /// closes sessions and so is the half worth testing.
+    pub(crate) fn submit_link_event_at(
+        &self,
+        peer_device_id: &str,
+        kind: TransportKind,
+        event: link_state::LinkEvent,
+        now: std::time::Instant,
+    ) {
+        let key = (peer_device_id.to_string(), kind);
+        let mut to_close: Vec<SessionSender> = Vec::new();
+        {
+            let Ok(mut guard) = self.runtime.lock() else { return };
+            let current = guard
+                .peer_link_state
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(link_state::LinkState::new);
+            let (next, effects) = current.apply(event.clone(), now);
+            if next != current {
+                log::debug!(
+                    "[link-state] {peer_device_id} {kind:?}: {current:?} + {event:?} -> {next:?}"
+                );
+            }
+            guard.peer_link_state.insert(key.clone(), next);
+            for effect in effects {
+                match effect {
+                    link_state::LinkEffect::TearDownSession => {
+                        if let Some(sender) = guard.peer_sessions.get(&key) {
+                            log::info!(
+                                "[link-state] {peer_device_id} {kind:?}: tearing down a session the machine no longer believes in"
+                            );
+                            to_close.push(sender.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for sender in to_close {
+            // `try_send` rather than a blocking send: a session whose channel
+            // is full is already not draining, and blocking here would stall
+            // the caller (a ping tick, a sync tick) on it. The session also
+            // ends on its own when its link dies, so a dropped Close costs a
+            // retry, not correctness.
+            let _ = sender.try_send(SessionCommand::Close);
+        }
+    }
+
     /// `AuthOk`/the session loop.
     pub fn try_claim_session(
         &self,
@@ -295,6 +366,13 @@ impl DeviceConnectionState {
             guard.peer_transport_ack.insert(key, types::TransportAckState::default());
             self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
         }
+        // Both events, in order: a claim only ever happens after a link came
+        // up *and* auth succeeded, but the gate learns the peer's identity
+        // from the Auth frame, so this is the first point either can be
+        // reported. Submitting only `AuthSucceeded` would leave the machine in
+        // `Idle` while a session exists -- a violation of its own invariant.
+        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::LinkEstablished);
+        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::AuthSucceeded);
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
             kind,
@@ -361,6 +439,10 @@ impl DeviceConnectionState {
                 return; // wasn't claimed on this transport; nothing to release
             }
             guard.peer_transport_ack.remove(&key);
+            // The machine is told below, outside the lock. Nothing is removed
+            // from `peer_link_state` here: the machine keeps describing the
+            // link after the session ends (`Idle`, `GaveUp`), which is the
+            // point -- it is the state of the *link*, not of the session.
             // A P1 review finding on the removal-before-DB-read fix above:
             // without this, `peer_primary_transport` can keep pointing at
             // the session just removed for the *entire* duration of the
@@ -379,6 +461,7 @@ impl DeviceConnectionState {
             true
         };
         debug_assert!(removed);
+        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::SessionEnded);
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
             peer_device_id: peer_device_id.to_string(),
             kind,
@@ -569,40 +652,71 @@ impl DeviceConnectionState {
     /// No-op if this (peer, transport) has no claimed session -- the
     /// session may have just ended between the tick firing and this call.
     pub(super) fn note_ping_tick(&self, peer_device_id: &str, kind: TransportKind) {
-        let Ok(mut guard) = self.runtime.lock() else { return };
-        let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind)) else {
-            return;
-        };
-        if ack.own_ping_awaiting_pong {
-            ack.consecutive_missed_own_pings += 1;
-            if ack.consecutive_missed_own_pings >= 3 {
-                ack.own_ping_acked = false;
+        let lapsed = {
+            let Ok(mut guard) = self.runtime.lock() else { return };
+            let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind))
+            else {
+                return;
+            };
+            let proven_before = ack.own_ping_acked && ack.peer_ping_received;
+            if ack.own_ping_awaiting_pong {
+                ack.consecutive_missed_own_pings += 1;
+                if ack.consecutive_missed_own_pings >= 3 {
+                    ack.own_ping_acked = false;
+                }
             }
+            ack.ticks_since_peer_ping += 1;
+            if ack.ticks_since_peer_ping >= 3 {
+                ack.peer_ping_received = false;
+            }
+            ack.own_ping_awaiting_pong = true;
+            proven_before && !(ack.own_ping_acked && ack.peer_ping_received)
+        };
+        // Outside the lock -- `submit_link_event` takes it itself, and this
+        // mutex is not reentrant.
+        if lapsed {
+            self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::ProofLapsed);
         }
-        ack.ticks_since_peer_ping += 1;
-        if ack.ticks_since_peer_ping >= 3 {
-            ack.peer_ping_received = false;
-        }
-        ack.own_ping_awaiting_pong = true;
+        // Every session's ping loop doubles as the machine's clock, which is
+        // what lets `Fading` reach its grace deadline at all. Submitted on
+        // every tick, not only on a lapse: the deadline is time-based, so it
+        // needs the passage of time reported even when nothing else changed.
+        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::Tick);
     }
 
     /// A `Pong` answering this device's own outstanding `Ping` arrived.
     pub(super) fn note_pong_received(&self, peer_device_id: &str, kind: TransportKind) {
-        let Ok(mut guard) = self.runtime.lock() else { return };
-        if let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind)) {
+        let proven = {
+            let Ok(mut guard) = self.runtime.lock() else { return };
+            let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind))
+            else {
+                return;
+            };
             ack.own_ping_acked = true;
             ack.own_ping_awaiting_pong = false;
             ack.consecutive_missed_own_pings = 0;
+            ack.own_ping_acked && ack.peer_ping_received
+        };
+        if proven {
+            self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::ProofComplete);
         }
     }
 
     /// An inbound `Ping` from the peer arrived (the caller replies with a
     /// `Pong` separately -- this just records the proof).
     pub(super) fn note_ping_received(&self, peer_device_id: &str, kind: TransportKind) {
-        let Ok(mut guard) = self.runtime.lock() else { return };
-        if let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind)) {
+        let proven = {
+            let Ok(mut guard) = self.runtime.lock() else { return };
+            let Some(ack) = guard.peer_transport_ack.get_mut(&(peer_device_id.to_string(), kind))
+            else {
+                return;
+            };
             ack.peer_ping_received = true;
             ack.ticks_since_peer_ping = 0;
+            ack.own_ping_acked && ack.peer_ping_received
+        };
+        if proven {
+            self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::ProofComplete);
         }
     }
 
