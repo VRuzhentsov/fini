@@ -149,15 +149,6 @@ impl LinkState {
         )
     }
 
-    /// Whether a dial may be started now. Necessary, not sufficient: the
-    /// caller still applies the pair's designated-dialer tiebreak.
-    pub(super) fn may_dial(&self, now: Instant) -> bool {
-        match self {
-            LinkState::Idle { retry_at } => retry_at.is_none_or(|at| now >= at),
-            _ => false,
-        }
-    }
-
     /// The pure transition. Returns the next state and any effects.
     ///
     /// Unhandled `(state, event)` pairs are no-ops by design rather than
@@ -346,22 +337,6 @@ mod tests {
             LinkState::Proving { since: start }.apply(LinkEvent::Tick, start + ATTEMPT_WINDOW);
         assert_eq!(state, LinkState::Idle { retry_at: None });
         assert_eq!(effects, vec![LinkEffect::TearDownSession]);
-    }
-
-    #[test]
-    fn backoff_gates_dialling_but_expires() {
-        let start = t0();
-        let backing_off = LinkState::Idle {
-            retry_at: Some(start + Duration::from_secs(10)),
-        };
-        assert!(!backing_off.may_dial(start));
-        assert!(backing_off.may_dial(start + Duration::from_secs(10)));
-        assert!(LinkState::new().may_dial(start));
-        assert!(!LinkState::Live.may_dial(start), "already connected");
-        assert!(
-            !LinkState::GaveUp { since: start }.may_dial(start),
-            "giving up must stop costing radio time"
-        );
     }
 
     #[test]

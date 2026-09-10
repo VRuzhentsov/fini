@@ -1157,6 +1157,7 @@ fn tick_is_overdue() -> bool {
 /// role can safely start (see `start_peripheral_once`'s caller below), and
 /// starting a Rust timer any earlier would just reintroduce that problem from
 /// a different thread.
+#[cfg(target_os = "android")]
 fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
@@ -1225,8 +1226,22 @@ pub fn space_sync_tick_impl(
         device_connection.db_path.clone(),
         &paired_peer_ids,
     );
-    // Same "first tick is the earliest safe point" reasoning as the
-    // peripheral start below, and a no-op on every call after the first.
+    // Android only, matching the reason this exists at all (ADR-0004): a
+    // backgrounded WebView has its timers throttled, so ticks stop. Desktop
+    // has no such problem -- its frontend always drives them, and if it ever
+    // stops that is a different bug, not one a second ticker should paper
+    // over.
+    //
+    // Running it on desktop was actively harmful, and measurably so. The
+    // keeper opens its own SQLite connection while the app holds its own, and
+    // `space_sync_tick_impl` writes, so the two contend: a desktop log from a
+    // real session had 21 keeper ticks and 21 `database is locked` failures.
+    // Every keeper tick there did no work *and* added lock pressure to
+    // everything else reading the DB, including the auth gate.
+    //
+    // Same "first tick is the earliest safe point" reasoning as the peripheral
+    // start below, and a no-op on every call after the first.
+    #[cfg(target_os = "android")]
     start_tick_keeper_once(device_connection.clone());
 
     // The keeper above only decides *who* drives the tick inside this process.
