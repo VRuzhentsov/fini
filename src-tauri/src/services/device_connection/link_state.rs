@@ -1,5 +1,16 @@
 //! The owned state machine for one peer's link on one transport (ADR-0005).
 //!
+//! **Load-bearing. Read `docs/adr/0005-transport-link-state-machine.md` before
+//! changing anything here.** Everything a user sees about connectivity is
+//! downstream of this file: the grey/amber/green row, whether a dial happens,
+//! whether an incoming connection is accepted. It is listed among the
+//! load-bearing files in `src-tauri/README.md` for that reason.
+//!
+//! Three properties below are deliberate and easy to erode by accident --
+//! purity, effects being a bare minimum rather than a command channel, and
+//! unhandled pairs being no-ops. Each has its own note at the point it
+//! matters; none of them is incidental.
+//!
 //! Everything here is pure: `LinkState::apply` takes the current state, an
 //! event and the current time, and returns the next state plus whatever must
 //! happen as a consequence. No clock reads, no locks, no I/O. That is what
