@@ -51,8 +51,10 @@ test('peer session establishes over BLE, both sides go green, and a single quest
 }) => {
   const [syncedA, syncedB] = await ensureBlePairedActors([actorA, actorB]);
 
-  await expectNetworkTransportUnavailable(actorA);
-  await expectNetworkTransportUnavailable(actorB);
+  // Peer-scoped, so the same spec covers both lanes: spawned actors see no
+  // presence at all, while on hardware only this peer must be absent.
+  await expectNetworkTransportUnavailable(actorA, syncedB.identity.device_id);
+  await expectNetworkTransportUnavailable(actorB, syncedA.identity.device_id);
 
   await waitForBleSession(actorA);
   await waitForBleSession(actorB);

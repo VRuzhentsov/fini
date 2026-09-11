@@ -25,7 +25,7 @@ RELEASE_BUNDLES ?= deb,rpm
 # this default has no effect on published release artifacts.
 NO_STRIP ?= true
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices desktop-debug desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
 
 help:
 	@echo ""
@@ -418,6 +418,35 @@ e2e-devices:
 	FINI_E2E_EXTERNAL_ACTORS="desktop=$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
 	TZ=UTC \
 	npx playwright test --config specs/e2e/playwright.config.ts --project actors $(if $(E2E_DEVICES_SPEC),-g "$(E2E_DEVICES_SPEC)",)
+
+# The BLE lane against real hardware: the same peer-sync-over-ble spec the
+# mock-radio lane runs, but driving the two already-running debug apps instead
+# of spawning any -- so the radio is a real one.
+#
+# Deliberately no FINI_E2E_TRANSPORT=ble here. That flag exists to launch
+# *spawned* actors with FINI_DISCOVERY_DISABLED=1 and a mock broker; neither
+# applies to apps that are already running. On hardware the network is made
+# unavailable the honest way: switch the phone's Wi-Fi off, so Bluetooth is the
+# only path left and the spec's peer-scoped presence assertion proves it.
+#
+# The control plane survives that: it reaches the phone over `adb forward`
+# on USB, not over the network being taken away.
+#
+#   1. make android-debug-deploy      # phone app running
+#   2. make desktop-debug             # desktop app running
+#   3. turn the phone's Wi-Fi off
+#   4. make e2e-devices-ble
+e2e-devices-ble:
+	@set -eu; \
+	adb get-state >/dev/null 2>&1 || (echo "No adb device. Connect the phone and run 'make android-devices'." && exit 1); \
+	adb forward tcp:$(E2E_PHONE_PORT) tcp:$(E2E_PHONE_PORT) >/dev/null; \
+	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices-ble}"; \
+	mkdir -p "$$run_root"; \
+	FINI_E2E_ROOT="$$run_root" \
+	FINI_E2E_ACTORS="desktop,$(E2E_PHONE_ACTOR)" \
+	FINI_E2E_EXTERNAL_ACTORS="desktop=$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	TZ=UTC \
+	npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
 
 E2E_PHONE_ACTOR ?= phone
 E2E_PHONE_PORT ?= 9223

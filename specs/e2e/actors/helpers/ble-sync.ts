@@ -56,6 +56,30 @@ export async function ensureBlePairedActors(
 
   const [a, b] = await waitForActorsReady(actors, timeoutMs);
 
+  // External actors are real apps on real devices with a real OS-level
+  // Bluetooth bond and a real address already stored. Seeding a fake address
+  // over that would not just be redundant, it would overwrite the pairing the
+  // run depends on -- so the hardware path asserts the precondition instead of
+  // manufacturing it.
+  if (a.actor.kind === 'external' || b.actor.kind === 'external') {
+    await expectBluetoothPairReady(a, b.identity.device_id);
+    await expectBluetoothPairReady(b, a.identity.device_id);
+    // Resume dialling on both sides before the run starts. A real device may
+    // arrive already in `bluetooth_dial_exhausted` from earlier activity, and
+    // that state is left only by an explicit user retry -- so without this the
+    // spec waits out its whole timeout on a pair that has simply stopped
+    // trying. This is the same call the Device row's "tap to try again"
+    // affordance makes; it resumes the automatic path rather than standing in
+    // for it, so what the spec then measures is still the real dial.
+    await a.actor.invoke('device_connection_retry_bluetooth_dial', {
+      peerDeviceId: b.identity.device_id,
+    });
+    await b.actor.invoke('device_connection_retry_bluetooth_dial', {
+      peerDeviceId: a.identity.device_id,
+    });
+    return [a, b];
+  }
+
   await a.actor.invoke('device_connection_save_paired_device', {
     peerDeviceId: b.identity.device_id,
     displayName: b.identity.hostname,
@@ -72,6 +96,33 @@ export async function ensureBlePairedActors(
   return [a, b];
 }
 
+interface PairedDeviceRow {
+  peer_device_id: string;
+  bluetooth_enabled: boolean;
+  bluetooth_address: string | null;
+}
+
+/**
+ * The hardware precondition, stated as an assertion rather than set up by the
+ * test: this actor already knows the peer, has Bluetooth enabled for it, and
+ * holds an address. A failure here means the devices were never paired over
+ * Bluetooth, which is a setup problem the run cannot fix for itself -- and a
+ * far clearer message than the timeout it would otherwise become.
+ */
+async function expectBluetoothPairReady(actor: SyncedActor, peerDeviceId: string): Promise<void> {
+  const paired = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
+  const row = paired.find((entry) => entry.peer_device_id === peerDeviceId);
+  expect(row, `${actor.actor.slug} should already be paired with ${peerDeviceId}`).toBeTruthy();
+  expect(
+    row?.bluetooth_enabled,
+    `${actor.actor.slug} should have Bluetooth enabled for ${peerDeviceId}`,
+  ).toBe(true);
+  expect(
+    row?.bluetooth_address,
+    `${actor.actor.slug} should hold a Bluetooth address for ${peerDeviceId}`,
+  ).toBeTruthy();
+}
+
 export async function waitForBleSession(actor: E2EActor, timeoutMs = 60_000): Promise<void> {
   await pollUntil(`${actor.slug} session established over BLE transport`, async () => {
     await actor.invoke('space_sync_tick');
@@ -80,10 +131,65 @@ export async function waitForBleSession(actor: E2EActor, timeoutMs = 60_000): Pr
   }, timeoutMs, 1_000);
 }
 
-export async function expectNetworkTransportUnavailable(actor: E2EActor): Promise<void> {
-  const presence = await actor.invoke<unknown[]>('device_connection_presence_snapshot');
-  expect(presence, `${actor.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
+/**
+ * Proves the network transport genuinely cannot carry this session, so a
+ * Bluetooth result is not one the network quietly produced.
+ *
+ * Two shapes, because the two lanes make the network unavailable in different
+ * ways. Spawned actors are launched with `FINI_DISCOVERY_DISABLED=1`, so they
+ * see no presence at all and the global assertion is the strongest one
+ * available. External actors are real apps that cannot be relaunched with that
+ * flag: there, the network is made unavailable by switching the phone's Wi-Fi
+ * off, and what must hold is that *this peer* is absent -- another device on
+ * the desktop's network is irrelevant and must not fail the run.
+ */
+export async function expectNetworkTransportUnavailable(
+  actor: E2EActor,
+  peerDeviceId?: string,
+): Promise<void> {
+  const presence = await actor.invoke<{ device_id?: string; last_seen_at?: string }[]>(
+    'device_connection_presence_snapshot',
+  );
+
+  // A spawned actor was launched with FINI_DISCOVERY_DISABLED=1 and can see
+  // nothing at all, so assert exactly that -- it is the stronger claim, and
+  // weakening it to "not this peer" for both lanes would quietly stop proving
+  // the flag works.
+  if (actor.kind === 'spawned' || peerDeviceId === undefined) {
+    expect(presence, `${actor.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
+    return;
+  }
+
+  // Freshness, not mere membership. The snapshot is not TTL-filtered -- it
+  // keeps every peer it has ever heard from, so a device that dropped off the
+  // network still appears in it indefinitely. Observed on this pair: entries
+  // fifteen hours stale sitting alongside live ones. Asking "is this peer in
+  // the list" would therefore never pass on hardware, however unreachable the
+  // peer actually is; asking "has it been heard from recently" is the question
+  // that matches what the assertion means.
+  const cutoff = Date.now() - PRESENCE_FRESHNESS_MS;
+  const freshPeerPresence = presence.filter((entry) => {
+    if (entry.device_id !== peerDeviceId) {
+      return false;
+    }
+    const seenAt = entry.last_seen_at ? Date.parse(entry.last_seen_at) : Number.NaN;
+    return Number.isNaN(seenAt) ? true : seenAt >= cutoff;
+  });
+
+  expect(
+    freshPeerPresence,
+    `${actor.slug} still sees live network presence for ${peerDeviceId} -- ` +
+      "turn the phone's Wi-Fi off so Bluetooth is the only path left",
+  ).toHaveLength(0);
 }
+
+/**
+ * How recent a presence beacon has to be to count as "the network can still
+ * reach this peer". Four times `DISCOVERY_TTL_SECS` (15s, see
+ * `device_connection`), so a peer that is genuinely live is never mistaken for
+ * a stale record on a slow beacon cycle.
+ */
+const PRESENCE_FRESHNESS_MS = 60_000;
 
 /**
  * "Green" is `state: "configured"` with `code: null` -- the ping/ack
