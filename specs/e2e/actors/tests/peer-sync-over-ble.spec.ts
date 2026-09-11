@@ -45,7 +45,7 @@ interface Quest {
  * strictly more precise anyway (exact id, not scraped text) for verifying
  * "the same entity converged."
  */
-test('peer session establishes over BLE, both sides go green, and a single quest converges both ways', async ({
+test('happy-path-BLE: session is carried by BLE alone, both sides go green, and a single quest converges both ways', async ({
   actorA,
   actorB,
 }) => {
