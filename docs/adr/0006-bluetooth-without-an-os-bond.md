@@ -61,11 +61,14 @@ identify them with the app-level auth we already trust.**
 2. **Identify at the app layer.** The `Auth` frame already carries `device_id`,
    and `run_peer_gate` already rejects a peer that is not the expected one.
    This is unchanged: it is already the declared trust boundary, and it already
-   works.
+   works. Note that `probe_candidate` (`ble.rs:521`) already does exactly this
+   — dial a scanned candidate and run `perform_client_auth` to learn who it is
+   — so identification by advertisement is not new code, it is code we already
+   run and then throw away.
 3. **Drop the bond checks.** `check_bluetooth_bond` and the OS-pairing arm of
    `bluetooth_dial_candidates` go away, along with `bluetooth_address` as a
-   dial input. Whether the address is kept as diagnostic metadata is an open
-   question below.
+   dial input and as a precondition. The column itself stays, written as
+   "where we last saw this peer" for diagnostics — see the design review below.
 4. **Protect the channel above the transport, not at the link.**
    `secure_channel.rs` — today a stub sitting between the codec and the `Link`
    — becomes the place confidentiality lives, using an established protocol
@@ -90,6 +93,81 @@ It is the wrong answer *here* for two reasons:
 
 A library-level option for this is being added to ble-gatt for other consumers;
 fini is expected to leave it off.
+
+## Design review
+
+The decision above leaves one thing unanswered that turns out to be
+load-bearing: **who dials.** `should_dial_peer` picks a side by comparing
+`self.device_id < peer.device_id`, and under this ADR we do not learn the
+peer's `device_id` until after we have connected and authenticated. The rule
+loses its input exactly when it is needed.
+
+Six decisions close that gap and the questions behind it.
+
+**1. A short identity fingerprint rides in the advertisement.** Four bytes
+derived from `device_id`, carried in the manufacturer data that
+`datagram_config` already populates and the scanner at `ble.rs:684` already
+reads. A legacy advertisement holds 31 bytes and the 128-bit service UUID plus
+the existing manufacturer record spend about 26, so this fits with room to
+spare. `should_dial_peer` keeps its rule and compares fingerprints instead of
+full ids. A fingerprint collision only means both sides dial, which is glare —
+a case the machine must survive regardless.
+
+The payload stops being a single flag byte, so the exact-equality test at
+`ble.rs:684` (`== Some([ADD_MODE_FLAG_BYTE])`) becomes a field read. That
+comparison is the one place a careless change silently disables add-mode
+discovery.
+
+**2. The fingerprint is stable now and rotating later, deliberately.** A
+constant identifier broadcast continuously is trackable, and it undoes the
+address rotation Android performs on purpose. The privacy-correct answer is a
+fingerprint derived from a per-pair secret and a coarse time window, so only a
+paired peer can recognise it — but `paired_devices` (`schema.rs:92`) stores no
+key material at all, so that answer is not available today. The same missing
+ingredient blocks `secure_channel`. Both get it at once; until then this is
+recorded as known debt rather than an oversight.
+
+Worth stating plainly: the service UUID already makes a device identifiable as
+"some Fini install". The fingerprint raises that to "this particular install".
+
+**3. "Not seen advertising" is a precondition, not a silent wait.** It maps
+onto the existing `PreconditionsLost { reason }` event, so the machine needs no
+new state, and it takes over the code slot that `BluetoothNotOsPaired` vacates.
+The row goes gray with an honest reason. The alternative — sitting in `Idle`
+showing amber "connecting…" at a peer who is in another building — is the exact
+dishonesty ADR-0005 exists to remove.
+
+**4. Scanning is duty-cycled, and the cycle depends on who is watching.** A 5s
+listening window, repeated every 30s in the foreground and every 60s in the
+background daemon: the foreground pays for a row that turns green while the
+user is looking at it, the daemon pays for battery. Scanning pauses while a
+session is live, because the link already proves presence.
+
+Continuous scanning is rejected on first-hand evidence, not theory: sustained
+scanning on the development desktop destabilised the host adapter badly enough
+to drop the machine's unrelated Bluetooth devices, recorded under ADR-0005's
+method traps.
+
+The freshness window for decision 3 follows from the period rather than being
+chosen: it must span several cycles, or one missed beacon drops the row
+spuriously. Roughly 90s in the foreground, roughly three minutes in the
+background. The cost is honest but unhurried: after a peer really leaves, the
+row can take up to three minutes to go gray.
+
+**5. `find_peer_address`/`probe_candidate` are promoted, not replaced.** They
+already scan, dial and authenticate; they simply discard the established link
+and return an address to redial. That discard is the address-centric model's
+last artefact. A successful probe *is* the session, so it keeps its link. The
+fingerprint becomes a cheap pre-filter deciding which candidates are worth
+probing at all — which is also what bounds dialling to strangers, since an
+unrecognised fingerprint is never probed.
+
+**6. The work lands in slices, dial-by-advertisement first.** Only that slice
+turns the manual happy path green, and it is the slice that tests this ADR's
+central claim — that a link establishes with no bond of any kind. ADR-0005's
+own Risks section argues the general case: landing in one piece leaves no
+intermediate version to verify on hardware, "and hardware verification is what
+found every defect in this area."
 
 ## Consequences
 
@@ -129,11 +207,20 @@ costs a dial. Bounding that is part of the implementation, not an afterthought.
 
 ## Open questions
 
-- Do we keep `paired_devices.bluetooth_address` at all? It stops being a dial
-  input; it may still be worth showing in diagnostics, but a stored address
-  that nothing depends on tends to grow dependents again.
-- How many concurrent dials to unknown advertisers are acceptable before that
-  becomes a battery or radio-contention problem, and what bounds them.
+Three of the original questions were closed by the design review above: the
+stored address stays as diagnostics only, dialling is bounded by the
+fingerprint pre-filter, and the dialer is chosen by comparing fingerprints.
+
+Still open:
+
 - Which protocol `secure_channel` should carry. Noise is the obvious candidate
   for a two-party channel with pre-shared identity, but that is its own
-  decision and deserves its own record.
+  decision and deserves its own record. It needs the same per-pair key material
+  that a rotating fingerprint needs, so the two should be decided together.
+- Whether `bluetooth_address` survives contact with decision 6. It is kept for
+  diagnostics on the grounds that hardware debugging goes blind without it, but
+  a stored address nothing depends on tends to grow dependents again. Worth
+  re-checking once the slices land.
+- The exact fingerprint derivation. Four bytes of a hash of `device_id` is the
+  assumption; whether that is a plain truncation and which hash is unresolved,
+  and matters only for interoperability between versions.

@@ -2,8 +2,18 @@
 
 ## Status
 
-Accepted, not yet implemented. Supersedes the status model in ADR-0003's
-revision, which this replaces rather than extends.
+Accepted. The machine itself is implemented —
+`device_connection/link_state.rs` holds the states, events and the pure
+transition function, and `device_connection/mod.rs` submits events from twelve
+call sites. The projection work described under "File changes" is not finished:
+`transport/ble.rs` still owns its process-global maps, and the UI row is still
+polled rather than pushed.
+
+Supersedes the status model in ADR-0003's revision, which this replaces rather
+than extends.
+
+The "Prerequisite this ADR does not supply" section at the bottom is superseded
+by ADR-0006, which removes the bond requirement rather than satisfying it.
 
 ## Context
 
