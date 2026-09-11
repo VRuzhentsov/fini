@@ -202,6 +202,54 @@ regresses; they are enumerated in those comments and must be walked one by one.
   contradicts.
 - `make e2e-devices` stays at 9/9 on the external-actor pair.
 
+## Prerequisite this ADR does not supply: the bond must be an LE bond
+
+Everything above is downstream of something that has to exist first, and
+discovering how strictly it has to exist cost a full day of hardware
+debugging. Recorded here so the next person does not repeat it.
+
+`bluetooth_dial_candidates` dials a peer's **stored identity address**, and
+`check_bluetooth_bond` requires that address to be OS-bonded right now. Both
+are necessary, and neither is sufficient, because the *kind* of bond decides
+which transport BlueZ then uses:
+
+- **No bond at all.** Android advertises with a resolvable private address.
+  Without a bond BlueZ cannot resolve it to the identity address, so the dial
+  has no reachable target. `bluetoothctl pair <identity>` cannot help either --
+  it answers `Device not available`, because the device was never discovered
+  under that address.
+- **A DUAL bond**, which is what pairing through Android's own Settings
+  produces against a desktop, because the desktop also advertises classic
+  profiles. BlueZ's `Device1.Connect()` then prefers BR/EDR and the dial fails
+  with `br-connection-unknown` / `br-connection-canceled`. There is no
+  transport argument on `Connect()` to override this -- BlueZ keeps one
+  `Device1` per remote identity and merges both roles onto it.
+- **An LE bond** is the configuration in which the dial works. The pair that
+  reached green on hardware had exactly that.
+
+So a working BLE link needs an LE bond, and nothing in the shipped product
+creates one: the in-app Bluetooth pairing flow is not delivered yet. Pairing
+through Android Settings actively produces the wrong kind.
+
+**Consequence for planning.** The peripheral-session defect this ADR's
+follow-up targets, and the state machine above, are both downstream of that
+missing step. A user cannot reach them today, because the link they would
+exercise cannot be established in the first place. Delivering BLE pairing is
+the prerequisite, not a parallel track.
+
+**Consequence for method.** Two further traps, both of which produced
+confident and wrong readings before being spotted:
+
+- Two desktop app instances ran simultaneously for hours, because the
+  `make desktop-debug` guard only protects that target and the binary was
+  launched directly. Two instances contend for one adapter's scanning and
+  advertising, and quietly distort everything measured through it.
+- The host adapter itself became unstable under that load, to the point of
+  dropping the machine's other Bluetooth devices. Findings taken from an
+  adapter in that state -- including the `br-connection-*` failures and the 3s
+  peripheral-session lifetime -- are worth re-confirming on a healthy one
+  before being built on.
+
 ## Open questions
 
 - Grace duration is set at 2 ping cycles (~30s) by the reasoning above, but has
