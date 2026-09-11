@@ -177,13 +177,31 @@ function resolveBleBrokerBinaryPath(): string {
   return binary;
 }
 
-function resolveAppBinaryPath(): string {
+/// The GUI binary each *spawned* actor is launched from.
+///
+/// `null` when every actor in the run is external, because then nothing is
+/// spawned and no local build is involved. Demanding the binary there made the
+/// device lane depend on an artifact it never executes: `make e2e-devices`
+/// drives two already-running apps (a desktop and a physical phone), yet a
+/// missing `target/debug-e2e` build failed all nine specs before a single one
+/// could talk to either device.
+function resolveAppBinaryPath(): string | null {
+  if (allActorsAreExternal()) {
+    return null;
+  }
   const binary = process.env.FINI_APP_BINARY ?? DEFAULT_APP_BINARY;
   if (!existsSync(binary)) {
     throw new Error(`Fini GUI binary not found: ${binary}`);
   }
 
   return binary;
+}
+
+/// Whether every actor this run declares is supplied externally.
+function allActorsAreExternal(): boolean {
+  const external = externalActorPorts();
+  const slugs = actorSlugs();
+  return slugs.length > 0 && slugs.every((slug) => external.has(slug));
 }
 
 function resolveRunRoot(): string {
@@ -672,7 +690,7 @@ async function createActorSession(): Promise<ActorSession> {
   mkdirSync(socketDir, { recursive: true });
 
   console.log(`FINI_E2E_RUN_ROOT=${sessionRoot}`);
-  console.log(`FINI_E2E_APP_BINARY=${binaryPath}`);
+  console.log(`FINI_E2E_APP_BINARY=${binaryPath ?? '(none -- every actor is external)'}`);
 
   let bleBroker: BleBrokerState | null = null;
   if (actorTransport() === 'ble') {
@@ -700,8 +718,15 @@ async function createActorSession(): Promise<ActorSession> {
           ? {
               kind: 'spawned',
               slug,
-              spawnState: () =>
-                spawnActorProcess(runId, runRoot, socketDir, slugs, slug, index, binaryPath),
+              spawnState: () => {
+                // Non-null by construction: `resolveAppBinaryPath` only
+                // returns null when every actor is external, and this branch
+                // is the one where at least one is not.
+                if (binaryPath === null) {
+                  throw new Error(`no GUI binary to spawn actor "${slug}" from`);
+                }
+                return spawnActorProcess(runId, runRoot, socketDir, slugs, slug, index, binaryPath);
+              },
               waitMs,
               onState: (state) => actorStates.push(state),
             }
