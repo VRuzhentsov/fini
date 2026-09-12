@@ -716,49 +716,70 @@ pub async fn scan_add_mode_candidates(
     use futures_util::StreamExt;
 
     let backend = backend().await?;
-    let mut discovered = backend
-        .scan(datagram_config().service)
-        .await
-        .map_err(|err| format!("ble scan failed: {err}"))?;
-
-    let mut candidates = Vec::new();
-    let mut tried: HashSet<String> = HashSet::new();
     let deadline = tokio::time::Instant::now() + timeout;
 
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
+    // Two phases, and the split is the point: listen to completion, close
+    // the scan, *then* probe. Probing while the discovery stream is still
+    // open asks one adapter to run active discovery and establish a
+    // connection at the same moment, and it does not do both -- measured on
+    // this hardware in the dial path, where BlueZ answered `Connect` with
+    // nothing at all until ble-gatt's own 20s timeout fired, every single
+    // attempt, against a peer at rssi -62.
+    //
+    // This function had the same shape and is the prime suspect for why
+    // in-app BLE pairing has never worked. Unverified on hardware: the fix
+    // is mechanical and mirrors `connect_by_advertisement`, but the symptom
+    // it is meant to cure has only been observed in that sibling.
+    let flagged_addresses = {
+        let mut discovered = backend
+            .scan(datagram_config().service)
+            .await
+            .map_err(|err| format!("ble scan failed: {err}"))?;
+
+        let mut flagged: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let peer = match tokio::time::timeout(remaining, discovered.next()).await {
+                Ok(Some(Ok(peer))) => peer,
+                // A backend-level scan failure (e.g. Android's async
+                // `onScanFailed`) means Bluetooth itself is unusable, not
+                // merely "no more candidates" -- propagate it like
+                // `find_peer_address` does, rather than reporting an
+                // apparently-successful empty/partial scan.
+                Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
+                // Timed out, or the stream ended: stop with whatever was
+                // already found.
+                Ok(None) | Err(_) => break,
+            };
+            let address = peer.address.0.clone();
+            if !seen.insert(address.clone()) {
+                continue;
+            }
+            // A field read, not an equality test against the whole payload:
+            // ADR-0006's slice 2 appended four fingerprint bytes after this
+            // flags byte, and an exact comparison would silently stop
+            // matching every advertiser -- disabling add-mode discovery
+            // entirely with no error anywhere.
+            let is_flagged = peer
+                .manufacturer_data
+                .get(&FINI_MANUFACTURER_ID)
+                .and_then(|payload| payload.first())
+                .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
+            if is_flagged {
+                flagged.push(address);
+            }
         }
-        let peer = match tokio::time::timeout(remaining, discovered.next()).await {
-            Ok(Some(Ok(peer))) => peer,
-            // A backend-level scan failure (e.g. Android's async
-            // `onScanFailed`) means Bluetooth itself is unusable, not
-            // merely "no more candidates" -- propagate it like
-            // `find_peer_address` does, rather than reporting an
-            // apparently-successful empty/partial scan.
-            Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
-            // Timed out, or the stream ended: stop with whatever was
-            // already found.
-            Ok(None) | Err(_) => break,
-        };
-        let address = peer.address.0.clone();
-        if !tried.insert(address.clone()) {
-            continue;
-        }
-        // A field read, not an equality test against the whole payload:
-        // ADR-0006's slice 2 appended four fingerprint bytes after this
-        // flags byte, and an exact comparison would silently stop matching
-        // every advertiser -- disabling add-mode discovery entirely with no
-        // error anywhere.
-        let flagged = peer
-            .manufacturer_data
-            .get(&FINI_MANUFACTURER_ID)
-            .and_then(|payload| payload.first())
-            .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
-        if !flagged {
-            continue;
-        }
+        flagged
+        // `discovered` is dropped here, stopping discovery, before any
+        // probe below runs.
+    };
+
+    let mut candidates = Vec::new();
+    for address in flagged_addresses {
         // Bounded by the *remaining* scan deadline, not a fixed window: one
         // unresponsive candidate (in range, advertising, but slow or gone
         // by the time this connects) must not eat the whole scan past the
