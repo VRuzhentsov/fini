@@ -37,7 +37,10 @@ pub use commands::{
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub(crate) use commands::bluetooth_address_is_os_paired;
+pub use commands::note_observed_bluetooth_address;
+// ADR-0006: `bluetooth_address_is_os_paired` is no longer re-exported. The
+// bond check has no callers outside `commands` now that neither the dial
+// path nor the inbound gate consults it.
 pub(crate) use commands::{
     local_bluetooth_address, normalize_bluetooth_address, peer_transport_preference,
     persist_bluetooth_address_and_maybe_enable,

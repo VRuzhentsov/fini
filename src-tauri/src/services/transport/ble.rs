@@ -175,7 +175,10 @@ mod android_lazy {
 }
 
 use crate::services::db::open_db_at_path;
-use crate::services::device_connection::{bluetooth_dial_candidates, DeviceConnectionState};
+use crate::services::device_connection::{
+    bluetooth_dial_candidates, note_observed_bluetooth_address as store_observed_bluetooth_address,
+    DeviceConnectionState,
+};
 use crate::services::space_sync::session;
 use crate::services::space_sync::types::PeerFrame;
 use crate::services::transport::{recv_frame, send_frame, BoxDialFuture, Link, Transport, TransportKind};
@@ -863,14 +866,10 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
 /// presence worker or static port list to draw from here. ADR-0003
 /// revision: dials unconditionally now, independent of Network's own state
 /// or the pin -- see `tcp_ws::spawn_dial_loop`'s own doc comment.
-pub fn spawn_dial_loop(
-    state: &DeviceConnectionState,
-    db_path: PathBuf,
-    candidates: &[(String, String)],
-) {
+pub fn spawn_dial_loop(state: &DeviceConnectionState, db_path: PathBuf, candidates: &[String]) {
     let my_id = state.identity.device_id.clone();
 
-    for (peer_id, address) in candidates {
+    for peer_id in candidates {
         if !should_dial_peer(&my_id, peer_id, state.has_session_on(peer_id, TransportKind::Bluetooth)) {
             continue;
         }
@@ -894,9 +893,8 @@ pub fn spawn_dial_loop(
         let state = state.clone();
         let db_path = db_path.clone();
         let peer_id = peer_id.clone();
-        let address = address.clone();
         tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id.clone(), address).await;
+            dial_with_backoff(state, db_path, peer_id.clone()).await;
             in_flight_dials().lock().unwrap().remove(&peer_id);
         });
     }
@@ -1077,18 +1075,11 @@ pub fn retry_bluetooth_dial(state: &DeviceConnectionState, peer_id: &str) {
     let state = state.clone();
     let peer_id = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
-        let address = tokio::task::block_in_place(|| {
-            let mut conn = open_db_at_path(&db_path);
-            bluetooth_dial_candidates(&mut conn)
-                .into_iter()
-                .find(|(candidate_id, _)| candidate_id == &peer_id)
-                .map(|(_, address)| address)
-        });
-        let Some(address) = address else {
+        if !is_still_bluetooth_eligible(&db_path, &peer_id) {
             in_flight_dials().lock().unwrap().remove(&peer_id);
             return;
-        };
-        dial_with_backoff(state, db_path, peer_id.clone(), address).await;
+        }
+        dial_with_backoff(state, db_path, peer_id.clone()).await;
         in_flight_dials().lock().unwrap().remove(&peer_id);
     });
 }
@@ -1116,11 +1107,11 @@ fn accepting_side_unconnected_since() -> &'static StdMutex<HashMap<String, Insta
 /// to time. Reuses `dial_exhausted`/`is_bluetooth_dial_exhausted` for the
 /// actual reporting, so every downstream consumer (both status polls, the
 /// frontend's retry affordance) already works identically for both roles.
-pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates: &[(String, String)]) {
+pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates: &[String]) {
     let my_id = &state.identity.device_id;
     let now = Instant::now();
     let mut unconnected_since = accepting_side_unconnected_since().lock().unwrap();
-    for (peer_id, _address) in candidates {
+    for peer_id in candidates {
         if state.has_session_on(peer_id, TransportKind::Bluetooth) {
             unconnected_since.remove(peer_id);
             // A session existing at all is proof the link can work right
@@ -1167,22 +1158,135 @@ fn should_dial_peer(my_id: &str, peer_id: &str, has_session: bool) -> bool {
 }
 
 /// Re-reads `paired_devices` for the current, live answer to "is this peer
-/// still a valid Bluetooth dial target" — enabled, still holding this exact
-/// address, and currently OS-paired. `block_in_place` around the blocking
-/// DB open, matching `space_sync::session::check_paired`'s existing pattern
-/// for the same kind of call from inside an async loop.
-fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str, address: &str) -> bool {
+/// still a valid Bluetooth dial target" — which since ADR-0006 means only
+/// "is Bluetooth still enabled for this pair". `block_in_place` around the
+/// blocking DB open, matching `space_sync::session::check_paired`'s existing
+/// pattern for the same kind of call from inside an async loop.
+fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
     tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
-        bluetooth_dial_candidates(&mut conn)
-            .into_iter()
-            .any(|(candidate_id, candidate_address)| {
-                candidate_id == peer_id && candidate_address == address
-            })
+        bluetooth_dial_candidates(&mut conn).iter().any(|candidate_id| candidate_id == peer_id)
     })
 }
 
-async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String, address: String) {
+/// `block_in_place` wrapper around the diagnostic address write, matching
+/// `is_still_bluetooth_eligible`'s pattern for a blocking DB call made from
+/// inside an async loop.
+fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, address: &str) {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        store_observed_bluetooth_address(&mut conn, peer_id, address);
+    })
+}
+
+/// How long one `connect_by_advertisement` scan listens before giving up on
+/// this attempt. ADR-0006 slice 1 keeps this a single fixed window; the
+/// duty-cycled foreground/background scanner is a later slice.
+const DIAL_SCAN_WINDOW: Duration = Duration::from_secs(8);
+
+/// Finds `peer_id` in the air and returns an authenticated link to it.
+///
+/// This is ADR-0006's core move. There is no stored address to dial: Android
+/// advertises under a rotating resolvable private address, so the only
+/// reliable way to reach a peer is to connect to whoever is advertising
+/// Fini's service UUID and let the app-level `Auth` frame say who answered.
+/// `perform_client_auth` already rejects a peer whose `device_id` is not the
+/// expected one, and `specs/device-connect/README.md` already names that
+/// exchange — not the OS bond — as the trust boundary.
+///
+/// Every candidate costs a dial plus a handshake, so this is bounded twice:
+/// by `budget` overall (the caller's remaining give-up window) and by
+/// `DIAL_SCAN_WINDOW` on the listening itself. A later ADR-0006 slice adds
+/// an advertised identity fingerprint, which turns this from "try each
+/// advertiser" into "try the one whose fingerprint matches".
+async fn connect_by_advertisement(
+    state: &DeviceConnectionState, peer_id: &str, budget: Duration,
+) -> AdvertisementDial {
+    use futures_util::StreamExt;
+
+    let mut last_auth_error = None;
+    let Ok(backend) = backend().await else {
+        return AdvertisementDial::NoneReachable { last_auth_error };
+    };
+    let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
+        return AdvertisementDial::NoneReachable { last_auth_error };
+    };
+
+    let deadline = tokio::time::Instant::now() + budget.min(DIAL_SCAN_WINDOW);
+    let mut tried: HashSet<String> = HashSet::new();
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return AdvertisementDial::NoneReachable { last_auth_error };
+        }
+        let candidate = match tokio::time::timeout(remaining, discovered.next()).await {
+            Ok(Some(Ok(candidate))) => candidate,
+            // A backend-level scan failure means Bluetooth itself is
+            // unusable right now; either way this attempt is over, and the
+            // caller's backoff decides what happens next.
+            Ok(Some(Err(_))) | Ok(None) | Err(_) => {
+                return AdvertisementDial::NoneReachable { last_auth_error }
+            }
+        };
+        let address = candidate.address.0;
+        if !tried.insert(address.clone()) {
+            continue;
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return AdvertisementDial::NoneReachable { last_auth_error };
+        }
+        // Bounded per candidate as well as overall: an advertiser that
+        // accepts the connection but never answers `Auth` would otherwise
+        // hold the whole window on its own. `dial` and `perform_client_auth`
+        // each wait unboundedly by themselves -- see `dial_with_backoff`'s
+        // note on real-device evidence of a single `connect()` taking ~28s.
+        let attempt = tokio::time::timeout(remaining.min(FIND_PEER_CANDIDATE_TIMEOUT), async {
+            let mut link = dial(&address).await?;
+            let version =
+                session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id)
+                    .await?;
+            Ok((link, version))
+        })
+        .await;
+
+        match attempt {
+            Ok(Ok((link, version))) => {
+                return AdvertisementDial::Connected {
+                    link,
+                    protocol_version: version,
+                    address,
+                }
+            }
+            Ok(Err(err)) => {
+                log::debug!("[transport][ble] candidate {address} is not {peer_id}: {err}");
+                last_auth_error = Some(err);
+            }
+            Err(_elapsed) => {
+                log::debug!("[transport][ble] candidate {address} did not answer in time");
+            }
+        }
+    }
+}
+
+/// What one `connect_by_advertisement` pass found.
+enum AdvertisementDial {
+    Connected {
+        link: Box<dyn Link>,
+        protocol_version: u32,
+        address: String,
+    },
+    /// Nothing in the air authenticated as this peer. `last_auth_error`
+    /// carries the last candidate's failure, if any candidate was tried at
+    /// all. The caller reads it the same way the old address-based path read
+    /// its auth result: an `auth rejected` prefix is a real peer refusing us
+    /// and earns a backoff, anything else is ordinary radio noise.
+    NoneReachable { last_auth_error: Option<String> },
+}
+
+async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String) {
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(30);
     // Real-device evidence (2026-09-01, actual BLE hardware, not the mock
@@ -1209,10 +1313,9 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
         // after the user disabled Bluetooth for them or unpaired them
         // entirely in the meantime — a setting meant to stop future
         // Bluetooth use silently not taking effect.
-        if !is_still_bluetooth_eligible(&db_path, &peer_id, &address) {
+        if !is_still_bluetooth_eligible(&db_path, &peer_id) {
             log::info!(
-                "[transport][ble] {peer_id} is no longer Bluetooth-enabled/OS-paired; \
-                 stopping dial retries"
+                "[transport][ble] {peer_id} is no longer Bluetooth-enabled; stopping dial retries"
             );
             return;
         }
@@ -1251,117 +1354,96 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
         // each attempt by whatever's left of `streak_deadline`, not a
         // separate fixed timeout, so the advertised total give-up window
         // holds regardless of how that time gets spent.
-        let connect_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(connect_budget, dial(&address)).await {
-            Ok(Ok(mut link)) => {
-                let auth_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
-                match tokio::time::timeout(
-                    auth_budget,
-                    session::perform_client_auth(link.as_mut(), &state.identity.device_id, &peer_id),
-                )
-                .await
+        let attempt_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
+        match connect_by_advertisement(&state, &peer_id, attempt_budget).await {
+            AdvertisementDial::Connected {
+                link,
+                protocol_version,
+                address,
+            } => {
+                log::info!("[transport][ble] auth OK with {peer_id} via {address}");
+                // The scan+connect+auth round trip is real wall-clock time
+                // during which the user could disable Bluetooth or unpair
+                // entirely; without this, a disable/unpair that lands in
+                // that window would still be raced by a session claim that
+                // started before it. Re-run the same eligibility check the
+                // top of this loop uses, right before claiming, to close
+                // that window.
+                if !is_still_bluetooth_eligible(&db_path, &peer_id) {
+                    log::info!(
+                        "[transport][ble] {peer_id} became ineligible during the \
+                         connect/auth handshake; discarding this session"
+                    );
+                    return;
+                }
+                // Diagnostics only. Since ADR-0006 nothing dials this
+                // address -- it records "where we last saw this peer", which
+                // is what keeps a hardware log readable after the fact.
+                note_observed_bluetooth_address(&db_path, &peer_id, &address);
+                let (tx, rx) = tokio::sync::mpsc::channel(64);
+                if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx, &db_path) {
+                    session::run_session(
+                        link,
+                        rx,
+                        state.clone(),
+                        db_path.clone(),
+                        peer_id.clone(),
+                        protocol_version,
+                    )
+                    .await;
+                    log::info!("[transport][ble] session with {peer_id} ended");
+                }
+                // Auth actually succeeding is real forward progress,
+                // independent of how long the eventual session lasted
+                // -- give the next streak (if the session later
+                // drops) its own full patience window rather than
+                // carrying over elapsed time from before this proof
+                // the link *can* work.
+                delay = Duration::from_secs(2);
+                streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
+            }
+            AdvertisementDial::NoneReachable {
+                last_auth_error: Some(err),
+            } => {
+                log::warn!("[transport][ble] no candidate authenticated as {peer_id}: {err}");
+                // "bluetooth disabled" is not permanent the way "unknown
+                // device" is -- the user could re-enable at any time. Keep
+                // retrying rather than giving up outright. The old "not
+                // currently OS-paired" rejection is gone entirely: ADR-0006
+                // removed the gate that produced it.
+                if err.starts_with("auth rejected")
+                    && !err.contains("bluetooth disabled for this pair")
                 {
-                    Ok(Ok(peer_protocol_version)) => {
-                        log::info!("[transport][ble] auth OK with {peer_id} via {address}");
-                        // The connect+auth round trip is real wall-clock time
-                        // during which the user could disable Bluetooth or
-                        // unpair entirely; without this, a disable/unpair
-                        // that lands in that window would still be raced by
-                        // a session claim that started before it. Re-run the
-                        // same eligibility check the top of this loop uses,
-                        // right before claiming, to close that window.
-                        if !is_still_bluetooth_eligible(&db_path, &peer_id, &address) {
-                            log::info!(
-                                "[transport][ble] {peer_id} became ineligible during the \
-                                 connect/auth handshake; discarding this session"
-                            );
-                            return;
-                        }
-                        let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx, &db_path) {
-                            session::run_session(
-                                link,
-                                rx,
-                                state.clone(),
-                                db_path.clone(),
-                                peer_id.clone(),
-                                peer_protocol_version,
-                            )
-                            .await;
-                            log::info!("[transport][ble] session with {peer_id} ended");
-                        }
-                        // Auth actually succeeding is real forward progress,
-                        // independent of how long the eventual session lasted
-                        // -- give the next streak (if the session later
-                        // drops) its own full patience window rather than
-                        // carrying over elapsed time from before this proof
-                        // the link *can* work.
-                        delay = Duration::from_secs(2);
-                        streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
-                    }
-                    Ok(Err(err)) => {
-                        log::warn!("[transport][ble] auth with {peer_id} failed: {err}");
-                        // "bluetooth disabled"/"not OS-paired" are not
-                        // permanent the way "unknown device" is -- the user
-                        // could re-enable, or re-pair, at any time. Keep
-                        // retrying rather than giving up outright.
-                        if err.starts_with("auth rejected")
-                            && !err.contains("bluetooth disabled for this pair")
-                            && !err.contains("bluetooth device is not currently OS-paired")
-                        {
-                            // Not just "don't retry within this task" --
-                            // `spawn_dial_loop` would otherwise spawn a
-                            // fresh one on the very next tick regardless.
-                            // See `dial_backoff_until`'s own doc comment.
-                            dial_backoff_until()
-                                .lock()
-                                .unwrap()
-                                .insert(peer_id.clone(), Instant::now() + DIAL_BACKOFF);
-                            return; // not paired; don't retry
-                        }
-                    }
-                    Err(_elapsed) => {
-                        // P2 review finding: falling through to the bottom
-                        // of the loop's unconditional `sleep(delay)` (up to
-                        // `max_delay` = 30s) here meant an attempt that
-                        // consumed the *entire* remaining budget still
-                        // waited another 30s before the top-of-loop deadline
-                        // check could fire -- the advertised 60s give-up
-                        // could take up to 90s in practice. This attempt
-                        // already used up (at least) whatever budget was
-                        // left, so loop back immediately and let that check
-                        // mark exhaustion right away instead.
-                        log::warn!(
-                            "[transport][ble] auth with {peer_id} timed out waiting for a reply \
-                             within the remaining retry window"
-                        );
-                        continue;
-                    }
+                    // Not just "don't retry within this task" --
+                    // `spawn_dial_loop` would otherwise spawn a
+                    // fresh one on the very next tick regardless.
+                    // See `dial_backoff_until`'s own doc comment.
+                    dial_backoff_until()
+                        .lock()
+                        .unwrap()
+                        .insert(peer_id.clone(), Instant::now() + DIAL_BACKOFF);
+                    return; // not paired; don't retry
                 }
             }
-            Ok(Err(err)) => {
-                log::warn!("[transport][ble] connect to {peer_id} ({address}) failed: {err}");
-            }
-            Err(_elapsed) => {
-                // Same reasoning as the auth-timeout arm above.
-                log::warn!(
-                    "[transport][ble] connect to {peer_id} ({address}) timed out within the \
-                     remaining retry window"
-                );
-                continue;
+            AdvertisementDial::NoneReachable {
+                last_auth_error: None,
+            } => {
+                // Nothing in the air answered as this peer within the
+                // window. Ordinary: the peer is out of range, its radio is
+                // off, or its advertisement simply did not land in this
+                // listening window.
+                log::info!("[transport][ble] {peer_id} did not answer in the air this round");
             }
         }
 
-        // P2 review finding: this sleep is also reached by the two
-        // `Ok(Err(err))` arms above (an ordinary connect failure, or a
-        // retryable auth rejection) -- unlike the `Err(_elapsed)` arms,
-        // those don't `continue` past it, so an ordinary rejection landing
-        // shortly before `streak_deadline` could still sleep the full (up
-        // to 30s) `delay` before the top-of-loop check gets another chance
-        // to run, pushing the advertised 60s give-up noticeably later.
-        // Bound it the same way the connect/auth budgets above are bounded,
-        // rather than duplicating a deadline check into both `Ok(Err(_))`
-        // arms individually.
+        // P2 review finding: this sleep is reached by the unsuccessful arms
+        // above, which (unlike the old `Err(_elapsed)` arms) don't `continue`
+        // past it, so a failure landing shortly before `streak_deadline`
+        // could still sleep the full (up to 30s) `delay` before the
+        // top-of-loop check gets another chance to run, pushing the
+        // advertised 60s give-up noticeably later. Bound it the same way the
+        // attempt budget above is bounded, rather than duplicating a deadline
+        // check into each unsuccessful arm individually.
         let remaining_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
         tokio::time::sleep(delay.min(remaining_budget)).await;
         delay = (delay * 2).min(max_delay);

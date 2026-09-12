@@ -1439,10 +1439,13 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
 /// disabled case rather than breaking Bluetooth accepts outright.
 #[tokio::test(flavor = "multi_thread")]
 async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
-    // `check_bluetooth_bond` requires the connecting link's `peer_addr()` to
-    // match the pair's stored `bluetooth_address` *and* that address to be
-    // OS-paired -- `sim::SimLink::peer_addr()` reports the TCP peer's IP
-    // ("127.0.0.1" here), so that's what gets stored and allow-listed.
+    // The stored address and the OS-paired allow-list below are no longer
+    // required to pass: ADR-0006 deleted `check_bluetooth_bond`, which used
+    // to demand that the connecting link's `peer_addr()` match the pair's
+    // stored `bluetooth_address` and that the address be OS-paired. They are
+    // left in place because this test's subject is the *enabled* gate, and
+    // keeping the surrounding setup unchanged keeps it a true mirror of the
+    // disabled-case test above.
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
     std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "127.0.0.1");
 

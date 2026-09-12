@@ -79,59 +79,17 @@ fn check_bluetooth_disabled_by_user(db_path: &PathBuf, device_id: &str) -> bool 
     })
 }
 
-/// Whether the link's actual peer address matches this pair's stored
-/// Bluetooth address, *and* that address is currently OS-bonded.
-///
-/// `check_bluetooth_enabled` alone only proves the authenticated
-/// `device_id` belongs to a row with Bluetooth turned on -- it says nothing
-/// about whether the central that just connected over BLE is actually the
-/// specific bonded hardware the pairing metadata expects. `device_id` is an
-/// app-level identifier carried inside the `Auth` frame, not tied to any
-/// physical radio; `specs/device-connect/README.md` states OS Bluetooth
-/// pairing as an additional, transport-level precondition specifically for
-/// Bluetooth (unlike tcp_ws/sim, which have no such notion), and Android's
-/// `BleGattBridge` advertises plain, unencrypted GATT characteristics (no
-/// `PERMISSION_*_ENCRYPTED`), so nothing at the BLE stack level enforces
-/// bonding before a connection succeeds -- that enforcement has to happen
-/// here. Mirrors `bluetooth_dial_candidates`'s own dial-side eligibility
-/// check. Fails closed on any missing/unreadable/mismatched data.
-fn check_bluetooth_bond(db_path: &PathBuf, device_id: &str, observed_address: Option<&str>) -> bool {
-    let Some(observed_address) = observed_address else {
-        return false;
-    };
-    let stored: Option<String> = tokio::task::block_in_place(|| {
-        let mut conn = open_db_at_path(db_path);
-        paired_devices::table
-            .find(device_id)
-            .select(paired_devices::bluetooth_address)
-            .first::<Option<String>>(&mut conn)
-            .unwrap_or(None)
-    });
-    let Some(stored) = stored else {
-        return false;
-    };
-    if !stored.eq_ignore_ascii_case(observed_address) {
-        return false;
-    }
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        // `bluetooth_address_is_os_paired` internally does a
-        // `tauri::async_runtime::block_on` on Linux (bounding its
-        // `bluetoothctl` subprocess) -- calling that directly from this
-        // async fn's body would risk "cannot start a runtime from within a
-        // runtime" on whichever worker thread is currently driving this
-        // task. `block_in_place` (already used for the DB read above) is
-        // the sanctioned way to run blocking/nested-runtime work safely
-        // from inside an async task on a multi-threaded runtime.
-        tokio::task::block_in_place(|| {
-            crate::services::device_connection::bluetooth_address_is_os_paired(&stored)
-        })
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        false
-    }
-}
+// ADR-0006 deleted `check_bluetooth_bond` from here. It required the
+// connecting link's observed address to equal this pair's stored address and
+// that address to be OS-bonded right now. Both halves are incompatible with
+// how Bluetooth actually works for us: a peer advertises under a rotating
+// resolvable private address, so the observed address is expected to differ
+// from anything stored, and the bond that would let the OS resolve one to
+// the other is something the product never creates.
+//
+// What it was reaching for -- "is the thing that just connected really this
+// peer" -- is answered one layer up by the `Auth` frame, which
+// `specs/device-connect/README.md` already names as the trust boundary.
 
 /// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.
 /// Shared by every adapter's dial path. Returns the peer's reported
@@ -303,19 +261,12 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             .await;
             return;
         }
-        if !check_bluetooth_bond(&db_path, &device_id, link.peer_addr().as_deref()) {
-            log::warn!(
-                "[space_sync][gate] bluetooth auth from {device_id} rejected: not currently OS-paired"
-            );
-            let _ = send_frame(
-                link.as_mut(),
-                &PeerFrame::AuthFail {
-                    reason: "bluetooth device is not currently OS-paired".into(),
-                },
-            )
-            .await;
-            return;
-        }
+        // ADR-0006 removed a second check here: the connecting link's
+        // observed address had to match a stored one that was also currently
+        // OS-bonded. It was never a trust check -- the `Auth` frame above is
+        // and remains the trust boundary -- and it rejected exactly the
+        // connections this transport now depends on, since a peer that
+        // advertises under a rotating address never matches a stored one.
     }
 
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);

@@ -191,8 +191,6 @@ pub struct TransportStatusInputs {
     /// peer's beacon reaching us right now."
     pub network_present: bool,
     pub bluetooth_enabled: bool,
-    pub bluetooth_has_metadata: bool,
-    pub bluetooth_os_paired: bool,
     /// `ble::is_bluetooth_dial_exhausted` -- whether this peer's automatic
     /// dial retries have given up after `AUTO_RETRY_WINDOW`. Checked last,
     /// after every other precondition passes: it only means anything once
@@ -216,8 +214,6 @@ pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportS
     let TransportStatusInputs {
         network_present,
         bluetooth_enabled,
-        bluetooth_has_metadata,
-        bluetooth_os_paired,
         bluetooth_dial_exhausted,
         network_connected,
         bluetooth_connected,
@@ -232,12 +228,8 @@ pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportS
     } else {
         Some(TransportStatusCode::NetworkUnavailable)
     };
-    let bluetooth_unconfigured_code = bluetooth_unconfigured_code(
-        bluetooth_enabled,
-        bluetooth_has_metadata,
-        bluetooth_os_paired,
-        bluetooth_dial_exhausted,
-    );
+    let bluetooth_unconfigured_code =
+        bluetooth_unconfigured_code(bluetooth_enabled, bluetooth_dial_exhausted);
 
     vec![
         TransportStatus {
@@ -275,23 +267,20 @@ fn row_state(
     RowState::Configured { code }
 }
 
-fn bluetooth_unconfigured_code(
-    enabled: bool,
-    has_metadata: bool,
-    os_paired: bool,
-    dial_exhausted: bool,
-) -> Option<TransportStatusCode> {
+/// ADR-0006 removed two arms that used to live here: `BluetoothNoAddress`
+/// (no stored address) and `BluetoothNotOsPaired` (no live OS bond).
+/// Neither is a precondition any more -- a peer is found by its
+/// advertisement and identified by the `Auth` frame, so a stored address is
+/// diagnostic metadata and the OS bond is not used at all. Both
+/// `TransportStatusCode` variants are deliberately left defined rather than
+/// deleted: ADR-0006's later slice reuses a reason slot here for "peer not
+/// seen advertising", which is a genuine precondition.
+fn bluetooth_unconfigured_code(enabled: bool, dial_exhausted: bool) -> Option<TransportStatusCode> {
     if !BLUETOOTH_ADAPTER_IMPLEMENTED {
         return Some(TransportStatusCode::BluetoothNotSupported);
     }
     if !enabled {
         return Some(TransportStatusCode::BluetoothDisabled);
-    }
-    if !has_metadata {
-        return Some(TransportStatusCode::BluetoothNoAddress);
-    }
-    if !os_paired {
-        return Some(TransportStatusCode::BluetoothNotOsPaired);
     }
     if dial_exhausted {
         return Some(TransportStatusCode::BluetoothDialExhausted);
@@ -327,8 +316,6 @@ mod tests {
         TransportStatusInputs {
             network_present: true,
             bluetooth_enabled: true,
-            bluetooth_has_metadata: true,
-            bluetooth_os_paired: true,
             bluetooth_dial_exhausted: false,
             network_connected: false,
             bluetooth_connected: false,
@@ -518,8 +505,10 @@ mod tests {
         );
     }
 
-    /// Incomplete metadata must still gate configuration even with a real
-    /// adapter registered.
+    /// The remaining preconditions must still gate configuration even with a
+    /// real adapter registered. ADR-0006 removed the stored-address and
+    /// OS-bond arms that used to be asserted here; what is left is the pair's
+    /// own Bluetooth toggle and dial exhaustion.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn bluetooth_still_requires_full_metadata_where_implemented() {
@@ -530,20 +519,6 @@ mod tests {
                     ..ready_inputs()
                 },
                 TransportStatusCode::BluetoothDisabled,
-            ),
-            (
-                TransportStatusInputs {
-                    bluetooth_has_metadata: false,
-                    ..ready_inputs()
-                },
-                TransportStatusCode::BluetoothNoAddress,
-            ),
-            (
-                TransportStatusInputs {
-                    bluetooth_os_paired: false,
-                    ..ready_inputs()
-                },
-                TransportStatusCode::BluetoothNotOsPaired,
             ),
             (
                 TransportStatusInputs {

@@ -1551,30 +1551,19 @@ pub fn device_connection_set_bluetooth_transport(
 }
 
 /// Whether `peer_device_id` currently satisfies every precondition
-/// `bluetooth_dial_candidates` itself requires -- Bluetooth enabled, a
-/// normalizable stored address, and a live OS bond checked right now (not
-/// cached). Re-validates a user-driven Bluetooth pin against *current*
-/// reality rather than whatever `DeviceView`'s last full status load
-/// happened to show: its own periodic polling deliberately only refreshes
-/// session liveness, not this heavier eligibility check (performance --
-/// see `refreshLiveConnectedState`'s own doc comment on the frontend), so
-/// a stale "configured" row can stay clickable well after the OS bond
-/// quietly disappears.
+/// `bluetooth_dial_candidates` itself requires. Since ADR-0006 that is one
+/// thing: Bluetooth enabled for the pair.
+///
+/// It used to also require a normalizable stored address and a live OS bond
+/// checked right now. Both are gone with the bond dependency — keeping them
+/// here would have left the user-driven Bluetooth pin refusing exactly the
+/// pairs the transport can now actually reach.
 pub(crate) fn peer_is_currently_bluetooth_eligible(conn: &mut SqliteConnection, peer_device_id: &str) -> bool {
-    let device: Option<PairedDevice> = paired_devices::table
+    paired_devices::table
         .find(peer_device_id)
-        .select(PairedDevice::as_select())
-        .first(&mut *conn)
-        .optional()
-        .unwrap_or(None);
-    let Some(device) = device else { return false };
-    if !device.bluetooth_enabled {
-        return false;
-    }
-    let Some(address) = device.bluetooth_address.as_deref().and_then(normalize_bluetooth_address) else {
-        return false;
-    };
-    bluetooth_address_is_os_paired(&address)
+        .select(paired_devices::bluetooth_enabled)
+        .first::<bool>(&mut *conn)
+        .unwrap_or(false)
 }
 
 /// ADR-0003 revision: click either transport row to pin this pair to it.
@@ -1763,25 +1752,14 @@ pub fn device_connection_transport_statuses_impl(
         .select(PairedDevice::as_select())
         .first(&mut *conn)
         .map_err(|e| e.to_string())?;
-    let bluetooth_has_metadata = paired
-        .bluetooth_address
-        .as_deref()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    let bluetooth_os_paired = paired
-        .bluetooth_address
-        .as_deref()
-        .and_then(normalize_bluetooth_address)
-        .map(|address| bluetooth_address_is_os_paired(&address))
-        .unwrap_or(false);
-
+    // ADR-0006: no stored-address or OS-bond lookup here any more. Dropping
+    // the bond check also drops a `bluetoothctl` subprocess that used to run
+    // once per peer on every status poll.
     let snapshot = transport_liveness_snapshot(state, &peer_device_id);
 
     Ok(build_transport_statuses(TransportStatusInputs {
         network_present: state.network_peer_available(&peer_device_id),
         bluetooth_enabled: paired.bluetooth_enabled,
-        bluetooth_has_metadata,
-        bluetooth_os_paired,
         bluetooth_dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         network_connected: snapshot.network_connected,
         bluetooth_connected: snapshot.bluetooth_connected,
@@ -1870,27 +1848,40 @@ pub fn device_connection_transport_liveness(
     device_connection_transport_liveness_impl(&state, peer_device_id)
 }
 
-/// Every paired peer eligible for a Bluetooth dial attempt right now:
-/// Bluetooth-enabled, with a stored address, and currently OS-paired. Used
-/// by `transport::ble::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
+/// Every paired peer eligible for a Bluetooth dial attempt right now: just
+/// the ones with Bluetooth enabled for the pair. Used by
+/// `transport::ble::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
 /// presence worker or static port list to draw candidates from, so this
 /// queries `paired_devices` directly, the same source
 /// `device_connection_transport_statuses` already checks per-peer.
+///
+/// ADR-0006: this used to also require a stored address and a live OS bond,
+/// and to return the address to dial. It returns peer ids alone now, because
+/// there is no address to dial *to* — the dialer finds the peer by scanning
+/// for Fini's service UUID and proves who answered with the `Auth` frame.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<(String, String)> {
-    let paired: Vec<PairedDevice> = paired_devices::table
+pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<String> {
+    paired_devices::table
         .filter(paired_devices::bluetooth_enabled.eq(true))
-        .select(PairedDevice::as_select())
+        .select(paired_devices::peer_device_id)
         .load(&mut *conn)
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    paired
-        .into_iter()
-        .filter_map(|device| {
-            let address = device.bluetooth_address.as_deref().and_then(normalize_bluetooth_address)?;
-            bluetooth_address_is_os_paired(&address).then_some((device.peer_device_id, address))
-        })
-        .collect()
+/// Records the link-layer address a peer was actually reached at, purely so
+/// hardware logs and the Device view can show it. ADR-0006: nothing dials
+/// this value any more, and nothing gates on it — a peer that advertises
+/// under a rotating address (every modern Android) will simply rewrite it
+/// each time, which is expected rather than a problem to solve.
+///
+/// Deliberately *not* `persist_bluetooth_address_and_maybe_enable`: that one
+/// carries bond-checking and enablement side effects meant for the discovery
+/// flow. Writing a diagnostic field must not enable a transport.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn note_observed_bluetooth_address(conn: &mut SqliteConnection, peer_id: &str, address: &str) {
+    let _ = diesel::update(paired_devices::table.find(peer_id))
+        .set(paired_devices::bluetooth_address.eq(address))
+        .execute(&mut *conn);
 }
 
 /// This peer's manually-pinned transport preference, if any --
