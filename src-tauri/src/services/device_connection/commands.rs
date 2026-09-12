@@ -63,9 +63,10 @@ pub(crate) fn transport_kind_to_preference_string(
 /// Tri-state OS-bond check: `Some(true)`/`Some(false)` are *confirmed*
 /// results (the query actually completed), `None` means the check itself
 /// failed or timed out -- inconclusive, not evidence the bond doesn't
-/// exist. Most callers (the settings toggle, the accepting gate's
-/// `check_bluetooth_bond`) correctly want to fail closed on `None` too --
-/// see `bluetooth_address_is_os_paired`, the simple-bool wrapper they use.
+/// exist. Callers that still consult a bond want to fail closed on `None`
+/// too -- see `bluetooth_address_is_os_paired`, the simple-bool wrapper.
+/// (ADR-0006 removed most of them: the settings toggle and the accepting
+/// gate no longer look at bonding at all.)
 /// `persist_bluetooth_address_and_maybe_enable` is the one caller that
 /// needs to tell the difference, so a transient `bluetoothctl`/D-Bus
 /// hiccup can't destructively clear a still-valid bond just because one
@@ -370,25 +371,28 @@ pub(crate) fn request_os_bond(address: &str, peer_device_id: &str, db_path: std:
     }
 }
 
-/// Stores `address` as `peer_id`'s Bluetooth address, and additionally
-/// enables Bluetooth for the pair if -- and only if -- `address` is
-/// currently OS-bonded *on this machine*. Returns whether it was enabled,
-/// or an error if the write itself failed (a caller must not treat a
-/// rejected/failed write as a successful enable or discovery).
+/// Stores `address` as `peer_id`'s Bluetooth address. Returns `false`
+/// always, or an error if the write itself failed.
+///
+/// The name is now wider than the behaviour: since ADR-0006 this enables
+/// nothing. It kept the `maybe_enable` half and the `bool` return through
+/// that change deliberately, because every caller already branches on the
+/// result and renaming it is a mechanical change better made when the
+/// pairing work (#169) touches these paths anyway.
 ///
 /// Shared by both Phase 1 mechanisms of ADR 0002: `session::run_session`'s
 /// inbound `BluetoothAddressUpdate` handler (self-report) and
-/// `transport::ble`'s scan-and-auth discovery. Both already have a form of
-/// remote confirmation before calling this (an authenticated `PeerFrame`
-/// channel, or a live `AuthOk` from the discovered address) -- what neither
-/// proves on its own is that *this* device has completed OS-level bonding
-/// with that address. `check_bluetooth_bond` (space_sync::session) already
-/// enforces that only the *accepting* side of a Bluetooth session, so a
-/// remote AuthOk during discovery only proves bonding on the *other*
-/// side. Requiring it here too, symmetrically, before auto-enabling keeps
-/// this consistent with `device_connection_set_bluetooth_transport_impl`'s
-/// own manual-enable precondition -- never silently enable a pair this
-/// machine can't actually use yet.
+/// `transport::ble`'s scan-and-auth discovery. Both already have remote
+/// confirmation before calling this -- an authenticated `PeerFrame`
+/// channel, or a live `AuthOk` from the discovered address -- so recording
+/// what they learned is safe.
+///
+/// What it must not do is decide enablement. It used to, based on a live
+/// OS-bond check, and the "confirmed unbonded" branch *disabled* Bluetooth
+/// for the pair. With no bond consulted anywhere on the dial path that
+/// check meant nothing, and on hardware it silently switched off a working
+/// pair seconds before it would have connected. Enablement now comes only
+/// from an explicit user action or a completed BLE pairing.
 pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     conn: &mut SqliteConnection, peer_id: &str, address: &str,
 ) -> Result<bool, String> {
@@ -1227,14 +1231,16 @@ pub fn device_connection_save_paired_device_impl(
     // ADR 0002 Phase 3: a Bluetooth address handed over as part of the
     // pairing handshake itself (either observed directly on a
     // Bluetooth-carried completion, or self-reported by the peer) is
-    // stored immediately -- but `bluetooth_enabled` still only flips on
-    // if the address is actually OS-bonded (same gate Phase 1's
-    // self-report already uses via `persist_bluetooth_address_and_maybe_enable`,
-    // reused here). A completed pre-auth handshake proves reachability,
-    // not bonding: `bluetooth_dial_candidates`/`check_bluetooth_bond`
-    // both hard-require OS pairing regardless of this flag, so setting it
-    // without a real bond would just be a lie the UI shows while the pair
-    // can never actually establish a Bluetooth session.
+    // stored immediately, as diagnostics.
+    //
+    // `bluetooth_enabled` used to flip on only for an OS-bonded address,
+    // on the reasoning that setting it otherwise would be a lie the UI
+    // shows for a pair that can never connect. ADR-0006 inverted that: no
+    // bond is consulted anywhere on the dial path, so requiring one here
+    // left the flag false for every pair the product can actually serve --
+    // and a peer is only dialled when it is true. The enablement decision
+    // now lives below, keyed on whether the pairing itself arrived over
+    // Bluetooth.
     //
     // Runs for both branches above, not just a fresh insert: this
     // function is only ever called as the final step of a real,

@@ -781,7 +781,6 @@ pub async fn scan_add_mode_candidates(
             // Cost to be honest about: a room with several Fini devices
             // makes every Add Device scan dial all of them and wait out
             // `CANDIDATE_PROBE_TIMEOUT` on the ones that are not pairing.
-            let _ = ADD_MODE_FLAG_BYTE;
             flagged.push(address);
         }
         // Logged unconditionally, at info. Three separate hypotheses about
