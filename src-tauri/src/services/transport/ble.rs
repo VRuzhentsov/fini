@@ -759,20 +759,43 @@ pub async fn scan_add_mode_candidates(
             if !seen.insert(address.clone()) {
                 continue;
             }
-            // A field read, not an equality test against the whole payload:
-            // ADR-0006's slice 2 appended four fingerprint bytes after this
-            // flags byte, and an exact comparison would silently stop
-            // matching every advertiser -- disabling add-mode discovery
-            // entirely with no error anywhere.
-            let is_flagged = peer
-                .manufacturer_data
-                .get(&FINI_MANUFACTURER_ID)
-                .and_then(|payload| payload.first())
-                .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
-            if is_flagged {
-                flagged.push(address);
-            }
+            // Deliberately probes *every* Fini advertiser, not only those
+            // carrying the add-mode flag.
+            //
+            // The flag was only ever a cheap pre-filter. The authority is
+            // the `DiscoveryHello` reply: `run_peer_gate` answers it solely
+            // `if state.is_add_mode_enabled()`, so a device that is not in
+            // add-mode stays silent and never becomes a candidate. Skipping
+            // the pre-filter costs a dial per nearby Fini install and
+            // changes no outcome.
+            //
+            // Why it is skipped: on hardware the desktop discovered the
+            // phone repeatedly for two minutes and probed it zero times,
+            // because the phone's advertisement did not carry the flag even
+            // though the phone was in add-mode. Two attempts to explain that
+            // were wrong, and pairing is blocked meanwhile. This trades an
+            // unexplained filter for a slower but working discovery, and the
+            // real fix belongs with the rest of BLE pairing in its own
+            // change -- issue #169.
+            //
+            // Cost to be honest about: a room with several Fini devices
+            // makes every Add Device scan dial all of them and wait out
+            // `CANDIDATE_PROBE_TIMEOUT` on the ones that are not pairing.
+            let _ = ADD_MODE_FLAG_BYTE;
+            flagged.push(address);
         }
+        // Logged unconditionally, at info. Three separate hypotheses about
+        // why add-mode discovery finds nothing have now been wrong, each
+        // costing a build/deploy/hardware cycle, because the only evidence
+        // available was `scan: discovered` lines from ble-gatt that cannot
+        // distinguish this scan from the dial loop's. This line says what
+        // *this* call saw and what it will probe, which is the fact every
+        // one of those attempts was missing.
+        log::info!(
+            "[transport][ble] add-mode scan saw {} advertiser(s), probing {}",
+            seen.len(),
+            flagged.len()
+        );
         flagged
         // `discovered` is dropped here, stopping discovery, before any
         // probe below runs.
@@ -963,6 +986,23 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
 /// revision: dials unconditionally now, independent of Network's own state
 /// or the pin -- see `tcp_ws::spawn_dial_loop`'s own doc comment.
 pub fn spawn_dial_loop(state: &DeviceConnectionState, db_path: PathBuf, candidates: &[String]) {
+    // While the user is adding a device, the dial loop gives up the adapter.
+    //
+    // One adapter supports one discovery session, and this loop holds one
+    // for 8s out of every scan period. `scan_add_mode_candidates` opening a
+    // second concurrent scan does not fail -- it returns a stream that
+    // simply never yields, which is why Add Device found nothing while this
+    // loop was finding the same phone every few seconds. Measured directly:
+    // `add-mode scan saw 0 advertiser(s)` repeating once per poll, against
+    // `scan: discovered ...` from this loop in the same log at the same time.
+    //
+    // Yielding is the right way round. Pairing is a short window the user is
+    // actively waiting on; reconnecting an existing peer is background work
+    // that loses nothing by pausing for it, and resumes on the next tick.
+    if *add_mode_sender().borrow() {
+        return;
+    }
+
     let my_id = state.identity.device_id.clone();
 
     for peer_id in candidates {
@@ -1559,6 +1599,16 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
             log::info!(
                 "[transport][ble] {peer_id} is no longer Bluetooth-enabled; stopping dial retries"
             );
+            return;
+        }
+        // The same adapter hand-off `spawn_dial_loop` performs, for a task
+        // that was already running when add-mode began. Returning rather
+        // than sleeping: the next `space_sync_tick` after add-mode ends
+        // spawns a fresh attempt, and holding a task open across an
+        // arbitrarily long pairing session would keep this peer's
+        // `in_flight_dials` slot occupied for no benefit.
+        if *add_mode_sender().borrow() {
+            log::info!("[transport][ble] pausing dial to {peer_id}: add-mode is using the adapter");
             return;
         }
         if tokio::time::Instant::now() >= streak_deadline {

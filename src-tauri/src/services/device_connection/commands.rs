@@ -1175,7 +1175,13 @@ pub fn device_connection_save_paired_device_impl(
     display_name: String,
     bluetooth_address: Option<String>,
     via_bluetooth: bool,
-    db_path: std::path::PathBuf,
+    // Unused since ADR-0006 removed the `request_os_bond` call this fed: a
+    // completed BLE pairing no longer needs the OS to bond anything, so
+    // there is nothing here that wants a second DB handle. Kept in the
+    // signature rather than removed because the callers, the Tauri command
+    // and its tests all pass it, and churning that is not this change's
+    // job -- the BLE pairing work (#169) will settle it either way.
+    _db_path: std::path::PathBuf,
 ) -> Result<PairedDevice, String> {
     // A P2 review finding: `ble::dial_exhausted`/`dial_backoff_until`/
     // `accepting_side_unconnected_since` are process-global, keyed only by
