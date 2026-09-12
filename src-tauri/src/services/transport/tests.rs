@@ -919,15 +919,18 @@ async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_sess
     std::env::remove_var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS");
 }
 
-/// Regression test for the receiving half of Phase 1: an inbound
-/// `BluetoothAddressUpdate` for an already OS-paired address both persists
-/// the address and auto-enables Bluetooth for that pair -- self-report
-/// alone is sufficient confirmation only because it arrives over an
-/// already-authenticated session, but auto-*enabling* additionally
-/// requires OS bonding, mirroring `device_connection_set_bluetooth_transport_impl`'s
-/// own precondition.
+/// ADR-0006: a self-report records the address and never touches
+/// enablement -- **not even when the reported address is OS-bonded**, which
+/// is what this test pins.
+///
+/// The bond used to decide this, and that made a background message able to
+/// flip a transport on or off. Off was the damaging direction: during
+/// hardware verification the peer reported its address, this side found no
+/// bond, and disabled a working pair. Since the bond is now consulted
+/// nowhere on the dial path, the honest rule is that a self-report carries
+/// no authority over enablement in either direction.
 #[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_self_report_persists_and_enables_when_os_paired() {
+async fn bluetooth_self_report_does_not_enable_even_for_a_bonded_address() {
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
     std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
@@ -964,7 +967,11 @@ async fn bluetooth_self_report_persists_and_enables_when_os_paired() {
         .first(&mut conn)
         .expect("load peer row");
     assert_eq!(row.0.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-    assert!(row.1, "bluetooth should be auto-enabled when the reported address is OS-paired");
+    assert!(
+        !row.1,
+        "a self-report must not enable a pair, even for a bonded address -- \
+         enablement is the user's call, or a completed BLE pairing's"
+    );
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }
@@ -1439,10 +1446,13 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
 /// disabled case rather than breaking Bluetooth accepts outright.
 #[tokio::test(flavor = "multi_thread")]
 async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
-    // `check_bluetooth_bond` requires the connecting link's `peer_addr()` to
-    // match the pair's stored `bluetooth_address` *and* that address to be
-    // OS-paired -- `sim::SimLink::peer_addr()` reports the TCP peer's IP
-    // ("127.0.0.1" here), so that's what gets stored and allow-listed.
+    // The stored address and the OS-paired allow-list below are no longer
+    // required to pass: ADR-0006 deleted `check_bluetooth_bond`, which used
+    // to demand that the connecting link's `peer_addr()` match the pair's
+    // stored `bluetooth_address` and that the address be OS-paired. They are
+    // left in place because this test's subject is the *enabled* gate, and
+    // keeping the surrounding setup unchanged keeps it a true mirror of the
+    // disabled-case test above.
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
     std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "127.0.0.1");
 
@@ -1484,23 +1494,22 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
 }
 
 /// Regression test for the second gap Codex flagged on PR #140's re-review:
-/// `check_bluetooth_enabled` alone proves the authenticated `device_id`'s
-/// row has Bluetooth on, but says nothing about whether the central that
-/// just connected is the specific bonded hardware the pairing metadata
-/// expects. Here the pair's stored address is OS-paired, but a *different*
-/// address connects (matching neither), so the accept must still be
-/// rejected even though `bluetooth_enabled` is true.
+/// ADR-0006 reversed this case, and it is kept rather than deleted because
+/// the reversal is the whole point of that decision.
+///
+/// A Bluetooth peer whose connecting address matches nothing stored, and
+/// which is not OS-bonded, used to be rejected. It is now **accepted**: the
+/// address a peer connects from is meaningless when Android rotates it, and
+/// identity comes from the `Auth` frame, which
+/// `specs/device-connect/README.md` already names as the trust boundary.
+/// Rejecting this case is exactly what made the transport unable to connect
+/// at all.
 #[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_gate_rejects_when_connecting_address_does_not_match_the_bonded_address() {
+async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
-    // The allow-listed (OS-paired) address is real, but it isn't the one
-    // stored for this pair, and it isn't the one connecting either -- only
-    // "AA:BB:CC:DD:EE:FF" is both stored *and* what a real bonded device at
-    // that address would present. "127.0.0.1" (what actually connects, via
-    // SimLink) is deliberately left off the allow-list and mismatched from
-    // storage, so this proves the address-match check independently of the
-    // OS-paired check `bluetooth_gate_accepts_...` already covers.
-    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+    // An allow-list that matches neither the stored address nor the
+    // connecting one, so nothing in this test is OS-bonded.
+    std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
 
     let (server, server_db) = server_state("transport-ble-gate-address-mismatch");
     seed_paired_device(&server_db, "peer-client");
@@ -1524,18 +1533,19 @@ async fn bluetooth_gate_rejects_when_connecting_address_does_not_match_the_bonde
             return;
         };
         // Connects as "127.0.0.1" (SimLink's real peer_addr), not the
-        // stored "AA:BB:CC:DD:EE:FF" -- simulating a central that knows a
-        // valid device_id but isn't the actual bonded hardware.
+        // Connects as "127.0.0.1" (SimLink's real peer_addr), which is
+        // neither the stored address nor OS-bonded -- the shape of every
+        // real Android peer, which advertises under a rotating address that
+        // by construction matches nothing stored.
         let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
-    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
-        .expect_err("a connecting address that doesn't match the stored bond must be rejected");
-    assert!(err.contains("not currently OS-paired"), "unexpected error: {err}");
+        .expect("an authenticated peer must be accepted regardless of its address");
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }
@@ -1901,4 +1911,87 @@ async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
         None | Some(Err(_)) => {}
         other => panic!("a receiver not in add-mode must not reply to DiscoveryHello, got {other:?}"),
     }
+}
+
+/// ADR-0005's opening evidence, as a test of the wiring rather than of the
+/// transition table (which `link_state`'s own tests cover exhaustively).
+///
+/// On real hardware a Bluetooth session lapsed to amber and was still claimed
+/// 1h44m later, refusing every incoming connection from that same peer while
+/// its dial side wound down to exhausted. The row said connected throughout.
+/// Nothing tore the dead link down, because a lapsed proof only recoloured a
+/// row -- there was no transition to carry an effect.
+///
+/// Proves the whole chain now: a lapsed proof enters the grace window, the
+/// session survives it, and once the grace expires the machine emits its
+/// teardown, the session's `Close` is delivered, and the slot is genuinely
+/// released so a later connection can claim it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
+    use crate::services::device_connection::link_state::{LinkEvent, FADE_GRACE};
+
+    let (server, server_db) = server_state("transport-lapsed-proof-tears-down");
+    seed_paired_device(&server_db, "peer-client");
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    let consumer_server = server.clone();
+    let consumer_db = server_db.clone();
+    tokio::spawn(async move {
+        while let Some(command) = rx.recv().await {
+            if matches!(command, crate::services::space_sync::types::SessionCommand::Close) {
+                consumer_server.release_session("peer-client", TransportKind::TcpWs, &consumer_db);
+                break;
+            }
+        }
+    });
+
+    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tx, &server_db));
+    let start = std::time::Instant::now();
+    server.submit_link_event_at("peer-client", TransportKind::TcpWs, LinkEvent::ProofComplete, start);
+
+    // The proof lapses. Nothing may be torn down yet: a link that goes quiet
+    // for one cycle is the case the grace window exists to ride out.
+    server.submit_link_event_at("peer-client", TransportKind::TcpWs, LinkEvent::ProofLapsed, start);
+    server.submit_link_event_at(
+        "peer-client",
+        TransportKind::TcpWs,
+        LinkEvent::Tick,
+        start + FADE_GRACE / 2,
+    );
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        server.has_session_on("peer-client", TransportKind::TcpWs),
+        "the session must survive the grace window, not be torn down on the first missed proof"
+    );
+
+    // Grace expires. This is the edge that did not exist.
+    server.submit_link_event_at(
+        "peer-client",
+        TransportKind::TcpWs,
+        LinkEvent::Tick,
+        start + FADE_GRACE,
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut released = false;
+    while tokio::time::Instant::now() < deadline {
+        if !server.has_session_on("peer-client", TransportKind::TcpWs) {
+            released = true;
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        released,
+        "a session whose proof stayed lapsed past the grace window must be torn down, \
+         not left holding the transport's only slot"
+    );
+
+    // The slot is genuinely free again -- the property whose absence made the
+    // original failure permanent rather than merely wrong.
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(4);
+    assert!(
+        server.try_claim_session("peer-client", TransportKind::TcpWs, tx2, &server_db),
+        "a later connection from the same peer must be able to claim the freed slot"
+    );
 }

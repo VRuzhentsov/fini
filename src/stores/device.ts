@@ -31,7 +31,7 @@ export type TransportStatusCode =
   | { code: "bluetooth_not_supported" }
   | { code: "bluetooth_disabled" }
   | { code: "bluetooth_no_address" }
-  | { code: "bluetooth_not_os_paired" }
+  | { code: "bluetooth_peer_not_nearby" }
   | { code: "bluetooth_dial_exhausted" }
   | { code: "connecting" }
   | { code: "awaiting_first_ack" }

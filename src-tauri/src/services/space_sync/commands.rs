@@ -1109,10 +1109,158 @@ pub fn space_sync_resolve_custom_space_mapping(
     )
 }
 
+/// How often the sync tick must run at minimum, and how often the Rust-side
+/// keeper below checks whether it has. Matches the frontend's own
+/// `MAPPING_UPDATE_POLL_INTERVAL_MS`, so a webview that is driving ticks
+/// normally keeps the keeper permanently idle.
+const TICK_INTERVAL: Duration = Duration::from_secs(3);
+
+/// When the last tick ran, from any caller -- the frontend command or the
+/// keeper. `None` until the first tick.
+static LAST_TICK_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn note_tick_ran() {
+    let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cell.lock() {
+        *guard = Some(Instant::now());
+    }
+}
+
+/// When the last tick arrived **from the frontend specifically**, as
+/// opposed to from the keeper. `None` until the first one.
+///
+/// This is how the Bluetooth dial loop tells foreground from background
+/// without any platform lifecycle plumbing (ADR-0006 slice 3). The webview
+/// only drives ticks while it is alive and running, and the keeper only
+/// runs when it is not, so "a frontend tick arrived recently" is a direct
+/// observation of the thing we actually care about: whether a person is
+/// currently looking at a transport row and waiting for it to turn green.
+static LAST_FRONTEND_TICK_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn note_frontend_tick() {
+    let cell = LAST_FRONTEND_TICK_AT.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cell.lock() {
+        *guard = Some(Instant::now());
+    }
+}
+
+/// Whether the frontend has ticked recently enough to count as driving.
+///
+/// The tolerance is several tick intervals rather than one: a single
+/// missed or delayed tick (a busy webview, a slow DB read) must not flip
+/// the dial loop into its frugal background cadence while the user is in
+/// fact watching.
+pub fn frontend_is_driving() -> bool {
+    const TOLERANCE: Duration = Duration::from_secs(15);
+    let cell = LAST_FRONTEND_TICK_AT.get_or_init(|| Mutex::new(None));
+    match cell.lock() {
+        Ok(guard) => guard.is_some_and(|at| at.elapsed() < TOLERANCE),
+        Err(_) => false,
+    }
+}
+
+fn tick_is_overdue() -> bool {
+    let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
+    match cell.lock() {
+        Ok(guard) => guard.map(|at| at.elapsed() >= TICK_INTERVAL).unwrap_or(true),
+        // Poisoned only if a tick panicked. Ticking again is the safer read:
+        // a stalled sync is worse than one redundant pass.
+        Err(_) => true,
+    }
+}
+
+/// Keeps the sync tick running when the webview stops driving it.
+///
+/// Ticks are scheduled by the frontend (`startMappingUpdateLoop`'s
+/// `setInterval`), which is fine on desktop but not on Android: once the app
+/// is backgrounded the WebView throttles its timers, the ticks stop, and with
+/// them every dial loop, session keepalive and BLE peripheral start that a
+/// tick drives. Observed directly on a Pixel 6 Pro -- backgrounding the app
+/// while pairing over Bluetooth silenced the process completely (not one log
+/// line), and the peer's session died of missed pings.
+///
+/// Deliberately a keeper rather than a replacement scheduler: it only ticks
+/// when nothing else has within `TICK_INTERVAL`, so a foreground webview
+/// driving ticks normally leaves it idle and the work is never doubled. The
+/// frontend keeps its own loop because it also refreshes UI state from each
+/// tick's result, which this cannot do.
+///
+/// Started from the first tick rather than from `.setup()` on purpose: on
+/// Android that first JS-triggered tick is the earliest point the peripheral
+/// role can safely start (see `start_peripheral_once`'s caller below), and
+/// starting a Rust timer any earlier would just reintroduce that problem from
+/// a different thread.
+#[cfg(target_os = "android")]
+fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(TICK_INTERVAL).await;
+                if !tick_is_overdue() {
+                    continue;
+                }
+                let state = device_connection.clone();
+                // `space_sync_tick_impl` is blocking (SQLite plus the dial
+                // loops it spawns), so it must not run on the async worker
+                // directly. Opening its own connection from `db_path` is what
+                // every other background path here already does.
+                let result = tokio::task::spawn_blocking(move || {
+                    let mut conn = crate::services::db::open_db_at_path(&state.db_path);
+                    space_sync_tick_impl(&mut conn, &state)
+                })
+                .await;
+                match result {
+                    Ok(Err(err)) => log::warn!("[space_sync][keeper] tick failed: {err}"),
+                    Err(err) => log::warn!("[space_sync][keeper] tick task failed: {err}"),
+                    Ok(Ok(_)) => {}
+                }
+            }
+        });
+    });
+}
+
+/// Starts the Android foreground service that keeps this process alive in the
+/// background. Once per process: `startForegroundService` on an already-running
+/// service just delivers another `onStartCommand`, which is harmless but
+/// pointless to repeat every three seconds.
+/// Gated on the Bluetooth permission triad, and not merely as a courtesy.
+///
+/// The service declares `foregroundServiceType="connectedDevice"`, and on
+/// Android 14+ promoting a service of that type requires one of the
+/// qualifying runtime prerequisites -- for this app, a granted nearby-devices
+/// permission. A fresh install has granted none, and `space_sync_tick_impl`
+/// runs on the first frontend tick, so starting unconditionally means
+/// `startForeground` throws `SecurityException` and takes the process with
+/// it. The app would die on launch for every new user, while every developer
+/// device -- which granted the permission long ago -- stayed fine.
+///
+/// Returning early leaves `STARTED` unconsumed on purpose, so the next tick
+/// after the user grants the permission still starts the service. The
+/// once-only guard is about not re-issuing `startForegroundService` every
+/// three seconds, not about only ever trying once.
+#[cfg(target_os = "android")]
+fn start_sync_service_once() {
+    if !crate::services::android_context::call_static_context_to_bool(
+        "com.fini.app.BluetoothPairing",
+        "hasPermissions",
+    ) {
+        return;
+    }
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        crate::services::android_context::call_static_context_void(
+            "com.fini.app.SyncForegroundService",
+            "start",
+        );
+    });
+}
+
 pub fn space_sync_tick_impl(
     mut conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
 ) -> Result<SpaceSyncTickResult, String> {
+    note_tick_ran();
     let peer_ids: Vec<String> = paired_devices::table
         .select(paired_devices::peer_device_id)
         .load(&mut *conn)
@@ -1132,6 +1280,33 @@ pub fn space_sync_tick_impl(
         device_connection.db_path.clone(),
         &paired_peer_ids,
     );
+    // Android only, matching the reason this exists at all (ADR-0004): a
+    // backgrounded WebView has its timers throttled, so ticks stop. Desktop
+    // has no such problem -- its frontend always drives them, and if it ever
+    // stops that is a different bug, not one a second ticker should paper
+    // over.
+    //
+    // Running it on desktop was actively harmful, and measurably so. The
+    // keeper opens its own SQLite connection while the app holds its own, and
+    // `space_sync_tick_impl` writes, so the two contend: a desktop log from a
+    // real session had 21 keeper ticks and 21 `database is locked` failures.
+    // Every keeper tick there did no work *and* added lock pressure to
+    // everything else reading the DB, including the auth gate.
+    //
+    // Same "first tick is the earliest safe point" reasoning as the peripheral
+    // start below, and a no-op on every call after the first.
+    #[cfg(target_os = "android")]
+    start_tick_keeper_once(device_connection.clone());
+
+    // The keeper above only decides *who* drives the tick inside this process.
+    // On Android that is not enough on its own: a backgrounded app has its
+    // process frozen or killed, so the loop stops regardless of who owns the
+    // timer. The foreground service is what keeps the process alive at all,
+    // and the persistent notification is both the price Android charges for
+    // that and honest disclosure that Fini is holding a device connection.
+    #[cfg(target_os = "android")]
+    start_sync_service_once();
+
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         // Android must not start the peripheral acceptor from `.setup()`
@@ -1140,11 +1315,30 @@ pub fn space_sync_tick_impl(
         // earliest safe point, so it starts here instead. A no-op on every
         // call after the first, and a no-op entirely on Linux, which
         // already starts it from `.setup()`.
+        // Gated on the Nearby-devices permission actually being held. This
+        // runs from a background sync tick, not a user action, so without the
+        // gate the very first tick after install starts advertising, Android
+        // throws SecurityException("Need android.permission.BLUETOOTH_CONNECT")
+        // out of `startAdvertising`, and the peripheral loop retries it every
+        // 60s forever -- work the user never asked for, failing invisibly.
+        //
+        // Nothing is lost by waiting: the permission prompt belongs to opening
+        // Add Device (see `device_connection_enter_add_mode_impl`), which is
+        // the point the user actually expresses intent to set up a Bluetooth
+        // connection. Once granted, the next tick starts the peripheral. The
+        // check must sit *outside* `start_peripheral_once` because its
+        // `std::sync::Once` would be spent by the first ungranted attempt and
+        // never retried after the user says yes.
         #[cfg(target_os = "android")]
-        crate::services::transport::ble::start_peripheral_once(
-            device_connection.clone(),
-            device_connection.db_path.clone(),
-        );
+        if crate::services::android_context::call_static_context_to_bool(
+            "com.fini.app.BluetoothPairing",
+            "hasPermissions",
+        ) {
+            crate::services::transport::ble::start_peripheral_once(
+                device_connection.clone(),
+                device_connection.db_path.clone(),
+            );
+        }
 
         // Reuse the connection this function was already handed, rather
         // than opening a second one. This runs every space_sync_tick --
@@ -1372,6 +1566,10 @@ pub fn space_sync_tick(
     db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
 ) -> Result<SpaceSyncTickResult, String> {
+    // Only this entry point notes a *frontend* tick. The keeper calls
+    // `space_sync_tick_impl` directly, which is what keeps the two
+    // distinguishable -- see `frontend_is_driving`.
+    note_frontend_tick();
     let mut conn = db.0.lock().unwrap();
     space_sync_tick_impl(&mut conn, &device_connection)
 }

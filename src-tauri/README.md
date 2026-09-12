@@ -21,6 +21,50 @@ src-tauri/
 └── tauri.conf.json    # Tauri configuration (app identity, window, bundle)
 ```
 
+## Load-bearing files
+
+Most of this tree is ordinary. These few are not: change them only with the
+linked decision record in hand, and expect a review to ask why.
+
+### `src/services/device_connection/link_state.rs` — the link state machine
+
+**Read [ADR-0005](../docs/adr/0005-transport-link-state-machine.md) before
+touching this file.**
+
+It owns what a peer's link on a transport *is*: eight states, twelve events,
+and one pure `apply(state, event, now) -> (state, effects)` that is the only
+place a transition may be decided. Everything a user sees about connectivity —
+the grey/amber/green row, whether a dial happens, whether an incoming
+connection is accepted — is downstream of it.
+
+Its invariant is the whole reason it exists:
+
+> A session exists **iff** the state is `Authenticating`, `Proving`, `Live` or
+> `Fading`.
+
+Every "the row says connected but nothing is" defect in this area's history is
+a violation of that sentence, including the one that motivated the file: a
+Bluetooth session that lapsed to amber stayed claimed for **1h44m**, refusing
+every incoming connection from that same peer, because a lapsed proof only
+recoloured a row — there was no transition to carry an effect.
+
+Three properties are deliberate and easy to erode:
+
+- **It is pure.** No clock reads, no locks, no I/O; `now` is an argument. That
+  is what makes deadlines measured in tens of seconds testable in
+  microseconds, and the deadlines are where the bug lived.
+- **Effects are one variant, not a command channel.** They exist only for what
+  the machine must cause to keep its own invariant true. Dialling is the
+  caller's decision, reported back as an event, so the state never claims an
+  attempt nobody made.
+- **Unhandled `(state, event)` pairs are no-ops on purpose.** Events arrive
+  from concurrent components and can race a transition that already moved past
+  them.
+
+Its tests are part of the design, not a courtesy: a property test walks all 96
+`(state, event)` pairs and asserts the invariant in both directions. Adding a
+state or an event without extending that test defeats the point of the file.
+
 ## Data model
 
 See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[RepeatRule]], [[QuestSeries]], [[QuestOccurrence]], [[Reminder]], [[FocusHistory]], [[DeviceConnection]], [[SpaceSync]], [[Network]]).
@@ -103,9 +147,10 @@ General notes:
   Tauri updater key and manifest.
 - **Android**: Built via `npm run tauri android build`; project lives in `gen/android/`
   - Android builds must pass `--features ui-plane` only so CLI modules and dependencies are excluded from the mobile bundle
-  - `make android-debug-deploy` builds, signs, installs, and launches a local debug-keystore APK using git-derived `versionName` and `versionCode`
+  - `make android-release-deploy-debugsigned` builds, signs, installs, and launches a local debug-keystore APK (release buildType, shares `com.fini.app`'s package id) using git-derived `versionName` and `versionCode`
+  - `make android-debug-deploy` builds the true `debug` buildType instead, which installs as its own separate `com.fini.app.debug` package (see `build.gradle.kts`'s `applicationIdSuffix`) -- coexists with a Play Store install with no certificate conflict, and enables Tauri's Kotlin logging
   - `make android-release-deploy-local` performs the same local build/install flow but signs with release-lineage credentials from `ANDROID_KEYSTORE_PATH` or `ANDROID_KEYSTORE_BASE64` plus the matching password and alias env vars
-  - local debug output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
+  - local debug-signed output is `bin/fini.apk`; local release-signed output is `bin/fini-release.apk`
 - **Flatpak**: Packaged via `com.fini.app.yml` at the repo root
 
 ## Local AppImage build failures on newer Linux toolchains

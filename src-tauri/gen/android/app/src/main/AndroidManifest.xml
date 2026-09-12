@@ -29,6 +29,16 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 
+    <!--
+        Keeps sync alive while the app is backgrounded: Android otherwise
+        throttles the WebView's timers and freezes the process, which stops
+        every dial loop and kills live Bluetooth sessions. The CONNECTED_DEVICE
+        type is required from Android 14 and must match the service's declared
+        foregroundServiceType below.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -48,6 +58,15 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            Not exported: started only from this app, over the JNI bridge in
+            services::android_context. See SyncForegroundService.kt.
+        -->
+        <service
+            android:name=".SyncForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

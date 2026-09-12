@@ -1,4 +1,4 @@
-mod commands;
+pub(crate) mod commands;
 mod merge;
 pub(crate) mod outbox;
 mod replay;

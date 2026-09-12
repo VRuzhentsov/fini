@@ -82,3 +82,11 @@ external fun onSubscribed(
     nativeHandle: Long,
     requestId: Long, address: String, characteristicUuid: String, success: Boolean,
 )
+
+/// The local Bluetooth adapter's state changed. `status` is one of
+/// `"on"` / `"off"` / `"unsupported"`. Android does not deliver a GATT
+/// disconnect callback when the adapter is toggled, so this is the only
+/// signal that every open connection this bridge held is now dead — the
+/// Rust side clears its per-connection state and emits the lifecycle
+/// events a real disconnect would have.
+external fun onRadioState(nativeHandle: Long, status: String)

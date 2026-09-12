@@ -427,6 +427,14 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run smoke and notification channel assertions
+        # `android-build-emulator-e2e` builds with `--debug`, which suffixes
+        # the application id, so the package installed on this emulator is
+        # `com.fini.app.debug`. Without this the assert script falls back to
+        # its `com.fini.app` default and checks a package that was never
+        # installed -- the gate would pass or fail on the wrong app, or on
+        # nothing at all.
+        env:
+          FINI_E2E_PACKAGE: com.fini.app.debug
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34

@@ -17,6 +17,17 @@ const DEFAULT_BASE_DISCOVERY_PORT = 46_000 + Math.floor(Math.random() * 500);
 export interface E2EActor {
   slug: string;
   page: TauriPage;
+  /**
+   * Whether this harness owns the app behind the actor.
+   *
+   * Exposed because a few guarantees only hold for 'spawned' actors: the
+   * harness gives those a hostname, a fresh data directory and known ports,
+   * none of which it can impose on an app already running on someone's
+   * device. A spec asserting such a value should say so explicitly rather
+   * than silently assume it -- and specs that assert nothing of the sort run
+   * unchanged against either kind.
+   */
+  kind: 'spawned' | 'external';
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
 
@@ -37,6 +48,27 @@ interface ActorSession {
   stop(preserve?: boolean): Promise<void>;
 }
 
+/**
+ * How one actor gets backed. The harness only ever asks a provider to
+ * `prepare` it, hand back a connected `PluginClient`, and `dispose` it -- it
+ * deliberately knows nothing about *what* is on the other end.
+ *
+ * That indirection is the point: a spawned desktop process, an app already
+ * running on a real phone, an emulator, or a stub that answers the plugin
+ * protocol without any app at all are all substitutable here. Specs address
+ * every actor through the same `invoke` surface regardless, so what a test
+ * runs against becomes a matter of configuration rather than of which code
+ * path the harness takes.
+ */
+interface ActorProvider {
+  slug: string;
+  /** Bring the backing app to a state where `connect` can succeed. */
+  prepare(): Promise<void>;
+  connect(): Promise<PluginClient>;
+  /** Release only what this provider itself created. */
+  dispose(preserve: boolean): Promise<void>;
+}
+
 interface ActorFixtures {
   actorSession: ActorSession;
   actors: Record<string, E2EActor>;
@@ -49,6 +81,48 @@ function actorSlugs(): string[] {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+/**
+ * Actors this harness connects to instead of spawning, as `slug=tcpPort`
+ * pairs (e.g. `FINI_E2E_EXTERNAL_ACTORS=phone=9223`).
+ *
+ * Every other actor is a local child process the harness owns end to end: it
+ * spawns the binary, hands it its whole configuration through the
+ * environment (data dir, discovery/ws ports, transport selection), and talks
+ * to it over a unix socket whose path it chose. None of that is possible for
+ * an app already running on a real Android device -- `am start` cannot set
+ * environment variables, and the plugin's unix socket lives inside the app
+ * sandbox where the host cannot reach it. Such a build instead exposes the
+ * same plugin protocol over loopback TCP (see `DEVTOOLS_ANDROID_TCP_PORT` in
+ * src-tauri/src/lib.rs), reachable here through `adb forward`.
+ *
+ * So an external actor is deliberately the harness's *unmanaged* case: it is
+ * not spawned, not configured, and not torn down here -- only driven. Its
+ * pairing, data and transport state are whatever that device already has,
+ * which is exactly the point when the thing under test is real radio
+ * behaviour that no emulator reproduces.
+ */
+function externalActorPorts(): Map<string, number> {
+  const raw = process.env.FINI_E2E_EXTERNAL_ACTORS?.trim();
+  if (!raw) return new Map();
+
+  return new Map(
+    raw
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const [slug, port] = entry.split('=').map((part) => part.trim());
+        const parsed = Number(port);
+        if (!slug || !Number.isInteger(parsed) || parsed <= 0) {
+          throw new Error(
+            `FINI_E2E_EXTERNAL_ACTORS entry must be "slug=port", got "${entry}"`,
+          );
+        }
+        return [slug, parsed] as const;
+      }),
+  );
 }
 
 /**
@@ -103,13 +177,31 @@ function resolveBleBrokerBinaryPath(): string {
   return binary;
 }
 
-function resolveAppBinaryPath(): string {
+/// The GUI binary each *spawned* actor is launched from.
+///
+/// `null` when every actor in the run is external, because then nothing is
+/// spawned and no local build is involved. Demanding the binary there made the
+/// device lane depend on an artifact it never executes: `make e2e-devices`
+/// drives two already-running apps (a desktop and a physical phone), yet a
+/// missing `target/debug-e2e` build failed all nine specs before a single one
+/// could talk to either device.
+function resolveAppBinaryPath(): string | null {
+  if (allActorsAreExternal()) {
+    return null;
+  }
   const binary = process.env.FINI_APP_BINARY ?? DEFAULT_APP_BINARY;
   if (!existsSync(binary)) {
     throw new Error(`Fini GUI binary not found: ${binary}`);
   }
 
   return binary;
+}
+
+/// Whether every actor this run declares is supplied externally.
+function allActorsAreExternal(): boolean {
+  const external = externalActorPorts();
+  const slugs = actorSlugs();
+  return slugs.length > 0 && slugs.every((slug) => external.has(slug));
 }
 
 function resolveRunRoot(): string {
@@ -234,6 +326,13 @@ function spawnActorProcess(
       FINI_DISCOVERY_PORT: String(discoveryPort),
       FINI_SPACE_SYNC_WS_PORT: String(wsPort),
       TAURI_PLAYWRIGHT_SOCKET: socketPath,
+      // WebKitGTK's DMABUF renderer fails on some GPU/compositor combinations
+      // (notably NVIDIA), where it logs "Failed to create GBM buffer" and
+      // paints nothing -- the window comes up blank and every `eval` against
+      // it times out, which looks exactly like a hung actor rather than a
+      // rendering problem. Forcing it off costs nothing headless and keeps a
+      // headed run working without the operator having to know this.
+      WEBKIT_DISABLE_DMABUF_RENDERER: '1',
       HOSTNAME: slug,
       TZ: 'UTC',
       XDG_DATA_HOME: dataDir,
@@ -369,6 +468,210 @@ async function waitForBleBrokerReady(state: BleBrokerState, timeoutMs: number): 
   );
 }
 
+/**
+ * What an actor is backed by. `Actor.create` turns one of these into a live
+ * actor, so choosing between a spawned desktop process, a real device, or a
+ * stub is a matter of which spec is passed in -- never of which branch the
+ * harness takes internally.
+ */
+type ActorSpec =
+  | {
+      kind: 'spawned';
+      slug: string;
+      spawnState: () => ActorProcessState;
+      waitMs: number;
+      onState: (state: ActorProcessState) => void;
+    }
+  | { kind: 'external'; slug: string; port: number };
+
+/**
+ * One actor, independent of what backs it.
+ *
+ * The lifecycle (`prepare` -> `connect` -> `dispose`) and the surface specs
+ * use (`invoke`, `page`) are identical for every backing, which is what lets
+ * a real phone, an emulator, or a stub be substituted for a spawned process
+ * without a spec noticing. `ActorService` owns instances of this; tests can
+ * be handed pre-built ones directly (see `ActorService`'s constructor).
+ */
+class Actor implements E2EActor {
+  readonly slug: string;
+  readonly kind: 'spawned' | 'external';
+  private readonly provider: ActorProvider;
+  private client: PluginClient | null = null;
+  private tauriPage: TauriPage | null = null;
+
+  private constructor(slug: string, kind: 'spawned' | 'external', provider: ActorProvider) {
+    this.slug = slug;
+    this.kind = kind;
+    this.provider = provider;
+  }
+
+  /** The one place that maps a spec to a backing implementation. */
+  static create(spec: ActorSpec): Actor {
+    const provider =
+      spec.kind === 'spawned'
+        ? spawnedActorProvider(spec.slug, spec.spawnState, spec.waitMs, spec.onState)
+        : externalActorProvider(spec.slug, spec.port);
+    return new Actor(spec.slug, spec.kind, provider);
+  }
+
+  /**
+   * Escape hatch for a fully custom backing (a stub, a remote runner, ...).
+   * Defaults to 'external' because anything reaching for this is, by
+   * definition, not a process this harness spawned and configured.
+   */
+  static fromProvider(provider: ActorProvider, kind: 'spawned' | 'external' = 'external'): Actor {
+    return new Actor(provider.slug, kind, provider);
+  }
+
+  get page(): TauriPage {
+    if (!this.tauriPage) throw new Error(`Actor "${this.slug}" is not started`);
+    return this.tauriPage;
+  }
+
+  async start(): Promise<PluginClient> {
+    await this.provider.prepare();
+    this.client = await this.provider.connect();
+    this.tauriPage = new TauriPage(this.client);
+    this.tauriPage.setDefaultTimeout(15_000);
+    return this.client;
+  }
+
+  invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+    return invokeTauri<T>(this.page, command, args);
+  }
+
+  async dispose(preserve: boolean): Promise<void> {
+    await this.provider.dispose(preserve);
+  }
+}
+
+/**
+ * Backs an actor with a process this harness spawns and owns end to end:
+ * it picks the binary, hands the app its whole configuration through the
+ * environment, and talks to it over a unix socket at a path it chose.
+ */
+function spawnedActorProvider(
+  slug: string,
+  spawnState: () => ActorProcessState,
+  waitMs: number,
+  onState: (state: ActorProcessState) => void,
+): ActorProvider {
+  let state: ActorProcessState | null = null;
+
+  return {
+    slug,
+    async prepare() {
+      state = spawnState();
+      onState(state);
+      await waitForActorSocket(state, waitMs);
+    },
+    async connect() {
+      if (!state) throw new Error(`Actor "${slug}" was not prepared`);
+      const client = new PluginClient(state.socketPath);
+      await client.connect();
+      const ping = await client.send({ type: 'ping' });
+      if (!ping.ok) {
+        throw new Error(actorDebugMessage(state, 'Plugin ping failed'));
+      }
+      return client;
+    },
+    async dispose() {
+      if (state) await stopActorProcess(state);
+    },
+  };
+}
+
+/**
+ * Backs an actor with an app that is *already running* somewhere this
+ * harness does not control, reached over loopback TCP.
+ *
+ * Nothing here spawns, configures or tears anything down -- deliberately.
+ * A real Android device cannot take the spawned provider's approach at all:
+ * `am start` cannot set environment variables, and the plugin's unix socket
+ * lives inside the app sandbox where the host cannot reach it. Such a build
+ * exposes the same plugin protocol over TCP instead (see
+ * `DEVTOOLS_ANDROID_TCP_PORT` in src-tauri/src/lib.rs), reachable here via
+ * `adb forward`. The device's pairing, data and transport state are whatever
+ * it already has, which is the point when the thing under test is real radio
+ * behaviour no emulator reproduces.
+ */
+function externalActorProvider(slug: string, port: number): ActorProvider {
+  return {
+    slug,
+    async prepare() {
+      // Nothing to prepare -- whoever owns this app already started it.
+    },
+    async connect() {
+      const client = new PluginClient(undefined, port);
+      await client.connect();
+      const ping = await client.send({ type: 'ping' });
+      if (!ping.ok) {
+        throw new Error(
+          `External actor "${slug}" did not answer ping on tcp:${port}. `
+            + 'Is the app running, built with the `devtools` feature, and the port forwarded '
+            + `(e.g. \`adb forward tcp:${port} tcp:${port}\`)?`,
+        );
+      }
+      return client;
+    },
+    async dispose() {
+      // Never stop what we did not start.
+    },
+  };
+}
+
+/**
+ * Owns a set of actors and their shared lifecycle, without knowing what any
+ * of them is backed by.
+ *
+ * Constructed with actor instances rather than with configuration on
+ * purpose: that is the injection seam. `ActorService.fromEnv` is just the
+ * default wiring (read the env, build one `Actor` per slug); a caller that
+ * wants a stubbed actor, a second phone, or a mixed set builds those
+ * instances itself and passes them here instead.
+ */
+class ActorService {
+  private readonly actors: Actor[];
+  private readonly clients: PluginClient[] = [];
+  private stopped = false;
+
+  constructor(actors: Actor[]) {
+    this.actors = actors;
+  }
+
+  async startAll(): Promise<Record<string, E2EActor>> {
+    for (const actor of this.actors) {
+      this.clients.push(await actor.start());
+    }
+    return Object.fromEntries(this.actors.map((actor) => [actor.slug, actor]));
+  }
+
+  async stopAll(preserve: boolean): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+
+    for (const client of [...this.clients].reverse()) {
+      try {
+        client.disconnect();
+      } catch {
+        // Best-effort disconnect only.
+      }
+    }
+
+    // Each actor releases only what its own provider created -- an external
+    // actor's dispose is deliberately a no-op, so a real device is never
+    // killed by a run that merely borrowed it.
+    for (const actor of [...this.actors].reverse()) {
+      try {
+        await actor.dispose(preserve);
+      } catch {
+        // Best-effort teardown only.
+      }
+    }
+  }
+}
+
 async function createActorSession(): Promise<ActorSession> {
   const slugs = actorSlugs();
   if (slugs.length < 2) {
@@ -387,7 +690,7 @@ async function createActorSession(): Promise<ActorSession> {
   mkdirSync(socketDir, { recursive: true });
 
   console.log(`FINI_E2E_RUN_ROOT=${sessionRoot}`);
-  console.log(`FINI_E2E_APP_BINARY=${binaryPath}`);
+  console.log(`FINI_E2E_APP_BINARY=${binaryPath ?? '(none -- every actor is external)'}`);
 
   let bleBroker: BleBrokerState | null = null;
   if (actorTransport() === 'ble') {
@@ -395,12 +698,43 @@ async function createActorSession(): Promise<ActorSession> {
     await waitForBleBrokerReady(bleBroker, waitMs);
   }
 
-  const actorStates = slugs.map((slug, index) =>
-    spawnActorProcess(runId, runRoot, socketDir, slugs, slug, index, binaryPath),
+  const externalPorts = externalActorPorts();
+  for (const slug of externalPorts.keys()) {
+    if (!slugs.includes(slug)) {
+      throw new Error(
+        `FINI_E2E_EXTERNAL_ACTORS names "${slug}", which is not in FINI_E2E_ACTORS (${slugs.join(', ')})`,
+      );
+    }
+  }
+
+  // Default wiring: one Actor per slug, backed by whatever its spec says.
+  // Everything downstream goes through ActorService and never learns which.
+  const actorStates: ActorProcessState[] = [];
+  const service = new ActorService(
+    slugs.map((slug, index) => {
+      const externalPort = externalPorts.get(slug);
+      return Actor.create(
+        externalPort === undefined
+          ? {
+              kind: 'spawned',
+              slug,
+              spawnState: () => {
+                // Non-null by construction: `resolveAppBinaryPath` only
+                // returns null when every actor is external, and this branch
+                // is the one where at least one is not.
+                if (binaryPath === null) {
+                  throw new Error(`no GUI binary to spawn actor "${slug}" from`);
+                }
+                return spawnActorProcess(runId, runRoot, socketDir, slugs, slug, index, binaryPath);
+              },
+              waitMs,
+              onState: (state) => actorStates.push(state),
+            }
+          : { kind: 'external', slug, port: externalPort },
+      );
+    }),
   );
 
-  const clients: PluginClient[] = [];
-  const actorEntries: Array<[string, E2EActor]> = [];
   let stopped = false;
 
   async function stop(preserve = false): Promise<void> {
@@ -411,21 +745,7 @@ async function createActorSession(): Promise<ActorSession> {
 
     const keepArtifacts = preserve || process.env.FINI_E2E_KEEP === '1' || (process.exitCode ?? 0) !== 0;
 
-    for (const client of clients.reverse()) {
-      try {
-        client.disconnect();
-      } catch {
-        // Best-effort disconnect only.
-      }
-    }
-
-    for (const state of actorStates.reverse()) {
-      try {
-        await stopActorProcess(state);
-      } catch {
-        // Best-effort process shutdown only.
-      }
-    }
+    await service.stopAll(keepArtifacts);
 
     if (bleBroker) {
       try {
@@ -450,42 +770,15 @@ async function createActorSession(): Promise<ActorSession> {
     }
   }
 
+  let actors: Record<string, E2EActor>;
   try {
-    for (const state of actorStates) {
-      await waitForActorSocket(state, waitMs);
-
-      const client = new PluginClient(state.socketPath);
-      clients.push(client);
-      await client.connect();
-
-      const ping = await client.send({ type: 'ping' });
-      if (!ping.ok) {
-        throw new Error(actorDebugMessage(state, 'Plugin ping failed'));
-      }
-
-      const page = new TauriPage(client);
-      page.setDefaultTimeout(15_000);
-
-      actorEntries.push([
-        state.slug,
-        {
-          slug: state.slug,
-          page,
-          invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-            return invokeTauri<T>(page, command, args);
-          },
-        },
-      ]);
-    }
+    actors = await service.startAll();
   } catch (error) {
     await stop(true);
     throw error;
   }
 
-  return {
-    actors: Object.fromEntries(actorEntries),
-    stop,
-  };
+  return { actors, stop };
 }
 
 async function invokeTauri<T>(page: TauriPage, command: string, args?: Record<string, unknown>): Promise<T> {
