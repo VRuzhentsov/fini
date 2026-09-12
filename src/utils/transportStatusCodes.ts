@@ -17,8 +17,8 @@ export function transportStatusText(code: TransportStatusCode): string {
       return "Bluetooth is disabled for this pair.";
     case "bluetooth_no_address":
       return "No Bluetooth address stored yet -- pair over OS Bluetooth or use Find via Bluetooth.";
-    case "bluetooth_not_os_paired":
-      return "OS Bluetooth pairing is required.";
+    case "bluetooth_peer_not_nearby":
+      return "That device isn't nearby -- it may be switched off, out of range, or have Bluetooth turned off.";
     case "bluetooth_dial_exhausted":
       return "Couldn't establish a Bluetooth connection after a minute of trying. Tap to try again.";
     case "connecting":

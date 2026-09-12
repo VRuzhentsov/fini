@@ -1303,6 +1303,44 @@ fn idle_scan_period() -> Duration {
 /// with "connect guard dropped".
 const DIAL_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// When each peer was last seen advertising a matching fingerprint.
+///
+/// ADR-0006 slice 4: this is what lets a transport row say "not nearby"
+/// honestly instead of sitting on amber "connecting…" at a peer that is in
+/// another building. It is only ever written from a fingerprint match, so
+/// "seen" means "seen advertising *as this peer*", not merely "some Fini
+/// device was in range".
+fn last_seen_advertising() -> &'static StdMutex<HashMap<String, Instant>> {
+    static LAST_SEEN: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
+    LAST_SEEN.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+fn note_peer_advertising(peer_id: &str) {
+    if let Ok(mut seen) = last_seen_advertising().lock() {
+        seen.insert(peer_id.to_string(), Instant::now());
+    }
+}
+
+/// Whether `peer_id` has advertised recently enough to still count as
+/// nearby.
+///
+/// The window is derived from the scan period rather than picked: it has to
+/// span several scan cycles, because a single missed beacon is ordinary --
+/// the listening window is 8s out of every 30s or 60s, so most of a peer's
+/// advertisements are simply not heard. A window shorter than a few cycles
+/// would flap the row between "nearby" and "not nearby" while nothing
+/// changed.
+///
+/// The cost is that the row is honest but unhurried: after a peer really
+/// leaves, it can take up to three minutes in the background to say so.
+pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
+    let freshness = idle_scan_period() * 3;
+    match last_seen_advertising().lock() {
+        Ok(seen) => seen.get(peer_id).is_some_and(|at| at.elapsed() < freshness),
+        Err(_) => false,
+    }
+}
+
 /// Finds `peer_id` in the air and returns an authenticated link to it.
 ///
 /// This is ADR-0006's core move. There is no stored address to dial: Android
@@ -1387,6 +1425,11 @@ async fn connect_by_advertisement(
                         if advertised != Some(wanted_fingerprint) {
                             continue;
                         }
+                        // Recorded on the match, before the dial: the peer
+                        // is provably in range whether or not connecting to
+                        // it then succeeds, and those are different facts
+                        // for the row to report.
+                        note_peer_advertising(peer_id);
                         if tried.insert(address.clone()) {
                             found = Some(address);
                             break;

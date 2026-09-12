@@ -185,6 +185,26 @@ fn bluetooth_dial_exhausted_now(#[allow(unused_variables)] peer_device_id: &str)
     }
 }
 
+/// Same platform-neutral wrapper shape as `bluetooth_dial_exhausted_now`,
+/// for `transport::ble::peer_seen_advertising_recently`.
+///
+/// `true` on platforms without a BLE transport, not `false`: this feeds a
+/// *negative* precondition (`!peer_nearby` reports "not nearby"), and
+/// `bluetooth_unconfigured_code` returns `BluetoothNotSupported` before ever
+/// reading it there. Returning `false` would be the wrong default to
+/// inherit if that ordering ever changed -- it would claim a peer is away on
+/// a platform that cannot look.
+fn bluetooth_peer_nearby_now(#[allow(unused_variables)] peer_device_id: &str) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        crate::services::transport::ble::peer_seen_advertising_recently(peer_device_id)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        true
+    }
+}
+
 /// Runs `command` with a hard time limit that actually terminates it, not
 /// merely bounds how long a caller waits: `kill_on_drop(true)` makes Tokio
 /// send the kill signal (and reap the process via its own SIGCHLD-driven
@@ -1722,6 +1742,7 @@ pub fn device_connection_transport_statuses_impl(
     Ok(build_transport_statuses(TransportStatusInputs {
         network_present: state.network_peer_available(&peer_device_id),
         bluetooth_enabled: paired.bluetooth_enabled,
+        bluetooth_peer_nearby: bluetooth_peer_nearby_now(&peer_device_id),
         bluetooth_dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         network_connected: snapshot.network_connected,
         bluetooth_connected: snapshot.bluetooth_connected,

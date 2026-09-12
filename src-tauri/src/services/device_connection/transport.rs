@@ -46,7 +46,13 @@ pub enum TransportStatusCode {
     BluetoothNoAddress,
     /// Bluetooth row, `Unconfigured`: has metadata, but the OS isn't
     /// currently bonded to it.
-    BluetoothNotOsPaired,
+    /// ADR-0006 slice 4. This slot used to be `BluetoothNotOsPaired`, and
+    /// the reuse is deliberate: dropping the bond freed a reason, and "the
+    /// peer is not advertising" is the genuine precondition that replaces
+    /// it. Unlike the bond, this one is something the user can see and act
+    /// on -- the other device is off, out of range, or has Bluetooth
+    /// disabled.
+    BluetoothPeerNotNearby,
     /// Bluetooth row, `Unconfigured`: preconditions are otherwise met, but
     /// automatic dial retries gave up after `ble::AUTO_RETRY_WINDOW` of no
     /// successful auth (real device evidence: a flaky link that connects,
@@ -191,6 +197,10 @@ pub struct TransportStatusInputs {
     /// peer's beacon reaching us right now."
     pub network_present: bool,
     pub bluetooth_enabled: bool,
+    /// `ble::peer_seen_advertising_recently` -- whether this peer has been
+    /// heard advertising within a few scan cycles. The honest answer to
+    /// "why is this not connecting" when the other device is simply away.
+    pub bluetooth_peer_nearby: bool,
     /// `ble::is_bluetooth_dial_exhausted` -- whether this peer's automatic
     /// dial retries have given up after `AUTO_RETRY_WINDOW`. Checked last,
     /// after every other precondition passes: it only means anything once
@@ -214,6 +224,7 @@ pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportS
     let TransportStatusInputs {
         network_present,
         bluetooth_enabled,
+        bluetooth_peer_nearby,
         bluetooth_dial_exhausted,
         network_connected,
         bluetooth_connected,
@@ -229,7 +240,7 @@ pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportS
         Some(TransportStatusCode::NetworkUnavailable)
     };
     let bluetooth_unconfigured_code =
-        bluetooth_unconfigured_code(bluetooth_enabled, bluetooth_dial_exhausted);
+        bluetooth_unconfigured_code(bluetooth_enabled, bluetooth_peer_nearby, bluetooth_dial_exhausted);
 
     vec![
         TransportStatus {
@@ -267,20 +278,26 @@ fn row_state(
     RowState::Configured { code }
 }
 
-/// ADR-0006 removed two arms that used to live here: `BluetoothNoAddress`
-/// (no stored address) and `BluetoothNotOsPaired` (no live OS bond).
-/// Neither is a precondition any more -- a peer is found by its
-/// advertisement and identified by the `Auth` frame, so a stored address is
-/// diagnostic metadata and the OS bond is not used at all. Both
-/// `TransportStatusCode` variants are deliberately left defined rather than
-/// deleted: ADR-0006's later slice reuses a reason slot here for "peer not
-/// seen advertising", which is a genuine precondition.
-fn bluetooth_unconfigured_code(enabled: bool, dial_exhausted: bool) -> Option<TransportStatusCode> {
+/// ADR-0006 replaced the two arms that used to live here. A stored address
+/// and a live OS bond were both preconditions; neither is any more, since a
+/// peer is found by its advertisement and identified by the `Auth` frame.
+///
+/// In their place is one real precondition: whether the peer is advertising
+/// at all. Ordered after `enabled` and before `dial_exhausted` on purpose --
+/// a peer that was never in range has not "failed to connect after a minute
+/// of trying", and saying so would send the user to retry a dial that has
+/// nothing to dial.
+fn bluetooth_unconfigured_code(
+    enabled: bool, peer_nearby: bool, dial_exhausted: bool,
+) -> Option<TransportStatusCode> {
     if !BLUETOOTH_ADAPTER_IMPLEMENTED {
         return Some(TransportStatusCode::BluetoothNotSupported);
     }
     if !enabled {
         return Some(TransportStatusCode::BluetoothDisabled);
+    }
+    if !peer_nearby {
+        return Some(TransportStatusCode::BluetoothPeerNotNearby);
     }
     if dial_exhausted {
         return Some(TransportStatusCode::BluetoothDialExhausted);
@@ -316,6 +333,7 @@ mod tests {
         TransportStatusInputs {
             network_present: true,
             bluetooth_enabled: true,
+            bluetooth_peer_nearby: true,
             bluetooth_dial_exhausted: false,
             network_connected: false,
             bluetooth_connected: false,
@@ -519,6 +537,13 @@ mod tests {
                     ..ready_inputs()
                 },
                 TransportStatusCode::BluetoothDisabled,
+            ),
+            (
+                TransportStatusInputs {
+                    bluetooth_peer_nearby: false,
+                    ..ready_inputs()
+                },
+                TransportStatusCode::BluetoothPeerNotNearby,
             ),
             (
                 TransportStatusInputs {
