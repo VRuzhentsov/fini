@@ -143,8 +143,12 @@ async function ensureBluetoothEnabledForPeer(
   if (row?.bluetooth_enabled) {
     return;
   }
+  // snake_case inside `input`, camelCase only at the top level: Tauri
+  // converts its own argument names, but the fields of a command's payload
+  // struct go straight through serde, and `DeviceBluetoothTransportInput`
+  // declares no rename.
   await actor.actor.invoke('device_connection_set_bluetooth_transport', {
-    input: { peerDeviceId, enabled: true },
+    input: { peer_device_id: peerDeviceId, enabled: true, bluetooth_address: null },
   });
 
   const after = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
