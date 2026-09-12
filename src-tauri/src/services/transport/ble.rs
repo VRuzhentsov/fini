@@ -196,11 +196,69 @@ fn datagram_config() -> DatagramConfig {
         ServiceUuid(Uuid::parse_str(FINI_BLE_SERVICE_UUID).expect("valid UUID literal")),
         CharacteristicUuid(Uuid::parse_str(FINI_BLE_CHARACTERISTIC_UUID).expect("valid UUID literal")),
     );
-    if *add_mode_sender().borrow() {
-        config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, vec![ADD_MODE_FLAG_BYTE]);
+    if let Some(fingerprint) = local_fingerprint().get() {
+        let mut payload = Vec::with_capacity(1 + FINGERPRINT_LEN);
+        payload.push(if *add_mode_sender().borrow() {
+            ADD_MODE_FLAG_BYTE
+        } else {
+            0
+        });
+        payload.extend_from_slice(fingerprint);
+        config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, payload);
     }
     config
 }
+
+/// This device's advertised identity fingerprint, set once by `run_server`
+/// before it first advertises. A `OnceLock` rather than a parameter on
+/// `datagram_config` because the advertisement is rebuilt from several
+/// places (serve, and each add-mode toggle) that have no reason to know
+/// about identity -- the same reason `add_mode_sender` is a global.
+fn local_fingerprint() -> &'static OnceLock<[u8; FINGERPRINT_LEN]> {
+    static FINGERPRINT: OnceLock<[u8; FINGERPRINT_LEN]> = OnceLock::new();
+    &FINGERPRINT
+}
+
+/// Four bytes of FNV-1a over the `device_id`.
+///
+/// FNV-1a specifically, and **not** `std::collections::hash_map::DefaultHasher`:
+/// that one's output is explicitly not guaranteed stable across Rust
+/// releases, so two peers built with different toolchains would compute
+/// different fingerprints for the same device and never recognise each
+/// other. FNV-1a is a fixed, published algorithm, so the value is stable
+/// for as long as the `device_id` is.
+///
+/// Not a security boundary and not meant to be one: `Auth` is
+/// (`specs/device-connect/README.md`), and this only decides which
+/// advertiser is worth dialling. A collision costs one wasted dial that
+/// `Auth` then rejects.
+///
+/// ADR-0006 records the privacy limit this carries: a stable value
+/// broadcast continuously is trackable, which is why the rotating,
+/// secret-derived form is the intended successor once pairing establishes
+/// key material (issue #162).
+fn fingerprint_of(device_id: &str) -> [u8; FINGERPRINT_LEN] {
+    const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+    const FNV_PRIME: u32 = 0x0100_0193;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in device_id.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash.to_be_bytes()
+}
+
+/// Reads the fingerprint out of a discovered peer's manufacturer data, or
+/// `None` for an advertiser that carries none -- a peer running a build
+/// from before ADR-0006's slice 2, which must stay dialable rather than
+/// being filtered out for being old.
+fn advertised_fingerprint(manufacturer_payload: Option<&[u8]>) -> Option<[u8; FINGERPRINT_LEN]> {
+    let payload = manufacturer_payload?;
+    payload.get(1..1 + FINGERPRINT_LEN)?.try_into().ok()
+}
+
+const FINGERPRINT_LEN: usize = 4;
 
 /// `0xFFFF` is the Bluetooth SIG's own reserved value for "manufacturer
 /// specific data" used for testing and non-market purposes — the
@@ -208,11 +266,16 @@ fn datagram_config() -> DatagramConfig {
 /// than picking an arbitrary value that could collide with a real vendor's
 /// company ID some other nearby scanner is specifically watching for.
 const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
-/// The entire payload of that manufacturer data: whether this device is
-/// currently in add-mode. One byte is deliberate — legacy advertisements
-/// cap out at 31 bytes total, and the service UUID above already spends
-/// most of that; see `GattServiceSpec::manufacturer_data`'s own doc
-/// comment in ble-gatt.
+/// Bit 0 of the manufacturer payload's first byte: whether this device is
+/// currently in add-mode.
+///
+/// The payload used to be exactly this one byte, present only while in
+/// add-mode. ADR-0006's slice 2 made it a five-byte record — one flags
+/// byte then four fingerprint bytes — advertised always, because the
+/// fingerprint is how a scanner tells which peer it has found. Five bytes
+/// still fits: legacy advertisements cap at 31 total and the 128-bit
+/// service UUID plus this record spend about 26. See
+/// `GattServiceSpec::manufacturer_data`'s own doc comment in ble-gatt.
 const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 
 /// Per-candidate cap for a dial+probe+reply confirmation round trip
@@ -683,9 +746,16 @@ pub async fn scan_add_mode_candidates(
         if !tried.insert(address.clone()) {
             continue;
         }
-        let flagged =
-            peer.manufacturer_data.get(&FINI_MANUFACTURER_ID).map(|v| v.as_slice())
-                == Some([ADD_MODE_FLAG_BYTE].as_slice());
+        // A field read, not an equality test against the whole payload:
+        // ADR-0006's slice 2 appended four fingerprint bytes after this
+        // flags byte, and an exact comparison would silently stop matching
+        // every advertiser -- disabling add-mode discovery entirely with no
+        // error anywhere.
+        let flagged = peer
+            .manufacturer_data
+            .get(&FINI_MANUFACTURER_ID)
+            .and_then(|payload| payload.first())
+            .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
         if !flagged {
             continue;
         }
@@ -749,6 +819,11 @@ impl Transport for BleTransport {
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     use futures_util::StreamExt;
+
+    // Before the first `datagram_config()` below builds an advertisement:
+    // the fingerprint is what lets a scanning peer tell this device apart
+    // from any other Fini install without connecting to it first.
+    let _ = local_fingerprint().set(fingerprint_of(&state.identity.device_id));
 
     // Retried with backoff, not returned-from-once: `lib.rs` spawns this
     // exactly once at startup, so an early failure here (adapter off,
@@ -1232,6 +1307,7 @@ async fn connect_by_advertisement(
     // which on hardware abandoned every dial 2s in.
     let started = tokio::time::Instant::now();
     let overall_deadline = started + budget;
+    let wanted_fingerprint = fingerprint_of(peer_id);
     let mut tried: HashSet<String> = HashSet::new();
 
     loop {
@@ -1259,6 +1335,19 @@ async fn connect_by_advertisement(
                 match tokio::time::timeout(listen_remaining, discovered.next()).await {
                     Ok(Some(Ok(candidate))) => {
                         let address = candidate.address.0;
+                        // Skip advertisers whose fingerprint says they are
+                        // someone else. An advertiser carrying none is a
+                        // peer on a build from before slice 2 and is still
+                        // tried -- `Auth` remains the thing that decides.
+                        let advertised = advertised_fingerprint(
+                            candidate
+                                .manufacturer_data
+                                .get(&FINI_MANUFACTURER_ID)
+                                .map(|payload| payload.as_slice()),
+                        );
+                        if advertised.is_some_and(|seen| seen != wanted_fingerprint) {
+                            continue;
+                        }
                         if tried.insert(address.clone()) {
                             found = Some(address);
                             break;

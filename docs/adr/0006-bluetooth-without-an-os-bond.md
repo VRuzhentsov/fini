@@ -96,22 +96,35 @@ fini is expected to leave it off.
 
 ## Design review
 
-The decision above leaves one thing unanswered that turns out to be
-load-bearing: **who dials.** `should_dial_peer` picks a side by comparing
-`self.device_id < peer.device_id`, and under this ADR we do not learn the
-peer's `device_id` until after we have connected and authenticated. The rule
-loses its input exactly when it is needed.
+The decision above leaves one thing unanswered: **which advertiser is which
+peer.**
 
-Six decisions close that gap and the questions behind it.
+An earlier draft of this section claimed the dialer tiebreak itself breaks,
+on the grounds that `should_dial_peer` compares `self.device_id <
+peer.device_id` and we no longer learn the peer's id before connecting. That
+was wrong, and is corrected here rather than quietly dropped: the dial loop
+iterates *known paired peers* read from `paired_devices`, so both ids are in
+hand and the rule is untouched by this ADR.
+
+The real gap is candidate selection. We know who we want to reach and we know
+who is advertising, but nothing connects the two, so every advertiser gets
+tried against every peer — each attempt costing a full dial and handshake.
+
+Six decisions close that gap and the questions around it.
 
 **1. A short identity fingerprint rides in the advertisement.** Four bytes
 derived from `device_id`, carried in the manufacturer data that
 `datagram_config` already populates and the scanner at `ble.rs:684` already
 reads. A legacy advertisement holds 31 bytes and the 128-bit service UUID plus
 the existing manufacturer record spend about 26, so this fits with room to
-spare. `should_dial_peer` keeps its rule and compares fingerprints instead of
-full ids. A fingerprint collision only means both sides dial, which is glare —
-a case the machine must survive regardless.
+spare.
+
+Its job is filtering, not tiebreaking: compute the expected fingerprint for
+the peer we are dialling, and skip every advertiser that does not match. That
+turns "try each advertiser" into "try the one that matches", bounds dialling
+to strangers to zero rather than to some budget, and gives the later
+"peer not seen advertising" precondition something to observe. A fingerprint
+collision costs one wasted dial that `Auth` then rejects.
 
 The payload stops being a single flag byte, so the exact-equality test at
 `ble.rs:684` (`== Some([ADD_MODE_FLAG_BYTE])`) becomes a field read. That
