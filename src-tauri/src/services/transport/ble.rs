@@ -1179,10 +1179,26 @@ fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, add
     })
 }
 
-/// How long one `connect_by_advertisement` scan listens before giving up on
-/// this attempt. ADR-0006 slice 1 keeps this a single fixed window; the
-/// duty-cycled foreground/background scanner is a later slice.
+/// How long one `connect_by_advertisement` pass listens for candidates
+/// before giving up on this attempt. ADR-0006 slice 1 keeps this a single
+/// fixed window; the duty-cycled foreground/background scanner is a later
+/// slice.
 const DIAL_SCAN_WINDOW: Duration = Duration::from_secs(8);
+
+/// How long one candidate gets for its own dial plus auth handshake.
+///
+/// Deliberately much larger than `FIND_PEER_CANDIDATE_TIMEOUT` (4s), which
+/// bounds the *discovery* probe where giving up fast and moving on is the
+/// right trade. Here we have already decided to talk to this peer, and a
+/// real BLE connect on this hardware has been measured at ~28s on its own
+/// (see `dial_with_backoff`). Bounded by the caller's remaining give-up
+/// window regardless, so this never extends the advertised 60s.
+///
+/// Hardware evidence for splitting the two budgets at all: sharing one
+/// deadline with the scan window above meant a candidate discovered 6s into
+/// an 8s window got 2s to connect, and every dial was abandoned mid-connect
+/// with "connect guard dropped".
+const DIAL_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Finds `peer_id` in the air and returns an authenticated link to it.
 ///
@@ -1208,34 +1224,63 @@ async fn connect_by_advertisement(
     let Ok(backend) = backend().await else {
         return AdvertisementDial::NoneReachable { last_auth_error };
     };
-    let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
-        return AdvertisementDial::NoneReachable { last_auth_error };
-    };
 
-    let deadline = tokio::time::Instant::now() + budget.min(DIAL_SCAN_WINDOW);
+    // Two deadlines, not one. `scan_deadline` bounds how long we listen for
+    // candidates; `overall_deadline` bounds the whole pass on the caller's
+    // behalf. Collapsing them means a candidate discovered late in the
+    // listening window inherits only its leftovers as its connect budget,
+    // which on hardware abandoned every dial 2s in.
+    let started = tokio::time::Instant::now();
+    let overall_deadline = started + budget;
     let mut tried: HashSet<String> = HashSet::new();
 
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return AdvertisementDial::NoneReachable { last_auth_error };
-        }
-        let candidate = match tokio::time::timeout(remaining, discovered.next()).await {
-            Ok(Some(Ok(candidate))) => candidate,
-            // A backend-level scan failure means Bluetooth itself is
-            // unusable right now; either way this attempt is over, and the
-            // caller's backoff decides what happens next.
-            Ok(Some(Err(_))) | Ok(None) | Err(_) => {
-                return AdvertisementDial::NoneReachable { last_auth_error }
+        // Scan and dial are strictly sequential, never concurrent, and the
+        // discovery stream is dropped before any dial begins.
+        //
+        // Hardware evidence for this shape: holding the stream open across
+        // the dial made BlueZ answer `Connect` with nothing at all until
+        // ble-gatt's own 20s timeout fired, every single time, on a peer
+        // sitting at rssi -62. An adapter cannot usefully drive active
+        // discovery and establish a connection at the same moment, so
+        // scanning while dialling meant competing with ourselves.
+        let scan_deadline = tokio::time::Instant::now() + DIAL_SCAN_WINDOW;
+        let found = {
+            let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
+                return AdvertisementDial::NoneReachable { last_auth_error };
+            };
+            let mut found = None;
+            loop {
+                let listen_remaining =
+                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
+                if listen_remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(listen_remaining, discovered.next()).await {
+                    Ok(Some(Ok(candidate))) => {
+                        let address = candidate.address.0;
+                        if tried.insert(address.clone()) {
+                            found = Some(address);
+                            break;
+                        }
+                    }
+                    // A backend-level scan failure means Bluetooth itself is
+                    // unusable right now; either way this pass is over, and
+                    // the caller's backoff decides what happens next.
+                    Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+                }
             }
+            found
+            // `discovered` is dropped here, stopping discovery, before the
+            // dial below runs.
         };
-        let address = candidate.address.0;
-        if !tried.insert(address.clone()) {
-            continue;
-        }
 
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
+        let Some(address) = found else {
+            return AdvertisementDial::NoneReachable { last_auth_error };
+        };
+
+        let budget_left = overall_deadline.saturating_duration_since(tokio::time::Instant::now());
+        if budget_left.is_zero() {
             return AdvertisementDial::NoneReachable { last_auth_error };
         }
         // Bounded per candidate as well as overall: an advertiser that
@@ -1243,7 +1288,7 @@ async fn connect_by_advertisement(
         // hold the whole window on its own. `dial` and `perform_client_auth`
         // each wait unboundedly by themselves -- see `dial_with_backoff`'s
         // note on real-device evidence of a single `connect()` taking ~28s.
-        let attempt = tokio::time::timeout(remaining.min(FIND_PEER_CANDIDATE_TIMEOUT), async {
+        let attempt = tokio::time::timeout(budget_left.min(DIAL_CANDIDATE_TIMEOUT), async {
             let mut link = dial(&address).await?;
             let version =
                 session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id)
@@ -1260,12 +1305,18 @@ async fn connect_by_advertisement(
                     address,
                 }
             }
+            // Logged at info, not debug: this is the load-bearing path while
+            // ADR-0006 is being brought up, and a silent candidate failure
+            // is indistinguishable from "nothing was advertising" in a
+            // hardware log -- which already cost one debugging round.
             Ok(Err(err)) => {
-                log::debug!("[transport][ble] candidate {address} is not {peer_id}: {err}");
+                log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
                 last_auth_error = Some(err);
             }
             Err(_elapsed) => {
-                log::debug!("[transport][ble] candidate {address} did not answer in time");
+                log::info!(
+                    "[transport][ble] candidate {address} did not finish connect+auth in time"
+                );
             }
         }
     }
