@@ -169,6 +169,32 @@ own Risks section argues the general case: landing in one piece leaves no
 intermediate version to verify on hardware, "and hardware verification is what
 found every defect in this area."
 
+## Security consequence, stated plainly
+
+The Context table above says the bond bought no trust, citing
+`specs/device-connect/README.md`. That is right about *design intent* and
+incomplete about *practical effect*, and issue #162 makes the sharper point:
+because the `Auth` frame proves nothing cryptographically, `check_bluetooth_bond`
+was in practice the only mechanism standing between a Bluetooth peer and
+impersonation of a paired device. Removing it removes that mechanism.
+
+Three things make this an acceptable trade rather than a regression, and all
+three should be checked before anyone relies on the reasoning:
+
+1. **It was weak.** The check asked whether the connecting device presented an
+   address we had bonded. BLE addresses are trivially spoofable, so it stopped
+   an attacker who did not know the peer's identity address and nobody else.
+2. **The primary transport never had it.** `tcp_ws` accepts a plaintext
+   `device_id` claim with no equivalent check at all. Bluetooth is the
+   secondary transport; this brings it to parity with the primary one rather
+   than opening a new class of exposure.
+3. **The real fix is already tracked.** Issue #162 authenticates the `Auth`
+   handshake cryptographically for *every* transport, which fixes both at once.
+
+What this ADR changes about #162 is its ordering, not its content: that ticket
+was written expecting to land *before* the bond could be dropped, and the bond
+has been dropped first. Its priority should rise accordingly.
+
 ## Consequences
 
 **The circular dependency disappears.** Bluetooth stops needing a bond, so it
