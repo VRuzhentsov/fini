@@ -330,6 +330,20 @@ DESKTOP_DEBUG_TARGET_DIR = $(CURDIR)/src-tauri/target/debug-app
 DESKTOP_DEBUG_BIN = $(DESKTOP_DEBUG_TARGET_DIR)/debug/fini-app
 DESKTOP_DEBUG_CONFIG = {"productName":"$(DESKTOP_DEBUG_NAME)","identifier":"$(DESKTOP_DEBUG_IDENTIFIER)"}
 
+# Backend unit tests. There was no target for these, and the gap cost two
+# defects in one session: a unit test asserting a payload shape that had
+# been replaced went unnoticed through several commits, because the only
+# build target available (desktop-debug-build) compiles the lib without
+# #[cfg(test)] and so never sees test code at all.
+#
+# Run with the features the app actually ships on this platform, so the
+# cfg-gated transport code under test is the code that runs.
+backend-test:
+	cd src-tauri && cargo test --features ui-plane
+
+backend-test-devtools:
+	cd src-tauri && cargo test --features ui-plane,devtools
+
 desktop-debug-build:
 	@set -eu; \
 	mkdir -p "$(FINI_SCRATCH_DIR)"; \
