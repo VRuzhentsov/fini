@@ -56,14 +56,14 @@ export async function ensureBlePairedActors(
 
   const [a, b] = await waitForActorsReady(actors, timeoutMs);
 
-  // External actors are real apps on real devices with a real OS-level
-  // Bluetooth bond and a real address already stored. Seeding a fake address
-  // over that would not just be redundant, it would overwrite the pairing the
-  // run depends on -- so the hardware path asserts the precondition instead of
-  // manufacturing it.
+  // External actors are real apps on real devices carrying a real pairing.
+  // Seeding a fake address over that would overwrite the thing the run
+  // depends on, so the hardware path asserts the pairing rather than
+  // manufacturing it -- and only ensures the per-pair Bluetooth toggle is on,
+  // which since ADR-0006 costs one boolean and no bond.
   if (a.actor.kind === 'external' || b.actor.kind === 'external') {
-    await expectBluetoothPairReady(a, b.identity.device_id);
-    await expectBluetoothPairReady(b, a.identity.device_id);
+    await ensureBluetoothEnabledForPeer(a, b.identity.device_id);
+    await ensureBluetoothEnabledForPeer(b, a.identity.device_id);
     // Resume dialling on both sides before the run starts. A real device may
     // arrive already in `bluetooth_dial_exhausted` from earlier activity, and
     // that state is left only by an explicit user retry -- so without this the
@@ -109,18 +109,49 @@ interface PairedDeviceRow {
  * Bluetooth, which is a setup problem the run cannot fix for itself -- and a
  * far clearer message than the timeout it would otherwise become.
  */
-async function expectBluetoothPairReady(actor: SyncedActor, peerDeviceId: string): Promise<void> {
+/**
+ * Asserts the pairing this run depends on, then makes sure Bluetooth is
+ * actually switched on for it.
+ *
+ * The pairing itself is still only asserted, never manufactured: these are
+ * real apps on real devices, and inventing a pair would replace the thing the
+ * run is supposed to exercise.
+ *
+ * Enablement is different, and ADR-0006 is why. It used to be an assertion
+ * too, on the reasoning that the flag stood for a real OS-level bond that a
+ * test had no business fabricating. There is no bond any more -- enabling
+ * writes one boolean and needs no address -- so asserting it only made the
+ * lane fail for a reason the lane could fix. It also failed for real: a
+ * device that had run an older build could arrive with the flag cleared by
+ * the self-report path that used to switch Bluetooth *off* when it found no
+ * bond, leaving a permanently red lane and a peer reporting
+ * `auth rejected: bluetooth disabled for this pair` with nothing naming the
+ * cause.
+ *
+ * A stored address is deliberately not required. Since ADR-0006 nothing
+ * dials it, and a phone that advertises under a rotating address will not
+ * have one that means anything.
+ */
+async function ensureBluetoothEnabledForPeer(
+  actor: SyncedActor,
+  peerDeviceId: string,
+): Promise<void> {
   const paired = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
   const row = paired.find((entry) => entry.peer_device_id === peerDeviceId);
   expect(row, `${actor.actor.slug} should already be paired with ${peerDeviceId}`).toBeTruthy();
+
+  if (row?.bluetooth_enabled) {
+    return;
+  }
+  await actor.actor.invoke('device_connection_set_bluetooth_transport', {
+    input: { peerDeviceId, enabled: true },
+  });
+
+  const after = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
   expect(
-    row?.bluetooth_enabled,
+    after.find((entry) => entry.peer_device_id === peerDeviceId)?.bluetooth_enabled,
     `${actor.actor.slug} should have Bluetooth enabled for ${peerDeviceId}`,
   ).toBe(true);
-  expect(
-    row?.bluetooth_address,
-    `${actor.actor.slug} should hold a Bluetooth address for ${peerDeviceId}`,
-  ).toBeTruthy();
 }
 
 export async function waitForBleSession(actor: E2EActor, timeoutMs = 60_000): Promise<void> {
