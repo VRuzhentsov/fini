@@ -1359,9 +1359,13 @@ pub fn device_connection_set_bluetooth_transport_impl(
         .and_then(normalize_bluetooth_address);
 
     if input.enabled {
-        let Some(address) = normalized_address else {
-            return Err("bluetooth address is required to enable Bluetooth transport".to_string());
-        };
+        // ADR-0006: neither a stored address nor an OS bond is required to
+        // enable Bluetooth any more, and requiring them here made the
+        // bondless dial path unreachable in practice -- a peer is only ever
+        // dialled when `bluetooth_enabled` is true, and this is the only
+        // user-facing route to setting it. An address supplied by the caller
+        // is still recorded, as the diagnostic "where we last saw this peer"
+        // that `note_observed_bluetooth_address` also writes.
 
         // This command only runs from the user explicitly flipping the
         // Bluetooth toggle in Device settings -- the one point in the app
@@ -1389,16 +1393,9 @@ pub fn device_connection_set_bluetooth_transport_impl(
             }
         }
 
-        if !bluetooth_address_is_os_paired(&address) {
-            return Err(
-                "OS Bluetooth pairing is required before enabling Bluetooth transport".to_string(),
-            );
-        }
-
         diesel::update(paired_devices::table.find(&input.peer_device_id))
             .set((
                 paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some(address)),
                 paired_devices::bluetooth_last_verified_at.eq(Some(utc_now())),
                 // The user explicitly opted back in -- clears whatever a
                 // previous explicit disable set, so self-reports are free
@@ -1407,6 +1404,17 @@ pub fn device_connection_set_bluetooth_transport_impl(
             ))
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
+
+        // Written separately, and only when the caller actually supplied
+        // one: folding it into the update above would blank a previously
+        // observed address every time the toggle is used without one, which
+        // is now the common case rather than the exception.
+        if let Some(address) = normalized_address {
+            diesel::update(paired_devices::table.find(&input.peer_device_id))
+                .set(paired_devices::bluetooth_address.eq(Some(address)))
+                .execute(&mut *conn)
+                .map_err(|e| e.to_string())?;
+        }
     } else {
         // One transaction, not two independent statements: if the second
         // update (clearing a surviving Bluetooth pin) failed after the

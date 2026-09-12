@@ -1363,17 +1363,28 @@ async fn connect_by_advertisement(
                 match tokio::time::timeout(listen_remaining, discovered.next()).await {
                     Ok(Some(Ok(candidate))) => {
                         let address = candidate.address.0;
-                        // Skip advertisers whose fingerprint says they are
-                        // someone else. An advertiser carrying none is a
-                        // peer on a build from before slice 2 and is still
-                        // tried -- `Auth` remains the thing that decides.
+                        // Only dial an advertiser whose fingerprint matches
+                        // the peer we want. A missing fingerprint is *not*
+                        // tolerated, and that is a deliberate reversal of
+                        // this code's first version.
+                        //
+                        // The `Auth` frame carries our own `device_id` and
+                        // the expected peer's in plaintext and proves
+                        // nothing cryptographically (issue #162), so dialling
+                        // an unknown advertiser hands both identifiers to
+                        // whoever happens to be advertising Fini's service
+                        // nearby. Tolerating a missing fingerprint for the
+                        // sake of older builds would keep that door open
+                        // permanently. Fini is in open alpha with a
+                        // no-legacy policy, so the older build upgrades
+                        // instead.
                         let advertised = advertised_fingerprint(
                             candidate
                                 .manufacturer_data
                                 .get(&FINI_MANUFACTURER_ID)
                                 .map(|payload| payload.as_slice()),
                         );
-                        if advertised.is_some_and(|seen| seen != wanted_fingerprint) {
+                        if advertised != Some(wanted_fingerprint) {
                             continue;
                         }
                         if tried.insert(address.clone()) {
@@ -1669,26 +1680,72 @@ mod tests {
     #[test]
     fn datagram_config_advertises_the_add_mode_flag_only_while_enabled() {
         let _guard = ADD_MODE_TEST_LOCK.lock().unwrap();
+        // ADR-0006 slice 2 changed the shape this asserts. The payload is no
+        // longer present only in add-mode and no longer equals a single
+        // flag byte: it is a flags byte followed by the identity
+        // fingerprint, advertised whenever a fingerprint is known, because
+        // being identifiable is what lets a scanner skip peers it does not
+        // want. The add-mode signal became bit 0 of that first byte.
+        let _ = local_fingerprint().set(fingerprint_of("test-device"));
+        let expected = *local_fingerprint().get().expect("fingerprint set above");
+
         set_add_mode(false);
         let disabled = datagram_config();
-        assert!(
-            !disabled.advertised_manufacturer_data.contains_key(&FINI_MANUFACTURER_ID),
-            "must not advertise the add-mode flag while add-mode is off"
-        );
+        let payload = disabled
+            .advertised_manufacturer_data
+            .get(&FINI_MANUFACTURER_ID)
+            .expect("the fingerprint is advertised regardless of add-mode");
+        assert_eq!(payload[0] & ADD_MODE_FLAG_BYTE, 0, "add-mode bit must be clear");
+        assert_eq!(&payload[1..], &expected, "fingerprint must be advertised");
 
         set_add_mode(true);
         let enabled = datagram_config();
+        let payload = enabled
+            .advertised_manufacturer_data
+            .get(&FINI_MANUFACTURER_ID)
+            .expect("payload present in add-mode too");
         assert_eq!(
-            enabled.advertised_manufacturer_data.get(&FINI_MANUFACTURER_ID),
-            Some(&vec![ADD_MODE_FLAG_BYTE])
+            payload[0] & ADD_MODE_FLAG_BYTE,
+            ADD_MODE_FLAG_BYTE,
+            "add-mode bit must be set while add-mode is on"
         );
+        assert_eq!(&payload[1..], &expected, "fingerprint is unchanged by add-mode");
 
         set_add_mode(false);
         let disabled_again = datagram_config();
-        assert!(
-            !disabled_again.advertised_manufacturer_data.contains_key(&FINI_MANUFACTURER_ID),
-            "must stop advertising the flag once add-mode is left again"
+        assert_eq!(
+            disabled_again.advertised_manufacturer_data.get(&FINI_MANUFACTURER_ID).map(|p| p[0]
+                & ADD_MODE_FLAG_BYTE),
+            Some(0),
+            "must stop signalling add-mode once it is left again"
         );
+    }
+
+    /// The fingerprint must be exactly FNV-1a, because both peers compute it
+    /// independently from the same `device_id` and any divergence means they
+    /// stop recognising each other -- a failure that would only appear across
+    /// an app-version boundary and would look like a radio problem.
+    ///
+    /// Checked against the published algorithm spelled out here rather than
+    /// against a captured constant: this catches a silent swap to a different
+    /// hash (`DefaultHasher`, whose output is explicitly unstable across Rust
+    /// releases, being the tempting one) without needing a magic number whose
+    /// provenance a later reader cannot verify.
+    #[test]
+    fn fingerprint_is_fnv1a_over_the_device_id() {
+        fn reference_fnv1a(input: &str) -> [u8; FINGERPRINT_LEN] {
+            let mut hash: u32 = 2_166_136_261;
+            for byte in input.as_bytes() {
+                hash ^= u32::from(*byte);
+                hash = hash.wrapping_mul(16_777_619);
+            }
+            hash.to_be_bytes()
+        }
+
+        for id in ["75700b2e-c970-482f-aa16-63ebdde0a91c", "peer-a", ""] {
+            assert_eq!(fingerprint_of(id), reference_fnv1a(id), "mismatch for {id:?}");
+        }
+        assert_ne!(fingerprint_of("peer-a"), fingerprint_of("peer-b"));
     }
 
     /// Serializes tests that set `FINI_LOCAL_BLUETOOTH_ADDRESS`/
