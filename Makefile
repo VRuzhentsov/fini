@@ -464,7 +464,11 @@ e2e-devices-ble:
 
 E2E_PHONE_ACTOR ?= phone
 E2E_PHONE_PORT ?= 9223
-E2E_PHONE_SPEC ?= external actor
+# Matched against the *test title* by Playwright's `-g`, not the filename.
+# "external actor" appears only in `external-actor-smoke.spec.ts`'s name, so
+# it selected nothing and the documented plain `make e2e-phone` ran an empty
+# suite that still exited green.
+E2E_PHONE_SPEC ?= both actors answer the same invoke surface
 e2e-phone:
 	@set -eu; \
 	adb get-state >/dev/null 2>&1 || (echo "No adb device. Connect the phone and run 'make android-devices'." && exit 1); \
