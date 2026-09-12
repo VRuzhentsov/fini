@@ -167,6 +167,27 @@ spuriously. Roughly 90s in the foreground, roughly three minutes in the
 background. The cost is honest but unhurried: after a peer really leaves, the
 row can take up to three minutes to go gray.
 
+**These periods are provisional, and deliberately so.** Scanning is only half
+of what this pair spends on radio; the other half is what happens once they
+are connected, which today is a sync tick every 3s and an app-level ping every
+15s — roughly 28,800 and 5,760 wakeups a day, to carry what is realistically a
+handful of quest changes. Issue #171 proposes replacing that with event-driven
+sync and transport-level liveness detection.
+
+The two decisions share one budget and should be tuned together, not
+separately. They also pull in opposite directions in a useful way: holding
+connections open longer means scanning less often, because a connected peer is
+not being searched for at all. Picking scan periods now, in ignorance of what
+the connected side will cost, would mean picking them twice.
+
+So slice 3 should land the *mechanism* — a duty-cycled scanner with
+foreground and background periods, paused while a session is live — and treat
+the specific numbers as the first guess rather than the answer. Nothing about
+the mechanism changes when #171 lands; only the constants do. That is also
+why #171 is sequenced after this ADR rather than merged into it: the sync
+layer should not be rebuilt on a transport that has not yet been shown to
+carry a real quest.
+
 **5. `find_peer_address`/`probe_candidate` are promoted, not replaced.** They
 already scan, dial and authenticate; they simply discard the established link
 and return an address to redial. That discard is the address-centric model's
