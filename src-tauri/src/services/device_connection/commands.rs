@@ -1754,7 +1754,18 @@ pub fn device_connection_transport_statuses_impl(
     Ok(build_transport_statuses(TransportStatusInputs {
         network_present: state.network_peer_available(&peer_device_id),
         bluetooth_enabled: paired.bluetooth_enabled,
-        bluetooth_peer_nearby: bluetooth_peer_nearby_now(&peer_device_id),
+        // A live session is the strongest possible evidence of nearness, and
+        // it outranks the advertisement record entirely.
+        //
+        // Without this the row lies in the one state it must not: scanning
+        // stops while a session is live (nothing is being searched for), so
+        // the last-seen-advertising stamp goes stale after three scan
+        // periods and the row reports "not nearby" about a peer it is
+        // actively talking to. That is precisely the class of dishonesty
+        // ADR-0005 exists to remove, reintroduced by the precondition meant
+        // to remove another one.
+        bluetooth_peer_nearby: snapshot.bluetooth_connected
+            || bluetooth_peer_nearby_now(&peer_device_id),
         bluetooth_dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         network_connected: snapshot.network_connected,
         bluetooth_connected: snapshot.bluetooth_connected,

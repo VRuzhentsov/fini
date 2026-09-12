@@ -1224,8 +1224,29 @@ fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
 /// background. Once per process: `startForegroundService` on an already-running
 /// service just delivers another `onStartCommand`, which is harmless but
 /// pointless to repeat every three seconds.
+/// Gated on the Bluetooth permission triad, and not merely as a courtesy.
+///
+/// The service declares `foregroundServiceType="connectedDevice"`, and on
+/// Android 14+ promoting a service of that type requires one of the
+/// qualifying runtime prerequisites -- for this app, a granted nearby-devices
+/// permission. A fresh install has granted none, and `space_sync_tick_impl`
+/// runs on the first frontend tick, so starting unconditionally means
+/// `startForeground` throws `SecurityException` and takes the process with
+/// it. The app would die on launch for every new user, while every developer
+/// device -- which granted the permission long ago -- stayed fine.
+///
+/// Returning early leaves `STARTED` unconsumed on purpose, so the next tick
+/// after the user grants the permission still starts the service. The
+/// once-only guard is about not re-issuing `startForegroundService` every
+/// three seconds, not about only ever trying once.
 #[cfg(target_os = "android")]
 fn start_sync_service_once() {
+    if !crate::services::android_context::call_static_context_to_bool(
+        "com.fini.app.BluetoothPairing",
+        "hasPermissions",
+    ) {
+        return;
+    }
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
         crate::services::android_context::call_static_context_void(

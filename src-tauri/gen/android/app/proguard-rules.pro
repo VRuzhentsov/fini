@@ -32,3 +32,13 @@
 -keep class dev.blegatt.NativeKt { *; }
 -keepclasseswithmembernames class dev.blegatt.NativeKt { native <methods>; }
 -keep class com.fini.app.BluetoothPairing { *; }
+# Reached only by name, from Rust, via `call_static_context_void` in
+# `space_sync/commands.rs` -- never from Kotlin or Java, so R8 sees no
+# reference and is free to rename or remove it. Manifest registration keeps
+# the Android component alive but says nothing about this companion method,
+# so without this rule a minified release APK starts and then dies on
+# NoSuchMethodError the first time background sync tries to start (ADR-0004).
+# Debug builds are unminified, which is exactly why this cannot be caught by
+# the way the app is normally tested.
+-keep class com.fini.app.SyncForegroundService { *; }
+-keep class com.fini.app.SyncForegroundService$Companion { *; }

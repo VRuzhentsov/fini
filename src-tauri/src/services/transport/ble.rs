@@ -736,10 +736,19 @@ pub async fn scan_add_mode_candidates(
             .await
             .map_err(|err| format!("ble scan failed: {err}"))?;
 
+        // Listening gets at most half the caller's window, so the probe
+        // phase always has something left. Splitting scan from probe fixed
+        // one bug and introduced the risk of another: a scan that runs to
+        // the full deadline leaves zero budget for the dials it just queued
+        // up, and the pass returns nothing having done nothing -- looking
+        // exactly like "no candidates" while actually meaning "no time".
+        let listen_deadline = deadline - timeout / 2;
+
         let mut flagged: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining =
+                listen_deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 break;
             }
