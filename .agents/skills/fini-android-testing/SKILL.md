@@ -56,6 +56,56 @@ Consequence: any plugin command that calls `PluginManager.startActivityForResult
 
 **Fix**: call `PluginManager.onActivityCreate(this)` in `MainActivity.onCreate` **before** `super.onCreate()`. `registerForActivityResult` must be called before `onStart`, so calling it in `onCreate` is correct and safe.
 
+## Driving a running app by hand: `devtools-bridge.mjs`
+
+Beside this file. A thin bridge to a running debug app's devtools socket: it
+connects, evaluates the expression you give it **inside the app's webview**,
+prints the result, and exits. Seconds, not minutes — no actor pool, no test
+runner, no build.
+
+```bash
+# from the repo root, so it resolves the repo's node_modules
+node .claude/skills/fini-android-testing/devtools-bridge.mjs 9224 "<javascript>"
+```
+
+Ports: **9224** desktop (`make desktop-debug`), **9223** phone (after
+`adb forward tcp:9223 tcp:9223`).
+
+The DOM is in scope, and `invoke(cmd, args)` is provided as a shorthand for
+the Tauri bridge. The last expression is the result; wrap in an async IIFE
+when you need `await`.
+
+```bash
+node ... 9224 "invoke('device_connection_get_paired_devices')"
+node ... 9223 "[...document.querySelectorAll('button')].map(b => b.textContent.trim())"
+node ... 9224 "[...document.querySelectorAll('button')].find(b => b.textContent.includes('Pair')).click()"
+node ... 9224 "(async () => { const p = await invoke('device_connection_get_paired_devices');
+   for (const d of p) await invoke('device_connection_unpair', { peerDeviceId: d.peer_device_id });
+   return p.length; })()"
+```
+
+**It deliberately has no verbs.** Compose the expression for the task at
+hand rather than adding a named action to the script — the bridge knows
+nothing about Fini, and all the knowledge lives in the command. Adding
+`unpair-all`-style helpers back is the thing to avoid.
+
+**Use it instead of `adb shell input tap`.** A selector addresses an element
+inside the webview, so it cannot land in another app and it fails loudly when
+the element is absent. A coordinate silently pokes whatever is underneath —
+which, on a phone that is someone's daily device, has meant tapping into an
+unrelated app. Reserve `adb shell input` for native Android UI the webview
+cannot reach (permission dialogs), and screenshot immediately before each tap.
+
+**Use it instead of writing a spec** when the goal is to *do* something once:
+unblock a flow, read state, click through a screen. Specs are for coverage
+the repo keeps; this is for hands.
+
+Worth knowing: it was built after several hours were lost running the full
+e2e harness to perform single actions, each round trip costing minutes with
+no visible progress. The whole pairing flow — unpair both sides, open Add
+Device, Pair, Accept, type the confirmation code, enable Bluetooth — was
+then driven through it in about five minutes.
+
 ## Device automation workflow
 
 ### 1. Start Android runtime
