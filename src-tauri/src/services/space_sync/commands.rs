@@ -1126,6 +1126,39 @@ fn note_tick_ran() {
     }
 }
 
+/// When the last tick arrived **from the frontend specifically**, as
+/// opposed to from the keeper. `None` until the first one.
+///
+/// This is how the Bluetooth dial loop tells foreground from background
+/// without any platform lifecycle plumbing (ADR-0006 slice 3). The webview
+/// only drives ticks while it is alive and running, and the keeper only
+/// runs when it is not, so "a frontend tick arrived recently" is a direct
+/// observation of the thing we actually care about: whether a person is
+/// currently looking at a transport row and waiting for it to turn green.
+static LAST_FRONTEND_TICK_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn note_frontend_tick() {
+    let cell = LAST_FRONTEND_TICK_AT.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cell.lock() {
+        *guard = Some(Instant::now());
+    }
+}
+
+/// Whether the frontend has ticked recently enough to count as driving.
+///
+/// The tolerance is several tick intervals rather than one: a single
+/// missed or delayed tick (a busy webview, a slow DB read) must not flip
+/// the dial loop into its frugal background cadence while the user is in
+/// fact watching.
+pub fn frontend_is_driving() -> bool {
+    const TOLERANCE: Duration = Duration::from_secs(15);
+    let cell = LAST_FRONTEND_TICK_AT.get_or_init(|| Mutex::new(None));
+    match cell.lock() {
+        Ok(guard) => guard.is_some_and(|at| at.elapsed() < TOLERANCE),
+        Err(_) => false,
+    }
+}
+
 fn tick_is_overdue() -> bool {
     let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
     match cell.lock() {
@@ -1512,6 +1545,10 @@ pub fn space_sync_tick(
     db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
 ) -> Result<SpaceSyncTickResult, String> {
+    // Only this entry point notes a *frontend* tick. The keeper calls
+    // `space_sync_tick_impl` directly, which is what keeps the two
+    // distinguishable -- see `frontend_is_driving`.
+    note_frontend_tick();
     let mut conn = db.0.lock().unwrap();
     space_sync_tick_impl(&mut conn, &device_connection)
 }

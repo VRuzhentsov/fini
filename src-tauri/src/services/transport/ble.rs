@@ -1255,10 +1255,38 @@ fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, add
 }
 
 /// How long one `connect_by_advertisement` pass listens for candidates
-/// before giving up on this attempt. ADR-0006 slice 1 keeps this a single
-/// fixed window; the duty-cycled foreground/background scanner is a later
-/// slice.
+/// before giving up on this attempt. The *window*; `idle_scan_period`
+/// below decides how often the window opens.
 const DIAL_SCAN_WINDOW: Duration = Duration::from_secs(8);
+
+/// Longest gap between scan windows while a peer is unreachable, when the
+/// user is watching (ADR-0006 slice 3).
+const SCAN_PERIOD_FOREGROUND: Duration = Duration::from_secs(30);
+
+/// The same, for the background daemon. Double, because nobody is waiting
+/// on the row and the phone is on battery.
+const SCAN_PERIOD_BACKGROUND: Duration = Duration::from_secs(60);
+
+/// How long to wait before opening the next scan window.
+///
+/// Duty-cycling at all is not a micro-optimisation: continuous scanning
+/// destabilised the development desktop's adapter badly enough to drop the
+/// machine's unrelated Bluetooth devices, which is recorded under ADR-0005's
+/// method traps. On the phone it is also simply expensive -- and the phone
+/// already runs Google's own continuous Nearby scanner, so ours is not the
+/// only consumer of that radio.
+///
+/// The two periods are a deliberate first guess, not a tuned answer. Issue
+/// #171 changes what a *connected* pair costs, and both halves spend one
+/// battery budget, so the numbers should be settled together once that
+/// lands. See ADR-0006's design review.
+fn idle_scan_period() -> Duration {
+    if crate::services::space_sync::commands::frontend_is_driving() {
+        SCAN_PERIOD_FOREGROUND
+    } else {
+        SCAN_PERIOD_BACKGROUND
+    }
+}
 
 /// How long one candidate gets for its own dial plus auth handshake.
 ///
@@ -1428,7 +1456,6 @@ enum AdvertisementDial {
 
 async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String) {
     let mut delay = Duration::from_secs(2);
-    let max_delay = Duration::from_secs(30);
     // Real-device evidence (2026-09-01, actual BLE hardware, not the mock
     // radio): a flaky link can keep connecting, negotiating MTU, and even
     // completing GATT service discovery, then dying before the app-level
@@ -1584,9 +1611,14 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
         // advertised 60s give-up noticeably later. Bound it the same way the
         // attempt budget above is bounded, rather than duplicating a deadline
         // check into each unsuccessful arm individually.
+        //
+        // The ceiling is re-read every iteration rather than captured once:
+        // the app can move between foreground and background during a single
+        // unsuccessful streak, and the cadence should follow it rather than
+        // stay on whatever it was when the streak began.
         let remaining_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
         tokio::time::sleep(delay.min(remaining_budget)).await;
-        delay = (delay * 2).min(max_delay);
+        delay = (delay * 2).min(idle_scan_period());
     }
 }
 
