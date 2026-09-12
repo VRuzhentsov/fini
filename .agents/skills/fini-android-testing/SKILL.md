@@ -65,7 +65,7 @@ runner, no build.
 
 ```bash
 # from the repo root, so it resolves the repo's node_modules
-node .claude/skills/fini-android-testing/devtools-bridge.mjs 9224 "<javascript>"
+node .agents/skills/fini-android-testing/devtools-bridge.mjs 9224 "<javascript>"
 ```
 
 Ports: **9224** desktop (`make desktop-debug`), **9223** phone (after

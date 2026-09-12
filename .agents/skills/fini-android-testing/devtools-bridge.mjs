@@ -2,7 +2,7 @@
 // actions -- it connects, evaluates whatever expression it is given inside
 // the app's webview, prints the result, exits.
 //
-//   node .claude/skills/fini-android-testing/devtools-bridge.mjs <port> "<js>"
+//   node .agents/skills/fini-android-testing/devtools-bridge.mjs <port> "<js>"
 //
 // Run it from the repo root -- it resolves `@srsholmes/tauri-playwright`
 // from the repo's node_modules.
@@ -28,7 +28,7 @@ const port = Number(portArg);
 const expr = exprParts.join(' ');
 if (!port || !expr) {
   console.error(
-    'usage: node .claude/skills/fini-android-testing/devtools-bridge.mjs <port> "<javascript>"',
+    'usage: node .agents/skills/fini-android-testing/devtools-bridge.mjs <port> "<javascript>"',
   );
   process.exit(2);
 }
