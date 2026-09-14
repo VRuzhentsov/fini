@@ -369,6 +369,21 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Without this the action installs its default set, `tools
+          # platform-tools`. Google has removed the legacy `tools` package from
+          # the SDK repository, so sdkmanager exits 1 and this job dies in
+          # ~19s, before any repo code runs:
+          #
+          #   Warning: Failed to find package 'tools'
+          #   Error: The process '.../sdkmanager' failed with exit code 1
+          #
+          # Ask for `platform-tools` alone -- that package still exists, and it
+          # is the only half of the default this job could want. Everything
+          # else it builds against (SDK, build-tools, NDK) is preinstalled on
+          # the runner image, and the emulator system image is installed by
+          # `reactivecircus/android-emulator-runner` below.
+          packages: platform-tools
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
