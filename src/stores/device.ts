@@ -1370,6 +1370,26 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   function isDeviceOnline(device: PairedDevice): boolean {
+    // A proven live link on *any* transport means the peer is reachable right
+    // now, whatever the presence beacon last saw. `last_seen_at` alone is a
+    // network-only signal: it is refreshed by the mDNS/UDP presence worker, so
+    // with Wi-Fi off it goes stale even while Bluetooth carries real traffic.
+    // Observed on hardware: the Device page read "Offline" directly above
+    // "Bluetooth — Connected now", which is the row contradicting itself.
+    //
+    // Green only (`configured` with no code): that is the state where the
+    // bidirectional ping/ack proof is currently complete. Amber deliberately
+    // does not count -- a claimed-but-unproven session is "connecting", and
+    // calling that Online is the same overclaim this fix exists to remove.
+    //
+    // Statuses are loaded per peer (see `refreshTransportStatuses`' callers),
+    // so a peer whose page has never been opened simply has none cached and
+    // falls through to the presence check below, exactly as before.
+    const provenLink = (transportStatusesByPeer.value[device.peer_device_id] ?? []).some(
+      (transport) => transport.state.state === "configured" && transport.state.code === null,
+    );
+    if (provenLink) return true;
+
     if (!device.last_seen_at) return false;
     const lastSeen = Date.parse(device.last_seen_at);
     if (Number.isNaN(lastSeen)) return false;
