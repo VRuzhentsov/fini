@@ -448,6 +448,13 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Without this the action installs its default set, `tools
+          # platform-tools`. Google has removed the legacy `tools` package from
+          # the SDK repository, so sdkmanager exits 1 and the job dies before
+          # any repo code runs. Same fix as ci.yml's emulator lane; this one was
+          # missed there and took the v0.3.9 release build down with it.
+          packages: platform-tools
 
       - name: Restore Android project cache
         uses: actions/cache@v4
