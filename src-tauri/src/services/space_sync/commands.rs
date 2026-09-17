@@ -2,7 +2,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
@@ -1109,11 +1109,71 @@ pub fn space_sync_resolve_custom_space_mapping(
     )
 }
 
-/// How often the sync tick must run at minimum, and how often the Rust-side
-/// keeper below checks whether it has. Matches the frontend's own
-/// `MAPPING_UPDATE_POLL_INTERVAL_MS`, so a webview that is driving ticks
-/// normally keeps the keeper permanently idle.
-const TICK_INTERVAL: Duration = Duration::from_secs(3);
+/// The longest an idle, fully-connected pair may go without a tick.
+///
+/// This is a floor for the *unprompted* cadence, not the latency of a
+/// change: a local edit wakes the drain immediately through
+/// [`notify_outbox_has_work`], so this interval no longer decides how fast
+/// data moves. What it still covers is everything a tick does besides
+/// moving data -- re-arming dial loops for a peer that is not connected,
+/// draining incoming space-sync ends -- plus being the backstop if a
+/// notification is ever missed.
+///
+/// It was 3s, chosen when the only transport was a network socket on mains
+/// power. Issue #171 did the arithmetic: ~28,800 wakeups a day to deliver a
+/// handful of quest changes. The cost is not the BLE link, which draws
+/// microamps while idle; it is waking the radio because a timer said so.
+const TICK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Raised whenever something lands in the outbox, so the keeper can send it
+/// now instead of at the next `TICK_INTERVAL`.
+///
+/// A `Notify` rather than a channel because the payload is irrelevant: the
+/// tick re-reads the outbox from SQLite anyway, so the only question is
+/// "is there work", and coalescing several edits into one wake is correct
+/// and desirable. `notify_waiters` (not `notify_one`) so a signal raised
+/// while nobody waits is dropped rather than queued -- the tick that is
+/// already running will read those rows itself.
+static OUTBOX_NOTIFY: OnceLock<Arc<tokio::sync::Notify>> = OnceLock::new();
+
+fn outbox_notify() -> &'static Arc<tokio::sync::Notify> {
+    OUTBOX_NOTIFY.get_or_init(|| Arc::new(tokio::sync::Notify::new()))
+}
+
+/// Called from `outbox::emit_sync_event_at` -- the single funnel every local
+/// change passes through -- to wake the keeper's drain.
+///
+/// Deliberately infallible and sync: it runs inside the same SQLite
+/// transaction path as the write, so it must not block, await, or fail the
+/// caller. A missed wake costs latency until the next tick, never data.
+pub fn notify_outbox_has_work() {
+    outbox_notify().notify_waiters();
+}
+
+/// Announces that a peer's change has been applied to our database, so the
+/// UI can refresh without polling for it.
+///
+/// A broadcast rather than the `Notify` above because this crosses into
+/// `lib.rs`, which forwards it to the webview as a Tauri event -- the same
+/// shape `DeviceConnectionState::subscribe_lifecycle` already uses for
+/// session changes (ADR-0003 Phase 2). Capacity 16 and a dropped `send`
+/// result on purpose: a receiver that lags simply refreshes once for the
+/// batch, which is the correct outcome for "something changed, re-read it".
+static DATA_CHANGED_TX: OnceLock<tokio::sync::broadcast::Sender<()>> = OnceLock::new();
+
+fn data_changed_tx() -> &'static tokio::sync::broadcast::Sender<()> {
+    DATA_CHANGED_TX.get_or_init(|| tokio::sync::broadcast::channel(16).0)
+}
+
+fn note_data_changed() {
+    let _ = data_changed_tx().send(());
+}
+
+/// Subscribe to "a peer's change was applied locally". See
+/// [`note_data_changed`].
+pub fn subscribe_data_changed() -> tokio::sync::broadcast::Receiver<()> {
+    data_changed_tx().subscribe()
+}
 
 /// When the last tick ran, from any caller -- the frontend command or the
 /// keeper. `None` until the first tick.
@@ -1196,9 +1256,25 @@ fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
     STARTED.call_once(|| {
         tauri::async_runtime::spawn(async move {
             loop {
-                tokio::time::sleep(TICK_INTERVAL).await;
-                if !tick_is_overdue() {
-                    continue;
+                // Whichever comes first: something to send, or the backstop
+                // interval. `Notify::notified()` is registered *before* the
+                // select so a signal raised while this task was mid-tick is
+                // not lost between iterations.
+                let notified = outbox_notify().notified();
+                tokio::select! {
+                    _ = tokio::time::sleep(TICK_INTERVAL) => {
+                        // Unprompted pass. Skip it if the frontend already
+                        // ticked recently -- that tick did the same work.
+                        if !tick_is_overdue() {
+                            continue;
+                        }
+                    }
+                    _ = notified => {
+                        // A local change is waiting. Run regardless of when
+                        // the last tick was: the whole point is that this
+                        // one carries data the previous tick could not have
+                        // seen.
+                    }
                 }
                 let state = device_connection.clone();
                 // `space_sync_tick_impl` is blocking (SQLite plus the dial
@@ -1551,6 +1627,15 @@ pub fn space_sync_tick_impl(
 
     let _ = cleanup_old_tombstones(&mut conn);
 
+    // Only when a peer's change actually landed in our database. This is what
+    // lets the frontend stop polling: it now learns about remote edits the
+    // moment they are applied instead of on its next interval. A tick that
+    // applied nothing is silent, which is the whole point -- an idle pair
+    // should produce no work for anyone, including the UI.
+    if applied_events > 0 {
+        note_data_changed();
+    }
+
     Ok(SpaceSyncTickResult {
         sent_events: sent_events_total,
         applied_events,
@@ -1558,6 +1643,25 @@ pub fn space_sync_tick_impl(
         peers,
         ticked_at,
     })
+}
+
+/// "The user is looking at the app" -- nothing more.
+///
+/// Before issue #171 this was a side effect of the frontend's 3s sync tick:
+/// ticks arriving *was* the evidence someone was watching, which is what
+/// `frontend_is_driving` reads to pick the Bluetooth scan cadence
+/// (ADR-0006 slice 3). Making sync event-driven removes that tick, and with
+/// it the evidence -- so the signal needs its own carrier, or the dial loop
+/// silently drops to its frugal background period while the user is in fact
+/// watching a row and waiting for it to turn green.
+///
+/// Deliberately does no work: no database, no dial loops, no outbox. It
+/// exists so the heartbeat that keeps that signal alive costs essentially
+/// nothing, which is the only reason it is acceptable to keep one at all.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn space_sync_note_foreground() {
+    note_frontend_tick();
 }
 
 #[cfg(any(feature = "ui-plane", test))]

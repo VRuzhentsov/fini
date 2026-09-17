@@ -429,7 +429,26 @@ pub async fn run_session(
 /// agnostic layer on top (it also runs over Bluetooth, which has no
 /// WS-level ping of its own), not a replacement for it, but there's no
 /// reason for the two cadences to disagree.
-const APP_PING_INTERVAL: Duration = Duration::from_secs(15);
+///
+/// Issue #171 moved it from 15s to 2 minutes. At 15s this was ~5,760 wakeups
+/// a day per connected transport, in both directions, on a battery -- and
+/// almost all of them proved something the transport already knew.
+///
+/// What makes the slower cadence safe is that a *dropped link* was never
+/// detected here: `run_session`'s loop above breaks the moment its receive
+/// path errors or the peer closes, and calls `release_session`, which raises
+/// `LinkEvent::SessionEnded`. That is the radio telling us, and it is both
+/// faster and more trustworthy than counting missed pings.
+///
+/// What is left for the ping is the case the transport cannot see: a peer
+/// whose link is up but whose app has stopped answering. Minutes is the
+/// right order for that -- nobody is served by learning it 15 seconds
+/// sooner, and the row's amber state is not a thing users act on.
+///
+/// The cost is that `TransportAckState`'s 3-miss decay to `PingMissed` now
+/// takes ~6 minutes instead of ~45s. That only governs a live-but-wedged
+/// peer; every ordinary disconnect still turns the row over immediately.
+const APP_PING_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Test/CI escape hatch, mirroring `local_bluetooth_address`'s own
 /// `FINI_LOCAL_BLUETOOTH_ADDRESS`: exercising the periodic re-check
