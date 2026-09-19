@@ -30,7 +30,21 @@ const wsPort = pickRandomPort('FINI_SPACE_SYNC_WS_PORT', 47500, 500);
 const headful = process.env.FINI_E2E_HEADFUL === '1';
 
 const envFlags = `FINI_APP_DATA_DIR=${dataDir} FINI_DISCOVERY_PORT=${discoveryPort} FINI_SPACE_SYNC_WS_PORT=${wsPort} TZ=UTC`;
-const binaryTimeout = process.platform === 'linux' ? '/usr/bin/timeout --foreground --kill-after=5s 300s ' : '';
+// A backstop against a runaway app process outliving the run -- not a
+// budget for the lane. It has to exceed the *whole* `ui` project's runtime,
+// because one app process serves every test in it: when this fires
+// mid-lane the app simply disappears, and the next test hangs forever
+// rather than failing, since a dead socket neither answers nor times out.
+//
+// That is exactly what 300s did once the lane grew past five minutes --
+// whichever test happened to run around the four-minute mark died with a
+// bare 180s timeout and no error, and the one after it inherited a wedged
+// app. The failure moved with timing, which made it read as flake for a
+// long time.
+//
+// 1800s leaves room for the lane to keep growing while still killing a
+// genuinely stuck process well inside CI's own limits.
+const binaryTimeout = process.platform === 'linux' ? '/usr/bin/timeout --foreground --kill-after=5s 1800s ' : '';
 
 const tauriCommand = process.env.FINI_APP_BINARY
   ? (headful

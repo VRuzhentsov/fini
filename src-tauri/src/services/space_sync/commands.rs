@@ -2,7 +2,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
@@ -73,6 +73,40 @@ pub struct SpaceSyncStatus {
     pub acked_event_count: i64,
     pub seen_event_count: i64,
     pub tombstone_count: i64,
+}
+
+/// One entry in the Device page's sync-queue accordion: a change emitted
+/// locally that this peer has not acknowledged yet.
+///
+/// `title` is resolved only for the entity types a person would recognise
+/// by name -- a Quest and a Space. Everything else (reminders, checklist
+/// activity, focus history, series templates) is bookkeeping the user never
+/// named, so rather than invent a label for it in Rust the row carries its
+/// `entity_type` and the frontend supplies the wording, next to the rest of
+/// the app's copy.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncQueueEntry {
+    pub entity_type: String,
+    pub entity_id: String,
+    pub space_id: String,
+    pub title: Option<String>,
+}
+
+/// Everything the Device page needs to answer "has my stuff synced?" for
+/// one peer, in one call.
+///
+/// `entries` is capped (see `SYNC_QUEUE_ENTRY_LIMIT`); `pending_count` is
+/// the real total, and is what both the "N changes waiting" line and the
+/// "+ more" arithmetic below the list are computed from.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncQueueSummary {
+    pub peer_device_id: String,
+    pub pending_count: usize,
+    pub entries: Vec<SyncQueueEntry>,
+    /// Newest `sync_acks.acked_at` for this peer -- what "Last change
+    /// reached <device> 2 min ago" reads from. `None` when this peer has
+    /// never acknowledged anything.
+    pub last_acked_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1109,11 +1143,84 @@ pub fn space_sync_resolve_custom_space_mapping(
     )
 }
 
-/// How often the sync tick must run at minimum, and how often the Rust-side
-/// keeper below checks whether it has. Matches the frontend's own
-/// `MAPPING_UPDATE_POLL_INTERVAL_MS`, so a webview that is driving ticks
-/// normally keeps the keeper permanently idle.
-const TICK_INTERVAL: Duration = Duration::from_secs(3);
+/// The longest an idle, fully-connected pair may go without a tick.
+///
+/// This is a floor for the *unprompted* cadence, not the latency of a
+/// change: a local edit wakes the drain immediately through
+/// [`notify_sync_work_pending`], so this interval no longer decides how fast
+/// data moves. What it still covers is everything a tick does besides
+/// moving data -- re-arming dial loops for a peer that is not connected,
+/// draining incoming space-sync ends -- plus being the backstop if a
+/// notification is ever missed.
+///
+/// It was 3s, chosen when the only transport was a network socket on mains
+/// power. Issue #171 did the arithmetic: ~28,800 wakeups a day to deliver a
+/// handful of quest changes. The cost is not the BLE link, which draws
+/// microamps while idle; it is waking the radio because a timer said so.
+const TICK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Raised whenever something lands in the outbox, so the keeper can send it
+/// now instead of at the next `TICK_INTERVAL`.
+///
+/// A `Notify` rather than a channel because the payload is irrelevant: the
+/// tick re-reads the outbox from SQLite anyway, so the only question is
+/// "is there work", and coalescing several edits into one wake is correct
+/// and desirable.
+///
+/// `notify_one`, not `notify_waiters`: a signal raised while the keeper is
+/// mid-tick must survive until it next waits. The earlier reasoning -- that
+/// the running tick would read those rows itself -- only holds if the write
+/// lands before that tick's read, and for an inbound frame arriving on
+/// another task there is nothing to make that true. Dropping the signal
+/// there costs a full backstop interval of latency for data that had
+/// already arrived. `notify_one` stores a single permit, so at worst the
+/// keeper runs one extra pass that finds nothing.
+static OUTBOX_NOTIFY: OnceLock<Arc<tokio::sync::Notify>> = OnceLock::new();
+
+fn outbox_notify() -> &'static Arc<tokio::sync::Notify> {
+    OUTBOX_NOTIFY.get_or_init(|| Arc::new(tokio::sync::Notify::new()))
+}
+
+/// Wakes the keeper because there is sync work pending -- in either
+/// direction.
+///
+/// Raised from `outbox::emit_sync_event_at` (the single funnel every local
+/// change passes through) and from `session::handle_inbound` when a peer's
+/// frame lands in an incoming queue. Both are "there is something to do
+/// that the last tick could not have seen", and the keeper cannot tell them
+/// apart anyway.
+///
+/// Deliberately infallible and sync: it runs inside the same SQLite
+/// transaction path as the write, so it must not block, await, or fail the
+/// caller. A missed wake costs latency until the next tick, never data.
+pub fn notify_sync_work_pending() {
+    outbox_notify().notify_one();
+}
+
+/// Announces that a peer's change has been applied to our database, so the
+/// UI can refresh without polling for it.
+///
+/// A broadcast rather than the `Notify` above because this crosses into
+/// `lib.rs`, which forwards it to the webview as a Tauri event -- the same
+/// shape `DeviceConnectionState::subscribe_lifecycle` already uses for
+/// session changes (ADR-0003 Phase 2). Capacity 16 and a dropped `send`
+/// result on purpose: a receiver that lags simply refreshes once for the
+/// batch, which is the correct outcome for "something changed, re-read it".
+static DATA_CHANGED_TX: OnceLock<tokio::sync::broadcast::Sender<()>> = OnceLock::new();
+
+fn data_changed_tx() -> &'static tokio::sync::broadcast::Sender<()> {
+    DATA_CHANGED_TX.get_or_init(|| tokio::sync::broadcast::channel(16).0)
+}
+
+pub(crate) fn note_data_changed() {
+    let _ = data_changed_tx().send(());
+}
+
+/// Subscribe to "a peer's change was applied locally". See
+/// [`note_data_changed`].
+pub fn subscribe_data_changed() -> tokio::sync::broadcast::Receiver<()> {
+    data_changed_tx().subscribe()
+}
 
 /// When the last tick ran, from any caller -- the frontend command or the
 /// keeper. `None` until the first tick.
@@ -1190,15 +1297,52 @@ fn tick_is_overdue() -> bool {
 /// role can safely start (see `start_peripheral_once`'s caller below), and
 /// starting a Rust timer any earlier would just reintroduce that problem from
 /// a different thread.
-#[cfg(target_os = "android")]
+/// Runs on every platform, but does different amounts of work on each.
+///
+/// The wake-on-change half is universal: without it, `notify_sync_work_pending`
+/// has no consumer at all off Android, so a local edit or an inbound frame
+/// waits for whatever the frontend's own cadence happens to be -- which
+/// ADR-0007 slowed to 30s at the same time as it claimed edits had become
+/// event-driven. They had, on one platform.
+///
+/// The *periodic backstop* stays Android-only, and that asymmetry is the
+/// original reason this was gated. On desktop the frontend always drives
+/// ticks, so a second periodic ticker only contends with it for the SQLite
+/// write lock -- a real desktop log showed 21 keeper ticks and 21
+/// `database is locked` failures, each doing no work while adding lock
+/// pressure to everything else, including the auth gate. A keeper that only
+/// ever wakes on a signal cannot cause that: it runs exactly when there is
+/// something new to carry.
 fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
         tauri::async_runtime::spawn(async move {
             loop {
-                tokio::time::sleep(TICK_INTERVAL).await;
-                if !tick_is_overdue() {
-                    continue;
+                // Registered *before* the wait so a signal raised while this
+                // task was mid-tick is not lost between iterations.
+                let notified = outbox_notify().notified();
+
+                #[cfg(target_os = "android")]
+                {
+                    tokio::select! {
+                        _ = tokio::time::sleep(TICK_INTERVAL) => {
+                            // Unprompted pass. Skip it if the frontend already
+                            // ticked recently -- that tick did the same work.
+                            if !tick_is_overdue() {
+                                continue;
+                            }
+                        }
+                        _ = notified => {
+                            // Something is waiting. Run regardless of when the
+                            // last tick was: the whole point is that this one
+                            // carries data the previous tick could not have
+                            // seen.
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    notified.await;
                 }
                 let state = device_connection.clone();
                 // `space_sync_tick_impl` is blocking (SQLite plus the dial
@@ -1270,32 +1414,45 @@ pub fn space_sync_tick_impl(
     // where we are the dialer (ADR-0003 revision: both connect
     // unconditionally, regardless of each other's state).
     let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
+    // ...except where the user has switched the Network channel off for a
+    // pair. Filtered here rather than inside the dial loop so the switch
+    // genuinely stops the dialling instead of only greying the row -- the
+    // Bluetooth side has always had its own equivalent gate
+    // (`ble::is_still_bluetooth_eligible`).
+    let network_peer_ids: HashSet<String> = paired_devices::table
+        .filter(paired_devices::network_enabled.eq(true))
+        .select(paired_devices::peer_device_id)
+        .load::<String>(&mut *conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
     tcp_ws::spawn_dial_loop(
         device_connection,
         device_connection.db_path.clone(),
-        &paired_peer_ids,
+        &network_peer_ids,
     );
+    // Not gated on `network_enabled`: Sim stands in for Bluetooth's role
+    // (see `transport::tests`), so the Network switch has no business
+    // stopping it any more than it stops the real Bluetooth dial loop.
     sim::spawn_fallback_dial_loop(
         device_connection,
         device_connection.db_path.clone(),
         &paired_peer_ids,
     );
-    // Android only, matching the reason this exists at all (ADR-0004): a
-    // backgrounded WebView has its timers throttled, so ticks stop. Desktop
-    // has no such problem -- its frontend always drives them, and if it ever
-    // stops that is a different bug, not one a second ticker should paper
-    // over.
+    // Started on every platform now, but see `start_tick_keeper_once`: only
+    // Android gets the periodic backstop, which is what ADR-0004 needed it
+    // for (a backgrounded WebView has its timers throttled, so ticks stop).
     //
-    // Running it on desktop was actively harmful, and measurably so. The
-    // keeper opens its own SQLite connection while the app holds its own, and
-    // `space_sync_tick_impl` writes, so the two contend: a desktop log from a
-    // real session had 21 keeper ticks and 21 `database is locked` failures.
-    // Every keeper tick there did no work *and* added lock pressure to
-    // everything else reading the DB, including the auth gate.
+    // A *periodic* keeper on desktop was actively harmful, and measurably so:
+    // it opens its own SQLite connection while the app holds one, and
+    // `space_sync_tick_impl` writes, so the two contend -- a real desktop log
+    // had 21 keeper ticks and 21 `database is locked` failures, each doing no
+    // work while adding lock pressure to everything else reading the DB,
+    // including the auth gate. The wake-on-change keeper runs only when there
+    // is something new to carry, so it cannot reproduce that.
     //
     // Same "first tick is the earliest safe point" reasoning as the peripheral
     // start below, and a no-op on every call after the first.
-    #[cfg(target_os = "android")]
     start_tick_keeper_once(device_connection.clone());
 
     // The keeper above only decides *who* drives the tick inside this process.
@@ -1551,6 +1708,15 @@ pub fn space_sync_tick_impl(
 
     let _ = cleanup_old_tombstones(&mut conn);
 
+    // Only when a peer's change actually landed in our database. This is what
+    // lets the frontend stop polling: it now learns about remote edits the
+    // moment they are applied instead of on its next interval. A tick that
+    // applied nothing is silent, which is the whole point -- an idle pair
+    // should produce no work for anyone, including the UI.
+    if applied_events > 0 {
+        note_data_changed();
+    }
+
     Ok(SpaceSyncTickResult {
         sent_events: sent_events_total,
         applied_events,
@@ -1558,6 +1724,25 @@ pub fn space_sync_tick_impl(
         peers,
         ticked_at,
     })
+}
+
+/// "The user is looking at the app" -- nothing more.
+///
+/// Before issue #171 this was a side effect of the frontend's 3s sync tick:
+/// ticks arriving *was* the evidence someone was watching, which is what
+/// `frontend_is_driving` reads to pick the Bluetooth scan cadence
+/// (ADR-0006 slice 3). Making sync event-driven removes that tick, and with
+/// it the evidence -- so the signal needs its own carrier, or the dial loop
+/// silently drops to its frugal background period while the user is in fact
+/// watching a row and waiting for it to turn green.
+///
+/// Deliberately does no work: no database, no dial loops, no outbox. It
+/// exists so the heartbeat that keeps that signal alive costs essentially
+/// nothing, which is the only reason it is acceptable to keep one at all.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn space_sync_note_foreground() {
+    note_frontend_tick();
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1668,6 +1853,88 @@ pub fn space_sync_status(
 ) -> Result<SpaceSyncStatus, String> {
     let mut conn = db.0.lock().unwrap();
     space_sync_status_impl(&mut conn, peer_device_id)
+}
+
+/// How many entries the Device page's sync-queue accordion asks for. The
+/// accordion shows ten and then says how many more there are, so loading
+/// the rest would be work nobody ever sees.
+pub const SYNC_QUEUE_ENTRY_LIMIT: usize = 10;
+
+pub fn space_sync_queue_summary_impl(
+    conn: &mut SqliteConnection,
+    peer_device_id: String,
+) -> Result<SyncQueueSummary, String> {
+    use crate::schema::quests;
+
+    let mapped: Vec<String> = pair_space_mappings::table
+        .filter(pair_space_mappings::peer_device_id.eq(&peer_device_id))
+        .filter(pair_space_mappings::end_of_sync_at.is_null())
+        .select(pair_space_mappings::space_id)
+        .load(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    // Exactly the query the sender uses, so the number on the page and the
+    // number of events the next tick would actually push cannot drift.
+    let pending = load_unacked_events_for_peer(&mut *conn, &peer_device_id, &mapped)?;
+    let pending_count = pending.len();
+
+    // Distinct entities, oldest first. Several edits to one quest are one
+    // thing waiting from the person's point of view, and the ones that have
+    // been waiting longest are the ones worth showing.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut entries: Vec<SyncQueueEntry> = Vec::new();
+    for event in pending {
+        if entries.len() >= SYNC_QUEUE_ENTRY_LIMIT {
+            break;
+        }
+        if !seen.insert((event.entity_type.clone(), event.entity_id.clone())) {
+            continue;
+        }
+        let title: Option<String> = match event.entity_type.as_str() {
+            "quest" => quests::table
+                .find(&event.entity_id)
+                .select(quests::title)
+                .first(&mut *conn)
+                .optional()
+                .map_err(|e| e.to_string())?,
+            "space" => spaces::table
+                .find(&event.entity_id)
+                .select(spaces::name)
+                .first(&mut *conn)
+                .optional()
+                .map_err(|e| e.to_string())?,
+            _ => None,
+        };
+        entries.push(SyncQueueEntry {
+            entity_type: event.entity_type,
+            entity_id: event.entity_id,
+            space_id: event.space_id,
+            title,
+        });
+    }
+
+    let last_acked_at: Option<String> = sync_acks::table
+        .filter(sync_acks::peer_device_id.eq(&peer_device_id))
+        .select(diesel::dsl::max(sync_acks::acked_at))
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(SyncQueueSummary {
+        peer_device_id,
+        pending_count,
+        entries,
+        last_acked_at,
+    })
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn space_sync_queue_summary(
+    db: State<AppDbConnection>,
+    peer_device_id: String,
+) -> Result<SyncQueueSummary, String> {
+    let mut conn = db.0.lock().unwrap();
+    space_sync_queue_summary_impl(&mut conn, peer_device_id)
 }
 
 #[cfg(test)]

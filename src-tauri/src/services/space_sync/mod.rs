@@ -8,7 +8,9 @@ pub mod types;
 #[cfg(any(feature = "ui-plane", test))]
 pub use commands::{
     space_sync_apply_remote_mappings, space_sync_list_mappings,
-    space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
+    space_sync_note_foreground, space_sync_queue_summary,
+    space_sync_resolve_custom_space_mapping, space_sync_status,
+    space_sync_tick,
     space_sync_update_mappings,
 };
 #[cfg(feature = "cli-plane")]

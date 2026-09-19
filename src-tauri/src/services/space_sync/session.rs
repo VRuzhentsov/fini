@@ -429,7 +429,26 @@ pub async fn run_session(
 /// agnostic layer on top (it also runs over Bluetooth, which has no
 /// WS-level ping of its own), not a replacement for it, but there's no
 /// reason for the two cadences to disagree.
-const APP_PING_INTERVAL: Duration = Duration::from_secs(15);
+///
+/// Issue #171 moved it from 15s to 2 minutes. At 15s this was ~5,760 wakeups
+/// a day per connected transport, in both directions, on a battery -- and
+/// almost all of them proved something the transport already knew.
+///
+/// What makes the slower cadence safe is that a *dropped link* was never
+/// detected here: `run_session`'s loop above breaks the moment its receive
+/// path errors or the peer closes, and calls `release_session`, which raises
+/// `LinkEvent::SessionEnded`. That is the radio telling us, and it is both
+/// faster and more trustworthy than counting missed pings.
+///
+/// What is left for the ping is the case the transport cannot see: a peer
+/// whose link is up but whose app has stopped answering. Minutes is the
+/// right order for that -- nobody is served by learning it 15 seconds
+/// sooner, and the row's amber state is not a thing users act on.
+///
+/// The cost is that `TransportAckState`'s 3-miss decay to `PingMissed` now
+/// takes ~6 minutes instead of ~45s. That only governs a live-but-wedged
+/// peer; every ordinary disconnect still turns the row over immediately.
+const APP_PING_INTERVAL: Duration = Duration::from_secs(120);
 
 /// Test/CI escape hatch, mirroring `local_bluetooth_address`'s own
 /// `FINI_LOCAL_BLUETOOTH_ADDRESS`: exercising the periodic re-check
@@ -454,6 +473,12 @@ async fn handle_inbound(
         PeerFrame::SyncEvent(envelope) => {
             let event_id = envelope.event_id.clone();
             state.push_incoming_sync_event(envelope);
+            // Queuing it is not enough. Nothing applies an incoming event
+            // until a tick drains the queue, so without this a peer's edit
+            // waits for the backstop interval -- which ADR-0007 raised to 30s
+            // while describing remote changes as pushed. Pushed to the queue,
+            // yes; to the database and the UI, only on the next tick.
+            crate::services::space_sync::commands::notify_sync_work_pending();
             let _ = send_frame(link, &PeerFrame::Ack { event_id }).await;
         }
         PeerFrame::Ack { event_id } => {
@@ -475,6 +500,17 @@ async fn handle_inbound(
                 custom_spaces,
                 sent_at,
             });
+            // Same reason as `SyncEvent` above: a mapping request the other
+            // person is waiting on should not sit in a queue for a tick
+            // interval before it can even be shown.
+            crate::services::space_sync::commands::notify_sync_work_pending();
+            // ...and a mapping update is consumed by the *frontend*, not by
+            // the tick, so waking the keeper alone would not surface it.
+            // `space-sync://changed` is what `startSyncChangedListener`
+            // already calls `consumeSpaceMappingUpdates` on; it simply never
+            // fired for this case, because it is raised only when a tick
+            // applies sync events and a mapping update produces none.
+            crate::services::space_sync::commands::note_data_changed();
         }
         PeerFrame::SpaceSyncEnd { space_id, ended_at } => {
             state.push_incoming_space_sync_end(IncomingSpaceSyncEnd {

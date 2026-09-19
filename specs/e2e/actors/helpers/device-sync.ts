@@ -105,11 +105,20 @@ export async function pairActorsViaUi(
 
   const requesterPage = requester.actor.page;
   const accepterPage = accepter.actor.page;
+
+  // The channel is an explicit choice now, asked before discovery runs --
+  // it is no longer inferred from whichever radio found the peer first.
+  // Both sides pick Network: the actors harness has no radio.
+  await requesterPage.click('[data-testid="pair-channel-network"]');
+
   const targetSelector = nearbyDeviceRequestSelector(accepter.identity.hostname);
   await requesterPage.waitForSelector(targetSelector, timeoutMs);
   await requesterPage.click(targetSelector);
 
-  const incomingSelector = incomingRequestAcceptSelector(requester.identity.hostname);
+  // The accepter's dialog switches itself to the incoming request the
+  // moment one arrives, whichever step it was showing -- someone waiting on
+  // an answer outranks whatever this side was doing.
+  const incomingSelector = incomingRequestAcceptSelector();
   await accepterPage.waitForSelector(incomingSelector, timeoutMs);
   await accepterPage.click(incomingSelector);
 
@@ -133,16 +142,43 @@ export async function pairActorsViaUi(
     return (await areActorsPaired(accepter.actor, requester.identity.device_id)) || false;
   }, timeoutMs);
 
+  // Dismiss the dialog on both sides before leaving: it stays mounted with
+  // the Settings page behind it, and leaving it open would also leave both
+  // devices sitting in add mode.
+  await closePairDialog(requesterPage, timeoutMs);
+  await closePairDialog(accepterPage, timeoutMs);
+
   await requesterPage.click('nav.nav a[href="#/settings"]');
   await accepterPage.click('nav.nav a[href="#/settings"]');
   await requesterPage.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
   await accepterPage.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
 }
 
+// Closes the pairing dialog by its backdrop, which is present in every step
+// -- the footer's own dismiss changes label ("Cancel", "Close", "Done") as
+// the flow progresses, so keying off it would make this depend on which
+// step pairing happened to end on.
+async function closePairDialog(page: E2EActor['page'], timeoutMs: number): Promise<void> {
+  const selector = '[data-testid="pair-dialog-backdrop"]';
+  await page.waitForSelector(selector, timeoutMs);
+  await page.click(selector);
+}
+
+// Adding a device is a modal on the Settings page rather than its own page,
+// and opening it is what puts this device into add mode -- which is what
+// makes it discoverable to the other one.
+//
+// Still driven by the hash, not by clicking the "Add device" row.
+// `/settings/add-device` survives precisely as a way to open this dialog
+// (the Settings search lists it as a destination), so navigating to it
+// exercises a path the product actually has. Clicking the row would not
+// work here anyway: `data-testid` lands on `SettingsListItem`'s `<li>`
+// while the handler sits on the inner `<button>`, so a click dispatched at
+// the matched element never reaches it.
 async function openAddDevice(actor: E2EActor, timeoutMs: number): Promise<void> {
   await actor.page.waitForSelector('nav.nav a[href="#/settings"]', timeoutMs);
   await actor.page.evaluate(`(() => { window.location.hash = '#/settings/add-device'; })()`);
-  await actor.page.waitForSelector('[data-testid="nearby-devices"]', timeoutMs);
+  await actor.page.waitForSelector('[data-testid="pair-device-dialog"]', timeoutMs);
 }
 
 async function areActorsPaired(actor: E2EActor, peerDeviceId: string): Promise<boolean> {
@@ -226,8 +262,11 @@ function nearbyDeviceRequestSelector(hostname: string): string {
   return `[data-testid="nearby-device-row"][data-device-hostname="${cssString(hostname)}"] [data-testid="request-pair"]`;
 }
 
-function incomingRequestAcceptSelector(hostname: string): string {
-  return `[data-testid="incoming-request-row"][data-from-hostname="${cssString(hostname)}"] [data-testid="accept-incoming-request"]`;
+// Accepting happens inside the pairing dialog, which shows one request at a
+// time -- so this no longer keys off the sender's hostname the way the old
+// per-row Accept button did.
+function incomingRequestAcceptSelector(): string {
+  return '[data-testid="pair-device-dialog"] [data-testid="accept-incoming-request"]';
 }
 
 function cssString(value: string): string {

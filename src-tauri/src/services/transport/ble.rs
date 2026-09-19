@@ -26,6 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -715,7 +716,7 @@ pub async fn scan_add_mode_candidates(
 ) -> Result<Vec<AddModeCandidate>, String> {
     use futures_util::StreamExt;
 
-    let backend = backend().await?;
+    let backend = backend().await.inspect_err(|_| note_adapter_unreachable())?;
     let deadline = tokio::time::Instant::now() + timeout;
 
     // Two phases, and the split is the point: listen to completion, close
@@ -734,6 +735,8 @@ pub async fn scan_add_mode_candidates(
         let mut discovered = backend
             .scan(datagram_config().service)
             .await
+            .inspect(|_| note_adapter_reachable())
+            .inspect_err(|_| note_adapter_unreachable())
             .map_err(|err| format!("ble scan failed: {err}"))?;
 
         // Listening gets at most half the caller's window, so the probe
@@ -893,6 +896,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         let backend = match backend().await {
             Ok(backend) => backend,
             Err(err) => {
+                note_adapter_unreachable();
                 log::warn!("[transport][ble] adapter unavailable, retrying in {delay:?}: {err}");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(max_delay);
@@ -925,8 +929,14 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         // running loop rather than a full task restart.
         let mut add_mode_rx = add_mode_sender().subscribe();
         let mut incoming = match datagram::serve(backend, &datagram_config()).await {
-            Ok(stream) => stream,
+            Ok(stream) => {
+                // Advertising is a real use of the radio, so it clears a
+                // previously-recorded failure just as a scan does.
+                note_adapter_reachable();
+                stream
+            }
             Err(err) => {
+                note_adapter_unreachable();
                 log::warn!("[transport][ble] advertise failed, retrying in {delay:?}: {err}");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(max_delay);
@@ -1410,6 +1420,84 @@ pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
     }
 }
 
+/// Whether the *local* Bluetooth radio could actually be used the last time
+/// this process tried to use it.
+///
+/// Three-valued on purpose. Before anything has been attempted the honest
+/// answer is "nobody has looked", and a row must not tell the user their
+/// adapter is off on that basis -- the same reasoning that makes
+/// `bluetooth_peer_nearby_now` default to `true` on a platform that cannot
+/// look.
+///
+/// Deliberately *observed* rather than polled. Asking BlueZ whether the
+/// adapter is powered costs a D-Bus round trip, and the transport row is
+/// polled every few seconds for every paired peer; the dial loop already
+/// scans once per `SCAN_PERIOD_*`, so recording what those attempts found
+/// keeps this fresh for free. It is also the truer signal: "we asked the
+/// radio to do something and it refused" is what the user actually cares
+/// about, and it catches an adapter that reports itself powered while
+/// refusing to scan.
+///
+/// Only a real *use* records health. Recording success from `backend()`
+/// alone would be wrong: it caches its `Arc` in a `OnceCell`, so once the
+/// adapter has worked once, every later call returns that cached handle
+/// without touching hardware -- an adapter switched off afterwards would
+/// still look reachable, and the row would flap between the cached success
+/// and the scan failure that follows it.
+const ADAPTER_UNKNOWN: u8 = 0;
+const ADAPTER_REACHABLE: u8 = 1;
+const ADAPTER_UNREACHABLE: u8 = 2;
+
+static ADAPTER_HEALTH: AtomicU8 = AtomicU8::new(ADAPTER_UNKNOWN);
+
+fn note_adapter_reachable() {
+    ADAPTER_HEALTH.store(ADAPTER_REACHABLE, Ordering::Relaxed);
+}
+
+fn note_adapter_unreachable() {
+    ADAPTER_HEALTH.store(ADAPTER_UNREACHABLE, Ordering::Relaxed);
+}
+
+/// `true` only once a genuine attempt has failed -- never merely because
+/// nothing has been tried yet. See `ADAPTER_HEALTH`.
+pub fn is_bluetooth_adapter_unavailable() -> bool {
+    ADAPTER_HEALTH.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
+}
+
+/// Asks the radio, right now, whether it can be used -- and records the
+/// answer into `ADAPTER_HEALTH` like any other attempt.
+///
+/// The observed signal above is free but unhurried: it only refreshes when
+/// the dial loop next scans, which since ADR-0007 is up to 30s away. That
+/// is fine for a row correcting itself in the background and wrong for the
+/// one moment the user is watching -- switching a channel on and expecting
+/// to be told immediately if their own Bluetooth is off. So this exists to
+/// be called from that user action, and only from it.
+///
+/// It opens a discovery session and drops it immediately rather than asking
+/// BlueZ whether the adapter reports itself powered. An adapter that claims
+/// to be powered and then refuses to scan is a real failure mode, and the
+/// question worth answering is "can we do the thing", not "does the
+/// hardware feel well".
+pub async fn probe_adapter_available() -> bool {
+    let Ok(backend) = backend().await else {
+        note_adapter_unreachable();
+        return false;
+    };
+    match backend.scan(datagram_config().service).await {
+        Ok(stream) => {
+            drop(stream);
+            note_adapter_reachable();
+            true
+        }
+        Err(err) => {
+            log::warn!("[transport][ble] adapter probe failed: {err}");
+            note_adapter_unreachable();
+            false
+        }
+    }
+}
+
 /// Finds `peer_id` in the air and returns an authenticated link to it.
 ///
 /// This is ADR-0006's core move. There is no stored address to dial: Android
@@ -1432,6 +1520,7 @@ async fn connect_by_advertisement(
 
     let mut last_auth_error = None;
     let Ok(backend) = backend().await else {
+        note_adapter_unreachable();
         return AdvertisementDial::NoneReachable { last_auth_error };
     };
 
@@ -1458,8 +1547,12 @@ async fn connect_by_advertisement(
         let scan_deadline = tokio::time::Instant::now() + DIAL_SCAN_WINDOW;
         let found = {
             let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
+                note_adapter_unreachable();
                 return AdvertisementDial::NoneReachable { last_auth_error };
             };
+            // The radio accepted a discovery session, which is the only
+            // evidence that actually clears a previously-recorded failure.
+            note_adapter_reachable();
             let mut found = None;
             loop {
                 let listen_remaining =

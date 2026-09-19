@@ -35,6 +35,16 @@ pub fn emit_sync_event_at(
         .execute(conn)
         .map_err(|e| e.to_string())?;
 
+    // Issue #171: this is the one funnel every local change passes through,
+    // so it is the one place that can tell the sync keeper there is now
+    // something to send. Before this, a change waited for the next timer
+    // tick; the timer existed *because* nothing raised a signal here.
+    //
+    // After the insert, never before: a waiter woken by this reads the
+    // outbox from SQLite, so signalling first would race it into finding
+    // nothing and going back to sleep until the backstop interval.
+    crate::services::space_sync::commands::notify_sync_work_pending();
+
     Ok(())
 }
 

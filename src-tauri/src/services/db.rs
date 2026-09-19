@@ -185,7 +185,7 @@ pub fn temp_db_path(label: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{quests, spaces};
+    use crate::schema::{paired_devices, quests, spaces};
 
     fn execute_sql_script(conn: &mut SqliteConnection, script: &str) {
         for statement in script.split(';') {
@@ -226,6 +226,57 @@ mod tests {
             "Family space id=2 must exist"
         );
         assert!(ids.iter().any(|id| id == "3"), "Work space id=3 must exist");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// Migration 23 gives Network the per-pair switch Bluetooth has had
+    /// since migration 19, and it must default to on.
+    ///
+    /// The asymmetry with `bluetooth_enabled` (which defaults to off) is
+    /// the whole point: Bluetooth is a channel a user opts in to, whereas
+    /// Network is the one every existing pair was formed over and is
+    /// currently syncing on. Defaulting it off would silently disconnect
+    /// every pair in the field the moment they upgraded, which is a data
+    /// -visible regression no test elsewhere would catch.
+    ///
+    /// Winds a fully-migrated database back to the pre-23 table shape, with
+    /// a pair already stored in it, then runs the migration forward again.
+    #[test]
+    fn network_stays_on_for_a_pair_that_predates_the_column() {
+        let db_path = temp_db_path("network-stays-on-for-a-pair-that-predates-the-column");
+        let mut conn = open_db_at_path(&db_path);
+
+        diesel::sql_query("ALTER TABLE paired_devices DROP COLUMN network_enabled")
+            .execute(&mut conn)
+            .expect("restore the pre-migration-23 paired_devices shape");
+        diesel::sql_query(
+            "INSERT INTO paired_devices
+                 (peer_device_id, display_name, paired_at, pair_state,
+                  bluetooth_enabled, bluetooth_disabled_by_user)
+             VALUES ('legacy-peer', 'Legacy laptop', datetime('now'), 'paired', 0, 0)",
+        )
+        .execute(&mut conn)
+        .expect("insert a pair from before the column existed");
+        diesel::sql_query(
+            "DELETE FROM __diesel_schema_migrations WHERE version = '00000000000023'",
+        )
+        .execute(&mut conn)
+        .expect("mark migration 23 unapplied");
+
+        conn.run_pending_migrations(MIGRATIONS)
+            .expect("re-run migration 23 over a pre-existing pair");
+
+        let network_enabled: bool = paired_devices::table
+            .find("legacy-peer")
+            .select(paired_devices::network_enabled)
+            .first(&mut conn)
+            .expect("read network_enabled for the pre-existing pair");
+
+        assert!(
+            network_enabled,
+            "a pair that predates the column must keep syncing over the network after upgrading"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

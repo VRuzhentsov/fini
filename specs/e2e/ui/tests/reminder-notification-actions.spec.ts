@@ -62,16 +62,35 @@ async function createQuestWithTodayReminder(
   await fillTextarea(tauriPage, '[data-testid="chat-input"]', title);
   await tauriPage.press('[data-testid="chat-input"]', 'Enter');
 
-  await tauriPage.waitForSelector('.quest-row-surface', 10_000);
+  // A new quest only shows up as a backlog row when something else is
+  // already the Focus quest: `FocusView`'s `backlog` computed excludes the
+  // active one, so the very first quest in an empty app renders in
+  // `ActiveQuestPanel` instead and there is no `.quest-row-surface`
+  // anywhere on the page.
+  //
+  // Waiting only for a row therefore made this helper fail whichever test
+  // happened to run first against a fresh app -- which moved around
+  // depending on what ran before it, and looked like flake. Both
+  // placements open the same `QuestEditor`, so either will do.
   await tauriPage.waitForFunction(`(() => {
     const rows = Array.from(document.querySelectorAll('.quest-row-surface'));
-    return rows.some((r) => r.textContent?.includes(${JSON.stringify(title)}));
-  })()`, 10_000);
+    if (rows.some((r) => r.textContent?.includes(${JSON.stringify(title)}))) return true;
+    const active = document.querySelector('.active-quest-title');
+    return Boolean(active && active.textContent?.includes(${JSON.stringify(title)}));
+  })()`, 30_000);
   await tauriPage.evaluate(`(() => {
     const rows = Array.from(document.querySelectorAll('.quest-row-surface'));
     const row = rows.find((r) => r.textContent?.includes(${JSON.stringify(title)}));
-    if (!(row instanceof HTMLElement)) throw new Error('quest row not found: ' + ${JSON.stringify(title)});
-    row.click();
+    if (row instanceof HTMLElement) {
+      row.click();
+      return;
+    }
+    const active = document.querySelector('.active-quest-title');
+    if (active instanceof HTMLElement && active.textContent?.includes(${JSON.stringify(title)})) {
+      active.click();
+      return;
+    }
+    throw new Error('quest not found as a backlog row or the active quest: ' + ${JSON.stringify(title)});
   })()`);
 
   await tauriPage.click('[data-testid="quest-reminder"]');

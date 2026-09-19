@@ -19,6 +19,11 @@ export interface PairedDevice {
   // click sets.
   preferred_transport: string | null;
   preferred_transport_set_at: string | null;
+  // The per-pair Network switch, counterpart to `bluetooth_enabled`.
+  // Defaults to true where Bluetooth defaults to false: Network is the
+  // channel a pair is normally formed over, so the switch exists to stop
+  // it deliberately rather than to opt in to what already works.
+  network_enabled: boolean;
 }
 
 // Mirrors the backend's TransportStatusCode (device_connection::transport,
@@ -28,8 +33,13 @@ export interface PairedDevice {
 // lookup when i18n lands).
 export type TransportStatusCode =
   | { code: "network_unavailable" }
+  | { code: "network_disabled" }
   | { code: "bluetooth_not_supported" }
   | { code: "bluetooth_disabled" }
+  // The channel is on for this pair but this machine's own radio refused
+  // the last time it was used -- the "on, waiting" row. Not a failure: the
+  // channel stays on and starts by itself once the radio comes back.
+  | { code: "bluetooth_adapter_off" }
   | { code: "bluetooth_no_address" }
   | { code: "bluetooth_peer_not_nearby" }
   | { code: "bluetooth_dial_exhausted" }
@@ -141,6 +151,27 @@ export interface SpaceSyncStatus {
   tombstone_count: number;
 }
 
+// One change waiting to reach a peer. `title` is resolved by the backend
+// only for the entity types a person named themselves -- a Quest or a
+// Space; everything else carries its `entity_type` so the wording lives
+// here with the rest of the app's copy rather than in Rust.
+export interface SyncQueueEntry {
+  entity_type: string;
+  entity_id: string;
+  space_id: string;
+  title: string | null;
+}
+
+export interface SyncQueueSummary {
+  peer_device_id: string;
+  // The real total. `entries` is capped at ten by the backend, so the
+  // "+ more" line below the list is computed from this, not from the
+  // array's length.
+  pending_count: number;
+  entries: SyncQueueEntry[];
+  last_acked_at: string | null;
+}
+
 export interface SpaceSyncTickPeer {
   peer_device_id: string;
   sent_events: number;
@@ -212,7 +243,23 @@ interface LocalDeviceIdentity {
 export const ADD_MODE_DISCOVERY_INTERVAL_MS = 5_000;
 const ADD_MODE_POLL_INTERVAL_MS = 1_000;
 const PRESENCE_POLL_INTERVAL_MS = 15_000;
-const MAPPING_UPDATE_POLL_INTERVAL_MS = 3_000;
+// Kept as the *heartbeat* cadence: how often the frontend tells the backend
+// someone is watching. It carries no data work -- see `space_sync_note_
+// foreground` -- so a short interval here is cheap, and it needs to stay
+// comfortably inside the backend's 15s `frontend_is_driving` tolerance.
+const FOREGROUND_HEARTBEAT_INTERVAL_MS = 5_000;
+
+// How many heartbeats pass between full sync ticks. At 5s that is a tick
+// every ~30s, matching the backend keeper's own `TICK_INTERVAL`.
+//
+// Issue #171: this used to be every 3s, and it was how data moved. It no
+// longer is -- local edits push from the backend the moment they are written,
+// remote ones arrive as `space-sync://changed` -- so what remains is the
+// backstop: re-arming dial loops for a peer that is not connected, and
+// covering a missed notification.
+const SYNC_TICK_EVERY_N_HEARTBEATS = 6;
+let syncTicksSkipped = 0;
+
 // A BLE scan pass has its own internal deadline covering both scanning and
 // dialing each flagged candidate for a `DiscoveryHello`, so it can take up
 // to `BLUETOOTH_SCAN_DURATION_MS` to resolve -- unlike the other polls,
@@ -256,6 +303,7 @@ export const useDeviceStore = defineStore("device", () => {
   const lastSyncedAtByPeerSpace = ref<Record<string, Record<string, string | null>>>({});
   const syncingByPeer = ref<Record<string, boolean>>({});
   const transportStatusesByPeer = ref<Record<string, DeviceTransportStatus[]>>({});
+  const syncQueueByPeer = ref<Record<string, SyncQueueSummary | null>>({});
   const lastAppliedSyncAt = ref<string | null>(null);
   const incomingExpectedCode = ref<Record<string, string>>({});
   const incomingAttemptCount = ref<Record<string, number>>({});
@@ -655,6 +703,72 @@ export const useDeviceStore = defineStore("device", () => {
     return updated;
   }
 
+  function getSyncQueue(peerDeviceId: string): SyncQueueSummary | null {
+    return syncQueueByPeer.value[peerDeviceId] ?? null;
+  }
+
+  // Backs the device page's sync-queue section -- the answer to "has my
+  // stuff synced?". Separate from `refreshSpaceSyncStatus`, which already
+  // carries `pending_event_count`, because this additionally resolves the
+  // titles behind that number and is therefore only worth loading while the
+  // page showing them is open.
+  async function refreshSyncQueue(peerDeviceId: string): Promise<SyncQueueSummary | null> {
+    try {
+      const summary = await invoke<SyncQueueSummary>("space_sync_queue_summary", {
+        peerDeviceId,
+      });
+      syncQueueByPeer.value = { ...syncQueueByPeer.value, [peerDeviceId]: summary };
+      return summary;
+    } catch (error) {
+      console.warn("[device-connection] failed to load sync queue", error);
+      return null;
+    }
+  }
+
+  // The Network channel's switch, the counterpart to
+  // `setBluetoothTransport`. Same shape deliberately: both rows on the
+  // device page drive the same kind of action, so neither reads as the
+  // special one.
+  async function setNetworkTransport(
+    peerDeviceId: string,
+    enabled: boolean,
+  ): Promise<PairedDevice> {
+    const updated = await invoke<PairedDevice>("device_connection_set_network_transport", {
+      peerDeviceId,
+      enabled,
+    });
+    const index = pairedDevices.value.findIndex((device) => device.peer_device_id === peerDeviceId);
+    if (index >= 0) {
+      pairedDevices.value[index] = updated;
+    }
+    await refreshTransportStatuses(peerDeviceId);
+    return updated;
+  }
+
+  // Asks the radio directly whether it can be used, and is called only from
+  // the moment a Bluetooth channel is switched on.
+  //
+  // The row's own reason refreshes passively, off whatever the background
+  // dial loop last observed -- honest, but since ADR-0007 up to 30s stale.
+  // That is invisible in the background and wrong in the one moment the
+  // person is watching the switch they just flipped, so the flip pays for a
+  // direct probe and nothing else does.
+  //
+  // `false` is not an error. The channel stays on and starts by itself; the
+  // row says so via `bluetooth_adapter_off`.
+  async function probeBluetoothAdapter(): Promise<boolean> {
+    try {
+      return await invoke<boolean>("device_connection_probe_bluetooth_adapter");
+    } catch (error) {
+      console.warn("[device-connection] bluetooth adapter probe failed", error);
+      // Treat an unanswerable probe as "nothing to report" rather than as a
+      // dead radio: the passive signal will correct the row soon enough,
+      // and inventing a hardware fault here would be the one lie this whole
+      // row exists to prevent.
+      return true;
+    }
+  }
+
   // Pins this pair onto the clicked transport, sticky until the user clicks
   // a row again. Both transports stay connected regardless of the pin --
   // the backend command just persists it and re-runs primary selection, so
@@ -701,6 +815,16 @@ export const useDeviceStore = defineStore("device", () => {
       await refreshTransportStatuses(peerDeviceId);
     }
     return address;
+  }
+
+  // Costs a single IPC hop and touches nothing: the backend records a
+  // timestamp and returns. See `space_sync_note_foreground`.
+  async function noteForeground() {
+    try {
+      await invoke("space_sync_note_foreground");
+    } catch (error) {
+      console.warn("[space-sync] foreground heartbeat failed", error);
+    }
   }
 
   async function runSpaceSyncTick() {
@@ -1054,10 +1178,48 @@ export const useDeviceStore = defineStore("device", () => {
     if (mappingUpdateTimer) return;
     void consumeSpaceMappingUpdates();
     void runSpaceSyncTick();
+    void startSyncChangedListener();
     mappingUpdateTimer = setInterval(() => {
+      // Two jobs on two cadences now (issue #171).
+      //
+      // `noteForeground` is the fast one, and it is deliberately the cheap
+      // one: it records nothing but "someone is looking", which is what the
+      // backend's `frontend_is_driving` reads to keep Bluetooth scanning on
+      // its foreground cadence. Before this, that signal was a side effect
+      // of ticking every 3s; making sync event-driven would have removed it
+      // silently and dropped discovery to its background period while the
+      // user watched.
+      void noteForeground();
+
+      // The real tick stays, but as a backstop rather than the thing that
+      // moves data -- a local edit now pushes immediately from the backend,
+      // and a remote one arrives over `space-sync://changed`. What is left
+      // for it is re-arming dial loops for a peer that is not connected.
+      syncTicksSkipped += 1;
+      if (syncTicksSkipped >= SYNC_TICK_EVERY_N_HEARTBEATS) {
+        syncTicksSkipped = 0;
+        void consumeSpaceMappingUpdates();
+        void runSpaceSyncTick();
+      }
+    }, FOREGROUND_HEARTBEAT_INTERVAL_MS);
+  }
+
+  // ADR-0004/#171: the backend pushes this the moment a peer's change lands
+  // in the database, so a remote edit shows up without waiting for a poll.
+  // Same shape and same lag handling as the session-changed listener below;
+  // the slow tick above still covers a dropped notification.
+  let syncChangedListenerStarted = false;
+  async function startSyncChangedListener() {
+    if (syncChangedListenerStarted) return;
+    syncChangedListenerStarted = true;
+    await listen("space-sync://changed", () => {
       void consumeSpaceMappingUpdates();
-      void runSpaceSyncTick();
-    }, MAPPING_UPDATE_POLL_INTERVAL_MS);
+      const peerIds = pairedDevices.value.map((p) => p.peer_device_id);
+      for (const peerId of peerIds) {
+        void refreshSpaceSyncStatus(peerId);
+      }
+      lastAppliedSyncAt.value = new Date().toISOString();
+    });
   }
 
   // ADR 0003 Phase 2: pushes `refreshLiveConnectedState` the moment a
@@ -1442,7 +1604,11 @@ export const useDeviceStore = defineStore("device", () => {
     getTransportStatuses,
     refreshTransportStatuses,
     refreshLiveConnectedState,
+    getSyncQueue,
+    refreshSyncQueue,
     setBluetoothTransport,
+    setNetworkTransport,
+    probeBluetoothAdapter,
     setPreferredTransport,
     retryBluetoothDial,
     findBluetoothAddress,

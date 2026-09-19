@@ -206,6 +206,26 @@ fn bluetooth_peer_nearby_now(#[allow(unused_variables)] peer_device_id: &str) ->
     }
 }
 
+/// Same platform-neutral wrapper shape again, for
+/// `transport::ble::is_bluetooth_adapter_unavailable`. This one is not
+/// per-peer: it describes this machine's own radio.
+///
+/// `true` (available) on platforms with no BLE transport, for the same
+/// reason `bluetooth_peer_nearby_now` returns `true` there --
+/// `bluetooth_unconfigured_code` answers `BluetoothNotSupported` before it
+/// ever reads this, and the harmless default is the one that doesn't invent
+/// a hardware fault on a machine that was never asked to have the hardware.
+fn bluetooth_adapter_available_now() -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        !crate::services::transport::ble::is_bluetooth_adapter_unavailable()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        true
+    }
+}
+
 /// Runs `command` with a hard time limit that actually terminates it, not
 /// merely bounds how long a caller waits: `kill_on_drop(true)` makes Tokio
 /// send the kill signal (and reap the process via its own SIGCHLD-driven
@@ -1625,6 +1645,113 @@ pub fn device_connection_set_preferred_transport(
     device_connection_set_preferred_transport_impl(&mut conn, &state, peer_device_id, preferred)
 }
 
+/// Whether this machine's Bluetooth radio can be used right now, asked
+/// directly rather than inferred from the last background attempt.
+///
+/// The Device page calls this immediately after switching a Bluetooth
+/// channel on, so a user whose own Bluetooth is off is told at the moment
+/// they flip the switch instead of up to a tick later. `false` is not an
+/// error and must not be shown as one: the channel stays on and starts by
+/// itself once the radio comes back -- that is the whole point of the
+/// "on, waiting" row state (`TransportStatusCode::BluetoothAdapterOff`).
+///
+/// Deliberately not called on any polling path. It opens a real discovery
+/// session; that is cheap once on a button press and wasteful every few
+/// seconds, which is exactly why the passive signal exists alongside it.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        Ok(crate::services::transport::ble::probe_adapter_available().await)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        // No BLE transport here at all, so there is no radio to be off.
+        // The row reports `BluetoothNotSupported` on its own; answering
+        // `false` would produce a toast blaming the user's hardware for a
+        // platform decision.
+        Ok(true)
+    }
+}
+
+/// The per-pair Network switch: the counterpart to
+/// `device_connection_set_bluetooth_transport`, added with the device-page
+/// redesign so both channels carry the same control instead of Bluetooth
+/// alone having an Enable/Disable pair.
+///
+/// Turning it off does three things, and the switch is a lie without all
+/// three: `space_sync_tick_impl` stops offering this peer to
+/// `tcp_ws::spawn_dial_loop`, any session already open on the transport is
+/// closed, and a Network pin is released so `primary` recomputes onto
+/// whatever is still connected. Greying the row alone would leave traffic
+/// flowing over a channel the user just switched off.
+///
+/// Unlike the Bluetooth switch there is no eligibility check to fail:
+/// Network needs no permission, no address and no pairing of its own, so
+/// enabling always succeeds and the row afterwards says whether the peer is
+/// actually reachable.
+pub fn device_connection_set_network_transport_impl(
+    conn: &mut SqliteConnection,
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+    enabled: bool,
+) -> Result<PairedDevice, String> {
+    let existing: Option<PairedDevice> = paired_devices::table
+        .find(&peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(existing) = existing else {
+        return Err("paired device not found".to_string());
+    };
+
+    diesel::update(paired_devices::table.find(&peer_device_id))
+        .set(paired_devices::network_enabled.eq(enabled))
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    if !enabled {
+        let disabling_a_network_pin =
+            peer_transport_preference(&mut *conn, &peer_device_id).as_deref() == Some("network");
+        state.close_session_on(&peer_device_id, crate::services::transport::TransportKind::TcpWs);
+
+        if disabling_a_network_pin {
+            // Clear the pin rather than moving it to Bluetooth: the user
+            // switched a channel off, which says nothing about wanting the
+            // other one pinned. `None` restores the automatic network-first
+            // rule, which with Network off resolves to Bluetooth anyway,
+            // and returns on its own the moment Network comes back.
+            return device_connection_set_preferred_transport_impl(
+                conn,
+                state,
+                peer_device_id,
+                None,
+            );
+        }
+        state.refresh_primary(&peer_device_id, false, existing.bluetooth_enabled);
+    }
+
+    paired_devices::table
+        .find(&peer_device_id)
+        .select(PairedDevice::as_select())
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_set_network_transport(
+    db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+    enabled: bool,
+) -> Result<PairedDevice, String> {
+    let mut conn = db.0.lock().unwrap();
+    device_connection_set_network_transport_impl(&mut conn, &state, peer_device_id, enabled)
+}
+
 /// The "Find via Bluetooth" button on `DeviceView.vue` — Phase 1's discovery
 /// mechanism (ADR 0002) for a peer that hasn't self-reported an address
 /// (Android peers can't; see `local_bluetooth_address`'s doc comment) or
@@ -1753,7 +1880,12 @@ pub fn device_connection_transport_statuses_impl(
 
     Ok(build_transport_statuses(TransportStatusInputs {
         network_present: state.network_peer_available(&peer_device_id),
+        network_enabled: paired.network_enabled,
         bluetooth_enabled: paired.bluetooth_enabled,
+        // Machine-wide, not per-peer: a radio that is off is off for every
+        // pair at once. Read after `bluetooth_enabled` so a pair whose
+        // channel is switched off keeps saying so.
+        bluetooth_adapter_available: bluetooth_adapter_available_now(),
         // A live session is the strongest possible evidence of nearness, and
         // it outranks the advertisement record entirely.
         //
