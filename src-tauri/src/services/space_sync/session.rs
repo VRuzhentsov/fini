@@ -473,6 +473,12 @@ async fn handle_inbound(
         PeerFrame::SyncEvent(envelope) => {
             let event_id = envelope.event_id.clone();
             state.push_incoming_sync_event(envelope);
+            // Queuing it is not enough. Nothing applies an incoming event
+            // until a tick drains the queue, so without this a peer's edit
+            // waits for the backstop interval -- which ADR-0007 raised to 30s
+            // while describing remote changes as pushed. Pushed to the queue,
+            // yes; to the database and the UI, only on the next tick.
+            crate::services::space_sync::commands::notify_sync_work_pending();
             let _ = send_frame(link, &PeerFrame::Ack { event_id }).await;
         }
         PeerFrame::Ack { event_id } => {
@@ -494,6 +500,17 @@ async fn handle_inbound(
                 custom_spaces,
                 sent_at,
             });
+            // Same reason as `SyncEvent` above: a mapping request the other
+            // person is waiting on should not sit in a queue for a tick
+            // interval before it can even be shown.
+            crate::services::space_sync::commands::notify_sync_work_pending();
+            // ...and a mapping update is consumed by the *frontend*, not by
+            // the tick, so waking the keeper alone would not surface it.
+            // `space-sync://changed` is what `startSyncChangedListener`
+            // already calls `consumeSpaceMappingUpdates` on; it simply never
+            // fired for this case, because it is raised only when a tick
+            // applies sync events and a mapping update produces none.
+            crate::services::space_sync::commands::note_data_changed();
         }
         PeerFrame::SpaceSyncEnd { space_id, ended_at } => {
             state.push_incoming_space_sync_end(IncomingSpaceSyncEnd {

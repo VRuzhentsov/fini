@@ -43,7 +43,7 @@ pub fn emit_sync_event_at(
     // After the insert, never before: a waiter woken by this reads the
     // outbox from SQLite, so signalling first would race it into finding
     // nothing and going back to sleep until the backstop interval.
-    crate::services::space_sync::commands::notify_outbox_has_work();
+    crate::services::space_sync::commands::notify_sync_work_pending();
 
     Ok(())
 }

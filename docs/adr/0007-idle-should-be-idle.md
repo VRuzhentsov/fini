@@ -44,6 +44,29 @@ the keeper selects on that against the backstop interval. The signal is raised
 *after* the insert: a waiter woken by it re-reads the outbox from SQLite, so
 signalling first would race it into finding nothing.
 
+> **Correction (review of this PR).** As first written this held on Android
+> only, and the section below was wrong in two ways.
+>
+> The keeper was `#[cfg(target_os = "android")]`, and it is the only thing
+> that waits on that `Notify` — so on desktop the signal was raised into a
+> void and a local edit waited for the frontend's cadence, which this same
+> change had just slowed from 3s to 30s. The keeper now runs everywhere;
+> only its *periodic* arm stays Android-only, which is what the SQLite lock
+> contention documented at its call site was actually about.
+>
+> Inbound frames raised no signal at all. `handle_inbound` queues an
+> envelope and returns, so a peer's edit also waited for the backstop —
+> "pushed" was true of the queue, not of the database or the UI. Both
+> `SyncEvent` and `SpaceMappingUpdate` now raise it, and the latter also
+> raises `space-sync://changed`, because mapping updates are drained by the
+> frontend rather than by a tick.
+>
+> The `Notify` is now `notify_one`, not `notify_waiters`: a signal raised
+> while the keeper is mid-tick has to survive until it next waits. The
+> original reasoning — that the running tick would read those rows anyway —
+> only holds if the write lands before that tick's read, and nothing makes
+> that true for a frame arriving on another task.
+
 **A remote change pushes to the UI.** When a tick applies a peer's event, a
 broadcast fires; `lib.rs` forwards it to the webview as `space-sync://changed`,
 the same shape ADR-0003 Phase 2 already uses for session lifecycle. The event

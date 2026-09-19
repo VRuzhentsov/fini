@@ -1147,7 +1147,7 @@ pub fn space_sync_resolve_custom_space_mapping(
 ///
 /// This is a floor for the *unprompted* cadence, not the latency of a
 /// change: a local edit wakes the drain immediately through
-/// [`notify_outbox_has_work`], so this interval no longer decides how fast
+/// [`notify_sync_work_pending`], so this interval no longer decides how fast
 /// data moves. What it still covers is everything a tick does besides
 /// moving data -- re-arming dial loops for a peer that is not connected,
 /// draining incoming space-sync ends -- plus being the backstop if a
@@ -1165,23 +1165,36 @@ const TICK_INTERVAL: Duration = Duration::from_secs(30);
 /// A `Notify` rather than a channel because the payload is irrelevant: the
 /// tick re-reads the outbox from SQLite anyway, so the only question is
 /// "is there work", and coalescing several edits into one wake is correct
-/// and desirable. `notify_waiters` (not `notify_one`) so a signal raised
-/// while nobody waits is dropped rather than queued -- the tick that is
-/// already running will read those rows itself.
+/// and desirable.
+///
+/// `notify_one`, not `notify_waiters`: a signal raised while the keeper is
+/// mid-tick must survive until it next waits. The earlier reasoning -- that
+/// the running tick would read those rows itself -- only holds if the write
+/// lands before that tick's read, and for an inbound frame arriving on
+/// another task there is nothing to make that true. Dropping the signal
+/// there costs a full backstop interval of latency for data that had
+/// already arrived. `notify_one` stores a single permit, so at worst the
+/// keeper runs one extra pass that finds nothing.
 static OUTBOX_NOTIFY: OnceLock<Arc<tokio::sync::Notify>> = OnceLock::new();
 
 fn outbox_notify() -> &'static Arc<tokio::sync::Notify> {
     OUTBOX_NOTIFY.get_or_init(|| Arc::new(tokio::sync::Notify::new()))
 }
 
-/// Called from `outbox::emit_sync_event_at` -- the single funnel every local
-/// change passes through -- to wake the keeper's drain.
+/// Wakes the keeper because there is sync work pending -- in either
+/// direction.
+///
+/// Raised from `outbox::emit_sync_event_at` (the single funnel every local
+/// change passes through) and from `session::handle_inbound` when a peer's
+/// frame lands in an incoming queue. Both are "there is something to do
+/// that the last tick could not have seen", and the keeper cannot tell them
+/// apart anyway.
 ///
 /// Deliberately infallible and sync: it runs inside the same SQLite
 /// transaction path as the write, so it must not block, await, or fail the
 /// caller. A missed wake costs latency until the next tick, never data.
-pub fn notify_outbox_has_work() {
-    outbox_notify().notify_waiters();
+pub fn notify_sync_work_pending() {
+    outbox_notify().notify_one();
 }
 
 /// Announces that a peer's change has been applied to our database, so the
@@ -1199,7 +1212,7 @@ fn data_changed_tx() -> &'static tokio::sync::broadcast::Sender<()> {
     DATA_CHANGED_TX.get_or_init(|| tokio::sync::broadcast::channel(16).0)
 }
 
-fn note_data_changed() {
+pub(crate) fn note_data_changed() {
     let _ = data_changed_tx().send(());
 }
 
@@ -1284,31 +1297,52 @@ fn tick_is_overdue() -> bool {
 /// role can safely start (see `start_peripheral_once`'s caller below), and
 /// starting a Rust timer any earlier would just reintroduce that problem from
 /// a different thread.
-#[cfg(target_os = "android")]
+/// Runs on every platform, but does different amounts of work on each.
+///
+/// The wake-on-change half is universal: without it, `notify_sync_work_pending`
+/// has no consumer at all off Android, so a local edit or an inbound frame
+/// waits for whatever the frontend's own cadence happens to be -- which
+/// ADR-0007 slowed to 30s at the same time as it claimed edits had become
+/// event-driven. They had, on one platform.
+///
+/// The *periodic backstop* stays Android-only, and that asymmetry is the
+/// original reason this was gated. On desktop the frontend always drives
+/// ticks, so a second periodic ticker only contends with it for the SQLite
+/// write lock -- a real desktop log showed 21 keeper ticks and 21
+/// `database is locked` failures, each doing no work while adding lock
+/// pressure to everything else, including the auth gate. A keeper that only
+/// ever wakes on a signal cannot cause that: it runs exactly when there is
+/// something new to carry.
 fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
         tauri::async_runtime::spawn(async move {
             loop {
-                // Whichever comes first: something to send, or the backstop
-                // interval. `Notify::notified()` is registered *before* the
-                // select so a signal raised while this task was mid-tick is
-                // not lost between iterations.
+                // Registered *before* the wait so a signal raised while this
+                // task was mid-tick is not lost between iterations.
                 let notified = outbox_notify().notified();
-                tokio::select! {
-                    _ = tokio::time::sleep(TICK_INTERVAL) => {
-                        // Unprompted pass. Skip it if the frontend already
-                        // ticked recently -- that tick did the same work.
-                        if !tick_is_overdue() {
-                            continue;
+
+                #[cfg(target_os = "android")]
+                {
+                    tokio::select! {
+                        _ = tokio::time::sleep(TICK_INTERVAL) => {
+                            // Unprompted pass. Skip it if the frontend already
+                            // ticked recently -- that tick did the same work.
+                            if !tick_is_overdue() {
+                                continue;
+                            }
+                        }
+                        _ = notified => {
+                            // Something is waiting. Run regardless of when the
+                            // last tick was: the whole point is that this one
+                            // carries data the previous tick could not have
+                            // seen.
                         }
                     }
-                    _ = notified => {
-                        // A local change is waiting. Run regardless of when
-                        // the last tick was: the whole point is that this
-                        // one carries data the previous tick could not have
-                        // seen.
-                    }
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    notified.await;
                 }
                 let state = device_connection.clone();
                 // `space_sync_tick_impl` is blocking (SQLite plus the dial
@@ -1397,27 +1431,28 @@ pub fn space_sync_tick_impl(
         device_connection.db_path.clone(),
         &network_peer_ids,
     );
+    // Not gated on `network_enabled`: Sim stands in for Bluetooth's role
+    // (see `transport::tests`), so the Network switch has no business
+    // stopping it any more than it stops the real Bluetooth dial loop.
     sim::spawn_fallback_dial_loop(
         device_connection,
         device_connection.db_path.clone(),
-        &network_peer_ids,
+        &paired_peer_ids,
     );
-    // Android only, matching the reason this exists at all (ADR-0004): a
-    // backgrounded WebView has its timers throttled, so ticks stop. Desktop
-    // has no such problem -- its frontend always drives them, and if it ever
-    // stops that is a different bug, not one a second ticker should paper
-    // over.
+    // Started on every platform now, but see `start_tick_keeper_once`: only
+    // Android gets the periodic backstop, which is what ADR-0004 needed it
+    // for (a backgrounded WebView has its timers throttled, so ticks stop).
     //
-    // Running it on desktop was actively harmful, and measurably so. The
-    // keeper opens its own SQLite connection while the app holds its own, and
-    // `space_sync_tick_impl` writes, so the two contend: a desktop log from a
-    // real session had 21 keeper ticks and 21 `database is locked` failures.
-    // Every keeper tick there did no work *and* added lock pressure to
-    // everything else reading the DB, including the auth gate.
+    // A *periodic* keeper on desktop was actively harmful, and measurably so:
+    // it opens its own SQLite connection while the app holds one, and
+    // `space_sync_tick_impl` writes, so the two contend -- a real desktop log
+    // had 21 keeper ticks and 21 `database is locked` failures, each doing no
+    // work while adding lock pressure to everything else reading the DB,
+    // including the auth gate. The wake-on-change keeper runs only when there
+    // is something new to carry, so it cannot reproduce that.
     //
     // Same "first tick is the earliest safe point" reasoning as the peripheral
     // start below, and a no-op on every call after the first.
-    #[cfg(target_os = "android")]
     start_tick_keeper_once(device_connection.clone());
 
     // The keeper above only decides *who* drives the tick inside this process.
