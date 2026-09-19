@@ -252,30 +252,46 @@ export async function waitForGreenTransport(
 
 /**
  * The UI-facing half of "green": not just that the backend reports a live
- * session, but that `DeviceView.vue`'s Bluetooth row actually renders
- * "Connected now" -- and, just as importantly, never renders "Still
- * connecting..." along the way. Throws the moment that text appears
- * (mirrors `waitForApproveDialogToClose`'s `state.error` pattern above) so
- * `pollUntil`'s timeout message names the actual regression instead of a
- * generic "timed out" -- a transient "Still connecting..." blip before
- * settling green is exactly the class of regression this e2e lane exists
- * to catch.
+ * session, but that `DeviceView.vue`'s Bluetooth row actually says so.
+ *
+ * Reads `data-channel-state` rather than the row's text. The row's wording
+ * is copy and moves with the design -- this assertion is about the state
+ * machine behind it, and keying on prose made an earlier version of this
+ * helper fail on a rename that changed nothing it was meant to protect.
+ *
+ * The regression guard survives ADR-0008 in a stronger form. It used to
+ * trip on "Still connecting…", a label the page invented after 30s of an
+ * unchanging amber row; since ADR-0005 the backend gives up on its own and
+ * reports `bluetooth_dial_exhausted`, which this row renders as `down` with
+ * a "Couldn't connect" reason. That is a real terminal failure rather than
+ * a cosmetic one, so reaching it aborts the poll immediately with a message
+ * naming the regression, instead of burning the full timeout.
  */
 export async function waitForBluetoothRowConnectedInUi(
   actor: E2EActor,
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  await pollUntil(`${actor.slug} bluetooth row shows Connected now in the UI`, async () => {
+  const selector = '[data-testid="transport-status-row"][data-transport-kind="bluetooth"]';
+
+  await pollUntil(`${actor.slug} bluetooth row reports a connected channel in the UI`, async () => {
     await openDeviceDetailsFromSettings(actor, peerDeviceId);
     await actor.invoke('space_sync_tick');
-    const text = await actor.page.textContent(
-      '[data-testid="transport-status-row"][data-transport-kind="bluetooth"]',
-    );
-    const value = text?.trim() ?? '';
-    if (value.includes('Still connecting')) {
-      throw new Error(`${actor.slug} bluetooth row shows "Still connecting..." -- regression guard tripped`);
+
+    const state = await actor.page.evaluate<string>(`(() => {
+      const row = document.querySelector(${JSON.stringify(selector)});
+      return row ? (row.getAttribute('data-channel-state') ?? '') : '';
+    })()`);
+
+    if (state === 'down') {
+      const text = await actor.page.textContent(selector);
+      if ((text ?? '').includes("Couldn't connect")) {
+        throw new Error(
+          `${actor.slug} bluetooth row gave up dialling -- regression guard tripped`,
+        );
+      }
     }
-    return value.includes('Connected now') ? value : false;
+
+    return state === 'connected' ? state : false;
   }, timeoutMs, 1_000);
 }

@@ -10,7 +10,7 @@ Search is client-side and scoped to the Settings overview route. When a query is
 
 Device routes:
 
-- `/settings/add-device` -> [[AddDeviceView]]
+- `/settings/add-device` -> this view, with [[PairDeviceDialog]] open. Pairing is a modal, not a page: it is a short two-person ceremony the user comes back from. The path survives only so the Settings search entry and existing deep links still open it.
 - `/settings/device/:id` -> [[DeviceView]]
 
 ## Sections
@@ -32,9 +32,10 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 
 - `DeviceList` is visible inline on `/settings`
 - Device rows navigate to [[DeviceView]]
-- `Add device` row is always last and navigates to [[AddDeviceView]]
+- `Add device` row is always last and opens [[PairDeviceDialog]]
+- Incoming pair requests surface here, not only inside the pairing flow: a request that expires unseen because the user was on another screen is the worst outcome of the ceremony
 - Device status uses green/gray presence indicator
-- Device rows show display name plus `Online`/`Offline`; UUIDs stay out of visible Settings list rows
+- Device rows show display name plus a plain-language summary line ("Network · connected", "Not connected · pixel-8 isn't nearby"); UUIDs stay out of visible Settings list rows
 - Device detail view owns mapped-space configuration and visible sync status per paired device
 
 ### Updates

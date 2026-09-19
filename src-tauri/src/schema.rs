@@ -101,6 +101,7 @@ diesel::table! {
         bluetooth_disabled_by_user -> Bool,
         preferred_transport -> Nullable<Text>,
         preferred_transport_set_at -> Nullable<Text>,
+        network_enabled            -> Bool,
     }
 }
 

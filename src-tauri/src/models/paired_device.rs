@@ -36,6 +36,17 @@ pub struct PairedDevice {
     pub preferred_transport: Option<String>,
     /// When `preferred_transport` was last set.
     pub preferred_transport_set_at: Option<String>,
+    /// The per-pair Network switch, the counterpart to `bluetooth_enabled`.
+    ///
+    /// Defaults to `true`, where Bluetooth defaults to `false`: Network is
+    /// the channel a pair is normally formed over and is already carrying
+    /// traffic, so the switch exists to let a user stop it deliberately,
+    /// not to make them opt in to what already works.
+    ///
+    /// Turning it off keeps the pair, the trust and the mapped spaces
+    /// intact -- it only stops this device dialling the peer over the
+    /// network and stops presence counting as a reason to connect.
+    pub network_enabled: bool,
 }
 
 #[derive(Deserialize, Insertable)]

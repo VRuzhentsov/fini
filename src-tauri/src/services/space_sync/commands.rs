@@ -75,6 +75,40 @@ pub struct SpaceSyncStatus {
     pub tombstone_count: i64,
 }
 
+/// One entry in the Device page's sync-queue accordion: a change emitted
+/// locally that this peer has not acknowledged yet.
+///
+/// `title` is resolved only for the entity types a person would recognise
+/// by name -- a Quest and a Space. Everything else (reminders, checklist
+/// activity, focus history, series templates) is bookkeeping the user never
+/// named, so rather than invent a label for it in Rust the row carries its
+/// `entity_type` and the frontend supplies the wording, next to the rest of
+/// the app's copy.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncQueueEntry {
+    pub entity_type: String,
+    pub entity_id: String,
+    pub space_id: String,
+    pub title: Option<String>,
+}
+
+/// Everything the Device page needs to answer "has my stuff synced?" for
+/// one peer, in one call.
+///
+/// `entries` is capped (see `SYNC_QUEUE_ENTRY_LIMIT`); `pending_count` is
+/// the real total, and is what both the "N changes waiting" line and the
+/// "+ more" arithmetic below the list are computed from.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncQueueSummary {
+    pub peer_device_id: String,
+    pub pending_count: usize,
+    pub entries: Vec<SyncQueueEntry>,
+    /// Newest `sync_acks.acked_at` for this peer -- what "Last change
+    /// reached <device> 2 min ago" reads from. `None` when this peer has
+    /// never acknowledged anything.
+    pub last_acked_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SpaceSyncTickPeer {
     pub peer_device_id: String,
@@ -1346,15 +1380,27 @@ pub fn space_sync_tick_impl(
     // where we are the dialer (ADR-0003 revision: both connect
     // unconditionally, regardless of each other's state).
     let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
+    // ...except where the user has switched the Network channel off for a
+    // pair. Filtered here rather than inside the dial loop so the switch
+    // genuinely stops the dialling instead of only greying the row -- the
+    // Bluetooth side has always had its own equivalent gate
+    // (`ble::is_still_bluetooth_eligible`).
+    let network_peer_ids: HashSet<String> = paired_devices::table
+        .filter(paired_devices::network_enabled.eq(true))
+        .select(paired_devices::peer_device_id)
+        .load::<String>(&mut *conn)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
     tcp_ws::spawn_dial_loop(
         device_connection,
         device_connection.db_path.clone(),
-        &paired_peer_ids,
+        &network_peer_ids,
     );
     sim::spawn_fallback_dial_loop(
         device_connection,
         device_connection.db_path.clone(),
-        &paired_peer_ids,
+        &network_peer_ids,
     );
     // Android only, matching the reason this exists at all (ADR-0004): a
     // backgrounded WebView has its timers throttled, so ticks stop. Desktop
@@ -1772,6 +1818,88 @@ pub fn space_sync_status(
 ) -> Result<SpaceSyncStatus, String> {
     let mut conn = db.0.lock().unwrap();
     space_sync_status_impl(&mut conn, peer_device_id)
+}
+
+/// How many entries the Device page's sync-queue accordion asks for. The
+/// accordion shows ten and then says how many more there are, so loading
+/// the rest would be work nobody ever sees.
+pub const SYNC_QUEUE_ENTRY_LIMIT: usize = 10;
+
+pub fn space_sync_queue_summary_impl(
+    conn: &mut SqliteConnection,
+    peer_device_id: String,
+) -> Result<SyncQueueSummary, String> {
+    use crate::schema::quests;
+
+    let mapped: Vec<String> = pair_space_mappings::table
+        .filter(pair_space_mappings::peer_device_id.eq(&peer_device_id))
+        .filter(pair_space_mappings::end_of_sync_at.is_null())
+        .select(pair_space_mappings::space_id)
+        .load(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    // Exactly the query the sender uses, so the number on the page and the
+    // number of events the next tick would actually push cannot drift.
+    let pending = load_unacked_events_for_peer(&mut *conn, &peer_device_id, &mapped)?;
+    let pending_count = pending.len();
+
+    // Distinct entities, oldest first. Several edits to one quest are one
+    // thing waiting from the person's point of view, and the ones that have
+    // been waiting longest are the ones worth showing.
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut entries: Vec<SyncQueueEntry> = Vec::new();
+    for event in pending {
+        if entries.len() >= SYNC_QUEUE_ENTRY_LIMIT {
+            break;
+        }
+        if !seen.insert((event.entity_type.clone(), event.entity_id.clone())) {
+            continue;
+        }
+        let title: Option<String> = match event.entity_type.as_str() {
+            "quest" => quests::table
+                .find(&event.entity_id)
+                .select(quests::title)
+                .first(&mut *conn)
+                .optional()
+                .map_err(|e| e.to_string())?,
+            "space" => spaces::table
+                .find(&event.entity_id)
+                .select(spaces::name)
+                .first(&mut *conn)
+                .optional()
+                .map_err(|e| e.to_string())?,
+            _ => None,
+        };
+        entries.push(SyncQueueEntry {
+            entity_type: event.entity_type,
+            entity_id: event.entity_id,
+            space_id: event.space_id,
+            title,
+        });
+    }
+
+    let last_acked_at: Option<String> = sync_acks::table
+        .filter(sync_acks::peer_device_id.eq(&peer_device_id))
+        .select(diesel::dsl::max(sync_acks::acked_at))
+        .first(&mut *conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(SyncQueueSummary {
+        peer_device_id,
+        pending_count,
+        entries,
+        last_acked_at,
+    })
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn space_sync_queue_summary(
+    db: State<AppDbConnection>,
+    peer_device_id: String,
+) -> Result<SyncQueueSummary, String> {
+    let mut conn = db.0.lock().unwrap();
+    space_sync_queue_summary_impl(&mut conn, peer_device_id)
 }
 
 #[cfg(test)]

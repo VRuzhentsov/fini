@@ -26,7 +26,9 @@ use services::device_connection::{
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_retry_bluetooth_dial, device_connection_save_paired_device,
     device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
+    device_connection_probe_bluetooth_adapter,
     device_connection_session_transport, device_connection_set_bluetooth_transport,
+    device_connection_set_network_transport,
     device_connection_set_preferred_transport, device_connection_transport_liveness,
     device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
     DeviceConnectionState,
@@ -62,7 +64,8 @@ use services::space::{create_space, delete_space, get_spaces, update_space};
 #[cfg(feature = "ui-plane")]
 use services::space_sync::{
     space_sync_apply_remote_mappings, space_sync_list_mappings,
-    space_sync_note_foreground, space_sync_resolve_custom_space_mapping, space_sync_status,
+    space_sync_note_foreground, space_sync_queue_summary,
+    space_sync_resolve_custom_space_mapping, space_sync_status,
     space_sync_tick,
     space_sync_update_mappings,
 };
@@ -519,6 +522,8 @@ pub fn run() {
             device_connection_save_paired_device,
             device_connection_session_transport,
             device_connection_set_bluetooth_transport,
+            device_connection_set_network_transport,
+            device_connection_probe_bluetooth_adapter,
             device_connection_set_preferred_transport,
             device_connection_find_bluetooth_address,
             device_connection_send_pair_request_bluetooth,
@@ -536,6 +541,7 @@ pub fn run() {
             space_sync_note_foreground,
             space_sync_tick,
             space_sync_status,
+            space_sync_queue_summary,
             theme_hint,
             get_auto_update_enabled,
             set_auto_update_enabled,

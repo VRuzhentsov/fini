@@ -36,11 +36,32 @@ pub struct BluetoothTransportMetadata {
 pub enum TransportStatusCode {
     /// Network row, `Unconfigured`: no discovery presence for this peer.
     NetworkUnavailable,
+    /// Network row, `Unconfigured`: switched off for this pair, the
+    /// counterpart to `BluetoothDisabled`. Checked before presence, so a
+    /// channel the user turned off says so rather than blaming the peer's
+    /// network.
+    NetworkDisabled,
     /// Bluetooth row, `Unconfigured`: no adapter registered on this
     /// platform at all (`BLUETOOTH_ADAPTER_IMPLEMENTED`).
     BluetoothNotSupported,
     /// Bluetooth row, `Unconfigured`: disabled for this pair.
     BluetoothDisabled,
+    /// Bluetooth row, `Unconfigured`: the channel is on for this pair, but
+    /// the *local* radio refused the last time this process tried to use it
+    /// -- Bluetooth switched off at the OS level, or an adapter that
+    /// reports itself present and then declines to scan.
+    ///
+    /// This is the one `Unconfigured` code the user is expected to sit in
+    /// deliberately: switching a channel on while the radio is off does not
+    /// fail and does not snap the switch back, it parks here and starts by
+    /// itself once the condition clears. See
+    /// `ble::is_bluetooth_adapter_unavailable`.
+    ///
+    /// Ordered before `BluetoothPeerNotNearby` on purpose, and the ordering
+    /// is load-bearing rather than cosmetic: with our own radio off we have
+    /// not looked for the peer at all, so reporting "isn't nearby" would be
+    /// a statement we have no evidence for, about the wrong device.
+    BluetoothAdapterOff,
     /// Bluetooth row, `Unconfigured`: enabled, but no address/reconnect
     /// metadata stored yet.
     BluetoothNoAddress,
@@ -196,7 +217,14 @@ pub struct TransportStatusInputs {
     /// Raw discovery presence (`network_peer_available`) -- "is this
     /// peer's beacon reaching us right now."
     pub network_present: bool,
+    /// `paired_devices.network_enabled` -- the per-pair Network switch.
+    pub network_enabled: bool,
     pub bluetooth_enabled: bool,
+    /// `!ble::is_bluetooth_adapter_unavailable` -- whether the local radio
+    /// worked the last time it was asked to do anything. `true` when
+    /// nothing has been attempted yet, so an untried adapter is never
+    /// accused of being off.
+    pub bluetooth_adapter_available: bool,
     /// `ble::peer_seen_advertising_recently` -- whether this peer has been
     /// heard advertising within a few scan cycles. The honest answer to
     /// "why is this not connecting" when the other device is simply away.
@@ -223,7 +251,9 @@ pub struct TransportStatusInputs {
 pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportStatus> {
     let TransportStatusInputs {
         network_present,
+        network_enabled,
         bluetooth_enabled,
+        bluetooth_adapter_available,
         bluetooth_peer_nearby,
         bluetooth_dial_exhausted,
         network_connected,
@@ -234,13 +264,19 @@ pub fn build_transport_statuses(inputs: TransportStatusInputs) -> Vec<TransportS
         bluetooth_code,
     } = inputs;
 
-    let network_unconfigured_code = if network_present {
-        None
-    } else {
+    let network_unconfigured_code = if !network_enabled {
+        Some(TransportStatusCode::NetworkDisabled)
+    } else if !network_present {
         Some(TransportStatusCode::NetworkUnavailable)
+    } else {
+        None
     };
-    let bluetooth_unconfigured_code =
-        bluetooth_unconfigured_code(bluetooth_enabled, bluetooth_peer_nearby, bluetooth_dial_exhausted);
+    let bluetooth_unconfigured_code = bluetooth_unconfigured_code(
+        bluetooth_enabled,
+        bluetooth_adapter_available,
+        bluetooth_peer_nearby,
+        bluetooth_dial_exhausted,
+    );
 
     vec![
         TransportStatus {
@@ -288,13 +324,16 @@ fn row_state(
 /// of trying", and saying so would send the user to retry a dial that has
 /// nothing to dial.
 fn bluetooth_unconfigured_code(
-    enabled: bool, peer_nearby: bool, dial_exhausted: bool,
+    enabled: bool, adapter_available: bool, peer_nearby: bool, dial_exhausted: bool,
 ) -> Option<TransportStatusCode> {
     if !BLUETOOTH_ADAPTER_IMPLEMENTED {
         return Some(TransportStatusCode::BluetoothNotSupported);
     }
     if !enabled {
         return Some(TransportStatusCode::BluetoothDisabled);
+    }
+    if !adapter_available {
+        return Some(TransportStatusCode::BluetoothAdapterOff);
     }
     if !peer_nearby {
         return Some(TransportStatusCode::BluetoothPeerNotNearby);
@@ -332,7 +371,9 @@ mod tests {
     fn ready_inputs() -> TransportStatusInputs {
         TransportStatusInputs {
             network_present: true,
+            network_enabled: true,
             bluetooth_enabled: true,
+            bluetooth_adapter_available: true,
             bluetooth_peer_nearby: true,
             bluetooth_dial_exhausted: false,
             network_connected: false,
@@ -540,6 +581,13 @@ mod tests {
             ),
             (
                 TransportStatusInputs {
+                    bluetooth_adapter_available: false,
+                    ..ready_inputs()
+                },
+                TransportStatusCode::BluetoothAdapterOff,
+            ),
+            (
+                TransportStatusInputs {
                     bluetooth_peer_nearby: false,
                     ..ready_inputs()
                 },
@@ -575,6 +623,75 @@ mod tests {
         let bluetooth = find(&statuses, TransportKind::Bluetooth);
         assert_eq!(
             bluetooth.state,
+            RowState::Unconfigured {
+                code: TransportStatusCode::BluetoothDisabled
+            }
+        );
+    }
+
+    /// The Network switch is the counterpart to the Bluetooth one, and like
+    /// it, it outranks the reason that would otherwise be reported: a
+    /// channel the user turned off must not blame the peer's network for
+    /// being unreachable.
+    #[test]
+    fn the_network_switch_outranks_presence() {
+        let switched_off = build_transport_statuses(TransportStatusInputs {
+            network_enabled: false,
+            network_present: false,
+            ..ready_inputs()
+        });
+        assert_eq!(
+            find(&switched_off, TransportKind::Network).state,
+            RowState::Unconfigured {
+                code: TransportStatusCode::NetworkDisabled
+            }
+        );
+
+        // Still off even while the peer is right there and reachable --
+        // otherwise the switch would silently do nothing whenever it
+        // mattered most.
+        let off_but_present = build_transport_statuses(TransportStatusInputs {
+            network_enabled: false,
+            ..ready_inputs()
+        });
+        assert_eq!(
+            find(&off_but_present, TransportKind::Network).state,
+            RowState::Unconfigured {
+                code: TransportStatusCode::NetworkDisabled
+            }
+        );
+    }
+
+    /// The "on, waiting" state: the pair's channel is switched on, and the
+    /// local radio is what's missing. It must outrank `BluetoothPeerNotNearby`
+    /// -- with our own adapter off nothing has scanned, so "the peer isn't
+    /// nearby" would be asserting something we never looked for, about the
+    /// other device rather than this one. It must in turn be outranked by
+    /// `BluetoothDisabled`, since a channel the user switched off has no
+    /// business complaining about hardware.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_dead_local_adapter_outranks_peer_nearness_but_not_the_pair_switch() {
+        let radio_off = build_transport_statuses(TransportStatusInputs {
+            bluetooth_adapter_available: false,
+            bluetooth_peer_nearby: false,
+            bluetooth_dial_exhausted: true,
+            ..ready_inputs()
+        });
+        assert_eq!(
+            find(&radio_off, TransportKind::Bluetooth).state,
+            RowState::Unconfigured {
+                code: TransportStatusCode::BluetoothAdapterOff
+            }
+        );
+
+        let switched_off = build_transport_statuses(TransportStatusInputs {
+            bluetooth_enabled: false,
+            bluetooth_adapter_available: false,
+            ..ready_inputs()
+        });
+        assert_eq!(
+            find(&switched_off, TransportKind::Bluetooth).state,
             RowState::Unconfigured {
                 code: TransportStatusCode::BluetoothDisabled
             }
