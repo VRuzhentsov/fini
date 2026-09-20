@@ -1731,6 +1731,16 @@ pub fn device_connection_set_network_transport_impl(
             );
         }
         state.refresh_primary(&peer_device_id, false, existing.bluetooth_enabled);
+    } else {
+        // Switching a channel back on is the fourth moment work becomes
+        // sendable: the peer was filtered out of the dial loop a moment ago
+        // and is now eligible again. Without this the pair waits for the
+        // next backstop tick to notice -- measured at 17s on hardware, for
+        // a reconnect the user just asked for and is watching.
+        //
+        // Bluetooth's enable branch already has its equivalent in
+        // `ble::retry_bluetooth_dial`; Network had none.
+        crate::services::space_sync::commands::notify_sync_work_pending();
     }
 
     paired_devices::table

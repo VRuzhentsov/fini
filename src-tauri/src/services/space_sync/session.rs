@@ -53,6 +53,34 @@ fn check_bluetooth_enabled(db_path: &PathBuf, device_id: &str) -> bool {
     })
 }
 
+/// Whether `device_id`'s paired-device row currently has Network enabled.
+///
+/// The exact counterpart of `check_bluetooth_enabled`, and it exists for the
+/// same reason that one does: `space_sync_tick_impl` filters this pair out of
+/// `tcp_ws::spawn_dial_loop` on the *dialing* side, but that says nothing
+/// about the *accepting* side. A peer whose own Network channel is still on
+/// will keep dialing us, and `check_paired` alone would let it straight back
+/// in -- so the switch would stop our outgoing traffic and silently permit
+/// the session anyway.
+///
+/// Observed on hardware before this check existed: turning Network off left
+/// `device_connection_session_transport` reporting `tcp_ws` seconds later,
+/// with the row showing "Off" over a live session -- precisely the lie the
+/// redesign exists to remove.
+///
+/// `unwrap_or(false)` fails closed, matching `check_bluetooth_enabled`: a
+/// row that is gone (unpaired) or unreadable must not read as enabled.
+fn check_network_enabled(db_path: &PathBuf, device_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        paired_devices::table
+            .find(device_id)
+            .select(paired_devices::network_enabled)
+            .first::<bool>(&mut conn)
+            .unwrap_or(false)
+    })
+}
+
 /// Whether this device has *explicitly* disabled Bluetooth for
 /// `device_id`'s pair (`device_connection_set_bluetooth_transport_impl`'s
 /// disable branch) -- checked by `BluetoothProbe`'s pre-auth handler so an
@@ -241,6 +269,22 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             link.as_mut(),
             &PeerFrame::AuthFail {
                 reason: "unknown device".into(),
+            },
+        )
+        .await;
+        return;
+    }
+
+    // Sim stands in for Bluetooth's role in tests, so it is deliberately not
+    // gated here -- only the real network transport is.
+    if kind == TransportKind::TcpWs && !check_network_enabled(&db_path, &device_id) {
+        log::warn!(
+            "[space_sync][gate] network auth from {device_id} rejected: network disabled for this pair"
+        );
+        let _ = send_frame(
+            link.as_mut(),
+            &PeerFrame::AuthFail {
+                reason: "network disabled for this pair".into(),
             },
         )
         .await;

@@ -382,6 +382,20 @@ impl DeviceConnectionState {
             peer_device_id: peer_device_id.to_string(),
             kind,
         });
+        // A channel coming up is the third moment work becomes sendable, and
+        // it was the missing one. The other two -- a local edit, an inbound
+        // frame -- raise this because they *create* work; this one raises it
+        // because work that already existed could not be sent until now.
+        //
+        // Observed on hardware: two quests emitted while the peer was
+        // unreachable sat in the outbox after the session came back, because
+        // the keeper had already woken once, found nothing sendable, and gone
+        // back to waiting. A forced tick drained both immediately, which is
+        // what proved the send path was fine and only the trigger missing.
+        //
+        // Matters most where there is no periodic backstop to paper over it:
+        // on desktop the keeper waits on this signal alone.
+        crate::services::space_sync::commands::notify_sync_work_pending();
         // Re-validate Bluetooth specifically -- a P1 review finding: the
         // pre-lock read above is a time-of-check/time-of-use window. If
         // Bluetooth gets disabled for this pair *between* that read and

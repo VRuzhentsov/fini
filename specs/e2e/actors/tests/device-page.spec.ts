@@ -38,10 +38,24 @@ test('turning a channel off stops the traffic, not just the colour of the row', 
   await toggleChannel(actorA, 'network');
   await waitForChannelState(actorA, syncedB.identity.device_id, 'network', 'off');
 
-  const transport = await actorA.invoke<string | null>('device_connection_session_transport', {
-    peerDeviceId: syncedB.identity.device_id,
-  });
-  expect(transport, 'network session must be closed once the channel is off').not.toBe('tcp_ws');
+  // Sampled repeatedly, not once. A single check moments after the toggle
+  // passes even when the switch does nothing: the peer's own dial loop simply
+  // has not come back round yet. That is exactly how this assertion passed
+  // while the session was in fact being re-established seconds later --
+  // caught on hardware, where the peer dials on its own schedule rather than
+  // the test's. Closing our dial loop is only half the switch; refusing the
+  // peer's inbound dial is the other half (`check_network_enabled`).
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const transport = await actorA.invoke<string | null>('device_connection_session_transport', {
+      peerDeviceId: syncedB.identity.device_id,
+    });
+    expect(
+      transport,
+      'network session must stay closed while the channel is off, including against an inbound dial',
+    ).not.toBe('tcp_ws');
+    await actorA.invoke('space_sync_tick');
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
 
   // And back on again: the switch has to be a switch, not a one-way door.
   await toggleChannel(actorA, 'network');

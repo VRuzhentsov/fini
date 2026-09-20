@@ -188,11 +188,57 @@ The 2 remaining failures are `reminder-notification-actions`, and they are
 in the same lane. Their cause is an app-level `SIGABRT` under the e2e
 container, unrelated to devices, tracked separately.
 
+## Verified on hardware
+
+Pixel 6 Pro over USB against a desktop debug build, both on 10.0.0.0/24,
+with a pair that predates this work (2026-09-13) and real Spaces.
+
+- Migration 23 upgraded that existing database in place: `network_enabled`
+  came back `true`, so the pair kept syncing over the channel it was formed
+  on — the asymmetry with `bluetooth_enabled` doing its job.
+- Both channels connected **at once**: `network:configured PRIMARY`,
+  `bluetooth:configured`, rendered as two live rows with the star on Network.
+  Bluetooth authenticated over a real radio (`via 52:4D:3E:99:BC:55`).
+- A quest created on the desktop reached the phone and was acknowledged in
+  **6.0s**, against a 30s backstop — the event-driven path working on the
+  platform that had none before the review fixes above.
+- Reasons named the right machine. With the desktop's radio scanning
+  normally the Bluetooth row said "fini-75700b2e isn't nearby", not
+  "Bluetooth is off on this computer" — the ordering in
+  `bluetooth_unconfigured_code` behaving correctly unprompted.
+- The sync queue, stalled, read "2 changes waiting · Nothing can reach
+  fini-75700b2e until a channel connects" and listed both real quest titles;
+  drained, "Everything synced · Last change reached fini-75700b2e just now".
+
+**Two defects this found that the whole test suite did not.** Both are
+fixed above, and both were in code written for this change:
+
+1. Work emitted while a peer was unreachable stayed in the outbox after the
+   session returned. The keeper had woken once, found nothing sendable and
+   gone back to waiting, and desktop has no periodic arm to catch it. A
+   forced tick sent both events instantly, which is what proved the send
+   path was fine and only the trigger missing. `claim_session` now raises
+   the signal.
+2. **The Network switch did not stop traffic.** The row read "Off" over a
+   live `tcp_ws` session, because only the *outgoing* dial was gated — the
+   peer kept dialling in and `check_paired` let it through. Exactly the lie
+   this design exists to remove, and exactly the failure
+   `check_bluetooth_enabled` had already been written to prevent for the
+   other channel. `check_network_enabled` is its counterpart.
+
+The second is worth dwelling on: `device-page.spec.ts` asserted that
+behaviour and **passed**, because it sampled once three seconds after the
+toggle and the peer had not re-dialled yet. It now samples repeatedly with
+ticks in between. A single click on a real pair exposed in seconds what a
+green suite could not.
+
 Owed:
 
-- On-device confirmation on the Pixel: switching Bluetooth on with the
-  laptop's radio off, and a real Bluetooth pairing run through the new modal.
-  Neither is provable in a container without a radio.
+- Switching Bluetooth on with the laptop's own radio off, to see "On,
+  waiting" on hardware. Needs the host radio disabled, which would drop any
+  Bluetooth peripherals in use, so it is left for a deliberate session.
+- A first-time pairing run through the new modal between two devices that
+  have never met; the hardware pair here already existed.
 - The pairing modal's `declined` step is unreachable in production —
   declining is never sent to the requester (issue #177). Its rendering is
   unit-tested; it has no e2e, deliberately, because an e2e would have to
