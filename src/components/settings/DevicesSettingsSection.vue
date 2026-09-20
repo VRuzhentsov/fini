@@ -57,6 +57,21 @@ function deviceSummary(device: PairedDevice): string {
   if (!kind) return "";
   return `${kind === "network" ? "Network" : "Bluetooth"} · connected`;
 }
+
+// Each row shaped once, rather than asking the store the same question from
+// two places in the template. `summary` being empty is what decides whether
+// the second line renders at all.
+const renderLists = computed(() => ({
+  devices: deviceStore.pairedDevices.map((device) => ({
+    device,
+    connected: connectedChannel(device) !== null,
+    summary: deviceSummary(device),
+  })),
+}));
+
+const renderFlags = computed(() => ({
+  emptyState: renderLists.value.devices.length === 0,
+}));
 </script>
 
 <template>
@@ -90,34 +105,34 @@ function deviceSummary(device: PairedDevice): string {
 
     <SettingsListGroup>
       <SettingsListItem
-        v-for="device in deviceStore.pairedDevices"
-        :key="device.peer_device_id"
-        :to="`/settings/device/${device.peer_device_id}`"
+        v-for="row in renderLists.devices"
+        :key="row.device.peer_device_id"
+        :to="`/settings/device/${row.device.peer_device_id}`"
         data-testid="paired-device-row"
-        :data-peer-device-id="device.peer_device_id"
+        :data-peer-device-id="row.device.peer_device_id"
       >
         <template #leading>
           <span
             class="size-2.5 rounded-full"
-            :class="connectedChannel(device) ? 'bg-success' : 'bg-[var(--fg-5)]'"
+            :class="row.connected ? 'bg-success' : 'bg-[var(--fg-5)]'"
           />
         </template>
         <template #start>
           <span class="block truncate font-medium" data-testid="paired-device-name">
-            {{ device.display_name }}
+            {{ row.device.display_name }}
           </span>
           <span
-            v-if="deviceSummary(device)"
+            v-if="row.summary"
             class="block truncate text-[11px] text-[var(--fg-3)]"
             data-testid="paired-device-summary"
           >
-            {{ deviceSummary(device) }}
+            {{ row.summary }}
           </span>
         </template>
         <template #trailing><span class="text-sm opacity-50">›</span></template>
       </SettingsListItem>
 
-      <SettingsListItem v-if="deviceStore.pairedDevices.length === 0">
+      <SettingsListItem v-if="renderFlags.emptyState">
         <span class="opacity-70">No paired devices yet</span>
       </SettingsListItem>
 

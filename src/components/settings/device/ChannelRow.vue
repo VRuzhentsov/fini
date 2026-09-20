@@ -47,8 +47,6 @@ const reason = computed(() => {
   return code ? channelStatusText(code, props.peerName) : null;
 });
 
-const showReason = computed(() => reason.value !== null && reasonOpen.value);
-
 // Only a connected channel can carry traffic, so only a connected channel
 // can hold the star. Offering it on a dead row would promise a switch that
 // silently does nothing.
@@ -80,6 +78,18 @@ const dotClass = computed(() => {
       return "bg-[var(--fg-5)]";
   }
 });
+
+// The template's render contract, per fini-frontend: each key answers
+// whether one element on this row appears. `reasonInfo` and `reasonText`
+// are separate on purpose -- the button offers the explanation, the
+// paragraph is the explanation, and only the second waits on a click.
+const renderFlags = computed(() => ({
+  reasonInfo: reason.value !== null,
+  reasonText: reason.value !== null && reasonOpen.value,
+  starToggle: canPin.value,
+  retryButton: retryable.value,
+  unlinkButton: unlinkable.value,
+}));
 </script>
 
 <template>
@@ -105,11 +115,11 @@ const dotClass = computed(() => {
         <span class="truncate text-[11px] text-[var(--fg-3)]">{{ label }}</span>
 
         <button
-          v-if="reason"
+          v-if="renderFlags.reasonInfo"
           type="button"
           class="shrink-0 text-[var(--fg-4)] hover:text-[var(--fg-2)]"
           data-testid="channel-status-info"
-          :aria-label="reason"
+          :aria-label="reason ?? undefined"
           :aria-expanded="reasonOpen"
           @click.stop="reasonOpen = !reasonOpen"
         >
@@ -117,7 +127,7 @@ const dotClass = computed(() => {
         </button>
 
         <span
-          v-if="canPin"
+          v-if="renderFlags.starToggle"
           class="ml-auto shrink-0"
           data-testid="channel-star"
           :data-starred="starred"
@@ -128,7 +138,7 @@ const dotClass = computed(() => {
       </component>
 
       <button
-        v-if="retryable"
+        v-if="renderFlags.retryButton"
         type="button"
         class="btn btn-ghost btn-xs shrink-0"
         data-testid="retry-bluetooth-dial"
@@ -139,7 +149,7 @@ const dotClass = computed(() => {
       </button>
 
       <button
-        v-if="unlinkable"
+        v-if="renderFlags.unlinkButton"
         type="button"
         class="shrink-0 text-[var(--fg-4)] hover:text-error disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-[var(--fg-4)]"
         data-testid="unlink-channel"
@@ -178,7 +188,7 @@ const dotClass = computed(() => {
     </div>
 
     <p
-      v-if="showReason"
+      v-if="renderFlags.reasonText"
       class="pl-[18px] text-[11px] leading-snug text-[var(--fg-2)]"
       data-testid="channel-status-reason"
     >
