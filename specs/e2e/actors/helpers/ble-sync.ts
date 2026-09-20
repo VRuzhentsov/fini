@@ -98,8 +98,11 @@ export async function ensureBlePairedActors(
 
 interface PairedDeviceRow {
   peer_device_id: string;
-  bluetooth_enabled: boolean;
-  bluetooth_address: string | null;
+}
+
+interface ChannelStatusRow {
+  kind: 'network' | 'bluetooth';
+  enabled: boolean;
 }
 
 /**
@@ -137,23 +140,28 @@ async function ensureBluetoothEnabledForPeer(
   peerDeviceId: string,
 ): Promise<void> {
   const paired = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
-  const row = paired.find((entry) => entry.peer_device_id === peerDeviceId);
-  expect(row, `${actor.actor.slug} should already be paired with ${peerDeviceId}`).toBeTruthy();
+  expect(
+    paired.some((entry) => entry.peer_device_id === peerDeviceId),
+    `${actor.actor.slug} should already be paired with ${peerDeviceId}`,
+  ).toBe(true);
 
-  if (row?.bluetooth_enabled) {
+  // The switch lives in `channels` now, not on the paired row: a pair made
+  // over the network has no Bluetooth row at all, so asking the paired row
+  // whether Bluetooth is on can only ever answer "no".
+  const statuses = await actor.actor.invoke<ChannelStatusRow[]>(
+    'device_connection_channel_statuses',
+    { peerDeviceId },
+  );
+  if (statuses.find((status) => status.kind === 'bluetooth')?.enabled) {
     return;
   }
-  // snake_case inside `input`, camelCase only at the top level: Tauri
-  // converts its own argument names, but the fields of a command's payload
-  // struct go straight through serde, and `DeviceBluetoothChannelInput`
-  // declares no rename.
-  await actor.actor.invoke('device_connection_set_bluetooth_channel', {
-    input: { peer_device_id: peerDeviceId, enabled: true, bluetooth_address: null },
-  });
 
-  const after = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
+  const after = await actor.actor.invoke<ChannelStatusRow[]>(
+    'device_connection_set_channel_enabled',
+    { peerDeviceId, kind: 'bluetooth', enabled: true },
+  );
   expect(
-    after.find((entry) => entry.peer_device_id === peerDeviceId)?.bluetooth_enabled,
+    after.find((status) => status.kind === 'bluetooth')?.enabled,
     `${actor.actor.slug} should have Bluetooth enabled for ${peerDeviceId}`,
   ).toBe(true);
 }
