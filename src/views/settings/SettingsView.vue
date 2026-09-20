@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import packageJson from "../../package.json";
-import AboutCard from "../components/SettingsView/AboutCard.vue";
-import AutomaticUpdatesSettingsSection from "../components/SettingsView/AutomaticUpdatesSettingsSection.vue";
-import BackupSettingsSection from "../components/SettingsView/BackupSettingsSection.vue";
-import DevicesSettingsSection from "../components/SettingsView/DevicesSettingsSection.vue";
-import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
-import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
-import SpacesSettingsSection from "../components/SettingsView/SpacesSettingsSection.vue";
-import ThemeSelector from "../components/SettingsView/ThemeSelector.vue";
-import { useDeviceStore, type PairedDevice } from "../stores/device";
-import { useSpaceStore } from "../stores/space";
+import packageJson from "../../../package.json";
+import AboutCard from "../../components/SettingsView/AboutCard.vue";
+import AutomaticUpdatesSettingsSection from "../../components/SettingsView/AutomaticUpdatesSettingsSection.vue";
+import BackupSettingsSection from "../../components/SettingsView/BackupSettingsSection.vue";
+import DevicesSettingsSection from "../../components/SettingsView/DevicesSettingsSection.vue";
+import SettingsListGroup from "../../components/SettingsView/SettingsListGroup.vue";
+import SettingsListItem from "../../components/SettingsView/SettingsListItem.vue";
+import SpacesSettingsSection from "../../components/SettingsView/SpacesSettingsSection.vue";
+import ThemeSelector from "../../components/SettingsView/ThemeSelector.vue";
+import { useDeviceStore, type PairedDevice } from "../../stores/device";
+import { useSpaceStore } from "../../stores/space";
 
 const spaceStore = useSpaceStore();
 const deviceStore = useDeviceStore();

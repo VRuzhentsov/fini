@@ -64,7 +64,7 @@ use services::space::{create_space, delete_space, get_spaces, update_space};
 #[cfg(feature = "ui-plane")]
 use services::space_sync::{
     space_sync_apply_remote_mappings, space_sync_list_mappings,
-    space_sync_note_foreground, space_sync_queue_summary,
+    space_sync_queue_summary,
     space_sync_resolve_custom_space_mapping, space_sync_status,
     space_sync_tick,
     space_sync_update_mappings,
@@ -538,7 +538,6 @@ pub fn run() {
             space_sync_update_mappings,
             space_sync_apply_remote_mappings,
             space_sync_resolve_custom_space_mapping,
-            space_sync_note_foreground,
             space_sync_tick,
             space_sync_status,
             space_sync_queue_summary,

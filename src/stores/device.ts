@@ -243,22 +243,6 @@ interface LocalDeviceIdentity {
 export const ADD_MODE_DISCOVERY_INTERVAL_MS = 5_000;
 const ADD_MODE_POLL_INTERVAL_MS = 1_000;
 const PRESENCE_POLL_INTERVAL_MS = 15_000;
-// Kept as the *heartbeat* cadence: how often the frontend tells the backend
-// someone is watching. It carries no data work -- see `space_sync_note_
-// foreground` -- so a short interval here is cheap, and it needs to stay
-// comfortably inside the backend's 15s `frontend_is_driving` tolerance.
-const FOREGROUND_HEARTBEAT_INTERVAL_MS = 5_000;
-
-// How many heartbeats pass between full sync ticks. At 5s that is a tick
-// every ~30s, matching the backend keeper's own `TICK_INTERVAL`.
-//
-// Issue #171: this used to be every 3s, and it was how data moved. It no
-// longer is -- local edits push from the backend the moment they are written,
-// remote ones arrive as `space-sync://changed` -- so what remains is the
-// backstop: re-arming dial loops for a peer that is not connected, and
-// covering a missed notification.
-const SYNC_TICK_EVERY_N_HEARTBEATS = 6;
-let syncTicksSkipped = 0;
 
 // A BLE scan pass has its own internal deadline covering both scanning and
 // dialing each flagged candidate for a `DiscoveryHello`, so it can take up
@@ -322,7 +306,6 @@ export const useDeviceStore = defineStore("device", () => {
   // `hydrate()` calls racing each other can't both pass the check before
   // either's `listen()` call resolves.
   let sessionChangedListenerStarted = false;
-  let mappingUpdateTimer: ReturnType<typeof setInterval> | null = null;
   let bluetoothScanTimer: ReturnType<typeof setTimeout> | null = null;
   let bluetoothScanActive = false;
   // Bumped on every start/stop so a tick whose `invoke` was still pending
@@ -822,16 +805,6 @@ export const useDeviceStore = defineStore("device", () => {
     return address;
   }
 
-  // Costs a single IPC hop and touches nothing: the backend records a
-  // timestamp and returns. See `space_sync_note_foreground`.
-  async function noteForeground() {
-    try {
-      await invoke("space_sync_note_foreground");
-    } catch (error) {
-      console.warn("[space-sync] foreground heartbeat failed", error);
-    }
-  }
-
   async function runSpaceSyncTick() {
     const peerIds = pairedDevices.value.map((p) => p.peer_device_id);
     for (const peerId of peerIds) {
@@ -1201,34 +1174,21 @@ export const useDeviceStore = defineStore("device", () => {
     }, PRESENCE_POLL_INTERVAL_MS);
   }
 
+  // The frontend no longer drives sync. It subscribes.
+  //
+  // The backend keeper owns every tick on every platform: it wakes on the
+  // moments that make work possible (a local edit, an inbound frame, a
+  // session claimed, a channel switched on, a peer becoming reachable) and
+  // otherwise sleeps on an hourly backstop. There is nothing left here for a
+  // timer to do that the backend is not already doing better, with the
+  // process lifetime and the transport state to do it correctly.
+  //
+  // What remains is the one thing the frontend is for: listening, so the UI
+  // re-reads when something changed. `consumeSpaceMappingUpdates` runs once
+  // on start to pick up anything queued before this listener existed.
   function startMappingUpdateLoop() {
-    if (mappingUpdateTimer) return;
     void consumeSpaceMappingUpdates();
-    void runSpaceSyncTick();
     void startSyncChangedListener();
-    mappingUpdateTimer = setInterval(() => {
-      // Two jobs on two cadences now (issue #171).
-      //
-      // `noteForeground` is the fast one, and it is deliberately the cheap
-      // one: it records nothing but "someone is looking", which is what the
-      // backend's `frontend_is_driving` reads to keep Bluetooth scanning on
-      // its foreground cadence. Before this, that signal was a side effect
-      // of ticking every 3s; making sync event-driven would have removed it
-      // silently and dropped discovery to its background period while the
-      // user watched.
-      void noteForeground();
-
-      // The real tick stays, but as a backstop rather than the thing that
-      // moves data -- a local edit now pushes immediately from the backend,
-      // and a remote one arrives over `space-sync://changed`. What is left
-      // for it is re-arming dial loops for a peer that is not connected.
-      syncTicksSkipped += 1;
-      if (syncTicksSkipped >= SYNC_TICK_EVERY_N_HEARTBEATS) {
-        syncTicksSkipped = 0;
-        void consumeSpaceMappingUpdates();
-        void runSpaceSyncTick();
-      }
-    }, FOREGROUND_HEARTBEAT_INTERVAL_MS);
   }
 
   // ADR-0004/#171: the backend pushes this the moment a peer's change lands

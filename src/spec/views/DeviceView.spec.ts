@@ -1,6 +1,6 @@
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
-import DeviceView from "../../views/DeviceView.vue";
+import DeviceView from "../../views/settings/DeviceView.vue";
 import { useDeviceStore } from "../../stores/device";
 import { useSpaceStore } from "../../stores/space";
 

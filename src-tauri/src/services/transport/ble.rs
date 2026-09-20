@@ -1359,12 +1359,20 @@ const SCAN_PERIOD_BACKGROUND: Duration = Duration::from_secs(60);
 /// #171 changes what a *connected* pair costs, and both halves spend one
 /// battery budget, so the numbers should be settled together once that
 /// lands. See ADR-0006's design review.
+/// One cadence, not two.
+///
+/// This used to pick between a foreground and a background period by asking
+/// whether the frontend had ticked recently. That made the webview a driver
+/// of backend behaviour, which it no longer is: the backend owns every tick,
+/// and the frontend only renders and listens. With no frontend signal there
+/// is nothing to adapt to, and inventing one from platform lifecycle would
+/// be a larger change than this is worth.
+///
+/// The background period is the one kept, which is the same trade taken
+/// everywhere else here: a peer returning is noticed within a minute rather
+/// than thirty seconds, and the radio is left alone the rest of the time.
 fn idle_scan_period() -> Duration {
-    if crate::services::space_sync::commands::frontend_is_driving() {
-        SCAN_PERIOD_FOREGROUND
-    } else {
-        SCAN_PERIOD_BACKGROUND
-    }
+    SCAN_PERIOD_BACKGROUND
 }
 
 /// How long one candidate gets for its own dial plus auth handshake.
@@ -1395,8 +1403,28 @@ fn last_seen_advertising() -> &'static StdMutex<HashMap<String, Instant>> {
 }
 
 fn note_peer_advertising(peer_id: &str) {
-    if let Ok(mut seen) = last_seen_advertising().lock() {
-        seen.insert(peer_id.to_string(), Instant::now());
+    let freshness = idle_scan_period() * 3;
+    let newly_reachable = match last_seen_advertising().lock() {
+        Ok(mut seen) => {
+            let was_stale = seen
+                .insert(peer_id.to_string(), Instant::now())
+                .is_none_or(|previous| previous.elapsed() >= freshness);
+            was_stale
+        }
+        Err(_) => false,
+    };
+
+    // A peer coming back into range is a moment dialling becomes possible,
+    // in the same family as a local edit creating work or a session claim
+    // making existing work sendable. Without it, reconnecting waits for the
+    // periodic backstop -- which matters little at a 30s tick and decides
+    // everything at an hourly one.
+    //
+    // Only on the transition. `note_peer_advertising` runs for every matched
+    // advertisement, several times per scan window, and waking the keeper on
+    // each would turn a backstop into a poll by another name.
+    if newly_reachable {
+        crate::services::space_sync::commands::notify_sync_work_pending();
     }
 }
 

@@ -1157,7 +1157,27 @@ pub fn space_sync_resolve_custom_space_mapping(
 /// power. Issue #171 did the arithmetic: ~28,800 wakeups a day to deliver a
 /// handful of quest changes. The cost is not the BLE link, which draws
 /// microamps while idle; it is waking the radio because a timer said so.
-const TICK_INTERVAL: Duration = Duration::from_secs(30);
+///
+/// Now an hour, because every moment that makes work possible raises
+/// [`notify_sync_work_pending`] instead:
+///
+/// - a local edit, via `outbox::emit_sync_event_at`
+/// - an inbound frame, via `session::handle_inbound`
+/// - a session being claimed, which makes already-queued work sendable
+/// - a channel being switched on, which makes a peer eligible again
+/// - a peer becoming reachable -- mDNS presence arriving, or a BLE
+///   advertisement matching a paired peer after a gap
+///
+/// That last one is what makes an hour defensible rather than reckless: it
+/// is what re-arms the dial loop, and at 30s a missed wake cost half a
+/// minute while at an hour it would cost an hour. The interval moved only
+/// once reconnection stopped depending on it.
+///
+/// Each of those fires on a *transition*, never on the steady state that
+/// follows -- an advertisement seen on every scan window, or an mDNS
+/// re-resolve, must not wake anything, or the backstop becomes a poll
+/// wearing a different name.
+const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Raised whenever something lands in the outbox, so the keeper can send it
 /// now instead of at the next `TICK_INTERVAL`.
@@ -1233,38 +1253,6 @@ fn note_tick_ran() {
     }
 }
 
-/// When the last tick arrived **from the frontend specifically**, as
-/// opposed to from the keeper. `None` until the first one.
-///
-/// This is how the Bluetooth dial loop tells foreground from background
-/// without any platform lifecycle plumbing (ADR-0006 slice 3). The webview
-/// only drives ticks while it is alive and running, and the keeper only
-/// runs when it is not, so "a frontend tick arrived recently" is a direct
-/// observation of the thing we actually care about: whether a person is
-/// currently looking at a transport row and waiting for it to turn green.
-static LAST_FRONTEND_TICK_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
-
-fn note_frontend_tick() {
-    let cell = LAST_FRONTEND_TICK_AT.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = cell.lock() {
-        *guard = Some(Instant::now());
-    }
-}
-
-/// Whether the frontend has ticked recently enough to count as driving.
-///
-/// The tolerance is several tick intervals rather than one: a single
-/// missed or delayed tick (a busy webview, a slow DB read) must not flip
-/// the dial loop into its frugal background cadence while the user is in
-/// fact watching.
-pub fn frontend_is_driving() -> bool {
-    const TOLERANCE: Duration = Duration::from_secs(15);
-    let cell = LAST_FRONTEND_TICK_AT.get_or_init(|| Mutex::new(None));
-    match cell.lock() {
-        Ok(guard) => guard.is_some_and(|at| at.elapsed() < TOLERANCE),
-        Err(_) => false,
-    }
-}
 
 fn tick_is_overdue() -> bool {
     let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
@@ -1726,35 +1714,15 @@ pub fn space_sync_tick_impl(
     })
 }
 
-/// "The user is looking at the app" -- nothing more.
-///
-/// Before issue #171 this was a side effect of the frontend's 3s sync tick:
-/// ticks arriving *was* the evidence someone was watching, which is what
-/// `frontend_is_driving` reads to pick the Bluetooth scan cadence
-/// (ADR-0006 slice 3). Making sync event-driven removes that tick, and with
-/// it the evidence -- so the signal needs its own carrier, or the dial loop
-/// silently drops to its frugal background period while the user is in fact
-/// watching a row and waiting for it to turn green.
-///
-/// Deliberately does no work: no database, no dial loops, no outbox. It
-/// exists so the heartbeat that keeps that signal alive costs essentially
-/// nothing, which is the only reason it is acceptable to keep one at all.
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn space_sync_note_foreground() {
-    note_frontend_tick();
-}
-
+/// Kept for callers that still ask for a tick explicitly -- the CLI, tests,
+/// and the frontend's one-shot on start. The frontend no longer ticks on a
+/// timer: the keeper owns the cadence on every platform.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn space_sync_tick(
     db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
 ) -> Result<SpaceSyncTickResult, String> {
-    // Only this entry point notes a *frontend* tick. The keeper calls
-    // `space_sync_tick_impl` directly, which is what keeps the two
-    // distinguishable -- see `frontend_is_driving`.
-    note_frontend_tick();
     let mut conn = db.0.lock().unwrap();
     space_sync_tick_impl(&mut conn, &device_connection)
 }

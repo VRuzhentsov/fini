@@ -2,8 +2,8 @@ import { createRouter, createWebHashHistory } from "vue-router";
 import FocusView from "../views/FocusView.vue";
 import QuestsView from "../views/QuestsView.vue";
 import HistoryView from "../views/HistoryView.vue";
-import SettingsView from "../views/SettingsView.vue";
-import DeviceView from "../views/DeviceView.vue";
+import SettingsView from "../views/settings/SettingsView.vue";
+import DeviceView from "../views/settings/DeviceView.vue";
 
 const router = createRouter({
   history: createWebHashHistory(),

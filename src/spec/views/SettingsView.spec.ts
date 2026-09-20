@@ -1,7 +1,7 @@
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import SettingsView from "../../views/SettingsView.vue";
+import SettingsView from "../../views/settings/SettingsView.vue";
 import { useSpaceStore } from "../../stores/space";
 import { useDeviceStore } from "../../stores/device";
 

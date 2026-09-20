@@ -2,15 +2,15 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronLeftIcon } from "@heroicons/vue/24/outline";
-import SettingsListGroup from "../components/SettingsView/SettingsListGroup.vue";
-import SettingsListItem from "../components/SettingsView/SettingsListItem.vue";
-import ChannelRow from "../components/DeviceView/ChannelRow.vue";
-import SyncQueueSection from "../components/DeviceView/SyncQueueSection.vue";
-import ChannelSetupDialog from "../components/DeviceView/ChannelSetupDialog.vue";
-import { useDeviceStore } from "../stores/device";
-import { useSpaceStore, isBuiltinSpace } from "../stores/space";
-import { shortUuid } from "../utils/shortUuid";
-import { channelRowState } from "../utils/transportStatusCodes";
+import SettingsListGroup from "../../components/SettingsView/SettingsListGroup.vue";
+import SettingsListItem from "../../components/SettingsView/SettingsListItem.vue";
+import ChannelRow from "../../components/DeviceView/ChannelRow.vue";
+import SyncQueueSection from "../../components/DeviceView/SyncQueueSection.vue";
+import ChannelSetupDialog from "../../components/DeviceView/ChannelSetupDialog.vue";
+import { useDeviceStore } from "../../stores/device";
+import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
+import { shortUuid } from "../../utils/shortUuid";
+import { channelRowState } from "../../utils/transportStatusCodes";
 
 const route = useRoute();
 const router = useRouter();

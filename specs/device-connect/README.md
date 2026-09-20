@@ -17,7 +17,8 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 ## Behavior
 
 - Only devices in add-device mode are pairing candidates
-- The user chooses the channel (Network or Bluetooth) **before** discovery runs; it is never inferred from whichever radio found the peer first — see `docs/adr/0008-a-channel-is-a-thing-the-user-chose.md`
+- Two devices cannot sync until at least one connection between them is configured. There are two that can be configured — Network and Bluetooth — and setting one up is what makes the pair usable at all
+- Discovery runs while a connection is being set up; it is what finds the peer to configure against
 - Pairing uses a sender/receiver handshake with a 6-digit passcode
 - Sender sees the code only after receiver acceptance
 - Trust is established once per pair, not per channel: adding a second channel to an already-paired device requires no passcode and does not interrupt the peer

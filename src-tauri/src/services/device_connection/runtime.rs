@@ -333,6 +333,20 @@ fn spawn_mdns_worker(
                         continue;
                     }
 
+                    // Whether this peer was absent from `presence` *before*
+                    // the upsert below. That transition -- not the steady
+                    // stream of re-resolves that follow it -- is the moment
+                    // dialling becomes possible, and the one worth waking a
+                    // tick for. See `notify_sync_work_pending`'s callers.
+                    let newly_present = service_txt(&info, "devid")
+                        .map(|id| {
+                            runtime_worker
+                                .lock()
+                                .map(|guard| !guard.presence.contains_key(id))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+
                     if let Ok(mut guard) = runtime_worker.lock() {
                         guard.rx_count += 1;
                         let presence = upsert_mdns_peer(&mut guard.presence, &info, discovery_port);
@@ -352,6 +366,13 @@ fn spawn_mdns_worker(
                                 guard.discovered.remove(&device_id);
                             }
                         }
+                    }
+
+                    // Raised outside the lock above: waking a tick while
+                    // holding the runtime mutex would have the woken tick
+                    // immediately contend for it.
+                    if newly_present {
+                        crate::services::space_sync::commands::notify_sync_work_pending();
                     }
                 }
                 Ok(_) => {}

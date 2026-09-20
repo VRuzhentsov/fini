@@ -259,7 +259,7 @@ export async function waitForGreenTransport(
  * machine behind it, and keying on prose made an earlier version of this
  * helper fail on a rename that changed nothing it was meant to protect.
  *
- * The regression guard survives ADR-0008 in a stronger form. It used to
+ * The regression guard survives ADR-0007 in a stronger form. It used to
  * trip on "Still connecting…", a label the page invented after 30s of an
  * unchanging amber row; since ADR-0005 the backend gives up on its own and
  * reports `bluetooth_dial_exhausted`, which this row renders as `down` with

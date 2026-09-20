@@ -4,7 +4,7 @@ Route: `/settings/device/:id`. Parent: [[SettingsView]].
 
 ## Concept
 
-Everything about one paired device. Redesigned by `docs/adr/0008-a-channel-is-a-thing-the-user-chose.md`.
+Everything about one paired device. Redesigned by `docs/adr/0007-channels-connect-and-stay-in-sync.md`.
 
 The page exists to answer three questions at a glance, and every section is there to serve one of them:
 

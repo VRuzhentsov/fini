@@ -9,7 +9,7 @@ import {
 } from '../helpers/device-page.ts';
 
 /**
- * The Device page, as ADR-0008 rebuilt it: channels with their own
+ * The Device page, as ADR-0007 rebuilt it: channels with their own
  * switches, a sync queue, and an unlink that says what it costs.
  *
  * These cover what unit tests structurally cannot. `DeviceView.spec.ts`
