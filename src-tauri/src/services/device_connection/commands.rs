@@ -1246,6 +1246,21 @@ pub fn device_connection_save_paired_device_impl(
             .values(&input)
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
+
+        // Migration 23's column default is `1`, which is right for every row
+        // that existed before this pair did -- they were all formed over the
+        // network and were syncing on it. It is wrong for a *new* pair, and
+        // silently so: a user who explicitly chose Bluetooth in the pairing
+        // dialog would get Network switched on too, and the app would start
+        // dialling the LAN over a channel they never picked.
+        //
+        // That would make the redesign's central promise false on the very
+        // first screen, so the initial value is set from how the pairing
+        // actually arrived rather than inherited from the default.
+        diesel::update(paired_devices::table.find(&peer_device_id))
+            .set(paired_devices::network_enabled.eq(!via_bluetooth))
+            .execute(&mut *conn)
+            .map_err(|e| e.to_string())?;
     }
 
     // ADR 0002 Phase 3: a Bluetooth address handed over as part of the

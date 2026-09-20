@@ -304,6 +304,11 @@ export const useDeviceStore = defineStore("device", () => {
   const syncingByPeer = ref<Record<string, boolean>>({});
   const transportStatusesByPeer = ref<Record<string, DeviceTransportStatus[]>>({});
   const syncQueueByPeer = ref<Record<string, SyncQueueSummary | null>>({});
+  // Per-channel discovery candidates. See `recomputeDiscovered`.
+  const discoveredByTransport = ref<Record<"network" | "bluetooth", DiscoveredDevice[]>>({
+    network: [],
+    bluetooth: [],
+  });
   const lastAppliedSyncAt = ref<string | null>(null);
   const incomingExpectedCode = ref<Record<string, string>>({});
   const incomingAttemptCount = ref<Record<string, number>>({});
@@ -905,8 +910,30 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
+  // Candidates for one channel, *before* the Network-preferring dedup below.
+  //
+  // `discoveredDevices` keeps only the Network entry when a peer is visible
+  // over both, which is right for a single mixed list but wrong the moment
+  // the user has chosen a channel out loud: filtering that deduped array by
+  // `transport === 'bluetooth'` makes a peer on the same LAN vanish, and the
+  // pairing dialog reports nobody found while the BLE scan is looking
+  // straight at it. Precisely the common case -- two devices on one network,
+  // user picks Bluetooth.
+  //
+  // So the dialog reads from these instead, which carry only the two
+  // exclusions that hold for any channel: ourselves, and peers already
+  // paired. Kept as a ref rather than derived on demand because the two
+  // `latest*Discovered` arrays behind them are plain module-level values,
+  // which a computed would never see change.
   function recomputeDiscovered() {
     const deduped = new Map<string, DiscoveredDevice>();
+    const eligible = (item: DiscoveredDevice) =>
+      item.device_id !== identity.value.device_id && !pairedDeviceIds.value.has(item.device_id);
+
+    discoveredByTransport.value = {
+      network: latestNetworkDiscovered.filter(eligible),
+      bluetooth: latestBluetoothDiscovered.filter(eligible),
+    };
 
     // Network always wins over Bluetooth for the same device_id, regardless
     // of which poll happened to finish more recently -- ADR 0002's selection
@@ -1323,6 +1350,7 @@ export const useDeviceStore = defineStore("device", () => {
     latestNetworkDiscovered = [];
     latestBluetoothDiscovered = [];
     discoveredDevices.value = [];
+    discoveredByTransport.value = { network: [], bluetooth: [] };
     addModeLastRefreshAt.value = null;
     void refreshDebugStatus();
   }
@@ -1570,6 +1598,7 @@ export const useDeviceStore = defineStore("device", () => {
     identity,
     pairedDevices,
     discoveredDevices,
+    discoveredByTransport,
     incomingRequests,
     outgoingRequest,
     outgoingRequestSecondsLeft,

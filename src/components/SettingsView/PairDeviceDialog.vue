@@ -36,10 +36,16 @@ const outgoing = computed(() => deviceStore.outgoingRequest);
 // expires unseen is the worst outcome of the whole flow.
 const incoming = computed(() => deviceStore.incomingRequests[0] ?? null);
 
+// Read from the per-channel lists, not from `discoveredDevices`.
+//
+// That array is deduplicated with Network preferred, so a peer visible over
+// both channels appears in it only as a Network entry -- and filtering it by
+// the chosen channel would make that peer vanish the moment the user picks
+// Bluetooth. Two devices on one LAN is the common case, so the dialog would
+// have reported "nobody found" while the BLE scan was looking straight at
+// the peer.
 const candidates = computed<DiscoveredDevice[]>(() =>
-  channel.value
-    ? deviceStore.discoveredDevices.filter((device) => device.transport === channel.value)
-    : [],
+  channel.value ? deviceStore.discoveredByTransport[channel.value] : [],
 );
 
 // How long an empty list is ordinary before it is worth explaining.

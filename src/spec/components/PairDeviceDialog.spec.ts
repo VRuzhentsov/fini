@@ -13,6 +13,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     outgoingRequest: null,
     incomingRequests: [],
     discoveredDevices: [],
+    discoveredByTransport: { network: [], bluetooth: [] },
     pairCompletedAt: null,
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
@@ -50,6 +51,42 @@ describe("PairDeviceDialog", () => {
     // Nothing is discovered until a channel has been chosen -- the whole
     // point of asking out loud rather than inferring it.
     expect(wrapper.find('[data-testid="nearby-device-row"]').exists()).toBe(false);
+  });
+
+  /**
+   * A peer visible over both channels appears in `discoveredDevices` only as
+   * a Network entry -- that list is deduplicated with Network preferred. So
+   * the dialog must read the per-channel lists instead: filtering the
+   * deduplicated one by the chosen channel made the peer vanish the moment
+   * Bluetooth was selected, and two devices on one LAN is the common case,
+   * not an edge one.
+   */
+  it("still lists a peer over Bluetooth when it is also visible over the network", async () => {
+    const peer = {
+      device_id: "peer-1",
+      hostname: "Pixel 8",
+      addr: "AA:BB:CC:DD:EE:FF",
+      discovery_port: 0,
+      ws_port: null,
+      last_seen_at: new Date().toISOString(),
+      transport: "bluetooth" as const,
+    };
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(
+      storeMock({
+        // Deduplicated list keeps only the Network entry, as the store does.
+        discoveredDevices: [{ ...peer, transport: "network" as const }],
+        discoveredByTransport: { network: [{ ...peer, transport: "network" as const }], bluetooth: [peer] },
+      }),
+    );
+
+    const wrapper = mountDialog();
+    await flushUi();
+    await wrapper.find('[data-testid="pair-channel-bluetooth"]').trigger("click");
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="nearby-device-row"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].attributes("data-device-transport")).toBe("bluetooth");
   });
 
   it("enters add mode on open, because that is what makes this device discoverable", async () => {
