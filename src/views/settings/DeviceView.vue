@@ -52,14 +52,6 @@ const anyChannelConnected = computed(() =>
   ),
 );
 
-// fini-frontend: template render decisions belong in a named renderFlags
-// key, not an ad hoc expression inline in `v-if`.
-const renderFlags = computed(() => ({
-  bluetoothSetupOffered: !channelStatuses.value.some(
-    (status) => status.kind === "bluetooth" && status.configured,
-  ),
-}));
-
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() =>
   deviceId.value ? deviceStore.getLastSyncedAtBySpace(deviceId.value) : {},
 );
@@ -180,6 +172,18 @@ async function saveMappings() {
 // whenever the background dial loop next tries.
 async function toggleChannel(kind: ChannelKind, enabled: boolean) {
   if (!deviceId.value || busyChannel.value) return;
+
+  // Switching on a channel that was never set up *is* the request to set it
+  // up, so the switch opens the dialog and the setup flow owns the rest.
+  // There is no separate "Set up Bluetooth" button any more: a page with
+  // both made the switch look like it did something different from the
+  // button, when they were two ways to ask for the same thing.
+  const status = channelStatuses.value.find((entry) => entry.kind === kind);
+  if (enabled && kind === "bluetooth" && status && !status.configured) {
+    channelSetupOpen.value = true;
+    return;
+  }
+
   busyChannel.value = kind;
   channelError.value = null;
   try {
@@ -283,14 +287,6 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           />
         </ul>
         <p v-if="channelError" class="mt-2 text-xs text-error">{{ channelError }}</p>
-        <button
-          v-if="renderFlags.bluetoothSetupOffered"
-          class="btn btn-ghost btn-sm mt-2 w-fit"
-          data-testid="add-channel"
-          @click="channelSetupOpen = true"
-        >
-          Set up Bluetooth
-        </button>
       </section>
 
       <section class="rounded-xl bg-base-200 p-3">

@@ -31,9 +31,9 @@ const enabled = computed(() => props.status.enabled);
 
 const CHANNEL_NAME = { network: "Network", bluetooth: "Bluetooth" } as const;
 
-// Starts open for the states the user has just caused and needs explaining
-// -- switching a channel on while the radio is off being the one that
-// replaced a toast. Everything else waits to be asked.
+// Always starts closed. Nothing auto-expands any more: the row is a row,
+// and an explanation nobody asked for is noise on a page the person opened
+// to see state. The info button is the only way in.
 const reasonOpen = ref(false);
 
 const rowState = computed(() => channelRowState(props.status.state, enabled.value));
@@ -47,13 +47,7 @@ const reason = computed(() => {
   return code ? channelStatusText(code, props.peerName) : null;
 });
 
-// Auto-opened rather than click-to-open for the one state that is both
-// persistent and not the user's doing -- see `channelStatusCodes`'s note
-// on why this replaced the design's toast.
-const reasonPinnedOpen = computed(
-  () => props.status.state.code?.code === "bluetooth_adapter_off",
-);
-const showReason = computed(() => reason.value !== null && (reasonOpen.value || reasonPinnedOpen.value));
+const showReason = computed(() => reason.value !== null && reasonOpen.value);
 
 // Only a connected channel can carry traffic, so only a connected channel
 // can hold the star. Offering it on a dead row would promise a switch that
@@ -111,7 +105,7 @@ const dotClass = computed(() => {
         <span class="truncate text-[11px] text-[var(--fg-3)]">{{ label }}</span>
 
         <button
-          v-if="reason && !reasonPinnedOpen"
+          v-if="reason"
           type="button"
           class="shrink-0 text-[var(--fg-4)] hover:text-[var(--fg-2)]"
           data-testid="channel-status-info"
