@@ -20,7 +20,6 @@ Features: `specs/device-connect/README.md`, `specs/space-sync/README.md`.
 - **Channels** — one [[ChannelRow]] per channel (Network, Bluetooth)
 - **Shared spaces** — editable mapped spaces for this pair, with last synced date and time
 - **Sync queue** — [[SyncQueueSection]]
-- **Set up Bluetooth** — opens [[ChannelSetupDialog]] when Bluetooth isn't on for this pair
 - `Unlink` action, last on the page, as a text button
 
 ## Channels
@@ -28,8 +27,9 @@ Features: `specs/device-connect/README.md`, `specs/space-sync/README.md`.
 Each row carries live state, the reason it isn't connected, a last connected/synced stamp, a star for the primary channel, and its own on/off switch.
 
 - **Row state** is derived by `channelRowState` in [[channelStatusCodes]]: `off` / `waiting` / `down` / `connecting` / `fading` / `connected`. It combines the backend's `RowState` with the pair's own switch, because "off" is a fact about what the user chose and every other state is a fact about the link.
-- **The reason** is plain language and names the device — "Pixel 8 isn't nearby", "Bluetooth is off on this computer". Never a status code, never a bare coloured dot. It lives in the row's information button.
-- **`waiting`** ("On, waiting") is the state the user sits in after switching a channel on while this machine's own radio is off. The switch stays on with a gray track, and the channel starts by itself when the radio returns. Its reason is shown without being asked for, since a toast would be gone before the question is.
+- **The reason** is plain language and names the device — "Pixel 8 isn't nearby", "Bluetooth is off on this computer". Never a status code, never a bare coloured dot. It lives in the row's information button, and *only* there: no state expands it by itself, because an explanation nobody asked for is noise on a page opened to see state.
+- **Setting a channel up** has no button of its own. Switching on a channel that was never configured is the request to configure it, so the switch opens [[ChannelSetupDialog]] and writes nothing; the dialog enables the channel once it succeeds. A separate "Set up Bluetooth" button was a second way to ask for the same thing, sitting beside a switch that looked like it did something else.
+- **`waiting`** ("On, waiting") is the state the user sits in after switching a channel on while this machine's own radio is off. The switch stays on with a gray track, and the channel starts by itself when the radio returns. Its reason waits in the information button like every other reason; it used to expand itself, which put a sentence about this computer's radio on a page the person opened to read state.
 - **The star** only appears on a channel that is actually connected — offering it on a dead row would promise a switch that does nothing.
 - Switching a channel on never fails and never reverts; see the ADR.
 

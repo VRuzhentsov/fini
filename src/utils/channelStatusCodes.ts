@@ -35,11 +35,9 @@ export function channelStatusText(
     case "bluetooth_disabled":
       return "Bluetooth is switched off for this device";
     case "bluetooth_adapter_off":
-      // Carries the promise as well as the condition. The redesign
-      // originally put this in a toast at the moment the switch was
-      // flipped; it lives here instead, so it is still on screen after a
-      // toast would have gone -- which is the whole point, since this is a
-      // state the person sits in rather than passes through.
+      // Carries the promise as well as the condition: this is a state the
+      // person sits in rather than passes through, so the sentence has to
+      // answer "and then what" on its own, whenever they ask for it.
       return "Bluetooth is off on this computer — the channel starts by itself once you turn it on";
     case "bluetooth_no_address":
       return `No Bluetooth address for ${peer} yet`;
