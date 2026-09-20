@@ -1,7 +1,7 @@
 mod commands;
 pub(crate) mod link_state;
 mod runtime;
-mod channel_status;
+pub(crate) mod channel_status;
 pub(crate) mod channels;
 pub(crate) mod types;
 

@@ -153,65 +153,6 @@ pub(crate) fn bluetooth_address_is_os_paired(address: &str) -> bool {
     bluetooth_address_bond_check(address).unwrap_or(false)
 }
 
-/// Cross-platform-safe wrapper around `channel::ble::is_bluetooth_dial_exhausted`
-/// -- that module only exists on `target_os = "linux"`/`"android"`, so a
-/// bare call from this platform-neutral file wouldn't compile everywhere
-/// this file does. `false` on every other platform: `bluetooth_unconfigured_code`
-/// already returns `BluetoothNotSupported` there first, so this value is
-/// never actually consulted in that case, but a real bool (not an `Option`
-/// forcing every caller to handle a platform that can't happen) keeps
-/// `device_connection_channel_statuses_impl` simple.
-fn bluetooth_dial_exhausted_now(#[allow(unused_variables)] peer_device_id: &str) -> bool {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        crate::services::communication::channel::ble::is_bluetooth_dial_exhausted(peer_device_id)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        false
-    }
-}
-
-/// Same platform-neutral wrapper shape as `bluetooth_dial_exhausted_now`,
-/// for `channel::ble::peer_seen_advertising_recently`.
-///
-/// `true` on platforms without a BLE channel, not `false`: this feeds a
-/// *negative* precondition (`!peer_nearby` reports "not nearby"), and
-/// `bluetooth_unconfigured_code` returns `BluetoothNotSupported` before ever
-/// reading it there. Returning `false` would be the wrong default to
-/// inherit if that ordering ever changed -- it would claim a peer is away on
-/// a platform that cannot look.
-fn bluetooth_peer_nearby_now(#[allow(unused_variables)] peer_device_id: &str) -> bool {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        crate::services::communication::channel::ble::peer_seen_advertising_recently(peer_device_id)
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        true
-    }
-}
-
-/// Same platform-neutral wrapper shape again, for
-/// `channel::ble::is_bluetooth_adapter_unavailable`. This one is not
-/// per-peer: it describes this machine's own radio.
-///
-/// `true` (available) on platforms with no BLE channel, for the same
-/// reason `bluetooth_peer_nearby_now` returns `true` there --
-/// `bluetooth_unconfigured_code` answers `BluetoothNotSupported` before it
-/// ever reads this, and the harmless default is the one that doesn't invent
-/// a hardware fault on a machine that was never asked to have the hardware.
-fn bluetooth_adapter_available_now() -> bool {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        !crate::services::communication::channel::ble::is_bluetooth_adapter_unavailable()
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        true
-    }
-}
-
 /// Runs `command` with a hard time limit that actually terminates it, not
 /// merely bounds how long a caller waits: `kill_on_drop(true)` makes Tokio
 /// send the kill signal (and reap the process via its own SIGCHLD-driven
@@ -1654,31 +1595,30 @@ pub fn device_connection_channel_statuses_impl(
     let network = channels::find(&mut *conn, &peer_device_id, ChannelKind::Network);
     let bluetooth = channels::find(&mut *conn, &peer_device_id, ChannelKind::Bluetooth);
 
+    let network_enabled = network.as_ref().is_some_and(|channel| channel.enabled);
+    let bluetooth_enabled = bluetooth.as_ref().is_some_and(|channel| channel.enabled);
+
+    // Each channel says why it cannot reach this peer. Nothing here knows
+    // what a radio or a beacon is any more -- which is the point, because
+    // the answers are about different machines and only the channel that
+    // owns the mechanism can tell them apart honestly.
+    let services = crate::services::communication::channel::service::services(state);
+    let why_not = |kind: ChannelKind, enabled: bool| {
+        services
+            .iter()
+            .find(|service| service.kind() == kind)
+            .and_then(|service| service.why_not(&peer_device_id, enabled))
+    };
+
     Ok(build_channel_statuses(ChannelStatusInputs {
-        network_present: state.network_peer_available(&peer_device_id),
         network_configured: network.is_some(),
         bluetooth_configured: bluetooth.is_some(),
-        network_enabled: network.as_ref().is_some_and(|channel| channel.enabled),
-        bluetooth_enabled: bluetooth.as_ref().is_some_and(|channel| channel.enabled),
+        network_enabled,
+        bluetooth_enabled,
         network_address: network.as_ref().and_then(|channel| channel.address.clone()),
         bluetooth_address: bluetooth.as_ref().and_then(|channel| channel.address.clone()),
-        // Machine-wide, not per-peer: a radio that is off is off for every
-        // pair at once. Read after `bluetooth_enabled` so a pair whose
-        // channel is switched off keeps saying so.
-        bluetooth_adapter_available: bluetooth_adapter_available_now(),
-        // A live session is the strongest possible evidence of nearness, and
-        // it outranks the advertisement record entirely.
-        //
-        // Without this the row lies in the one state it must not: scanning
-        // stops while a session is live (nothing is being searched for), so
-        // the last-seen-advertising stamp goes stale after three scan
-        // periods and the row reports "not nearby" about a peer it is
-        // actively talking to. That is precisely the class of dishonesty
-        // ADR-0005 exists to remove, reintroduced by the precondition meant
-        // to remove another one.
-        bluetooth_peer_nearby: snapshot.bluetooth_connected
-            || bluetooth_peer_nearby_now(&peer_device_id),
-        bluetooth_dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
+        network_unconfigured_code: why_not(ChannelKind::Network, network_enabled),
+        bluetooth_unconfigured_code: why_not(ChannelKind::Bluetooth, bluetooth_enabled),
         network_connected: snapshot.network_connected,
         bluetooth_connected: snapshot.bluetooth_connected,
         // The person's stored choice, not `snapshot`'s live primary: the
@@ -1753,7 +1693,11 @@ pub fn device_connection_channel_liveness_impl(
             kind: ChannelKind::Bluetooth,
             connected: snapshot.bluetooth_connected,
             code: snapshot.bluetooth_code,
-            dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
+            dial_exhausted: crate::services::communication::channel::service::service_for(
+                state,
+                ChannelKind::Bluetooth,
+            )
+            .dial_exhausted(&peer_device_id),
         },
     ]
 }

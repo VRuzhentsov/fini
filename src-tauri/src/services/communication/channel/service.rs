@@ -30,7 +30,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::radio::{for_this_device, Radio};
-use crate::services::communication::pairing::{ChannelKind, DeviceConnectionState};
+use crate::services::communication::pairing::{
+    channel_status, ChannelKind, ChannelStatusCode, DeviceConnectionState,
+};
 
 /// Everything one channel can do. Implemented once per `ChannelKind`.
 ///
@@ -91,6 +93,30 @@ pub trait ChannelService: Send + Sync {
     fn retry_now(&self, peer_device_id: &str) {
         let _ = peer_device_id;
     }
+
+    /// Whether this channel's automatic attempts at this peer have given up.
+    ///
+    /// Surfaced on its own, separate from `why_not`, because the row stays
+    /// clickable in that state — it is the one reason a person can act on by
+    /// asking for another try.
+    fn dial_exhausted(&self, peer_device_id: &str) -> bool {
+        let _ = peer_device_id;
+        false
+    }
+
+    /// Why this channel cannot reach this peer, or `None` if nothing is in
+    /// the way. What the row on the Device page says out loud.
+    ///
+    /// Only the channel can answer honestly. "Bluetooth is off on this
+    /// computer" and "Pixel 8 isn't nearby" are claims about different
+    /// machines, and only one of them is something the person can act on
+    /// where they are standing — so the answer has to come from whichever
+    /// channel actually knows, not from a caller guessing between them.
+    ///
+    /// `enabled` is the pair's own switch, passed in because it is a fact
+    /// about the row rather than about the channel; where it sits in each
+    /// channel's ordering is the channel's business.
+    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelStatusCode>;
 }
 
 /// The channel services for one `DeviceConnectionState`. One per kind.
@@ -174,6 +200,10 @@ impl ChannelService for NetworkChannelService {
     fn retry_now(&self, _peer_device_id: &str) {
         crate::services::communication::sync::commands::notify_sync_work_pending();
     }
+
+    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelStatusCode> {
+        channel_status::network_unconfigured_code(enabled, self.is_reachable(peer_device_id))
+    }
 }
 
 /// The Bluetooth channel: peers found by scanning for Fini's service UUID,
@@ -226,5 +256,26 @@ impl ChannelService for BluetoothChannelService {
 
     fn retry_now(&self, peer_device_id: &str) {
         self.radio.retry_now(&self.state, peer_device_id);
+    }
+
+    fn dial_exhausted(&self, peer_device_id: &str) -> bool {
+        self.radio.dial_exhausted(peer_device_id)
+    }
+
+    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelStatusCode> {
+        channel_status::bluetooth_unconfigured_code(
+            self.radio.available(),
+            enabled,
+            self.radio.adapter_available(),
+            // A live session is the strongest evidence of nearness there is,
+            // and it outranks the advertisement record entirely: scanning
+            // stops while a session is up, so the last-seen stamp goes stale
+            // and the row would report "not nearby" about a peer it is
+            // actively talking to.
+            self.state
+                .has_session_on(peer_device_id, super::TransportKind::Bluetooth)
+                || self.radio.is_reachable(peer_device_id),
+            self.radio.dial_exhausted(peer_device_id),
+        )
     }
 }

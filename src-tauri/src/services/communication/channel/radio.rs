@@ -62,6 +62,22 @@ pub trait Radio: Send + Sync {
     /// dialling, as far as this radio can tell without trying.
     fn is_reachable(&self, peer_device_id: &str) -> bool;
 
+    /// Whether the hardware worked the last time it was asked to do
+    /// anything, from whatever the background loops already observed.
+    ///
+    /// The passive counterpart to `probe`: free to read, and therefore the
+    /// one a status poll uses. `true` when nothing has been attempted yet,
+    /// so an untried radio is never accused of being off.
+    fn adapter_available(&self) -> bool {
+        true
+    }
+
+    /// Whether this peer's automatic dial attempts have given up.
+    fn dial_exhausted(&self, peer_device_id: &str) -> bool {
+        let _ = peer_device_id;
+        false
+    }
+
     /// Give this peer a fresh retry window after its attempts gave up.
     fn retry_now(&self, state: &DeviceConnectionState, peer_device_id: &str) {
         let _ = (state, peer_device_id);
@@ -143,6 +159,29 @@ impl Radio for GattRadio {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             super::ble::peer_seen_advertising_recently(peer_device_id)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            let _ = peer_device_id;
+            false
+        }
+    }
+
+    fn adapter_available(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            !super::ble::is_bluetooth_adapter_unavailable()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            true
+        }
+    }
+
+    fn dial_exhausted(&self, peer_device_id: &str) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            super::ble::is_bluetooth_dial_exhausted(peer_device_id)
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {

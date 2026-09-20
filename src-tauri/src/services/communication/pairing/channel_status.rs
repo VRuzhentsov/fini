@@ -2,9 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::communication::channel::TransportKind;
 
-/// Which channel it is. Coarser than `TransportKind` on purpose: a
-/// person chooses between Network and Bluetooth, while `TcpWs` and `Sim` are
-/// two transports that both carry the Network channel.
+/// Which channel it is. Says the same thing `TransportKind` says, one
+/// mechanical rename from being the same type — see `docs/glossary.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
@@ -79,7 +78,8 @@ pub enum ChannelStatusCode {
     /// network.
     NetworkDisabled,
     /// Bluetooth row, `Unconfigured`: no adapter registered on this
-    /// platform at all (`BLUETOOTH_ADAPTER_IMPLEMENTED`).
+    /// platform at all -- `Radio::available` is false, so no build of this app
+    /// on this OS could use it.
     BluetoothNotSupported,
     /// Bluetooth row, `Unconfigured`: disabled for this pair.
     BluetoothDisabled,
@@ -244,25 +244,12 @@ pub fn select_channel_endpoint(
     })
 }
 
-/// `channel::ble` (BlueZ on Linux, GATT via `ble_gatt::backend::android`
-/// on Android, both through `ble-gatt`) is wired up in `lib.rs`/
-/// `sync::commands` on both platforms. Everywhere else, status must
-/// never report a `Configured` Bluetooth row regardless of stored metadata,
-/// or the Device view would promise a fallback that silently cannot sync.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = true;
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = false;
-
 /// Everything `build_channel_statuses` needs, one field per condition it
 /// checks. A named-field struct instead of positional bools deliberately:
 /// transposing two same-typed bools at a call site is exactly the class of
 /// bug a struct's field names catch that positional args don't.
 #[derive(Debug, Clone)]
 pub struct ChannelStatusInputs {
-    /// Raw discovery presence (`network_peer_available`) -- "is this
-    /// peer's beacon reaching us right now."
-    pub network_present: bool,
     /// Whether a `channels` row exists for this pair and kind: the channel
     /// has been set up. A channel that was never set up is off for the same
     /// reason a switched-off one is, so the codes below do not distinguish
@@ -275,20 +262,18 @@ pub struct ChannelStatusInputs {
     /// `channels.address` -- where the channel last reached the peer.
     pub network_address: Option<String>,
     pub bluetooth_address: Option<String>,
-    /// `!ble::is_bluetooth_adapter_unavailable` -- whether the local radio
-    /// worked the last time it was asked to do anything. `true` when
-    /// nothing has been attempted yet, so an untried adapter is never
-    /// accused of being off.
-    pub bluetooth_adapter_available: bool,
-    /// `ble::peer_seen_advertising_recently` -- whether this peer has been
-    /// heard advertising within a few scan cycles. The honest answer to
-    /// "why is this not connecting" when the other device is simply away.
-    pub bluetooth_peer_nearby: bool,
-    /// `ble::is_bluetooth_dial_exhausted` -- whether this peer's automatic
-    /// dial retries have given up after `AUTO_RETRY_WINDOW`. Checked last,
-    /// after every other precondition passes: it only means anything once
-    /// dialling was actually attempted.
-    pub bluetooth_dial_exhausted: bool,
+    /// Why this channel cannot reach the peer, or `None` if nothing is in
+    /// the way — `ChannelService::why_not`.
+    ///
+    /// Answered by the channel itself rather than computed here: only the
+    /// Network channel knows what presence it has heard, and only the
+    /// Bluetooth one knows whether its radio is off, whether the peer was
+    /// last seen advertising, and whether dialling has given up. The
+    /// decision tables those answers come from are
+    /// `network_unconfigured_code` and `bluetooth_unconfigured_code` below,
+    /// kept pure so their ordering stays testable without a radio.
+    pub network_unconfigured_code: Option<ChannelStatusCode>,
+    pub bluetooth_unconfigured_code: Option<ChannelStatusCode>,
     /// Whether a session is currently claimed on this channel --
     /// `DeviceConnectionState::has_session_on`.
     pub network_connected: bool,
@@ -307,16 +292,14 @@ pub struct ChannelStatusInputs {
 
 pub fn build_channel_statuses(inputs: ChannelStatusInputs) -> Vec<ChannelStatus> {
     let ChannelStatusInputs {
-        network_present,
         network_configured,
         bluetooth_configured,
         network_enabled,
         bluetooth_enabled,
         network_address,
         bluetooth_address,
-        bluetooth_adapter_available,
-        bluetooth_peer_nearby,
-        bluetooth_dial_exhausted,
+        network_unconfigured_code,
+        bluetooth_unconfigured_code,
         network_connected,
         bluetooth_connected,
         network_primary,
@@ -324,20 +307,6 @@ pub fn build_channel_statuses(inputs: ChannelStatusInputs) -> Vec<ChannelStatus>
         network_code,
         bluetooth_code,
     } = inputs;
-
-    let network_unconfigured_code = if !network_enabled {
-        Some(ChannelStatusCode::NetworkDisabled)
-    } else if !network_present {
-        Some(ChannelStatusCode::NetworkUnavailable)
-    } else {
-        None
-    };
-    let bluetooth_unconfigured_code = bluetooth_unconfigured_code(
-        bluetooth_enabled,
-        bluetooth_adapter_available,
-        bluetooth_peer_nearby,
-        bluetooth_dial_exhausted,
-    );
 
     vec![
         ChannelStatus {
@@ -390,10 +359,26 @@ fn row_state(
 /// a peer that was never in range has not "failed to connect after a minute
 /// of trying", and saying so would send the user to retry a dial that has
 /// nothing to dial.
-fn bluetooth_unconfigured_code(
-    enabled: bool, adapter_available: bool, peer_nearby: bool, dial_exhausted: bool,
+/// Why the Network channel cannot reach a peer.
+///
+/// `enabled` is checked before presence deliberately: a channel the person
+/// switched off must say so rather than blaming the peer's network, which
+/// is a claim about the wrong machine and one they cannot act on.
+pub fn network_unconfigured_code(enabled: bool, present: bool) -> Option<ChannelStatusCode> {
+    if !enabled {
+        return Some(ChannelStatusCode::NetworkDisabled);
+    }
+    if !present {
+        return Some(ChannelStatusCode::NetworkUnavailable);
+    }
+    None
+}
+
+pub fn bluetooth_unconfigured_code(
+    implemented: bool, enabled: bool, adapter_available: bool, peer_nearby: bool,
+    dial_exhausted: bool,
 ) -> Option<ChannelStatusCode> {
-    if !BLUETOOTH_ADAPTER_IMPLEMENTED {
+    if !implemented {
         return Some(ChannelStatusCode::BluetoothNotSupported);
     }
     if !enabled {
@@ -437,16 +422,16 @@ mod tests {
     /// override just the field(s) they're exercising.
     fn ready_inputs() -> ChannelStatusInputs {
         ChannelStatusInputs {
-            network_present: true,
+
             network_configured: true,
             bluetooth_configured: true,
             network_enabled: true,
             bluetooth_enabled: true,
             network_address: None,
             bluetooth_address: None,
-            bluetooth_adapter_available: true,
-            bluetooth_peer_nearby: true,
-            bluetooth_dial_exhausted: false,
+
+            network_unconfigured_code: None,
+            bluetooth_unconfigured_code: None,
             network_connected: false,
             bluetooth_connected: false,
             network_primary: false,
@@ -513,7 +498,7 @@ mod tests {
     #[test]
     fn a_channel_with_no_session_reports_unconfigured_or_connecting() {
         let not_present = build_channel_statuses(ChannelStatusInputs {
-            network_present: false,
+            network_unconfigured_code: Some(ChannelStatusCode::NetworkUnavailable),
             ..ready_inputs()
         });
         assert_eq!(
@@ -593,178 +578,110 @@ mod tests {
         );
     }
 
-    /// No Bluetooth `Transport`/`DataLink` adapter is registered on this
-    /// platform (see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc comment), so a
-    /// Bluetooth session can never actually establish there. Status must
-    /// report `Unconfigured` regardless of how complete the stored
-    /// enablement metadata is.
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    /// The Bluetooth reasons, in the order they are checked.
+    ///
+    /// The ordering is load-bearing rather than cosmetic, and every case here
+    /// is a claim about a *different machine*: "switched off" is about the
+    /// pair, "this computer's radio is off" is about this device, "isn't
+    /// nearby" is about the peer. Getting the order wrong does not produce a
+    /// slightly worse message, it produces a confident statement about the
+    /// wrong device that the person cannot act on.
+    ///
+    /// Tested against the decision table directly rather than through a row,
+    /// and on every platform: `implemented` is a parameter now that the
+    /// Bluetooth service reads it from its radio, so the no-adapter case no
+    /// longer needs a build that has no adapter.
     #[test]
-    fn bluetooth_is_never_configured_without_a_registered_adapter() {
-        for network_present in [true, false] {
-            let statuses = build_channel_statuses(ChannelStatusInputs {
-                network_present,
-                ..ready_inputs()
-            });
-            let bluetooth = find(&statuses, ChannelKind::Bluetooth);
+    fn bluetooth_reasons_are_checked_in_the_order_that_names_the_right_device() {
+        let cases = [
+            (
+                "no adapter on this platform at all outranks everything",
+                (false, false, false, false, true),
+                Some(ChannelStatusCode::BluetoothNotSupported),
+            ),
+            (
+                "a channel the person switched off has no business \
+                 complaining about hardware",
+                (true, false, false, false, true),
+                Some(ChannelStatusCode::BluetoothDisabled),
+            ),
+            (
+                "with our own radio off nothing has scanned, so 'isn't \
+                 nearby' would assert what we never looked for",
+                (true, true, false, false, true),
+                Some(ChannelStatusCode::BluetoothAdapterOff),
+            ),
+            (
+                "a peer that was never in range has not failed to connect \
+                 after a minute of trying",
+                (true, true, true, false, true),
+                Some(ChannelStatusCode::BluetoothPeerNotNearby),
+            ),
+            (
+                "exhaustion means anything only once dialling was actually \
+                 attempted, so it is checked last",
+                (true, true, true, true, true),
+                Some(ChannelStatusCode::BluetoothDialExhausted),
+            ),
+            (
+                "nothing in the way",
+                (true, true, true, true, false),
+                None,
+            ),
+        ];
+
+        for (why, (implemented, enabled, adapter, nearby, exhausted), expected) in cases {
             assert_eq!(
-                bluetooth.state,
-                RowState::Unconfigured {
-                    code: ChannelStatusCode::BluetoothNotSupported
-                }
+                bluetooth_unconfigured_code(implemented, enabled, adapter, nearby, exhausted),
+                expected,
+                "{why}"
             );
-            assert!(!bluetooth.primary);
         }
     }
 
-    /// Mirror of the above for platforms where `channel::ble` is a real,
-    /// registered adapter (Linux, Android).
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    #[test]
-    fn bluetooth_is_configured_with_full_metadata_where_implemented() {
-        let statuses = build_channel_statuses(ChannelStatusInputs {
-            network_present: false,
-            ..ready_inputs()
-        });
-        let bluetooth = find(&statuses, ChannelKind::Bluetooth);
-        assert_eq!(
-            bluetooth.state,
-            RowState::Configured {
-                code: Some(ChannelStatusCode::Connecting)
-            }
-        );
-    }
-
-    /// The remaining preconditions must still gate configuration even with a
-    /// real adapter registered. ADR-0006 removed the stored-address and
-    /// OS-bond arms that used to be asserted here; what is left is the pair's
-    /// own Bluetooth toggle and dial exhaustion.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    #[test]
-    fn bluetooth_still_requires_full_metadata_where_implemented() {
-        for (inputs, expected) in [
-            (
-                ChannelStatusInputs {
-                    bluetooth_enabled: false,
-                    ..ready_inputs()
-                },
-                ChannelStatusCode::BluetoothDisabled,
-            ),
-            (
-                ChannelStatusInputs {
-                    bluetooth_adapter_available: false,
-                    ..ready_inputs()
-                },
-                ChannelStatusCode::BluetoothAdapterOff,
-            ),
-            (
-                ChannelStatusInputs {
-                    bluetooth_peer_nearby: false,
-                    ..ready_inputs()
-                },
-                ChannelStatusCode::BluetoothPeerNotNearby,
-            ),
-            (
-                ChannelStatusInputs {
-                    bluetooth_dial_exhausted: true,
-                    ..ready_inputs()
-                },
-                ChannelStatusCode::BluetoothDialExhausted,
-            ),
-        ] {
-            let statuses = build_channel_statuses(inputs);
-            let bluetooth = find(&statuses, ChannelKind::Bluetooth);
-            assert_eq!(bluetooth.state, RowState::Unconfigured { code: expected });
-        }
-    }
-
-    /// `bluetooth_dial_exhausted` only takes effect once every earlier
-    /// precondition is already satisfied -- an unmet precondition (e.g.
-    /// disabled) must keep reporting *that* reason, not the exhausted one,
-    /// since exhaustion only means anything once dialling was actually
-    /// attempted.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    #[test]
-    fn dial_exhausted_is_overridden_by_an_earlier_unmet_precondition() {
-        let statuses = build_channel_statuses(ChannelStatusInputs {
-            bluetooth_enabled: false,
-            bluetooth_dial_exhausted: true,
-            ..ready_inputs()
-        });
-        let bluetooth = find(&statuses, ChannelKind::Bluetooth);
-        assert_eq!(
-            bluetooth.state,
-            RowState::Unconfigured {
-                code: ChannelStatusCode::BluetoothDisabled
-            }
-        );
-    }
-
-    /// The Network switch is the counterpart to the Bluetooth one, and like
-    /// it, it outranks the reason that would otherwise be reported: a
-    /// channel the user turned off must not blame the peer's network for
-    /// being unreachable.
+    /// The Network switch outranks presence for the same reason the Bluetooth
+    /// one does: a channel the person turned off must not blame the peer's
+    /// network for being unreachable. Asserted with the peer *present* as
+    /// well, because that is when the switch matters most and when getting
+    /// this wrong would make it look like it did nothing.
     #[test]
     fn the_network_switch_outranks_presence() {
-        let switched_off = build_channel_statuses(ChannelStatusInputs {
-            network_enabled: false,
-            network_present: false,
-            ..ready_inputs()
-        });
         assert_eq!(
-            find(&switched_off, ChannelKind::Network).state,
-            RowState::Unconfigured {
-                code: ChannelStatusCode::NetworkDisabled
-            }
+            network_unconfigured_code(false, false),
+            Some(ChannelStatusCode::NetworkDisabled)
         );
-
-        // Still off even while the peer is right there and reachable --
-        // otherwise the switch would silently do nothing whenever it
-        // mattered most.
-        let off_but_present = build_channel_statuses(ChannelStatusInputs {
-            network_enabled: false,
-            ..ready_inputs()
-        });
         assert_eq!(
-            find(&off_but_present, ChannelKind::Network).state,
-            RowState::Unconfigured {
-                code: ChannelStatusCode::NetworkDisabled
-            }
+            network_unconfigured_code(false, true),
+            Some(ChannelStatusCode::NetworkDisabled),
         );
+        assert_eq!(
+            network_unconfigured_code(true, false),
+            Some(ChannelStatusCode::NetworkUnavailable)
+        );
+        assert_eq!(network_unconfigured_code(true, true), None);
     }
 
-    /// The "on, waiting" state: the pair's channel is switched on, and the
-    /// local radio is what's missing. It must outrank `BluetoothPeerNotNearby`
-    /// -- with our own adapter off nothing has scanned, so "the peer isn't
-    /// nearby" would be asserting something we never looked for, about the
-    /// other device rather than this one. It must in turn be outranked by
-    /// `BluetoothDisabled`, since a channel the user switched off has no
-    /// business complaining about hardware.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    /// A reason from the channel becomes a gray row; no reason and no session
+    /// becomes "Connecting…". This is all `build_channel_statuses` decides
+    /// about reachability now -- the reasons themselves come from whichever
+    /// channel knows, and the two tests above cover those.
     #[test]
-    fn a_dead_local_adapter_outranks_peer_nearness_but_not_the_pair_switch() {
-        let radio_off = build_channel_statuses(ChannelStatusInputs {
-            bluetooth_adapter_available: false,
-            bluetooth_peer_nearby: false,
-            bluetooth_dial_exhausted: true,
+    fn a_reason_makes_the_row_gray_and_its_absence_makes_it_connecting() {
+        let statuses = build_channel_statuses(ChannelStatusInputs {
+            bluetooth_unconfigured_code: Some(ChannelStatusCode::BluetoothPeerNotNearby),
             ..ready_inputs()
         });
+
         assert_eq!(
-            find(&radio_off, ChannelKind::Bluetooth).state,
+            find(&statuses, ChannelKind::Bluetooth).state,
             RowState::Unconfigured {
-                code: ChannelStatusCode::BluetoothAdapterOff
+                code: ChannelStatusCode::BluetoothPeerNotNearby
             }
         );
-
-        let switched_off = build_channel_statuses(ChannelStatusInputs {
-            bluetooth_enabled: false,
-            bluetooth_adapter_available: false,
-            ..ready_inputs()
-        });
         assert_eq!(
-            find(&switched_off, ChannelKind::Bluetooth).state,
-            RowState::Unconfigured {
-                code: ChannelStatusCode::BluetoothDisabled
+            find(&statuses, ChannelKind::Network).state,
+            RowState::Configured {
+                code: Some(ChannelStatusCode::Connecting)
             }
         );
     }
