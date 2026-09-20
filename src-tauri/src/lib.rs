@@ -69,10 +69,8 @@ use services::communication::sync::{
     space_sync_tick,
     space_sync_update_mappings,
 };
-#[cfg(all(feature = "ui-plane", target_os = "linux"))]
-use services::communication::channel::ble;
 #[cfg(feature = "ui-plane")]
-use services::communication::channel::{sim, tcp_ws};
+use services::communication::channel::sim;
 #[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
@@ -462,10 +460,17 @@ pub fn run() {
 
             let data_dir = app_data_dir(&app_handle);
             let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
-            tauri::async_runtime::spawn(tcp_ws::run_server(dc_state.clone(), dc_state.db_path.clone()));
+            // Each channel starts its own accept loop. A channel that cannot
+            // run on this platform declines from inside its service, so this
+            // stays one line however many channels exist.
+            for channel in services::communication::channel::service::services(&dc_state) {
+                channel.start_serving();
+            }
+            // Sim has no service of its own: it stands in for the Bluetooth
+            // channel on CI, and whether that makes it part of
+            // `BluetoothChannelService` or something separate is not settled.
+            // Left here rather than guessed at.
             sim::maybe_spawn_server(dc_state.clone(), dc_state.db_path.clone());
-            #[cfg(target_os = "linux")]
-            tauri::async_runtime::spawn(ble::run_server(dc_state.clone(), dc_state.db_path.clone()));
             tauri::async_runtime::spawn(forward_session_lifecycle_events(
                 dc_state.subscribe_lifecycle(),
                 app_handle.clone(),

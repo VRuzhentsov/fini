@@ -25,7 +25,7 @@ use crate::services::communication::pairing::{CustomSpaceDescriptor, DeviceConne
 use crate::services::quest::QuestService;
 #[cfg(test)]
 use crate::services::communication::channel::TransportKind;
-use crate::services::communication::channel::{sim, tcp_ws};
+use crate::services::communication::channel::sim;
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 
@@ -1407,18 +1407,16 @@ pub fn space_sync_tick_impl(
     // genuinely stops the dialling instead of only greying the row -- the
     // Bluetooth side has always had its own equivalent gate
     // (`ble::is_still_bluetooth_eligible`).
-    let network_peer_ids: HashSet<String> = crate::services::communication::pairing::channels::
+    let network_peer_ids: Vec<String> = crate::services::communication::pairing::channels::
         peers_with_channel_enabled(
             &mut *conn,
             crate::services::communication::pairing::ChannelKind::Network,
-        )
-        .into_iter()
-        .collect();
-    tcp_ws::spawn_dial_loop(
+        );
+    crate::services::communication::channel::service::service_for(
         device_connection,
-        device_connection.db_path.clone(),
-        &network_peer_ids,
-    );
+        crate::services::communication::pairing::ChannelKind::Network,
+    )
+    .start_dialing(&network_peer_ids);
     // Not gated on the Network switch: Sim stands in for Bluetooth's role
     // (see `channel::tests`), so the Network switch has no business
     // stopping it any more than it stops the real Bluetooth dial loop.
@@ -1452,60 +1450,21 @@ pub fn space_sync_tick_impl(
     #[cfg(target_os = "android")]
     start_sync_service_once();
 
+    // Reuses the connection this function was already handed rather than
+    // opening a second one: this runs on every tick, for the life of the
+    // process, so a redundant `open_db_at_path` here was a fresh SQLite
+    // connection opened every time, indefinitely, for every running
+    // instance. The Network candidates above don't need this because they
+    // come through this same `conn`.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        // Android must not start the peripheral acceptor from `.setup()`
-        // (see `channel::ble::start_peripheral_once`'s doc comment) --
-        // this command's first real, JS-triggered invocation is the
-        // earliest safe point, so it starts here instead. A no-op on every
-        // call after the first, and a no-op entirely on Linux, which
-        // already starts it from `.setup()`.
-        // Gated on the Nearby-devices permission actually being held. This
-        // runs from a background sync tick, not a user action, so without the
-        // gate the very first tick after install starts advertising, Android
-        // throws SecurityException("Need android.permission.BLUETOOTH_CONNECT")
-        // out of `startAdvertising`, and the peripheral loop retries it every
-        // 60s forever -- work the user never asked for, failing invisibly.
-        //
-        // Nothing is lost by waiting: the permission prompt belongs to opening
-        // Add Device (see `device_connection_enter_add_mode_impl`), which is
-        // the point the user actually expresses intent to set up a Bluetooth
-        // connection. Once granted, the next tick starts the peripheral. The
-        // check must sit *outside* `start_peripheral_once` because its
-        // `std::sync::Once` would be spent by the first ungranted attempt and
-        // never retried after the user says yes.
-        #[cfg(target_os = "android")]
-        if crate::services::android_context::call_static_context_to_bool(
-            "com.fini.app.BluetoothPairing",
-            "hasPermissions",
-        ) {
-            crate::services::communication::channel::ble::start_peripheral_once(
-                device_connection.clone(),
-                device_connection.db_path.clone(),
-            );
-        }
-
-        // Reuse the connection this function was already handed, rather
-        // than opening a second one. This runs every space_sync_tick --
-        // every 3s, per peer, for the life of the process (see
-        // MAPPING_UPDATE_POLL_INTERVAL_MS in src/stores/device.ts) --
-        // so a redundant `open_db_at_path` here was a fresh SQLite
-        // connection open on every single tick, indefinitely, for every
-        // running instance. tcp_ws::spawn_dial_loop and
-        // sim::spawn_fallback_dial_loop above don't need this because
-        // their candidates come from `paired_peer_ids`, already loaded
-        // through this same `conn`.
-        let candidates = crate::services::communication::pairing::bluetooth_dial_candidates(&mut conn);
-        crate::services::communication::channel::ble::spawn_dial_loop(
+        let candidates =
+            crate::services::communication::pairing::bluetooth_dial_candidates(&mut conn);
+        crate::services::communication::channel::service::service_for(
             device_connection,
-            device_connection.db_path.clone(),
-            &candidates,
-        );
-        // The dialing side's own give-up timer (`spawn_dial_loop` ->
-        // `dial_with_backoff`'s `AUTO_RETRY_WINDOW`) has no equivalent on
-        // whichever side of each pair never dials -- see this function's
-        // own doc comment for why that mattered in practice.
-        crate::services::communication::channel::ble::check_accepting_side_exhaustion(device_connection, &candidates);
+            crate::services::communication::pairing::ChannelKind::Bluetooth,
+        )
+        .start_dialing(&candidates);
     }
 
     let ticked_at = utc_now();

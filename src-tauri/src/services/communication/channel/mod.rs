@@ -35,6 +35,7 @@ pub mod codec;
 pub mod encryption;
 pub mod envelope;
 pub mod selection;
+pub mod service;
 pub mod sim;
 pub mod tcp_ws;
 
