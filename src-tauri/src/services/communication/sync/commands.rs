@@ -25,7 +25,6 @@ use crate::services::communication::pairing::{CustomSpaceDescriptor, DeviceConne
 use crate::services::quest::QuestService;
 #[cfg(test)]
 use crate::services::communication::channel::TransportKind;
-use crate::services::communication::channel::loopback;
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 

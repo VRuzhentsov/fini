@@ -25,7 +25,7 @@
 //! Adding a channel is then one `impl` of this trait plus a `channel_kinds`
 //! row. See `../README.md` and `docs/glossary.md`.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -58,6 +58,14 @@ pub trait ChannelService: Send + Sync {
         self.available()
     }
 
+    /// Start looking for peers: this channel's own way of noticing that
+    /// another device is there. mDNS and UDP beacons for Network, scanning
+    /// for Fini's service UUID over Bluetooth.
+    ///
+    /// Not gated on `ui-plane`, unlike `start_serving`: `cli-plane` dials out
+    /// for sync, and it cannot dial what it has not found.
+    fn start_discovery(&self) {}
+
     /// Begin serving: start whatever accept loop this channel needs, so a
     /// peer dialling in can be answered. Called once at startup.
     ///
@@ -85,29 +93,32 @@ pub trait ChannelService: Send + Sync {
     }
 }
 
-/// The app's channel services. One instance of each kind for the whole
-/// process, built on first use and shared from then on.
+/// The channel services for one `DeviceConnectionState`. One per kind.
 ///
 /// Not one per pair: a single `NetworkChannelService` serves every paired
-/// device that has the Network channel on.
-pub fn services(state: &DeviceConnectionState) -> &'static [Arc<dyn ChannelService>] {
-    static SERVICES: OnceLock<Vec<Arc<dyn ChannelService>>> = OnceLock::new();
-    SERVICES.get_or_init(|| {
-        vec![
-            Arc::new(NetworkChannelService::new(state.clone())),
-            Arc::new(BluetoothChannelService::new(state.clone(), for_this_device())),
-        ]
-    })
+/// device that has the Network channel on. In a running app there is exactly
+/// one `DeviceConnectionState`, so there is exactly one of each of these.
+///
+/// Deliberately **not** cached in a process-wide `OnceLock`. That would bind
+/// every later caller to whichever state happened to construct it first,
+/// which is invisible in the app (there is only one) and wrong everywhere
+/// else — a test would silently get a service pointing at a previous test's
+/// database. What the services hold today is a `DeviceConnectionState` clone
+/// and a radio, so rebuilding them per call costs an `Arc` bump. That stops
+/// being true in the step that moves the session registry inside them, and
+/// they will then be owned by the state rather than rebuilt.
+pub fn services(state: &DeviceConnectionState) -> Vec<Arc<dyn ChannelService>> {
+    vec![
+        Arc::new(NetworkChannelService::new(state.clone())),
+        Arc::new(BluetoothChannelService::new(state.clone(), for_this_device())),
+    ]
 }
 
 /// The service for one kind, for callers that already know which channel
 /// they mean — a switch being flipped, a row being explained.
-pub fn service_for(
-    state: &DeviceConnectionState,
-    kind: ChannelKind,
-) -> &'static Arc<dyn ChannelService> {
+pub fn service_for(state: &DeviceConnectionState, kind: ChannelKind) -> Arc<dyn ChannelService> {
     services(state)
-        .iter()
+        .into_iter()
         .find(|service| service.kind() == kind)
         .expect("every ChannelKind has a service")
 }
@@ -134,6 +145,10 @@ impl ChannelService for NetworkChannelService {
     /// reachable over it is `is_reachable`'s question, not this one.
     fn available(&self) -> bool {
         true
+    }
+
+    fn start_discovery(&self) {
+        self.state.start_network_discovery();
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -191,6 +206,10 @@ impl ChannelService for BluetoothChannelService {
 
     async fn probe(&self) -> bool {
         self.radio.probe().await
+    }
+
+    fn start_discovery(&self) {
+        self.radio.start_discovery(&self.state);
     }
 
     fn start_serving(&self) {

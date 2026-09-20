@@ -144,29 +144,54 @@ impl DeviceConnectionState {
             .expect("failed to create device connection state")
     }
 
+    /// Builds the state, and starts nothing.
+    ///
+    /// Constructing this used to spawn the mDNS/UDP presence worker as a side
+    /// effect, which meant one channel's way of finding peers began the
+    /// instant shared state existed -- while the other channel's scanning
+    /// began somewhere else entirely, inside its own adapter. Finding a peer
+    /// belongs to the channel that knows how, so each service starts its own
+    /// (`ChannelService::start_discovery`).
     pub fn try_from_db_path(app_data_dir: &Path, db_path: PathBuf) -> Result<Self, String> {
         let identity = try_load_or_create_identity(app_data_dir, &db_path)?;
-        let runtime = Arc::new(Mutex::new(DiscoveryRuntime::default()));
-        let discovery_port = env_port("FINI_DISCOVERY_PORT", DISCOVERY_PORT);
-        let space_sync_ws_port = env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT);
-        let discovery_broadcast_ports = env_port_list("FINI_DISCOVERY_PEER_PORTS", discovery_port);
-
-        spawn_discovery_worker(
-            identity.clone(),
-            runtime.clone(),
-            discovery_port,
-            discovery_broadcast_ports,
-            space_sync_ws_port,
-        );
 
         Ok(Self {
             identity,
             db_path,
-            discovery_port,
-            space_sync_ws_port,
-            runtime,
+            discovery_port: env_port("FINI_DISCOVERY_PORT", DISCOVERY_PORT),
+            space_sync_ws_port: env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT),
+            runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })
+    }
+
+    /// Start the mDNS/UDP presence worker, once per state.
+    ///
+    /// `pub(crate)` and called only from `NetworkChannelService`: the worker
+    /// needs this state's private identity and presence store, but *whether
+    /// and when* the Network channel starts looking is the service's call.
+    ///
+    /// Guarded on this state's own `worker_started` rather than a process
+    /// static, so asking twice is harmless while two states in one process
+    /// still each get their own worker. That matters for tests, where a
+    /// process-wide guard would let the first state ever created decide for
+    /// every one after it.
+    pub(crate) fn start_network_discovery(&self) {
+        {
+            let Ok(guard) = self.runtime.lock() else {
+                return;
+            };
+            if guard.worker_started {
+                return;
+            }
+        }
+        spawn_discovery_worker(
+            self.identity.clone(),
+            self.runtime.clone(),
+            self.discovery_port,
+            env_port_list("FINI_DISCOVERY_PEER_PORTS", self.discovery_port),
+            self.space_sync_ws_port,
+        );
     }
 
     pub fn take_incoming_sync_events(&self) -> Vec<SyncEventEnvelope> {

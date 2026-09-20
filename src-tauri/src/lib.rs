@@ -70,8 +70,6 @@ use services::communication::sync::{
     space_sync_update_mappings,
 };
 #[cfg(feature = "ui-plane")]
-use services::communication::channel::loopback;
-#[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
     feature = "ui-plane",
@@ -460,10 +458,11 @@ pub fn run() {
 
             let data_dir = app_data_dir(&app_handle);
             let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
-            // Each channel starts its own accept loop. A channel that cannot
-            // run on this platform declines from inside its service, so this
-            // stays one line however many channels exist.
+            // Each channel starts its own discovery and its own accept loop.
+            // A channel that cannot run on this platform declines from inside
+            // its service, so this stays one line however many channels exist.
             for channel in services::communication::channel::service::services(&dc_state) {
+                channel.start_discovery();
                 channel.start_serving();
             }
             tauri::async_runtime::spawn(forward_session_lifecycle_events(

@@ -638,6 +638,13 @@ impl CliContext {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let device_state = DeviceConnectionState::try_from_db_path(&app_data_dir, db_path.clone())
             .map_err(CliError::runtime)?;
+        // The CLI dials out for sync and cannot dial what it has not found,
+        // so it starts discovery even though it runs no acceptor of its own.
+        for channel in
+            crate::services::communication::channel::service::services(&device_state)
+        {
+            channel.start_discovery();
+        }
         Ok(Self {
             db_path,
             device_state,

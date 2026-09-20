@@ -41,6 +41,17 @@ pub trait Radio: Send + Sync {
         self.available()
     }
 
+    /// Start looking for peers.
+    ///
+    /// Scanning over a real radio is driven by the dial loop rather than a
+    /// standing worker, so `GattRadio` has nothing to start here — but the
+    /// method exists because "how this channel finds peers" is a question a
+    /// radio must be able to answer, not one the caller should have to know
+    /// the shape of.
+    fn start_discovery(&self, state: &DeviceConnectionState) {
+        let _ = state;
+    }
+
     /// Start accepting inbound connections.
     fn serve(&self, state: &DeviceConnectionState);
 
