@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
 
+use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::sync::session;
 use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, TransportKind};
@@ -326,6 +327,25 @@ fn should_dial_peer(
 /// has the peer's real, current one -- exactly what `ble::dial_with_backoff`
 /// already avoids by re-checking `is_still_bluetooth_eligible` (which reads
 /// the current address) on every iteration.
+/// Whether the Network channel is still switched on for this pair.
+///
+/// The same question `space_sync_tick_impl` asks before spawning a dial task,
+/// asked again from inside the task -- `ble::is_still_bluetooth_eligible` is
+/// the same function for the other channel, down to the `block_in_place`
+/// wrapper around a blocking DB read made from an async loop. A retry is at
+/// least a second apart, so one short-lived connection per iteration costs
+/// nothing next to the dial it guards.
+fn is_still_network_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        crate::services::communication::pairing::channels::is_enabled(
+            &mut conn,
+            peer_id,
+            crate::services::communication::pairing::ChannelKind::Network,
+        )
+    })
+}
+
 pub(crate) async fn dial_with_backoff(
     state: DeviceConnectionState,
     db_path: PathBuf,
@@ -336,6 +356,16 @@ pub(crate) async fn dial_with_backoff(
 
     loop {
         if state.has_session_on(&peer_id, TransportKind::TcpWs) {
+            return;
+        }
+        // Re-read the switch on *every* iteration, not once at spawn time.
+        // The tick-level filter decides who gets a task started; it cannot
+        // stop one already running, and this loop outlives many ticks. Found
+        // on hardware: switching Network off on the dialling side closed the
+        // session and this loop reopened it 1.1s later (`delay` is reset to
+        // 1s whenever a session ends), so the switch appeared to do nothing
+        // on whichever of the two devices happened to be the dialer.
+        if !is_still_network_eligible(&db_path, &peer_id) {
             return;
         }
         let Some((_, addr, ws_port)) = state

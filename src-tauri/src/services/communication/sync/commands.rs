@@ -1402,10 +1402,12 @@ pub fn space_sync_tick_impl(
     // unconditionally, regardless of each other's state).
     let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
     // ...except where the user has switched the Network channel off for a
-    // pair. Filtered here rather than inside the dial loop so the switch
-    // genuinely stops the dialling instead of only greying the row -- the
-    // Bluetooth side has always had its own equivalent gate
-    // (`ble::is_still_bluetooth_eligible`).
+    // pair, so the switch genuinely stops the dialling instead of only
+    // greying the row. This decides who gets a dial task *started*; the task
+    // itself re-asks the same question on every retry
+    // (`tcp_ws::is_still_network_eligible`), because a loop that outlives
+    // many ticks cannot be stopped from here. The Bluetooth side has the
+    // same pair of gates.
     let network_peer_ids: Vec<String> = crate::services::communication::pairing::channels::
         peers_with_channel_enabled(
             &mut *conn,
