@@ -5,7 +5,7 @@ import SettingsListGroup from "./SettingsListGroup.vue";
 import SettingsListItem from "./SettingsListItem.vue";
 import PairDeviceDialog from "./PairDeviceDialog.vue";
 import { useDeviceStore, type PairedDevice } from "../../stores/device";
-import { channelRowState, channelStatusText } from "../../utils/channelStatusCodes";
+import { channelRowState } from "../../utils/channelStatusCodes";
 
 const props = defineProps<{
   // Bumped by the Settings search when someone picks "Add device". A counter
@@ -35,32 +35,27 @@ function closePairDialog() {
 // the whole ceremony.
 const incoming = computed(() => deviceStore.incomingRequests);
 
-// One line under each device name, in the same plain language the device
-// page uses. Built from whatever channel state is already cached -- the
-// presence loop refreshes it for every presenced peer, so this costs no
-// extra calls, and degrades to a bare "Not connected" for a peer nothing
-// has looked at yet rather than inventing a reason.
+// Which channel, if any, actually has a live session with this device.
+//
+// Not `isDeviceOnline`: that is presence -- a beacon heard on the LAN --
+// which says a machine exists, not that we are talking to it. A desktop
+// sitting discoverable with no session was showing a green dot here while
+// nothing was connected.
+function connectedChannel(device: PairedDevice): "network" | "bluetooth" | null {
+  const live = deviceStore
+    .getChannelStatuses(device.peer_device_id)
+    .find((status) => channelRowState(status.state, status.enabled) === "connected");
+  return live?.kind ?? null;
+}
+
+// One line under each device name, and only when there is something worth
+// saying. A device that is simply not connected gets no line: the list is a
+// list of devices, not a place to explain each one's silence. The reason
+// still lives on the device page, where the person went to ask.
 function deviceSummary(device: PairedDevice): string {
-  const statuses = deviceStore.getChannelStatuses(device.peer_device_id);
-  if (statuses.length === 0) {
-    return deviceStore.isDeviceOnline(device) ? "Connected" : "Not connected";
-  }
-
-  const live = statuses.find(
-    (status) => channelRowState(status.state, status.enabled) === "connected",
-  );
-  if (live) {
-    return `${live.kind === "network" ? "Network" : "Bluetooth"} · connected`;
-  }
-
-  // Nothing is connected, so say why -- preferring whichever channel is
-  // actually switched on, since a channel the user turned off explains
-  // nothing about why the device is unreachable.
-  const candidate = statuses.find((status) => status.enabled && status.state.code) ?? statuses[0];
-  const reason = candidate?.state.code
-    ? channelStatusText(candidate.state.code, device.display_name)
-    : null;
-  return reason ? `Not connected · ${reason.toLowerCase()}` : "Not connected";
+  const kind = connectedChannel(device);
+  if (!kind) return "";
+  return `${kind === "network" ? "Network" : "Bluetooth"} · connected`;
 }
 </script>
 
@@ -104,14 +99,18 @@ function deviceSummary(device: PairedDevice): string {
         <template #leading>
           <span
             class="size-2.5 rounded-full"
-            :class="deviceStore.isDeviceOnline(device) ? 'bg-success' : 'bg-[var(--fg-5)]'"
+            :class="connectedChannel(device) ? 'bg-success' : 'bg-[var(--fg-5)]'"
           />
         </template>
         <template #start>
           <span class="block truncate font-medium" data-testid="paired-device-name">
             {{ device.display_name }}
           </span>
-          <span class="block truncate text-[11px] text-[var(--fg-3)]" data-testid="paired-device-summary">
+          <span
+            v-if="deviceSummary(device)"
+            class="block truncate text-[11px] text-[var(--fg-3)]"
+            data-testid="paired-device-summary"
+          >
             {{ deviceSummary(device) }}
           </span>
         </template>
