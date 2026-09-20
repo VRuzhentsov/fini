@@ -164,20 +164,18 @@ async function closePairDialog(page: E2EActor['page'], timeoutMs: number): Promi
   await page.click(selector);
 }
 
-// Adding a device is a modal on the Settings page rather than its own page,
+// Adding a device is a dialog on the Settings page rather than its own page,
 // and opening it is what puts this device into add mode -- which is what
 // makes it discoverable to the other one.
 //
-// Still driven by the hash, not by clicking the "Add device" row.
-// `/settings/add-device` survives precisely as a way to open this dialog
-// (the Settings search lists it as a destination), so navigating to it
-// exercises a path the product actually has. Clicking the row would not
-// work here anyway: `data-testid` lands on `SettingsListItem`'s `<li>`
-// while the handler sits on the inner `<button>`, so a click dispatched at
-// the matched element never reaches it.
+// Driven by clicking the row a person clicks. There is no route to navigate
+// to any more, and that is the point: the only way in is the one the product
+// actually offers, so this cannot pass while the button is broken.
 async function openAddDevice(actor: E2EActor, timeoutMs: number): Promise<void> {
   await actor.page.waitForSelector('nav.nav a[href="#/settings"]', timeoutMs);
-  await actor.page.evaluate(`(() => { window.location.hash = '#/settings/add-device'; })()`);
+  await actor.page.click('nav.nav a[href="#/settings"]');
+  await actor.page.waitForSelector('[data-testid="add-device-link"]', timeoutMs);
+  await actor.page.click('[data-testid="add-device-link"]');
   await actor.page.waitForSelector('[data-testid="pair-device-dialog"]', timeoutMs);
 }
 

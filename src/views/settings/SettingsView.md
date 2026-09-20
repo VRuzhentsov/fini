@@ -10,8 +10,9 @@ Search is client-side and scoped to the Settings overview route. When a query is
 
 Device routes:
 
-- `/settings/add-device` -> this view, with [[PairDeviceDialog]] open. Pairing is a modal, not a page: it is a short two-person ceremony the user comes back from. The path survives only so the Settings search entry and existing deep links still open it.
 - `/settings/device/:id` -> [[DeviceView]]
+
+Pairing has no route of its own. It is [[PairDeviceDialog]] on this page — a short two-person ceremony you come back from, not a place you navigate to. A path for it would be a URL that renders Settings and then opens something on top: a second way to describe one screen, and one the back button would have to be taught about. The Settings search entry for "Add device" is therefore an action rather than a destination.
 
 ## Sections
 

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
 import { PlusIcon } from "@heroicons/vue/24/outline";
 import SettingsListGroup from "./SettingsListGroup.vue";
 import SettingsListItem from "./SettingsListItem.vue";
@@ -8,28 +7,26 @@ import PairDeviceDialog from "./PairDeviceDialog.vue";
 import { useDeviceStore, type PairedDevice } from "../../stores/device";
 import { channelRowState, channelStatusText } from "../../utils/channelStatusCodes";
 
+const props = defineProps<{
+  // Bumped by the Settings search when someone picks "Add device". A counter
+  // rather than a boolean because the same request can be made twice: open
+  // the dialog, close it, search again. A flag would already be true the
+  // second time and nothing would happen.
+  pairRequests?: number;
+}>();
+
 const deviceStore = useDeviceStore();
-const route = useRoute();
-const router = useRouter();
 const pairDialogOpen = ref(false);
 
-// `/settings/add-device` is no longer a page, but it is still a way to open
-// this dialog -- the Settings search lists "Add device" as a destination,
-// and deep links to it already exist. Watched rather than read once so
-// arriving from the search while Settings is already mounted still opens it.
 watch(
-  () => route.path,
-  (path) => {
-    if (path === "/settings/add-device") pairDialogOpen.value = true;
+  () => props.pairRequests ?? 0,
+  (requests, previous) => {
+    if (requests > (previous ?? 0)) pairDialogOpen.value = true;
   },
-  { immediate: true },
 );
 
-// Closing returns the URL to plain Settings, so the dialog does not reopen
-// on the next navigation back to this page.
 function closePairDialog() {
   pairDialogOpen.value = false;
-  if (route.path === "/settings/add-device") void router.replace("/settings");
 }
 
 // Someone asking to pair surfaces here, on the devices page, rather than
@@ -125,7 +122,7 @@ function deviceSummary(device: PairedDevice): string {
         <span class="opacity-70">No paired devices yet</span>
       </SettingsListItem>
 
-      <SettingsListItem button data-testid="add-device-link" @click="pairDialogOpen = true">
+      <SettingsListItem button testid="add-device-link" @click="pairDialogOpen = true">
         <template #leading><PlusIcon class="size-4" /></template>
         <template #start><span class="font-medium">Add device</span></template>
         <template #trailing><span class="text-sm opacity-50">›</span></template>

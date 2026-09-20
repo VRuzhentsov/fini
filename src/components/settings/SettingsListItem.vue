@@ -6,6 +6,11 @@ const props = defineProps<{
   to?: string;
   href?: string;
   button?: boolean;
+  // Lands on the interactive element, not the `<li>`. A plain `data-testid`
+  // attribute falls through to the root instead, which is a wrapper with no
+  // click handler -- a test that "clicks the row" would then be clicking
+  // nothing and passing anyway.
+  testid?: string;
 }>();
 
 const emit = defineEmits<{
@@ -21,10 +26,11 @@ const rowComponent = computed(() => {
   return "div";
 });
 const rowAttrs = computed(() => {
-  if (props.to) return { to: props.to };
-  if (props.href) return { href: props.href, target: "_blank", rel: "noreferrer noopener" };
-  if (props.button) return { type: "button" };
-  return {};
+  const testid = props.testid ? { "data-testid": props.testid } : {};
+  if (props.to) return { ...testid, to: props.to };
+  if (props.href) return { ...testid, href: props.href, target: "_blank", rel: "noreferrer noopener" };
+  if (props.button) return { ...testid, type: "button" };
+  return testid;
 });
 
 function handleClick(event: MouseEvent) {

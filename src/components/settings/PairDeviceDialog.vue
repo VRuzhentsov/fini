@@ -104,10 +104,9 @@ const digits = computed(() => codeInput.value.replace(/\D/g, "").slice(0, 6));
 
 // Entering add mode is what makes this device discoverable to the other
 // one, so it has to happen exactly once per opening -- and it must survive
-// being mounted already-open, which is what arriving straight at
-// `/settings/add-device` does: the parent flips its flag during its own
-// setup, before this component exists, so a plain `watch` on the prop would
-// never see the transition and the nearby list would sit empty forever.
+// being mounted already-open. The parent can flip its flag during its own
+// setup, before this component exists, and a plain `watch` on the prop
+// would never see that transition: the nearby list would sit empty forever.
 function startAddMode() {
   channel.value = null;
   codeInput.value = "";
