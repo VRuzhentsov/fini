@@ -68,7 +68,8 @@ runner, no build.
 node .agents/skills/fini-android-testing/devtools-bridge.mjs 9224 "<javascript>"
 ```
 
-Ports: **9224** desktop (`make desktop-debug`), **9223** phone (after
+Ports: **9224** desktop (`make desktop-debug`, or `make desktop-debug-dev`
+for the same app with the frontend over HMR), **9223** phone (after
 `adb forward tcp:9223 tcp:9223`).
 
 The DOM is in scope, and `invoke(cmd, args)` is provided as a shorthand for

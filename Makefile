@@ -25,12 +25,14 @@ RELEASE_BUNDLES ?= deb,rpm
 # this default has no effect on published release artifacts.
 NO_STRIP ?= true
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-dev desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
 
 help:
 	@echo ""
 	@echo "Linux"
-	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch)"
+	@echo "  make dev              Hot-reload dev app (Vite HMR + Rust watch), production identity"
+	@echo "  make desktop-debug-dev  Hot-reload the debug app (separate data dir + ports)"
+	@echo "  make desktop-debug    Run the debug app from its built binary"
 	@echo "  make build            Release build"
 	@echo "  make pr-gate-fe-unit  Run frontend unit tests in Dockerfile stage"
 	@echo "  make pr-gate-be-compile  Compile backend tests in Dockerfile stage"
@@ -73,14 +75,24 @@ help:
 require-container:
 	@test "$(CONTAINER_ENGINE)" != "missing" || (echo "No container engine found. Install Docker or Podman, or set CONTAINER=docker|podman." && exit 1)
 
+# Swap the devtools capability in for the duration of one command and put the
+# committed one back however that command exits -- including Ctrl-C, which is
+# how every `dev` session ends. Shared by the three targets that need it
+# rather than copied into each: it is the same workflow every time, and a
+# copy that drifts leaves the devtools capability committed by accident.
+define with_devtools_capability
+mkdir -p "$(FINI_SCRATCH_DIR)"; \
+capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
+cp src-tauri/capabilities/default.json "$$capability_backup"; \
+restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
+trap restore_capability EXIT INT TERM; \
+cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+
+endef
+
 dev:
 	@set -eu; \
-	mkdir -p "$(FINI_SCRATCH_DIR)"; \
-	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
-	cp src-tauri/capabilities/default.json "$$capability_backup"; \
-	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
-	trap restore_capability EXIT INT TERM; \
-	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+	$(with_devtools_capability) \
 	npm run tauri dev -- --features ui-plane,desktop-updater,devtools
 
 build:
@@ -326,6 +338,9 @@ DESKTOP_DEBUG_NAME ?= Fini Debug
 DESKTOP_DEBUG_PORT ?= 9224
 DESKTOP_DEBUG_DISCOVERY_PORT ?= 45464
 DESKTOP_DEBUG_WS_PORT ?= 45465
+# Vite's port, from vite.config.ts. Only used to refuse a second session
+# that would silently attach to an already-running server.
+DESKTOP_DEV_SERVER_PORT ?= 1420
 DESKTOP_DEBUG_TARGET_DIR = $(CURDIR)/src-tauri/target/debug-app
 DESKTOP_DEBUG_BIN = $(DESKTOP_DEBUG_TARGET_DIR)/debug/fini-app
 DESKTOP_DEBUG_CONFIG = {"productName":"$(DESKTOP_DEBUG_NAME)","identifier":"$(DESKTOP_DEBUG_IDENTIFIER)"}
@@ -346,12 +361,7 @@ backend-test-devtools:
 
 desktop-debug-build:
 	@set -eu; \
-	mkdir -p "$(FINI_SCRATCH_DIR)"; \
-	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
-	cp src-tauri/capabilities/default.json "$$capability_backup"; \
-	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
-	trap restore_capability EXIT INT TERM; \
-	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
+	$(with_devtools_capability) \
 	CARGO_TARGET_DIR="$(DESKTOP_DEBUG_TARGET_DIR)" npm run tauri -- build --debug --no-bundle \
 		--features ui-plane,devtools --config '$(DESKTOP_DEBUG_CONFIG)' -- --bin fini-app; \
 	printf 'Built "%s" (identifier %s) at %s\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_IDENTIFIER)" "$(DESKTOP_DEBUG_BIN)"
@@ -370,6 +380,53 @@ DESKTOP_DEBUG_DATA_DIR ?= $(HOME)/.local/share/fini-debug
 # still receives this app's presence. Listening stays on the shifted port so
 # the production app keeps :45454 to itself.
 DESKTOP_DEBUG_PEER_PORTS ?= 45454,$(DESKTOP_DEBUG_DISCOVERY_PORT)
+
+# Every runtime coordinate the debug app needs, in one place: both the
+# baked-in binary (desktop-debug) and the HMR session (desktop-debug-dev)
+# have to agree on them exactly, or the two would not be the same app -- a
+# different data dir is a different database, and a different discovery port
+# is a device the phone cannot find.
+DESKTOP_DEBUG_ENV = \
+	FINI_APP_DATA_DIR="$(DESKTOP_DEBUG_DATA_DIR)" \
+	FINI_DEVTOOLS_TCP_PORT="$(DESKTOP_DEBUG_PORT)" \
+	FINI_DISCOVERY_PORT="$(DESKTOP_DEBUG_DISCOVERY_PORT)" \
+	FINI_DISCOVERY_PEER_PORTS="$(DESKTOP_DEBUG_PEER_PORTS)" \
+	FINI_SPACE_SYNC_WS_PORT="$(DESKTOP_DEBUG_WS_PORT)" \
+	WEBKIT_DISABLE_DMABUF_RENDERER=1
+
+# The debug app with the frontend served by Vite instead of baked into the
+# binary, so a .vue or .ts edit reaches the running window in about a second
+# and nothing is rebuilt.
+#
+# This exists because `make dev` could not be used for it: `dev` runs under
+# the *production* identity, data dir and ports, so using it to work on the
+# debug app meant pointing the session at the real database. The only way to
+# get the debug identity was `desktop-debug`, which bakes the frontend in --
+# so every UI change cost a full `tauri build --debug`, and the round trip
+# was long enough that UI work stopped being verified at all.
+#
+# Rust changes still rebuild, as they must; `tauri dev` watches src-tauri and
+# restarts the app itself. The target dir is shared with desktop-debug-build
+# on purpose: the dependency cache is the expensive part and switching
+# between the two then relinks rather than recompiling the world.
+desktop-debug-dev:
+	@set -eu; \
+	if ss -lnt "sport = :$(DESKTOP_DEBUG_PORT)" 2>/dev/null | grep -q LISTEN; then \
+		printf 'refusing to start: %s is already running (devtools port %s is bound).\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_PORT)" >&2; \
+		exit 1; \
+	fi; \
+	if ss -lnt "sport = :$(DESKTOP_DEV_SERVER_PORT)" 2>/dev/null | grep -q LISTEN; then \
+		printf 'refusing to start: something already holds the Vite port %s (make dev?).\n' "$(DESKTOP_DEV_SERVER_PORT)" >&2; \
+		printf 'this session would attach to that server and serve the wrong frontend.\n' >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p "$(DESKTOP_DEBUG_DATA_DIR)"; \
+	printf '%s (HMR): data=%s devtools=tcp:%s discovery=%s ws=%s\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_DATA_DIR)" "$(DESKTOP_DEBUG_PORT)" "$(DESKTOP_DEBUG_DISCOVERY_PORT)" "$(DESKTOP_DEBUG_WS_PORT)"; \
+	$(with_devtools_capability) \
+	CARGO_TARGET_DIR="$(DESKTOP_DEBUG_TARGET_DIR)" \
+	$(DESKTOP_DEBUG_ENV) \
+	npm run tauri -- dev --features ui-plane,devtools --config '$(DESKTOP_DEBUG_CONFIG)'
+
 desktop-debug:
 	@set -eu; \
 	if ss -lnt "sport = :$(DESKTOP_DEBUG_PORT)" 2>/dev/null | grep -q LISTEN; then \
@@ -379,14 +436,14 @@ desktop-debug:
 		exit 1; \
 	fi; \
 	test -x "$(DESKTOP_DEBUG_BIN)" || $(MAKE) desktop-debug-build; \
+	if [ -n "$$(find src src-tauri/src -type f -newer "$(DESKTOP_DEBUG_BIN)" -print -quit 2>/dev/null)" ]; then \
+		printf 'note: sources have changed since this binary was built, so it will launch stale.\n' >&2; \
+		printf '      make desktop-debug-dev    same app, frontend over HMR, no rebuild\n' >&2; \
+		printf '      make desktop-debug-build  rebuild this binary first\n' >&2; \
+	fi; \
 	mkdir -p "$(DESKTOP_DEBUG_DATA_DIR)"; \
 	printf '%s: data=%s devtools=tcp:%s discovery=%s ws=%s\n' "$(DESKTOP_DEBUG_NAME)" "$(DESKTOP_DEBUG_DATA_DIR)" "$(DESKTOP_DEBUG_PORT)" "$(DESKTOP_DEBUG_DISCOVERY_PORT)" "$(DESKTOP_DEBUG_WS_PORT)"; \
-	FINI_APP_DATA_DIR="$(DESKTOP_DEBUG_DATA_DIR)" \
-	FINI_DEVTOOLS_TCP_PORT="$(DESKTOP_DEBUG_PORT)" \
-	FINI_DISCOVERY_PORT="$(DESKTOP_DEBUG_DISCOVERY_PORT)" \
-	FINI_DISCOVERY_PEER_PORTS="$(DESKTOP_DEBUG_PEER_PORTS)" \
-	FINI_SPACE_SYNC_WS_PORT="$(DESKTOP_DEBUG_WS_PORT)" \
-	WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+	$(DESKTOP_DEBUG_ENV) \
 	"$(DESKTOP_DEBUG_BIN)"
 
 # Run the actor suite with a real Android device joined as an actor, against
