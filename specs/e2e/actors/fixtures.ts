@@ -126,23 +126,28 @@ function externalActorPorts(): Map<string, number> {
 }
 
 /**
- * Which transport actors use to sync. 'network' (default) is the real
- * WebSocket transport used by every other actor suite. 'sim' spawns actors
- * with the network transport made genuinely unavailable
- * (`FINI_DISCOVERY_DISABLED=1` — no mDNS, no UDP presence) and the Sim
- * transport configured instead, so fallback/selection is proven against a
- * real second transport rather than raced against presence timing. 'ble'
- * is the same idea one layer deeper: network disabled the same way, but
- * actors dial the real `ble.rs` code path against a cross-process mock
- * radio (`ble-gatt`'s `mock-broker` feature) instead of the Sim transport's
- * plain TCP stand-in — see `helpers/ble-sync.ts` and
- * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`. See
- * `specs/e2e/transports.md`.
+ * How actors reach each other in a lane. 'network' (default) is the real
+ * WebSocket connection every other actor suite uses.
+ *
+ * The other two both make the Network channel genuinely unavailable
+ * (`FINI_DISCOVERY_DISABLED=1` — no mDNS, no UDP presence) so the Bluetooth
+ * channel has to carry the traffic, and differ in how far down the fake
+ * goes:
+ *
+ * - 'loopback' swaps the whole radio for a TCP connection on 127.0.0.1
+ *   (`radio::LoopbackRadio`). Proves fallback and selection without needing
+ *   the BLE stack to run at all.
+ * - 'ble' keeps all the real `ble.rs` code and fakes only the radio beneath
+ *   it, via `ble-gatt`'s `mock-broker`. More faithful, and the only one that
+ *   proves Bluetooth itself works — see `helpers/ble-sync.ts` and
+ *   `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
+ *
+ * See `specs/e2e/transports.md`.
  */
-export type ActorTransport = 'network' | 'sim' | 'ble';
+export type ActorTransport = 'network' | 'loopback' | 'ble';
 
 function actorTransport(): ActorTransport {
-  if (process.env.FINI_E2E_TRANSPORT === 'sim') return 'sim';
+  if (process.env.FINI_E2E_TRANSPORT === 'loopback') return 'loopback';
   if (process.env.FINI_E2E_TRANSPORT === 'ble') return 'ble';
   return 'network';
 }
@@ -160,7 +165,7 @@ function fakeBluetoothAddress(index: number): string {
 
 /**
  * Clear of the discovery/ws range (`baseDiscoveryPort + index*2` and
- * `+1`) and the sim range (`baseDiscoveryPort + slugCount*2 + 1000..
+ * `+1`) and the loopback range (`baseDiscoveryPort + slugCount*2 + 1000..
  * +1000+slugCount-1`) computed above -- one broker shared by every actor,
  * not one per actor, so this doesn't take an index.
  */
@@ -281,20 +286,20 @@ function spawnActorProcess(
   const discoveryPort = baseDiscoveryPort + index * 2;
   const wsPort = discoveryPort + 1;
   const peerPorts = slugs.map((_, peerIndex) => String(baseDiscoveryPort + peerIndex * 2)).join(',');
-  const simBasePort = baseDiscoveryPort + slugs.length * 2 + 1000;
-  const simPort = simBasePort + index;
-  const peerSimPorts = slugs.map((_, peerIndex) => String(simBasePort + peerIndex)).join(',');
+  const loopbackBasePort = baseDiscoveryPort + slugs.length * 2 + 1000;
+  const loopbackPort = loopbackBasePort + index;
+  const peerLoopbackPorts = slugs.map((_, peerIndex) => String(loopbackBasePort + peerIndex)).join(',');
   const transport = actorTransport();
 
   mkdirSync(dataDir, { recursive: true });
   rmSync(socketPath, { force: true });
 
   const transportEnv: Record<string, string> =
-    transport === 'sim'
+    transport === 'loopback'
       ? {
           FINI_DISCOVERY_DISABLED: '1',
-          FINI_SIM_TRANSPORT_PORT: String(simPort),
-          FINI_SIM_PEER_PORTS: peerSimPorts,
+          FINI_LOOPBACK_PORT: String(loopbackPort),
+          FINI_LOOPBACK_PEER_PORTS: peerLoopbackPorts,
         }
       : transport === 'ble'
         ? {

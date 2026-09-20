@@ -27,7 +27,7 @@ pub struct SyncEventEnvelope {
 /// primary) -- but an explicit user action that makes a channel
 /// *ineligible* still does: `device_connection_set_bluetooth_channel_
 /// with_state_impl`'s disable path uses this to actually tear down a live
-/// Bluetooth/Sim session the moment Bluetooth is turned off for a pair,
+/// Bluetooth session the moment Bluetooth is turned off for a pair,
 /// not just stop counting it toward primary selection. See
 /// `DeviceConnectionState::close_session_on`.
 #[derive(Debug)]

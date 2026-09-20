@@ -32,7 +32,7 @@ pub struct FrameEnvelope {
 /// `serde_json`'s default `Vec<u8>` representation is a JSON array of
 /// numbers -- roughly 4 bytes on the wire per plaintext byte (digits plus a
 /// comma), versus ~1.33x for base64. Harmless bandwidth waste over
-/// tcp_ws/Sim; not over BLE, where it directly multiplies fragment count on
+/// tcp_ws; not over BLE, where it directly multiplies fragment count on
 /// an already-small GATT budget. Found via the actors-ble e2e lane: a
 /// ~400-byte `PeerFrame::SyncEvent` was landing on the wire at ~2850 bytes,
 /// pushing one small quest edit to ~238 fragments and 20+ real seconds to

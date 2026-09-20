@@ -1,9 +1,9 @@
 import { test, expect } from '../fixtures.ts';
 import {
-  ensureSimPairedActors,
+  ensureLoopbackPairedActors,
   expectNetworkChannelUnavailable,
-  waitForSimSession,
-} from '../helpers/sim-sync.ts';
+  waitForLoopbackSession,
+} from '../helpers/loopback-sync.ts';
 import {
   ensurePersonalSpaceSync,
   expectNoIncomingSpaceSyncDialog,
@@ -13,22 +13,22 @@ import {
 /**
  * Proves the transport abstraction with a real second transport, not a
  * mock: two real `fini-app` processes, network transport made genuinely
- * unavailable (`FINI_E2E_TRANSPORT=sim` -> `FINI_DISCOVERY_DISABLED=1`),
- * establish an authenticated session over the Sim adapter and replicate an
+ * unavailable (`FINI_E2E_TRANSPORT=loopback` -> `FINI_DISCOVERY_DISABLED=1`),
+ * establish an authenticated session over the loopback radio and replicate an
  * approved Space over it — the same acceptance shape the ticket requires
  * for the real Bluetooth fallback. See `specs/e2e/transports.md`.
  */
-test('peer session establishes over Sim transport when network is unavailable, and Space sync replicates over it', async ({
+test('peer session establishes over loopback radio when network is unavailable, and Space sync replicates over it', async ({
   actorA,
   actorB,
 }) => {
-  const [syncedA, syncedB] = await ensureSimPairedActors([actorA, actorB]);
+  const [syncedA, syncedB] = await ensureLoopbackPairedActors([actorA, actorB]);
 
   await expectNetworkChannelUnavailable(actorA);
   await expectNetworkChannelUnavailable(actorB);
 
-  await waitForSimSession(actorA);
-  await waitForSimSession(actorB);
+  await waitForLoopbackSession(actorA);
+  await waitForLoopbackSession(actorB);
 
   const kindOnA = await actorA.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedB.identity.device_id,
@@ -36,8 +36,8 @@ test('peer session establishes over Sim transport when network is unavailable, a
   const kindOnB = await actorB.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedA.identity.device_id,
   });
-  expect(kindOnA).toBe('sim');
-  expect(kindOnB).toBe('sim');
+  expect(kindOnA).toBe('bluetooth');
+  expect(kindOnB).toBe('bluetooth');
 
   await ensurePersonalSpaceSync(actorA, syncedB.identity.device_id, actorB, syncedA.identity.device_id);
 
@@ -51,12 +51,12 @@ test('peer session establishes over Sim transport when network is unavailable, a
   await expectNoIncomingSpaceSyncDialog(actorA);
   await expectNoIncomingSpaceSyncDialog(actorB);
 
-  // Sim stays primary across further ticks: with Network genuinely
-  // disabled for this test, primary-transport selection has nothing else
+  // Bluetooth stays primary across further ticks: with Network genuinely
+  // disabled for this test, primary-channel selection has nothing else
   // to pick.
   await actorA.invoke('space_sync_tick');
   const kindOnAAfterTick = await actorA.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedB.identity.device_id,
   });
-  expect(kindOnAAfterTick).toBe('sim');
+  expect(kindOnAAfterTick).toBe('bluetooth');
 });

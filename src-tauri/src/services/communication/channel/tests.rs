@@ -21,7 +21,7 @@ use crate::services::db::{open_db_at_path, temp_db_path};
 use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, sim, tcp_ws, DataLink, Transport, TransportKind};
+use crate::services::communication::channel::{recv_frame, send_frame, loopback, tcp_ws, DataLink, Transport, TransportKind};
 
 async fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -140,17 +140,17 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
     seed_paired_device(&server_db, "peer-client");
     seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
     let tcp_port = free_port().await;
-    let sim_port = free_port().await;
+    let loopback_port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), tcp_port));
-    tokio::spawn(sim::run_server(server.clone(), server_db.clone(), sim_port));
+    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let mut tcp_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port).await.expect("dial tcp");
     session::perform_client_auth(tcp_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("tcp auth should succeed for paired device");
-    let mut sim_link = AsBluetooth(sim::dial(sim_port).await.expect("dial sim"));
-    session::perform_client_auth(&mut sim_link, "peer-client", &server.identity.device_id)
+    let mut loopback_link = loopback::dial(loopback_port).await.expect("dial loopback");
+    session::perform_client_auth(loopback_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("sim (bluetooth-kind) auth should succeed for paired device");
     sleep(Duration::from_millis(50)).await;
@@ -178,7 +178,7 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
     // collapses Sim/Bluetooth/LoRa to the same Bluetooth channel either way.
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::Sim),
+        Some(TransportKind::Bluetooth),
         "primary must flip immediately, without waiting for a reconnect"
     );
     assert!(
@@ -186,7 +186,7 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
         "the Network session must stay connected -- only primary-ness changed"
     );
     assert!(
-        server.has_session_on("peer-client", TransportKind::Sim),
+        server.has_session_on("peer-client", TransportKind::Bluetooth),
         "the bluetooth-role session must stay connected"
     );
 }
@@ -343,19 +343,20 @@ async fn switching_bluetooth_off_releases_the_primary_and_flips_it_to_network() 
 
     let (server, server_db) = server_state("channel-switch-bluetooth-off-releases-primary");
     seed_paired_device(&server_db, "peer-client");
+    seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
 
     let tcp_port = free_port().await;
-    let sim_port = free_port().await;
+    let loopback_port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), tcp_port));
-    tokio::spawn(sim::run_server(server.clone(), server_db.clone(), sim_port));
+    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let mut tcp_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port).await.expect("dial tcp");
     session::perform_client_auth(tcp_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("tcp auth should succeed for paired device");
-    let mut sim_link = AsBluetooth(sim::dial(sim_port).await.expect("dial sim"));
-    session::perform_client_auth(&mut sim_link, "peer-client", &server.identity.device_id)
+    let mut loopback_link = loopback::dial(loopback_port).await.expect("dial loopback");
+    session::perform_client_auth(loopback_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("sim (bluetooth-kind) auth should succeed for paired device");
     sleep(Duration::from_millis(50)).await;
@@ -371,7 +372,7 @@ async fn switching_bluetooth_off_releases_the_primary_and_flips_it_to_network() 
     .expect("choose Bluetooth as primary");
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     // See the sibling test above for why this is `Sim`, not `Bluetooth`.
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Sim));
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Bluetooth));
 
     crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
         &mut conn,
@@ -407,7 +408,7 @@ async fn switching_bluetooth_off_releases_the_primary_and_flips_it_to_network() 
 /// async close having (or not having) already run. Uses `AsBluetooth`
 /// (real Bluetooth-kind claiming, unlike the sibling test above's `Sim`) --
 /// `bluetooth_enabled` deliberately only excludes the real `Bluetooth`
-/// kind, not `Sim`/`LoRa`, which aren't governed by that column at all
+/// kind, not the loopback radio, which aren't governed by that column at all
 /// (see `recompute_primary_locked`'s own doc comment), so this needs the
 /// real kind to exercise the check meaningfully.
 #[tokio::test(flavor = "multi_thread")]
@@ -440,7 +441,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
         let Ok((stream, _addr)) = ble_listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
@@ -451,7 +452,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
         .expect("tcp auth should succeed for paired device");
 
     let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
-    let mut ble_link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(ble_stream));
+    let mut ble_link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(ble_stream));
     session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
@@ -536,13 +537,13 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
         let Ok((stream, _addr)) = ble_listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
 
     let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
-    let mut ble_link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(ble_stream));
+    let mut ble_link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(ble_stream));
     session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
@@ -1054,20 +1055,24 @@ async fn tcp_ws_gate_rejects_unpaired_device() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn sim_gate_accepts_paired_device_and_claims_session_in_bluetooth_fallback_role() {
-    let (server, server_db) = server_state("transport-sim-accept");
+async fn loopback_gate_accepts_a_paired_device_and_claims_the_bluetooth_session() {
+    let (server, server_db) = server_state("channel-loopback-accept");
     seed_paired_device(&server_db, "peer-client");
+    // The loopback radio *is* the Bluetooth channel where there is no
+    // hardware, so the pair needs that channel set up for the gate to let it
+    // in -- exactly as a real radio would.
+    seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
     let port = free_port().await;
-    tokio::spawn(sim::run_server(server.clone(), server_db.clone(), port));
+    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = sim::dial(port).await.expect("dial");
+    let mut link = loopback::dial(port).await.expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth should succeed for paired device");
 
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Sim));
+    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Bluetooth));
 }
 
 /// ADR-0003 revision's core new guarantee: both Network and Bluetooth can
@@ -1079,16 +1084,17 @@ async fn sim_gate_accepts_paired_device_and_claims_session_in_bluetooth_fallback
 /// whichever session happens to be "the" one.
 #[tokio::test(flavor = "multi_thread")]
 async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
-    let (server, server_db) = server_state("transport-dual-connect");
+    let (server, server_db) = server_state("channel-dual-connect");
     seed_paired_device(&server_db, "peer-client");
+    seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
     let tcp_port = free_port().await;
-    let sim_port = free_port().await;
+    let loopback_port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(
         server.clone(),
         server_db.clone(),
         tcp_port,
     ));
-    tokio::spawn(sim::run_server(server.clone(), server_db.clone(), sim_port));
+    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let mut first_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port)
@@ -1105,14 +1111,14 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
 
     // A second connection on a *different* transport must be accepted, not
     // rejected -- the old sticky single-session invariant no longer holds.
-    let mut second_link = sim::dial(sim_port).await.expect("dial sim");
+    let mut second_link = loopback::dial(loopback_port).await.expect("dial loopback");
     session::perform_client_auth(second_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("a session on a second transport must also be accepted");
     sleep(Duration::from_millis(50)).await;
 
     assert!(server.has_session_on("peer-client", TransportKind::TcpWs));
-    assert!(server.has_session_on("peer-client", TransportKind::Sim));
+    assert!(server.has_session_on("peer-client", TransportKind::Bluetooth));
     assert_eq!(
         server.primary_transport("peer-client"),
         Some(TransportKind::TcpWs),
@@ -1130,18 +1136,18 @@ async fn both_adapters_satisfy_the_transport_port() {
     let (server, server_db) = server_state("transport-polymorphic");
     seed_paired_device(&server_db, "peer-client");
     let tcp_port = free_port().await;
-    let sim_port = free_port().await;
+    let loopback_port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(
         server.clone(),
         server_db.clone(),
         tcp_port,
     ));
-    tokio::spawn(sim::run_server(server.clone(), server_db.clone(), sim_port));
+    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let adapters: Vec<(Box<dyn Transport>, u16, TransportKind)> = vec![
         (Box::new(tcp_ws::TcpWsTransport), tcp_port, TransportKind::TcpWs),
-        (Box::new(sim::SimTransport), sim_port, TransportKind::Sim),
+        (Box::new(loopback::LoopbackTransport), loopback_port, TransportKind::Bluetooth),
     ];
 
     for (adapter, port, expected_kind) in adapters {
@@ -1385,7 +1391,7 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
     );
 }
 
-// The mutual-dial race that `sim::should_dial_fallback_peer`'s deterministic
+// The mutual-dial race that `loopback::should_dial_fallback_peer`'s deterministic
 // dialer rule fixes is unit-tested directly there, mirroring
 // `tcp_ws::should_dial_peer`'s own test — reproducing the actual network
 // race end-to-end in an integration test proved unreliable (the exact
@@ -1440,12 +1446,12 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("a paired but bluetooth-disabled device must be rejected over a Bluetooth-kind link");
@@ -1490,12 +1496,12 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("a bluetooth-enabled, bonded paired device should authenticate over a Bluetooth-kind link");
@@ -1546,17 +1552,17 @@ async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        // Connects as "127.0.0.1" (SimDataLink's real peer_addr), not the
-        // Connects as "127.0.0.1" (SimDataLink's real peer_addr), which is
+        // Connects as "127.0.0.1" (LoopbackDataLink's real peer_addr), not the
+        // Connects as "127.0.0.1" (LoopbackDataLink's real peer_addr), which is
         // neither the stored address nor OS-bonded -- the shape of every
         // real Android peer, which advertises under a rotating address that
         // by construction matches nothing stored.
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("an authenticated peer must be accepted regardless of its address");
@@ -1589,12 +1595,12 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::PairRequest(PairRequestPayload {
@@ -1649,12 +1655,12 @@ async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::PairComplete(PairCompletePayload {
@@ -1755,12 +1761,12 @@ async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {
@@ -1805,12 +1811,12 @@ async fn bluetooth_probe_gets_no_reply_when_the_channel_is_switched_off() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {
@@ -1841,12 +1847,12 @@ async fn bluetooth_probe_gets_no_reply_from_an_unpaired_device_id() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {

@@ -30,7 +30,7 @@ pub fn utc_now() -> String {
 /// on a peer moments later -- can otherwise land in the same whole second,
 /// tying on `utc_now()`'s second-only precision and falling through to the
 /// origin-device-id tie-break, which has nothing to do with which edit is
-/// actually newer. Confirmed via the actors-ble/actors-sim e2e lanes: a
+/// actually newer. Confirmed via the actors-ble/actors-loopback e2e lanes: a
 /// create-then-immediate-edit sequence intermittently landed in the same
 /// second, and the objectively later edit silently lost the tie.
 pub fn sync_timestamp() -> String {

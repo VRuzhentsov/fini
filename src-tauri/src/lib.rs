@@ -70,7 +70,7 @@ use services::communication::sync::{
     space_sync_update_mappings,
 };
 #[cfg(feature = "ui-plane")]
-use services::communication::channel::sim;
+use services::communication::channel::loopback;
 #[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
@@ -208,7 +208,7 @@ fn sync_native_theme(app: AppHandle, theme: String) {
 /// Payload for `SESSION_CHANGED_EVENT` — ADR-0003 Phase 2. `established`
 /// distinguishes the two `LifecycleEvent` variants; `kind` is the
 /// finer-grained `services::communication::channel::TransportKind` the event itself
-/// carries (TcpWs/Sim/Bluetooth), not `pairing::transport`'s
+/// carries (TcpWs/Bluetooth), not `pairing::transport`'s
 /// coarser Network/Bluetooth row kind — the frontend doesn't need to
 /// interpret it, it's just enough for the listener to log/filter on if it
 /// ever wants to.
@@ -466,11 +466,6 @@ pub fn run() {
             for channel in services::communication::channel::service::services(&dc_state) {
                 channel.start_serving();
             }
-            // Sim has no service of its own: it stands in for the Bluetooth
-            // channel on CI, and whether that makes it part of
-            // `BluetoothChannelService` or something separate is not settled.
-            // Left here rather than guessed at.
-            sim::maybe_spawn_server(dc_state.clone(), dc_state.db_path.clone());
             tauri::async_runtime::spawn(forward_session_lifecycle_events(
                 dc_state.subscribe_lifecycle(),
                 app_handle.clone(),

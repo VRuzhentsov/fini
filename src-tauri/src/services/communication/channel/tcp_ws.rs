@@ -155,7 +155,7 @@ pub async fn dial(addr: IpAddr, port: u16) -> Result<Box<dyn DataLink>, String> 
 /// loop (`spawn_dial_loop`) calls `dial()` directly rather than through this
 /// trait object — there is no runtime plugin registry for two adapters —
 /// but this impl proves the port is genuinely adapter-agnostic: both
-/// `TcpWsTransport` and `channel::sim::SimTransport` satisfy the same
+/// `TcpWsTransport` and `channel::loopback::LoopbackTransport` satisfy the same
 /// `Transport` trait, exercised together in `channel::tests`.
 #[allow(dead_code)]
 pub struct TcpWsTransport;

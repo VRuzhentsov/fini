@@ -1,7 +1,7 @@
 //! The transport-neutral peer protocol engine: pairing gate, auth gate, and
 //! the authenticated sync session loop. Operates purely on `PeerFrame` over
 //! a `DataLink` trait object, so it is shared verbatim by every channel
-//! adapter's accept/dial code (`channel::tcp_ws`, `channel::sim`, and
+//! adapter's accept/dial code (`channel::tcp_ws`, `channel::loopback`, and
 //! the future real Bluetooth adapter).
 
 use std::path::PathBuf;

@@ -29,6 +29,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 
+use super::radio::{for_this_device, Radio};
 use crate::services::communication::pairing::{ChannelKind, DeviceConnectionState};
 
 /// Everything one channel can do. Implemented once per `ChannelKind`.
@@ -94,7 +95,7 @@ pub fn services(state: &DeviceConnectionState) -> &'static [Arc<dyn ChannelServi
     SERVICES.get_or_init(|| {
         vec![
             Arc::new(NetworkChannelService::new(state.clone())),
-            Arc::new(BluetoothChannelService::new(state.clone())),
+            Arc::new(BluetoothChannelService::new(state.clone(), for_this_device())),
         ]
     })
 }
@@ -164,13 +165,19 @@ impl ChannelService for NetworkChannelService {
 /// connected over GATT.
 pub struct BluetoothChannelService {
     state: DeviceConnectionState,
+    /// Injected, not reached for: this service is the policy, and the radio
+    /// is the mechanism. Real hardware on a device, loopback on CI, and the
+    /// service cannot tell the difference — which is what makes the CI lane
+    /// worth anything.
+    radio: Box<dyn Radio>,
 }
 
 impl BluetoothChannelService {
-    pub fn new(state: DeviceConnectionState) -> Self {
-        Self { state }
+    pub fn new(state: DeviceConnectionState, radio: Box<dyn Radio>) -> Self {
+        Self { state, radio }
     }
 }
+
 
 #[async_trait]
 impl ChannelService for BluetoothChannelService {
@@ -178,87 +185,27 @@ impl ChannelService for BluetoothChannelService {
         ChannelKind::Bluetooth
     }
 
-    /// Only where an adapter is wired up at all. Everywhere else the Device
-    /// page says so plainly rather than offering a channel that can never
-    /// start.
     fn available(&self) -> bool {
-        cfg!(any(target_os = "linux", target_os = "android"))
+        self.radio.available()
     }
 
     async fn probe(&self) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        {
-            super::ble::probe_adapter_available().await
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        {
-            // No adapter on this platform at all, so there is no radio to be
-            // off. Answering `false` would blame the person's hardware for a
-            // platform decision.
-            true
-        }
+        self.radio.probe().await
     }
 
-    #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        tauri::async_runtime::spawn(super::ble::run_server(
-            self.state.clone(),
-            self.state.db_path.clone(),
-        ));
+        self.radio.serve(&self.state);
     }
 
     fn start_dialing(&self, peers: &[String]) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        {
-            // Android starts advertising lazily, from the first real tick
-            // rather than at setup: the Activity context it needs does not
-            // exist when the app boots (see `ble::start_peripheral_once`).
-            // Linux starts its peripheral role from `start_serving`, like any
-            // other accept loop.
-            //
-            // Gated on the Nearby-devices permission actually being held,
-            // because this runs from a background tick rather than a user
-            // action. Without the gate the first tick after install starts
-            // advertising, Android throws SecurityException out of
-            // `startAdvertising`, and the loop retries it every 60s forever --
-            // work nobody asked for, failing invisibly. The check must sit
-            // *outside* `start_peripheral_once`, whose `Once` would be spent
-            // by the first ungranted attempt and never retried after the
-            // person says yes.
-            #[cfg(target_os = "android")]
-            if crate::services::android_context::call_static_context_to_bool(
-                "com.fini.app.BluetoothPairing",
-                "hasPermissions",
-            ) {
-                super::ble::start_peripheral_once(self.state.clone(), self.state.db_path.clone());
-            }
-
-            super::ble::spawn_dial_loop(&self.state, self.state.db_path.clone(), peers);
-            // The dialling side's own give-up timer has no equivalent on
-            // whichever side of a pair never dials.
-            super::ble::check_accepting_side_exhaustion(&self.state, peers);
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let _ = peers;
+        self.radio.dial(&self.state, peers);
     }
 
     fn is_reachable(&self, peer_device_id: &str) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        {
-            super::ble::peer_seen_advertising_recently(peer_device_id)
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        {
-            let _ = peer_device_id;
-            false
-        }
+        self.radio.is_reachable(peer_device_id)
     }
 
     fn retry_now(&self, peer_device_id: &str) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        super::ble::retry_bluetooth_dial(&self.state, peer_device_id);
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let _ = peer_device_id;
+        self.radio.retry_now(&self.state, peer_device_id);
     }
 }

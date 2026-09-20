@@ -4,48 +4,54 @@ import { pollUntil } from './dom.ts';
 import { waitForActorsReady, type SyncedActor } from './device-sync.ts';
 
 /**
- * Readiness + pairing for the Sim-transport actor suite
- * (`FINI_E2E_TRANSPORT=sim`). Those actors are spawned with
+ * Readiness + pairing for the loopback actor suite
+ * (`FINI_E2E_TRANSPORT=loopback`). Those actors are spawned with
  * `FINI_DISCOVERY_DISABLED=1` — no mDNS, no UDP presence — so the normal
  * `ensureSyncedActors` flow (which pairs via the discovered-nearby-devices
  * UI and waits on `device_connection_presence_snapshot`) cannot apply here:
  * there is nothing to discover by design, the same way there would be
- * nothing to discover over Bluetooth before an OS-level pairing exists.
+ * nothing to discover over Bluetooth before the peer is in range.
+ *
  * Pairing is done directly via `device_connection_save_paired_device` (the
  * same command the pairing UI calls at the end of its flow), then readiness
- * is driven by `space_sync_tick` until a session claims itself over Sim.
+ * is driven by `space_sync_tick` until a session claims itself.
  */
 
 interface PeerSessionDebugStatus {
   peer_session_count: number;
 }
 
-export async function ensureSimPairedActors(
+export async function ensureLoopbackPairedActors(
   actors: E2EActor[],
   timeoutMs = 60_000,
 ): Promise<SyncedActor[]> {
   if (actors.length !== 2) {
-    throw new Error(`ensureSimPairedActors expects exactly two actors, got ${actors.length}`);
+    throw new Error(`ensureLoopbackPairedActors expects exactly two actors, got ${actors.length}`);
   }
 
   const [a, b] = await waitForActorsReady(actors, timeoutMs);
 
+  // `viaBluetooth: true` because that is what this lane genuinely is: the
+  // loopback radio *is* the Bluetooth channel on a machine with no radio, so
+  // its links claim the Bluetooth session slot and the session gate checks
+  // that channel's switch. Pairing over Network here would configure the
+  // wrong channel and every auth would be rejected -- correctly.
   await a.actor.invoke('device_connection_save_paired_device', {
     peerDeviceId: b.identity.device_id,
     displayName: b.identity.hostname,
-    viaBluetooth: false,
+    viaBluetooth: true,
   });
   await b.actor.invoke('device_connection_save_paired_device', {
     peerDeviceId: a.identity.device_id,
     displayName: a.identity.hostname,
-    viaBluetooth: false,
+    viaBluetooth: true,
   });
 
   return [a, b];
 }
 
-export async function waitForSimSession(actor: E2EActor, timeoutMs = 60_000): Promise<void> {
-  await pollUntil(`${actor.slug} session established over Sim transport`, async () => {
+export async function waitForLoopbackSession(actor: E2EActor, timeoutMs = 60_000): Promise<void> {
+  await pollUntil(`${actor.slug} session established over loopback radio`, async () => {
     await actor.invoke('space_sync_tick');
     const status = await actor.invoke<PeerSessionDebugStatus>('device_connection_debug_status');
     return status.peer_session_count > 0 || false;

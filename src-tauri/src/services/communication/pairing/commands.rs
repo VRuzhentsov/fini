@@ -1388,9 +1388,6 @@ pub fn device_connection_set_channel_enabled_impl(
             }
             ChannelKind::Bluetooth => {
                 state.close_session_on(&peer_device_id, TransportKind::Bluetooth);
-                // Sim stands in for Bluetooth in tests and E2E, so it has to
-                // be closed by the same switch or the lane proves nothing.
-                state.close_session_on(&peer_device_id, TransportKind::Sim);
             }
         }
         // `channels::set_enabled` already released the primary in the DB;
@@ -1611,29 +1608,21 @@ fn channel_liveness_snapshot(state: &DeviceConnectionState, peer_device_id: &str
     // ADR-0003 revision: both channels can have a claimed session at
     // once now, so "the live channel" no longer exists as a single
     // value -- each row checks its own `has_session_on`.
-    // `TransportKind` (TcpWs/Sim/Bluetooth/LoRa) is finer-grained than
-    // `ChannelKind`'s Network/Bluetooth; `Sim` reads the same as
-    // `Bluetooth` here -- it exists specifically to stand in for
-    // Bluetooth's role in tests/E2E (see `channel::tests`'s own doc
-    // comment).
+    // One session slot per channel: the loopback radio reports Bluetooth like
+    // any other way of connecting that channel, so there is no second
+    // Bluetooth-ish kind to check for any more.
     let network_connected = state.has_session_on(peer_device_id, TransportKind::TcpWs);
-    let bluetooth_connected = state.has_session_on(peer_device_id, TransportKind::Bluetooth)
-        || state.has_session_on(peer_device_id, TransportKind::Sim);
-    let bluetooth_wire_kind = if state.has_session_on(peer_device_id, TransportKind::Sim) {
-        TransportKind::Sim
-    } else {
-        TransportKind::Bluetooth
-    };
+    let bluetooth_connected = state.has_session_on(peer_device_id, TransportKind::Bluetooth);
 
     let primary = state.primary_transport(peer_device_id);
     let network_primary = primary == Some(TransportKind::TcpWs);
-    let bluetooth_primary = matches!(primary, Some(TransportKind::Bluetooth) | Some(TransportKind::Sim));
+    let bluetooth_primary = primary == Some(TransportKind::Bluetooth);
 
     let network_code = network_connected
         .then(|| state.channel_liveness_code(peer_device_id, TransportKind::TcpWs))
         .flatten();
     let bluetooth_code = bluetooth_connected
-        .then(|| state.channel_liveness_code(peer_device_id, bluetooth_wire_kind))
+        .then(|| state.channel_liveness_code(peer_device_id, TransportKind::Bluetooth))
         .flatten();
 
     ChannelLivenessSnapshot {
@@ -1787,7 +1776,7 @@ pub fn device_connection_channel_liveness(
 /// and to return the address to dial. It returns peer ids alone now, because
 /// there is no address to dial *to* — the dialer finds the peer by scanning
 /// for Fini's service UUID and proves who answered with the `Auth` frame.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+
 pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<String> {
     channels::peers_with_channel_enabled(conn, ChannelKind::Bluetooth)
 }

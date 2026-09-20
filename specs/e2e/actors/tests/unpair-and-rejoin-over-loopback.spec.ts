@@ -1,5 +1,5 @@
 import { test, expect } from '../fixtures.ts';
-import { ensureSimPairedActors, waitForSimSession } from '../helpers/sim-sync.ts';
+import { ensureLoopbackPairedActors, waitForLoopbackSession } from '../helpers/loopback-sync.ts';
 import { ensurePersonalSpaceSync, waitForPersonalLastSyncedLabel } from '../helpers/personal-sync.ts';
 
 interface PairedDeviceRow {
@@ -16,13 +16,13 @@ interface PairedDeviceRow {
  * re-requested and re-approved from scratch (the mapping is genuinely
  * gone, not just hidden), not silently inherited from before the unpair.
  */
-test('unpairing and re-pairing over Sim transport fully recovers session and Space sync', async ({
+test('unpairing and re-pairing over loopback radio fully recovers session and Space sync', async ({
   actorA,
   actorB,
 }) => {
-  const [firstSyncedA, firstSyncedB] = await ensureSimPairedActors([actorA, actorB]);
-  await waitForSimSession(actorA);
-  await waitForSimSession(actorB);
+  const [firstSyncedA, firstSyncedB] = await ensureLoopbackPairedActors([actorA, actorB]);
+  await waitForLoopbackSession(actorA);
+  await waitForLoopbackSession(actorB);
   await ensurePersonalSpaceSync(
     actorA,
     firstSyncedB.identity.device_id,
@@ -40,9 +40,9 @@ test('unpairing and re-pairing over Sim transport fully recovers session and Spa
   expect(pairedOnAAfterUnpair.some((row) => row.peer_device_id === firstSyncedB.identity.device_id)).toBe(false);
   expect(pairedOnBAfterUnpair.some((row) => row.peer_device_id === firstSyncedA.identity.device_id)).toBe(false);
 
-  const [syncedA, syncedB] = await ensureSimPairedActors([actorA, actorB]);
-  await waitForSimSession(actorA);
-  await waitForSimSession(actorB);
+  const [syncedA, syncedB] = await ensureLoopbackPairedActors([actorA, actorB]);
+  await waitForLoopbackSession(actorA);
+  await waitForLoopbackSession(actorB);
 
   const mappedOnAAfterRepair = await actorA.invoke<string[]>('space_sync_list_mappings', {
     peerDeviceId: syncedB.identity.device_id,

@@ -6,10 +6,10 @@ import { openDeviceDetailsFromSettings } from './personal-sync.ts';
 
 /**
  * Readiness + pairing for the BLE-transport actor suite
- * (`FINI_E2E_TRANSPORT=ble`). Mirrors `sim-sync.ts` almost exactly -- same
+ * (`FINI_E2E_TRANSPORT=ble`). Mirrors `loopback-sync.ts` almost exactly -- same
  * reason: actors are spawned with `FINI_DISCOVERY_DISABLED=1`, so there is
  * nothing to discover by design and the normal `ensureSyncedActors` UI-pair
- * flow doesn't apply. The difference from Sim is what's underneath: these
+ * flow doesn't apply. The difference from loopback is what is underneath: these
  * actors dial the real `ble.rs` code path (dial loop, peripheral accept,
  * session claim) against a cross-process mock radio instead of a plain TCP
  * stand-in, and pairing is marked `viaBluetooth: true` with a real (fake)

@@ -1,19 +1,25 @@
-//! The Sim transport: a deterministic, radio-free adapter used by Rust
-//! integration tests and Playwright E2E to prove transport selection and
-//! the dual-connection/ping-ack liveness model without real hardware. It
-//! implements the same `DataLink` port as every other adapter (raw TCP +
-//! length-delimited framing instead of a WebSocket upgrade), so exercising
-//! it exercises the real gate/session code in `sync::session` — this
-//! is a first-class transport, not a mock of one.
+//! How the Bluetooth channel connects on a machine with no Bluetooth: a raw
+//! TCP connection to `127.0.0.1` with length-delimited framing, in place of
+//! GATT. Selected by `radio::for_this_device`, which is the only thing that
+//! decides between this and the real radio.
 //!
-//! Unlike `tcp_ws`, Sim has no autonomous discovery step: peers are
-//! configured directly via `FINI_SIM_PEER_PORTS` (one port per actor in a
-//! test run, positionally, mirroring `FINI_DISCOVERY_PEER_PORTS`). The dial
-//! loop tries each configured port against each paired peer id it doesn't
-//! yet have a session with; the gate's existing `peer_device_id` check
-//! rejects wrong guesses harmlessly. The real Bluetooth adapter (PR B) will
-//! have genuine per-peer discovery via OS-paired addresses and won't need
-//! this guess-and-check.
+//! It is not a mock. The link it hands back goes through the same `DataLink`
+//! port, the same codec, the same gate and the same session loop as a real
+//! one — so a test running over it exercises everything except the radio,
+//! which is the part CI cannot have. What it proves is the behaviour that
+//! matters most and is hardest to arrange: the network is unavailable, so
+//! the other channel carries the traffic.
+//!
+//! Its links report `TransportKind::Bluetooth`, because that is what they
+//! are: the Bluetooth channel, connected a different way. It used to report
+//! a kind of its own, which meant the Bluetooth switch did not apply to it
+//! and every test needed an `AsBluetooth` wrapper to paper over the gap.
+//!
+//! No discovery step, unlike `tcp_ws` and `ble`: peers are configured
+//! directly via `FINI_LOOPBACK_PEER_PORTS` (one port per actor in a test run,
+//! positionally, mirroring `FINI_DISCOVERY_PEER_PORTS`). The dial loop tries
+//! each configured port against each paired peer it has no session with, and
+//! the gate's `peer_device_id` check rejects wrong guesses harmlessly.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -27,11 +33,11 @@ use crate::services::communication::sync::session;
 use crate::services::communication::channel::codec::length_delimited;
 use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, TransportKind};
 
-pub struct SimDataLink {
+pub struct LoopbackDataLink {
     stream: TcpStream,
 }
 
-impl SimDataLink {
+impl LoopbackDataLink {
     /// `pub(crate)`, not private: `channel::tests` constructs one
     /// directly from an accepted `TcpStream` to act as a controlled fake
     /// peer in the TCP-failure-reset regression test, without needing the
@@ -42,9 +48,9 @@ impl SimDataLink {
 }
 
 #[async_trait]
-impl DataLink for SimDataLink {
+impl DataLink for LoopbackDataLink {
     fn kind(&self) -> TransportKind {
-        TransportKind::Sim
+        TransportKind::Bluetooth
     }
 
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
@@ -64,16 +70,16 @@ impl DataLink for SimDataLink {
     }
 }
 
-/// Read `FINI_SIM_TRANSPORT_PORT`; `None` means the Sim adapter is disabled
+/// Read `FINI_LOOPBACK_PORT`; `None` means the loopback radio is not configured
 /// for this process (the default — zero cost for normal desktop usage).
 pub fn configured_listen_port() -> Option<u16> {
-    std::env::var("FINI_SIM_TRANSPORT_PORT")
+    std::env::var("FINI_LOOPBACK_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
 }
 
 fn configured_peer_ports() -> Vec<u16> {
-    std::env::var("FINI_SIM_PEER_PORTS")
+    std::env::var("FINI_LOOPBACK_PEER_PORTS")
         .ok()
         .map(|value| {
             value
@@ -87,20 +93,20 @@ fn configured_peer_ports() -> Vec<u16> {
 pub async fn dial(port: u16) -> Result<Box<dyn DataLink>, String> {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .await
-        .map_err(|err| format!("sim connect 127.0.0.1:{port} failed: {err}"))?;
-    Ok(Box::new(SimDataLink::new(stream)))
+        .map_err(|err| format!("loopback connect 127.0.0.1:{port} failed: {err}"))?;
+    Ok(Box::new(LoopbackDataLink::new(stream)))
 }
 
-/// `Transport` implementation for the Sim adapter — see the note on
+/// `Transport` implementation for the loopback radio — see the note on
 /// `channel::tcp_ws::TcpWsTransport` for why production dial loops call
 /// `dial()` directly rather than through this trait object.
 #[allow(dead_code)]
-pub struct SimTransport;
+pub struct LoopbackTransport;
 
 #[async_trait]
-impl Transport for SimTransport {
+impl Transport for LoopbackTransport {
     fn kind(&self) -> TransportKind {
-        TransportKind::Sim
+        TransportKind::Bluetooth
     }
 
     fn dial(&self, _peer_device_id: &str, _addr: &str, port: u16) -> BoxDialFuture {
@@ -108,7 +114,7 @@ impl Transport for SimTransport {
     }
 }
 
-/// Start the Sim listener if `FINI_SIM_TRANSPORT_PORT` is configured; no-op
+/// Start the loopback listener if `FINI_LOOPBACK_PORT` is configured; no-op
 /// otherwise. Mirrors `channel::tcp_ws::run_server` but with raw framing.
 /// `ui-plane`/`test` only — see `session::run_peer_gate`'s doc comment.
 #[cfg(any(feature = "ui-plane", test))]
@@ -124,30 +130,30 @@ pub(crate) async fn run_server(state: DeviceConnectionState, db_path: PathBuf, p
     let listener = match TcpListener::bind(("0.0.0.0", port)).await {
         Ok(l) => l,
         Err(err) => {
-            eprintln!("[transport][sim] failed to bind :{port}: {err}");
+            eprintln!("[channel][loopback] failed to bind :{port}: {err}");
             return;
         }
     };
-    eprintln!("[transport][sim] listening on :{port}");
+    eprintln!("[channel][loopback] listening on :{port}");
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                eprintln!("[transport][sim] connection from {addr}");
-                let link: Box<dyn DataLink> = Box::new(SimDataLink::new(stream));
+                eprintln!("[channel][loopback] connection from {addr}");
+                let link: Box<dyn DataLink> = Box::new(LoopbackDataLink::new(stream));
                 let state = state.clone();
                 let db_path = db_path.clone();
                 tokio::spawn(session::run_peer_gate(link, state, db_path));
             }
-            Err(err) => eprintln!("[transport][sim] accept error: {err}"),
+            Err(err) => eprintln!("[channel][loopback] accept error: {err}"),
         }
     }
 }
 
-/// Dial loop: for every paired peer with no active session on this
-/// transport, try each configured Sim peer port. No-op unless
-/// `FINI_SIM_PEER_PORTS` is set. Playing the Bluetooth role for this PR's
-/// test/E2E coverage — see module docs. Applies
+/// Dial loop: for every paired peer with no active session on the Bluetooth
+/// channel, try each configured loopback peer port. No-op unless
+/// `FINI_LOOPBACK_PEER_PORTS` is set -- see the module docs for when that
+/// happens. Applies
 /// `should_dial_fallback_peer`'s deterministic dialer rule, mirroring
 /// `tcp_ws::spawn_dial_loop`/`should_dial_peer`. ADR-0003 revision: dials
 /// unconditionally now, independent of Network's own state or the pin --
@@ -170,7 +176,7 @@ pub fn spawn_fallback_dial_loop(
         if !should_dial_fallback_peer(&my_id, peer_id) {
             continue;
         }
-        if state.has_session_on(peer_id, TransportKind::Sim) {
+        if state.has_session_on(peer_id, TransportKind::Bluetooth) {
             continue;
         }
         if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
@@ -217,7 +223,7 @@ pub(crate) async fn dial_with_backoff(
     let max_delay = Duration::from_secs(15);
 
     loop {
-        if state.has_session_on(&peer_id, TransportKind::Sim) {
+        if state.has_session_on(&peer_id, TransportKind::Bluetooth) {
             return;
         }
 
@@ -229,9 +235,9 @@ pub(crate) async fn dial_with_backoff(
                 .await
             {
                 Ok(peer_protocol_version) => {
-                    eprintln!("[transport][sim] auth OK with {peer_id} via :{port}");
+                    eprintln!("[channel][loopback] auth OK with {peer_id} via :{port}");
                     let (tx, rx) = tokio::sync::mpsc::channel(64);
-                    if state.try_claim_session(&peer_id, TransportKind::Sim, tx, &db_path) {
+                    if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx, &db_path) {
                         session::run_session(
                             link,
                             rx,
@@ -241,7 +247,7 @@ pub(crate) async fn dial_with_backoff(
                             peer_protocol_version,
                         )
                         .await;
-                        eprintln!("[transport][sim] session with {peer_id} ended");
+                        eprintln!("[channel][loopback] session with {peer_id} ended");
                         return;
                     }
                     // Lost the claim race (e.g. the peer's inbound accept claimed a session on
@@ -250,7 +256,7 @@ pub(crate) async fn dial_with_backoff(
                     // iteration's has_session_on check (which should now see the winning session)
                     // short-circuits, instead of this task silently exiting and leaving nothing
                     // to notice if that session never actually materializes.
-                    eprintln!("[transport][sim] lost claim race with {peer_id} via :{port}");
+                    eprintln!("[channel][loopback] lost claim race with {peer_id} via :{port}");
                 }
                 Err(_) => continue, // wrong-guess port, or peer not yet listening
             }

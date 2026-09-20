@@ -142,17 +142,33 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **peering**, **route** | structurally accurate but router-engineer jargon, and a channel appears in a settings screen |
 | **transport**, as a separate layer | retired — it is simply the older word for *channel* |
 
+### Radio
+
+How the Bluetooth channel reaches a peer, injected into
+`BluetoothChannelService` rather than reached for. `GattRadio` on a real
+device; `LoopbackRadio` — a TCP connection to `127.0.0.1` — where there is no
+hardware, which is CI.
+
+`LoopbackRadio` was called "Sim", and the rename is the point: it read as a
+fourth kind of channel beside Network and Bluetooth, which it never was. A
+person cannot choose it, it appears in no table and on no screen, and it has
+no discovery of its own. It is one way of connecting the Bluetooth channel,
+and its links say so — `TransportKind::Bluetooth`, the same as any other.
+
+It is not a mock. Links go through the same `DataLink`, codec, gate and
+session loop as real ones, so a test over it exercises everything except the
+radio. `ble-gatt`'s **mock broker** is the other CI stand-in and sits one
+layer deeper: all the real BLE code, with only the radio faked. The two lanes
+prove different things — loopback proves fallback works, the broker proves
+Bluetooth works.
+
 ## Known gaps
 
-`communication/channel/`'s `TransportKind` (`TcpWs`/`Sim`/`Bluetooth`/`LoRa`)
-predates this file and still spells "transport" in the retired sense, naming
-connection code rather than a channel. It is the one name left contradicting
-this glossary, deliberately unrenamed while how that layer is organised is
-still being decided — renaming it twice would be worse than once.
-
-Its `LoRa` variant is wrong twice over: LoRa will be a future *channel* with
-its own `DataLink`, so it belongs in `channel_kinds` as a row, and today the
-two places matching on it quietly fold it in with Bluetooth, which it is not.
+`communication/channel/`'s `TransportKind` still spells "transport" in the
+retired sense. It now has exactly two variants, `TcpWs` and `Bluetooth`, and
+says precisely what `ChannelKind` says — one mechanical rename from being the
+same type. It kept the old name only because the rename is a separate,
+mechanical commit.
 
 `LinkState`/`LinkEvent` (ADR-0005) keep the bare word `link`. They are the
 state machine for whether a pair *has* a `DataLink` on a channel and what is

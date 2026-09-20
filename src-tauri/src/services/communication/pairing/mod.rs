@@ -37,7 +37,7 @@ pub use commands::{
     device_connection_channel_liveness,
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
-#[cfg(any(target_os = "linux", target_os = "android"))]
+
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::note_observed_bluetooth_address;
@@ -66,11 +66,10 @@ pub use commands::{
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
-// and is what the `channels` table stores. It is coarser than
-// `communication::channel::TransportKind` (TcpWs/Sim/Bluetooth/LoRa), which
-// names the connection code that carried a link rather than a channel: both
-// TcpWs and Sim connect the one Network channel. Both are in scope at once
-// in places (`channel::tests`), which is why they keep distinct names.
+// and is what the `channels` table stores. Since the loopback radio stopped
+// being a kind of its own it says exactly what
+// `communication::channel::TransportKind` says, and the two enums are one
+// mechanical rename from being the same type.
 pub use channel_status::{
     build_channel_statuses, ChannelKind, ChannelLiveness, ChannelStatus, ChannelStatusCode,
     ChannelStatusInputs,
@@ -408,7 +407,7 @@ impl DeviceConnectionState {
         // the race to the much smaller window between this second read and
         // a *new* disable landing -- which `close_session_on`'s own retry
         // (see its doc comment) still catches, since the session exists by
-        // then. `Sim`/`LoRa` don't need this: they aren't gated by
+        // then. the loopback radio don't need this: they aren't gated by
         // `bluetooth_enabled` at all (see `recompute_primary_locked`'s doc
         // comment).
         if kind == TransportKind::Bluetooth {
@@ -513,7 +512,7 @@ impl DeviceConnectionState {
     /// -- or indefinitely, if that read panics. A missing cache entry
     /// fails closed (treated as disabled): self-corrects on the very next
     /// DB-backed recompute either way, so a brief false negative here costs
-    /// far less than a false positive would. `Sim`/`LoRa` are exempt, same
+    /// far less than a false positive would. the loopback radio are exempt, same
     /// as `recompute_primary_locked`'s own exclusion -- they aren't
     /// governed by `bluetooth_enabled` at all.
     fn reselect_primary_from_runtime_only(guard: &mut types::DiscoveryRuntime, peer_device_id: &str) {
@@ -529,7 +528,7 @@ impl DeviceConnectionState {
             .get(peer_device_id)
             .copied()
             .unwrap_or(false);
-        let fallback = [TransportKind::TcpWs, TransportKind::Bluetooth, TransportKind::Sim, TransportKind::LoRa]
+        let fallback = [TransportKind::TcpWs, TransportKind::Bluetooth]
             .into_iter()
             .filter(|kind| *kind != TransportKind::Bluetooth || bluetooth_enabled)
             .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
@@ -601,16 +600,9 @@ impl DeviceConnectionState {
             .peer_sessions
             .contains_key(&(peer_device_id.to_string(), TransportKind::TcpWs));
         // `bluetooth_enabled` only ever gates the real `Bluetooth` kind --
-        // `Sim`/`LoRa` aren't governed by that DB column at all (the
-        // accept/dial gates never check it for them either, see
-        // `run_peer_gate`'s `kind == TransportKind::Bluetooth` guard), so
-        // excluding them here would silently break every Sim-based test's
-        // existing assumption that a claimed Sim session can become
-        // primary.
-        let bluetooth_connected = [TransportKind::Bluetooth, TransportKind::Sim, TransportKind::LoRa]
-            .into_iter()
-            .filter(|kind| *kind != TransportKind::Bluetooth || bluetooth_enabled)
-            .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
+        let bluetooth_connected = bluetooth_enabled
+            .then_some(TransportKind::Bluetooth)
+            .filter(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
 
         let pick = if pinned_to_bluetooth && bluetooth_connected.is_some() {
             bluetooth_connected
@@ -895,7 +887,7 @@ impl DeviceConnectionState {
     /// Forces the peer's currently claimed session on this specific
     /// channel closed, without a transport-level failure. The only
     /// caller is `device_connection_set_channel_enabled_impl`'s
-    /// disable path: a still-open Bluetooth (or Sim, its test stand-in)
+    /// disable path: a still-open Bluetooth 
     /// session must actually stop -- not just stop counting toward primary
     /// selection (`recompute_primary_locked` already excludes a disabled
     /// pair's Bluetooth from that, closing the race between this and the

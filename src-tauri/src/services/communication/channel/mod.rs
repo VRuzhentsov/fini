@@ -34,9 +34,10 @@ pub mod ble;
 pub mod codec;
 pub mod encryption;
 pub mod envelope;
+pub mod radio;
 pub mod selection;
 pub mod service;
-pub mod sim;
+pub mod loopback;
 pub mod tcp_ws;
 
 #[cfg(test)]
@@ -47,21 +48,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::communication::sync::types::PeerFrame;
 
-/// Which adapter carried (or could carry) a peer link.
+/// Which channel carried (or could carry) a peer link.
+///
+/// One variant per channel, and one session slot per variant. It used to
+/// carry two more: `Sim`, which was really an implementation of the
+/// Bluetooth channel rather than a channel of its own (see `radio`), and
+/// `LoRa`, reserved for an adapter nobody wrote. Making channels data
+/// removed the reason to reserve anything here — a new channel is a
+/// `channel_kinds` row and a `DataLink`, not an enum variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportKind {
-    /// mDNS/UDP discovery + WebSocket sync (the network transport).
+    /// The Network channel: mDNS/UDP presence + a WebSocket link.
     TcpWs,
-    /// Deterministic loopback-TCP adapter used by tests/E2E to prove
-    /// selection, fallback, and handoff without a real radio.
-    Sim,
-    /// The real Bluetooth adapter — see `channel::ble` (BlueZ on Linux,
-    /// GATT on Android, both via `ble-gatt`).
+    /// The Bluetooth channel: GATT via `ble-gatt` on a real device, a
+    /// loopback TCP connection where there is no radio (`radio::Radio`).
     Bluetooth,
-    /// Reserved for a future LoRaWAN adapter. No adapter implements this
-    /// kind yet.
-    LoRa,
 }
 
 /// An untrusted candidate peer surfaced by a transport's discovery step.
@@ -99,10 +101,10 @@ pub trait DataLink: Send {
 }
 
 /// One adapter implementing a `TransportKind`. `tcp_ws::TcpWsTransport` and
-/// `sim::SimTransport` both implement this — proven polymorphically in
+/// `loopback::LoopbackTransport` both implement this — proven polymorphically in
 /// `channel::tests` — but with only two concrete adapters in this PR,
 /// production dial loops (`tcp_ws::spawn_dial_loop`,
-/// `sim::spawn_fallback_dial_loop`) call each adapter's functions directly
+/// `loopback::spawn_fallback_dial_loop`) call each adapter's functions directly
 /// rather than through a dynamic `Box<dyn Transport>` registry. A registry
 /// becomes worth its weight once a third adapter (real Bluetooth, then
 /// LoRaWAN) lands.

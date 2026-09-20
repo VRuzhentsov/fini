@@ -11,7 +11,7 @@
 //! peripheral role isn't spawned from `.setup()` on Android the way it is on
 //! Linux.
 //!
-//! Plays the same role `channel::sim` plays for tests/E2E, but for real.
+//! Plays the same role `channel::loopback` plays for tests/E2E, but for real.
 //! ADR-0003 revision: dials/accepts unconditionally, independent of
 //! Network's own state -- both transports stay connected to a paired peer
 //! at once, with `preferred_transport` only deciding which one is primary
@@ -869,7 +869,7 @@ impl Transport for BleTransport {
 /// adapter uses. No-op (logs and returns) when the local adapter can't do
 /// peripheral mode, or isn't available at all — Bluetooth is always a
 /// fallback, never a hard requirement to start the app. `ui-plane`/`test`
-/// only, matching `tcp_ws::run_server`/`sim::run_server` — `cli-plane` dials
+/// only, matching `tcp_ws::run_server`/`loopback::run_server` — `cli-plane` dials
 /// out but does not run an inbound acceptor.
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
@@ -1304,7 +1304,7 @@ pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates
 }
 
 /// Deterministic dialer rule, mirroring `tcp_ws::should_dial_peer`/
-/// `sim::should_dial_fallback_peer`: exactly one side of a pair ever
+/// `loopback::should_dial_fallback_peer`: exactly one side of a pair ever
 /// attempts to dial, so both peers dialling each other in the same tick
 /// can't race to claim the same session on both ends.
 fn should_dial_peer(my_id: &str, peer_id: &str, has_session: bool) -> bool {

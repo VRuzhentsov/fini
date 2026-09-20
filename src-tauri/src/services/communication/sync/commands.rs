@@ -25,7 +25,7 @@ use crate::services::communication::pairing::{CustomSpaceDescriptor, DeviceConne
 use crate::services::quest::QuestService;
 #[cfg(test)]
 use crate::services::communication::channel::TransportKind;
-use crate::services::communication::channel::sim;
+use crate::services::communication::channel::loopback;
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 
@@ -1417,14 +1417,6 @@ pub fn space_sync_tick_impl(
         crate::services::communication::pairing::ChannelKind::Network,
     )
     .start_dialing(&network_peer_ids);
-    // Not gated on the Network switch: Sim stands in for Bluetooth's role
-    // (see `channel::tests`), so the Network switch has no business
-    // stopping it any more than it stops the real Bluetooth dial loop.
-    sim::spawn_fallback_dial_loop(
-        device_connection,
-        device_connection.db_path.clone(),
-        &paired_peer_ids,
-    );
     // Started on every platform now, but see `start_tick_keeper_once`: only
     // Android gets the periodic backstop, which is what ADR-0004 needed it
     // for (a backgrounded WebView has its timers throttled, so ticks stop).
@@ -1456,7 +1448,11 @@ pub fn space_sync_tick_impl(
     // connection opened every time, indefinitely, for every running
     // instance. The Network candidates above don't need this because they
     // come through this same `conn`.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    //
+    // No platform gate here any more: which radio this build has is the
+    // service's business, and on a machine with none the loopback one takes
+    // over. Gating the call site was how "does this platform have Bluetooth"
+    // leaked out of the Bluetooth channel in the first place.
     {
         let candidates =
             crate::services::communication::pairing::bluetooth_dial_candidates(&mut conn);

@@ -34,15 +34,13 @@ impl ChannelKind {
 }
 
 impl From<TransportKind> for ChannelKind {
-    /// Which channel a transport carries. `Sim` (tests and E2E, standing in
-    /// for Bluetooth) and `LoRa` (reserved, no adapter) both answer
-    /// Bluetooth: neither is a channel a person can choose.
+    /// One to one now. The two enums say the same thing with different
+    /// spellings, and collapsing them is the last step of the vocabulary
+    /// work — see `docs/glossary.md`'s known gaps.
     fn from(kind: TransportKind) -> Self {
         match kind {
             TransportKind::TcpWs => ChannelKind::Network,
-            TransportKind::Sim | TransportKind::Bluetooth | TransportKind::LoRa => {
-                ChannelKind::Bluetooth
-            }
+            TransportKind::Bluetooth => ChannelKind::Bluetooth,
         }
     }
 }
