@@ -213,21 +213,31 @@ describe("device store channel liveness", () => {
   });
 
   // Regression test for a P1 review finding: the lightweight live-poll
-  // (`refreshLiveConnectedState`, backed by `device_connection_transport_
-  // liveness`) used to only patch `primary`, leaving `state`/`code` frozen
-  // at whatever the last full `refreshChannelStatuses` poll saw -- wrong
-  // once green/amber became a continuously-reproven ping/ack proof that
-  // can lapse or complete independent of which channel is primary.
-  it("refreshes the ping/ack code, not just primary, on the lightweight poll", async () => {
+  // (`refreshLiveConnectedState`, backed by
+  // `device_connection_channel_liveness`) used to leave `state`/`code`
+  // frozen at whatever the last full `refreshChannelStatuses` poll saw --
+  // wrong once green/amber became a continuously-reproven ping/ack proof
+  // that can lapse or complete on its own.
+  //
+  // The poll deliberately carries no `primary`: the star is the person's
+  // stored choice, and letting a liveness signal rewrite it is how a
+  // setting appears to move by itself.
+  it("refreshes the ping/ack code on the lightweight poll, and never the star", async () => {
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
       {
         kind: "network",
+        configured: true,
+        enabled: true,
         primary: true,
+        address: null,
         state: { state: "configured", code: { code: "awaiting_first_ack" } },
       },
       {
         kind: "bluetooth",
+        configured: true,
+        enabled: false,
         primary: false,
+        address: null,
         state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
       },
     ]);
@@ -240,17 +250,16 @@ describe("device store channel liveness", () => {
     });
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: true, primary: true, code: null },
-      { kind: "bluetooth", connected: false, primary: false, code: null },
+      { kind: "network", connected: true, code: null },
+      { kind: "bluetooth", connected: false, code: null },
     ]);
     await store.refreshLiveConnectedState("peer-1");
 
     const [network, bluetooth] = store.getChannelStatuses("peer-1");
     expect(network.state).toEqual({ state: "configured", code: null });
     expect(network.primary).toBe(true);
-    // Not connected: the lightweight poll can't explain why (disabled?
-    // out of range?), so the unconfigured row is left exactly as the last
-    // full poll reported it, not overwritten with a guess.
+    // Switched off: there is no live state to patch, because the row says
+    // what the person chose rather than what a radio is doing.
     expect(bluetooth.state).toEqual({
       state: "unconfigured",
       code: { code: "bluetooth_disabled" },
@@ -267,10 +276,20 @@ describe("device store channel liveness", () => {
   // misleading.
   it("reports connecting, not awaiting_first_ack, for a configured row with no session yet", async () => {
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", primary: false, state: { state: "configured", code: null } },
+      {
+        kind: "network",
+        configured: true,
+        enabled: true,
+        primary: false,
+        address: null,
+        state: { state: "configured", code: null },
+      },
       {
         kind: "bluetooth",
+        configured: true,
+        enabled: false,
         primary: false,
+        address: null,
         state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
       },
     ]);
@@ -279,8 +298,8 @@ describe("device store channel liveness", () => {
     await store.refreshChannelStatuses("peer-1");
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: false, primary: false, code: null },
-      { kind: "bluetooth", connected: false, primary: false, code: null },
+      { kind: "network", connected: false, code: null },
+      { kind: "bluetooth", connected: false, code: null },
     ]);
     await store.refreshLiveConnectedState("peer-1");
 

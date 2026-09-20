@@ -1,4 +1,4 @@
-//! The Bluetooth transport: BLE GATT `Link`s over `ble-gatt`'s datagram tier
+//! The Bluetooth transport: BLE GATT `DataLink`s over `ble-gatt`'s datagram tier
 //! (github.com/VRuzhentsov/ble-gatt).
 //!
 //! Linux (BlueZ via `ble_gatt::backend::linux`) and Android (via
@@ -182,7 +182,7 @@ use crate::services::communication::pairing::{
 };
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, BoxDialFuture, Link, Transport, TransportKind};
+use crate::services::communication::channel::{recv_frame, send_frame, BoxDialFuture, DataLink, Transport, TransportKind};
 
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
@@ -288,7 +288,7 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// Still shorter than `AddDeviceView.vue`'s own per-pass scan duration
 /// (`BLUETOOTH_SCAN_DURATION_MS`, currently 4s), so a slow candidate cannot
 /// quietly consume a whole pass -- but no longer *much* shorter, because the
-/// round trip it caps now has a third stage. `BleLink::send` retries a
+/// round trip it caps now has a third stage. `BleDataLink::send` retries a
 /// `GattBusy` rejection for up to ~1.4s (see its comment), on top of a dial
 /// that measurably takes 1-2s against a real phone. At the previous 1.5s this
 /// budget could not fit dial + retry, so the retry was cut off mid-flight
@@ -460,12 +460,12 @@ pub fn start_peripheral_once(state: DeviceConnectionState, db_path: PathBuf) {
     });
 }
 
-pub struct BleLink {
+pub struct BleDataLink {
     channel: DatagramChannel,
     peer_addr: String,
 }
 
-impl BleLink {
+impl BleDataLink {
     fn new(channel: DatagramChannel) -> Self {
         let peer_addr = channel.peer().0.clone();
         Self { channel, peer_addr }
@@ -473,7 +473,7 @@ impl BleLink {
 }
 
 #[async_trait]
-impl Link for BleLink {
+impl DataLink for BleDataLink {
     fn kind(&self) -> TransportKind {
         TransportKind::Bluetooth
     }
@@ -536,13 +536,13 @@ impl Link for BleLink {
 }
 
 /// Central role: dial a peer's Bluetooth address.
-pub async fn dial(address: &str) -> Result<Box<dyn Link>, String> {
+pub async fn dial(address: &str) -> Result<Box<dyn DataLink>, String> {
     let backend = backend().await?;
     let peer = PeerAddress(address.to_string());
     let channel = datagram::connect(backend, &peer, &datagram_config())
         .await
         .map_err(|err| format!("ble connect to {address} failed: {err}"))?;
-    Ok(Box::new(BleLink::new(channel)))
+    Ok(Box::new(BleDataLink::new(channel)))
 }
 
 /// Scans for nearby Fini BLE advertisers and opportunistically connects and
@@ -951,7 +951,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
             tokio::select! {
                 channel = incoming.next() => {
                     let Some(channel) = channel else { break; };
-                    let link: Box<dyn Link> = Box::new(BleLink::new(channel));
+                    let link: Box<dyn DataLink> = Box::new(BleDataLink::new(channel));
                     // Mirrors tcp_ws's/sim's "connection from {addr}" accept
                     // log -- without this, `run_peer_gate`'s own auth-outcome
                     // logging (added alongside this) has no matching "an
@@ -1686,7 +1686,7 @@ async fn connect_by_advertisement(
 /// What one `connect_by_advertisement` pass found.
 enum AdvertisementDial {
     Connected {
-        link: Box<dyn Link>,
+        link: Box<dyn DataLink>,
         protocol_version: u32,
         address: String,
     },

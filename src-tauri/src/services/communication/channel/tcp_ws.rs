@@ -1,4 +1,4 @@
-//! The network transport: WebSocket `Link`s over TCP. Peer discovery for
+//! The network transport: WebSocket `DataLink`s over TCP. Peer discovery for
 //! this adapter is the existing mDNS/UDP presence worker
 //! (`pairing::runtime`) — `DeviceConnectionState::list_presenced_peers`
 //! is this adapter's candidate list; there is no separate discovery step
@@ -20,7 +20,7 @@ use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketSt
 
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::sync::session;
-use crate::services::communication::channel::{BoxDialFuture, Link, Transport, TransportKind};
+use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, TransportKind};
 
 type BoxedSink = Pin<Box<dyn Sink<Message, Error = WsError> + Send>>;
 type BoxedSource = Pin<Box<dyn Stream<Item = Result<Message, WsError>> + Send>>;
@@ -35,7 +35,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// `recv()` gives up and reports the link dead (~45s: 15s × 3).
 const PING_MISS_LIMIT: u32 = 3;
 
-pub struct TcpWsLink {
+pub struct TcpWsDataLink {
     sink: BoxedSink,
     source: BoxedSource,
     peer_addr: Option<String>,
@@ -47,7 +47,7 @@ pub struct TcpWsLink {
     missed_pongs: u32,
 }
 
-impl TcpWsLink {
+impl TcpWsDataLink {
     fn new(ws: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
         let (sink, source) = ws.split();
         Self {
@@ -77,7 +77,7 @@ impl TcpWsLink {
 }
 
 #[async_trait]
-impl Link for TcpWsLink {
+impl DataLink for TcpWsDataLink {
     fn kind(&self) -> TransportKind {
         TransportKind::TcpWs
     }
@@ -89,7 +89,7 @@ impl Link for TcpWsLink {
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
         // Text, not Binary: `pairing::commands::send_pair_ws` sends
         // the one-shot pre-auth pairing frames (PairRequest/Accept/Complete)
-        // over a raw tungstenite client, independent of this Link — it must
+        // over a raw tungstenite client, independent of this DataLink — it must
         // stay wire-compatible with whatever this side reads. `codec::encode_frame`
         // always produces valid UTF-8 JSON, so this is lossless.
         let text = String::from_utf8(payload)
@@ -143,12 +143,12 @@ fn ws_url(addr: IpAddr, port: u16) -> String {
     }
 }
 
-pub async fn dial(addr: IpAddr, port: u16) -> Result<Box<dyn Link>, String> {
+pub async fn dial(addr: IpAddr, port: u16) -> Result<Box<dyn DataLink>, String> {
     let url = ws_url(addr, port);
     let (ws, _) = connect_async(&url)
         .await
         .map_err(|err| format!("connect {url} failed: {err}"))?;
-    Ok(Box::new(TcpWsLink::new(ws)))
+    Ok(Box::new(TcpWsDataLink::new(ws)))
 }
 
 /// `Transport` implementation for the network adapter. The production dial
@@ -212,7 +212,7 @@ pub(crate) async fn run_server_on_port(
                 tokio::spawn(async move {
                     match accept_async(stream).await {
                         Ok(ws) => {
-                            let link: Box<dyn Link> = Box::new(TcpWsLink::new_plain(ws, peer_addr));
+                            let link: Box<dyn DataLink> = Box::new(TcpWsDataLink::new_plain(ws, peer_addr));
                             session::run_peer_gate(link, state, db_path).await;
                         }
                         Err(err) => log::warn!("[transport][tcp_ws] WS handshake failed: {err}"),

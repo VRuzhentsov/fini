@@ -49,11 +49,8 @@ function deviceSummary(device: PairedDevice): string {
     return deviceStore.isDeviceOnline(device) ? "Connected" : "Not connected";
   }
 
-  const enabledFor = (kind: "network" | "bluetooth") =>
-    kind === "network" ? device.network_enabled : device.bluetooth_enabled;
-
   const live = statuses.find(
-    (status) => channelRowState(status.state, enabledFor(status.kind)) === "connected",
+    (status) => channelRowState(status.state, status.enabled) === "connected",
   );
   if (live) {
     return `${live.kind === "network" ? "Network" : "Bluetooth"} · connected`;
@@ -62,8 +59,7 @@ function deviceSummary(device: PairedDevice): string {
   // Nothing is connected, so say why -- preferring whichever channel is
   // actually switched on, since a channel the user turned off explains
   // nothing about why the device is unreachable.
-  const candidate =
-    statuses.find((status) => enabledFor(status.kind) && status.state.code) ?? statuses[0];
+  const candidate = statuses.find((status) => status.enabled && status.state.code) ?? statuses[0];
   const reason = candidate?.state.code
     ? channelStatusText(candidate.state.code, device.display_name)
     : null;

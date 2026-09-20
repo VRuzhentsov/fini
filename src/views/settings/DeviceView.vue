@@ -7,7 +7,7 @@ import SettingsListItem from "../../components/settings/SettingsListItem.vue";
 import ChannelRow from "../../components/settings/device/ChannelRow.vue";
 import SyncQueueSection from "../../components/settings/device/SyncQueueSection.vue";
 import ChannelSetupDialog from "../../components/settings/device/ChannelSetupDialog.vue";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore, type ChannelKind } from "../../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
 import { channelRowState } from "../../utils/channelStatusCodes";
@@ -25,7 +25,7 @@ const savingMappings = ref(false);
 const mappingsDirty = ref(false);
 const mappingError = ref<string | null>(null);
 const channelError = ref<string | null>(null);
-const busyChannel = ref<"network" | "bluetooth" | null>(null);
+const busyChannel = ref<ChannelKind | null>(null);
 
 const deviceId = computed(() => String(route.params.id ?? ""));
 const device = computed(() => deviceStore.findPairedDevice(deviceId.value));
@@ -36,33 +36,28 @@ const channelStatuses = computed(() =>
 );
 const syncQueue = computed(() => (deviceId.value ? deviceStore.getSyncQueue(deviceId.value) : null));
 
-// A manual pin always wins over the backend's automatic choice for display:
-// once the user has pinned a channel, that is the one governing which
-// becomes primary as soon as it connects, so the star should track the
-// user's decision rather than whichever row happens to be primary now.
-const starredChannel = computed<"network" | "bluetooth" | null>(() => {
-  const pinned = device.value?.preferred_transport;
-  if (pinned === "network" || pinned === "bluetooth") return pinned;
-  return channelStatuses.value.find((status) => status.primary)?.kind ?? null;
-});
-
-function channelEnabled(kind: "network" | "bluetooth"): boolean {
-  if (!device.value) return false;
-  return kind === "network" ? device.value.network_enabled : device.value.bluetooth_enabled;
-}
+// The star is the user's stored choice, not whichever channel happens to
+// be carrying traffic at this moment -- so it stays put across a
+// disconnect, and says what will govern the next reconnect. Null when they
+// have not chosen and selection is automatic.
+const starredChannel = computed<ChannelKind | null>(
+  () => channelStatuses.value.find((status) => status.primary)?.kind ?? null,
+);
 
 // Drives the sync queue's "sending now" vs "nothing can reach it" line.
 // Anything actually carrying a proven link counts, primary or not.
 const anyChannelConnected = computed(() =>
   channelStatuses.value.some(
-    (status) => channelRowState(status.state, channelEnabled(status.kind)) === "connected",
+    (status) => channelRowState(status.state, status.enabled) === "connected",
   ),
 );
 
 // fini-frontend: template render decisions belong in a named renderFlags
 // key, not an ad hoc expression inline in `v-if`.
 const renderFlags = computed(() => ({
-  bluetoothSetupOffered: !device.value?.bluetooth_enabled,
+  bluetoothSetupOffered: !channelStatuses.value.some(
+    (status) => status.kind === "bluetooth" && status.configured,
+  ),
 }));
 
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() =>
@@ -183,19 +178,15 @@ async function saveMappings() {
 // stays on and starts by itself, and the row says why. The only thing the
 // probe changes is *when* the row can say it -- immediately, rather than
 // whenever the background dial loop next tries.
-async function toggleChannel(kind: "network" | "bluetooth", enabled: boolean) {
+async function toggleChannel(kind: ChannelKind, enabled: boolean) {
   if (!deviceId.value || busyChannel.value) return;
   busyChannel.value = kind;
   channelError.value = null;
   try {
-    if (kind === "network") {
-      await deviceStore.setNetworkChannel(deviceId.value, enabled);
-    } else {
-      await deviceStore.setBluetoothChannel(deviceId.value, enabled);
-      if (enabled) {
-        await deviceStore.probeBluetoothAdapter();
-        await deviceStore.refreshChannelStatuses(deviceId.value);
-      }
+    await deviceStore.setChannelEnabled(deviceId.value, kind, enabled);
+    if (kind === "bluetooth" && enabled) {
+      await deviceStore.probeBluetoothAdapter();
+      await deviceStore.refreshChannelStatuses(deviceId.value);
     }
   } catch (error) {
     channelError.value = String(error);
@@ -204,12 +195,28 @@ async function toggleChannel(kind: "network" | "bluetooth", enabled: boolean) {
   }
 }
 
-async function pinChannel(kind: "network" | "bluetooth") {
+// Forgetting a channel, as opposed to switching it off. The backend
+// refuses while it is still on, and the row's own control is disabled
+// until then -- this catch is for the race, not the ordinary path.
+async function unlinkChannel(kind: ChannelKind) {
   if (!deviceId.value || busyChannel.value) return;
   busyChannel.value = kind;
   channelError.value = null;
   try {
-    await deviceStore.setPreferredChannel(deviceId.value, kind);
+    await deviceStore.unlinkChannel(deviceId.value, kind);
+  } catch (error) {
+    channelError.value = String(error);
+  } finally {
+    busyChannel.value = null;
+  }
+}
+
+async function pinChannel(kind: ChannelKind) {
+  if (!deviceId.value || busyChannel.value) return;
+  busyChannel.value = kind;
+  channelError.value = null;
+  try {
+    await deviceStore.setPrimaryChannel(deviceId.value, kind);
   } catch (error) {
     channelError.value = String(error);
   } finally {
@@ -266,13 +273,13 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
             v-for="status in channelStatuses"
             :key="status.kind"
             :status="status"
-            :enabled="channelEnabled(status.kind)"
             :starred="starredChannel === status.kind"
             :peer-name="peerName"
             :busy="busyChannel === status.kind"
             @toggle="(next) => toggleChannel(status.kind, next)"
             @pin="pinChannel(status.kind)"
             @retry="retryChannel()"
+            @unlink="unlinkChannel(status.kind)"
           />
         </ul>
         <p v-if="channelError" class="mt-2 text-xs text-error">{{ channelError }}</p>

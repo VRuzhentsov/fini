@@ -1,6 +1,6 @@
 //! The encryption seam. Crypto itself is out of scope for this PR; this
 //! module is the room left for it: a `SecureChannel` sits between the
-//! `PeerFrame` codec and the `Link`, and today does nothing
+//! `PeerFrame` codec and the `DataLink`, and today does nothing
 //! (`PlaintextChannel`). Enabling Signal-style E2E encryption later means
 //! adding a new `SecureChannel` impl plus a real `KeyMaterial` payload
 //! exchanged during pairing — not a wire-format break, because the

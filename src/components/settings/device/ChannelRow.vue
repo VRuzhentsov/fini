@@ -1,20 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { StarIcon as StarSolid } from "@heroicons/vue/24/solid";
-import { StarIcon as StarOutline, InformationCircleIcon } from "@heroicons/vue/24/outline";
+import { StarIcon as StarOutline, InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./ChannelIcon.vue";
 import type { DeviceChannelStatus } from "../../../stores/device";
 import { channelRowLabel, channelRowState, channelStatusText } from "../../../utils/channelStatusCodes";
 
 const props = defineProps<{
   status: DeviceChannelStatus;
-  // The pair's own switch for this channel -- `network_enabled` /
-  // `bluetooth_enabled`. Separate from `status`, because "off" is a fact
-  // about what the user chose and every other row state is a fact about
-  // the link.
-  enabled: boolean;
-  // Which channel the star sits on. A manual pin wins over the backend's
-  // automatic choice; the parent resolves that and passes the answer.
+  // Whether this channel holds the star -- the user's stored choice of
+  // which one carries the traffic. The parent resolves it across the rows
+  // so exactly one can be starred.
   starred: boolean;
   peerName: string;
   busy: boolean;
@@ -24,7 +20,14 @@ const emit = defineEmits<{
   toggle: [enabled: boolean];
   pin: [];
   retry: [];
+  unlink: [];
 }>();
+
+// "Off" is a fact about what the user chose; every other row state is a
+// fact about the link. A channel that was never set up reads as off too --
+// the difference between the two is what the page offers, not what the
+// row says.
+const enabled = computed(() => props.status.enabled);
 
 const CHANNEL_NAME = { network: "Network", bluetooth: "Bluetooth" } as const;
 
@@ -33,7 +36,7 @@ const CHANNEL_NAME = { network: "Network", bluetooth: "Bluetooth" } as const;
 // replaced a toast. Everything else waits to be asked.
 const reasonOpen = ref(false);
 
-const rowState = computed(() => channelRowState(props.status.state, props.enabled));
+const rowState = computed(() => channelRowState(props.status.state, enabled.value));
 const label = computed(() => channelRowLabel(rowState.value));
 
 // The row's own reason, in the person's words. `off` says nothing: the
@@ -62,6 +65,12 @@ const retryable = computed(
     props.status.state.state === "unconfigured" &&
     props.status.state.code.code === "bluetooth_dial_exhausted",
 );
+
+// Unlinking is only offered for a channel that exists, and only once it is
+// off. Shown disabled rather than hidden while it is on, so the control is
+// where the person expects it and says what to do first -- hiding it would
+// make the page look as though unlinking were unavailable.
+const unlinkable = computed(() => props.status.configured);
 
 const dotClass = computed(() => {
   switch (rowState.value) {
@@ -133,6 +142,19 @@ const dotClass = computed(() => {
         @click="emit('retry')"
       >
         Try again
+      </button>
+
+      <button
+        v-if="unlinkable"
+        type="button"
+        class="shrink-0 text-[var(--fg-4)] hover:text-error disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-[var(--fg-4)]"
+        data-testid="unlink-channel"
+        aria-label="Unlink channel"
+        :title="enabled ? 'Turn the channel off first' : 'Unlink channel'"
+        :disabled="busy || enabled"
+        @click="emit('unlink')"
+      >
+        <TrashIcon class="size-3.5" />
       </button>
 
       <button

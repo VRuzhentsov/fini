@@ -32,10 +32,22 @@ async function flushUi() {
   }
 }
 
-const GREEN_ROWS = [
-  { kind: "network", primary: true, state: { state: "configured", code: null } },
-  { kind: "bluetooth", primary: false, state: { state: "configured", code: null } },
-];
+// One row per channel, both configured, both on, neither chosen as
+// primary -- the state a pair is in when the person has set both up and
+// left selection automatic.
+function channelRow(kind: "network" | "bluetooth", overrides: Record<string, unknown> = {}) {
+  return {
+    kind,
+    configured: true,
+    enabled: true,
+    primary: false,
+    address: null,
+    state: { state: "configured", code: null },
+    ...overrides,
+  };
+}
+
+const GREEN_ROWS = [channelRow("network"), channelRow("bluetooth")];
 
 function pairedDevice(overrides: Record<string, unknown> = {}) {
   return {
@@ -44,12 +56,6 @@ function pairedDevice(overrides: Record<string, unknown> = {}) {
     paired_at: "2026-04-07T11:00:00.000Z",
     last_seen_at: "2026-04-07T11:05:00.000Z",
     pair_state: "paired",
-    bluetooth_enabled: true,
-    bluetooth_address: "AA:BB:CC:DD:EE:FF",
-    bluetooth_last_verified_at: "2026-04-07T11:01:00.000Z",
-    preferred_transport: null,
-    preferred_transport_set_at: null,
-    network_enabled: true,
     ...overrides,
   };
 }
@@ -74,10 +80,10 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     refreshSpaceSyncStatus: jest.fn().mockResolvedValue(undefined),
     refreshChannelStatuses: jest.fn().mockResolvedValue(undefined),
     refreshLiveConnectedState: jest.fn().mockResolvedValue(undefined),
-    setBluetoothChannel: jest.fn().mockResolvedValue(undefined),
-    setNetworkChannel: jest.fn().mockResolvedValue(undefined),
+    setChannelEnabled: jest.fn().mockResolvedValue([]),
+    unlinkChannel: jest.fn().mockResolvedValue([]),
     probeBluetoothAdapter: jest.fn().mockResolvedValue(true),
-    setPreferredChannel: jest.fn().mockResolvedValue(undefined),
+    setPrimaryChannel: jest.fn().mockResolvedValue([]),
     retryBluetoothDial: jest.fn().mockResolvedValue(undefined),
     findBluetoothAddress: jest.fn().mockResolvedValue(null),
     saveMappedSpaces: jest.fn().mockResolvedValue([]),
@@ -176,15 +182,17 @@ describe("DeviceView channels", () => {
     await rows[1].find("button").trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.setPreferredChannel).toHaveBeenCalledWith("peer-device-123", "bluetooth");
+    expect(deviceStoreMock.setPrimaryChannel).toHaveBeenCalledWith("peer-device-123", "bluetooth");
   });
 
-  it("stars the manually pinned channel, not the automatic choice", async () => {
-    // The fixture marks "network" as primary, but this pair is pinned to
-    // Bluetooth -- the star follows the user's pin.
-    deviceStoreMock.findPairedDevice.mockReturnValue(
-      pairedDevice({ preferred_transport: "bluetooth" }),
-    );
+  it("stars the channel the user chose, on the row that stores the choice", async () => {
+    // The star is `channels.is_primary` -- a setting, not a live state, so
+    // it comes off the row itself rather than from whichever link happens
+    // to be carrying traffic (ADR-0007).
+    deviceStoreMock.getChannelStatuses.mockReturnValue([
+      channelRow("network"),
+      channelRow("bluetooth", { primary: true }),
+    ]);
 
     const wrapper = mountView();
     await flushUi();
@@ -203,21 +211,66 @@ describe("DeviceView channels", () => {
     await rows[0].find('[data-testid="channel-switch"]').trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.setNetworkChannel).toHaveBeenCalledWith("peer-device-123", false);
+    expect(deviceStoreMock.setChannelEnabled).toHaveBeenCalledWith(
+      "peer-device-123",
+      "network",
+      false,
+    );
+  });
+
+  // Unlinking is a second, deliberate act: the control is present for a
+  // configured channel but refuses to fire while it is still on, so one
+  // click can never forget a working connection.
+  it("offers unlink only once the channel is off", async () => {
+    deviceStoreMock.getChannelStatuses.mockReturnValue([
+      channelRow("network"),
+      channelRow("bluetooth", {
+        enabled: false,
+        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+      }),
+    ]);
+
+    const wrapper = mountView();
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
+    expect(rows[0].find('[data-testid="unlink-channel"]').attributes("disabled")).toBeDefined();
+
+    await rows[1].find('[data-testid="unlink-channel"]').trigger("click");
+    await flushUi();
+
+    expect(deviceStoreMock.unlinkChannel).toHaveBeenCalledWith("peer-device-123", "bluetooth");
+  });
+
+  // A channel that was never set up has no row to forget, so the control
+  // is absent rather than merely disabled.
+  it("offers no unlink for a channel that was never set up", async () => {
+    deviceStoreMock.getChannelStatuses.mockReturnValue([
+      channelRow("network"),
+      channelRow("bluetooth", {
+        configured: false,
+        enabled: false,
+        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+      }),
+    ]);
+
+    const wrapper = mountView();
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
+    expect(rows[1].find('[data-testid="unlink-channel"]').exists()).toBe(false);
   });
 
   // Switching a channel on asks the radio directly rather than waiting for
   // the background dial loop, so the row can say "on, waiting" immediately
   // instead of up to a tick later.
   it("probes the adapter when Bluetooth is switched on", async () => {
-    deviceStoreMock.findPairedDevice.mockReturnValue(pairedDevice({ bluetooth_enabled: false }));
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      GREEN_ROWS[0],
-      {
-        kind: "bluetooth",
-        primary: false,
+      channelRow("network"),
+      channelRow("bluetooth", {
+        enabled: false,
         state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
-      },
+      }),
     ]);
 
     const wrapper = mountView();
@@ -227,18 +280,20 @@ describe("DeviceView channels", () => {
     await rows[1].find('[data-testid="channel-switch"]').trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.setBluetoothChannel).toHaveBeenCalledWith("peer-device-123", true);
+    expect(deviceStoreMock.setChannelEnabled).toHaveBeenCalledWith(
+      "peer-device-123",
+      "bluetooth",
+      true,
+    );
     expect(deviceStoreMock.probeBluetoothAdapter).toHaveBeenCalled();
   });
 
   it("explains a dead local radio without blaming the peer", async () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      GREEN_ROWS[0],
-      {
-        kind: "bluetooth",
-        primary: false,
+      channelRow("network"),
+      channelRow("bluetooth", {
         state: { state: "unconfigured", code: { code: "bluetooth_adapter_off" } },
-      },
+      }),
     ]);
 
     const wrapper = mountView();
@@ -255,12 +310,10 @@ describe("DeviceView channels", () => {
 
   it("names the peer when the peer is the one out of reach", async () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      GREEN_ROWS[0],
-      {
-        kind: "bluetooth",
-        primary: false,
+      channelRow("network"),
+      channelRow("bluetooth", {
         state: { state: "unconfigured", code: { code: "bluetooth_peer_not_nearby" } },
-      },
+      }),
     ]);
 
     const wrapper = mountView();

@@ -89,7 +89,7 @@ async function enableBluetooth() {
   const mine = ++generation;
   errorText.value = null;
   try {
-    await deviceStore.setBluetoothChannel(props.peerDeviceId, true);
+    await deviceStore.setChannelEnabled(props.peerDeviceId, "bluetooth", true);
     await deviceStore.probeBluetoothAdapter();
     await deviceStore.refreshChannelStatuses(props.peerDeviceId);
     if (mine !== generation) return;

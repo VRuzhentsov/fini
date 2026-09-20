@@ -1,11 +1,50 @@
 use serde::{Deserialize, Serialize};
 
+use crate::services::communication::channel::TransportKind;
+
+/// Which channel it is. Coarser than `TransportKind` on purpose: a
+/// person chooses between Network and Bluetooth, while `TcpWs` and `Sim` are
+/// two transports that both carry the Network channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
     #[default]
     Network,
     Bluetooth,
+}
+
+impl ChannelKind {
+    /// How this kind is stored: `channels.channel_kind`, seeded into
+    /// `channel_kinds.code`. Deliberately the same strings serde produces,
+    /// so the wire form and the stored form never diverge.
+    pub fn code(self) -> &'static str {
+        match self {
+            ChannelKind::Network => "network",
+            ChannelKind::Bluetooth => "bluetooth",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "network" => Some(ChannelKind::Network),
+            "bluetooth" => Some(ChannelKind::Bluetooth),
+            _ => None,
+        }
+    }
+}
+
+impl From<TransportKind> for ChannelKind {
+    /// Which channel a transport carries. `Sim` (tests and E2E, standing in
+    /// for Bluetooth) and `LoRa` (reserved, no adapter) both answer
+    /// Bluetooth: neither is a channel a person can choose.
+    fn from(kind: TransportKind) -> Self {
+        match kind {
+            TransportKind::TcpWs => ChannelKind::Network,
+            TransportKind::Sim | TransportKind::Bluetooth | TransportKind::LoRa => {
+                ChannelKind::Bluetooth
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,38 +169,47 @@ pub enum RowState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelStatus {
     pub kind: ChannelKind,
-    /// Whether this is the channel currently carrying real application
-    /// traffic (SyncEvent, BootstrapStart, etc.) -- `DeviceConnectionState::
-    /// primary_transport`. Network wins whenever it's connected, unless
-    /// explicitly pinned to Bluetooth (recomputed on every connect/
-    /// disconnect and on every manual pin change, so this always reflects
-    /// what the automatic rule would pick right now -- there's no separate
-    /// "would prefer" vs "is" distinction any more, since both channels
-    /// stay independently connected rather than one waiting to take over).
+    /// Whether this pair has this channel set up at all -- a `channels` row
+    /// exists. `false` is the page's "you have not added this yet" state,
+    /// which no boolean could express before rows were lazy.
+    pub configured: bool,
+    /// The switch. Always `false` when `configured` is.
+    pub enabled: bool,
+    /// The channel the person chose to carry this pair's traffic.
+    ///
+    /// A setting, not a live state (ADR-0007): it is `channels.is_primary`,
+    /// so it survives a reconnect, governs the next one, and is shown
+    /// whether or not this channel is connected at this moment. `false` on
+    /// every row means they have not chosen, and selection falls back to the
+    /// automatic network-first rule.
     pub primary: bool,
+    /// Where this channel last reached the peer -- diagnostics only, and
+    /// `None` until it has reached it once. Nothing dials it (ADR-0006).
+    pub address: Option<String>,
     pub state: RowState,
 }
 
 /// Lightweight, in-memory-only per-channel liveness -- the same signal
 /// `ChannelStatus`/`RowState` carries, minus everything that needs a DB
-/// read or an OS-level check (`bluetooth_enabled`, has-metadata, OS-paired,
-/// `network_present`). `device_connection_session_channel`'s live-poll
-/// sibling: fixes a P1 review finding where the live poll only refreshed
-/// `primary` and left `code` frozen at whatever the last full
-/// `device_connection_channel_statuses` poll saw -- fine under the old
-/// model (a claimed session *was* the full liveness signal), wrong under
-/// this one, where green/amber is a continuously-reproven ping/ack proof
-/// that can lapse (or complete) independent of `primary` and independent
-/// of anything the network-presence-gated full poll would notice for a
-/// Bluetooth-only peer. `connected: false` means "no session on this
-/// channel" -- `code` is `None` in that case too (nothing to say without
-/// the heavier check that knows *why*); the frontend leaves `state` as
-/// last-known rather than inferring `Unconfigured` from this alone.
+/// read or an OS-level check (the switch, `network_present`).
+/// `device_connection_session_channel`'s live-poll sibling, polled far more
+/// often than the full status read: green/amber is a continuously-reproven
+/// ping/ack proof that can lapse or complete without anything the
+/// network-presence-gated full poll would notice for a Bluetooth-only peer.
+///
+/// Carries no `primary`. The star is `channels.is_primary` -- a setting the
+/// person made, which cannot change between two polls of a liveness signal,
+/// and letting a live value overwrite it here is exactly how a persisted
+/// choice would appear to move on its own.
+///
+/// `connected: false` means "no session on this channel" -- `code` is `None`
+/// in that case too (nothing to say without the heavier check that knows
+/// *why*); the frontend leaves `state` as last-known rather than inferring
+/// `Unconfigured` from this alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelLiveness {
     pub kind: ChannelKind,
     pub connected: bool,
-    pub primary: bool,
     pub code: Option<ChannelStatusCode>,
     /// `ble::is_bluetooth_dial_exhausted` -- always `false` for the network
     /// row. A P1 review finding: without this, the 5s live-poll timer
@@ -212,14 +260,23 @@ const BLUETOOTH_ADAPTER_IMPLEMENTED: bool = false;
 /// checks. A named-field struct instead of positional bools deliberately:
 /// transposing two same-typed bools at a call site is exactly the class of
 /// bug a struct's field names catch that positional args don't.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ChannelStatusInputs {
     /// Raw discovery presence (`network_peer_available`) -- "is this
     /// peer's beacon reaching us right now."
     pub network_present: bool,
-    /// `paired_devices.network_enabled` -- the per-pair Network switch.
+    /// Whether a `channels` row exists for this pair and kind: the channel
+    /// has been set up. A channel that was never set up is off for the same
+    /// reason a switched-off one is, so the codes below do not distinguish
+    /// them -- the page does, by offering to set it up.
+    pub network_configured: bool,
+    pub bluetooth_configured: bool,
+    /// `channels.enabled` -- the per-pair switch for each channel.
     pub network_enabled: bool,
     pub bluetooth_enabled: bool,
+    /// `channels.address` -- where the channel last reached the peer.
+    pub network_address: Option<String>,
+    pub bluetooth_address: Option<String>,
     /// `!ble::is_bluetooth_adapter_unavailable` -- whether the local radio
     /// worked the last time it was asked to do anything. `true` when
     /// nothing has been attempted yet, so an untried adapter is never
@@ -238,7 +295,9 @@ pub struct ChannelStatusInputs {
     /// `DeviceConnectionState::has_session_on`.
     pub network_connected: bool,
     pub bluetooth_connected: bool,
-    /// `DeviceConnectionState::primary_transport`, resolved by the caller.
+    /// `channels.is_primary` -- the channel the person chose, not whichever
+    /// one happens to be carrying traffic. Both `false` means they have not
+    /// chosen and selection is automatic.
     pub network_primary: bool,
     pub bluetooth_primary: bool,
     /// `DeviceConnectionState::channel_liveness_code` -- the amber
@@ -251,8 +310,12 @@ pub struct ChannelStatusInputs {
 pub fn build_channel_statuses(inputs: ChannelStatusInputs) -> Vec<ChannelStatus> {
     let ChannelStatusInputs {
         network_present,
+        network_configured,
+        bluetooth_configured,
         network_enabled,
         bluetooth_enabled,
+        network_address,
+        bluetooth_address,
         bluetooth_adapter_available,
         bluetooth_peer_nearby,
         bluetooth_dial_exhausted,
@@ -281,12 +344,18 @@ pub fn build_channel_statuses(inputs: ChannelStatusInputs) -> Vec<ChannelStatus>
     vec![
         ChannelStatus {
             kind: ChannelKind::Network,
+            configured: network_configured,
+            enabled: network_enabled,
             primary: network_primary,
+            address: network_address,
             state: row_state(network_unconfigured_code, network_connected, network_code),
         },
         ChannelStatus {
             kind: ChannelKind::Bluetooth,
+            configured: bluetooth_configured,
+            enabled: bluetooth_enabled,
             primary: bluetooth_primary,
+            address: bluetooth_address,
             state: row_state(bluetooth_unconfigured_code, bluetooth_connected, bluetooth_code),
         },
     ]
@@ -371,8 +440,12 @@ mod tests {
     fn ready_inputs() -> ChannelStatusInputs {
         ChannelStatusInputs {
             network_present: true,
+            network_configured: true,
+            bluetooth_configured: true,
             network_enabled: true,
             bluetooth_enabled: true,
+            network_address: None,
+            bluetooth_address: None,
             bluetooth_adapter_available: true,
             bluetooth_peer_nearby: true,
             bluetooth_dial_exhausted: false,
@@ -522,7 +595,7 @@ mod tests {
         );
     }
 
-    /// No Bluetooth `Transport`/`Link` adapter is registered on this
+    /// No Bluetooth `Transport`/`DataLink` adapter is registered on this
     /// platform (see `BLUETOOTH_ADAPTER_IMPLEMENTED`'s doc comment), so a
     /// Bluetooth session can never actually establish there. Status must
     /// report `Unconfigured` regardless of how complete the stored

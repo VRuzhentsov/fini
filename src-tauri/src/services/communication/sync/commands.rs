@@ -1407,11 +1407,11 @@ pub fn space_sync_tick_impl(
     // genuinely stops the dialling instead of only greying the row -- the
     // Bluetooth side has always had its own equivalent gate
     // (`ble::is_still_bluetooth_eligible`).
-    let network_peer_ids: HashSet<String> = paired_devices::table
-        .filter(paired_devices::network_enabled.eq(true))
-        .select(paired_devices::peer_device_id)
-        .load::<String>(&mut *conn)
-        .map_err(|e| e.to_string())?
+    let network_peer_ids: HashSet<String> = crate::services::communication::pairing::channels::
+        peers_with_channel_enabled(
+            &mut *conn,
+            crate::services::communication::pairing::ChannelKind::Network,
+        )
         .into_iter()
         .collect();
     tcp_ws::spawn_dial_loop(
@@ -1419,7 +1419,7 @@ pub fn space_sync_tick_impl(
         device_connection.db_path.clone(),
         &network_peer_ids,
     );
-    // Not gated on `network_enabled`: Sim stands in for Bluetooth's role
+    // Not gated on the Network switch: Sim stands in for Bluetooth's role
     // (see `channel::tests`), so the Network switch has no business
     // stopping it any more than it stops the real Bluetooth dial loop.
     sim::spawn_fallback_dial_loop(

@@ -218,7 +218,7 @@ Do not invent generic targets such as `make test`, `make lint`, or `make check` 
 
 ## Naming
 
-`docs/naming.md` is the source of truth for the project's vocabulary and for how names are formed. Read it before naming a new table, module, type, command, or `data-*` hook, and before renaming one. It is also where a disagreement about a name is settled — the file wins over what the code currently says. Load `fini-code-style` alongside it for the repo-wide rules that are not about names.
+Two files, and they answer different questions. `docs/glossary.md` is what the words **mean** — channel, DataLink, session, primary — and is where you go to choose *which* word. `docs/naming.md` is how names are **formed** — plurals, casing per language, `data-*` hooks, command prefixes — and is where you go to write it down. Read the relevant one before naming a new table, module, type, command or DOM hook, and before renaming one. Either file wins over what the code currently says. Load `fini-code-style` alongside them for the repo-wide rules that are not about names.
 
 ## Code Reuse
 

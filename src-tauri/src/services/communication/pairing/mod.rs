@@ -2,6 +2,7 @@ mod commands;
 pub(crate) mod link_state;
 mod runtime;
 mod channel_status;
+pub(crate) mod channels;
 pub(crate) mod types;
 
 use std::net::Ipv4Addr;
@@ -31,9 +32,9 @@ pub use commands::{
     device_connection_retry_bluetooth_dial, device_connection_save_paired_device,
     device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
     device_connection_probe_bluetooth_adapter,
-    device_connection_session_channel, device_connection_set_bluetooth_channel,
-    device_connection_set_network_channel,
-    device_connection_set_preferred_channel, device_connection_channel_liveness,
+    device_connection_session_channel, device_connection_set_channel_enabled,
+    device_connection_set_primary_channel, device_connection_unlink_channel,
+    device_connection_channel_liveness,
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -44,7 +45,7 @@ pub use commands::note_observed_bluetooth_address;
 // bond check has no callers outside `commands` now that neither the dial
 // path nor the inbound gate consults it.
 pub(crate) use commands::{
-    local_bluetooth_address, normalize_bluetooth_address, peer_channel_preference,
+    local_bluetooth_address, normalize_bluetooth_address,
     persist_bluetooth_address_and_maybe_enable,
 };
 #[cfg(any(feature = "cli-plane", test))]
@@ -58,19 +59,18 @@ pub use commands::{
     device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
     device_connection_send_pair_request_impl, device_connection_session_channel_impl,
-    device_connection_set_bluetooth_channel_impl, device_connection_set_bluetooth_channel_with_state_impl,
-    device_connection_set_preferred_channel_impl,
+    device_connection_set_channel_enabled_impl, device_connection_unlink_channel_impl,
+    device_connection_set_primary_channel_impl,
     device_connection_channel_liveness_impl, device_connection_channel_statuses_impl,
     device_connection_unpair_impl, device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
-// `ChannelKind` is the user-facing medium a pair configured -- Network or
-// Bluetooth -- and is what the `channels` table stores. It is deliberately
-// coarser than `communication::channel::TransportKind` (TcpWs/Sim/Bluetooth/
-// LoRa), which names the adapter that actually carried a link; Sim and
-// TcpWs are two channels under the one Network channel. Both are in scope
-// at once in places (`channel::tests`), which is why they keep distinct
-// names rather than one being an alias of the other.
+// `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
+// and is what the `channels` table stores. It is coarser than
+// `communication::channel::TransportKind` (TcpWs/Sim/Bluetooth/LoRa), which
+// names the connection code that carried a link rather than a channel: both
+// TcpWs and Sim connect the one Network channel. Both are in scope at once
+// in places (`channel::tests`), which is why they keep distinct names.
 pub use channel_status::{
     build_channel_statuses, ChannelKind, ChannelLiveness, ChannelStatus, ChannelStatusCode,
     ChannelStatusInputs,
@@ -543,17 +543,17 @@ impl DeviceConnectionState {
         }
     }
 
-    /// Reads `preferred_transport`/`bluetooth_enabled` for `peer_device_id`
-    /// from `db_path` -- a plain, explicit path, not `self.db_path`: every
-    /// other DB-touching helper in this module (`check_paired`, etc.) takes
-    /// the caller's own `db_path` rather than trusting a field on `self`,
-    /// and callers here (dial loops, `run_peer_gate`/`run_session`) already
-    /// have the correct one in scope from their own parameters.
+    /// Reads this pair's primary choice and Bluetooth switch from `db_path`
+    /// -- a plain, explicit path, not `self.db_path`: every other DB-touching
+    /// helper in this module (`check_paired`, etc.) takes the caller's own
+    /// `db_path` rather than trusting a field on `self`, and callers here
+    /// (dial loops, `run_peer_gate`/`run_session`) already have the correct
+    /// one in scope from their own parameters.
     fn bluetooth_primary_eligibility(db_path: &Path, peer_device_id: &str) -> (bool, bool) {
         tokio::task::block_in_place(|| {
             let mut conn = crate::services::db::open_db_at_path(db_path);
-            let pinned_to_bluetooth =
-                commands::peer_channel_preference(&mut conn, peer_device_id).as_deref() == Some("bluetooth");
+            let pinned_to_bluetooth = commands::peer_primary_channel(&mut conn, peer_device_id)
+                == Some(channel_status::ChannelKind::Bluetooth);
             let bluetooth_enabled = commands::peer_bluetooth_enabled(&mut conn, peer_device_id);
             (pinned_to_bluetooth, bluetooth_enabled)
         })
@@ -632,7 +632,7 @@ impl DeviceConnectionState {
 
     /// Re-runs primary-channel selection for `peer_device_id` right now,
     /// without waiting for the next claim/release event. The only external
-    /// caller is `device_connection_set_preferred_channel_impl`: a manual
+    /// caller is `device_connection_set_primary_channel_impl`: a manual
     /// pin change must be reflected immediately (both rows already
     /// connected, nothing to reconnect), not only whenever a channel
     /// happens to reconnect next.
@@ -860,7 +860,7 @@ impl DeviceConnectionState {
 
     /// Sends application traffic (SyncEvent, BootstrapStart, etc.) over the
     /// peer's *primary* channel. `Ping`/`Pong` don't go through this --
-    /// `run_session`'s ping/ack loop already owns its `Link` directly and
+    /// `run_session`'s ping/ack loop already owns its `DataLink` directly and
     /// sends on it inline, since every connected channel exchanges those
     /// on its own, not just the primary one.
     pub fn push_to_peer(&self, peer_device_id: &str, msg: PeerFrame) -> bool {
@@ -894,7 +894,7 @@ impl DeviceConnectionState {
 
     /// Forces the peer's currently claimed session on this specific
     /// channel closed, without a transport-level failure. The only
-    /// caller is `device_connection_set_bluetooth_channel_with_state_impl`'s
+    /// caller is `device_connection_set_channel_enabled_impl`'s
     /// disable path: a still-open Bluetooth (or Sim, its test stand-in)
     /// session must actually stop -- not just stop counting toward primary
     /// selection (`recompute_primary_locked` already excludes a disabled

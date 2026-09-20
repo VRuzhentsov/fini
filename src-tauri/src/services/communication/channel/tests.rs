@@ -18,10 +18,10 @@ use tokio::time::sleep;
 use crate::models::CreatePairedDeviceInput;
 use crate::schema::paired_devices;
 use crate::services::db::{open_db_at_path, temp_db_path};
-use crate::services::communication::pairing::DeviceConnectionState;
+use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, sim, tcp_ws, Link, Transport, TransportKind};
+use crate::services::communication::channel::{recv_frame, send_frame, sim, tcp_ws, DataLink, Transport, TransportKind};
 
 async fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -40,23 +40,28 @@ fn seed_paired_device(db_path: &PathBuf, peer_device_id: &str) {
         })
         .execute(&mut conn)
         .expect("seed paired device");
+    // A pair is only reachable over channels it has configured, and the
+    // session gate fails closed on the rest. Every real network pairing
+    // configures this, so a seeded pair that skipped it would be rejected at
+    // `Auth` -- not a bug these tests are about.
+    channels::configure(&mut conn, peer_device_id, ChannelKind::Network, true, None)
+        .expect("set the pair's Network channel up");
 }
 
-/// Marks `peer_device_id` Bluetooth-enabled with a stored address --
-/// `device_connection_set_preferred_channel_impl`'s own eligibility
-/// check (`peer_is_currently_bluetooth_eligible`) also requires a live OS
-/// bond, which callers must separately arrange via the
-/// `FINI_BLUETOOTH_PAIRED_ADDRESSES` escape hatch (holding
-/// `BLUETOOTH_ADDRESS_ENV_LOCK`) for the address used here.
+/// Sets this pair's Bluetooth channel up and switches it on, with a stored
+/// address. Callers that also need the peer to look OS-bonded arrange that
+/// separately via the `FINI_BLUETOOTH_PAIRED_ADDRESSES` escape hatch
+/// (holding `BLUETOOTH_ADDRESS_ENV_LOCK`) for the address used here.
 fn seed_bluetooth_enabled_peer(db_path: &PathBuf, peer_device_id: &str, address: &str) {
     let mut conn = open_db_at_path(db_path);
-    diesel::update(paired_devices::table.find(peer_device_id))
-        .set((
-            paired_devices::bluetooth_enabled.eq(true),
-            paired_devices::bluetooth_address.eq(Some(address)),
-        ))
-        .execute(&mut conn)
-        .expect("mark peer bluetooth-enabled with an address");
+    crate::services::communication::pairing::channels::configure(
+        &mut conn,
+        peer_device_id,
+        ChannelKind::Bluetooth,
+        true,
+        Some(address),
+    )
+    .expect("set the pair's Bluetooth channel up");
 }
 
 fn server_state(label: &str) -> (DeviceConnectionState, PathBuf) {
@@ -152,22 +157,25 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
     assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
 
     let mut conn = open_db_at_path(&server_db);
-    let updated = crate::services::communication::pairing::device_connection_set_preferred_channel_impl(
+    let updated = crate::services::communication::pairing::device_connection_set_primary_channel_impl(
         &mut conn,
         &server,
         "peer-client".to_string(),
-        Some(TransportKind::Bluetooth),
+        Some(ChannelKind::Bluetooth),
     )
-    .expect("set preferred transport");
+    .expect("choose Bluetooth as the primary channel");
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    assert_eq!(updated.preferred_transport.as_deref(), Some("bluetooth"));
-    assert!(updated.preferred_transport_set_at.is_some());
+    let bluetooth_row = updated
+        .iter()
+        .find(|status| status.kind == ChannelKind::Bluetooth)
+        .expect("a Bluetooth row");
+    assert!(bluetooth_row.primary, "the choice must come back on the row");
 
     // The server-side session actually claims under the real wire kind
     // (`Sim`, standing in for Bluetooth here) -- `AsBluetooth` only affects
     // what the *client* reports, not what `run_peer_gate`'s accept side
-    // sees from its own `link.kind()`. `channel_kind_to_preference_string`
-    // collapses Sim/Bluetooth/LoRa to the same "bluetooth" pin either way.
+    // sees from its own `link.kind()`. `ChannelKind::from(TransportKind)`
+    // collapses Sim/Bluetooth/LoRa to the same Bluetooth channel either way.
     assert_eq!(
         server.primary_transport("peer-client"),
         Some(TransportKind::Sim),
@@ -186,35 +194,32 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
 /// Regression test for a P1 review finding: a stale "configured" row
 /// (`DeviceView`'s polling only refreshes session liveness, not full
 /// eligibility -- see the frontend's own `refreshLiveConnectedState` doc
-/// comment) can stay clickable well after the OS Bluetooth bond quietly
-/// disappears. `device_connection_set_preferred_channel_impl` must
-/// re-validate current eligibility itself rather than trusting the click --
-/// persisting and announcing a pin that can never actually connect just
-/// relocates the stranding hazard instead of preventing it.
+/// comment) can stay clickable well after the channel it names has been
+/// switched off. `device_connection_set_primary_channel_impl` must
+/// re-validate that itself rather than trusting the click -- storing a
+/// choice that can never actually carry traffic just relocates the
+/// stranding hazard instead of preventing it.
 #[tokio::test(flavor = "multi_thread")]
-async fn set_preferred_channel_refuses_a_bluetooth_pin_when_not_currently_eligible() {
-    let (server, server_db) = server_state("transport-set-preferred-bluetooth-ineligible");
+async fn set_primary_channel_refuses_a_bluetooth_pin_when_not_currently_eligible() {
+    let (server, server_db) = server_state("channel-set-primary-bluetooth-ineligible");
     seed_paired_device(&server_db, "peer-client");
-    // Bluetooth left disabled (the schema default) -- the condition under
-    // test; no `FINI_BLUETOOTH_PAIRED_ADDRESSES` escape hatch either, so
-    // even a stored address wouldn't pass the OS-bond check.
+    // No Bluetooth channel configured at all -- the condition under test.
 
     let mut conn = open_db_at_path(&server_db);
-    let err = crate::services::communication::pairing::device_connection_set_preferred_channel_impl(
+    let err = crate::services::communication::pairing::device_connection_set_primary_channel_impl(
         &mut conn,
         &server,
         "peer-client".to_string(),
-        Some(TransportKind::Bluetooth),
+        Some(ChannelKind::Bluetooth),
     )
-    .expect_err("must refuse a Bluetooth pin that isn't currently eligible");
-    assert!(err.contains("Bluetooth"), "got: {err}");
+    .expect_err("must refuse a channel that is not switched on");
+    assert!(err.contains("Switch the channel on"), "got: {err}");
 
-    let row: crate::models::PairedDevice = paired_devices::table
-        .find("peer-client")
-        .select(crate::models::PairedDevice::as_select())
-        .first(&mut conn)
-        .expect("load peer row");
-    assert_eq!(row.preferred_transport, None, "a refused pin must not be persisted");
+    assert_eq!(
+        channels::primary_kind(&mut conn, "peer-client"),
+        None,
+        "a refused choice must not be persisted"
+    );
 }
 
 /// ADR-0003 revision: both transports now dial/accept and stay connected
@@ -230,10 +235,22 @@ async fn network_dial_establishes_regardless_of_a_bluetooth_pin() {
     seed_paired_device(&dialer_db, &responder.identity.device_id);
 
     let mut dialer_conn = open_db_at_path(&dialer_db);
-    diesel::update(paired_devices::table.find(&responder.identity.device_id))
-        .set(paired_devices::preferred_transport.eq(Some("bluetooth")))
-        .execute(&mut dialer_conn)
-        .expect("pin the dialer to bluetooth directly (bypassing the impl's own eligibility check)");
+    // Written straight to the table, bypassing the command's own "switch it
+    // on first" check: the point here is the dial path, not the choice.
+    channels::configure(
+        &mut dialer_conn,
+        &responder.identity.device_id,
+        ChannelKind::Bluetooth,
+        true,
+        None,
+    )
+    .expect("set the Bluetooth channel up");
+    channels::set_primary(
+        &mut dialer_conn,
+        &responder.identity.device_id,
+        Some(ChannelKind::Bluetooth),
+    )
+    .expect("choose Bluetooth as primary");
 
     let port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(responder.clone(), responder_db.clone(), port));
@@ -313,19 +330,18 @@ async fn dial_with_backoff_adopts_a_changed_endpoint_mid_retry() {
     );
 }
 
-/// Regression test for a P1 review finding: disabling Bluetooth for a pair
-/// that was pinned to it must not leave this device pinned to a transport
-/// that can never reconnect -- `device_connection_set_bluetooth_channel_
-/// with_state_impl` must redirect the pin to Network, which immediately
-/// becomes primary since it's already connected (no wire notification
-/// needed any more: both transports stay connected regardless of the pin,
-/// so there's nothing to relay to the peer).
+/// Regression test for a P1 review finding: switching a channel off for a
+/// pair whose traffic was pinned to it must not leave the pair pointed at a
+/// channel that can never reconnect. Turning it off releases the choice
+/// (ADR-0007), and selection falls straight back to the already-connected
+/// Network session -- no wire notification needed, since both channels stay
+/// connected regardless of the choice and there is nothing to relay.
 #[tokio::test(flavor = "multi_thread")]
-async fn disabling_bluetooth_redirects_the_pin_to_network_and_flips_primary() {
+async fn switching_bluetooth_off_releases_the_primary_and_flips_it_to_network() {
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
     std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
-    let (server, server_db) = server_state("transport-disable-bluetooth-redirects");
+    let (server, server_db) = server_state("channel-switch-bluetooth-off-releases-primary");
     seed_paired_device(&server_db, "peer-client");
 
     let tcp_port = free_port().await;
@@ -346,31 +362,29 @@ async fn disabling_bluetooth_redirects_the_pin_to_network_and_flips_primary() {
 
     let mut conn = open_db_at_path(&server_db);
     seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
-    crate::services::communication::pairing::device_connection_set_preferred_channel_impl(
+    crate::services::communication::pairing::device_connection_set_primary_channel_impl(
         &mut conn,
         &server,
         "peer-client".to_string(),
-        Some(TransportKind::Bluetooth),
+        Some(ChannelKind::Bluetooth),
     )
-    .expect("pin to bluetooth");
+    .expect("choose Bluetooth as primary");
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     // See the sibling test above for why this is `Sim`, not `Bluetooth`.
     assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Sim));
 
-    let updated = crate::services::communication::pairing::device_connection_set_bluetooth_channel_with_state_impl(
+    crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
         &mut conn,
         &server,
-        crate::services::communication::pairing::types::DeviceBluetoothChannelInput {
-            peer_device_id: "peer-client".to_string(),
-            enabled: false,
-            bluetooth_address: None,
-        },
+        "peer-client".to_string(),
+        ChannelKind::Bluetooth,
+        false,
     )
-    .expect("disable bluetooth");
+    .expect("switch bluetooth off");
     assert_eq!(
-        updated.preferred_transport.as_deref(),
-        Some("network"),
-        "disabling a Bluetooth pin must redirect to Network, not merely clear it"
+        channels::primary_kind(&mut conn, "peer-client"),
+        None,
+        "switching a channel off must release the primary rather than leave it pointed at nothing"
     );
     assert_eq!(
         server.primary_transport("peer-client"),
@@ -405,13 +419,14 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
-        diesel::update(paired_devices::table.find("peer-client"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("127.0.0.1")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth for seeded peer");
+        channels::configure(
+            &mut conn,
+            "peer-client",
+            ChannelKind::Bluetooth,
+            true,
+            Some("127.0.0.1"),
+        )
+        .expect("switch bluetooth on for the seeded peer");
     }
 
     let tcp_port = free_port().await;
@@ -425,7 +440,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
         let Ok((stream, _addr)) = ble_listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
@@ -436,7 +451,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
         .expect("tcp auth should succeed for paired device");
 
     let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
-    let mut ble_link: Box<dyn Link> = Box::new(sim::SimLink::new(ble_stream));
+    let mut ble_link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(ble_stream));
     session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
@@ -451,14 +466,12 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
     assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
 
     let mut conn = open_db_at_path(&server_db);
-    crate::services::communication::pairing::device_connection_set_bluetooth_channel_with_state_impl(
+    crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
         &mut conn,
         &server,
-        crate::services::communication::pairing::types::DeviceBluetoothChannelInput {
-            peer_device_id: "peer-client".to_string(),
-            enabled: false,
-            bluetooth_address: None,
-        },
+        "peer-client".to_string(),
+        ChannelKind::Bluetooth,
+        false,
     )
     .expect("disable bluetooth");
 
@@ -505,13 +518,14 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
-        diesel::update(paired_devices::table.find("peer-client"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("127.0.0.1")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth for seeded peer");
+        channels::configure(
+            &mut conn,
+            "peer-client",
+            ChannelKind::Bluetooth,
+            true,
+            Some("127.0.0.1"),
+        )
+        .expect("switch bluetooth on for the seeded peer");
     }
 
     let ble_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -522,13 +536,13 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
         let Ok((stream, _addr)) = ble_listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
 
     let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
-    let mut ble_link: Box<dyn Link> = Box::new(sim::SimLink::new(ble_stream));
+    let mut ble_link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(ble_stream));
     session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
@@ -542,14 +556,12 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
     );
 
     let mut conn = open_db_at_path(&server_db);
-    crate::services::communication::pairing::device_connection_set_bluetooth_channel_with_state_impl(
+    crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
         &mut conn,
         &server,
-        crate::services::communication::pairing::types::DeviceBluetoothChannelInput {
-            peer_device_id: "peer-client".to_string(),
-            enabled: false,
-            bluetooth_address: None,
-        },
+        "peer-client".to_string(),
+        ChannelKind::Bluetooth,
+        false,
     )
     .expect("disable bluetooth");
 
@@ -657,10 +669,8 @@ async fn release_session_reselects_primary_from_runtime_state_without_waiting_on
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
-        diesel::update(paired_devices::table.find("peer-client"))
-            .set(paired_devices::bluetooth_enabled.eq(true))
-            .execute(&mut conn)
-            .expect("enable bluetooth for seeded peer");
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, true, None)
+            .expect("switch bluetooth on for the seeded peer");
     }
 
     let (tcp_tx, _tcp_rx) = tokio::sync::mpsc::channel(4);
@@ -709,10 +719,8 @@ async fn reselect_primary_excludes_a_just_disabled_bluetooth_session() {
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
-        diesel::update(paired_devices::table.find("peer-client"))
-            .set(paired_devices::bluetooth_enabled.eq(true))
-            .execute(&mut conn)
-            .expect("enable bluetooth for seeded peer");
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, true, None)
+            .expect("switch bluetooth on for the seeded peer");
     }
 
     let (tcp_tx, _tcp_rx) = tokio::sync::mpsc::channel(4);
@@ -722,14 +730,12 @@ async fn reselect_primary_excludes_a_just_disabled_bluetooth_session() {
     assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
 
     let mut conn = open_db_at_path(&server_db);
-    crate::services::communication::pairing::device_connection_set_bluetooth_channel_with_state_impl(
+    crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
         &mut conn,
         &server,
-        crate::services::communication::pairing::types::DeviceBluetoothChannelInput {
-            peer_device_id: "peer-client".to_string(),
-            enabled: false,
-            bluetooth_address: None,
-        },
+        "peer-client".to_string(),
+        ChannelKind::Bluetooth,
+        false,
     )
     .expect("disable bluetooth");
     assert!(
@@ -919,23 +925,32 @@ async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_sess
     std::env::remove_var("FINI_BLUETOOTH_RECHECK_INTERVAL_MS");
 }
 
-/// ADR-0006: a self-report records the address and never touches
-/// enablement -- **not even when the reported address is OS-bonded**, which
-/// is what this test pins.
+/// ADR-0006: a self-report records the address and never touches the
+/// switch -- **not even when the reported address is OS-bonded**, which is
+/// what this test pins.
 ///
 /// The bond used to decide this, and that made a background message able to
-/// flip a transport on or off. Off was the damaging direction: during
+/// flip a channel on or off. Off was the damaging direction: during
 /// hardware verification the peer reported its address, this side found no
-/// bond, and disabled a working pair. Since the bond is now consulted
+/// bond, and switched a working pair off. Since the bond is now consulted
 /// nowhere on the dial path, the honest rule is that a self-report carries
-/// no authority over enablement in either direction.
+/// no authority over the switch in either direction.
 #[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_self_report_does_not_enable_even_for_a_bonded_address() {
+async fn bluetooth_self_report_does_not_switch_a_channel_on_even_for_a_bonded_address() {
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
     std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
-    let (server, server_db) = server_state("transport-tcpws-self-report-enable");
+    let (server, server_db) = server_state("channel-tcpws-self-report-enable");
     seed_paired_device(&server_db, "peer-client");
+    {
+        // The channel has to exist for an address to be recorded against
+        // it at all -- a self-report must never be what sets a channel up.
+        // Switched on, so this test isolates the one thing it is about: a
+        // bonded address arriving over the wire does not move the switch.
+        let mut conn = open_db_at_path(&server_db);
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, true, None)
+            .expect("set the Bluetooth channel up");
+    }
     let port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(
         server.clone(),
@@ -961,30 +976,31 @@ async fn bluetooth_self_report_does_not_enable_even_for_a_bonded_address() {
 
     sleep(Duration::from_millis(100)).await;
     let mut conn = open_db_at_path(&server_db);
-    let row: (Option<String>, bool) = paired_devices::table
-        .find("peer-client")
-        .select((paired_devices::bluetooth_address, paired_devices::bluetooth_enabled))
-        .first(&mut conn)
-        .expect("load peer row");
-    assert_eq!(row.0.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+    let row = channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth)
+        .expect("the Bluetooth channel row");
+    assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
     assert!(
-        !row.1,
-        "a self-report must not enable a pair, even for a bonded address -- \
-         enablement is the user's call, or a completed BLE pairing's"
+        !row.is_primary,
+        "a self-report must not choose the channel either -- that is the \
+         person's call, made on the row"
     );
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }
 
-/// Mirror of the above without OS pairing: the address still gets stored
-/// (so a later manual "Enable Bluetooth" click has something pre-filled),
-/// but Bluetooth is not auto-enabled -- a self-report by itself proves
-/// nothing about OS bonding.
+/// Mirror of the above for a pair that has no Bluetooth channel at all: the
+/// self-report is dropped entirely.
+///
+/// A row existing is what "configured" means, so recording the address would
+/// mean a background message from the peer setting a channel up on this
+/// device -- the page would offer a Bluetooth row the person never asked
+/// for. There is also nothing for the address to be useful to: nothing dials
+/// it (ADR-0006), it is diagnostics for a channel that exists.
 #[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_self_report_persists_without_enabling_when_not_os_paired() {
+async fn bluetooth_self_report_does_not_set_up_a_channel_that_was_never_configured() {
     let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
 
-    let (server, server_db) = server_state("transport-tcpws-self-report-no-enable");
+    let (server, server_db) = server_state("channel-tcpws-self-report-no-channel");
     seed_paired_device(&server_db, "peer-client");
     let port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(
@@ -1011,13 +1027,10 @@ async fn bluetooth_self_report_persists_without_enabling_when_not_os_paired() {
 
     sleep(Duration::from_millis(100)).await;
     let mut conn = open_db_at_path(&server_db);
-    let row: (Option<String>, bool) = paired_devices::table
-        .find("peer-client")
-        .select((paired_devices::bluetooth_address, paired_devices::bluetooth_enabled))
-        .first(&mut conn)
-        .expect("load peer row");
-    assert_eq!(row.0.as_deref(), Some("11:22:33:44:55:66"));
-    assert!(!row.1, "bluetooth must not auto-enable without OS pairing");
+    assert!(
+        channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
+        "a self-report must not be what sets a channel up"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1142,8 +1155,8 @@ async fn both_adapters_satisfy_the_transport_port() {
 }
 
 /// `pairing::commands::send_pair_ws` is a one-shot sender
-/// independent of `TcpWsLink` (connect, send one frame, close) — it does
-/// not go through `Link::send`, so nothing structurally forces it to stay
+/// independent of `TcpWsDataLink` (connect, send one frame, close) — it does
+/// not go through `DataLink::send`, so nothing structurally forces it to stay
 /// wire-compatible with what `run_peer_gate`/`codec::decode_frame` expect
 /// on the receiving end. This regression-tests that compatibility directly:
 /// a real `PairRequest` sent via the production
@@ -1314,10 +1327,10 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
     );
     // Regression test for a P1 review finding on this PR: the lightweight
     // live-poll surface (`device_connection_channel_liveness`) must
-    // reflect this amber-not-green state too, not just `primary` -- the
-    // whole point of it existing is to let a Bluetooth-only peer's row
-    // (never covered by the network-presence-gated full poll) stay
-    // current without the OS-bond-check cost.
+    // reflect this amber-not-green state, not leave it frozen -- the whole
+    // point of it existing is to let a Bluetooth-only peer's row (never
+    // covered by the network-presence-gated full poll) stay current
+    // without that poll's cost.
     let liveness_before = crate::services::communication::pairing::device_connection_channel_liveness_impl(
         &server,
         "peer-client".to_string(),
@@ -1327,7 +1340,6 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
         .find(|l| l.kind == crate::services::communication::pairing::ChannelKind::Network)
         .expect("network liveness row");
     assert!(network_liveness_before.connected);
-    assert!(network_liveness_before.primary);
     assert!(
         network_liveness_before.code.is_some(),
         "must carry an amber code before the ping/ack proof completes, not None (green)"
@@ -1385,12 +1397,12 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
 /// Wraps a real link but reports a different `TransportKind` — lets these
 /// tests drive `run_peer_gate`'s Bluetooth-specific enablement check using
 /// `sim`'s real, already-proven TCP+length-delimited wire protocol, without
-/// needing an actual BLE stack (no adapter's `Link` impl is swappable at the
+/// needing an actual BLE stack (no adapter's `DataLink` impl is swappable at the
 /// `kind()` level otherwise).
-struct AsBluetooth(Box<dyn Link>);
+struct AsBluetooth(Box<dyn DataLink>);
 
 #[async_trait]
-impl Link for AsBluetooth {
+impl DataLink for AsBluetooth {
     fn kind(&self) -> TransportKind {
         TransportKind::Bluetooth
     }
@@ -1428,12 +1440,12 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("a paired but bluetooth-disabled device must be rejected over a Bluetooth-kind link");
@@ -1460,13 +1472,14 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
-        diesel::update(paired_devices::table.find("peer-client"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("127.0.0.1")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth for seeded peer");
+        channels::configure(
+            &mut conn,
+            "peer-client",
+            ChannelKind::Bluetooth,
+            true,
+            Some("127.0.0.1"),
+        )
+        .expect("switch bluetooth on for the seeded peer");
     }
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1477,12 +1490,12 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("a bluetooth-enabled, bonded paired device should authenticate over a Bluetooth-kind link");
@@ -1515,13 +1528,14 @@ async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
-        diesel::update(paired_devices::table.find("peer-client"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth for seeded peer");
+        channels::configure(
+            &mut conn,
+            "peer-client",
+            ChannelKind::Bluetooth,
+            true,
+            Some("AA:BB:CC:DD:EE:FF"),
+        )
+        .expect("switch bluetooth on for the seeded peer");
     }
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1532,17 +1546,17 @@ async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        // Connects as "127.0.0.1" (SimLink's real peer_addr), not the
-        // Connects as "127.0.0.1" (SimLink's real peer_addr), which is
+        // Connects as "127.0.0.1" (SimDataLink's real peer_addr), not the
+        // Connects as "127.0.0.1" (SimDataLink's real peer_addr), which is
         // neither the stored address nor OS-bonded -- the shape of every
         // real Android peer, which advertises under a rotating address that
         // by construction matches nothing stored.
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("an authenticated peer must be accepted regardless of its address");
@@ -1552,7 +1566,7 @@ async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
 
 /// ADR 0002 Phase 3: a `PairRequest` delivered over a Bluetooth-kind link
 /// must be flagged `via_bluetooth`, with `from_bluetooth_address` set to the
-/// address actually *observed* on that connection (`Link::peer_addr()`) --
+/// address actually *observed* on that connection (`DataLink::peer_addr()`) --
 /// trusted over any self-report, since the sender has no network endpoint
 /// fields to self-report through this transport in the first place.
 #[tokio::test(flavor = "multi_thread")]
@@ -1575,12 +1589,12 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::PairRequest(PairRequestPayload {
@@ -1635,12 +1649,12 @@ async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::PairComplete(PairCompletePayload {
@@ -1741,12 +1755,12 @@ async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {
@@ -1764,24 +1778,23 @@ async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet
     }
 }
 
-/// Regression test for the P2 review finding: a probe from a paired but
-/// *explicitly disabled* peer must get no reply either -- replying would
-/// let that peer believe "Find via Bluetooth" succeeded and persist/enable
-/// the address on its own end, only for every real session attempt to
-/// then be rejected by this device's own `check_bluetooth_enabled` gate.
-/// Distinct from the "not yet enabled" case above: that one must still
-/// reply (it's the whole point of this discovery flow), an explicit
-/// disable must not.
+/// Regression test for the P2 review finding: a probe from a peer whose
+/// Bluetooth channel this device set up and then *switched off* must get no
+/// reply -- replying would let that peer believe "Find via Bluetooth"
+/// succeeded and record the address on its own end, only for every real
+/// session attempt to then be rejected by this device's own
+/// `check_channel_enabled` gate. Distinct from the never-set-up case above:
+/// that one must still reply (it's the whole point of this discovery flow),
+/// a switched-off channel must not. A row that exists and is off is exactly
+/// what tells the two apart.
 #[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_probe_gets_no_reply_when_explicitly_disabled() {
-    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-disabled");
+async fn bluetooth_probe_gets_no_reply_when_the_channel_is_switched_off() {
+    let (receiver, receiver_db) = server_state("channel-bluetooth-probe-switched-off");
     seed_paired_device(&receiver_db, "peer-client");
     {
         let mut conn = open_db_at_path(&receiver_db);
-        diesel::update(paired_devices::table.find("peer-client"))
-            .set(paired_devices::bluetooth_disabled_by_user.eq(true))
-            .execute(&mut conn)
-            .expect("mark the pair as explicitly disabled");
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
+            .expect("set the channel up, switched off");
     }
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1792,12 +1805,12 @@ async fn bluetooth_probe_gets_no_reply_when_explicitly_disabled() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {
@@ -1828,12 +1841,12 @@ async fn bluetooth_probe_gets_no_reply_from_an_unpaired_device_id() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn Link> = Box::new(AsBluetooth(Box::new(sim::SimLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(sim::SimDataLink::new(stream))));
         session::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn Link> = Box::new(sim::SimLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(sim::SimDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {

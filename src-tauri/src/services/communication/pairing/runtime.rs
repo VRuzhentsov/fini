@@ -121,7 +121,7 @@ pub(super) fn build_incoming_pair_request(
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
     // When `via_bluetooth`, `from_addr` is the sender's Bluetooth address as
-    // observed on this connection (`Link::peer_addr()`), not an IP -- see
+    // observed on this connection (`DataLink::peer_addr()`), not an IP -- see
     // `IncomingPairRequest::from_bluetooth_address`.
     let from_bluetooth_address = via_bluetooth.then(|| from_addr.clone());
 

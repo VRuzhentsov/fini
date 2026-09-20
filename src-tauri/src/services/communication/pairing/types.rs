@@ -64,7 +64,7 @@ pub struct IncomingPairRequest {
     /// Whether this `PairRequest` arrived over a Bluetooth link (ADR 0002
     /// Phase 3's BLE-first pairing) rather than network. When true,
     /// `from_bluetooth_address` carries the sender's address as *observed*
-    /// on this connection (`Link::peer_addr()`), which is more trustworthy
+    /// on this connection (`DataLink::peer_addr()`), which is more trustworthy
     /// than a self-reported value.
     pub via_bluetooth: bool,
     pub from_bluetooth_address: Option<String>,
@@ -140,13 +140,6 @@ pub struct DevicePairRequestBluetoothInput {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DevicePairRequestAckInput {
     pub request_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct DeviceBluetoothChannelInput {
-    pub peer_device_id: String,
-    pub enabled: bool,
-    pub bluetooth_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

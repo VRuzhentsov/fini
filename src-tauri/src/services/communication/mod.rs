@@ -9,10 +9,13 @@
 //! - `sync` — the application protocol that runs over a channel, and the
 //!   outbox that survives a channel being down.
 //!
-//! A **channel** is the configured connection between two devices; a
-//! **channel kind** is the medium it uses (`network`, `bluetooth`).
-//! "Transport" is the low-level synonym, kept in this module's internals for
-//! the adapter that carries a link — see `docs/naming.md`.
+//! A **channel (transport)** is the configured path between two devices —
+//! one concept, two words, the second being the older networking one. A
+//! **channel kind** is which one it is: `network` or `bluetooth`.
+//!
+//! See `README.md` beside this file for how `Channel`, `PeerSession`,
+//! `DataLink` and `PeerFrame` differ, and `docs/glossary.md` for what each
+//! word means.
 
 pub mod channel;
 pub mod pairing;

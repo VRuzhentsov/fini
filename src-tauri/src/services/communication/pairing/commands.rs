@@ -8,6 +8,8 @@ use std::time::Duration;
 use tauri::State;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use super::channel_status::ChannelKind;
+use super::channels;
 use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;
@@ -17,7 +19,7 @@ use crate::services::communication::pairing::runtime::{
     generate_passcode, prune_expired_incoming_requests, utc_now,
 };
 use crate::services::communication::pairing::types::{
-    DeviceBluetoothChannelInput, DeviceConnectionDebugStatus, DeviceIdentity,
+    DeviceConnectionDebugStatus, DeviceIdentity,
     DevicePairRequestAckInput, DevicePairRequestBluetoothInput, DevicePairRequestInput,
     DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairAcceptPayload,
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
@@ -42,22 +44,6 @@ pub(crate) fn normalize_bluetooth_address(value: &str) -> Option<String> {
         return None;
     }
     Some(trimmed.to_ascii_uppercase())
-}
-
-/// `paired_devices.preferred_transport`'s stored form for a live/target
-/// `TransportKind` -- ADR-0003 Phase 3. `Sim`
-/// (test/E2E-only, stands in for Bluetooth) and `LoRa` (reserved, no
-/// adapter implements it yet) both fold into "bluetooth": neither is ever
-/// a real user-facing preference target of its own.
-pub(crate) fn channel_kind_to_preference_string(
-    kind: TransportKind,
-) -> &'static str {
-    match kind {
-        TransportKind::TcpWs => "network",
-        TransportKind::Sim
-        | TransportKind::Bluetooth
-        | TransportKind::LoRa => "bluetooth",
-    }
 }
 
 /// Tri-state OS-bond check: `Some(true)`/`Some(false)` are *confirmed*
@@ -416,32 +402,7 @@ pub(crate) fn request_os_bond(address: &str, peer_device_id: &str, db_path: std:
 pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     conn: &mut SqliteConnection, peer_id: &str, address: &str,
 ) -> Result<bool, String> {
-    // Only `disabled_by_user` is read now: it keeps an explicit opt-out
-    // (`device_connection_set_bluetooth_channel_impl`'s disable branch)
-    // from being undone by this self-report path. The companion read of
-    // `bluetooth_enabled` went with the bond branching below -- nothing
-    // here decides enablement any more, so there is no longer a
-    // "currently enabled state to protect" to weigh against.
-    let disabled_by_user: bool = paired_devices::table
-        .find(peer_id)
-        .select(paired_devices::bluetooth_disabled_by_user)
-        .first(&mut *conn)
-        .unwrap_or(false);
-
-    if disabled_by_user {
-        // `specs/device-connect/README.md`: "Disabling ... clears stored
-        // Bluetooth reconnect metadata," and that must *stay* cleared no
-        // matter what this self-report's bond check would otherwise
-        // conclude -- confirmed bonded, confirmed not bonded, or
-        // inconclusive all leave the row untouched here. Checked before
-        // even running the bond check itself: there is nothing this
-        // self-report could learn that should change a row the user has
-        // explicitly opted out of. Re-enabling via the settings toggle is
-        // what stores a fresh address again, deliberately as its own
-        // distinct user action.
-        return Ok(false);
-    }
-    // ADR-0006: record the address, and leave enablement strictly alone.
+    // ADR-0006: record the address, and leave the switch strictly alone.
     //
     // This used to branch on a live OS-bond check -- confirmed bonded
     // enabled the pair, confirmed unbonded *disabled* it, inconclusive did
@@ -454,21 +415,20 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     // `auth rejected: bluetooth disabled for this pair`, with nothing
     // anywhere naming the cause.
     //
-    // Enablement now changes only by explicit user action
-    // (`device_connection_set_bluetooth_channel_impl`) or at pairing.
-    // The `disabled_by_user` opt-out above still wins over everything here.
-    diesel::update(paired_devices::table.find(peer_id))
-        .set(paired_devices::bluetooth_address.eq(Some(address)))
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
+    // `note_address` writes only to a channel that exists and is on, which
+    // is what keeps a self-report from undoing an explicit switch-off --
+    // the job `bluetooth_disabled_by_user` used to hold a whole column for.
+    // Switching the channel back on is what stores a fresh address again,
+    // deliberately as its own distinct act.
+    channels::note_address(conn, peer_id, ChannelKind::Bluetooth, address);
     Ok(false)
 }
 
 /// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/`PairComplete`).
-/// Independent of `channel::tcp_ws::TcpWsLink` (connect, send one frame,
-/// close — no need for a full `Link`), but MUST encode via the same
+/// Independent of `channel::tcp_ws::TcpWsDataLink` (connect, send one frame,
+/// close — no need for a full `DataLink`), but MUST encode via the same
 /// `channel::codec::encode_frame` (envelope-wrapped) and the same `Message::Text`
-/// framing `TcpWsLink` reads, or `run_peer_gate` silently fails to parse the
+/// framing `TcpWsDataLink` reads, or `run_peer_gate` silently fails to parse the
 /// first frame.
 fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
     tauri::async_runtime::block_on(async move {
@@ -491,7 +451,7 @@ fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
 /// One-shot pre-auth pairing sender over Bluetooth — the BLE-first pairing
 /// equivalent of `send_pair_ws` above (ADR 0002 Phase 3). No text-framing
 /// dance needed here: `channel::send_frame` already handles encoding for
-/// any `Link`, unlike the WebSocket path, which has to hand-roll a
+/// any `DataLink`, unlike the WebSocket path, which has to hand-roll a
 /// `Message::Text` frame around the same codec.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 /// A stale/unresponsive BLE candidate has no bound of its own here: `dial`
@@ -1247,35 +1207,26 @@ pub fn device_connection_save_paired_device_impl(
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
 
-        // Migration 23's column default is `1`, which is right for every row
-        // that existed before this pair did -- they were all formed over the
-        // network and were syncing on it. It is wrong for a *new* pair, and
-        // silently so: a user who explicitly chose Bluetooth in the pairing
-        // dialog would get Network switched on too, and the app would start
-        // dialling the LAN over a channel they never picked.
-        //
-        // That would make the redesign's central promise false on the very
-        // first screen, so the initial value is set from how the pairing
-        // actually arrived rather than inherited from the default.
-        diesel::update(paired_devices::table.find(&peer_device_id))
-            .set(paired_devices::network_enabled.eq(!via_bluetooth))
-            .execute(&mut *conn)
-            .map_err(|e| e.to_string())?;
+        // A new pair's channels reflect how it was set up (ADR-0007). A
+        // person who explicitly chose Bluetooth in the pairing dialog must
+        // not find Network configured as well, with the app dialling the LAN
+        // over a channel they never picked -- that would make the redesign's
+        // central promise false on the very first screen.
+        if !via_bluetooth {
+            channels::configure(
+                &mut *conn,
+                &peer_device_id,
+                ChannelKind::Network,
+                true,
+                None,
+            )?;
+        }
     }
 
     // ADR 0002 Phase 3: a Bluetooth address handed over as part of the
     // pairing handshake itself (either observed directly on a
     // Bluetooth-carried completion, or self-reported by the peer) is
-    // stored immediately, as diagnostics.
-    //
-    // `bluetooth_enabled` used to flip on only for an OS-bonded address,
-    // on the reasoning that setting it otherwise would be a lie the UI
-    // shows for a pair that can never connect. ADR-0006 inverted that: no
-    // bond is consulted anywhere on the dial path, so requiring one here
-    // left the flag false for every pair the product can actually serve --
-    // and a peer is only dialled when it is true. The enablement decision
-    // now lives below, keyed on whether the pairing itself arrived over
-    // Bluetooth.
+    // recorded as diagnostics -- but only onto a channel that exists.
     //
     // Runs for both branches above, not just a fresh insert: this
     // function is only ever called as the final step of a real,
@@ -1283,53 +1234,26 @@ pub fn device_connection_save_paired_device_impl(
     // background path -- an *existing* row here means an asymmetric
     // re-pair (the other side reset and paired again while this side kept
     // its old row), and that fresh handshake's Bluetooth details are just
-    // as real as a brand-new pair's.
-    if let Some(address) = bluetooth_address.as_deref().and_then(normalize_bluetooth_address) {
-        // A fresh BLE-carried pairing completion is treated as an implicit
-        // opt back *in*: an asymmetric re-pair (the other side reset and
-        // paired again) can land on a row that still carries
-        // `bluetooth_disabled_by_user = true` from a *previous* pairing
-        // with this same peer_device_id, and
-        // `persist_bluetooth_address_and_maybe_enable`'s opt-out guard
-        // would otherwise silently ignore this completely fresh handshake
-        // -- the UI would report pairing complete while this side
-        // permanently rejects every real session. Completing a whole
-        // BLE-first pairing (device discovery, code confirmation) is a
-        // clear enough user action to count as re-opting in on its own,
-        // unlike an ordinary network pairing that merely happens to carry
-        // a self-reported address alongside it.
-        if via_bluetooth {
-            diesel::update(paired_devices::table.find(&peer_device_id))
-                .set(paired_devices::bluetooth_disabled_by_user.eq(false))
-                .execute(&mut *conn)
-                .map_err(|e| e.to_string())?;
-        }
-        persist_bluetooth_address_and_maybe_enable(&mut *conn, &peer_device_id, &address)?;
-
-        // ADR-0006: enablement is decided here, at a completed pairing, and
-        // no longer falls out of a bond check inside the self-report path.
-        //
-        // A completed BLE-carried pairing is a deliberate user action that
-        // already proves the two devices can reach each other over
-        // Bluetooth -- it is how they just talked. Requiring an OS bond on
-        // top of that was what left `bluetooth_enabled` permanently false
-        // for every pair the product could actually serve, which in turn
-        // made the whole bondless dial path unreachable.
-        //
-        // Deliberately narrowed to `via_bluetooth`: an ordinary network
-        // pairing that merely carries a self-reported address alongside it
-        // is not evidence that Bluetooth works between these two, and
-        // silently switching a second channel on is the user's call, via
-        // the Device settings toggle.
-        if via_bluetooth {
-            diesel::update(paired_devices::table.find(&peer_device_id))
-                .set((
-                    paired_devices::bluetooth_enabled.eq(true),
-                    paired_devices::bluetooth_last_verified_at.eq(Some(utc_now())),
-                ))
-                .execute(&mut *conn)
-                .map_err(|e| e.to_string())?;
-        }
+    // as real as a brand-new pair's. A completed BLE-first pairing is a
+    // deliberate enough act to count as setting the channel up again, so
+    // it overwrites a previous opt-out rather than being ignored by it --
+    // otherwise the UI would report pairing complete while this side
+    // permanently rejected every real session.
+    let address = bluetooth_address.as_deref().and_then(normalize_bluetooth_address);
+    if via_bluetooth {
+        channels::configure(
+            &mut *conn,
+            &peer_device_id,
+            ChannelKind::Bluetooth,
+            true,
+            address.as_deref(),
+        )?;
+    } else if let Some(address) = address.as_deref() {
+        // An ordinary network pairing that happens to carry a self-reported
+        // address is not evidence that Bluetooth works between these two.
+        // Record where the peer says it can be found, and leave setting the
+        // channel up to the person.
+        channels::note_address(&mut *conn, &peer_device_id, ChannelKind::Bluetooth, address);
     }
 
     paired_devices::table
@@ -1360,43 +1284,47 @@ pub fn device_connection_save_paired_device(
     )
 }
 
-pub fn device_connection_set_bluetooth_channel_impl(
+/// The switch on a channel row: one function for both kinds, because
+/// turning a channel off has to do the same four things either way, and
+/// having had two of these is how the Network switch shipped greying the
+/// row while traffic kept flowing.
+///
+/// Off means: the row is off, the primary is released, this device stops
+/// dialling, and any session already open on the channel is closed. The
+/// peer's inbound dial is refused separately, by the session gate
+/// (`sync::session`), which is the other half of the same promise.
+///
+/// On means: the row is on and, for Bluetooth, the dial backoff is reset --
+/// a person who just switched a channel on is asking for an attempt now,
+/// not at the end of whatever window a previous failure opened.
+///
+/// Enabling never fails on a precondition. If the condition the channel
+/// needs is absent -- no radio, peer away -- the channel stays on and the
+/// row says so (ADR-0007).
+pub fn device_connection_set_channel_enabled_impl(
     conn: &mut SqliteConnection,
-    input: DeviceBluetoothChannelInput,
-) -> Result<PairedDevice, String> {
-    let existing: Option<PairedDevice> = paired_devices::table
-        .find(&input.peer_device_id)
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+    kind: ChannelKind,
+    enabled: bool,
+) -> Result<Vec<ChannelStatus>, String> {
+    let paired: Option<PairedDevice> = paired_devices::table
+        .find(&peer_device_id)
         .select(PairedDevice::as_select())
         .first(&mut *conn)
         .optional()
         .map_err(|e| e.to_string())?;
-    if existing.is_none() {
+    if paired.is_none() {
         return Err("paired device not found".to_string());
     }
 
-    let normalized_address = input
-        .bluetooth_address
-        .as_deref()
-        .and_then(normalize_bluetooth_address);
-
-    if input.enabled {
-        // ADR-0006: neither a stored address nor an OS bond is required to
-        // enable Bluetooth any more, and requiring them here made the
-        // bondless dial path unreachable in practice -- a peer is only ever
-        // dialled when `bluetooth_enabled` is true, and this is the only
-        // user-facing route to setting it. An address supplied by the caller
-        // is still recorded, as the diagnostic "where we last saw this peer"
-        // that `note_observed_bluetooth_address` also writes.
-
-        // This command only runs from the user explicitly flipping the
-        // Bluetooth toggle in Device settings -- the one point in the app
-        // where requesting the runtime permission triad is appropriate. Not
-        // requested at startup or from any background path (the dial loop,
-        // the peripheral acceptor): see BluetoothPairing.requestPermissionsIfNeeded's
-        // doc comment. Fire-and-forget: if the user hasn't responded to the
-        // dialog yet, `isBonded`/`hasPermissions` below still (correctly)
-        // fail closed, and this same toggle click can just be retried once
-        // they grant it.
+    if enabled && kind == ChannelKind::Bluetooth {
+        // The one point in the app where requesting the runtime permission
+        // triad is appropriate: an explicit switch flip, never startup and
+        // never a background path (the dial loop, the peripheral acceptor).
+        // See BluetoothPairing.requestPermissionsIfNeeded's doc comment.
+        // Fire-and-forget: if the dialog is still unanswered, `hasPermissions`
+        // below (correctly) fails closed and the same click can be retried.
         #[cfg(target_os = "android")]
         {
             crate::services::android_context::call_static_context_void(
@@ -1413,251 +1341,169 @@ pub fn device_connection_set_bluetooth_channel_impl(
                 );
             }
         }
+    }
 
-        diesel::update(paired_devices::table.find(&input.peer_device_id))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_last_verified_at.eq(Some(utc_now())),
-                // The user explicitly opted back in -- clears whatever a
-                // previous explicit disable set, so self-reports are free
-                // to auto-confirm/re-enable this pair again.
-                paired_devices::bluetooth_disabled_by_user.eq(false),
-            ))
-            .execute(&mut *conn)
-            .map_err(|e| e.to_string())?;
-
-        // Written separately, and only when the caller actually supplied
-        // one: folding it into the update above would blank a previously
-        // observed address every time the toggle is used without one, which
-        // is now the common case rather than the exception.
-        if let Some(address) = normalized_address {
-            diesel::update(paired_devices::table.find(&input.peer_device_id))
-                .set(paired_devices::bluetooth_address.eq(Some(address)))
-                .execute(&mut *conn)
-                .map_err(|e| e.to_string())?;
-        }
+    // `configure`, not `set_enabled`: flipping the switch on a channel that
+    // has no row is how a channel gets set up in the first place, and the
+    // page offers exactly that for a channel a pair has never used.
+    // `set_enabled` on its own would update nothing and report success.
+    if channels::find(&mut *conn, &peer_device_id, kind).is_some() {
+        channels::set_enabled(&mut *conn, &peer_device_id, kind, enabled)?;
     } else {
-        // One transaction, not two independent statements: if the second
-        // update (clearing a surviving Bluetooth pin) failed after the
-        // first had already committed, the pair would be left with
-        // Bluetooth disabled *and* still pinned to it -- Network stays
-        // suppressed by the pin while Bluetooth candidate selection now
-        // excludes the disabled pair, stranding it. Rolling back the
-        // disable too if the pin clear fails means this function only
-        // ever leaves the two in sync.
-        conn.transaction::<(), diesel::result::Error, _>(|conn| {
-            diesel::update(paired_devices::table.find(&input.peer_device_id))
-                .set((
-                    paired_devices::bluetooth_enabled.eq(false),
-                    paired_devices::bluetooth_address.eq(Option::<String>::None),
-                    paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
-                    // An explicit opt-out: must stick until the user
-                    // explicitly re-enables it above, not just until the
-                    // next self-report over a network session re-confirms
-                    // the (still genuinely OS-bonded) address -- see
-                    // `persist_bluetooth_address_and_maybe_enable`.
-                    paired_devices::bluetooth_disabled_by_user.eq(true),
-                ))
-                .execute(conn)?;
+        channels::configure(&mut *conn, &peer_device_id, kind, enabled, None)?;
+    }
 
-            // A "bluetooth" pin that survives disabling Bluetooth for this
-            // pair can never actually be honored as primary --
-            // `bluetooth_dial_candidates`/the inbound Bluetooth gate now
-            // both exclude this pair, so Bluetooth can never reconnect to
-            // become primary again. Clearing it falls back to automatic
-            // (network-first) primary selection, matching what the user
-            // almost certainly wants from "disable Bluetooth" anyway.
-            if peer_channel_preference(conn, &input.peer_device_id).as_deref() == Some("bluetooth") {
-                diesel::update(paired_devices::table.find(&input.peer_device_id))
-                    .set((
-                        paired_devices::preferred_transport.eq(Option::<String>::None),
-                        paired_devices::preferred_transport_set_at.eq(Option::<String>::None),
-                    ))
-                    .execute(conn)?;
+    if enabled {
+        match kind {
+            // Switching a channel on is one of the five moments work becomes
+            // sendable (ADR-0007): the peer was filtered out of the dial loop
+            // a moment ago and is eligible again. Without this the pair waits
+            // for the hourly backstop to notice -- measured at 17s on
+            // hardware for a reconnect the person just asked for and is
+            // watching.
+            ChannelKind::Network => {
+                crate::services::communication::sync::commands::notify_sync_work_pending();
             }
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
-    }
-
-    paired_devices::table
-        .find(&input.peer_device_id)
-        .select(PairedDevice::as_select())
-        .first(&mut *conn)
-        .map_err(|e| e.to_string())
-}
-
-/// Like `device_connection_set_bluetooth_channel_impl`, but additionally
-/// acts on a live `DeviceConnectionState` -- the `_impl` function alone
-/// only writes this device's own row (a safe fallback for callers with no
-/// live state, e.g. cli-plane); this one has one, so a disable can also:
-///
-/// 1. Redirect an existing Bluetooth pin to an explicit Network pin
-///    (rather than merely clearing to "no preference"), reusing
-///    `device_connection_set_preferred_channel_impl`'s own
-///    `refresh_primary` call -- without this, a pair pinned to Bluetooth
-///    would fall back to automatic selection, which is *usually* Network
-///    anyway, but not guaranteed if Network also happens to be down.
-/// 2. Close any live Bluetooth (or Sim, its test stand-in) session for this
-///    peer outright (`close_session_on`) -- a P1 review finding: without
-///    this, an already-connected session doesn't just linger cosmetically,
-///    it can still win primary-channel fallback (if Network later drops)
-///    and have `push_to_peer` resume real application traffic over a
-///    channel the user explicitly just turned off, violating
-///    `specs/device-connect/README.md`'s "disabling ... prevents future
-///    Bluetooth use" contract. `recompute_primary_locked`'s own
-///    `bluetooth_enabled` check (see its doc comment) closes the race
-///    between this fire-and-forget close and its own async teardown; this
-///    call is what makes the connection actually stop, not just stop
-///    counting.
-///
-/// Takes a plain `&DeviceConnectionState` (not `tauri::State`) so it's
-/// directly unit-testable the same way every other `_impl` function here
-/// is.
-pub fn device_connection_set_bluetooth_channel_with_state_impl(
-    conn: &mut SqliteConnection,
-    state: &DeviceConnectionState,
-    input: DeviceBluetoothChannelInput,
-) -> Result<PairedDevice, String> {
-    let peer_device_id = input.peer_device_id.clone();
-    let disabling = !input.enabled;
-    let disabling_a_bluetooth_pin =
-        disabling && peer_channel_preference(&mut *conn, &peer_device_id).as_deref() == Some("bluetooth");
-
-    let updated = device_connection_set_bluetooth_channel_impl(&mut *conn, input)?;
-
-    if disabling {
-        state.close_session_on(&peer_device_id, TransportKind::Bluetooth);
-        state.close_session_on(&peer_device_id, TransportKind::Sim);
-        if !disabling_a_bluetooth_pin {
-            // `disabling_a_bluetooth_pin` already gets an equivalent
-            // `refresh_primary` call below, via `device_connection_
-            // device_connection_set_preferred_channel_impl` -- this covers the unpinned
-            // case, a P1 review finding: without it, a peer that happened
-            // to have Bluetooth as primary (Network down at the time)
-            // would keep it as primary in memory -- and `push_to_peer`
-            // would keep routing real traffic there -- until some
-            // unrelated claim/release event happened to trigger a
-            // recompute, rather than the instant this disable takes
-            // effect.
-            state.refresh_primary(&peer_device_id, false, false);
+            // Bluetooth's equivalent, plus a backoff reset: after a peer
+            // exhausted its automatic retries, switching off and on again
+            // used to return straight to `BluetoothDialExhausted` with
+            // `spawn_dial_loop` still skipping it, ignoring the fresh
+            // request entirely.
+            ChannelKind::Bluetooth => {
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                crate::services::communication::channel::ble::retry_bluetooth_dial(
+                    state,
+                    &peer_device_id,
+                );
+            }
         }
     } else {
-        // A P2 review finding: `ble::dial_exhausted`'s own doc comment
-        // already claimed this reset happens on explicit re-enable, but
-        // nothing actually called it -- after a peer exhausted, disabling
-        // and re-enabling Bluetooth just returned straight back to
-        // `BluetoothDialExhausted` and `spawn_dial_loop` kept skipping it,
-        // ignoring the user's fresh enable action entirely. Calls
-        // `ble::retry_bluetooth_dial` directly (not the `ui-plane`-gated
-        // `device_connection_retry_bluetooth_dial` command) so this stays
-        // reachable from `cli-plane`/no-feature builds too.
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        crate::services::communication::channel::ble::retry_bluetooth_dial(state, &peer_device_id);
+        // Closing the session is what makes the switch a switch. Without it
+        // an already-connected session does not merely linger cosmetically:
+        // it can still win primary-channel selection and have `push_to_peer`
+        // resume real traffic over a channel the person just switched off.
+        match kind {
+            ChannelKind::Network => {
+                state.close_session_on(&peer_device_id, TransportKind::TcpWs);
+            }
+            ChannelKind::Bluetooth => {
+                state.close_session_on(&peer_device_id, TransportKind::Bluetooth);
+                // Sim stands in for Bluetooth in tests and E2E, so it has to
+                // be closed by the same switch or the lane proves nothing.
+                state.close_session_on(&peer_device_id, TransportKind::Sim);
+            }
+        }
+        // `channels::set_enabled` already released the primary in the DB;
+        // this is the in-memory half. Without it a peer that happened to
+        // have this channel primary keeps it primary until some unrelated
+        // claim/release event triggers a recompute, rather than the instant
+        // the switch takes effect.
+        let pinned_to_bluetooth =
+            channels::primary_kind(&mut *conn, &peer_device_id) == Some(ChannelKind::Bluetooth);
+        let bluetooth_enabled =
+            channels::is_enabled(&mut *conn, &peer_device_id, ChannelKind::Bluetooth);
+        state.refresh_primary(&peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
     }
 
-    if disabling_a_bluetooth_pin {
-        return device_connection_set_preferred_channel_impl(
-            conn,
-            state,
-            peer_device_id,
-            Some(TransportKind::TcpWs),
-        );
-    }
-
-    Ok(updated)
+    device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_set_bluetooth_channel(
+pub fn device_connection_set_channel_enabled(
     db: State<AppDbConnection>,
     state: State<DeviceConnectionState>,
-    input: DeviceBluetoothChannelInput,
-) -> Result<PairedDevice, String> {
+    peer_device_id: String,
+    kind: ChannelKind,
+    enabled: bool,
+) -> Result<Vec<ChannelStatus>, String> {
     let mut conn = db.0.lock().unwrap();
-    device_connection_set_bluetooth_channel_with_state_impl(&mut conn, &state, input)
+    device_connection_set_channel_enabled_impl(&mut conn, &state, peer_device_id, kind, enabled)
 }
 
-/// Whether `peer_device_id` currently satisfies every precondition
-/// `bluetooth_dial_candidates` itself requires. Since ADR-0006 that is one
-/// thing: Bluetooth enabled for the pair.
+/// Forget a channel entirely: "unlink channel" on the Device page.
 ///
-/// It used to also require a normalizable stored address and a live OS bond
-/// checked right now. Both are gone with the bond dependency — keeping them
-/// here would have left the user-driven Bluetooth pin refusing exactly the
-/// pairs the channel can now actually reach.
-pub(crate) fn peer_is_currently_bluetooth_eligible(conn: &mut SqliteConnection, peer_device_id: &str) -> bool {
-    paired_devices::table
-        .find(peer_device_id)
-        .select(paired_devices::bluetooth_enabled)
-        .first::<bool>(&mut *conn)
-        .unwrap_or(false)
-}
-
-/// ADR-0003 revision: click either channel row to pin this pair to it.
-/// Persists the pin (so it governs future automatic reconnects too), then
-/// immediately re-runs primary-channel selection (`refresh_primary`) so
-/// the UI reflects it without waiting for a reconnect -- both channels
-/// stay connected regardless of the pin now, so there's nothing to switch
-/// or force-close, only which already-connected one is primary.
-/// `preferred: None` clears the stored pin, falling back to the automatic
-/// network-first rule.
-pub fn device_connection_set_preferred_channel_impl(
+/// The pair keeps its trust, its mapped spaces and its other channel; this
+/// one stops existing, and the page offers to set it up again from scratch.
+/// Refused while the channel is on, so it is always a deliberate second act
+/// rather than something one click can do to a working connection.
+pub fn device_connection_unlink_channel_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
     peer_device_id: String,
-    preferred: Option<TransportKind>,
-) -> Result<PairedDevice, String> {
-    let existing: Option<PairedDevice> = paired_devices::table
+    kind: ChannelKind,
+) -> Result<Vec<ChannelStatus>, String> {
+    channels::unlink(&mut *conn, &peer_device_id, kind)?;
+    device_connection_channel_statuses_impl(conn, state, peer_device_id)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_unlink_channel(
+    db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+    kind: ChannelKind,
+) -> Result<Vec<ChannelStatus>, String> {
+    let mut conn = db.0.lock().unwrap();
+    device_connection_unlink_channel_impl(&mut conn, &state, peer_device_id, kind)
+}
+
+/// Choose which channel carries this pair's traffic: the star on a channel
+/// row. `primary: None` clears the choice, falling back to the automatic
+/// network-first rule.
+///
+/// The choice persists, so it governs future reconnects too, and the row
+/// shows it whether or not that channel is connected right now (ADR-0007).
+/// Selection is re-run immediately (`refresh_primary`) so the page reflects
+/// it without waiting for a reconnect -- both channels stay connected
+/// regardless of the choice, so there is nothing to switch or force-close,
+/// only which already-connected one is primary.
+///
+/// Refused for a channel that is off: a channel that cannot connect cannot
+/// carry the traffic, so honouring the choice would mean suppressing the
+/// other one in favour of nothing.
+pub fn device_connection_set_primary_channel_impl(
+    conn: &mut SqliteConnection,
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+    primary: Option<ChannelKind>,
+) -> Result<Vec<ChannelStatus>, String> {
+    let paired: Option<PairedDevice> = paired_devices::table
         .find(&peer_device_id)
         .select(PairedDevice::as_select())
         .first(&mut *conn)
         .optional()
         .map_err(|e| e.to_string())?;
-    let Some(existing) = existing else {
+    if paired.is_none() {
         return Err("paired device not found".to_string());
-    };
-    if preferred == Some(TransportKind::Bluetooth)
-        && !peer_is_currently_bluetooth_eligible(conn, &peer_device_id)
-    {
-        return Err(
-            "Bluetooth is not currently available for this pair -- check it's enabled and \
-             still OS-paired, then try again"
-                .to_string(),
-        );
+    }
+    if let Some(kind) = primary {
+        if !channels::is_enabled(&mut *conn, &peer_device_id, kind) {
+            return Err("Switch the channel on first".to_string());
+        }
     }
 
-    let now = utc_now();
-    diesel::update(paired_devices::table.find(&peer_device_id))
-        .set((
-            paired_devices::preferred_transport
-                .eq(preferred.map(channel_kind_to_preference_string)),
-            paired_devices::preferred_transport_set_at.eq(Some(now)),
-        ))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
+    channels::set_primary(&mut *conn, &peer_device_id, primary)?;
 
-    let pinned_to_bluetooth = preferred.is_some_and(|kind| kind != TransportKind::TcpWs);
-    state.refresh_primary(&peer_device_id, pinned_to_bluetooth, existing.bluetooth_enabled);
+    let pinned_to_bluetooth = primary == Some(ChannelKind::Bluetooth);
+    let bluetooth_enabled =
+        channels::is_enabled(&mut *conn, &peer_device_id, ChannelKind::Bluetooth);
+    state.refresh_primary(&peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
 
-    paired_devices::table
-        .find(&peer_device_id)
-        .select(PairedDevice::as_select())
-        .first(&mut *conn)
-        .map_err(|e| e.to_string())
+    device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_set_preferred_channel(
+pub fn device_connection_set_primary_channel(
     db: State<AppDbConnection>,
     state: State<DeviceConnectionState>,
     peer_device_id: String,
-    preferred: Option<TransportKind>,
-) -> Result<PairedDevice, String> {
+    primary: Option<ChannelKind>,
+) -> Result<Vec<ChannelStatus>, String> {
     let mut conn = db.0.lock().unwrap();
-    device_connection_set_preferred_channel_impl(&mut conn, &state, peer_device_id, preferred)
+    device_connection_set_primary_channel_impl(&mut conn, &state, peer_device_id, primary)
 }
 
 /// Whether this machine's Bluetooth radio can be used right now, asked
@@ -1688,93 +1534,6 @@ pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String>
         // platform decision.
         Ok(true)
     }
-}
-
-/// The per-pair Network switch: the counterpart to
-/// `device_connection_set_bluetooth_channel`, added with the device-page
-/// redesign so both channels carry the same control instead of Bluetooth
-/// alone having an Enable/Disable pair.
-///
-/// Turning it off does three things, and the switch is a lie without all
-/// three: `space_sync_tick_impl` stops offering this peer to
-/// `tcp_ws::spawn_dial_loop`, any session already open on the channel is
-/// closed, and a Network pin is released so `primary` recomputes onto
-/// whatever is still connected. Greying the row alone would leave traffic
-/// flowing over a channel the user just switched off.
-///
-/// Unlike the Bluetooth switch there is no eligibility check to fail:
-/// Network needs no permission, no address and no pairing of its own, so
-/// enabling always succeeds and the row afterwards says whether the peer is
-/// actually reachable.
-pub fn device_connection_set_network_channel_impl(
-    conn: &mut SqliteConnection,
-    state: &DeviceConnectionState,
-    peer_device_id: String,
-    enabled: bool,
-) -> Result<PairedDevice, String> {
-    let existing: Option<PairedDevice> = paired_devices::table
-        .find(&peer_device_id)
-        .select(PairedDevice::as_select())
-        .first(&mut *conn)
-        .optional()
-        .map_err(|e| e.to_string())?;
-    let Some(existing) = existing else {
-        return Err("paired device not found".to_string());
-    };
-
-    diesel::update(paired_devices::table.find(&peer_device_id))
-        .set(paired_devices::network_enabled.eq(enabled))
-        .execute(&mut *conn)
-        .map_err(|e| e.to_string())?;
-
-    if !enabled {
-        let disabling_a_network_pin =
-            peer_channel_preference(&mut *conn, &peer_device_id).as_deref() == Some("network");
-        state.close_session_on(&peer_device_id, TransportKind::TcpWs);
-
-        if disabling_a_network_pin {
-            // Clear the pin rather than moving it to Bluetooth: the user
-            // switched a channel off, which says nothing about wanting the
-            // other one pinned. `None` restores the automatic network-first
-            // rule, which with Network off resolves to Bluetooth anyway,
-            // and returns on its own the moment Network comes back.
-            return device_connection_set_preferred_channel_impl(
-                conn,
-                state,
-                peer_device_id,
-                None,
-            );
-        }
-        state.refresh_primary(&peer_device_id, false, existing.bluetooth_enabled);
-    } else {
-        // Switching a channel back on is the fourth moment work becomes
-        // sendable: the peer was filtered out of the dial loop a moment ago
-        // and is now eligible again. Without this the pair waits for the
-        // next backstop tick to notice -- measured at 17s on hardware, for
-        // a reconnect the user just asked for and is watching.
-        //
-        // Bluetooth's enable branch already has its equivalent in
-        // `ble::retry_bluetooth_dial`; Network had none.
-        crate::services::communication::sync::commands::notify_sync_work_pending();
-    }
-
-    paired_devices::table
-        .find(&peer_device_id)
-        .select(PairedDevice::as_select())
-        .first(&mut *conn)
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn device_connection_set_network_channel(
-    db: State<AppDbConnection>,
-    state: State<DeviceConnectionState>,
-    peer_device_id: String,
-    enabled: bool,
-) -> Result<PairedDevice, String> {
-    let mut conn = db.0.lock().unwrap();
-    device_connection_set_network_channel_impl(&mut conn, &state, peer_device_id, enabled)
 }
 
 /// The "Find via Bluetooth" button on `DeviceView.vue` — Phase 1's discovery
@@ -1892,20 +1651,28 @@ pub fn device_connection_channel_statuses_impl(
     state: &DeviceConnectionState,
     peer_device_id: String,
 ) -> Result<Vec<ChannelStatus>, String> {
-    let paired: PairedDevice = paired_devices::table
+    // Asked for its error, not its columns: a peer that is not paired has no
+    // channels to report, and saying so beats returning two empty rows.
+    paired_devices::table
         .find(&peer_device_id)
         .select(PairedDevice::as_select())
-        .first(&mut *conn)
+        .first::<PairedDevice>(&mut *conn)
         .map_err(|e| e.to_string())?;
-    // ADR-0006: no stored-address or OS-bond lookup here any more. Dropping
-    // the bond check also drops a `bluetoothctl` subprocess that used to run
-    // once per peer on every status poll.
+    // ADR-0006: no OS-bond lookup here any more. Dropping the bond check
+    // also drops a `bluetoothctl` subprocess that used to run once per peer
+    // on every status poll.
     let snapshot = channel_liveness_snapshot(state, &peer_device_id);
+    let network = channels::find(&mut *conn, &peer_device_id, ChannelKind::Network);
+    let bluetooth = channels::find(&mut *conn, &peer_device_id, ChannelKind::Bluetooth);
 
     Ok(build_channel_statuses(ChannelStatusInputs {
         network_present: state.network_peer_available(&peer_device_id),
-        network_enabled: paired.network_enabled,
-        bluetooth_enabled: paired.bluetooth_enabled,
+        network_configured: network.is_some(),
+        bluetooth_configured: bluetooth.is_some(),
+        network_enabled: network.as_ref().is_some_and(|channel| channel.enabled),
+        bluetooth_enabled: bluetooth.as_ref().is_some_and(|channel| channel.enabled),
+        network_address: network.as_ref().and_then(|channel| channel.address.clone()),
+        bluetooth_address: bluetooth.as_ref().and_then(|channel| channel.address.clone()),
         // Machine-wide, not per-peer: a radio that is off is off for every
         // pair at once. Read after `bluetooth_enabled` so a pair whose
         // channel is switched off keeps saying so.
@@ -1925,8 +1692,11 @@ pub fn device_connection_channel_statuses_impl(
         bluetooth_dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         network_connected: snapshot.network_connected,
         bluetooth_connected: snapshot.bluetooth_connected,
-        network_primary: snapshot.network_primary,
-        bluetooth_primary: snapshot.bluetooth_primary,
+        // The person's stored choice, not `snapshot`'s live primary: the
+        // star is a setting (ADR-0007), and reading it off the live value
+        // would make it move on its own whenever a link dropped.
+        network_primary: network.as_ref().is_some_and(|channel| channel.is_primary),
+        bluetooth_primary: bluetooth.as_ref().is_some_and(|channel| channel.is_primary),
         network_code: snapshot.network_code,
         bluetooth_code: snapshot.bluetooth_code,
     }))
@@ -1987,14 +1757,12 @@ pub fn device_connection_channel_liveness_impl(
         ChannelLiveness {
             kind: ChannelKind::Network,
             connected: snapshot.network_connected,
-            primary: snapshot.network_primary,
             code: snapshot.network_code,
             dial_exhausted: false,
         },
         ChannelLiveness {
             kind: ChannelKind::Bluetooth,
             connected: snapshot.bluetooth_connected,
-            primary: snapshot.bluetooth_primary,
             code: snapshot.bluetooth_code,
             dial_exhausted: bluetooth_dial_exhausted_now(&peer_device_id),
         },
@@ -2010,12 +1778,10 @@ pub fn device_connection_channel_liveness(
     device_connection_channel_liveness_impl(&state, peer_device_id)
 }
 
-/// Every paired peer eligible for a Bluetooth dial attempt right now: just
-/// the ones with Bluetooth enabled for the pair. Used by
+/// Every paired peer eligible for a Bluetooth dial attempt right now: the
+/// ones whose Bluetooth channel is set up and on. Used by
 /// `channel::ble::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
-/// presence worker or static port list to draw candidates from, so this
-/// queries `paired_devices` directly, the same source
-/// `device_connection_channel_statuses` already checks per-peer.
+/// presence worker or static port list to draw candidates from.
 ///
 /// ADR-0006: this used to also require a stored address and a live OS bond,
 /// and to return the address to dial. It returns peer ids alone now, because
@@ -2023,11 +1789,7 @@ pub fn device_connection_channel_liveness(
 /// for Fini's service UUID and proves who answered with the `Auth` frame.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<String> {
-    paired_devices::table
-        .filter(paired_devices::bluetooth_enabled.eq(true))
-        .select(paired_devices::peer_device_id)
-        .load(&mut *conn)
-        .unwrap_or_default()
+    channels::peers_with_channel_enabled(conn, ChannelKind::Bluetooth)
 }
 
 /// Records the link-layer address a peer was actually reached at, purely so
@@ -2035,47 +1797,28 @@ pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<String> {
 /// this value any more, and nothing gates on it — a peer that advertises
 /// under a rotating address (every modern Android) will simply rewrite it
 /// each time, which is expected rather than a problem to solve.
-///
-/// Deliberately *not* `persist_bluetooth_address_and_maybe_enable`: that one
-/// carries bond-checking and enablement side effects meant for the discovery
-/// flow. Writing a diagnostic field must not enable a channel.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn note_observed_bluetooth_address(conn: &mut SqliteConnection, peer_id: &str, address: &str) {
-    let _ = diesel::update(paired_devices::table.find(peer_id))
-        .set(paired_devices::bluetooth_address.eq(address))
-        .execute(&mut *conn);
+    channels::note_address(conn, peer_id, ChannelKind::Bluetooth, address);
 }
 
-/// This peer's manually-pinned channel preference, if any --
-/// `"network"`/`"bluetooth"` (`channel_kind_to_preference_string`'s
-/// stored form), or `None` for pure automatic primary selection. Both
-/// channels dial/connect unconditionally regardless of this pin (ADR-0003
-/// revision) -- it's consulted only by `DeviceConnectionState::
-/// recompute_primary_locked`, to decide which already-connected channel
-/// counts as primary. A missing/unpaired row reads the same as no
-/// preference, matching every other `unwrap_or_default`-style read in this
-/// module.
-pub fn peer_channel_preference(conn: &mut SqliteConnection, peer_id: &str) -> Option<String> {
-    paired_devices::table
-        .find(peer_id)
-        .select(paired_devices::preferred_transport)
-        .first::<Option<String>>(&mut *conn)
-        .unwrap_or_default()
+/// The channel this pair's traffic was pinned to, or `None` for automatic
+/// (network-first) selection. Both channels dial and connect regardless of
+/// it (ADR-0003 revision) -- it decides only which already-connected one
+/// counts as primary. A missing/unpaired row reads as no choice, matching
+/// every other `unwrap_or_default`-style read in this module.
+pub fn peer_primary_channel(conn: &mut SqliteConnection, peer_id: &str) -> Option<ChannelKind> {
+    channels::primary_kind(conn, peer_id)
 }
 
-/// The coarse `bluetooth_enabled` toggle alone -- not a live OS-bond check
-/// (unlike `peer_is_currently_bluetooth_eligible`). Used by
+/// The Bluetooth switch for this pair. Used by
 /// `DeviceConnectionState::bluetooth_primary_eligibility` to exclude a
-/// disabled pair's Bluetooth session from primary-channel candidacy
+/// switched-off pair's Bluetooth session from primary-channel candidacy
 /// (see `recompute_primary_locked`'s own doc comment for the P1 review
-/// finding this closes). A missing/unpaired row reads as disabled, failing
-/// closed the same direction `check_bluetooth_enabled` does.
+/// finding this closes). A pair with no Bluetooth channel configured reads
+/// as off, failing closed the same direction the session gate does.
 pub fn peer_bluetooth_enabled(conn: &mut SqliteConnection, peer_id: &str) -> bool {
-    paired_devices::table
-        .find(peer_id)
-        .select(paired_devices::bluetooth_enabled)
-        .first::<bool>(&mut *conn)
-        .unwrap_or(false)
+    channels::is_enabled(conn, peer_id, ChannelKind::Bluetooth)
 }
 
 pub fn device_connection_session_channel_impl(
@@ -2230,15 +1973,7 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    fn paired_device_input(enabled: bool, address: Option<&str>) -> DeviceBluetoothChannelInput {
-        DeviceBluetoothChannelInput {
-            peer_device_id: "peer-a".to_string(),
-            enabled,
-            bluetooth_address: address.map(ToString::to_string),
-        }
-    }
-
-    fn test_conn() -> SqliteConnection {
+    fn test_conn() -> (SqliteConnection, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("fini.db");
         let mut conn = db::open_db_at_path(&db_path);
@@ -2253,320 +1988,83 @@ mod tests {
             ))
             .execute(&mut conn)
             .expect("insert paired device");
-        conn
+        (conn, db_path)
     }
 
-    /// Regression test for the P1 review finding: an explicit disable via
-    /// the settings toggle must stick even when a later self-report over
-    /// an authenticated session re-confirms the address is genuinely
-    /// still OS-bonded -- the user's Fini-level opt-out is a separate
-    /// question from OS bond status, and `persist_bluetooth_address_and_maybe_enable`
-    /// must not silently re-enable behind their back just because the
-    /// bond never actually went away.
-    #[test]
-    fn persist_bluetooth_address_does_not_reenable_after_an_explicit_disable() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(false),
-                paired_devices::bluetooth_address.eq(Option::<String>::None),
-                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
-                paired_devices::bluetooth_disabled_by_user.eq(true),
-            ))
-            .execute(&mut conn)
-            .expect("seed an explicitly-disabled pair");
-
-        // `persist_bluetooth_address_and_maybe_enable` itself doesn't
-        // normalize -- callers do that first (see
-        // `device_connection_save_paired_device_impl`/the inbound
-        // self-report handler) -- so this passes an already-normalized
-        // address, matching the real contract.
-        let enabled =
-            persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF")
-                .expect("persist bluetooth address");
-        assert!(!enabled, "must not report enabled despite a confirmed bond");
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert!(
-            !row.bluetooth_enabled,
-            "an explicit disable must survive a self-report confirming the bond still exists"
-        );
-        assert_eq!(
-            row.bluetooth_address, None,
-            "specs/device-connect/README.md: disabling clears stored Bluetooth reconnect \
-             metadata, and it must *stay* cleared -- not get quietly repopulated by the next \
-             self-report"
-        );
-        assert!(row.bluetooth_last_verified_at.is_none());
-
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    /// A `DeviceConnectionState` for the switch/primary commands, which act
+    /// on live sessions as well as rows. No sessions are ever claimed here,
+    /// so `close_session_on`/`refresh_primary` are no-ops and what the tests
+    /// observe is purely what was written.
+    fn test_state() -> (SqliteConnection, DeviceConnectionState) {
+        let (conn, db_path) = test_conn();
+        let data_dir = db_path.with_extension("data");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        // Keeps these hermetic: no real mDNS daemon.
+        std::env::set_var("FINI_MDNS_DISABLED", "1");
+        let state = DeviceConnectionState::from_db_path(&data_dir, db_path);
+        (conn, state)
     }
 
-    /// Regression test for the P2 review finding: the disabled-by-user
-    /// guard originally only covered the `Some(true)` (confirmed bonded)
-    /// branch, so a self-report while the bond was confirmed *absent* or
-    /// the check was inconclusive still repopulated `bluetooth_address`.
-    /// The guard now runs before the bond check even executes, so this
-    /// covers both remaining cases: a confirmed-not-paired address (no
-    /// matching `FINI_BLUETOOTH_PAIRED_ADDRESSES` entry) leaves an
-    /// explicitly-disabled peer's row untouched too.
+    fn bluetooth_row(conn: &mut SqliteConnection) -> Option<crate::models::Channel> {
+        channels::find(conn, "peer-a", ChannelKind::Bluetooth)
+    }
+
+    /// A new pair's channels reflect how it was set up (ADR-0007). Pairing
+    /// over Bluetooth configures Bluetooth and nothing else -- a person who
+    /// chose Bluetooth in the pairing dialog must not find the app dialling
+    /// the LAN over a channel they never picked.
     #[test]
-    fn persist_bluetooth_address_ignores_a_confirmed_not_paired_result_after_an_explicit_disable() {
+    fn save_paired_device_sets_up_only_the_channel_the_pairing_arrived_over() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
 
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(false),
-                paired_devices::bluetooth_address.eq(Option::<String>::None),
-                paired_devices::bluetooth_last_verified_at.eq(Option::<String>::None),
-                paired_devices::bluetooth_disabled_by_user.eq(true),
-            ))
-            .execute(&mut conn)
-            .expect("seed an explicitly-disabled pair");
-
-        let enabled =
-            persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF")
-                .expect("persist bluetooth address");
-        assert!(!enabled);
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(
-            row.bluetooth_address, None,
-            "a confirmed-not-paired result must not repopulate a disabled peer's address either"
-        );
-        assert!(!row.bluetooth_enabled);
-        assert!(row.bluetooth_last_verified_at.is_none());
-
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    }
-
-    /// Regression test for the P1 review finding on the migration itself:
-    /// `bluetooth_enabled` (migration 19) and `bluetooth_disabled_by_user`
-    /// (this migration) ship together, unreleased -- no released build
-    /// ever exposed a way to explicitly disable Bluetooth, so a
-    /// pre-existing `bluetooth_enabled = 0` row is simply "never touched,"
-    /// not "explicitly disabled." An earlier version of this migration
-    /// backfilled such rows to `disabled_by_user = true`, which would have
-    /// opted every existing pair out of the new automatic exchange flow on
-    /// first upgrade. Reverts and re-applies just this migration to
-    /// exercise the real SQL, not a hand-rolled equivalent.
-    #[test]
-    fn migration_does_not_backfill_disabled_by_user_for_preexisting_not_enabled_rows() {
-        use diesel_migrations::MigrationHarness;
-
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("fini.db");
         let mut conn = db::open_db_at_path(&db_path);
         std::mem::forget(dir);
 
-        conn.revert_last_migration(db::MIGRATIONS)
-            .expect("revert the irreversible metadata migration marker");
-        conn.revert_last_migration(db::MIGRATIONS)
-            .expect("revert the bluetooth_disabled_by_user migration");
-
-        diesel::insert_into(paired_devices::table)
-            .values((
-                paired_devices::peer_device_id.eq("peer-legacy-untouched"),
-                paired_devices::display_name.eq("Peer Legacy"),
-                paired_devices::paired_at.eq("2026-01-01T00:00:00Z"),
-                paired_devices::pair_state.eq("paired"),
-                paired_devices::bluetooth_enabled.eq(false),
-            ))
-            .execute(&mut conn)
-            .expect("seed a pre-existing not-enabled row, as if from before this migration");
-
-        conn.run_pending_migrations(db::MIGRATIONS)
-            .expect("reapply the bluetooth_disabled_by_user migration");
-
-        let disabled_by_user: bool = paired_devices::table
-            .find("peer-legacy-untouched")
-            .select(paired_devices::bluetooth_disabled_by_user)
-            .first(&mut conn)
-            .expect("load the migrated row");
-        assert!(
-            !disabled_by_user,
-            "a pre-existing not-enabled row must default to not-opted-out, since no released \
-             build could have explicitly disabled it"
-        );
-    }
-
-    /// Regression test for the same P1 finding: explicitly re-enabling via
-    /// the settings toggle must clear the opt-out flag, so a *subsequent*
-    /// self-report is free to auto-confirm/re-enable normally again.
-    #[test]
-    fn set_bluetooth_channel_clears_disabled_by_user_flag_when_re_enabled() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set(paired_devices::bluetooth_disabled_by_user.eq(true))
-            .execute(&mut conn)
-            .expect("seed an explicitly-disabled pair");
-
-        device_connection_set_bluetooth_channel_impl(
-            &mut conn,
-            paired_device_input(true, Some("aa:bb:cc:dd:ee:ff")),
-        )
-        .expect("re-enable bluetooth channel");
-
-        // The opt-out is cleared, so a self-report is free to record an
-        // address again rather than being ignored outright. It still does
-        // not *enable* anything -- ADR-0006 took that authority away from
-        // the self-report path entirely -- so what this asserts is that the
-        // write goes through and the pair stays enabled from the explicit
-        // action above.
-        persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF")
-            .expect("persist bluetooth address");
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert!(!row.bluetooth_disabled_by_user, "the explicit opt-out must be cleared");
-        assert!(row.bluetooth_enabled, "and the pair stays enabled by the user's own action");
-        assert_eq!(row.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    }
-
-    /// Regression test for the P2 review finding: an asymmetric BLE
-    /// re-pair (the other side reset and paired again) can land on an
-    /// *existing* row that still carries `bluetooth_disabled_by_user =
-    /// true` from a previous pairing with this same peer_device_id.
-    /// Without clearing it, `persist_bluetooth_address_and_maybe_enable`'s
-    /// opt-out guard would silently ignore this completely fresh
-    /// handshake -- the UI reports pairing complete, but this side
-    /// permanently rejects every real session. Completing a whole
-    /// BLE-first pairing counts as an implicit re-opt-in on its own.
-    #[test]
-    fn save_paired_device_clears_a_stale_opt_out_on_a_fresh_ble_carried_pairing() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set(paired_devices::bluetooth_disabled_by_user.eq(true))
-            .execute(&mut conn)
-            .expect("seed a stale opt-out from a previous pairing with this peer_device_id");
-
-        let saved = device_connection_save_paired_device_impl(
-            &mut conn,
-            "peer-a".to_string(),
-            "Peer A".to_string(),
-            Some("aa:bb:cc:dd:ee:ff".to_string()),
-            true, // via_bluetooth
-            std::path::PathBuf::from("/nonexistent"), // never touched: enabled, no bond request
-        )
-        .expect("save paired device");
-
-        assert!(
-            saved.bluetooth_enabled,
-            "a fresh BLE-carried pairing must not be silently ignored by a stale opt-out"
-        );
-        assert_eq!(saved.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    }
-
-    /// ADR 0002 Phase 3: a Bluetooth address handed over as part of the
-    /// pairing handshake itself is stored on row creation, and enabled if
-    /// it's also OS-bonded -- same gate Phase 1's self-report already uses
-    /// (`persist_bluetooth_address_and_maybe_enable`). A completed pre-auth
-    /// handshake proves reachability, not bonding: enabling without a real
-    /// bond would be a dead end, since `bluetooth_dial_candidates` and the
-    /// accepting gate both hard-require OS pairing regardless of this flag.
-    #[test]
-    fn save_paired_device_enables_bluetooth_on_insert_when_address_is_os_paired() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let db_path = dir.path().join("fini.db");
-        let mut conn = db::open_db_at_path(&db_path);
-        std::mem::forget(dir);
-
-        let saved = device_connection_save_paired_device_impl(
+        device_connection_save_paired_device_impl(
             &mut conn,
             "peer-new".to_string(),
             "Peer New".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
-            true,
-            db_path.clone(),
-        )
-        .expect("save paired device");
-
-        assert!(saved.bluetooth_enabled);
-        assert_eq!(saved.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert!(saved.bluetooth_last_verified_at.is_some());
-
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    }
-
-    /// ADR-0006: a BLE-carried pairing enables Bluetooth for the pair with
-    /// no OS bond involved. The pairing handshake itself just travelled over
-    /// Bluetooth, which is the only evidence that matters; requiring a bond
-    /// on top left `bluetooth_enabled` false for every pair the product can
-    /// actually serve, and a peer is only ever dialled when that flag is
-    /// true -- so the bondless dial path could never be reached.
-    #[test]
-    fn save_paired_device_enables_bluetooth_for_a_ble_pairing_without_any_bond() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // An allow-list matching nothing: this address is definitively not
-        // bonded, and enabling must happen anyway.
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let db_path = dir.path().join("fini.db");
-        let mut conn = db::open_db_at_path(&db_path);
-        std::mem::forget(dir);
-
-        let saved = device_connection_save_paired_device_impl(
-            &mut conn,
-            "peer-new-unbonded".to_string(),
-            "Peer New Unbonded".to_string(),
-            Some("aa:bb:cc:dd:ee:ff".to_string()),
             true, // via_bluetooth
             db_path.clone(),
         )
         .expect("save paired device");
 
-        assert!(saved.bluetooth_enabled, "a BLE pairing enables the channel it arrived on");
-        assert_eq!(saved.bluetooth_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert!(saved.bluetooth_last_verified_at.is_some());
+        let bluetooth = channels::find(&mut conn, "peer-new", ChannelKind::Bluetooth)
+            .expect("the Bluetooth channel the pairing arrived over");
+        assert!(bluetooth.enabled);
+        assert_eq!(
+            bluetooth.address.as_deref(),
+            Some("AA:BB:CC:DD:EE:FF"),
+            "the address the handshake carried is recorded, as diagnostics"
+        );
+        assert!(
+            channels::find(&mut conn, "peer-new", ChannelKind::Network).is_none(),
+            "Network must not be configured by a Bluetooth pairing"
+        );
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
-    /// The counterpart: an ordinary *network* pairing that merely carries a
-    /// self-reported Bluetooth address must not switch a second channel on
-    /// behind the user's back. Nothing there is evidence that Bluetooth
-    /// works between these two devices; the Device settings toggle is.
+    /// The counterpart: an ordinary network pairing configures Network, and
+    /// a self-reported Bluetooth address alongside it is not evidence that
+    /// Bluetooth works between these two devices. It is dropped rather than
+    /// stored, because storing it would mean a Bluetooth row -- which is the
+    /// same thing as offering a channel the person never asked for.
     #[test]
-    fn save_paired_device_does_not_enable_bluetooth_for_a_network_pairing() {
+    fn save_paired_device_over_the_network_does_not_set_bluetooth_up() {
         let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
         let dir = tempfile::tempdir().expect("temp dir");
         let db_path = dir.path().join("fini.db");
         let mut conn = db::open_db_at_path(&db_path);
         std::mem::forget(dir);
 
-        let saved = device_connection_save_paired_device_impl(
+        device_connection_save_paired_device_impl(
             &mut conn,
             "peer-network-paired".to_string(),
             "Peer Network Paired".to_string(),
@@ -2576,286 +2074,348 @@ mod tests {
         )
         .expect("save paired device");
 
-        assert!(!saved.bluetooth_enabled, "a network pairing leaves Bluetooth for the user to enable");
-        assert_eq!(
-            saved.bluetooth_address.as_deref(),
-            Some("AA:BB:CC:DD:EE:FF"),
-            "the self-reported address is still recorded, as diagnostics"
+        let network = channels::find(&mut conn, "peer-network-paired", ChannelKind::Network)
+            .expect("the Network channel the pairing arrived over");
+        assert!(network.enabled);
+        assert!(
+            channels::find(&mut conn, "peer-network-paired", ChannelKind::Bluetooth).is_none(),
+            "a self-reported address must not set a second channel up"
         );
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
-    /// Regression test for the P2 review finding: before this fix, an
-    /// unbonded address update left `bluetooth_enabled`/
-    /// `bluetooth_last_verified_at` untouched, so the row could end up
-    /// claiming "enabled, verified" while actually pointing at an address
-    /// that was never verified at all -- silently pointing dial attempts at
-    /// an address that can't work while the metadata still looked healthy.
-    /// ADR-0006 reversed this one, and reversing it is the point.
-    ///
-    /// A self-report used to disable Bluetooth for a pair whose reported
-    /// address was confirmed unbonded. With no bond required anywhere on the
-    /// dial path that check means nothing, and during hardware verification
-    /// it was actively destructive: the desktop reported its address, the
-    /// phone found no bond, and the phone disabled the very channel that
-    /// was about to connect. The other side saw only `auth rejected:
-    /// bluetooth disabled for this pair`.
-    ///
-    /// A self-report now records the address and leaves enablement alone.
+    /// An asymmetric re-pair -- the other side reset and paired again while
+    /// this side kept its row -- can land on a channel this device had
+    /// switched off. Completing a whole BLE-first pairing is a deliberate
+    /// enough act to set it back up; without this the UI would report
+    /// pairing complete while this side permanently rejected every real
+    /// session.
     #[test]
-    fn persist_bluetooth_address_leaves_enablement_alone_for_an_unbonded_address() {
+    fn a_fresh_bluetooth_pairing_switches_a_previously_switched_off_channel_back_on() {
         let _guard = ENV_LOCK.lock().unwrap();
-        // A *confirmed* not-paired result, not merely absent from the
-        // allow-list of one: `remove_var` alone would fall through to the
-        // real `bluetoothctl` check, which is not deterministic here.
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::bluetooth_address.eq(Some("AA:BB:CC:DD:EE:FF")),
-                paired_devices::bluetooth_last_verified_at.eq(Some("2026-01-01T00:00:00Z")),
-            ))
-            .execute(&mut conn)
-            .expect("seed a previously-verified bluetooth address");
+        let (mut conn, db_path) = test_conn();
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
+            .expect("seed a channel that was set up and switched off");
 
-        let enabled_by_this_call = persist_bluetooth_address_and_maybe_enable(
-            &mut conn,
-            "peer-a",
-            "11:22:33:44:55:66",
-        )
-        .expect("persist bluetooth address");
-        assert!(
-            !enabled_by_this_call,
-            "a self-report never enables a pair by itself any more"
-        );
-
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(row.bluetooth_address.as_deref(), Some("11:22:33:44:55:66"));
-        assert!(
-            row.bluetooth_enabled,
-            "an unbonded self-report must not disable a pair the user enabled"
-        );
-        assert!(
-            row.bluetooth_last_verified_at.is_some(),
-            "and must not clear the verification timestamp either"
-        );
-
-        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    }
-
-    /// Regression test for the P2 review finding: this function is only
-    /// ever called as the final step of a real pairing completion, never
-    /// from an unrelated background path, so an *existing* row here means
-    /// an asymmetric re-pair (the other side reset and paired again while
-    /// this side kept its old row) -- that fresh handshake's Bluetooth
-    /// details must not be silently dropped just because the row already
-    /// existed.
-    #[test]
-    fn save_paired_device_refreshes_bluetooth_metadata_on_update_too() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // A *confirmed* not-paired result (see the sibling test's comment
-        // above for why `remove_var` alone isn't deterministic enough).
-        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
-
-        // `test_conn` seeds "peer-a" with no Bluetooth metadata at all, as
-        // if from a stale prior pairing.
-        let mut conn = test_conn();
-
-        let saved = device_connection_save_paired_device_impl(
+        device_connection_save_paired_device_impl(
             &mut conn,
             "peer-a".to_string(),
-            "Peer A Renamed".to_string(),
-            Some("11:22:33:44:55:66".to_string()),
-            false,
-            // Never touched: not OS-paired, and via_bluetooth is false.
-            std::path::PathBuf::from("/nonexistent"),
+            "Peer A".to_string(),
+            Some("aa:bb:cc:dd:ee:ff".to_string()),
+            true, // via_bluetooth
+            db_path,
         )
         .expect("save paired device");
 
-        assert_eq!(saved.display_name, "Peer A Renamed");
-        assert_eq!(saved.bluetooth_address.as_deref(), Some("11:22:33:44:55:66"));
+        let row = bluetooth_row(&mut conn).expect("the Bluetooth row");
+        assert!(
+            row.enabled,
+            "a fresh Bluetooth pairing must not be silently ignored by an earlier switch-off"
+        );
+        assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
-    /// ADR-0006 inverted what this asserts. Enabling used to demand a
-    /// stored address *and* a live OS bond; both are gone, because a peer is
-    /// only ever dialled when `bluetooth_enabled` is true and this is the
-    /// only user-facing route to setting it -- so requiring a bond here made
-    /// the bondless dial path unreachable in practice.
+    /// A self-report records where the peer says it can be found, and never
+    /// moves the switch in either direction.
+    ///
+    /// The OS bond used to decide this, which made a background message able
+    /// to turn a channel on or off. Off was the damaging direction: during
+    /// hardware verification the desktop reported its address, the phone
+    /// found no bond, and switched off the very channel that was about to
+    /// connect. What reached the other side was `auth rejected: bluetooth
+    /// disabled for this pair`, with nothing anywhere naming the cause.
     #[test]
-    fn enabling_bluetooth_channel_needs_neither_an_address_nor_a_bond() {
+    fn a_self_report_records_the_address_and_never_moves_the_switch() {
         let _guard = ENV_LOCK.lock().unwrap();
-        // Deliberately an allow-list that matches nothing: no address used
-        // below is bonded, and enabling must succeed regardless.
+        // A *confirmed* not-paired result, not merely an absent one:
+        // `remove_var` alone falls through to the real `bluetoothctl`, which
+        // is not deterministic here.
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
-        let mut conn = test_conn();
 
-        let without_address =
-            device_connection_set_bluetooth_channel_impl(&mut conn, paired_device_input(true, None))
-                .expect("enabling without any address must succeed");
-        assert!(without_address.bluetooth_enabled);
-        assert!(without_address.bluetooth_last_verified_at.is_some());
-
-        let unbonded = device_connection_set_bluetooth_channel_impl(
+        let (mut conn, _db_path) = test_conn();
+        channels::configure(
             &mut conn,
-            paired_device_input(true, Some("11:22:33:44:55:66")),
+            "peer-a",
+            ChannelKind::Bluetooth,
+            true,
+            Some("AA:BB:CC:DD:EE:FF"),
         )
-        .expect("enabling with an unbonded address must succeed");
-        assert!(unbonded.bluetooth_enabled);
-        assert_eq!(
-            unbonded.bluetooth_address.as_deref(),
-            Some("11:22:33:44:55:66"),
-            "a supplied address is still recorded, as diagnostics"
+        .expect("seed a channel that is on");
+
+        let switched_on_by_this_call =
+            persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "11:22:33:44:55:66")
+                .expect("persist bluetooth address");
+        assert!(
+            !switched_on_by_this_call,
+            "a self-report never switches a channel on by itself"
         );
 
-        // Toggling again without an address must not blank what was
-        // recorded before -- the address is diagnostic metadata, and now
-        // that most enables carry none, a naive overwrite would erase it.
-        let toggled_again =
-            device_connection_set_bluetooth_channel_impl(&mut conn, paired_device_input(true, None))
-                .expect("re-enabling without an address must succeed");
-        assert_eq!(
-            toggled_again.bluetooth_address.as_deref(),
-            Some("11:22:33:44:55:66"),
-            "a previously observed address must survive an address-less enable"
+        let row = bluetooth_row(&mut conn).expect("the Bluetooth row");
+        assert_eq!(row.address.as_deref(), Some("11:22:33:44:55:66"));
+        assert!(
+            row.enabled,
+            "an unbonded self-report must not switch off a channel the person switched on"
         );
+
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
+    /// The other half: a channel that was set up and switched off stays
+    /// exactly as the person left it, address included. This is the job
+    /// `bluetooth_disabled_by_user` used to hold a whole column for -- a row
+    /// that exists and is off says the same thing, and cannot fall out of
+    /// step with the switch beside it.
     #[test]
-    fn disabling_bluetooth_channel_clears_reconnect_metadata() {
+    fn a_self_report_leaves_a_switched_off_channel_alone() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
-        let mut conn = test_conn();
-        device_connection_set_bluetooth_channel_impl(
-            &mut conn,
-            paired_device_input(true, Some("AA:BB:CC:DD:EE:FF")),
-        )
-        .expect("enable bluetooth");
 
-        let disabled = device_connection_set_bluetooth_channel_impl(
-            &mut conn,
-            paired_device_input(false, None),
-        )
-        .expect("disable bluetooth");
-        assert!(!disabled.bluetooth_enabled);
-        assert_eq!(disabled.bluetooth_address, None);
-        assert_eq!(disabled.bluetooth_last_verified_at, None);
+        let (mut conn, _db_path) = test_conn();
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
+            .expect("seed a channel that was switched off");
+
+        persist_bluetooth_address_and_maybe_enable(&mut conn, "peer-a", "AA:BB:CC:DD:EE:FF")
+            .expect("persist bluetooth address");
+
+        let row = bluetooth_row(&mut conn).expect("the Bluetooth row");
+        assert!(!row.enabled, "an explicit switch-off must survive a self-report");
+        assert_eq!(
+            row.address, None,
+            "and the self-report must not quietly repopulate what it left"
+        );
+
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
-    /// Regression test for a P1 review finding on ADR-0003 Phase 2/3: a
-    /// Bluetooth pin must not survive the user later disabling Bluetooth
-    /// for that pair -- Network would otherwise stand down for a pin that
-    /// can no longer be honored, stranding the pair on no channel at all.
-    #[test]
-    fn disabling_bluetooth_clears_an_existing_bluetooth_pin() {
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::preferred_transport.eq(Some("bluetooth")),
-                paired_devices::preferred_transport_set_at.eq(Some("2026-04-07T00:00:01Z")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth and pin it for this test");
+    /// ADR-0006: switching Bluetooth on demands neither a stored address nor
+    /// a live OS bond. Both used to be required, and since a peer is only
+    /// ever dialled over a channel that is on, requiring a bond here made
+    /// the bondless dial path unreachable in practice.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_a_channel_on_needs_neither_an_address_nor_a_bond() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // An allow-list matching nothing: no address here is bonded.
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
 
-        device_connection_set_bluetooth_channel_impl(&mut conn, paired_device_input(false, None))
-            .expect("disable bluetooth");
+        let (mut conn, state) = test_state();
+        let statuses = device_connection_set_channel_enabled_impl(
+            &mut conn,
+            &state,
+            "peer-a".to_string(),
+            ChannelKind::Bluetooth,
+            true,
+        )
+        .expect("switching on without any address must succeed");
 
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
+        let row = statuses
+            .iter()
+            .find(|status| status.kind == ChannelKind::Bluetooth)
+            .expect("a Bluetooth row");
+        assert!(row.configured, "the switch is what sets a channel up");
+        assert!(row.enabled);
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    /// Switching a channel off is not forgetting it (ADR-0007): what it
+    /// learned is kept, so switching it back on does not start from nothing.
+    /// Forgetting is a separate act -- unlink.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_a_channel_off_keeps_what_it_learned() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
+
+        let (mut conn, state) = test_state();
+        channels::configure(
+            &mut conn,
+            "peer-a",
+            ChannelKind::Bluetooth,
+            true,
+            Some("AA:BB:CC:DD:EE:FF"),
+        )
+        .expect("set the channel up with an address");
+
+        device_connection_set_channel_enabled_impl(
+            &mut conn,
+            &state,
+            "peer-a".to_string(),
+            ChannelKind::Bluetooth,
+            false,
+        )
+        .expect("switch bluetooth off");
+
+        let row = bluetooth_row(&mut conn).expect("the row must survive being switched off");
+        assert!(!row.enabled);
         assert_eq!(
-            row.preferred_transport, None,
-            "a Bluetooth pin must not survive Bluetooth being disabled for this pair"
+            row.address.as_deref(),
+            Some("AA:BB:CC:DD:EE:FF"),
+            "switching off is not forgetting -- turning it back on must not start from nothing"
         );
-        assert_eq!(row.preferred_transport_set_at, None);
+
+        std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
 
-    /// Sibling of the test above: disabling Bluetooth for a pair that was
-    /// pinned to *Network* must leave that pin alone -- only a Bluetooth
-    /// pin is a stranding hazard here.
-    #[test]
-    fn disabling_bluetooth_leaves_a_network_pin_untouched() {
-        let mut conn = test_conn();
-        diesel::update(paired_devices::table.find("peer-a"))
-            .set((
-                paired_devices::bluetooth_enabled.eq(true),
-                paired_devices::preferred_transport.eq(Some("network")),
-                paired_devices::preferred_transport_set_at.eq(Some("2026-04-07T00:00:01Z")),
-            ))
-            .execute(&mut conn)
-            .expect("enable bluetooth and pin network for this test");
+    /// Regression test for a P1 review finding on ADR-0003: a primary choice
+    /// must not survive that channel being switched off -- the other one
+    /// would stand down for a choice that can no longer be honoured,
+    /// stranding the pair on no channel at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_a_channel_off_releases_its_primary() {
+        let (mut conn, state) = test_state();
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, true, None)
+            .expect("set bluetooth up");
+        channels::set_primary(&mut conn, "peer-a", Some(ChannelKind::Bluetooth))
+            .expect("choose it as primary");
 
-        device_connection_set_bluetooth_channel_impl(&mut conn, paired_device_input(false, None))
-            .expect("disable bluetooth");
+        device_connection_set_channel_enabled_impl(
+            &mut conn,
+            &state,
+            "peer-a".to_string(),
+            ChannelKind::Bluetooth,
+            false,
+        )
+        .expect("switch bluetooth off");
 
-        let row: PairedDevice = paired_devices::table
-            .find("peer-a")
-            .select(PairedDevice::as_select())
-            .first(&mut conn)
-            .expect("load peer row");
-        assert_eq!(row.preferred_transport.as_deref(), Some("network"));
+        assert_eq!(
+            channels::primary_kind(&mut conn, "peer-a"),
+            None,
+            "a primary choice must not survive its own channel being switched off"
+        );
+    }
+
+    /// Sibling of the test above: switching one channel off must leave a
+    /// primary choice made on the *other* one alone. Only the choice that
+    /// can no longer be honoured is a stranding hazard.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_a_channel_off_leaves_the_other_ones_primary_alone() {
+        let (mut conn, state) = test_state();
+        channels::configure(&mut conn, "peer-a", ChannelKind::Network, true, None)
+            .expect("set network up");
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, true, None)
+            .expect("set bluetooth up");
+        channels::set_primary(&mut conn, "peer-a", Some(ChannelKind::Network))
+            .expect("choose network as primary");
+
+        device_connection_set_channel_enabled_impl(
+            &mut conn,
+            &state,
+            "peer-a".to_string(),
+            ChannelKind::Bluetooth,
+            false,
+        )
+        .expect("switch bluetooth off");
+
+        assert_eq!(
+            channels::primary_kind(&mut conn, "peer-a"),
+            Some(ChannelKind::Network)
+        );
+    }
+
+    /// Unlink is the deliberate second act: a channel that is still on
+    /// cannot be forgotten by one click, and the refusal says what to do
+    /// instead.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unlink_refuses_while_the_channel_is_still_on() {
+        let (mut conn, state) = test_state();
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, true, None)
+            .expect("set bluetooth up");
+
+        let err = device_connection_unlink_channel_impl(
+            &mut conn,
+            &state,
+            "peer-a".to_string(),
+            ChannelKind::Bluetooth,
+        )
+        .expect_err("must refuse to unlink a channel that is on");
+        assert!(err.contains("Turn the channel off first"), "got: {err}");
+        assert!(bluetooth_row(&mut conn).is_some());
+    }
+
+    /// And once it is off, unlinking forgets it entirely -- the page goes
+    /// back to offering to set it up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unlink_forgets_a_switched_off_channel() {
+        let (mut conn, state) = test_state();
+        channels::configure(
+            &mut conn,
+            "peer-a",
+            ChannelKind::Bluetooth,
+            false,
+            Some("AA:BB:CC:DD:EE:FF"),
+        )
+        .expect("set bluetooth up, switched off");
+
+        let statuses = device_connection_unlink_channel_impl(
+            &mut conn,
+            &state,
+            "peer-a".to_string(),
+            ChannelKind::Bluetooth,
+        )
+        .expect("unlink a switched-off channel");
+
+        assert!(bluetooth_row(&mut conn).is_none());
+        let row = statuses
+            .iter()
+            .find(|status| status.kind == ChannelKind::Bluetooth)
+            .expect("a Bluetooth row is still reported, as an offer to set it up");
+        assert!(!row.configured);
+        assert!(!row.enabled);
     }
 
     #[test]
-    fn unpair_removes_the_paired_device_row_entirely() {
-        let mut conn = test_conn();
+    fn unpair_removes_the_paired_device_row_and_its_channels() {
+        let (mut conn, _db_path) = test_conn();
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, true, None)
+            .expect("set bluetooth up");
 
         device_connection_unpair_impl(&mut conn, "peer-a".to_string()).expect("unpair");
 
         let remaining = paired_devices::table
             .find("peer-a")
             .select(PairedDevice::as_select())
-            .first(&mut conn)
+            .first::<PairedDevice>(&mut conn)
             .optional()
             .expect("query after unpair");
+        assert!(remaining.is_none(), "unpair must remove the row");
         assert!(
-            remaining.is_none(),
-            "unpair must remove the row, not just clear its Bluetooth fields"
+            bluetooth_row(&mut conn).is_none(),
+            "and its channels must go with it -- ON DELETE CASCADE, not a second delete to forget"
         );
     }
 
-    /// The "delete Bluetooth connection, then pair again" lifecycle a user
-    /// takes when e.g. resetting a stuck pair: unpair fully deletes the
-    /// row (unlike disabling, which only clears Bluetooth fields on an
-    /// otherwise-still-paired row), so a subsequent pairing always goes
-    /// through save_paired_device's *insert* branch, not its update
-    /// branch. Regression coverage for that specific path staying clean --
-    /// no leftover state from the deleted row (there is none to leak, but
-    /// this proves the full cycle end-to-end rather than each half in
-    /// isolation) and the re-pair enabling normally when the fresh address
-    /// is OS-bonded.
+    /// The "unpair, then pair again" lifecycle a person takes when resetting
+    /// a stuck pair. Unpair deletes the row outright (unlike switching a
+    /// channel off, which keeps it), so the re-pair always goes through
+    /// `save_paired_device`'s *insert* branch. Proves the full cycle rather
+    /// than each half in isolation: nothing leaks from the deleted row, and
+    /// the fresh pairing sets its channel up normally.
     #[test]
     fn unpair_then_re_pair_via_bluetooth_starts_with_clean_state() {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "AA:BB:CC:DD:EE:FF");
 
-        let mut conn = test_conn();
-        device_connection_set_bluetooth_channel_impl(
+        let (mut conn, _db_path) = test_conn();
+        channels::configure(
             &mut conn,
-            paired_device_input(true, Some("AA:BB:CC:DD:EE:FF")),
+            "peer-a",
+            ChannelKind::Bluetooth,
+            true,
+            Some("AA:BB:CC:DD:EE:FF"),
         )
-        .expect("enable bluetooth on the original pairing");
+        .expect("set bluetooth up on the original pairing");
 
         device_connection_unpair_impl(&mut conn, "peer-a".to_string()).expect("unpair");
 
         // A real re-pair hands over whatever address the fresh handshake
-        // observed -- plausibly a different one than before (the peer may
-        // have re-paired from a different adapter/OS install).
+        // observed -- plausibly a different one (the peer may have paired
+        // again from a different adapter or OS install).
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "11:22:33:44:55:66");
-        let repaired = device_connection_save_paired_device_impl(
+        device_connection_save_paired_device_impl(
             &mut conn,
             "peer-a".to_string(),
             "Peer A".to_string(),
@@ -2865,13 +2425,9 @@ mod tests {
         )
         .expect("re-pair after unpair");
 
-        assert!(
-            repaired.bluetooth_enabled,
-            "a fresh re-pair with an OS-bonded address must enable normally, \
-             not inherit anything from the deleted row"
-        );
-        assert_eq!(repaired.bluetooth_address.as_deref(), Some("11:22:33:44:55:66"));
-        assert!(!repaired.bluetooth_disabled_by_user);
+        let row = bluetooth_row(&mut conn).expect("the re-paired Bluetooth row");
+        assert!(row.enabled, "a fresh re-pair sets its channel up normally");
+        assert_eq!(row.address.as_deref(), Some("11:22:33:44:55:66"));
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }

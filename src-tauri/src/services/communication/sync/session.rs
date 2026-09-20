@@ -1,6 +1,6 @@
 //! The transport-neutral peer protocol engine: pairing gate, auth gate, and
 //! the authenticated sync session loop. Operates purely on `PeerFrame` over
-//! a `Link` trait object, so it is shared verbatim by every channel
+//! a `DataLink` trait object, so it is shared verbatim by every channel
 //! adapter's accept/dial code (`channel::tcp_ws`, `channel::sim`, and
 //! the future real Bluetooth adapter).
 
@@ -13,11 +13,12 @@ use tokio::sync::mpsc;
 use crate::schema::{pair_space_mappings, paired_devices};
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::{
-    DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd, IncomingSyncAck,
+    channels, ChannelKind, DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
+    IncomingSyncAck,
 };
 use crate::services::communication::sync::outbox::load_events_for_space;
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
-use crate::services::communication::channel::{recv_frame, send_frame, Link, TransportKind};
+use crate::services::communication::channel::{recv_frame, send_frame, DataLink, TransportKind};
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
     tokio::task::block_in_place(|| {
@@ -31,79 +32,46 @@ fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
     })
 }
 
-/// Whether `device_id`'s paired-device row currently has Bluetooth enabled.
-/// Checked only for `TransportKind::Bluetooth` accepts, in addition to
-/// `check_paired` -- `bluetooth_dial_candidates` already enforces this on
-/// the *dialing* side, but `run_peer_gate` had no equivalent on the
-/// *accepting* side: a peer that still had this pair's Bluetooth enabled on
-/// their end could dial in and connect to our advertising GATT server, and
-/// be authenticated on `check_paired` alone, even after the local user
-/// disabled Bluetooth for this pair -- contradicting
-/// `specs/device-connect/README.md`'s "disabling ... prevents future
-/// Bluetooth use" contract. `unwrap_or(false)` fails closed: a peer row
-/// that's gone (unpaired) or unreadable must not be treated as enabled.
-fn check_bluetooth_enabled(db_path: &PathBuf, device_id: &str) -> bool {
+/// Whether this pair's channel of `kind` is set up and switched on.
+///
+/// Checked on every accept, in addition to `check_paired`. The dial loops
+/// already enforce it on the *dialing* side, but that says nothing about the
+/// *accepting* side: a peer whose own copy of this channel is still on will
+/// keep dialing us, and `check_paired` alone would let it straight back in --
+/// so the switch would stop our outgoing traffic and silently permit the
+/// session anyway.
+///
+/// Observed on hardware before the Network half of this existed: turning
+/// Network off left `device_connection_session_channel` reporting `tcp_ws`
+/// seconds later, with the row showing "Off" over a live session -- precisely
+/// the lie the redesign exists to remove.
+///
+/// Fails closed: a pair with no such channel configured, or an unreadable
+/// row, must not be treated as enabled.
+fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) -> bool {
     tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
-        paired_devices::table
-            .find(device_id)
-            .select(paired_devices::bluetooth_enabled)
-            .first::<bool>(&mut conn)
-            .unwrap_or(false)
+        channels::is_enabled(&mut conn, device_id, kind)
     })
 }
 
-/// Whether `device_id`'s paired-device row currently has Network enabled.
-///
-/// The exact counterpart of `check_bluetooth_enabled`, and it exists for the
-/// same reason that one does: `space_sync_tick_impl` filters this pair out of
-/// `tcp_ws::spawn_dial_loop` on the *dialing* side, but that says nothing
-/// about the *accepting* side. A peer whose own Network channel is still on
-/// will keep dialing us, and `check_paired` alone would let it straight back
-/// in -- so the switch would stop our outgoing traffic and silently permit
-/// the session anyway.
-///
-/// Observed on hardware before this check existed: turning Network off left
-/// `device_connection_session_channel` reporting `tcp_ws` seconds later,
-/// with the row showing "Off" over a live session -- precisely the lie the
-/// redesign exists to remove.
-///
-/// `unwrap_or(false)` fails closed, matching `check_bluetooth_enabled`: a
-/// row that is gone (unpaired) or unreadable must not read as enabled.
-fn check_network_enabled(db_path: &PathBuf, device_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = open_db_at_path(db_path);
-        paired_devices::table
-            .find(device_id)
-            .select(paired_devices::network_enabled)
-            .first::<bool>(&mut conn)
-            .unwrap_or(false)
-    })
-}
-
-/// Whether this device has *explicitly* disabled Bluetooth for
-/// `device_id`'s pair (`device_connection_set_bluetooth_channel_impl`'s
-/// disable branch) -- checked by `BluetoothProbe`'s pre-auth handler so an
-/// explicit opt-out isn't bypassed by "Find via Bluetooth": that flow's
-/// whole point is discovering an address for a pair that has *never* been
-/// enabled (see its own doc comment), but a pair the user actively turned
-/// off is a different case entirely. Replying would let the other side
-/// believe discovery succeeded and persist/enable the address on its own
+/// Whether this device set this pair's Bluetooth channel up and then
+/// switched it off -- checked by `BluetoothProbe`'s pre-auth handler so an
+/// explicit switch-off isn't bypassed by "Find via Bluetooth". That flow's
+/// whole point is discovering an address for a pair that has *never* had
+/// Bluetooth set up (see its own doc comment), but a pair the person
+/// actively turned off is a different case entirely. Replying would let the
+/// other side believe discovery succeeded and record the address on its own
 /// end, only for every real session attempt to then be rejected by
-/// `check_bluetooth_enabled` here -- `specs/device-connect/README.md`'s
-/// "disabling ... prevents future Bluetooth use" contract, silently
-/// undermined via a side channel that predates it. `unwrap_or(false)`
-/// fails open here on purpose (opposite of `check_bluetooth_enabled`'s
-/// fail-closed): an unpaired/unreadable row has nothing to have been
-/// disabled, matching a never-enabled pair.
-fn check_bluetooth_disabled_by_user(db_path: &PathBuf, device_id: &str) -> bool {
+/// `check_channel_enabled` here.
+///
+/// Fails open, the opposite of `check_channel_enabled`: a pair with no
+/// Bluetooth row has nothing to have been switched off, which is exactly
+/// the never-set-up case this flow is for.
+fn check_bluetooth_switched_off(db_path: &PathBuf, device_id: &str) -> bool {
     tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
-        paired_devices::table
-            .find(device_id)
-            .select(paired_devices::bluetooth_disabled_by_user)
-            .first::<bool>(&mut conn)
-            .unwrap_or(false)
+        channels::is_switched_off(&mut conn, device_id, ChannelKind::Bluetooth)
     })
 }
 
@@ -125,7 +93,7 @@ fn check_bluetooth_disabled_by_user(db_path: &PathBuf, device_id: &str) -> bool 
 /// field existed) so the caller's `run_session` knows which proactive
 /// frames are safe to send -- see `PROTOCOL_VERSION`'s doc comment.
 pub async fn perform_client_auth(
-    link: &mut dyn Link,
+    link: &mut dyn DataLink,
     my_device_id: &str,
     peer_device_id: &str,
 ) -> Result<u32, String> {
@@ -148,7 +116,7 @@ pub async fn perform_client_auth(
     }
 }
 
-/// Server-side gate: read the first frame off a freshly accepted `Link` and
+/// Server-side gate: read the first frame off a freshly accepted `DataLink` and
 /// dispatch it. Pre-auth pairing messages (`PairRequest`/`PairAccept`/
 /// `PairComplete`) are handled and the link is then closed — discovery and
 /// pairing metadata are untrusted regardless of which channel carried
@@ -164,7 +132,7 @@ pub async fn perform_client_auth(
 /// `spawn_dial_loop`/`spawn_fallback_dial_loop`, ungated) but does not run
 /// an inbound listener/pairing acceptor.
 #[cfg(any(feature = "ui-plane", test))]
-pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState, db_path: PathBuf) {
+pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionState, db_path: PathBuf) {
     let kind = link.kind();
     let from_addr = link.peer_addr().unwrap_or_default();
     let Some(Ok(frame)) = recv_frame(link.as_mut()).await else {
@@ -186,14 +154,14 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
             return;
         }
         PeerFrame::BluetoothProbe { device_id } => {
-            // Deliberately `check_paired`, not `check_bluetooth_enabled`:
+            // Deliberately `check_paired`, not `check_channel_enabled`:
             // this exists precisely so "Find via Bluetooth" can confirm an
             // address for a pair that doesn't have Bluetooth enabled yet.
             // But an *explicit* disable is a different case from
-            // never-enabled -- see `check_bluetooth_disabled_by_user`'s
+            // never-enabled -- see `check_bluetooth_switched_off`'s
             // doc comment for why that one must still gate the reply.
             if check_paired(&db_path, &device_id)
-                && !check_bluetooth_disabled_by_user(&db_path, &device_id)
+                && !check_bluetooth_switched_off(&db_path, &device_id)
             {
                 let _ = send_frame(
                     link.as_mut(),
@@ -277,7 +245,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
 
     // Sim stands in for Bluetooth's role in tests, so it is deliberately not
     // gated here -- only the real network channel is.
-    if kind == TransportKind::TcpWs && !check_network_enabled(&db_path, &device_id) {
+    if kind == TransportKind::TcpWs && !check_channel_enabled(&db_path, &device_id, ChannelKind::Network) {
         log::warn!(
             "[space_sync][gate] network auth from {device_id} rejected: network disabled for this pair"
         );
@@ -292,7 +260,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
     }
 
     if kind == TransportKind::Bluetooth {
-        if !check_bluetooth_enabled(&db_path, &device_id) {
+        if !check_channel_enabled(&db_path, &device_id, ChannelKind::Bluetooth) {
             log::warn!(
                 "[space_sync][gate] bluetooth auth from {device_id} rejected: bluetooth disabled for this pair"
             );
@@ -359,7 +327,7 @@ pub async fn run_peer_gate(mut link: Box<dyn Link>, state: DeviceConnectionState
 /// connect) — this function never claims the session itself, only releases
 /// it on exit.
 pub async fn run_session(
-    mut link: Box<dyn Link>,
+    mut link: Box<dyn DataLink>,
     mut rx: mpsc::Receiver<SessionCommand>,
     state: DeviceConnectionState,
     db_path: PathBuf,
@@ -468,7 +436,7 @@ pub async fn run_session(
 
 /// ADR-0003 revision: the app-level ping/ack cadence -- see
 /// `PeerFrame::Ping`'s doc comment and `ChannelAckState`'s 3-miss decay
-/// rule. Deliberately the same interval `tcp_ws::TcpWsLink`'s own
+/// rule. Deliberately the same interval `tcp_ws::TcpWsDataLink`'s own
 /// WebSocket-native ping already uses: this is a separate, channel-
 /// agnostic layer on top (it also runs over Bluetooth, which has no
 /// WS-level ping of its own), not a replacement for it, but there's no
@@ -508,7 +476,7 @@ fn bluetooth_recheck_interval() -> Duration {
 
 async fn handle_inbound(
     frame: PeerFrame,
-    link: &mut dyn Link,
+    link: &mut dyn DataLink,
     state: &DeviceConnectionState,
     db_path: &PathBuf,
     peer_device_id: &str,

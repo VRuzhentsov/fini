@@ -1,15 +1,18 @@
 //! Carrying bytes over a pair's channels.
 //!
-//! A **channel** is what a pair configured — Network or Bluetooth, the two
-//! `ChannelKind`s. A **transport** is the adapter that actually moves the
-//! bytes for one, and the two are not one-to-one: the Network channel is
-//! carried by `tcp_ws` in production and by `sim` in tests. That is why
-//! this module keeps the word "transport" internally while the interface
-//! says "channel" (`docs/naming.md`).
+//! A **channel (transport)** is what a pair configured — Network or
+//! Bluetooth, the two `ChannelKind`s. This module holds the connection code
+//! underneath one: `tcp_ws` is how the Network channel actually connects,
+//! `ble` is how the Bluetooth one does. Connection code is not itself a
+//! channel and can be shared by several — see `../README.md`.
+//!
+//! `TransportKind` below still spells that older sense of "transport" and
+//! is the one name left contradicting `docs/glossary.md`; it is deliberately
+//! not renamed until how this layer is organised has been settled.
 //!
 //! `pairing`/`sync` speak one shared application protocol
 //! (`crate::services::communication::sync::types::PeerFrame`) over whichever
-//! `Transport`/`Link` is currently selected for a peer. This module defines
+//! `Transport`/`DataLink` is currently selected for a peer. This module defines
 //! that boundary plus the adapters that implement it:
 //!
 //! - `tcp_ws` — the Network channel's transport (mDNS/UDP discovery +
@@ -21,8 +24,8 @@
 //!   reserved `TransportKind` variant with no adapter; see
 //!   `docs/adr/0001-transport-neutral-peer-protocol.md`.
 //!
-//! A `Link` moves opaque byte datagrams (whole payloads, boundaries
-//! preserved); each adapter owns its own chunking/framing. Above `Link` sits
+//! A `DataLink` moves opaque byte datagrams (whole payloads, boundaries
+//! preserved); each adapter owns its own chunking/framing. Above `DataLink` sits
 //! `codec` (envelope + `PeerFrame` (de)serialization) and `encryption`
 //! (currently pass-through; the seam for future end-to-end encryption).
 
@@ -62,7 +65,7 @@ pub enum TransportKind {
 
 /// An untrusted candidate peer surfaced by a transport's discovery step.
 /// Never confers trust by itself — only a successful `PeerFrame::Auth`
-/// handshake over a dialed `Link` does. Not yet consumed by a runtime
+/// handshake over a dialed `DataLink` does. Not yet consumed by a runtime
 /// registry (see `Transport` doc comment) — reserved for the real
 /// Bluetooth adapter's discovery step (PR B), which unlike `tcp_ws`
 /// (backed by the existing presence worker) and `sim` (statically
@@ -79,7 +82,7 @@ pub struct Candidate {
 /// A live, point-to-point connection to one peer. Moves opaque byte
 /// datagrams; framing/chunking is the adapter's concern, not the caller's.
 #[async_trait]
-pub trait Link: Send {
+pub trait DataLink: Send {
     fn kind(&self) -> TransportKind;
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String>;
     /// `None` means the link closed (peer disconnected or read error).
@@ -111,17 +114,17 @@ pub trait Transport: Send + Sync {
 
 #[allow(dead_code)]
 pub type BoxDialFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn Link>, String>> + Send>>;
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn DataLink>, String>> + Send>>;
 
 /// Send one `PeerFrame` over a link (encode via `codec`, transport carries bytes).
-pub async fn send_frame(link: &mut dyn Link, frame: &PeerFrame) -> Result<(), String> {
+pub async fn send_frame(link: &mut dyn DataLink, frame: &PeerFrame) -> Result<(), String> {
     let bytes = codec::encode_frame(frame)?;
     link.send(bytes).await
 }
 
 /// Receive one `PeerFrame` from a link (decode via `codec`).
 /// `None` means the link closed; `Some(Err(_))` means a malformed/unreadable frame.
-pub async fn recv_frame(link: &mut dyn Link) -> Option<Result<PeerFrame, String>> {
+pub async fn recv_frame(link: &mut dyn DataLink) -> Option<Result<PeerFrame, String>> {
     match link.recv().await? {
         Ok(bytes) => Some(codec::decode_frame(&bytes)),
         Err(err) => Some(Err(err)),

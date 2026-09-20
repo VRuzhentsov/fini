@@ -1,31 +1,16 @@
 # Naming
 
-What things are called in Fini, and how names are formed. When a name here
-conflicts with what the code currently says, this file wins and the code is
-wrong.
+How names are **formed** in Fini: plurals, casing per language, DOM hooks,
+command prefixes. Rules about spelling, not about meaning.
 
-## Vocabulary
+What the words *mean* — channel, DataLink, session, primary — is
+[`glossary.md`](glossary.md). Reach for that one when choosing *which* word;
+reach for this one when writing it down.
 
-### Channels
+When a rule here conflicts with what the code currently says, this file wins
+and the code is wrong.
 
-| Term | Means |
-|---|---|
-| **channel** | the configured connection between two paired devices — what a pair *has* |
-| **channel kind** | the medium a channel uses: `network` or `bluetooth` |
-| **primary** | the channel the person chose to carry the traffic (`is_primary` in SQL, because `primary` is a keyword) |
-| **transport** | the adapter that actually moves the bytes for a channel |
-
-A channel and a transport are not one-to-one, which is why both words exist.
-The Network channel is carried by `tcp_ws` in production and by `sim` under
-test; `ChannelKind` has two variants and `TransportKind` has four
-(`TcpWs`, `Sim`, `Bluetooth`, `LoRa`). "Transport" is therefore not a synonym
-to sprinkle around — it belongs in `services/communication/channel/`, where
-the adapters live, and nowhere the person can see. Interfaces, commands,
-tables, events and UI copy say *channel*.
-
-`InstallChannel` is unrelated: it is the app-update track (stable/beta).
-
-### Communication
+## Module layout
 
 `services/communication/` holds the three things two devices do to reach
 each other:
@@ -33,17 +18,15 @@ each other:
 | Module | Owns |
 |---|---|
 | `pairing` | establishing trust, and the channels a pair has configured |
-| `channel` | carrying bytes — the adapters, framing, and the encryption seam |
+| `channel` | carrying bytes — the connection code, framing, and the encryption seam |
 | `sync` | the application protocol over a channel, and the outbox behind it |
 
-`channel/encryption.rs` is the encryption seam (`SecureChannel`,
-`PlaintextChannel`), named for what it is rather than for the trait it
-exports.
+A module is named for the concept it owns, not for the trait it exports:
+`channel/encryption.rs` holds `SecureChannel` and `PlaintextChannel`.
 
-ADRs 0001–0006 were written before this rename and refer to the old
+ADRs 0001–0006 predate the current module layout and refer to the old
 `services/{transport,space_sync,device_connection}/` paths. They are records
-of decisions as taken, so they are left as written; ADR-0007 is where the
-current vocabulary is decided.
+of decisions as taken, so they are left as written.
 
 ## Plurals
 

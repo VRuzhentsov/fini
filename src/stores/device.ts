@@ -10,20 +10,10 @@ export interface PairedDevice {
   paired_at: string;
   last_seen_at: string | null;
   pair_state: string;
-  bluetooth_enabled: boolean;
-  bluetooth_address: string | null;
-  bluetooth_last_verified_at: string | null;
-  // The user's sticky manual pin, if any -- "network" | "bluetooth" | null.
-  // Independent of `ChannelStatus.primary` (which already-connected
-  // channel is actually carrying traffic right now); this is what a row
-  // click sets.
-  preferred_transport: string | null;
-  preferred_transport_set_at: string | null;
-  // The per-pair Network switch, counterpart to `bluetooth_enabled`.
-  // Defaults to true where Bluetooth defaults to false: Network is the
-  // channel a pair is normally formed over, so the switch exists to stop
-  // it deliberately rather than to opt in to what already works.
-  network_enabled: boolean;
+  // Nothing about *how* the two devices reach each other lives here. That
+  // is per channel, and comes from `device_connection_channel_statuses`
+  // (ADR-0007) -- one row per configured channel, with its own switch,
+  // primary flag and learned address.
 }
 
 // Mirrors the backend's ChannelStatusCode (communication::pairing::channel_status,
@@ -61,13 +51,23 @@ export type DeviceChannelRowState =
   | { state: "unconfigured"; code: ChannelStatusCode }
   | { state: "configured"; code: ChannelStatusCode | null };
 
+export type ChannelKind = "network" | "bluetooth";
+
 export interface DeviceChannelStatus {
-  kind: "network" | "bluetooth";
-  // Whether this is the channel currently carrying real application
-  // traffic -- independent of `state`. Both rows can be green at once;
-  // only one is ever primary. Network wins whenever connected, unless
-  // pinned to Bluetooth.
+  kind: ChannelKind;
+  // Whether this pair has this channel set up at all. `false` is the "you
+  // have not added this yet" row, which offers to set it up.
+  configured: boolean;
+  // The switch. Always false when `configured` is.
+  enabled: boolean;
+  // The channel the user chose to carry this pair's traffic -- a setting,
+  // not a live state, so it shows whether or not the channel is connected
+  // right now. All rows false means they have not chosen and selection is
+  // automatic (network-first).
   primary: boolean;
+  // Where the channel last reached the peer. Diagnostics only; nothing
+  // dials it.
+  address: string | null;
   state: DeviceChannelRowState;
 }
 
@@ -595,22 +595,23 @@ export const useDeviceStore = defineStore("device", () => {
   // it can't intercept that case.
   function applyLiveness(
     status: DeviceChannelStatus,
-    entry: { connected: boolean; primary: boolean; code: ChannelStatusCode | null; dial_exhausted: boolean } | undefined,
+    entry: { connected: boolean; code: ChannelStatusCode | null; dial_exhausted: boolean } | undefined,
   ): DeviceChannelStatus {
     if (!entry) return status;
+    // A channel that is off, or was never set up, has no live state to
+    // patch: its row is what the user chose, not what a radio is doing.
+    if (!status.enabled) return status;
     if (status.state.state === "unconfigured" && !entry.connected) {
-      return { ...status, primary: entry.primary };
+      return status;
     }
     if (!entry.connected && entry.dial_exhausted) {
       return {
         ...status,
-        primary: entry.primary,
         state: { state: "unconfigured", code: { code: "bluetooth_dial_exhausted" } },
       };
     }
     return {
       ...status,
-      primary: entry.primary,
       state: {
         state: "configured",
         code: entry.connected ? entry.code : { code: "connecting" },
@@ -669,26 +670,38 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  async function setBluetoothChannel(
+  // The switch on a channel row, for either kind. One action rather than a
+  // pair of them, matching the backend: both rows on the device page drive
+  // the same thing, so neither reads as the special one.
+  //
+  // Returns the pair's rows as they are after the write, so the page does
+  // not need a second round trip to find out what changed.
+  async function setChannelEnabled(
     peerDeviceId: string,
+    kind: ChannelKind,
     enabled: boolean,
-    bluetoothAddress?: string | null,
-  ): Promise<PairedDevice> {
-    const updated = await invoke<PairedDevice>("device_connection_set_bluetooth_channel", {
-      input: {
-        peer_device_id: peerDeviceId,
-        enabled,
-        bluetooth_address: bluetoothAddress ?? null,
-      },
+  ): Promise<DeviceChannelStatus[]> {
+    const statuses = await invoke<DeviceChannelStatus[]>(
+      "device_connection_set_channel_enabled",
+      { peerDeviceId, kind, enabled },
+    );
+    channelStatusesByPeer.value[peerDeviceId] = statuses;
+    return statuses;
+  }
+
+  // Forget a channel: "unlink channel" on the device page. The backend
+  // refuses while it is still on, which is what keeps this from being
+  // something one click can do to a working connection.
+  async function unlinkChannel(
+    peerDeviceId: string,
+    kind: ChannelKind,
+  ): Promise<DeviceChannelStatus[]> {
+    const statuses = await invoke<DeviceChannelStatus[]>("device_connection_unlink_channel", {
+      peerDeviceId,
+      kind,
     });
-    const index = pairedDevices.value.findIndex((device) => device.peer_device_id === peerDeviceId);
-    if (index >= 0) {
-      pairedDevices.value[index] = updated;
-    } else {
-      pairedDevices.value = [updated, ...pairedDevices.value];
-    }
-    await refreshChannelStatuses(peerDeviceId);
-    return updated;
+    channelStatusesByPeer.value[peerDeviceId] = statuses;
+    return statuses;
   }
 
   function getSyncQueue(peerDeviceId: string): SyncQueueSummary | null {
@@ -714,25 +727,6 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   // The Network channel's switch, the counterpart to
-  // `setBluetoothChannel`. Same shape deliberately: both rows on the
-  // device page drive the same kind of action, so neither reads as the
-  // special one.
-  async function setNetworkChannel(
-    peerDeviceId: string,
-    enabled: boolean,
-  ): Promise<PairedDevice> {
-    const updated = await invoke<PairedDevice>("device_connection_set_network_channel", {
-      peerDeviceId,
-      enabled,
-    });
-    const index = pairedDevices.value.findIndex((device) => device.peer_device_id === peerDeviceId);
-    if (index >= 0) {
-      pairedDevices.value[index] = updated;
-    }
-    await refreshChannelStatuses(peerDeviceId);
-    return updated;
-  }
-
   // Asks the radio directly whether it can be used, and is called only from
   // the moment a Bluetooth channel is switched on.
   //
@@ -757,25 +751,21 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  // Pins this pair onto the clicked channel, sticky until the user clicks
-  // a row again. Both channels stay connected regardless of the pin --
-  // the backend command just persists it and re-runs primary selection, so
-  // there's nothing to force-close; this just persists the returned row and
-  // refreshes what's primary, matching setBluetoothChannel's shape above.
-  async function setPreferredChannel(
+  // Chooses which channel carries this pair's traffic -- the star on a row.
+  // Sticky until the user chooses again, and shown whether or not that
+  // channel is connected right now. Both channels stay connected regardless
+  // of the choice, so there is nothing to force-close: the backend stores it
+  // and re-runs primary selection.
+  async function setPrimaryChannel(
     peerDeviceId: string,
-    kind: "network" | "bluetooth",
-  ): Promise<PairedDevice> {
-    const updated = await invoke<PairedDevice>("device_connection_set_preferred_channel", {
-      peerDeviceId,
-      preferred: kind === "network" ? "tcp_ws" : "bluetooth",
-    });
-    const index = pairedDevices.value.findIndex((device) => device.peer_device_id === peerDeviceId);
-    if (index >= 0) {
-      pairedDevices.value[index] = updated;
-    }
-    await refreshChannelStatuses(peerDeviceId);
-    return updated;
+    kind: ChannelKind | null,
+  ): Promise<DeviceChannelStatus[]> {
+    const statuses = await invoke<DeviceChannelStatus[]>(
+      "device_connection_set_primary_channel",
+      { peerDeviceId, primary: kind },
+    );
+    channelStatusesByPeer.value[peerDeviceId] = statuses;
+    return statuses;
   }
 
   // The Device page's "tap to try again" affordance on a `bluetooth_dial_
@@ -1595,10 +1585,10 @@ export const useDeviceStore = defineStore("device", () => {
     refreshLiveConnectedState,
     getSyncQueue,
     refreshSyncQueue,
-    setBluetoothChannel,
-    setNetworkChannel,
+    setChannelEnabled,
+    unlinkChannel,
     probeBluetoothAdapter,
-    setPreferredChannel,
+    setPrimaryChannel,
     retryBluetoothDial,
     findBluetoothAddress,
     isSyncingPeer,

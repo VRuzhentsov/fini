@@ -5,10 +5,16 @@ to `DeviceConnection`/`SpaceSync` (issue #25). See
 `docs/adr/0001-transport-neutral-peer-protocol.md` for the decision record
 behind these terms.
 
-These are the *adapter*-layer terms. What a person configures between two of
-their devices is a **channel**, and the project-wide vocabulary — channel,
-channel kind, and where "transport" still belongs — lives in
-[`docs/naming.md`](docs/naming.md).
+**The vocabulary below is the one issue #25 shipped with, and it has since
+changed.** "Transport" was retired as a separate concept: it is now simply
+the older word for **channel**, the connection a pair configured, and the
+two are one thing. Read
+[`src-tauri/src/services/communication/README.md`](src-tauri/src/services/communication/README.md)
+for the current layering and [`docs/glossary.md`](docs/glossary.md) for what
+each word means today — including `DataLink (Connection)`, which is what the
+`Link` entry below has since been renamed to. The entries are kept because
+they still describe the envelope and codec boundaries accurately, and
+because they record why those boundaries were drawn.
 
 - **Peer Protocol** — the transport-neutral application protocol: pairing
   handshake (`PairRequest`/`PairAccept`/`PairComplete`) plus authenticated

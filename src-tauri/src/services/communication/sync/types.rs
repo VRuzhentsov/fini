@@ -39,7 +39,7 @@ pub enum SessionCommand {
 pub type SessionSender = mpsc::Sender<SessionCommand>;
 
 /// A message of the transport-neutral Fini peer protocol: pairing handshake
-/// plus authenticated sync. Carried by whichever `Transport`/`Link` is
+/// plus authenticated sync. Carried by whichever `Transport`/`DataLink` is
 /// currently selected for a peer (see `crate::services::communication::channel`).
 /// Bump whenever a new `PeerFrame` variant is introduced that must not be
 /// *proactively* sent to a peer that might not understand it yet (unlike a

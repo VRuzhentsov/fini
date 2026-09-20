@@ -1,7 +1,7 @@
 //! The Sim transport: a deterministic, radio-free adapter used by Rust
 //! integration tests and Playwright E2E to prove transport selection and
 //! the dual-connection/ping-ack liveness model without real hardware. It
-//! implements the same `Link` port as every other adapter (raw TCP +
+//! implements the same `DataLink` port as every other adapter (raw TCP +
 //! length-delimited framing instead of a WebSocket upgrade), so exercising
 //! it exercises the real gate/session code in `sync::session` — this
 //! is a first-class transport, not a mock of one.
@@ -25,13 +25,13 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::sync::session;
 use crate::services::communication::channel::codec::length_delimited;
-use crate::services::communication::channel::{BoxDialFuture, Link, Transport, TransportKind};
+use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, TransportKind};
 
-pub struct SimLink {
+pub struct SimDataLink {
     stream: TcpStream,
 }
 
-impl SimLink {
+impl SimDataLink {
     /// `pub(crate)`, not private: `channel::tests` constructs one
     /// directly from an accepted `TcpStream` to act as a controlled fake
     /// peer in the TCP-failure-reset regression test, without needing the
@@ -42,7 +42,7 @@ impl SimLink {
 }
 
 #[async_trait]
-impl Link for SimLink {
+impl DataLink for SimDataLink {
     fn kind(&self) -> TransportKind {
         TransportKind::Sim
     }
@@ -84,11 +84,11 @@ fn configured_peer_ports() -> Vec<u16> {
         .unwrap_or_default()
 }
 
-pub async fn dial(port: u16) -> Result<Box<dyn Link>, String> {
+pub async fn dial(port: u16) -> Result<Box<dyn DataLink>, String> {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|err| format!("sim connect 127.0.0.1:{port} failed: {err}"))?;
-    Ok(Box::new(SimLink::new(stream)))
+    Ok(Box::new(SimDataLink::new(stream)))
 }
 
 /// `Transport` implementation for the Sim adapter — see the note on
@@ -134,7 +134,7 @@ pub(crate) async fn run_server(state: DeviceConnectionState, db_path: PathBuf, p
         match listener.accept().await {
             Ok((stream, addr)) => {
                 eprintln!("[transport][sim] connection from {addr}");
-                let link: Box<dyn Link> = Box::new(SimLink::new(stream));
+                let link: Box<dyn DataLink> = Box::new(SimDataLink::new(stream));
                 let state = state.clone();
                 let db_path = db_path.clone();
                 tokio::spawn(session::run_peer_gate(link, state, db_path));
@@ -200,7 +200,7 @@ fn in_flight_dials() -> &'static std::sync::Mutex<HashSet<String>> {
 /// dial each other in the same tick — each accepts the other's inbound
 /// connection and claims a session on it, then each side's own outbound
 /// dial loses that claim race (already claimed by the inbound) and drops
-/// its outbound `Link`, which — since both ends of one TCP connection share
+/// its outbound `DataLink`, which — since both ends of one TCP connection share
 /// a socket — tears down the peer's just-claimed inbound session too,
 /// leaving both disconnected until a tick happens not to race.
 fn should_dial_fallback_peer(my_id: &str, peer_id: &str) -> bool {

@@ -1,6 +1,6 @@
 //! `PeerFrame <-> bytes`, via the versioned envelope and the active
 //! `SecureChannel` (pass-through today). Shared by every adapter so the
-//! wire format is identical regardless of which `Link` carries it.
+//! wire format is identical regardless of which `DataLink` carries it.
 
 use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::envelope::{EncScheme, FrameEnvelope, ENVELOPE_VERSION};
@@ -10,7 +10,7 @@ fn channel() -> impl SecureChannel {
     PlaintextChannel
 }
 
-/// `PeerFrame -> ciphertext-in-envelope -> bytes`, ready to hand to `Link::send`.
+/// `PeerFrame -> ciphertext-in-envelope -> bytes`, ready to hand to `DataLink::send`.
 pub fn encode_frame(frame: &PeerFrame) -> Result<Vec<u8>, String> {
     let plain = serde_json::to_vec(frame).map_err(|err| format!("encode PeerFrame: {err}"))?;
     let channel = channel();
@@ -19,7 +19,7 @@ pub fn encode_frame(frame: &PeerFrame) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&envelope).map_err(|err| format!("encode envelope: {err}"))
 }
 
-/// Bytes from `Link::recv` -> envelope -> plaintext -> `PeerFrame`.
+/// Bytes from `DataLink::recv` -> envelope -> plaintext -> `PeerFrame`.
 pub fn decode_frame(bytes: &[u8]) -> Result<PeerFrame, String> {
     let envelope: FrameEnvelope =
         serde_json::from_slice(bytes).map_err(|err| format!("decode envelope: {err}"))?;
