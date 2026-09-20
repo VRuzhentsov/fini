@@ -553,6 +553,18 @@ pub(super) fn spawn_discovery_worker(
                         if beacon.protocol == DISCOVERY_PROTOCOL
                             && beacon.device_id != identity.device_id
                         {
+                            // Same transition the mDNS branch wakes on, and
+                            // for the same reason. Either discovery can win
+                            // the startup race, and whichever does it first
+                            // makes the other's insert a no-op -- so waking
+                            // only from mDNS means a UDP-first peer is not
+                            // dialled until some unrelated work happens to
+                            // tick. Read before the upsert below.
+                            let newly_present = runtime
+                                .lock()
+                                .map(|guard| !guard.presence.contains_key(beacon.device_id.as_str()))
+                                .unwrap_or(false);
+
                             if let Ok(mut guard) = runtime.lock() {
                                 guard.rx_count += 1;
 
@@ -585,6 +597,13 @@ pub(super) fn spawn_discovery_worker(
                                         );
                                     }
                                 }
+                            }
+
+                            // Outside the lock, as in the mDNS branch: a
+                            // woken tick would otherwise contend for the
+                            // mutex we are still holding.
+                            if newly_present {
+                                crate::services::communication::sync::commands::notify_sync_work_pending();
                             }
                         }
                         continue;
