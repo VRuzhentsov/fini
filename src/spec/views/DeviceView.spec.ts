@@ -64,7 +64,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     getLastSyncedAtBySpace: jest.fn().mockReturnValue({}),
     getMappedSpaceIds: jest.fn().mockReturnValue([]),
     getUnresolvedCustomSpaces: jest.fn().mockReturnValue([]),
-    getTransportStatuses: jest.fn().mockReturnValue(GREEN_ROWS),
+    getChannelStatuses: jest.fn().mockReturnValue(GREEN_ROWS),
     getSyncQueue: jest.fn().mockReturnValue(null),
     refreshSyncQueue: jest.fn().mockResolvedValue(null),
     shortDeviceId: jest.fn().mockReturnValue("ce-123"),
@@ -72,12 +72,12 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     runSpaceSyncTick: jest.fn().mockResolvedValue(undefined),
     loadMappedSpaces: jest.fn().mockResolvedValue([]),
     refreshSpaceSyncStatus: jest.fn().mockResolvedValue(undefined),
-    refreshTransportStatuses: jest.fn().mockResolvedValue(undefined),
+    refreshChannelStatuses: jest.fn().mockResolvedValue(undefined),
     refreshLiveConnectedState: jest.fn().mockResolvedValue(undefined),
-    setBluetoothTransport: jest.fn().mockResolvedValue(undefined),
-    setNetworkTransport: jest.fn().mockResolvedValue(undefined),
+    setBluetoothChannel: jest.fn().mockResolvedValue(undefined),
+    setNetworkChannel: jest.fn().mockResolvedValue(undefined),
     probeBluetoothAdapter: jest.fn().mockResolvedValue(true),
-    setPreferredTransport: jest.fn().mockResolvedValue(undefined),
+    setPreferredChannel: jest.fn().mockResolvedValue(undefined),
     retryBluetoothDial: jest.fn().mockResolvedValue(undefined),
     findBluetoothAddress: jest.fn().mockResolvedValue(null),
     saveMappedSpaces: jest.fn().mockResolvedValue([]),
@@ -160,7 +160,7 @@ describe("DeviceView channels", () => {
     const wrapper = mountView();
     await flushUi();
 
-    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].text()).toContain("Network");
     expect(rows[0].text()).toContain("Connected");
@@ -172,11 +172,11 @@ describe("DeviceView channels", () => {
     const wrapper = mountView();
     await flushUi();
 
-    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
     await rows[1].find("button").trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.setPreferredTransport).toHaveBeenCalledWith("peer-device-123", "bluetooth");
+    expect(deviceStoreMock.setPreferredChannel).toHaveBeenCalledWith("peer-device-123", "bluetooth");
   });
 
   it("stars the manually pinned channel, not the automatic choice", async () => {
@@ -199,11 +199,11 @@ describe("DeviceView channels", () => {
     const wrapper = mountView();
     await flushUi();
 
-    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
     await rows[0].find('[data-testid="channel-switch"]').trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.setNetworkTransport).toHaveBeenCalledWith("peer-device-123", false);
+    expect(deviceStoreMock.setNetworkChannel).toHaveBeenCalledWith("peer-device-123", false);
   });
 
   // Switching a channel on asks the radio directly rather than waiting for
@@ -211,7 +211,7 @@ describe("DeviceView channels", () => {
   // instead of up to a tick later.
   it("probes the adapter when Bluetooth is switched on", async () => {
     deviceStoreMock.findPairedDevice.mockReturnValue(pairedDevice({ bluetooth_enabled: false }));
-    deviceStoreMock.getTransportStatuses.mockReturnValue([
+    deviceStoreMock.getChannelStatuses.mockReturnValue([
       GREEN_ROWS[0],
       {
         kind: "bluetooth",
@@ -223,16 +223,16 @@ describe("DeviceView channels", () => {
     const wrapper = mountView();
     await flushUi();
 
-    const rows = wrapper.findAll('[data-testid="transport-status-row"]');
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
     await rows[1].find('[data-testid="channel-switch"]').trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.setBluetoothTransport).toHaveBeenCalledWith("peer-device-123", true);
+    expect(deviceStoreMock.setBluetoothChannel).toHaveBeenCalledWith("peer-device-123", true);
     expect(deviceStoreMock.probeBluetoothAdapter).toHaveBeenCalled();
   });
 
   it("explains a dead local radio without blaming the peer", async () => {
-    deviceStoreMock.getTransportStatuses.mockReturnValue([
+    deviceStoreMock.getChannelStatuses.mockReturnValue([
       GREEN_ROWS[0],
       {
         kind: "bluetooth",
@@ -244,7 +244,7 @@ describe("DeviceView channels", () => {
     const wrapper = mountView();
     await flushUi();
 
-    const bluetoothRow = wrapper.findAll('[data-testid="transport-status-row"]')[1];
+    const bluetoothRow = wrapper.findAll('[data-testid="channel-status-row"]')[1];
     expect(bluetoothRow.attributes("data-channel-state")).toBe("waiting");
     expect(bluetoothRow.text()).toContain("On, waiting");
     // Shown without being asked for, and it names this machine rather than
@@ -254,7 +254,7 @@ describe("DeviceView channels", () => {
   });
 
   it("names the peer when the peer is the one out of reach", async () => {
-    deviceStoreMock.getTransportStatuses.mockReturnValue([
+    deviceStoreMock.getChannelStatuses.mockReturnValue([
       GREEN_ROWS[0],
       {
         kind: "bluetooth",
@@ -266,9 +266,9 @@ describe("DeviceView channels", () => {
     const wrapper = mountView();
     await flushUi();
 
-    const bluetoothRow = wrapper.findAll('[data-testid="transport-status-row"]')[1];
+    const bluetoothRow = wrapper.findAll('[data-testid="channel-status-row"]')[1];
     expect(bluetoothRow.attributes("data-channel-state")).toBe("down");
-    await bluetoothRow.find('[data-testid="transport-status-info"]').trigger("click");
+    await bluetoothRow.find('[data-testid="channel-status-info"]').trigger("click");
     await flushUi();
     expect(bluetoothRow.text()).toContain("peer-host isn't nearby");
   });

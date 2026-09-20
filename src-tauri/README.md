@@ -26,7 +26,7 @@ src-tauri/
 Most of this tree is ordinary. These few are not: change them only with the
 linked decision record in hand, and expect a review to ask why.
 
-### `src/services/device_connection/link_state.rs` — the link state machine
+### `src/services/communication/pairing/link_state.rs` — the link state machine
 
 **Read [ADR-0005](../docs/adr/0005-transport-link-state-machine.md) before
 touching this file.**

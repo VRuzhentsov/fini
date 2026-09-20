@@ -71,42 +71,42 @@ jest.mock("../../composables/useBackupImport", () => ({
   }),
 }));
 
-jest.mock("../../components/SettingsView/AboutCard.vue", () => ({
+jest.mock("../../components/settings/AboutCard.vue", () => ({
   __esModule: true,
   default: { name: "AboutCard", template: "<section data-testid='about-card-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/ExportSpacesDialog.vue", () => ({
+jest.mock("../../components/settings/ExportSpacesDialog.vue", () => ({
   __esModule: true,
   default: { name: "ExportSpacesDialog", template: "<section data-testid='export-spaces-dialog-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/ImportSpaceMappingDialog.vue", () => ({
+jest.mock("../../components/settings/ImportSpaceMappingDialog.vue", () => ({
   __esModule: true,
   default: { name: "ImportSpaceMappingDialog", template: "<section data-testid='import-space-mapping-dialog-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/MergeConflictDialog.vue", () => ({
+jest.mock("../../components/settings/MergeConflictDialog.vue", () => ({
   __esModule: true,
   default: { name: "MergeConflictDialog", template: "<section data-testid='merge-conflict-dialog-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/ThemeSelector.vue", () => ({
+jest.mock("../../components/settings/ThemeSelector.vue", () => ({
   __esModule: true,
   default: { name: "ThemeSelector", template: "<section data-testid='theme-selector-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/SpacesSettingsSection.vue", () => ({
+jest.mock("../../components/settings/SpacesSettingsSection.vue", () => ({
   __esModule: true,
   default: { name: "SpacesSettingsSection", template: "<section data-testid='spaces-settings-section-stub' />" },
 }), { virtual: true });
 
-jest.mock("../../components/SettingsView/DevicesSettingsSection.vue", () => ({
+jest.mock("../../components/settings/DevicesSettingsSection.vue", () => ({
   __esModule: true,
   default: { name: "DevicesSettingsSection", template: "<section data-testid='devices-settings-section-stub' />" },
 }), { virtual: true });
 
-jest.mock("../../components/SettingsView/BackupSettingsSection.vue", () => ({
+jest.mock("../../components/settings/BackupSettingsSection.vue", () => ({
   __esModule: true,
   default: { name: "BackupSettingsSection", template: "<section data-testid='backup-settings-section-stub' />" },
 }), { virtual: true });

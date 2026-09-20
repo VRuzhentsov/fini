@@ -27,7 +27,7 @@ Features: `specs/device-connect/README.md`, `specs/space-sync/README.md`.
 
 Each row carries live state, the reason it isn't connected, a last connected/synced stamp, a star for the primary channel, and its own on/off switch.
 
-- **Row state** is derived by `channelRowState` in [[transportStatusCodes]]: `off` / `waiting` / `down` / `connecting` / `fading` / `connected`. It combines the backend's `RowState` with the pair's own switch, because "off" is a fact about what the user chose and every other state is a fact about the link.
+- **Row state** is derived by `channelRowState` in [[channelStatusCodes]]: `off` / `waiting` / `down` / `connecting` / `fading` / `connected`. It combines the backend's `RowState` with the pair's own switch, because "off" is a fact about what the user chose and every other state is a fact about the link.
 - **The reason** is plain language and names the device — "Pixel 8 isn't nearby", "Bluetooth is off on this computer". Never a status code, never a bare coloured dot. It lives in the row's information button.
 - **`waiting`** ("On, waiting") is the state the user sits in after switching a channel on while this machine's own radio is off. The switch stays on with a gray track, and the channel starts by itself when the radio returns. Its reason is shown without being asked for, since a toast would be gone before the question is.
 - **The star** only appears on a channel that is actually connected — offering it on a dead row would promise a switch that does nothing.

@@ -6,12 +6,12 @@ pub mod backup;
 pub mod checklist;
 #[cfg(feature = "cli-plane")]
 pub mod cli;
+pub mod communication;
 #[cfg(feature = "cli-plane")]
 pub mod cli_update;
 pub mod db;
 #[cfg(feature = "ui-plane")]
 pub mod desktop_update;
-pub mod device_connection;
 pub mod due_time;
 pub mod migration_import;
 #[cfg(any(feature = "ui-plane", test))]
@@ -22,6 +22,4 @@ pub mod reconciler;
 pub mod reminder;
 pub mod settings;
 pub mod space;
-pub mod space_sync;
-pub mod transport;
 pub mod update_recovery;

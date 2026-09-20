@@ -7,7 +7,7 @@
 //! the checklist content itself.
 //!
 //! The embedded `<!--k=id-->` token gives each line stable identity across edits, which is what
-//! makes the per-item sync merge (`merge_3way`, used by `space_sync::commands::apply_sync_event`)
+//! makes the per-item sync merge (`merge_3way`, used by `sync::commands::apply_sync_event`)
 //! and the recurrence scope reconciliation (`reconcile_future_scope`) possible.
 
 use serde::{Deserialize, Serialize};
@@ -169,7 +169,7 @@ pub fn reconcile_future_scope(
     serialize(&reconciled)
 }
 
-/// 3-way merge for the per-item sync path (`space_sync::commands::apply_sync_event`). `base` is
+/// 3-way merge for the per-item sync path (`sync::commands::apply_sync_event`). `base` is
 /// the device-local `checklist_base` — the last value both sides last agreed on. Returns the
 /// merged checklist text and whether an irreconcilable same-item conflict was hit (logged, not
 /// fatal — see module docs / issue #128 spike write-up for why this is a narrow, accepted

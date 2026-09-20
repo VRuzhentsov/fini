@@ -7,7 +7,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export type ChannelKind = 'network' | 'bluetooth';
 
 // The row's own vocabulary (`channelRowState` in
-// `src/utils/transportStatusCodes.ts`), not the backend's -- the two answer
+// `src/utils/channelStatusCodes.ts`), not the backend's -- the two answer
 // different questions, and this is the one the person reads.
 export type ChannelRowState =
   | 'off'
@@ -18,7 +18,7 @@ export type ChannelRowState =
   | 'connected';
 
 export function channelRowSelector(kind: ChannelKind): string {
-  return `[data-testid="transport-status-row"][data-transport-kind="${kind}"]`;
+  return `[data-testid="channel-status-row"][data-channel-kind="${kind}"]`;
 }
 
 /**
@@ -50,7 +50,7 @@ export async function waitForChannelState(
 
 /** The plain-language reason under a row, or '' when it isn't showing one. */
 export async function channelReason(actor: E2EActor, kind: ChannelKind): Promise<string> {
-  const selector = `${channelRowSelector(kind)} [data-testid="transport-status-reason"]`;
+  const selector = `${channelRowSelector(kind)} [data-testid="channel-status-reason"]`;
   return actor.page.evaluate<string>(`(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
     return el ? (el.textContent ?? '').trim() : '';

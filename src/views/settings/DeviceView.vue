@@ -2,15 +2,15 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronLeftIcon } from "@heroicons/vue/24/outline";
-import SettingsListGroup from "../../components/SettingsView/SettingsListGroup.vue";
-import SettingsListItem from "../../components/SettingsView/SettingsListItem.vue";
-import ChannelRow from "../../components/DeviceView/ChannelRow.vue";
-import SyncQueueSection from "../../components/DeviceView/SyncQueueSection.vue";
-import ChannelSetupDialog from "../../components/DeviceView/ChannelSetupDialog.vue";
+import SettingsListGroup from "../../components/settings/SettingsListGroup.vue";
+import SettingsListItem from "../../components/settings/SettingsListItem.vue";
+import ChannelRow from "../../components/settings/device/ChannelRow.vue";
+import SyncQueueSection from "../../components/settings/device/SyncQueueSection.vue";
+import ChannelSetupDialog from "../../components/settings/device/ChannelSetupDialog.vue";
 import { useDeviceStore } from "../../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
-import { channelRowState } from "../../utils/transportStatusCodes";
+import { channelRowState } from "../../utils/channelStatusCodes";
 
 const route = useRoute();
 const router = useRouter();
@@ -31,8 +31,8 @@ const deviceId = computed(() => String(route.params.id ?? ""));
 const device = computed(() => deviceStore.findPairedDevice(deviceId.value));
 const peerName = computed(() => device.value?.display_name ?? "That device");
 
-const transportStatuses = computed(() =>
-  deviceId.value ? deviceStore.getTransportStatuses(deviceId.value) : [],
+const channelStatuses = computed(() =>
+  deviceId.value ? deviceStore.getChannelStatuses(deviceId.value) : [],
 );
 const syncQueue = computed(() => (deviceId.value ? deviceStore.getSyncQueue(deviceId.value) : null));
 
@@ -43,7 +43,7 @@ const syncQueue = computed(() => (deviceId.value ? deviceStore.getSyncQueue(devi
 const starredChannel = computed<"network" | "bluetooth" | null>(() => {
   const pinned = device.value?.preferred_transport;
   if (pinned === "network" || pinned === "bluetooth") return pinned;
-  return transportStatuses.value.find((status) => status.primary)?.kind ?? null;
+  return channelStatuses.value.find((status) => status.primary)?.kind ?? null;
 });
 
 function channelEnabled(kind: "network" | "bluetooth"): boolean {
@@ -54,7 +54,7 @@ function channelEnabled(kind: "network" | "bluetooth"): boolean {
 // Drives the sync queue's "sending now" vs "nothing can reach it" line.
 // Anything actually carrying a proven link counts, primary or not.
 const anyChannelConnected = computed(() =>
-  transportStatuses.value.some(
+  channelStatuses.value.some(
     (status) => channelRowState(status.state, channelEnabled(status.kind)) === "connected",
   ),
 );
@@ -145,7 +145,7 @@ async function loadDeviceState() {
   try {
     mappedSelection.value = await deviceStore.loadMappedSpaces(deviceId.value);
     await deviceStore.refreshSpaceSyncStatus(deviceId.value);
-    await deviceStore.refreshTransportStatuses(deviceId.value);
+    await deviceStore.refreshChannelStatuses(deviceId.value);
     await deviceStore.refreshSyncQueue(deviceId.value);
     mappingsDirty.value = false;
   } catch (error) {
@@ -189,12 +189,12 @@ async function toggleChannel(kind: "network" | "bluetooth", enabled: boolean) {
   channelError.value = null;
   try {
     if (kind === "network") {
-      await deviceStore.setNetworkTransport(deviceId.value, enabled);
+      await deviceStore.setNetworkChannel(deviceId.value, enabled);
     } else {
-      await deviceStore.setBluetoothTransport(deviceId.value, enabled);
+      await deviceStore.setBluetoothChannel(deviceId.value, enabled);
       if (enabled) {
         await deviceStore.probeBluetoothAdapter();
-        await deviceStore.refreshTransportStatuses(deviceId.value);
+        await deviceStore.refreshChannelStatuses(deviceId.value);
       }
     }
   } catch (error) {
@@ -209,7 +209,7 @@ async function pinChannel(kind: "network" | "bluetooth") {
   busyChannel.value = kind;
   channelError.value = null;
   try {
-    await deviceStore.setPreferredTransport(deviceId.value, kind);
+    await deviceStore.setPreferredChannel(deviceId.value, kind);
   } catch (error) {
     channelError.value = String(error);
   } finally {
@@ -263,7 +263,7 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
         <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide opacity-70">Channels</h2>
         <ul class="flex list-none flex-col overflow-hidden rounded-lg">
           <ChannelRow
-            v-for="status in transportStatuses"
+            v-for="status in channelStatuses"
             :key="status.kind"
             :status="status"
             :enabled="channelEnabled(status.kind)"

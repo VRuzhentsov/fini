@@ -52,7 +52,7 @@ export async function waitForSimSession(actor: E2EActor, timeoutMs = 60_000): Pr
   }, timeoutMs, 1_000);
 }
 
-export async function expectNetworkTransportUnavailable(actor: E2EActor): Promise<void> {
+export async function expectNetworkChannelUnavailable(actor: E2EActor): Promise<void> {
   const presence = await actor.invoke<unknown[]>('device_connection_presence_snapshot');
   expect(presence, `${actor.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
 }

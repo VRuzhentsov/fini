@@ -40,11 +40,11 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 
 ## Primary UI Surfaces
 
-- `src/views/SettingsView.vue` — the devices list and incoming pair requests
-- `src/components/SettingsView/PairDeviceDialog.vue` — pairing, as a modal; replaces the former `/settings/add-device` route
-- `src/views/DeviceView.vue` — one paired device: channels, shared spaces, sync queue, unlink
-- `src/components/DeviceView/ChannelSetupDialog.vue` — adding or re-establishing a channel on an already-paired device, with no passcode step
-- `src/views/DeviceView.vue`
+- `src/views/settings/SettingsView.vue` — the devices list and incoming pair requests
+- `src/components/settings/PairDeviceDialog.vue` — pairing, as a modal; replaces the former `/settings/add-device` route
+- `src/views/settings/DeviceView.vue` — one paired device: channels, shared spaces, sync queue, unlink
+- `src/components/settings/device/ChannelSetupDialog.vue` — adding or re-establishing a channel on an already-paired device, with no passcode step
+- `src/views/settings/DeviceView.vue`
 
 ## Related Feature
 

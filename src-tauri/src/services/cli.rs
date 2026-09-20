@@ -12,10 +12,10 @@ use crate::models::{
 use crate::services::backup;
 use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
 use crate::services::db::{db_default_path, try_open_db_at_path};
-use crate::services::device_connection::types::{
+use crate::services::communication::pairing::types::{
     DevicePairRequestAckInput, DevicePairRequestInput,
 };
-use crate::services::device_connection::{
+use crate::services::communication::pairing::{
     device_connection_consume_space_mapping_updates_impl, device_connection_debug_status_impl,
     device_connection_discovery_snapshot_impl, device_connection_enter_add_mode_impl,
     device_connection_get_identity_impl, device_connection_get_paired_devices_impl,
@@ -33,8 +33,8 @@ use crate::services::quest::{
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
-use crate::services::space_sync::outbox::emit_sync_event;
-use crate::services::space_sync::{
+use crate::services::communication::sync::outbox::emit_sync_event;
+use crate::services::communication::sync::{
     space_sync_apply_remote_mappings_impl, space_sync_list_mappings_impl,
     space_sync_resolve_custom_space_mapping_impl, space_sync_status_impl, space_sync_tick_impl,
     space_sync_update_mappings_impl, SpaceResolutionMode,

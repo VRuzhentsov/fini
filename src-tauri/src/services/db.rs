@@ -25,7 +25,7 @@ pub fn utc_now() -> String {
 
 /// Same instant as `utc_now`, but to millisecond precision. Needed
 /// specifically for sync-event ordering (`sync_outbox.updated_at`, compared
-/// by `space_sync::merge::incoming_wins`): two events that are genuinely
+/// by `sync::merge::incoming_wins`): two events that are genuinely
 /// sequential -- e.g. a quest created on one device, then edited there or
 /// on a peer moments later -- can otherwise land in the same whole second,
 /// tying on `utc_now()`'s second-only precision and falling through to the

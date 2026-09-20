@@ -14,8 +14,8 @@ export interface PairedDevice {
   bluetooth_address: string | null;
   bluetooth_last_verified_at: string | null;
   // The user's sticky manual pin, if any -- "network" | "bluetooth" | null.
-  // Independent of `TransportStatus.primary` (which already-connected
-  // transport is actually carrying traffic right now); this is what a row
+  // Independent of `ChannelStatus.primary` (which already-connected
+  // channel is actually carrying traffic right now); this is what a row
   // click sets.
   preferred_transport: string | null;
   preferred_transport_set_at: string | null;
@@ -26,12 +26,12 @@ export interface PairedDevice {
   network_enabled: boolean;
 }
 
-// Mirrors the backend's TransportStatusCode (device_connection::transport,
+// Mirrors the backend's ChannelStatusCode (communication::pairing::channel_status,
 // ADR-0003 revision) -- a machine-readable reason, not display text. See
-// `../utils/transportStatusCodes.ts` for the code -> English lookup (the
+// `../utils/channelStatusCodes.ts` for the code -> English lookup (the
 // only place text is attached to these; swap that file for a locale-aware
 // lookup when i18n lands).
-export type TransportStatusCode =
+export type ChannelStatusCode =
   | { code: "network_unavailable" }
   | { code: "network_disabled" }
   | { code: "bluetooth_not_supported" }
@@ -47,28 +47,28 @@ export type TransportStatusCode =
   | { code: "awaiting_first_ack" }
   | { code: "ping_missed"; count: number };
 
-// Mirrors the backend's RowState (device_connection::transport, ADR-0003
+// Mirrors the backend's RowState (communication::pairing::channel_status, ADR-0003
 // revision): shared shape between the Network and Bluetooth rows. Gray ->
-// amber -> green, per row, independent of which transport is primary:
+// amber -> green, per row, independent of which channel is primary:
 // - unconfigured: local preconditions aren't met at all (gray); `code` is
 //   why.
 // - configured, code present: preconditions met and a session is claimed,
 //   but the bidirectional ping/ack proof isn't currently complete (amber).
 // - configured, code null: the ping/ack proof is currently complete
 //   (green). "Currently" -- this isn't sticky, a lapsed proof falls back
-//   to amber on its own even without the transport disconnecting.
-export type DeviceTransportRowState =
-  | { state: "unconfigured"; code: TransportStatusCode }
-  | { state: "configured"; code: TransportStatusCode | null };
+//   to amber on its own even without the channel disconnecting.
+export type DeviceChannelRowState =
+  | { state: "unconfigured"; code: ChannelStatusCode }
+  | { state: "configured"; code: ChannelStatusCode | null };
 
-export interface DeviceTransportStatus {
+export interface DeviceChannelStatus {
   kind: "network" | "bluetooth";
-  // Whether this is the transport currently carrying real application
+  // Whether this is the channel currently carrying real application
   // traffic -- independent of `state`. Both rows can be green at once;
   // only one is ever primary. Network wins whenever connected, unless
   // pinned to Bluetooth.
   primary: boolean;
-  state: DeviceTransportRowState;
+  state: DeviceChannelRowState;
 }
 
 export interface DiscoveredDevice {
@@ -81,7 +81,7 @@ export interface DiscoveredDevice {
   // Which discovery mechanism found this candidate -- ADR 0002 Phase 3.
   // `addr` carries a Bluetooth MAC (and `discovery_port`/`ws_port` are
   // meaningless) when this is "bluetooth".
-  transport: "network" | "bluetooth";
+  channel_kind: "network" | "bluetooth";
 }
 
 export interface IncomingPairRequest {
@@ -286,10 +286,10 @@ export const useDeviceStore = defineStore("device", () => {
   const lastSyncedAtByPeer = ref<Record<string, string | null>>({});
   const lastSyncedAtByPeerSpace = ref<Record<string, Record<string, string | null>>>({});
   const syncingByPeer = ref<Record<string, boolean>>({});
-  const transportStatusesByPeer = ref<Record<string, DeviceTransportStatus[]>>({});
+  const channelStatusesByPeer = ref<Record<string, DeviceChannelStatus[]>>({});
   const syncQueueByPeer = ref<Record<string, SyncQueueSummary | null>>({});
   // Per-channel discovery candidates. See `recomputeDiscovered`.
-  const discoveredByTransport = ref<Record<"network" | "bluetooth", DiscoveredDevice[]>>({
+  const discoveredByChannel = ref<Record<"network" | "bluetooth", DiscoveredDevice[]>>({
     network: [],
     bluetooth: [],
   });
@@ -412,8 +412,8 @@ export const useDeviceStore = defineStore("device", () => {
     return getLastSyncedAtBySpace(peerDeviceId)[spaceId] ?? null;
   }
 
-  function getTransportStatuses(peerDeviceId: string): DeviceTransportStatus[] {
-    return transportStatusesByPeer.value[peerDeviceId] ?? [];
+  function getChannelStatuses(peerDeviceId: string): DeviceChannelStatus[] {
+    return channelStatusesByPeer.value[peerDeviceId] ?? [];
   }
 
   function isSyncingPeer(peerDeviceId: string): boolean {
@@ -564,16 +564,16 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  async function refreshTransportStatuses(peerDeviceId: string): Promise<DeviceTransportStatus[]> {
+  async function refreshChannelStatuses(peerDeviceId: string): Promise<DeviceChannelStatus[]> {
     try {
-      const statuses = await invoke<DeviceTransportStatus[]>("device_connection_transport_statuses", {
+      const statuses = await invoke<DeviceChannelStatus[]>("device_connection_channel_statuses", {
         peerDeviceId,
       });
-      transportStatusesByPeer.value[peerDeviceId] = statuses;
+      channelStatusesByPeer.value[peerDeviceId] = statuses;
       return statuses;
     } catch (error) {
-      console.warn("[device-connection] failed to load transport statuses", error);
-      transportStatusesByPeer.value[peerDeviceId] = [];
+      console.warn("[device-connection] failed to load channel statuses", error);
+      channelStatusesByPeer.value[peerDeviceId] = [];
       return [];
     }
   }
@@ -594,9 +594,9 @@ export const useDeviceStore = defineStore("device", () => {
   // since this branch only ever fires for a row already `unconfigured` --
   // it can't intercept that case.
   function applyLiveness(
-    status: DeviceTransportStatus,
-    entry: { connected: boolean; primary: boolean; code: TransportStatusCode | null; dial_exhausted: boolean } | undefined,
-  ): DeviceTransportStatus {
+    status: DeviceChannelStatus,
+    entry: { connected: boolean; primary: boolean; code: ChannelStatusCode | null; dial_exhausted: boolean } | undefined,
+  ): DeviceChannelStatus {
     if (!entry) return status;
     if (status.state.state === "unconfigured" && !entry.connected) {
       return { ...status, primary: entry.primary };
@@ -618,12 +618,12 @@ export const useDeviceStore = defineStore("device", () => {
     };
   }
 
-  // On Linux, `device_connection_transport_statuses` re-checks OS bond
+  // On Linux, `device_connection_channel_statuses` re-checks OS bond
   // status via a `bluetoothctl` subprocess call on every invocation --
   // fine for a one-shot load, but not something a live-status poll should
   // rerun every few seconds while a device's page stays open (a stalled
   // BlueZ/D-Bus would hold up every other DB-backed command for as long as
-  // the view stays mounted). `device_connection_transport_liveness` is the
+  // the view stays mounted). `device_connection_channel_liveness` is the
   // lightweight sibling: in-memory only, no DB read, no subprocess -- but
   // (unlike the plain-primary-only signal this used to read) it also
   // carries each row's current ping/ack `code`, so this patches both
@@ -631,7 +631,7 @@ export const useDeviceStore = defineStore("device", () => {
   // is a continuously-reproven proof that can lapse or complete
   // independent of `primary`, and a Bluetooth-only peer never appears in
   // the network-presence-gated poll that would otherwise trigger a fresh
-  // full `refreshTransportStatuses` load -- without this, such a peer's
+  // full `refreshChannelStatuses` load -- without this, such a peer's
   // row could stay frozen amber indefinitely after the backend proved it
   // green, or vice versa. `unconfigured` rows are left alone when not
   // connected: this lightweight check doesn't know *why* (disabled? not
@@ -639,7 +639,7 @@ export const useDeviceStore = defineStore("device", () => {
   // self-healing-within-a-few-seconds philosophy as the push/poll split
   // above, not a new gap.
   async function refreshLiveConnectedState(peerDeviceId: string) {
-    if (!transportStatusesByPeer.value[peerDeviceId]?.length) return;
+    if (!channelStatusesByPeer.value[peerDeviceId]?.length) return;
 
     try {
       const liveness = await invoke<
@@ -647,21 +647,21 @@ export const useDeviceStore = defineStore("device", () => {
           kind: "network" | "bluetooth";
           connected: boolean;
           primary: boolean;
-          code: TransportStatusCode | null;
+          code: ChannelStatusCode | null;
           dial_exhausted: boolean;
         }>
-      >("device_connection_transport_liveness", { peerDeviceId });
+      >("device_connection_channel_liveness", { peerDeviceId });
       // Re-read *after* the await, not the array captured before it: an
-      // enable/disable operation's full refresh (`setBluetoothTransport`)
+      // enable/disable operation's full refresh (`setBluetoothChannel`)
       // can land while this invoke is pending, and patching on top of the
       // pre-await snapshot would silently revert `state` back to a stale
       // value -- with nothing else to correct it afterward for a
       // Bluetooth-only peer, since it never appears in the network
       // presence snapshot that would otherwise trigger a fresh full load.
-      const current = transportStatusesByPeer.value[peerDeviceId];
+      const current = channelStatusesByPeer.value[peerDeviceId];
       if (!current || current.length === 0) return;
       const byKind = new Map(liveness.map((entry) => [entry.kind, entry]));
-      transportStatusesByPeer.value[peerDeviceId] = current.map((status) =>
+      channelStatusesByPeer.value[peerDeviceId] = current.map((status) =>
         applyLiveness(status, byKind.get(status.kind)),
       );
     } catch (error) {
@@ -669,12 +669,12 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  async function setBluetoothTransport(
+  async function setBluetoothChannel(
     peerDeviceId: string,
     enabled: boolean,
     bluetoothAddress?: string | null,
   ): Promise<PairedDevice> {
-    const updated = await invoke<PairedDevice>("device_connection_set_bluetooth_transport", {
+    const updated = await invoke<PairedDevice>("device_connection_set_bluetooth_channel", {
       input: {
         peer_device_id: peerDeviceId,
         enabled,
@@ -687,7 +687,7 @@ export const useDeviceStore = defineStore("device", () => {
     } else {
       pairedDevices.value = [updated, ...pairedDevices.value];
     }
-    await refreshTransportStatuses(peerDeviceId);
+    await refreshChannelStatuses(peerDeviceId);
     return updated;
   }
 
@@ -714,14 +714,14 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   // The Network channel's switch, the counterpart to
-  // `setBluetoothTransport`. Same shape deliberately: both rows on the
+  // `setBluetoothChannel`. Same shape deliberately: both rows on the
   // device page drive the same kind of action, so neither reads as the
   // special one.
-  async function setNetworkTransport(
+  async function setNetworkChannel(
     peerDeviceId: string,
     enabled: boolean,
   ): Promise<PairedDevice> {
-    const updated = await invoke<PairedDevice>("device_connection_set_network_transport", {
+    const updated = await invoke<PairedDevice>("device_connection_set_network_channel", {
       peerDeviceId,
       enabled,
     });
@@ -729,7 +729,7 @@ export const useDeviceStore = defineStore("device", () => {
     if (index >= 0) {
       pairedDevices.value[index] = updated;
     }
-    await refreshTransportStatuses(peerDeviceId);
+    await refreshChannelStatuses(peerDeviceId);
     return updated;
   }
 
@@ -757,16 +757,16 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  // Pins this pair onto the clicked transport, sticky until the user clicks
-  // a row again. Both transports stay connected regardless of the pin --
+  // Pins this pair onto the clicked channel, sticky until the user clicks
+  // a row again. Both channels stay connected regardless of the pin --
   // the backend command just persists it and re-runs primary selection, so
   // there's nothing to force-close; this just persists the returned row and
-  // refreshes what's primary, matching setBluetoothTransport's shape above.
-  async function setPreferredTransport(
+  // refreshes what's primary, matching setBluetoothChannel's shape above.
+  async function setPreferredChannel(
     peerDeviceId: string,
     kind: "network" | "bluetooth",
   ): Promise<PairedDevice> {
-    const updated = await invoke<PairedDevice>("device_connection_set_preferred_transport", {
+    const updated = await invoke<PairedDevice>("device_connection_set_preferred_channel", {
       peerDeviceId,
       preferred: kind === "network" ? "tcp_ws" : "bluetooth",
     });
@@ -774,33 +774,33 @@ export const useDeviceStore = defineStore("device", () => {
     if (index >= 0) {
       pairedDevices.value[index] = updated;
     }
-    await refreshTransportStatuses(peerDeviceId);
+    await refreshChannelStatuses(peerDeviceId);
     return updated;
   }
 
   // The Device page's "tap to try again" affordance on a `bluetooth_dial_
   // exhausted` row (see the backend's `ble::retry_bluetooth_dial` doc
   // comment): resumes the backend's automatic dial retries for one more
-  // `AUTO_RETRY_WINDOW`. `refreshTransportStatuses` afterward is what makes
+  // `AUTO_RETRY_WINDOW`. `refreshChannelStatuses` afterward is what makes
   // the row switch back to "Connecting..." immediately instead of waiting
   // for the next 5s poll.
   async function retryBluetoothDial(peerDeviceId: string): Promise<void> {
     await invoke("device_connection_retry_bluetooth_dial", { peerDeviceId });
-    await refreshTransportStatuses(peerDeviceId);
+    await refreshChannelStatuses(peerDeviceId);
   }
 
   // Phase 1 of ADR 0002's "Find via Bluetooth" button: scans for up to 60s
   // and, on a match, the backend has already persisted the address (and
   // enabled Bluetooth for the pair, if this machine is already OS-bonded
   // with it) -- so this just re-loads state afterward rather than
-  // constructing the update itself, unlike setBluetoothTransport above.
+  // constructing the update itself, unlike setBluetoothChannel above.
   async function findBluetoothAddress(peerDeviceId: string): Promise<string | null> {
     const address = await invoke<string | null>("device_connection_find_bluetooth_address", {
       peerDeviceId,
     });
     if (address) {
       await loadPairedDevices();
-      await refreshTransportStatuses(peerDeviceId);
+      await refreshChannelStatuses(peerDeviceId);
     }
     return address;
   }
@@ -888,7 +888,7 @@ export const useDeviceStore = defineStore("device", () => {
   // `discoveredDevices` keeps only the Network entry when a peer is visible
   // over both, which is right for a single mixed list but wrong the moment
   // the user has chosen a channel out loud: filtering that deduped array by
-  // `transport === 'bluetooth'` makes a peer on the same LAN vanish, and the
+  // `channel === 'bluetooth'` makes a peer on the same LAN vanish, and the
   // pairing dialog reports nobody found while the BLE scan is looking
   // straight at it. Precisely the common case -- two devices on one network,
   // user picks Bluetooth.
@@ -903,7 +903,7 @@ export const useDeviceStore = defineStore("device", () => {
     const eligible = (item: DiscoveredDevice) =>
       item.device_id !== identity.value.device_id && !pairedDeviceIds.value.has(item.device_id);
 
-    discoveredByTransport.value = {
+    discoveredByChannel.value = {
       network: latestNetworkDiscovered.filter(eligible),
       bluetooth: latestBluetoothDiscovered.filter(eligible),
     };
@@ -911,7 +911,7 @@ export const useDeviceStore = defineStore("device", () => {
     // Network always wins over Bluetooth for the same device_id, regardless
     // of which poll happened to finish more recently -- ADR 0002's selection
     // order prefers network whenever it's available, and a timestamp-based
-    // merge would otherwise flip the row (and requestPair's transport
+    // merge would otherwise flip the row (and requestPair's channel
     // choice) to Bluetooth just because the BLE scan's own completion timer
     // landed after the network beacon's. Bluetooth only fills in device_ids
     // network didn't find at all.
@@ -1011,7 +1011,7 @@ export const useDeviceStore = defineStore("device", () => {
           console.warn("[device-connection] failed to update last_seen", error);
         }
       }
-      void refreshTransportStatuses(device.peer_device_id);
+      void refreshChannelStatuses(device.peer_device_id);
     }
 
     await loadPairedDevices();
@@ -1181,7 +1181,7 @@ export const useDeviceStore = defineStore("device", () => {
   // session claimed, a channel switched on, a peer becoming reachable) and
   // otherwise sleeps on an hourly backstop. There is nothing left here for a
   // timer to do that the backend is not already doing better, with the
-  // process lifetime and the transport state to do it correctly.
+  // process lifetime and the channel state to do it correctly.
   //
   // What remains is the one thing the frontend is for: listening, so the UI
   // re-reads when something changed. `consumeSpaceMappingUpdates` runs once
@@ -1310,7 +1310,7 @@ export const useDeviceStore = defineStore("device", () => {
     latestNetworkDiscovered = [];
     latestBluetoothDiscovered = [];
     discoveredDevices.value = [];
-    discoveredByTransport.value = { network: [], bluetooth: [] };
+    discoveredByChannel.value = { network: [], bluetooth: [] };
     addModeLastRefreshAt.value = null;
     void refreshDebugStatus();
   }
@@ -1334,7 +1334,7 @@ export const useDeviceStore = defineStore("device", () => {
     };
 
     try {
-      if (device.transport === "bluetooth") {
+      if (device.channel_kind === "bluetooth") {
         const payload: DevicePairRequestBluetoothInput = {
           request_id: requestId,
           to_device_id: device.device_id,
@@ -1515,12 +1515,12 @@ export const useDeviceStore = defineStore("device", () => {
     delete lastSyncedAtByPeer.value[deviceId];
     delete lastSyncedAtByPeerSpace.value[deviceId];
     delete syncingByPeer.value[deviceId];
-    delete transportStatusesByPeer.value[deviceId];
+    delete channelStatusesByPeer.value[deviceId];
     await loadPairedDevices();
   }
 
   function isDeviceOnline(device: PairedDevice): boolean {
-    // A proven live link on *any* transport means the peer is reachable right
+    // A proven live link on *any* channel means the peer is reachable right
     // now, whatever the presence beacon last saw. `last_seen_at` alone is a
     // network-only signal: it is refreshed by the mDNS/UDP presence worker, so
     // with Wi-Fi off it goes stale even while Bluetooth carries real traffic.
@@ -1532,11 +1532,11 @@ export const useDeviceStore = defineStore("device", () => {
     // does not count -- a claimed-but-unproven session is "connecting", and
     // calling that Online is the same overclaim this fix exists to remove.
     //
-    // Statuses are loaded per peer (see `refreshTransportStatuses`' callers),
+    // Statuses are loaded per peer (see `refreshChannelStatuses`' callers),
     // so a peer whose page has never been opened simply has none cached and
     // falls through to the presence check below, exactly as before.
-    const provenLink = (transportStatusesByPeer.value[device.peer_device_id] ?? []).some(
-      (transport) => transport.state.state === "configured" && transport.state.code === null,
+    const provenLink = (channelStatusesByPeer.value[device.peer_device_id] ?? []).some(
+      (channel) => channel.state.state === "configured" && channel.state.code === null,
     );
     if (provenLink) return true;
 
@@ -1558,7 +1558,7 @@ export const useDeviceStore = defineStore("device", () => {
     identity,
     pairedDevices,
     discoveredDevices,
-    discoveredByTransport,
+    discoveredByChannel,
     incomingRequests,
     outgoingRequest,
     outgoingRequestSecondsLeft,
@@ -1572,7 +1572,7 @@ export const useDeviceStore = defineStore("device", () => {
     lastSyncedAtByPeer,
     lastSyncedAtByPeerSpace,
     syncingByPeer,
-    transportStatusesByPeer,
+    channelStatusesByPeer,
     lastAppliedSyncAt,
     hydrate,
     refreshDiscovery,
@@ -1590,15 +1590,15 @@ export const useDeviceStore = defineStore("device", () => {
     getLastSyncedAt,
     getLastSyncedAtBySpace,
     getLastSyncedAtForSpace,
-    getTransportStatuses,
-    refreshTransportStatuses,
+    getChannelStatuses,
+    refreshChannelStatuses,
     refreshLiveConnectedState,
     getSyncQueue,
     refreshSyncQueue,
-    setBluetoothTransport,
-    setNetworkTransport,
+    setBluetoothChannel,
+    setNetworkChannel,
     probeBluetoothAdapter,
-    setPreferredTransport,
+    setPreferredChannel,
     retryBluetoothDial,
     findBluetoothAddress,
     isSyncingPeer,

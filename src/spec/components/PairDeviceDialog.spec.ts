@@ -1,6 +1,6 @@
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
-import PairDeviceDialog from "../../components/SettingsView/PairDeviceDialog.vue";
+import PairDeviceDialog from "../../components/settings/PairDeviceDialog.vue";
 import { useDeviceStore } from "../../stores/device";
 
 jest.mock("../../stores/device", () => ({
@@ -13,7 +13,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     outgoingRequest: null,
     incomingRequests: [],
     discoveredDevices: [],
-    discoveredByTransport: { network: [], bluetooth: [] },
+    discoveredByChannel: { network: [], bluetooth: [] },
     pairCompletedAt: null,
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
@@ -69,13 +69,13 @@ describe("PairDeviceDialog", () => {
       discovery_port: 0,
       ws_port: null,
       last_seen_at: new Date().toISOString(),
-      transport: "bluetooth" as const,
+      channel_kind: "bluetooth" as const,
     };
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(
       storeMock({
         // Deduplicated list keeps only the Network entry, as the store does.
-        discoveredDevices: [{ ...peer, transport: "network" as const }],
-        discoveredByTransport: { network: [{ ...peer, transport: "network" as const }], bluetooth: [peer] },
+        discoveredDevices: [{ ...peer, channel_kind: "network" as const }],
+        discoveredByChannel: { network: [{ ...peer, channel_kind: "network" as const }], bluetooth: [peer] },
       }),
     );
 
@@ -86,7 +86,7 @@ describe("PairDeviceDialog", () => {
 
     const rows = wrapper.findAll('[data-testid="nearby-device-row"]');
     expect(rows).toHaveLength(1);
-    expect(rows[0].attributes("data-device-transport")).toBe("bluetooth");
+    expect(rows[0].attributes("data-channel-kind")).toBe("bluetooth");
   });
 
   it("enters add mode on open, because that is what makes this device discoverable", async () => {

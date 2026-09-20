@@ -38,7 +38,7 @@ different things at different layers. This table is the honest mapping.
 ## What closes the gap between "CI-proven" and "the ticket's real topologies"
 
 The Rust integration test layer is deliberately runtime-agnostic *by
-construction* — `space_sync::session` and `services::transport` have no
+construction* — `sync::session` and `services::transport` have no
 `cfg(target_os = ...)` branches — so once the real Bluetooth adapter (PR B)
 exists, the exact same tests, run on the exact same CI, prove the exact same
 selection/auth-gate/dual-connection-liveness semantics for it. What CI cannot do is

@@ -1,7 +1,7 @@
 import { test, expect } from '../fixtures.ts';
 import {
   ensureSimPairedActors,
-  expectNetworkTransportUnavailable,
+  expectNetworkChannelUnavailable,
   waitForSimSession,
 } from '../helpers/sim-sync.ts';
 import {
@@ -24,16 +24,16 @@ test('peer session establishes over Sim transport when network is unavailable, a
 }) => {
   const [syncedA, syncedB] = await ensureSimPairedActors([actorA, actorB]);
 
-  await expectNetworkTransportUnavailable(actorA);
-  await expectNetworkTransportUnavailable(actorB);
+  await expectNetworkChannelUnavailable(actorA);
+  await expectNetworkChannelUnavailable(actorB);
 
   await waitForSimSession(actorA);
   await waitForSimSession(actorB);
 
-  const kindOnA = await actorA.invoke<string>('device_connection_session_transport', {
+  const kindOnA = await actorA.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedB.identity.device_id,
   });
-  const kindOnB = await actorB.invoke<string>('device_connection_session_transport', {
+  const kindOnB = await actorB.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedA.identity.device_id,
   });
   expect(kindOnA).toBe('sim');
@@ -55,7 +55,7 @@ test('peer session establishes over Sim transport when network is unavailable, a
   // disabled for this test, primary-transport selection has nothing else
   // to pick.
   await actorA.invoke('space_sync_tick');
-  const kindOnAAfterTick = await actorA.invoke<string>('device_connection_session_transport', {
+  const kindOnAAfterTick = await actorA.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedB.identity.device_id,
   });
   expect(kindOnAAfterTick).toBe('sim');

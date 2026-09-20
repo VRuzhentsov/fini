@@ -127,11 +127,11 @@ Conventions:
 
 - Mount components with `@vue/test-utils` `mount()` when the test needs DOM behavior; otherwise prefer pure store/composable tests.
 - Reset every `invoke` mock in `beforeEach`. Tests run with `--runInBand`, but mock state still leaks across `it` blocks unless explicitly reset.
-- Match the file path of the production code: `src/stores/device.ts` ↔ `src/spec/stores/device.store.spec.ts`, `src/views/DeviceView.vue` ↔ `src/spec/views/DeviceView.spec.ts`.
+- Match the file path of the production code: `src/stores/device.ts` ↔ `src/spec/stores/device.store.spec.ts`, `src/views/settings/DeviceView.vue` ↔ `src/spec/views/DeviceView.spec.ts`.
 
 ## Writing BE unit tests
 
-Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.rs`, `src-tauri/src/services/quest.rs`, `src-tauri/src/services/settings.rs`, `src-tauri/src/services/device_connection/runtime.rs`.
+Layout: inline `#[cfg(test)] mod tests` at the bottom of the source file. Existing examples live next to the production code in `src-tauri/src/services/db.rs`, `src-tauri/src/services/quest.rs`, `src-tauri/src/services/settings.rs`, `src-tauri/src/services/communication/pairing/runtime.rs`.
 
 For DB-touching tests, use the `temp_db_path(label)` helper in `src-tauri/src/services/db.rs`:
 

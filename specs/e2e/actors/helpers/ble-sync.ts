@@ -23,14 +23,14 @@ interface PeerSessionDebugStatus {
   peer_session_count: number;
 }
 
-interface TransportStatusCode {
+interface ChannelStatusCode {
   code: string;
 }
 
-interface TransportStatus {
+interface ChannelStatus {
   kind: 'network' | 'bluetooth';
   primary: boolean;
-  state: { state: 'unconfigured'; code: TransportStatusCode } | { state: 'configured'; code: TransportStatusCode | null };
+  state: { state: 'unconfigured'; code: ChannelStatusCode } | { state: 'configured'; code: ChannelStatusCode | null };
 }
 
 /**
@@ -145,9 +145,9 @@ async function ensureBluetoothEnabledForPeer(
   }
   // snake_case inside `input`, camelCase only at the top level: Tauri
   // converts its own argument names, but the fields of a command's payload
-  // struct go straight through serde, and `DeviceBluetoothTransportInput`
+  // struct go straight through serde, and `DeviceBluetoothChannelInput`
   // declares no rename.
-  await actor.actor.invoke('device_connection_set_bluetooth_transport', {
+  await actor.actor.invoke('device_connection_set_bluetooth_channel', {
     input: { peer_device_id: peerDeviceId, enabled: true, bluetooth_address: null },
   });
 
@@ -178,7 +178,7 @@ export async function waitForBleSession(actor: E2EActor, timeoutMs = 60_000): Pr
  * off, and what must hold is that *this peer* is absent -- another device on
  * the desktop's network is irrelevant and must not fail the run.
  */
-export async function expectNetworkTransportUnavailable(
+export async function expectNetworkChannelUnavailable(
   actor: E2EActor,
   peerDeviceId?: string,
 ): Promise<void> {
@@ -235,14 +235,14 @@ const PRESENCE_FRESHNESS_MS = 60_000;
  * here directly guards that class of bug, not just "a session exists
  * somewhere."
  */
-export async function waitForGreenTransport(
+export async function waitForGreenChannel(
   actor: E2EActor,
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
   await pollUntil(`${actor.slug} bluetooth transport reports green`, async () => {
     await actor.invoke('space_sync_tick');
-    const statuses = await actor.invoke<TransportStatus[]>('device_connection_transport_statuses', {
+    const statuses = await actor.invoke<ChannelStatus[]>('device_connection_channel_statuses', {
       peerDeviceId,
     });
     const bluetooth = statuses.find((status) => status.kind === 'bluetooth');
@@ -272,7 +272,7 @@ export async function waitForBluetoothRowConnectedInUi(
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  const selector = '[data-testid="transport-status-row"][data-transport-kind="bluetooth"]';
+  const selector = '[data-testid="channel-status-row"][data-channel-kind="bluetooth"]';
 
   await pollUntil(`${actor.slug} bluetooth row reports a connected channel in the UI`, async () => {
     await openDeviceDetailsFromSettings(actor, peerDeviceId);

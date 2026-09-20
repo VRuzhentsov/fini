@@ -15,7 +15,7 @@ use services::backup::{backup_apply_import, backup_export, backup_preflight_impo
 #[cfg(feature = "ui-plane")]
 use services::db::{app_data_dir, try_open_db, AppDbConnection};
 #[cfg(feature = "ui-plane")]
-use services::device_connection::{
+use services::communication::pairing::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
     device_connection_discover_bluetooth_candidates, device_connection_discovery_snapshot,
     device_connection_enter_add_mode, device_connection_find_bluetooth_address,
@@ -27,10 +27,10 @@ use services::device_connection::{
     device_connection_retry_bluetooth_dial, device_connection_save_paired_device,
     device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
     device_connection_probe_bluetooth_adapter,
-    device_connection_session_transport, device_connection_set_bluetooth_transport,
-    device_connection_set_network_transport,
-    device_connection_set_preferred_transport, device_connection_transport_liveness,
-    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
+    device_connection_session_channel, device_connection_set_bluetooth_channel,
+    device_connection_set_network_channel,
+    device_connection_set_preferred_channel, device_connection_channel_liveness,
+    device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
     DeviceConnectionState,
 };
 #[cfg(feature = "ui-plane")]
@@ -62,7 +62,7 @@ use services::settings::{self, ThemeMode};
 #[cfg(feature = "ui-plane")]
 use services::space::{create_space, delete_space, get_spaces, update_space};
 #[cfg(feature = "ui-plane")]
-use services::space_sync::{
+use services::communication::sync::{
     space_sync_apply_remote_mappings, space_sync_list_mappings,
     space_sync_queue_summary,
     space_sync_resolve_custom_space_mapping, space_sync_status,
@@ -70,9 +70,9 @@ use services::space_sync::{
     space_sync_update_mappings,
 };
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
-use services::transport::ble;
+use services::communication::channel::ble;
 #[cfg(feature = "ui-plane")]
-use services::transport::{sim, tcp_ws};
+use services::communication::channel::{sim, tcp_ws};
 #[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
@@ -209,8 +209,8 @@ fn sync_native_theme(app: AppHandle, theme: String) {
 
 /// Payload for `SESSION_CHANGED_EVENT` — ADR-0003 Phase 2. `established`
 /// distinguishes the two `LifecycleEvent` variants; `kind` is the
-/// finer-grained `services::transport::TransportKind` the event itself
-/// carries (TcpWs/Sim/Bluetooth), not `device_connection::transport`'s
+/// finer-grained `services::communication::channel::TransportKind` the event itself
+/// carries (TcpWs/Sim/Bluetooth), not `pairing::transport`'s
 /// coarser Network/Bluetooth row kind — the frontend doesn't need to
 /// interpret it, it's just enough for the listener to log/filter on if it
 /// ever wants to.
@@ -218,7 +218,7 @@ fn sync_native_theme(app: AppHandle, theme: String) {
 #[derive(Clone, serde::Serialize)]
 struct SessionChangedEvent {
     peer_device_id: String,
-    kind: services::transport::TransportKind,
+    kind: services::communication::channel::TransportKind,
     established: bool,
 }
 
@@ -233,10 +233,10 @@ const SESSION_CHANGED_EVENT: &str = "device-connection://session-changed";
 /// window instead of staying wrong indefinitely). See ADR-0003 Phase 2.
 #[cfg(feature = "ui-plane")]
 async fn forward_session_lifecycle_events(
-    mut events: tokio::sync::broadcast::Receiver<services::transport::selection::LifecycleEvent>,
+    mut events: tokio::sync::broadcast::Receiver<services::communication::channel::selection::LifecycleEvent>,
     app: AppHandle,
 ) {
-    use services::transport::selection::LifecycleEvent;
+    use services::communication::channel::selection::LifecycleEvent;
 
     loop {
         let event = match events.recv().await {
@@ -471,7 +471,7 @@ pub fn run() {
                 app_handle.clone(),
             ));
             tauri::async_runtime::spawn(forward_sync_changed_events(
-                services::space_sync::commands::subscribe_data_changed(),
+                services::communication::sync::commands::subscribe_data_changed(),
                 app_handle.clone(),
             ));
             app.manage(dc_state);
@@ -520,16 +520,16 @@ pub fn run() {
             device_connection_debug_status,
             device_connection_get_paired_devices,
             device_connection_save_paired_device,
-            device_connection_session_transport,
-            device_connection_set_bluetooth_transport,
-            device_connection_set_network_transport,
+            device_connection_session_channel,
+            device_connection_set_bluetooth_channel,
+            device_connection_set_network_channel,
             device_connection_probe_bluetooth_adapter,
-            device_connection_set_preferred_transport,
+            device_connection_set_preferred_channel,
             device_connection_find_bluetooth_address,
             device_connection_send_pair_request_bluetooth,
             device_connection_discover_bluetooth_candidates,
-            device_connection_transport_statuses,
-            device_connection_transport_liveness,
+            device_connection_channel_statuses,
+            device_connection_channel_liveness,
             device_connection_retry_bluetooth_dial,
             device_connection_unpair,
             device_connection_update_last_seen,

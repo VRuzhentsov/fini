@@ -46,7 +46,7 @@ test('turning a channel off stops the traffic, not just the colour of the row', 
   // the test's. Closing our dial loop is only half the switch; refusing the
   // peer's inbound dial is the other half (`check_network_enabled`).
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const transport = await actorA.invoke<string | null>('device_connection_session_transport', {
+    const transport = await actorA.invoke<string | null>('device_connection_session_channel', {
       peerDeviceId: syncedB.identity.device_id,
     });
     expect(

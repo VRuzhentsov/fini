@@ -27,7 +27,7 @@ pub struct PairedDevice {
     /// disable contract).
     pub bluetooth_disabled_by_user: bool,
     /// A manually-pinned transport ("network"/"bluetooth",
-    /// `device_connection::transport::TransportKind`'s serde form), or
+    /// `pairing::channel_status::TransportKind`'s serde form), or
     /// `None` for pure automatic network-first primary selection -- every
     /// pre-existing row's default. Both transports stay connected
     /// regardless of this pin (ADR-0003 revision); it only decides which
