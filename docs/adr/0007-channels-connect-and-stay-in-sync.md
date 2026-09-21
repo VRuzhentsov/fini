@@ -24,7 +24,8 @@ why not.**
 ### Channels
 
 **A connection medium is a Channel.** "Transport" is a networking word; the
-code may keep it, the interface does not.
+interface does not use it, and since the `ChannelKind` collapse neither does
+the code.
 
 **A channel is configured, not inferred.** Setting up a connection asks which
 of the two to configure. Discovery runs while a connection is being set up —
@@ -64,6 +65,40 @@ does not configure Network.
 person chose to carry the traffic, and it persists — so it still governs
 after a reconnect, and the page shows it whether or not that channel is
 connected at this moment.
+
+### Channel services
+
+**One object owns each channel.** `NetworkChannelService` and
+`BluetoothChannelService` implement one `ChannelService` interface. Each is a
+singleton serving every paired device at once, not one per pair: a phone
+paired with three devices has two services holding however many sessions,
+not six objects.
+
+**A service owns the mechanics; it does not own the rules.** Finding peers,
+dialling, accepting, retrying, and saying why this channel cannot reach a
+given peer all belong to the service — only it knows whether "Bluetooth is
+off on this computer" or "that phone isn't nearby" is the true answer, and
+those are claims about different machines. Deciding *who is allowed to
+connect* is not its business. A service initiates the handshake because it
+is holding the link, but the gate that answers "is this device paired, is
+this channel switched on" lives once, in `pairing`. A second channel must
+not be able to answer that differently from the first.
+
+**The radio is injected, not reached for.** `BluetoothChannelService` is
+constructed with a `Radio`: real GATT on a device, a loopback connection
+where there is no radio at all. The service cannot tell which it has, which
+is what makes a CI lane over the loopback radio worth anything — it
+exercises the service, the gate and the session loop, and fakes only the
+part CI genuinely lacks.
+
+**One name for one thing.** A channel and a transport are the same concept,
+so there is one `ChannelKind` — `Network` and `Bluetooth` — and it is what
+the wire, the database and the interface all say. The code no longer carries
+a parallel spelling.
+
+**Adding a channel is an implementation, not a redesign.** A row in the
+channels table, one `impl ChannelService`, and a `DataLink`. No schema
+change, no new column, and nothing to add to the gate.
 
 ### Sync
 
