@@ -11,7 +11,7 @@
 //! just the lifecycle event bus every adapter's session loop reports
 //! through.
 
-use crate::services::communication::channel::TransportKind;
+use crate::services::communication::channel::ChannelKind;
 
 /// Fan-out lifecycle events for a peer connection. Consumed by the UI and
 /// the connection manager; never carries sync payloads (those stay on the
@@ -20,11 +20,11 @@ use crate::services::communication::channel::TransportKind;
 pub enum LifecycleEvent {
     SessionEstablished {
         peer_device_id: String,
-        kind: TransportKind,
+        kind: ChannelKind,
     },
     SessionEnded {
         peer_device_id: String,
-        kind: TransportKind,
+        kind: ChannelKind,
     },
 }
 

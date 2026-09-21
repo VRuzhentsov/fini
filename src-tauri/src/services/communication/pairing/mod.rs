@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, SessionSender, SyncEventEnvelope};
 use crate::services::communication::channel::selection::{new_lifecycle_bus, LifecycleBus, LifecycleEvent};
-use crate::services::communication::channel::TransportKind;
 
 // Shared with `channel::tests`, which sets/clears the same process-global
 // `FINI_BLUETOOTH_PAIRED_ADDRESSES` env var in its own tests -- see the
@@ -68,7 +67,7 @@ use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
 // and is what the `channels` table stores. Since the loopback radio stopped
 // being a kind of its own it says exactly what
-// `communication::channel::TransportKind` says, and the two enums are one
+// `communication::channel::ChannelKind` says, and the two enums are one
 // mechanical rename from being the same type.
 pub use channel_status::{
     build_channel_statuses, ChannelKind, ChannelLiveness, ChannelStatus, ChannelStatusCode,
@@ -301,7 +300,7 @@ impl DeviceConnectionState {
     pub(super) fn submit_link_event(
         &self,
         peer_device_id: &str,
-        kind: TransportKind,
+        kind: ChannelKind,
         event: link_state::LinkEvent,
     ) {
         self.submit_link_event_at(peer_device_id, kind, event, std::time::Instant::now());
@@ -317,7 +316,7 @@ impl DeviceConnectionState {
     pub(crate) fn submit_link_event_at(
         &self,
         peer_device_id: &str,
-        kind: TransportKind,
+        kind: ChannelKind,
         event: link_state::LinkEvent,
         now: std::time::Instant,
     ) {
@@ -364,7 +363,7 @@ impl DeviceConnectionState {
     pub fn try_claim_session(
         &self,
         peer_device_id: &str,
-        kind: TransportKind,
+        kind: ChannelKind,
         sender: SessionSender,
         db_path: &Path,
     ) -> bool {
@@ -435,7 +434,7 @@ impl DeviceConnectionState {
         // then. the loopback radio don't need this: they aren't gated by
         // `bluetooth_enabled` at all (see `recompute_primary_locked`'s doc
         // comment).
-        if kind == TransportKind::Bluetooth {
+        if kind == ChannelKind::Bluetooth {
             let (_, still_enabled) = Self::bluetooth_primary_eligibility(db_path, peer_device_id);
             if !still_enabled {
                 self.close_session_on(peer_device_id, kind);
@@ -462,7 +461,7 @@ impl DeviceConnectionState {
         true
     }
 
-    pub fn release_session(&self, peer_device_id: &str, kind: TransportKind, db_path: &Path) {
+    pub fn release_session(&self, peer_device_id: &str, kind: ChannelKind, db_path: &Path) {
         // Removal happens *before* the DB read, not after -- a P1 review
         // finding: with the DB read (up to ~75s worst case across 5
         // retries against a 15s busy_timeout each) ordered first, a dead
@@ -553,9 +552,9 @@ impl DeviceConnectionState {
             .get(peer_device_id)
             .copied()
             .unwrap_or(false);
-        let fallback = [TransportKind::TcpWs, TransportKind::Bluetooth]
+        let fallback = [ChannelKind::Network, ChannelKind::Bluetooth]
             .into_iter()
-            .filter(|kind| *kind != TransportKind::Bluetooth || bluetooth_enabled)
+            .filter(|kind| *kind != ChannelKind::Bluetooth || bluetooth_enabled)
             .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
         match fallback {
             Some(kind) => {
@@ -623,16 +622,16 @@ impl DeviceConnectionState {
             .insert(peer_device_id.to_string(), bluetooth_enabled);
         let network_connected = guard
             .peer_sessions
-            .contains_key(&(peer_device_id.to_string(), TransportKind::TcpWs));
+            .contains_key(&(peer_device_id.to_string(), ChannelKind::Network));
         // `bluetooth_enabled` only ever gates the real `Bluetooth` kind --
         let bluetooth_connected = bluetooth_enabled
-            .then_some(TransportKind::Bluetooth)
+            .then_some(ChannelKind::Bluetooth)
             .filter(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
 
         let pick = if pinned_to_bluetooth && bluetooth_connected.is_some() {
             bluetooth_connected
         } else if network_connected {
-            Some(TransportKind::TcpWs)
+            Some(ChannelKind::Network)
         } else {
             bluetooth_connected
         };
@@ -665,7 +664,7 @@ impl DeviceConnectionState {
     /// `session_kind` (ADR-0003 revision: there can be a session on each
     /// channel at once now, so "the" session no longer names a single
     /// thing -- this specifically means the *primary* one).
-    pub fn primary_transport(&self, peer_device_id: &str) -> Option<TransportKind> {
+    pub fn primary_transport(&self, peer_device_id: &str) -> Option<ChannelKind> {
         let guard = self.runtime.lock().ok()?;
         guard.peer_primary_transport.get(peer_device_id).copied()
     }
@@ -675,7 +674,7 @@ impl DeviceConnectionState {
     /// this (not `primary_transport`) to decide whether they still need to
     /// keep trying: each channel now dials/connects independently of the
     /// other's state.
-    pub fn has_session_on(&self, peer_device_id: &str, kind: TransportKind) -> bool {
+    pub fn has_session_on(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
@@ -688,7 +687,7 @@ impl DeviceConnectionState {
     /// exact 3-miss decay rule), then marks a ping as newly outstanding.
     /// No-op if this (peer, channel) has no claimed session -- the
     /// session may have just ended between the tick firing and this call.
-    pub(super) fn note_ping_tick(&self, peer_device_id: &str, kind: TransportKind) {
+    pub(super) fn note_ping_tick(&self, peer_device_id: &str, kind: ChannelKind) {
         let lapsed = {
             let Ok(mut guard) = self.runtime.lock() else { return };
             let Some(ack) = guard.peer_channel_ack.get_mut(&(peer_device_id.to_string(), kind))
@@ -722,7 +721,7 @@ impl DeviceConnectionState {
     }
 
     /// A `Pong` answering this device's own outstanding `Ping` arrived.
-    pub(super) fn note_pong_received(&self, peer_device_id: &str, kind: TransportKind) {
+    pub(super) fn note_pong_received(&self, peer_device_id: &str, kind: ChannelKind) {
         let proven = {
             let Ok(mut guard) = self.runtime.lock() else { return };
             let Some(ack) = guard.peer_channel_ack.get_mut(&(peer_device_id.to_string(), kind))
@@ -741,7 +740,7 @@ impl DeviceConnectionState {
 
     /// An inbound `Ping` from the peer arrived (the caller replies with a
     /// `Pong` separately -- this just records the proof).
-    pub(super) fn note_ping_received(&self, peer_device_id: &str, kind: TransportKind) {
+    pub(super) fn note_ping_received(&self, peer_device_id: &str, kind: ChannelKind) {
         let proven = {
             let Ok(mut guard) = self.runtime.lock() else { return };
             let Some(ack) = guard.peer_channel_ack.get_mut(&(peer_device_id.to_string(), kind))
@@ -768,7 +767,7 @@ impl DeviceConnectionState {
     /// what the link's state says it is. The ack table still feeds the
     /// transitions that get the machine there -- it is the evidence, not the
     /// verdict.
-    pub fn channel_reliable(&self, peer_device_id: &str, kind: TransportKind) -> bool {
+    pub fn channel_reliable(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
         let Ok(guard) = self.runtime.lock() else { return false };
         matches!(
             guard.peer_link_state.get(&(peer_device_id.to_string(), kind)),
@@ -785,7 +784,7 @@ impl DeviceConnectionState {
     pub fn channel_liveness_code(
         &self,
         peer_device_id: &str,
-        kind: TransportKind,
+        kind: ChannelKind,
     ) -> Option<channel_status::ChannelStatusCode> {
         let key = (peer_device_id.to_string(), kind);
         let guard = self.runtime.lock().ok()?;
@@ -931,7 +930,7 @@ impl DeviceConnectionState {
     /// Fire-and-forget once accepted into the mailbox: the actual teardown
     /// (and `release_session`) happens once `run_session`'s loop processes
     /// it, not synchronously with this call.
-    pub fn close_session_on(&self, peer_device_id: &str, kind: TransportKind) -> bool {
+    pub fn close_session_on(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
         let sender = {
             let guard = match self.runtime.lock() {
                 Ok(g) => g,

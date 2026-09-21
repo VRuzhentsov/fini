@@ -3,12 +3,11 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::services::communication::sync::types::{SessionSender, SyncEventEnvelope};
-// `TransportKind` (TcpWs/Sim/Bluetooth/LoRa, used for `peer_session_kind`
-// below) names at adapter granularity what `ChannelKind` (Network/Bluetooth)
-// names at the granularity a person chose -- `DiscoveredDevice.channel_kind`
-// only ever needs "which channel found this," not the live-session kind.
-use crate::services::communication::channel::TransportKind;
-use super::channel_status::ChannelKind;
+// One kind, at one granularity: the channel a person chose is the same
+// thing the live session runs on. This used to be two types -- an adapter
+// kind and a row kind -- which is why several comments nearby drew a
+// distinction that no longer exists.
+use crate::services::communication::channel::ChannelKind;
 use super::link_state::LinkState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,24 +275,24 @@ pub(super) struct DiscoveryRuntime {
     /// ADR-0003 revision: one session *per channel*, not one per peer --
     /// both Network and Bluetooth stay connected simultaneously so either
     /// can earn a real (not remembered) green. Keyed by `(peer_device_id,
-    /// TransportKind)`. See `DeviceConnectionState::try_claim_session`.
-    pub peer_sessions: HashMap<(String, TransportKind), SessionSender>,
-    /// The owned link state machine per `(peer_device_id, TransportKind)`
+    /// ChannelKind)`. See `DeviceConnectionState::try_claim_session`.
+    pub peer_sessions: HashMap<(String, ChannelKind), SessionSender>,
+    /// The owned link state machine per `(peer_device_id, ChannelKind)`
     /// (ADR-0005). Lives beside `peer_sessions` deliberately: a transition and
     /// a read of the session table then happen under one lock, so the two
     /// cannot drift the way `peer_sessions` and `peer_channel_ack` used to.
     /// `peer_sessions` holds the *handle* to a live session; this holds what
     /// the link's state actually is, and owns every decision about it.
-    pub peer_link_state: HashMap<(String, TransportKind), LinkState>,
+    pub peer_link_state: HashMap<(String, ChannelKind), LinkState>,
     /// Which channel is *primary* for each peer -- the one carrying real
     /// application traffic (SyncEvent, BootstrapEnd, etc.), reported as
     /// `RowState::Live`. Both channels can be connected and green at
     /// once; only one is ever primary. `None` until at least one channel
     /// has claimed a session for this peer.
-    pub peer_primary_transport: HashMap<String, TransportKind>,
+    pub peer_primary_transport: HashMap<String, ChannelKind>,
     /// Per-(peer, channel) bidirectional ping/ack state -- see
     /// `PeerFrame::Ping`/`Pong` and `DeviceConnectionState::channel_ack_state`.
-    pub peer_channel_ack: HashMap<(String, TransportKind), ChannelAckState>,
+    pub peer_channel_ack: HashMap<(String, ChannelKind), ChannelAckState>,
     /// Last-known `bluetooth_enabled` per peer, written every time
     /// `recompute_primary_locked` runs (it already reads this from the DB
     /// for its own purposes). A P1 review finding: `reselect_primary_from_

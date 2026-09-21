@@ -10,7 +10,7 @@
 //! matters most and is hardest to arrange: the network is unavailable, so
 //! the other channel carries the traffic.
 //!
-//! Its links report `TransportKind::Bluetooth`, because that is what they
+//! Its links report `ChannelKind::Bluetooth`, because that is what they
 //! are: the Bluetooth channel, connected a different way. It used to report
 //! a kind of its own, which meant the Bluetooth switch did not apply to it
 //! and every test needed an `AsBluetooth` wrapper to paper over the gap.
@@ -31,7 +31,7 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::sync::session;
 use crate::services::communication::channel::codec::length_delimited;
-use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, TransportKind};
+use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, ChannelKind};
 
 pub struct LoopbackDataLink {
     stream: TcpStream,
@@ -49,8 +49,8 @@ impl LoopbackDataLink {
 
 #[async_trait]
 impl DataLink for LoopbackDataLink {
-    fn kind(&self) -> TransportKind {
-        TransportKind::Bluetooth
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Bluetooth
     }
 
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
@@ -105,8 +105,8 @@ pub struct LoopbackTransport;
 
 #[async_trait]
 impl Transport for LoopbackTransport {
-    fn kind(&self) -> TransportKind {
-        TransportKind::Bluetooth
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Bluetooth
     }
 
     fn dial(&self, _peer_device_id: &str, _addr: &str, port: u16) -> BoxDialFuture {
@@ -176,7 +176,7 @@ pub fn spawn_fallback_dial_loop(
         if !should_dial_fallback_peer(&my_id, peer_id) {
             continue;
         }
-        if state.has_session_on(peer_id, TransportKind::Bluetooth) {
+        if state.has_session_on(peer_id, ChannelKind::Bluetooth) {
             continue;
         }
         if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
@@ -223,7 +223,7 @@ pub(crate) async fn dial_with_backoff(
     let max_delay = Duration::from_secs(15);
 
     loop {
-        if state.has_session_on(&peer_id, TransportKind::Bluetooth) {
+        if state.has_session_on(&peer_id, ChannelKind::Bluetooth) {
             return;
         }
 
@@ -237,7 +237,7 @@ pub(crate) async fn dial_with_backoff(
                 Ok(peer_protocol_version) => {
                     eprintln!("[channel][loopback] auth OK with {peer_id} via :{port}");
                     let (tx, rx) = tokio::sync::mpsc::channel(64);
-                    if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx, &db_path) {
+                    if state.try_claim_session(&peer_id, ChannelKind::Bluetooth, tx, &db_path) {
                         session::run_session(
                             link,
                             rx,

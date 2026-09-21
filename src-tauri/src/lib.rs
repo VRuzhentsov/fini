@@ -205,16 +205,15 @@ fn sync_native_theme(app: AppHandle, theme: String) {
 
 /// Payload for `SESSION_CHANGED_EVENT` — ADR-0003 Phase 2. `established`
 /// distinguishes the two `LifecycleEvent` variants; `kind` is the
-/// finer-grained `services::communication::channel::TransportKind` the event itself
-/// carries (TcpWs/Bluetooth), not `pairing::transport`'s
-/// coarser Network/Bluetooth row kind — the frontend doesn't need to
-/// interpret it, it's just enough for the listener to log/filter on if it
-/// ever wants to.
+/// `ChannelKind` the event carries — the same Network/Bluetooth the row on
+/// the Device page shows, since there is only one such type now. The
+/// frontend doesn't need to interpret it, it's just enough for the listener
+/// to log or filter on if it ever wants to.
 #[cfg(feature = "ui-plane")]
 #[derive(Clone, serde::Serialize)]
 struct SessionChangedEvent {
     peer_device_id: String,
-    kind: services::communication::channel::TransportKind,
+    kind: services::communication::channel::ChannelKind,
     established: bool,
 }
 

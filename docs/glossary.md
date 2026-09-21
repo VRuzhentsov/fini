@@ -153,7 +153,7 @@ hardware, which is CI.
 fourth kind of channel beside Network and Bluetooth, which it never was. A
 person cannot choose it, it appears in no table and on no screen, and it has
 no discovery of its own. It is one way of connecting the Bluetooth channel,
-and its links say so — `TransportKind::Bluetooth`, the same as any other.
+and its links say so — `ChannelKind::Bluetooth`, the same as any other.
 
 It is not a mock. Links go through the same `DataLink`, codec, gate and
 session loop as real ones, so a test over it exercises everything except the
@@ -163,12 +163,6 @@ prove different things — loopback proves fallback works, the broker proves
 Bluetooth works.
 
 ## Known gaps
-
-`communication/channel/`'s `TransportKind` still spells "transport" in the
-retired sense. It now has exactly two variants, `TcpWs` and `Bluetooth`, and
-says precisely what `ChannelKind` says — one mechanical rename from being the
-same type. It kept the old name only because the rename is a separate,
-mechanical commit.
 
 `LinkState`/`LinkEvent` (ADR-0005) keep the bare word `link`. They are the
 state machine for whether a pair *has* a `DataLink` on a channel and what is

@@ -182,7 +182,7 @@ use crate::services::communication::pairing::{
 };
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, BoxDialFuture, DataLink, Transport, TransportKind};
+use crate::services::communication::channel::{recv_frame, send_frame, BoxDialFuture, DataLink, Transport, ChannelKind};
 
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
@@ -474,8 +474,8 @@ impl BleDataLink {
 
 #[async_trait]
 impl DataLink for BleDataLink {
-    fn kind(&self) -> TransportKind {
-        TransportKind::Bluetooth
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Bluetooth
     }
 
     fn peer_addr(&self) -> Option<String> {
@@ -854,8 +854,8 @@ pub struct BleTransport;
 
 #[async_trait]
 impl Transport for BleTransport {
-    fn kind(&self) -> TransportKind {
-        TransportKind::Bluetooth
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Bluetooth
     }
 
     fn dial(&self, _peer_device_id: &str, addr: &str, _port: u16) -> BoxDialFuture {
@@ -1024,7 +1024,7 @@ pub fn spawn_dial_loop(state: &DeviceConnectionState, db_path: PathBuf, candidat
     let my_id = state.identity.device_id.clone();
 
     for peer_id in candidates {
-        if !should_dial_peer(&my_id, peer_id, state.has_session_on(peer_id, TransportKind::Bluetooth)) {
+        if !should_dial_peer(&my_id, peer_id, state.has_session_on(peer_id, ChannelKind::Bluetooth)) {
             continue;
         }
         if is_backing_off(&dial_backoff_until().lock().unwrap(), peer_id, Instant::now()) {
@@ -1218,7 +1218,7 @@ pub fn retry_bluetooth_dial(state: &DeviceConnectionState, peer_id: &str) {
     // read the distant past.
     accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
 
-    if state.has_session_on(peer_id, TransportKind::Bluetooth) {
+    if state.has_session_on(peer_id, ChannelKind::Bluetooth) {
         return;
     }
     if !in_flight_dials().lock().unwrap().insert(peer_id.to_string()) {
@@ -1266,7 +1266,7 @@ pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates
     let now = Instant::now();
     let mut unconnected_since = accepting_side_unconnected_since().lock().unwrap();
     for peer_id in candidates {
-        if state.has_session_on(peer_id, TransportKind::Bluetooth) {
+        if state.has_session_on(peer_id, ChannelKind::Bluetooth) {
             unconnected_since.remove(peer_id);
             // A session existing at all is proof the link can work right
             // now, regardless of how it got established (the peer could
@@ -1714,7 +1714,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
     let mut streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
 
     loop {
-        if state.has_session_on(&peer_id, TransportKind::Bluetooth) {
+        if state.has_session_on(&peer_id, ChannelKind::Bluetooth) {
             return;
         }
         // Re-checked every retry, not just at the moment this task was
@@ -1752,7 +1752,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
             // session is still live. Re-checking `has_session_on`
             // immediately before the write, not just at the top of the
             // loop, closes that TOCTOU window.
-            if state.has_session_on(&peer_id, TransportKind::Bluetooth) {
+            if state.has_session_on(&peer_id, ChannelKind::Bluetooth) {
                 return;
             }
             log::info!(
@@ -1802,7 +1802,7 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
                 // is what keeps a hardware log readable after the fact.
                 note_observed_bluetooth_address(&db_path, &peer_id, &address);
                 let (tx, rx) = tokio::sync::mpsc::channel(64);
-                if state.try_claim_session(&peer_id, TransportKind::Bluetooth, tx, &db_path) {
+                if state.try_claim_session(&peer_id, ChannelKind::Bluetooth, tx, &db_path) {
                     session::run_session(
                         link,
                         rx,

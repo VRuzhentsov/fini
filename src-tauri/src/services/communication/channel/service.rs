@@ -273,7 +273,7 @@ impl ChannelService for BluetoothChannelService {
             // and the row would report "not nearby" about a peer it is
             // actively talking to.
             self.state
-                .has_session_on(peer_device_id, super::TransportKind::Bluetooth)
+                .has_session_on(peer_device_id, super::ChannelKind::Bluetooth)
                 || self.radio.is_reachable(peer_device_id),
             self.radio.dial_exhausted(peer_device_id),
         )

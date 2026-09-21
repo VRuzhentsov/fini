@@ -55,7 +55,7 @@ test('turning a channel off stops the traffic, not just the colour of the row', 
     expect(
       transport,
       'network session must stay closed while the channel is off, including against an inbound dial',
-    ).not.toBe('tcp_ws');
+    ).not.toBe('network');
     await actorA.invoke('space_sync_tick');
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }

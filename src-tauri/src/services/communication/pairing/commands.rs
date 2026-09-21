@@ -8,7 +8,7 @@ use std::time::Duration;
 use tauri::State;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use super::channel_status::ChannelKind;
+
 use super::channels;
 use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
@@ -29,7 +29,7 @@ use crate::services::communication::pairing::{
     build_channel_statuses, ChannelLiveness, ChannelStatus, ChannelStatusCode, ChannelStatusInputs,
 };
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::TransportKind;
+use crate::services::communication::channel::ChannelKind;
 
 fn ws_url(addr: IpAddr, port: u16) -> String {
     match addr {
@@ -1328,10 +1328,10 @@ pub fn device_connection_set_channel_enabled_impl(
         // resume real traffic over a channel the person just switched off.
         match kind {
             ChannelKind::Network => {
-                state.close_session_on(&peer_device_id, TransportKind::TcpWs);
+                state.close_session_on(&peer_device_id, ChannelKind::Network);
             }
             ChannelKind::Bluetooth => {
-                state.close_session_on(&peer_device_id, TransportKind::Bluetooth);
+                state.close_session_on(&peer_device_id, ChannelKind::Bluetooth);
             }
         }
         // `channels::set_enabled` already released the primary in the DB;
@@ -1555,18 +1555,18 @@ fn channel_liveness_snapshot(state: &DeviceConnectionState, peer_device_id: &str
     // One session slot per channel: the loopback radio reports Bluetooth like
     // any other way of connecting that channel, so there is no second
     // Bluetooth-ish kind to check for any more.
-    let network_connected = state.has_session_on(peer_device_id, TransportKind::TcpWs);
-    let bluetooth_connected = state.has_session_on(peer_device_id, TransportKind::Bluetooth);
+    let network_connected = state.has_session_on(peer_device_id, ChannelKind::Network);
+    let bluetooth_connected = state.has_session_on(peer_device_id, ChannelKind::Bluetooth);
 
     let primary = state.primary_transport(peer_device_id);
-    let network_primary = primary == Some(TransportKind::TcpWs);
-    let bluetooth_primary = primary == Some(TransportKind::Bluetooth);
+    let network_primary = primary == Some(ChannelKind::Network);
+    let bluetooth_primary = primary == Some(ChannelKind::Bluetooth);
 
     let network_code = network_connected
-        .then(|| state.channel_liveness_code(peer_device_id, TransportKind::TcpWs))
+        .then(|| state.channel_liveness_code(peer_device_id, ChannelKind::Network))
         .flatten();
     let bluetooth_code = bluetooth_connected
-        .then(|| state.channel_liveness_code(peer_device_id, TransportKind::Bluetooth))
+        .then(|| state.channel_liveness_code(peer_device_id, ChannelKind::Bluetooth))
         .flatten();
 
     ChannelLivenessSnapshot {
@@ -1678,13 +1678,6 @@ pub fn device_connection_channel_liveness_impl(
     peer_device_id: String,
 ) -> Vec<ChannelLiveness> {
     let snapshot = channel_liveness_snapshot(state, &peer_device_id);
-    // The coarse, device_connection-local `TransportKind` (Network/
-    // Bluetooth) `ChannelLiveness`/`ChannelStatus` are keyed by --
-    // distinct from this file's bare `TransportKind` import
-    // (`TransportKind`, TcpWs/Sim/Bluetooth/
-    // LoRa), which `channel_liveness_snapshot` already resolved down to
-    // Network/Bluetooth booleans above.
-    use super::channel_status::ChannelKind;
     vec![
         ChannelLiveness {
             kind: ChannelKind::Network,
@@ -1760,7 +1753,7 @@ pub fn peer_bluetooth_enabled(conn: &mut SqliteConnection, peer_id: &str) -> boo
 pub fn device_connection_session_channel_impl(
     state: &DeviceConnectionState,
     peer_device_id: String,
-) -> Option<TransportKind> {
+) -> Option<ChannelKind> {
     state.primary_transport(&peer_device_id)
 }
 
@@ -1772,7 +1765,7 @@ pub fn device_connection_session_channel_impl(
 pub fn device_connection_session_channel(
     state: State<DeviceConnectionState>,
     peer_device_id: String,
-) -> Option<TransportKind> {
+) -> Option<ChannelKind> {
     device_connection_session_channel_impl(&state, peer_device_id)
 }
 

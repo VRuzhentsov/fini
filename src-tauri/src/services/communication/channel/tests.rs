@@ -18,10 +18,10 @@ use tokio::time::sleep;
 use crate::models::CreatePairedDeviceInput;
 use crate::schema::paired_devices;
 use crate::services::db::{open_db_at_path, temp_db_path};
-use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
+use crate::services::communication::pairing::{channels, DeviceConnectionState};
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, loopback, tcp_ws, DataLink, Transport, TransportKind};
+use crate::services::communication::channel::{recv_frame, send_frame, loopback, tcp_ws, DataLink, Transport, ChannelKind};
 
 async fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -123,7 +123,7 @@ async fn tcp_ws_gate_accepts_paired_device_and_claims_session_as_network() {
     sleep(Duration::from_millis(50)).await;
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::TcpWs)
+        Some(ChannelKind::Network)
     );
 }
 
@@ -154,7 +154,7 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
         .await
         .expect("sim (bluetooth-kind) auth should succeed for paired device");
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
+    assert_eq!(server.primary_transport("peer-client"), Some(ChannelKind::Network));
 
     let mut conn = open_db_at_path(&server_db);
     let updated = crate::services::communication::pairing::device_connection_set_primary_channel_impl(
@@ -174,19 +174,19 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
     // The server-side session actually claims under the real wire kind
     // (`Sim`, standing in for Bluetooth here) -- `AsBluetooth` only affects
     // what the *client* reports, not what `run_peer_gate`'s accept side
-    // sees from its own `link.kind()`. `ChannelKind::from(TransportKind)`
+    // sees from its own `link.kind()`. `ChannelKind::from(ChannelKind)`
     // collapses Sim/Bluetooth/LoRa to the same Bluetooth channel either way.
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::Bluetooth),
+        Some(ChannelKind::Bluetooth),
         "primary must flip immediately, without waiting for a reconnect"
     );
     assert!(
-        server.has_session_on("peer-client", TransportKind::TcpWs),
+        server.has_session_on("peer-client", ChannelKind::Network),
         "the Network session must stay connected -- only primary-ness changed"
     );
     assert!(
-        server.has_session_on("peer-client", TransportKind::Bluetooth),
+        server.has_session_on("peer-client", ChannelKind::Bluetooth),
         "the bluetooth-role session must stay connected"
     );
 }
@@ -266,7 +266,7 @@ async fn network_dial_establishes_regardless_of_a_bluetooth_pin() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut established = false;
     while tokio::time::Instant::now() < deadline {
-        if dialer.has_session_on(&responder.identity.device_id, TransportKind::TcpWs) {
+        if dialer.has_session_on(&responder.identity.device_id, ChannelKind::Network) {
             established = true;
             break;
         }
@@ -306,7 +306,7 @@ async fn dial_with_backoff_adopts_a_changed_endpoint_mid_retry() {
     ));
     sleep(Duration::from_millis(200)).await;
     assert!(
-        !dialer.has_session_on(&responder.identity.device_id, TransportKind::TcpWs),
+        !dialer.has_session_on(&responder.identity.device_id, ChannelKind::Network),
         "must not have established anything against the dead port"
     );
 
@@ -318,7 +318,7 @@ async fn dial_with_backoff_adopts_a_changed_endpoint_mid_retry() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut established = false;
     while tokio::time::Instant::now() < deadline {
-        if dialer.has_session_on(&responder.identity.device_id, TransportKind::TcpWs) {
+        if dialer.has_session_on(&responder.identity.device_id, ChannelKind::Network) {
             established = true;
             break;
         }
@@ -372,7 +372,7 @@ async fn switching_bluetooth_off_releases_the_primary_and_flips_it_to_network() 
     .expect("choose Bluetooth as primary");
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     // See the sibling test above for why this is `Sim`, not `Bluetooth`.
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Bluetooth));
+    assert_eq!(server.primary_transport("peer-client"), Some(ChannelKind::Bluetooth));
 
     crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
         &mut conn,
@@ -389,13 +389,13 @@ async fn switching_bluetooth_off_releases_the_primary_and_flips_it_to_network() 
     );
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::TcpWs),
+        Some(ChannelKind::Network),
         "primary must flip to the already-connected Network session immediately"
     );
 }
 
 /// Regression test for a second P1 review finding on this PR: disabling
-/// Bluetooth while a `TransportKind::Bluetooth` session is already live
+/// Bluetooth while a `ChannelKind::Bluetooth` session is already live
 /// must not let that session win primary-transport fallback later, even in
 /// the window before its own async teardown (`close_session_on`'s
 /// fire-and-forget `SessionCommand::Close`) has been processed --
@@ -464,7 +464,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
     // real-world case for this finding: disabling Bluetooth from Settings
     // while a healthy Network session is already carrying traffic, not the
     // pinned case the sibling test above covers.
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
+    assert_eq!(server.primary_transport("peer-client"), Some(ChannelKind::Network));
 
     let mut conn = open_db_at_path(&server_db);
     crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
@@ -481,7 +481,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
     // `Close` command `close_session_on` just sent it. Without
     // `recompute_primary_locked`'s `bluetooth_enabled` exclusion, this
     // falls back to the still-technically-connected Bluetooth session.
-    server.release_session("peer-client", TransportKind::TcpWs, &server_db);
+    server.release_session("peer-client", ChannelKind::Network, &server_db);
 
     assert_eq!(
         server.primary_transport("peer-client"),
@@ -495,7 +495,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
     // while the connection (and its ping/pong) keeps running underneath.
     sleep(Duration::from_millis(100)).await;
     assert!(
-        !server.has_session_on("peer-client", TransportKind::Bluetooth),
+        !server.has_session_on("peer-client", ChannelKind::Bluetooth),
         "the disabled pair's Bluetooth session must actually close, not just stop counting \
          toward primary"
     );
@@ -552,7 +552,7 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
 
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::Bluetooth),
+        Some(ChannelKind::Bluetooth),
         "bluetooth should be primary -- it's the only connected transport, and unpinned"
     );
 
@@ -596,18 +596,18 @@ async fn claiming_a_bluetooth_session_while_disabled_self_corrects() {
     tokio::spawn(async move {
         while let Some(command) = rx.recv().await {
             if matches!(command, crate::services::communication::sync::types::SessionCommand::Close) {
-                consumer_server.release_session("peer-client", TransportKind::Bluetooth, &consumer_db);
+                consumer_server.release_session("peer-client", ChannelKind::Bluetooth, &consumer_db);
                 break;
             }
         }
     });
 
-    assert!(server.try_claim_session("peer-client", TransportKind::Bluetooth, tx, &server_db));
+    assert!(server.try_claim_session("peer-client", ChannelKind::Bluetooth, tx, &server_db));
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let mut closed = false;
     while tokio::time::Instant::now() < deadline {
-        if !server.has_session_on("peer-client", TransportKind::Bluetooth) {
+        if !server.has_session_on("peer-client", ChannelKind::Bluetooth) {
             closed = true;
             break;
         }
@@ -633,19 +633,19 @@ async fn release_session_removes_before_its_own_db_read_can_block_it() {
     let (server, server_db) = server_state("transport-release-removes-before-db-read");
     seed_paired_device(&server_db, "peer-client");
     let (tx, _rx) = tokio::sync::mpsc::channel(4);
-    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tx, &server_db));
-    assert!(server.has_session_on("peer-client", TransportKind::TcpWs));
+    assert!(server.try_claim_session("peer-client", ChannelKind::Network, tx, &server_db));
+    assert!(server.has_session_on("peer-client", ChannelKind::Network));
 
     let doomed_db_path = std::path::PathBuf::from("/nonexistent-directory-for-fini-tests/fini.db");
     let peer = "peer-client".to_string();
     let server_for_task = server.clone();
     let handle = tokio::spawn(async move {
-        server_for_task.release_session(&peer, TransportKind::TcpWs, &doomed_db_path);
+        server_for_task.release_session(&peer, ChannelKind::Network, &doomed_db_path);
     });
 
     sleep(Duration::from_millis(20)).await;
     assert!(
-        !server.has_session_on("peer-client", TransportKind::TcpWs),
+        !server.has_session_on("peer-client", ChannelKind::Network),
         "removal must not wait on (or depend on the success of) the DB read that only feeds \
          primary recompute"
     );
@@ -675,13 +675,13 @@ async fn release_session_reselects_primary_from_runtime_state_without_waiting_on
     }
 
     let (tcp_tx, _tcp_rx) = tokio::sync::mpsc::channel(4);
-    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tcp_tx, &server_db));
+    assert!(server.try_claim_session("peer-client", ChannelKind::Network, tcp_tx, &server_db));
     let (ble_tx, _ble_rx) = tokio::sync::mpsc::channel(4);
-    assert!(server.try_claim_session("peer-client", TransportKind::Bluetooth, ble_tx, &server_db));
+    assert!(server.try_claim_session("peer-client", ChannelKind::Bluetooth, ble_tx, &server_db));
 
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::TcpWs),
+        Some(ChannelKind::Network),
         "network wins by default with both connected"
     );
 
@@ -689,13 +689,13 @@ async fn release_session_reselects_primary_from_runtime_state_without_waiting_on
     let peer = "peer-client".to_string();
     let server_for_task = server.clone();
     let handle = tokio::spawn(async move {
-        server_for_task.release_session(&peer, TransportKind::TcpWs, &doomed_db_path);
+        server_for_task.release_session(&peer, ChannelKind::Network, &doomed_db_path);
     });
 
     sleep(Duration::from_millis(20)).await;
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::Bluetooth),
+        Some(ChannelKind::Bluetooth),
         "primary must fail over to the still-connected Bluetooth session immediately, not \
          keep pointing at the just-removed Network one while the DB read is still (doomed to \
          be) in flight"
@@ -725,10 +725,10 @@ async fn reselect_primary_excludes_a_just_disabled_bluetooth_session() {
     }
 
     let (tcp_tx, _tcp_rx) = tokio::sync::mpsc::channel(4);
-    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tcp_tx, &server_db));
+    assert!(server.try_claim_session("peer-client", ChannelKind::Network, tcp_tx, &server_db));
     let (ble_tx, _ble_rx) = tokio::sync::mpsc::channel(4);
-    assert!(server.try_claim_session("peer-client", TransportKind::Bluetooth, ble_tx, &server_db));
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::TcpWs));
+    assert!(server.try_claim_session("peer-client", ChannelKind::Bluetooth, ble_tx, &server_db));
+    assert_eq!(server.primary_transport("peer-client"), Some(ChannelKind::Network));
 
     let mut conn = open_db_at_path(&server_db);
     crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
@@ -740,7 +740,7 @@ async fn reselect_primary_excludes_a_just_disabled_bluetooth_session() {
     )
     .expect("disable bluetooth");
     assert!(
-        server.has_session_on("peer-client", TransportKind::Bluetooth),
+        server.has_session_on("peer-client", ChannelKind::Bluetooth),
         "the Bluetooth session must still be present -- its async Close hasn't been processed"
     );
 
@@ -748,7 +748,7 @@ async fn reselect_primary_excludes_a_just_disabled_bluetooth_session() {
     let peer = "peer-client".to_string();
     let server_for_task = server.clone();
     let handle = tokio::spawn(async move {
-        server_for_task.release_session(&peer, TransportKind::TcpWs, &doomed_db_path);
+        server_for_task.release_session(&peer, ChannelKind::Network, &doomed_db_path);
     });
 
     sleep(Duration::from_millis(20)).await;
@@ -1072,7 +1072,7 @@ async fn loopback_gate_accepts_a_paired_device_and_claims_the_bluetooth_session(
         .expect("auth should succeed for paired device");
 
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Bluetooth));
+    assert_eq!(server.primary_transport("peer-client"), Some(ChannelKind::Bluetooth));
 }
 
 /// ADR-0003 revision's core new guarantee: both Network and Bluetooth can
@@ -1106,7 +1106,7 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
     sleep(Duration::from_millis(50)).await;
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::TcpWs)
+        Some(ChannelKind::Network)
     );
 
     // A second connection on a *different* transport must be accepted, not
@@ -1117,11 +1117,11 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
         .expect("a session on a second transport must also be accepted");
     sleep(Duration::from_millis(50)).await;
 
-    assert!(server.has_session_on("peer-client", TransportKind::TcpWs));
-    assert!(server.has_session_on("peer-client", TransportKind::Bluetooth));
+    assert!(server.has_session_on("peer-client", ChannelKind::Network));
+    assert!(server.has_session_on("peer-client", ChannelKind::Bluetooth));
     assert_eq!(
         server.primary_transport("peer-client"),
-        Some(TransportKind::TcpWs),
+        Some(ChannelKind::Network),
         "network stays primary even once bluetooth/sim also connects"
     );
 
@@ -1145,9 +1145,9 @@ async fn both_adapters_satisfy_the_transport_port() {
     tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
-    let adapters: Vec<(Box<dyn Transport>, u16, TransportKind)> = vec![
-        (Box::new(tcp_ws::TcpWsTransport), tcp_port, TransportKind::TcpWs),
-        (Box::new(loopback::LoopbackTransport), loopback_port, TransportKind::Bluetooth),
+    let adapters: Vec<(Box<dyn Transport>, u16, ChannelKind)> = vec![
+        (Box::new(tcp_ws::TcpWsTransport), tcp_port, ChannelKind::Network),
+        (Box::new(loopback::LoopbackTransport), loopback_port, ChannelKind::Bluetooth),
     ];
 
     for (adapter, port, expected_kind) in adapters {
@@ -1328,7 +1328,7 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
         .expect("auth should succeed for paired device");
     sleep(Duration::from_millis(50)).await;
     assert!(
-        !server.channel_reliable("peer-client", TransportKind::TcpWs),
+        !server.channel_reliable("peer-client", ChannelKind::Network),
         "a freshly claimed session must not already be green"
     );
     // Regression test for a P1 review finding on this PR: the lightweight
@@ -1372,7 +1372,7 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
 
     sleep(Duration::from_millis(50)).await;
     assert!(
-        server.channel_reliable("peer-client", TransportKind::TcpWs),
+        server.channel_reliable("peer-client", ChannelKind::Network),
         "green once both directions of the ping/ack proof are complete"
     );
 
@@ -1400,7 +1400,7 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
 // adding disproportionate complexity for what a pure function test already
 // covers exactly.
 
-/// Wraps a real link but reports a different `TransportKind` — lets these
+/// Wraps a real link but reports a different `ChannelKind` — lets these
 /// tests drive `run_peer_gate`'s Bluetooth-specific enablement check using
 /// `sim`'s real, already-proven TCP+length-delimited wire protocol, without
 /// needing an actual BLE stack (no adapter's `DataLink` impl is swappable at the
@@ -1409,8 +1409,8 @@ struct AsBluetooth(Box<dyn DataLink>);
 
 #[async_trait]
 impl DataLink for AsBluetooth {
-    fn kind(&self) -> TransportKind {
-        TransportKind::Bluetooth
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Bluetooth
     }
 
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
@@ -1460,7 +1460,7 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
 
 /// Mirror of the above with Bluetooth explicitly enabled for the pair: the
 /// same link kind must now authenticate and claim the session as
-/// `TransportKind::Bluetooth`, proving the new check only rejects the
+/// `ChannelKind::Bluetooth`, proving the new check only rejects the
 /// disabled case rather than breaking Bluetooth accepts outright.
 #[tokio::test(flavor = "multi_thread")]
 async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
@@ -1507,7 +1507,7 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
         .expect("a bluetooth-enabled, bonded paired device should authenticate over a Bluetooth-kind link");
 
     sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.primary_transport("peer-client"), Some(TransportKind::Bluetooth));
+    assert_eq!(server.primary_transport("peer-client"), Some(ChannelKind::Bluetooth));
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }
@@ -1958,35 +1958,35 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
     tokio::spawn(async move {
         while let Some(command) = rx.recv().await {
             if matches!(command, crate::services::communication::sync::types::SessionCommand::Close) {
-                consumer_server.release_session("peer-client", TransportKind::TcpWs, &consumer_db);
+                consumer_server.release_session("peer-client", ChannelKind::Network, &consumer_db);
                 break;
             }
         }
     });
 
-    assert!(server.try_claim_session("peer-client", TransportKind::TcpWs, tx, &server_db));
+    assert!(server.try_claim_session("peer-client", ChannelKind::Network, tx, &server_db));
     let start = std::time::Instant::now();
-    server.submit_link_event_at("peer-client", TransportKind::TcpWs, LinkEvent::ProofComplete, start);
+    server.submit_link_event_at("peer-client", ChannelKind::Network, LinkEvent::ProofComplete, start);
 
     // The proof lapses. Nothing may be torn down yet: a link that goes quiet
     // for one cycle is the case the grace window exists to ride out.
-    server.submit_link_event_at("peer-client", TransportKind::TcpWs, LinkEvent::ProofLapsed, start);
+    server.submit_link_event_at("peer-client", ChannelKind::Network, LinkEvent::ProofLapsed, start);
     server.submit_link_event_at(
         "peer-client",
-        TransportKind::TcpWs,
+        ChannelKind::Network,
         LinkEvent::Tick,
         start + FADE_GRACE / 2,
     );
     sleep(Duration::from_millis(50)).await;
     assert!(
-        server.has_session_on("peer-client", TransportKind::TcpWs),
+        server.has_session_on("peer-client", ChannelKind::Network),
         "the session must survive the grace window, not be torn down on the first missed proof"
     );
 
     // Grace expires. This is the edge that did not exist.
     server.submit_link_event_at(
         "peer-client",
-        TransportKind::TcpWs,
+        ChannelKind::Network,
         LinkEvent::Tick,
         start + FADE_GRACE,
     );
@@ -1994,7 +1994,7 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let mut released = false;
     while tokio::time::Instant::now() < deadline {
-        if !server.has_session_on("peer-client", TransportKind::TcpWs) {
+        if !server.has_session_on("peer-client", ChannelKind::Network) {
             released = true;
             break;
         }
@@ -2010,7 +2010,7 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
     // original failure permanent rather than merely wrong.
     let (tx2, _rx2) = tokio::sync::mpsc::channel(4);
     assert!(
-        server.try_claim_session("peer-client", TransportKind::TcpWs, tx2, &server_db),
+        server.try_claim_session("peer-client", ChannelKind::Network, tx2, &server_db),
         "a later connection from the same peer must be able to claim the freed slot"
     );
 }

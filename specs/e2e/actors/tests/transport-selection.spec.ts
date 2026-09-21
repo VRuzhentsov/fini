@@ -23,6 +23,6 @@ test('paired actors with network available claim their session as the network tr
     peerDeviceId: syncedA.identity.device_id,
   });
 
-  expect(kindOnA).toBe('tcp_ws');
-  expect(kindOnB).toBe('tcp_ws');
+  expect(kindOnA).toBe('network');
+  expect(kindOnB).toBe('network');
 });

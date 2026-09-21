@@ -1,48 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use crate::services::communication::channel::TransportKind;
-
-/// Which channel it is. Says the same thing `TransportKind` says, one
-/// mechanical rename from being the same type — see `docs/glossary.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelKind {
-    #[default]
-    Network,
-    Bluetooth,
-}
-
-impl ChannelKind {
-    /// How this kind is stored: `channels.channel_kind`, seeded into
-    /// `channel_kinds.code`. Deliberately the same strings serde produces,
-    /// so the wire form and the stored form never diverge.
-    pub fn code(self) -> &'static str {
-        match self {
-            ChannelKind::Network => "network",
-            ChannelKind::Bluetooth => "bluetooth",
-        }
-    }
-
-    pub fn from_code(code: &str) -> Option<Self> {
-        match code {
-            "network" => Some(ChannelKind::Network),
-            "bluetooth" => Some(ChannelKind::Bluetooth),
-            _ => None,
-        }
-    }
-}
-
-impl From<TransportKind> for ChannelKind {
-    /// One to one now. The two enums say the same thing with different
-    /// spellings, and collapsing them is the last step of the vocabulary
-    /// work — see `docs/glossary.md`'s known gaps.
-    fn from(kind: TransportKind) -> Self {
-        match kind {
-            TransportKind::TcpWs => ChannelKind::Network,
-            TransportKind::Bluetooth => ChannelKind::Bluetooth,
-        }
-    }
-}
+/// The channel kind, defined once in `channel` and re-exported here so the
+/// many `pairing::ChannelKind` paths keep reading naturally. This module
+/// used to declare a second enum of its own, with a `From` impl bridging
+/// the two — see `ChannelKind`'s own doc comment for why that is gone.
+pub use crate::services::communication::channel::ChannelKind;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelEndpoint {

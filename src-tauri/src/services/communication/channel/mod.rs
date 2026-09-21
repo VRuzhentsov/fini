@@ -6,23 +6,17 @@
 //! `ble` is how the Bluetooth one does. Connection code is not itself a
 //! channel and can be shared by several — see `../README.md`.
 //!
-//! `TransportKind` below still spells that older sense of "transport" and
-//! is the one name left contradicting `docs/glossary.md`; it is deliberately
-//! not renamed until how this layer is organised has been settled.
-//!
 //! `pairing`/`sync` speak one shared application protocol
 //! (`crate::services::communication::sync::types::PeerFrame`) over whichever
-//! `Transport`/`DataLink` is currently selected for a peer. This module defines
-//! that boundary plus the adapters that implement it:
+//! `DataLink` is currently selected for a peer. This module defines that
+//! boundary plus the connection code that implements it:
 //!
-//! - `tcp_ws` — the Network channel's transport (mDNS/UDP discovery +
+//! - `tcp_ws` — how the Network channel connects (mDNS/UDP discovery +
 //!   WebSocket link).
-//! - `sim` — a deterministic, CI-safe adapter used by tests and E2E to
-//!   exercise selection/fallback/handoff without real radios.
-//! - `ble` — the Bluetooth channel's transport (Linux BlueZ, Android GATT,
-//!   both via `ble-gatt`; see that module's doc comment). LoRaWAN remains a
-//!   reserved `TransportKind` variant with no adapter; see
-//!   `docs/adr/0001-transport-neutral-peer-protocol.md`.
+//! - `ble` — how the Bluetooth channel connects (Linux BlueZ, Android GATT,
+//!   both via `ble-gatt`; see that module's doc comment).
+//! - `loopback` — how the Bluetooth channel connects where there is no
+//!   radio at all, for CI. Not a channel of its own; see `radio`.
 //!
 //! A `DataLink` moves opaque byte datagrams (whole payloads, boundaries
 //! preserved); each adapter owns its own chunking/framing. Above `DataLink` sits
@@ -56,14 +50,42 @@ use crate::services::communication::sync::types::PeerFrame;
 /// `LoRa`, reserved for an adapter nobody wrote. Making channels data
 /// removed the reason to reserve anything here — a new channel is a
 /// `channel_kinds` row and a `DataLink`, not an enum variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// There used to be a second enum saying this same thing — `TransportKind`,
+/// whose `TcpWs` variant was this one's `Network` — with a `From` impl
+/// between them. Two names for one idea is exactly what the vocabulary work
+/// set out to remove: a channel and a transport are one concept, and
+/// `tcp_ws` named a protocol where a channel belongs. Collapsing them is
+/// what makes that true in the code rather than only in the glossary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum TransportKind {
-    /// The Network channel: mDNS/UDP presence + a WebSocket link.
-    TcpWs,
-    /// The Bluetooth channel: GATT via `ble-gatt` on a real device, a
-    /// loopback TCP connection where there is no radio (`radio::Radio`).
+pub enum ChannelKind {
+    /// mDNS/UDP presence + a WebSocket link.
+    #[default]
+    Network,
+    /// GATT via `ble-gatt` on a real device, a loopback TCP connection
+    /// where there is no radio (`radio::Radio`).
     Bluetooth,
+}
+
+impl ChannelKind {
+    /// How this kind is stored: `channels.channel_kind`, seeded into
+    /// `channel_kinds.code`. Deliberately the same strings serde produces,
+    /// so the wire form and the stored form never diverge.
+    pub fn code(self) -> &'static str {
+        match self {
+            ChannelKind::Network => "network",
+            ChannelKind::Bluetooth => "bluetooth",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "network" => Some(ChannelKind::Network),
+            "bluetooth" => Some(ChannelKind::Bluetooth),
+            _ => None,
+        }
+    }
 }
 
 /// An untrusted candidate peer surfaced by a transport's discovery step.
@@ -77,7 +99,7 @@ pub enum TransportKind {
 #[allow(dead_code)]
 pub struct Candidate {
     pub peer_device_id: String,
-    pub kind: TransportKind,
+    pub kind: ChannelKind,
     pub addr: String,
     pub port: u16,
 }
@@ -86,7 +108,7 @@ pub struct Candidate {
 /// datagrams; framing/chunking is the adapter's concern, not the caller's.
 #[async_trait]
 pub trait DataLink: Send {
-    fn kind(&self) -> TransportKind;
+    fn kind(&self) -> ChannelKind;
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String>;
     /// `None` means the link closed (peer disconnected or read error).
     async fn recv(&mut self) -> Option<Result<Vec<u8>, String>>;
@@ -100,18 +122,17 @@ pub trait DataLink: Send {
     }
 }
 
-/// One adapter implementing a `TransportKind`. `tcp_ws::TcpWsTransport` and
-/// `loopback::LoopbackTransport` both implement this — proven polymorphically in
-/// `channel::tests` — but with only two concrete adapters in this PR,
-/// production dial loops (`tcp_ws::spawn_dial_loop`,
-/// `loopback::spawn_fallback_dial_loop`) call each adapter's functions directly
-/// rather than through a dynamic `Box<dyn Transport>` registry. A registry
-/// becomes worth its weight once a third adapter (real Bluetooth, then
-/// LoRaWAN) lands.
+/// One piece of connection code for a `ChannelKind`.
+/// `tcp_ws::TcpWsTransport` and `loopback::LoopbackTransport` both implement
+/// this — proven polymorphically in `channel::tests` — but the production
+/// dial loops (`tcp_ws::spawn_dial_loop`, `loopback::spawn_fallback_dial_loop`)
+/// call each one's functions directly rather than through a dynamic
+/// `Box<dyn Transport>` registry. A registry becomes worth its weight once a
+/// channel arrives that this list cannot name.
 #[async_trait]
 #[allow(dead_code)]
 pub trait Transport: Send + Sync {
-    fn kind(&self) -> TransportKind;
+    fn kind(&self) -> ChannelKind;
     fn dial(&self, peer_device_id: &str, addr: &str, port: u16) -> BoxDialFuture;
 }
 

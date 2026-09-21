@@ -24,7 +24,7 @@ use crate::services::db::AppDbConnection;
 use crate::services::communication::pairing::{CustomSpaceDescriptor, DeviceConnectionState};
 use crate::services::quest::QuestService;
 #[cfg(test)]
-use crate::services::communication::channel::TransportKind;
+use crate::services::communication::channel::ChannelKind;
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 
@@ -3103,7 +3103,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         assert!(device_connection.try_claim_session(
             "peer-a",
-            TransportKind::TcpWs,
+            ChannelKind::Network,
             tx,
             &db_path,
         ));

@@ -21,7 +21,7 @@ use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketSt
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::sync::session;
-use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, TransportKind};
+use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, ChannelKind};
 
 type BoxedSink = Pin<Box<dyn Sink<Message, Error = WsError> + Send>>;
 type BoxedSource = Pin<Box<dyn Stream<Item = Result<Message, WsError>> + Send>>;
@@ -79,8 +79,8 @@ impl TcpWsDataLink {
 
 #[async_trait]
 impl DataLink for TcpWsDataLink {
-    fn kind(&self) -> TransportKind {
-        TransportKind::TcpWs
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Network
     }
 
     fn peer_addr(&self) -> Option<String> {
@@ -163,8 +163,8 @@ pub struct TcpWsTransport;
 
 #[async_trait]
 impl Transport for TcpWsTransport {
-    fn kind(&self) -> TransportKind {
-        TransportKind::TcpWs
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Network
     }
 
     fn dial(&self, _peer_device_id: &str, addr: &str, port: u16) -> BoxDialFuture {
@@ -255,7 +255,7 @@ pub fn spawn_dial_loop(
             my_id.as_str(),
             peer_id.as_str(),
             paired_peer_ids,
-            state.has_session_on(&peer_id, TransportKind::TcpWs),
+            state.has_session_on(&peer_id, ChannelKind::Network),
         ) {
             continue;
         }
@@ -355,7 +355,7 @@ pub(crate) async fn dial_with_backoff(
     let max_delay = Duration::from_secs(30);
 
     loop {
-        if state.has_session_on(&peer_id, TransportKind::TcpWs) {
+        if state.has_session_on(&peer_id, ChannelKind::Network) {
             return;
         }
         // Re-read the switch on *every* iteration, not once at spawn time.
@@ -393,7 +393,7 @@ pub(crate) async fn dial_with_backoff(
                     Ok(peer_protocol_version) => {
                         log::info!("[transport][tcp_ws] auth OK with {peer_id}");
                         let (tx, rx) = tokio::sync::mpsc::channel(64);
-                        if state.try_claim_session(&peer_id, TransportKind::TcpWs, tx, &db_path) {
+                        if state.try_claim_session(&peer_id, ChannelKind::Network, tx, &db_path) {
                             session::run_session(
                                 link,
                                 rx,

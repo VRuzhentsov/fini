@@ -18,7 +18,7 @@ use crate::services::communication::pairing::{
 };
 use crate::services::communication::sync::outbox::load_events_for_space;
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
-use crate::services::communication::channel::{recv_frame, send_frame, DataLink, TransportKind};
+use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
     tokio::task::block_in_place(|| {
@@ -141,7 +141,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
 
     let (device_id, peer_device_id, peer_protocol_version) = match frame {
         PeerFrame::PairRequest(payload) => {
-            let _ = state.receive_ws_pair_request(payload, from_addr, kind == TransportKind::Bluetooth);
+            let _ = state.receive_ws_pair_request(payload, from_addr, kind == ChannelKind::Bluetooth);
             return;
         }
         PeerFrame::PairAccept(payload) => {
@@ -150,7 +150,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         }
         PeerFrame::PairComplete(payload) => {
             let _ =
-                state.receive_ws_pair_complete(payload, from_addr, kind == TransportKind::Bluetooth);
+                state.receive_ws_pair_complete(payload, from_addr, kind == ChannelKind::Bluetooth);
             return;
         }
         PeerFrame::BluetoothProbe { device_id } => {
@@ -245,7 +245,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
 
     // Sim stands in for Bluetooth's role in tests, so it is deliberately not
     // gated here -- only the real network channel is.
-    if kind == TransportKind::TcpWs && !check_channel_enabled(&db_path, &device_id, ChannelKind::Network) {
+    if kind == ChannelKind::Network && !check_channel_enabled(&db_path, &device_id, ChannelKind::Network) {
         log::warn!(
             "[space_sync][gate] network auth from {device_id} rejected: network disabled for this pair"
         );
@@ -259,7 +259,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         return;
     }
 
-    if kind == TransportKind::Bluetooth {
+    if kind == ChannelKind::Bluetooth {
         if !check_channel_enabled(&db_path, &device_id, ChannelKind::Bluetooth) {
             log::warn!(
                 "[space_sync][gate] bluetooth auth from {device_id} rejected: bluetooth disabled for this pair"
@@ -357,7 +357,7 @@ pub async fn run_session(
     // a peer on a build from before this frame existed cannot decode it and
     // would drop the whole authenticated session, so this frame is never
     // sent proactively to a peer that hasn't proven it understands it.
-    let bluetooth_self_report_enabled = link.kind() == TransportKind::TcpWs && peer_protocol_version >= 1;
+    let bluetooth_self_report_enabled = link.kind() == ChannelKind::Network && peer_protocol_version >= 1;
     let mut last_reported_bluetooth_address: Option<String> = None;
     if bluetooth_self_report_enabled {
         if let Some(address) = crate::services::communication::pairing::local_bluetooth_address().await {
