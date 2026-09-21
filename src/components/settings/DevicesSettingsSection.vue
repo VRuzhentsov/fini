@@ -128,8 +128,12 @@ const renderFlags = computed(() => ({
         :data-peer-device-id="row.device.peer_device_id"
       >
         <template #leading>
+          <!-- `data-connected` carries what the colour means, so a test can
+               assert the state rather than a Tailwind class name. -->
           <span
             class="size-2.5 rounded-full"
+            data-testid="paired-device-dot"
+            :data-connected="row.connected"
             :class="row.connected ? 'bg-success' : 'bg-[var(--fg-5)]'"
           />
         </template>

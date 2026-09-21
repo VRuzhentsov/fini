@@ -48,11 +48,33 @@ export async function waitForChannelState(
   }, timeoutMs, 1_000);
 }
 
-/** The plain-language reason under a row, or '' when it isn't showing one. */
+/**
+ * The plain-language reason for a row, asked for the way a person asks for
+ * it: by pressing the row's information button.
+ *
+ * It clicks rather than just reading, because no row expands its reason on
+ * its own any more -- reading the page without asking would return '' for
+ * every state. Only clicks when the reason is not already open, so calling
+ * this twice does not toggle it shut again.
+ *
+ * Returns '' when the row has no reason at all, which is a connected row.
+ */
 export async function channelReason(actor: E2EActor, kind: ChannelKind): Promise<string> {
-  const selector = `${channelRowSelector(kind)} [data-testid="channel-status-reason"]`;
+  const rowSelector = channelRowSelector(kind);
+  const reasonSelector = `${rowSelector} [data-testid="channel-status-reason"]`;
+  const infoSelector = `${rowSelector} [data-testid="channel-status-info"]`;
+
+  const needsOpening = await actor.page.evaluate<boolean>(`(() => {
+    const reason = document.querySelector(${JSON.stringify(reasonSelector)});
+    const info = document.querySelector(${JSON.stringify(infoSelector)});
+    return !reason && !!info;
+  })()`);
+  if (needsOpening) {
+    await actor.page.click(infoSelector);
+  }
+
   return actor.page.evaluate<string>(`(() => {
-    const el = document.querySelector(${JSON.stringify(selector)});
+    const el = document.querySelector(${JSON.stringify(reasonSelector)});
     return el ? (el.textContent ?? '').trim() : '';
   })()`);
 }
@@ -82,4 +104,39 @@ export async function waitForSyncQueue(
     const text = await syncQueueText(actor);
     return predicate(text) ? text : false;
   }, timeoutMs, 1_000);
+}
+
+/**
+ * The devices list's own verdict on a peer: whether its dot is the connected
+ * colour.
+ *
+ * Reads `data-connected` rather than the Tailwind class, for the reason
+ * `waitForChannelState` reads `data-channel-state` -- the class is styling
+ * and moves with the design, the attribute is the claim being made.
+ */
+export async function deviceDotConnected(
+  actor: E2EActor,
+  peerDeviceId: string,
+): Promise<boolean> {
+  await actor.page.click('nav.nav a[href="#/settings"]');
+  await actor.page.waitForSelector('[data-testid="settings-devices"]', DEFAULT_TIMEOUT_MS);
+  const selector =
+    `[data-testid="paired-device-row"][data-peer-device-id="${peerDeviceId}"] ` +
+    `[data-testid="paired-device-dot"]`;
+  return actor.page.evaluate<boolean>(`(() => {
+    const dot = document.querySelector(${JSON.stringify(selector)});
+    return dot ? dot.getAttribute('data-connected') === 'true' : false;
+  })()`);
+}
+
+/** Whether any channel row on the device page is in the connected state. */
+export async function anyChannelConnected(
+  actor: E2EActor,
+  peerDeviceId: string,
+): Promise<boolean> {
+  await openDeviceDetailsFromSettings(actor, peerDeviceId);
+  return actor.page.evaluate<boolean>(`(() => {
+    const rows = [...document.querySelectorAll('[data-testid="channel-status-row"]')];
+    return rows.some((row) => row.getAttribute('data-channel-state') === 'connected');
+  })()`);
 }

@@ -2,7 +2,9 @@ import { test, expect } from '../fixtures.ts';
 import { ensureSyncedActors } from '../helpers/device-sync.ts';
 import { ensurePersonalSpaceSync, openDeviceDetailsFromSettings } from '../helpers/personal-sync.ts';
 import {
+  anyChannelConnected,
   channelReason,
+  deviceDotConnected,
   toggleChannel,
   waitForChannelState,
   waitForSyncQueue,
@@ -172,4 +174,50 @@ test('unlinking names the spaces that stop syncing and promises nothing is delet
 
   expect(confirmation).toContain('Personal');
   expect(confirmation).toContain('Nothing is deleted');
+});
+
+/**
+ * The devices list's dot, and the line that is no longer under it.
+ *
+ * The dot used to read presence -- a beacon heard on the LAN -- so a machine
+ * that was merely discoverable showed green while no session existed. Found
+ * by using the app, not by a test, which is why this one asserts the two
+ * surfaces against *each other* rather than hard-coding both: the list's dot
+ * and the device page's rows are two renderings of one fact, and the bug was
+ * them disagreeing. Hard-coding each separately would let them drift apart
+ * again and still pass.
+ */
+test('the devices list dot agrees with the channel rows', async ({ actorA, actorB }) => {
+  const [, syncedB] = await ensureSyncedActors([actorA, actorB], { pairViaUi: true });
+  const peerId = syncedB.identity.device_id;
+
+  await waitForChannelState(actorA, peerId, 'network', 'connected');
+  expect(await anyChannelConnected(actorA, peerId), 'a channel row is connected').toBe(true);
+  expect(await deviceDotConnected(actorA, peerId), 'so the dot is the connected colour').toBe(true);
+
+  // Nothing connected. The dot has to follow the session, not the peer's
+  // continued presence on the network -- which is unchanged here, and is
+  // exactly what the old implementation was reading.
+  await openDeviceDetailsFromSettings(actorA, peerId);
+  await toggleChannel(actorA, 'network');
+  await waitForChannelState(actorA, peerId, 'network', 'off');
+
+  expect(await anyChannelConnected(actorA, peerId), 'no channel row is connected').toBe(false);
+  expect(await deviceDotConnected(actorA, peerId), 'so the dot must not be green').toBe(false);
+
+  // And the row says nothing on its own. The detail exists, but only for
+  // someone who presses the button for it.
+  const detail = await actorA.page.evaluate<{ shown: boolean; hasInfo: boolean }>(`(() => {
+    const row = document.querySelector('[data-testid="paired-device-row"]');
+    return {
+      shown: !!row?.querySelector('[data-testid="paired-device-detail"]'),
+      hasInfo: !!row?.querySelector('[data-testid="paired-device-info"]'),
+    };
+  })()`);
+  expect(detail.shown, 'the list must not explain each device unasked').toBe(false);
+  expect(detail.hasInfo, 'but the detail must still be reachable').toBe(true);
+
+  await openDeviceDetailsFromSettings(actorA, peerId);
+  await toggleChannel(actorA, 'network');
+  await waitForChannelState(actorA, peerId, 'network', 'connected', 60_000);
 });
