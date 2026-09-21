@@ -140,3 +140,40 @@ export async function anyChannelConnected(
     return rows.some((row) => row.getAttribute('data-channel-state') === 'connected');
   })()`);
 }
+
+/**
+ * Switch a channel on that was never set up, which now opens the setup
+ * dialog rather than writing anything: search for the peer, then accept the
+ * outcome either way.
+ *
+ * "Turn on anyway" is the branch this takes in the container, where there is
+ * no `bluetoothd` and the search cannot succeed -- and it is the branch a
+ * person with the radio switched off takes too. The switch alone used to do
+ * this; the dialog owns it now, so the test has to walk the same path.
+ */
+export async function setUpChannelViaDialog(
+  actor: E2EActor,
+  kind: ChannelKind,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<void> {
+  await actor.page.click(`${channelRowSelector(kind)} [data-testid="channel-switch"]`);
+  await actor.page.waitForSelector('[data-testid="channel-setup-dialog"]', timeoutMs);
+  await actor.page.click(`[data-testid="setup-${kind}"]`);
+
+  // Either the search found it or it did not; both end somewhere with a way
+  // forward, and the dialog is what decides which.
+  await pollUntil(`${actor.slug} ${kind} setup offers a way to turn it on`, async () => {
+    return actor.page.evaluate<boolean>(`(() => {
+      return !!document.querySelector('[data-testid="turn-on-${kind}"], [data-testid="turn-on-${kind}-anyway"]');
+    })()`);
+  }, timeoutMs, 500);
+
+  const found = await actor.page.evaluate<boolean>(`(() => {
+    return !!document.querySelector('[data-testid="turn-on-${kind}"]');
+  })()`);
+  await actor.page.click(
+    found ? `[data-testid="turn-on-${kind}"]` : `[data-testid="turn-on-${kind}-anyway"]`,
+  );
+
+  await actor.page.click('[data-testid="channel-setup-backdrop"]');
+}

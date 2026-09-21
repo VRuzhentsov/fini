@@ -233,6 +233,19 @@ async function enableBluetooth() {
           <template v-else-if="step === 'notFound' || step === 'failed'">
             <button class="btn btn-ghost btn-sm" @click="emit('close')">Close</button>
             <span class="flex-1" />
+            <!-- Not finding the peer is not a reason to refuse the setting.
+                 This machine's radio may simply be off, the peer may be in
+                 another room, and the channel is designed to sit on and start
+                 by itself once it can ("On, waiting"). Without this the only
+                 route to `enableBluetooth` was a successful search, which made
+                 that whole state unreachable for exactly the people in it. -->
+            <button
+              class="btn btn-ghost btn-sm"
+              data-testid="turn-on-bluetooth-anyway"
+              @click="void enableBluetooth()"
+            >
+              Turn on anyway
+            </button>
             <button class="btn btn-primary btn-sm" @click="void searchBluetooth()">Search again</button>
           </template>
         </div>

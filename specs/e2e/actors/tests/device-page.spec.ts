@@ -5,6 +5,7 @@ import {
   anyChannelConnected,
   channelReason,
   deviceDotConnected,
+  setUpChannelViaDialog,
   toggleChannel,
   waitForChannelState,
   waitForSyncQueue,
@@ -85,7 +86,11 @@ test('a channel switched on with no usable radio waits, and blames this device',
   await openDeviceDetailsFromSettings(actorA, syncedB.identity.device_id);
   await waitForChannelState(actorA, syncedB.identity.device_id, 'bluetooth', 'off');
 
-  await toggleChannel(actorA, 'bluetooth');
+  // Switching on a channel that was never set up opens the setup dialog;
+  // the dialog is what turns it on. In here the search cannot succeed --
+  // no `bluetoothd` -- so this takes the "turn on anyway" branch, which is
+  // the same one a person with their radio switched off takes.
+  await setUpChannelViaDialog(actorA, 'bluetooth');
 
   // Not "down", and specifically not a failure: the switch stays on and
   // the channel is expected to start by itself once a radio appears.
