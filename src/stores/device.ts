@@ -1225,6 +1225,20 @@ export const useDeviceStore = defineStore("device", () => {
     void startSessionChangedListener();
     void refreshPresence();
     void refreshDebugStatus();
+
+    // One tick at startup, and it is load-bearing rather than tidy.
+    //
+    // `start_tick_keeper_once` is only ever reached from inside
+    // `space_sync_tick_impl`, so nothing that keeps this app talking to its
+    // pairs -- the keeper, the outbound dial loops, Android's foreground
+    // service -- exists until some tick has run. Every other caller is a
+    // deliberate act: saving a space mapping, answering a sync request,
+    // opening the Device page. A launch where the person just uses their
+    // quests would therefore never dial anybody, and their pairs would sit
+    // unreachable until they happened to visit a settings screen.
+    //
+    // Once is enough: the keeper takes over from here and wakes on change.
+    void runSpaceSyncTick();
   }
 
   async function enterAddMode() {
