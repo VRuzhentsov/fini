@@ -1400,8 +1400,12 @@ pub fn space_sync_tick_impl(
     // Ensure a session is open on every channel independently for peers
     // where we are the dialer (ADR-0003 revision: both connect
     // unconditionally, regardless of each other's state).
-    let paired_peer_ids: HashSet<String> = peer_ids.iter().cloned().collect();
-    // ...except where the user has switched the Network channel off for a
+    //
+    // Each channel asks for its own candidates rather than sharing one
+    // paired-peer set: the two no longer agree on who is eligible, which is
+    // the whole point of a per-pair switch.
+    //
+    // ...and except where the user has switched the Network channel off for a
     // pair, so the switch genuinely stops the dialling instead of only
     // greying the row. This decides who gets a dial task *started*; the task
     // itself re-asks the same question on every retry

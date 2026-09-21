@@ -185,7 +185,7 @@ pub fn temp_db_path(label: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{paired_devices, quests, spaces};
+    use crate::schema::{quests, spaces};
 
     fn execute_sql_script(conn: &mut SqliteConnection, script: &str) {
         for statement in script.split(';') {
