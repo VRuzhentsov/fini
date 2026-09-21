@@ -409,7 +409,20 @@ pub(crate) async fn dial_with_backoff(
                     }
                     Err(err) => {
                         log::warn!("[transport][tcp_ws] auth with {peer_id} failed: {err}");
-                        if err.starts_with("auth rejected") {
+                        // "network disabled for this pair" is the peer's
+                        // switch, not a verdict about us, and it can flip back
+                        // at any second -- so it must not buy a minute of
+                        // silence the way an unknown-device rejection does.
+                        //
+                        // It bit exactly where you would expect: only the
+                        // lexicographically-lower device dials, so when the
+                        // *higher* one switches its channel back on, nothing
+                        // dials until the peer's backoff expires. The switch
+                        // looked dead for up to a minute. `ble` has always
+                        // excluded its own equivalent reason here.
+                        if err.starts_with("auth rejected")
+                            && !err.contains("network disabled for this pair")
+                        {
                             // Not just "don't retry within this task" --
                             // `spawn_dial_loop` would otherwise spawn a
                             // fresh one on the very next tick regardless.
