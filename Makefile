@@ -251,6 +251,7 @@ pr-gate-e2e-run:
 	  -e FINI_E2E_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
 	  -e FINI_E2E_CI_ACTOR_WAIT_SECS="$(FINI_E2E_CI_ACTOR_WAIT_SECS)" \
 	  -e FINI_E2E_LANES="$(FINI_E2E_LANES)" \
+	  -e FINI_E2E_KEEP="$(FINI_E2E_KEEP)" \
 	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
 	  "$(FINI_DEV_RUNNER_IMAGE)"
 
