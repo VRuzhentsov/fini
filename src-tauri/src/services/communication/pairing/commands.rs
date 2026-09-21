@@ -1147,21 +1147,24 @@ pub fn device_connection_save_paired_device_impl(
             .values(&input)
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
+    }
 
-        // A new pair's channels reflect how it was set up (ADR-0007). A
-        // person who explicitly chose Bluetooth in the pairing dialog must
-        // not find Network configured as well, with the app dialling the LAN
-        // over a channel they never picked -- that would make the redesign's
-        // central promise false on the very first screen.
-        if !via_bluetooth {
-            channels::configure(
-                &mut *conn,
-                &peer_device_id,
-                ChannelKind::Network,
-                true,
-                None,
-            )?;
-        }
+    // A pair's channels reflect how it was set up (ADR-0007). A person who
+    // explicitly chose Bluetooth in the pairing dialog must not find Network
+    // configured as well, with the app dialling the LAN over a channel they
+    // never picked -- that would make the redesign's central promise false on
+    // the very first screen.
+    //
+    // Outside the insert branch, on the same reasoning the Bluetooth block
+    // below spells out: an existing row here means an asymmetric re-pair, the
+    // other side having reset and paired again over the network while this
+    // side kept its row. Configuring only on a fresh insert left that pair
+    // with Network off or absent, so `check_channel_enabled` rejected the
+    // auth while the dialog had just said pairing was complete. Completing a
+    // pairing over a channel is a deliberate enough act to set that channel
+    // up, which is exactly what the Bluetooth side already assumes.
+    if !via_bluetooth {
+        channels::configure(&mut *conn, &peer_device_id, ChannelKind::Network, true, None)?;
     }
 
     // ADR 0002 Phase 3: a Bluetooth address handed over as part of the
@@ -1980,6 +1983,56 @@ mod tests {
         );
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
+    }
+
+    /// The asymmetric re-pair: this side kept its row while the other side
+    /// reset and paired again over the network. Configuring Network only on a
+    /// fresh insert left the channel off or absent here, so the dialog said
+    /// pairing was complete and `check_channel_enabled` then rejected every
+    /// auth -- a pair that looks set up and cannot talk.
+    ///
+    /// The Bluetooth side has always treated a completed handshake as
+    /// deliberate enough to set its channel up again; this asserts Network
+    /// does too.
+    #[test]
+    fn re_pairing_over_the_network_sets_network_up_again_on_an_existing_pair() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = db::open_db_at_path(&db_path);
+        std::mem::forget(dir);
+
+        device_connection_save_paired_device_impl(
+            &mut conn,
+            "peer-old".to_string(),
+            "Peer Old".to_string(),
+            None,
+            false, // via_bluetooth
+            db_path.clone(),
+        )
+        .expect("first pairing");
+
+        // The person switched Network off at some point after pairing.
+        channels::set_enabled(&mut conn, "peer-old", ChannelKind::Network, false)
+            .expect("switch Network off");
+        assert!(!channels::is_enabled(&mut conn, "peer-old", ChannelKind::Network));
+
+        // The other side reset and paired again, over the network.
+        device_connection_save_paired_device_impl(
+            &mut conn,
+            "peer-old".to_string(),
+            "Peer Old".to_string(),
+            None,
+            false, // via_bluetooth
+            db_path.clone(),
+        )
+        .expect("re-pairing");
+
+        assert!(
+            channels::is_enabled(&mut conn, "peer-old", ChannelKind::Network),
+            "a completed Network pairing must leave the Network channel usable"
+        );
     }
 
     /// The counterpart: an ordinary network pairing configures Network, and
