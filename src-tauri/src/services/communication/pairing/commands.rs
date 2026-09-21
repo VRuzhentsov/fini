@@ -1112,6 +1112,15 @@ pub fn device_connection_set_channel_enabled_impl(
                     state,
                     &peer_device_id,
                 );
+                // The same wake Network does above, and on Android it is
+                // what starts the foreground service: `start_sync_service_once`
+                // only runs from inside a tick, so a first tick that happened
+                // before Nearby Devices was granted left the service stopped.
+                // Nothing else would start it -- the dial above supplies a
+                // wake only if it reaches the peer, and "Turn on anyway"
+                // exists precisely for when it cannot. The app would then be
+                // frozen on backgrounding with Bluetooth sync switched on.
+                crate::services::communication::sync::commands::notify_sync_work_pending();
             }
         }
     } else {
