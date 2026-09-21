@@ -33,7 +33,26 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**", "**/builddir/**", "**/.flatpak-builder/**", "**/flatpak-build/**"],
+      //
+      // `.claude/worktrees` holds full checkouts of this repo, so without it
+      // Vite watches every agent worktree's `src/` and `dist/` alongside the
+      // real one. Observed in a dev session: an unrelated worktree's build
+      // wrote its `dist/index.html` and this app full-page reloaded, twice,
+      // mid-session. A reload is not HMR -- it throws away the state you were
+      // looking at, which is the thing HMR exists to keep.
+      //
+      // `dist` and `tmp` are this checkout's own outputs, for the same
+      // reason: nothing in dev is served from either, and the only thing
+      // watching them can do is reload the app while a build is writing.
+      ignored: [
+        "**/src-tauri/**",
+        "**/.claude/worktrees/**",
+        "**/dist/**",
+        "**/tmp/**",
+        "**/builddir/**",
+        "**/.flatpak-builder/**",
+        "**/flatpak-build/**",
+      ],
     },
   },
 }));
