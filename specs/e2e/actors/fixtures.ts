@@ -156,8 +156,8 @@ function actorTransport(): ActorTransport {
  * Deterministic per-actor fake Bluetooth address for the `ble` lane's mock
  * radio. Doesn't need to look like a real BLE address (`ble-gatt`'s
  * `PeerAddress` is a plain string) — just stable and unique per actor index
- * so `FINI_LOCAL_BLUETOOTH_ADDRESS`/`FINI_BLUETOOTH_PAIRED_ADDRESSES` agree
- * on who's who without any coordination step between actor processes.
+ * so `FINI_LOCAL_BLUETOOTH_ADDRESS` identifies each actor without any
+ * coordination step between actor processes.
  */
 function fakeBluetoothAddress(index: number): string {
   return `AA:BB:CC:00:00:${(index + 1).toString(16).padStart(2, '0').toUpperCase()}`;
@@ -305,16 +305,12 @@ function spawnActorProcess(
         ? {
             FINI_DISCOVERY_DISABLED: '1',
             FINI_BLE_MOCK_BROKER: `127.0.0.1:${bleBrokerPort(baseDiscoveryPort, slugs.length)}`,
+            // Required by the mock broker: `ble.rs` refuses to start without
+            // it. `FINI_BLUETOOTH_PAIRED_ADDRESSES` used to sit beside this,
+            // satisfying an OS-bond check in `bluetooth_dial_candidates`.
+            // ADR-0006 deleted that check, so the variable had no reader left
+            // and was only telling the next person a gate existed.
             FINI_LOCAL_BLUETOOTH_ADDRESS: fakeBluetoothAddress(index),
-            // Everyone *else's* fake address -- what `bluetooth_dial_candidates`'
-            // OS-bond check needs to treat every peer as already bonded (see
-            // `FINI_BLUETOOTH_PAIRED_ADDRESSES`'s own doc comment in
-            // `device_connection::commands`).
-            FINI_BLUETOOTH_PAIRED_ADDRESSES: slugs
-              .map((_, peerIndex) => peerIndex)
-              .filter((peerIndex) => peerIndex !== index)
-              .map(fakeBluetoothAddress)
-              .join(','),
           }
         : {};
 

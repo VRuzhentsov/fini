@@ -12,11 +12,11 @@ import { openDeviceDetailsFromSettings } from './personal-sync.ts';
  * flow doesn't apply. The difference from loopback is what is underneath: these
  * actors dial the real `ble.rs` code path (dial loop, peripheral accept,
  * session claim) against a cross-process mock radio instead of a plain TCP
- * stand-in, and pairing is marked `viaBluetooth: true` with a real (fake)
- * address so `bluetooth_dial_candidates` actually has something to find.
- * See `fixtures.ts`'s `fakeBluetoothAddress`/`FINI_BLUETOOTH_PAIRED_ADDRESSES`
- * wiring and `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in
- * `ble-gatt`.
+ * stand-in, and pairing is marked `viaBluetooth: true` so the Bluetooth
+ * channel is switched on for the pair -- which is what
+ * `bluetooth_dial_candidates` actually reads. See `fixtures.ts`'s
+ * `fakeBluetoothAddress` wiring and
+ * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  */
 
 interface PeerSessionDebugStatus {
@@ -105,13 +105,6 @@ interface ChannelStatusRow {
   enabled: boolean;
 }
 
-/**
- * The hardware precondition, stated as an assertion rather than set up by the
- * test: this actor already knows the peer, has Bluetooth enabled for it, and
- * holds an address. A failure here means the devices were never paired over
- * Bluetooth, which is a setup problem the run cannot fix for itself -- and a
- * far clearer message than the timeout it would otherwise become.
- */
 /**
  * Asserts the pairing this run depends on, then makes sure Bluetooth is
  * actually switched on for it.
