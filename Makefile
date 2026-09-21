@@ -46,6 +46,7 @@ help:
 	@echo "  make e2e-build        Build dev-runner image and run E2E inside it"
 	@echo "  make e2e-headed       Run visible local E2E (UI + multi-actor) alongside make dev"
 	@echo "  make pr-gate-e2e      Run containerized full E2E suite in dev-runner"
+	@echo "  FINI_E2E_LANES=loopback make pr-gate-e2e  Run one lane (main|loopback|ble) on its own"
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
 	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
@@ -249,6 +250,7 @@ pr-gate-e2e-run:
 	  -e FINI_E2E_CI_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
 	  -e FINI_E2E_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
 	  -e FINI_E2E_CI_ACTOR_WAIT_SECS="$(FINI_E2E_CI_ACTOR_WAIT_SECS)" \
+	  -e FINI_E2E_LANES="$(FINI_E2E_LANES)" \
 	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
 	  "$(FINI_DEV_RUNNER_IMAGE)"
 
