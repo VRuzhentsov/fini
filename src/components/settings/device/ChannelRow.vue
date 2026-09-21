@@ -47,9 +47,14 @@ const reason = computed(() => {
   return code ? channelStatusText(code, props.peerName) : null;
 });
 
-// Only a connected channel can carry traffic, so only a connected channel
-// can hold the star. Offering it on a dead row would promise a switch that
-// silently does nothing.
+// Moving the star is a connected-channel action: pinning a dead row would
+// promise a switch that silently does nothing.
+//
+// Showing it is a different question, and the answer is not the same. The
+// star is the person's stored choice of which channel carries the traffic --
+// a setting, not a live state -- so it stays visible on the channel that
+// holds it even while that channel is down. Hiding it there would say the
+// choice had been forgotten, when reconnecting will honour it.
 const canPin = computed(() => rowState.value === "connected" || rowState.value === "fading");
 
 const retryable = computed(
@@ -86,7 +91,7 @@ const dotClass = computed(() => {
 const renderFlags = computed(() => ({
   reasonInfo: reason.value !== null,
   reasonText: reason.value !== null && reasonOpen.value,
-  starToggle: canPin.value,
+  starToggle: canPin.value || props.starred,
   retryButton: retryable.value,
   unlinkButton: unlinkable.value,
 }));

@@ -30,7 +30,7 @@ Each row carries live state, the reason it isn't connected, a last connected/syn
 - **The reason** is plain language and names the device — "Pixel 8 isn't nearby", "Bluetooth is off on this computer". Never a status code, never a bare coloured dot. It lives in the row's information button, and *only* there: no state expands it by itself, because an explanation nobody asked for is noise on a page opened to see state.
 - **Setting a channel up** has no button of its own. Switching on a channel that was never configured is the request to configure it, so the switch opens [[ChannelSetupDialog]] and writes nothing; the dialog enables the channel once it succeeds. A separate "Set up Bluetooth" button was a second way to ask for the same thing, sitting beside a switch that looked like it did something else.
 - **`waiting`** ("On, waiting") is the state the user sits in after switching a channel on while this machine's own radio is off. The switch stays on with a gray track, and the channel starts by itself when the radio returns. Its reason waits in the information button like every other reason; it used to expand itself, which put a sentence about this computer's radio on a page the person opened to read state.
-- **The star** only appears on a channel that is actually connected — offering it on a dead row would promise a switch that does nothing.
+- **The star** shows on whichever channel holds it, connected or not: it is the person's stored choice, a setting rather than a live state, and hiding it on a dead row would say the choice had been forgotten. *Moving* it stays a connected-channel action, since pinning a dead row would promise a switch that does nothing.
 - Switching a channel on never fails and never reverts; see the ADR.
 
 ## Sync queue

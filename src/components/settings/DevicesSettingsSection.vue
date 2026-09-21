@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { PlusIcon } from "@heroicons/vue/24/outline";
+import { PlusIcon, InformationCircleIcon } from "@heroicons/vue/24/outline";
 import SettingsListGroup from "./SettingsListGroup.vue";
 import SettingsListItem from "./SettingsListItem.vue";
 import PairDeviceDialog from "./PairDeviceDialog.vue";
 import { useDeviceStore, type PairedDevice } from "../../stores/device";
-import { channelRowState } from "../../utils/channelStatusCodes";
+import { channelRowState, channelStatusText } from "../../utils/channelStatusCodes";
 
 const props = defineProps<{
   // Bumped by the Settings search when someone picks "Add device". A counter
@@ -48,24 +48,40 @@ function connectedChannel(device: PairedDevice): "network" | "bluetooth" | null 
   return live?.kind ?? null;
 }
 
-// One line under each device name, and only when there is something worth
-// saying. A device that is simply not connected gets no line: the list is a
-// list of devices, not a place to explain each one's silence. The reason
-// still lives on the device page, where the person went to ask.
-function deviceSummary(device: PairedDevice): string {
+// What this device's state amounts to, in one sentence. Never rendered on
+// its own line: the row is a circle, a name and an info button, and this is
+// what the button reveals. A list of devices is not the place to explain
+// each one's silence to someone who did not ask.
+function deviceDetail(device: PairedDevice): string | null {
+  const statuses = deviceStore.getChannelStatuses(device.peer_device_id);
   const kind = connectedChannel(device);
-  if (!kind) return "";
-  return `${kind === "network" ? "Network" : "Bluetooth"} · connected`;
+  if (kind) return `${kind === "network" ? "Network" : "Bluetooth"} · connected`;
+
+  // Nothing is connected, so say why -- preferring whichever channel is
+  // actually switched on, since a channel the user turned off explains
+  // nothing about why the device is unreachable.
+  const candidate = statuses.find((status) => status.enabled && status.state.code) ?? statuses[0];
+  return candidate?.state.code
+    ? channelStatusText(candidate.state.code, device.display_name)
+    : null;
+}
+
+// Which row has its detail open. One at a time: these are one-line answers
+// to "what about this one", not a panel to leave hanging open.
+const detailOpen = ref<string | null>(null);
+
+function toggleDetail(peerDeviceId: string) {
+  detailOpen.value = detailOpen.value === peerDeviceId ? null : peerDeviceId;
 }
 
 // Each row shaped once, rather than asking the store the same question from
-// two places in the template. `summary` being empty is what decides whether
-// the second line renders at all.
+// several places in the template.
 const renderLists = computed(() => ({
   devices: deviceStore.pairedDevices.map((device) => ({
     device,
     connected: connectedChannel(device) !== null,
-    summary: deviceSummary(device),
+    detail: deviceDetail(device),
+    detailShown: detailOpen.value === device.peer_device_id,
   })),
 }));
 
@@ -121,13 +137,30 @@ const renderFlags = computed(() => ({
           <span class="block truncate font-medium" data-testid="paired-device-name">
             {{ row.device.display_name }}
           </span>
+          <!-- Below the name rather than beside it: the detail is a sentence,
+               and a sentence in a row this narrow would push the name out. -->
           <span
-            v-if="row.summary"
-            class="block truncate text-[11px] text-[var(--fg-3)]"
-            data-testid="paired-device-summary"
+            v-if="row.detailShown"
+            class="block text-[11px] leading-snug text-[var(--fg-2)]"
+            data-testid="paired-device-detail"
           >
-            {{ row.summary }}
+            {{ row.detail }}
           </span>
+        </template>
+        <template #end>
+          <!-- Inside a RouterLink, so the click has to be stopped from
+               navigating: asking what a row means is not asking to open it. -->
+          <button
+            v-if="row.detail"
+            type="button"
+            class="shrink-0 text-[var(--fg-4)] hover:text-[var(--fg-2)]"
+            data-testid="paired-device-info"
+            :aria-label="row.detail"
+            :aria-expanded="row.detailShown"
+            @click.stop.prevent="toggleDetail(row.device.peer_device_id)"
+          >
+            <InformationCircleIcon class="size-4" />
+          </button>
         </template>
         <template #trailing><span class="text-sm opacity-50">›</span></template>
       </SettingsListItem>

@@ -302,8 +302,16 @@ describe("DeviceView channels", () => {
     const bluetoothRow = wrapper.findAll('[data-testid="channel-status-row"]')[1];
     expect(bluetoothRow.attributes("data-channel-state")).toBe("waiting");
     expect(bluetoothRow.text()).toContain("On, waiting");
-    // Shown without being asked for, and it names this machine rather than
-    // the peer.
+
+    // The row itself stays quiet. This reason used to expand on its own --
+    // it was the one state that did -- which put a sentence about this
+    // computer's radio on a page opened to read state.
+    expect(bluetoothRow.find('[data-testid="channel-status-reason"]').exists()).toBe(false);
+
+    // Asked for, it names this machine rather than the peer. That is the
+    // part worth protecting: the two claims are about different devices and
+    // only one is something the person can act on where they are standing.
+    await bluetoothRow.find('[data-testid="channel-status-info"]').trigger("click");
     expect(bluetoothRow.text()).toContain("Bluetooth is off on this computer");
     expect(bluetoothRow.text()).not.toContain("isn't nearby");
   });
