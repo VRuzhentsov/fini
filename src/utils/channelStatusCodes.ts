@@ -1,4 +1,4 @@
-import type { ChannelStatusCode } from "../stores/device";
+import type { ChannelRowState, ChannelStatusCode } from "../stores/device";
 
 // Mirrors the backend's ChannelStatusCode enum (device_connection::
 // channel, ADR-0003 revision). This is the ONLY place English text is
@@ -20,20 +20,17 @@ import type { ChannelStatusCode } from "../stores/device";
 export function channelStatusText(
   code: ChannelStatusCode,
   peerName?: string,
+  channelName?: string,
 ): string {
   // Falls back to a pronoun rather than an empty string: the sentence has
   // to stay grammatical when a caller has no name to hand.
   const peer = peerName?.trim() || "That device";
 
-  switch (code.code) {
-    case "network_unavailable":
+  switch (code) {
+    case "peer_not_on_network":
       return `${peer} isn't on this network`;
-    case "network_disabled":
-      return "Network is switched off for this device";
     case "bluetooth_not_supported":
       return "This computer can't use Bluetooth";
-    case "bluetooth_disabled":
-      return "Bluetooth is switched off for this device";
     case "bluetooth_adapter_off":
       // Carries the promise as well as the condition: this is a state the
       // person sits in rather than passes through, so the sentence has to
@@ -46,62 +43,24 @@ export function channelStatusText(
     case "bluetooth_dial_exhausted":
       return "Couldn't connect";
     case "connecting":
-      return "Connecting…";
     case "awaiting_first_ack":
       return "Connecting…";
-    case "ping_missed":
+    case "not_answering":
       return "Not answering";
+    // One sentence for both channels, with the name substituted in --
+    // which is why there is no longer a code per channel for it.
+    case "disabled":
+      return `${channelName ?? "This channel"} is switched off for this device`;
   }
 }
 
-// What a channel row reads as, derived from the backend's row state plus
-// the pair's own switch. Mirrors the redesign's own vocabulary rather than
-// the backend's, because the two answer different questions: the backend
-// says what is true of the link, this says what the person is looking at.
-export type ChannelRowState =
-  // The switch is off. Nothing is happening because the user said so.
-  | "off"
-  // The switch is on, and this machine's own radio is what's missing. Gray
-  // dot, and the switch sits in the on position with a gray track.
-  | "waiting"
-  // The switch is on and the radio is fine -- the other device is the one
-  // that can't be reached.
-  | "down"
-  // Dialling, or dialled but not yet proven.
-  | "connecting"
-  // Proven live, but the proof has since lapsed.
-  | "fading"
-  // Proven live right now.
-  | "connected";
+// The row's category comes from the backend now (`DeviceChannelStatus.status`).
+// `channelRowState` used to compute it here, which meant switching on
+// `bluetooth_adapter_off` and `bluetooth_not_supported` to decide "waiting"
+// versus "down" -- one channel's failure modes hard-coded into the one
+// function that is supposed to hold for every channel. A channel
+// categorises its own reasons now; see `ChannelReason::category`.
 
-export function channelRowState(
-  state:
-    | { state: "unconfigured"; code: ChannelStatusCode }
-    | { state: "configured"; code: ChannelStatusCode | null },
-  enabled: boolean,
-): ChannelRowState {
-  if (!enabled) return "off";
-
-  if (state.state === "unconfigured") {
-    switch (state.code.code) {
-      // The two codes that mean "this machine", not "the peer". Both read
-      // as waiting rather than down, because the switch is on and the thing
-      // that would make it work is here rather than somewhere else.
-      case "bluetooth_adapter_off":
-      case "bluetooth_not_supported":
-        return "waiting";
-      default:
-        return "down";
-    }
-  }
-
-  if (state.code === null) return "connected";
-  return state.code.code === "ping_missed" ? "fading" : "connecting";
-}
-
-// The one-line label beside the dot. Deliberately short and never
-// punctuated -- the reason lives in the info button next to it, and
-// duplicating it here would make a two-line row out of a one-line fact.
 export function channelRowLabel(row: ChannelRowState): string {
   switch (row) {
     case "off":

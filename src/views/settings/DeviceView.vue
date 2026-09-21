@@ -10,7 +10,6 @@ import ChannelSetupDialog from "../../components/settings/device/ChannelSetupDia
 import { useDeviceStore, type ChannelKind } from "../../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
-import { channelRowState } from "../../utils/channelStatusCodes";
 
 const route = useRoute();
 const router = useRouter();
@@ -48,7 +47,7 @@ const starredChannel = computed<ChannelKind | null>(
 // Anything actually carrying a proven link counts, primary or not.
 const anyChannelConnected = computed(() =>
   channelStatuses.value.some(
-    (status) => channelRowState(status.state, status.enabled) === "connected",
+    (status) => status.status === "connected",
   ),
 );
 

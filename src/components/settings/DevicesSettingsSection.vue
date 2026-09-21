@@ -5,7 +5,7 @@ import SettingsListGroup from "./SettingsListGroup.vue";
 import SettingsListItem from "./SettingsListItem.vue";
 import PairDeviceDialog from "./PairDeviceDialog.vue";
 import { useDeviceStore, type PairedDevice } from "../../stores/device";
-import { channelRowState, channelStatusText } from "../../utils/channelStatusCodes";
+import { channelStatusText } from "../../utils/channelStatusCodes";
 
 const props = defineProps<{
   // Bumped by the Settings search when someone picks "Add device". A counter
@@ -44,7 +44,7 @@ const incoming = computed(() => deviceStore.incomingRequests);
 function connectedChannel(device: PairedDevice): "network" | "bluetooth" | null {
   const live = deviceStore
     .getChannelStatuses(device.peer_device_id)
-    .find((status) => channelRowState(status.state, status.enabled) === "connected");
+    .find((status) => status.status === "connected");
   return live?.kind ?? null;
 }
 
@@ -60,9 +60,13 @@ function deviceDetail(device: PairedDevice): string | null {
   // Nothing is connected, so say why -- preferring whichever channel is
   // actually switched on, since a channel the user turned off explains
   // nothing about why the device is unreachable.
-  const candidate = statuses.find((status) => status.enabled && status.state.code) ?? statuses[0];
-  return candidate?.state.code
-    ? channelStatusText(candidate.state.code, device.display_name)
+  const candidate = statuses.find((status) => status.enabled && status.reason) ?? statuses[0];
+  return candidate?.reason
+    ? channelStatusText(
+        candidate.reason,
+        device.display_name,
+        candidate.kind === "network" ? "Network" : "Bluetooth",
+      )
     : null;
 }
 

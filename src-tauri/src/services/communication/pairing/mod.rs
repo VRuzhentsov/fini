@@ -75,8 +75,8 @@ use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // `communication::channel::ChannelKind` says, and the two enums are one
 // mechanical rename from being the same type.
 pub use channel_status::{
-    build_channel_statuses, ChannelKind, ChannelLiveness, ChannelStatus, ChannelStatusCode,
-    ChannelStatusInputs,
+    build_channel_statuses, BluetoothStatusCode, ChannelKind, ChannelLiveness, ChannelReason,
+    ChannelRowState, ChannelStatus, ChannelStatusCode, ChannelStatusInputs, NetworkStatusCode,
 };
 use types::DiscoveryRuntime;
 pub use types::{
@@ -790,7 +790,7 @@ impl DeviceConnectionState {
         &self,
         peer_device_id: &str,
         kind: ChannelKind,
-    ) -> Option<channel_status::ChannelStatusCode> {
+    ) -> Option<channel_status::ChannelReason> {
         let key = (peer_device_id.to_string(), kind);
         let guard = self.runtime.lock().ok()?;
         // Which amber applies is now read off the machine's state rather than
@@ -801,25 +801,27 @@ impl DeviceConnectionState {
         let code = match guard.peer_link_state.get(&key)? {
             link_state::LinkState::Live => return None,
             link_state::LinkState::Proving { .. } | link_state::LinkState::Authenticating { .. } => {
-                channel_status::ChannelStatusCode::AwaitingFirstAck
+                channel_status::ChannelReason::Any(
+                    channel_status::ChannelStatusCode::AwaitingFirstAck,
+                )
             }
             link_state::LinkState::Fading { .. } => {
                 // `count` stays sourced from the ack table: it is a measure of
                 // the evidence, not of the state, and the state has no reason
                 // to carry a number the transition never reads.
-                let count = guard
-                    .peer_channel_ack
-                    .get(&key)
-                    .map(|ack| ack.consecutive_missed_own_pings.max(ack.ticks_since_peer_ping))
-                    .unwrap_or(0);
-                channel_status::ChannelStatusCode::PingMissed { count }
+                // The count this used to carry was never rendered: the
+                // sentence is "Not answering" either way. It went with the
+                // rest of the payload nothing reads.
+                channel_status::ChannelReason::Any(channel_status::ChannelStatusCode::NotAnswering)
             }
             // Not a session state: the caller only reaches here once
             // `has_session_on` is known true, so this is a race between the two
             // reads. Reporting "waiting for the first ack" is the honest
             // answer for a session too young or too gone to have proven
             // anything.
-            _ => channel_status::ChannelStatusCode::AwaitingFirstAck,
+            _ => channel_status::ChannelReason::Any(
+                channel_status::ChannelStatusCode::AwaitingFirstAck,
+            ),
         };
         Some(code)
     }

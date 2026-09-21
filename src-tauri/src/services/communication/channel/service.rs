@@ -31,7 +31,7 @@ use async_trait::async_trait;
 
 use super::radio::{for_this_device, Radio};
 use crate::services::communication::pairing::{
-    channel_status, ChannelKind, ChannelStatusCode, DeviceConnectionState,
+    channel_status, ChannelKind, ChannelReason, DeviceConnectionState,
 };
 
 /// Everything one channel can do. Implemented once per `ChannelKind`.
@@ -116,7 +116,7 @@ pub trait ChannelService: Send + Sync {
     /// `enabled` is the pair's own switch, passed in because it is a fact
     /// about the row rather than about the channel; where it sits in each
     /// channel's ordering is the channel's business.
-    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelStatusCode>;
+    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelReason>;
 }
 
 /// The channel services for one `DeviceConnectionState`. One per kind.
@@ -201,7 +201,7 @@ impl ChannelService for NetworkChannelService {
         crate::services::communication::sync::commands::notify_sync_work_pending();
     }
 
-    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelStatusCode> {
+    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelReason> {
         channel_status::network_unconfigured_code(enabled, self.is_reachable(peer_device_id))
     }
 }
@@ -262,7 +262,7 @@ impl ChannelService for BluetoothChannelService {
         self.radio.dial_exhausted(peer_device_id)
     }
 
-    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelStatusCode> {
+    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelReason> {
         channel_status::bluetooth_unconfigured_code(
             self.radio.available(),
             enabled,

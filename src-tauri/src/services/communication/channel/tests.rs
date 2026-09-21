@@ -1347,7 +1347,7 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
         .expect("network liveness row");
     assert!(network_liveness_before.connected);
     assert!(
-        network_liveness_before.code.is_some(),
+        network_liveness_before.reason.is_some(),
         "must carry an amber code before the ping/ack proof completes, not None (green)"
     );
 
@@ -1385,7 +1385,7 @@ async fn a_freshly_claimed_session_starts_amber_and_becomes_green_once_pings_rou
         .find(|l| l.kind == crate::services::communication::pairing::ChannelKind::Network)
         .expect("network liveness row");
     assert!(
-        network_liveness_after.code.is_none(),
+        network_liveness_after.reason.is_none(),
         "the lightweight live-poll surface must also report green (code: None) once the \
          ping/ack proof completes, not stay frozen at the pre-proof amber snapshot"
     );

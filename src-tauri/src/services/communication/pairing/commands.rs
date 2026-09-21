@@ -26,7 +26,7 @@ use crate::services::communication::pairing::types::{
 };
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::pairing::{
-    build_channel_statuses, ChannelLiveness, ChannelStatus, ChannelStatusCode, ChannelStatusInputs,
+    build_channel_statuses, ChannelLiveness, ChannelReason, ChannelStatus, ChannelStatusInputs,
 };
 use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::ChannelKind;
@@ -1248,7 +1248,7 @@ pub fn device_connection_set_primary_channel(
 /// they flip the switch instead of up to a tick later. `false` is not an
 /// error and must not be shown as one: the channel stays on and starts by
 /// itself once the radio comes back -- that is the whole point of the
-/// "on, waiting" row state (`ChannelStatusCode::BluetoothAdapterOff`).
+/// "on, waiting" row state (`BluetoothStatusCode::AdapterOff`).
 ///
 /// Deliberately not called on any polling path. It opens a real discovery
 /// session; that is cheap once on a button press and wasteful every few
@@ -1335,10 +1335,10 @@ pub async fn device_connection_find_bluetooth_address(
 struct ChannelLivenessSnapshot {
     network_connected: bool,
     network_primary: bool,
-    network_code: Option<ChannelStatusCode>,
+    network_code: Option<ChannelReason>,
     bluetooth_connected: bool,
     bluetooth_primary: bool,
-    bluetooth_code: Option<ChannelStatusCode>,
+    bluetooth_code: Option<ChannelReason>,
 }
 
 fn channel_liveness_snapshot(state: &DeviceConnectionState, peer_device_id: &str) -> ChannelLivenessSnapshot {
@@ -1428,7 +1428,7 @@ pub fn device_connection_channel_statuses_impl(
 }
 
 /// The Device page's "click the Bluetooth row to try again" affordance
-/// (see `ChannelStatusCode::BluetoothDialExhausted`'s doc comment): a
+/// (see `BluetoothStatusCode::DialExhausted`'s doc comment): a
 /// no-op everywhere the dial loop wasn't exhausted, so the frontend doesn't
 /// need to guard the call. Takes only `state`, not `db` -- `ble::
 /// retry_bluetooth_dial` looks up the peer's dial address itself, off its
@@ -1475,13 +1475,13 @@ pub fn device_connection_channel_liveness_impl(
         ChannelLiveness {
             kind: ChannelKind::Network,
             connected: snapshot.network_connected,
-            code: snapshot.network_code,
+            reason: snapshot.network_code.map(|r| r.code().to_string()),
             dial_exhausted: false,
         },
         ChannelLiveness {
             kind: ChannelKind::Bluetooth,
             connected: snapshot.bluetooth_connected,
-            code: snapshot.bluetooth_code,
+            reason: snapshot.bluetooth_code.map(|r| r.code().to_string()),
             dial_exhausted: crate::services::communication::channel::service::service_for(
                 state,
                 ChannelKind::Bluetooth,

@@ -42,7 +42,8 @@ function channelRow(kind: "network" | "bluetooth", overrides: Record<string, unk
     enabled: true,
     primary: false,
     address: null,
-    state: { state: "configured", code: null },
+    status: "connected",
+    reason: null,
     ...overrides,
   };
 }
@@ -226,7 +227,7 @@ describe("DeviceView channels", () => {
       channelRow("network"),
       channelRow("bluetooth", {
         enabled: false,
-        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+        status: "down", reason: "bluetooth_disabled",
       }),
     ]);
 
@@ -250,7 +251,7 @@ describe("DeviceView channels", () => {
       channelRow("bluetooth", {
         configured: false,
         enabled: false,
-        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+        status: "down", reason: "bluetooth_disabled",
       }),
     ]);
 
@@ -269,7 +270,7 @@ describe("DeviceView channels", () => {
       channelRow("network"),
       channelRow("bluetooth", {
         enabled: false,
-        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+        status: "down", reason: "bluetooth_disabled",
       }),
     ]);
 
@@ -292,7 +293,7 @@ describe("DeviceView channels", () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
       channelRow("network"),
       channelRow("bluetooth", {
-        state: { state: "unconfigured", code: { code: "bluetooth_adapter_off" } },
+        status: "waiting", reason: "bluetooth_adapter_off",
       }),
     ]);
 
@@ -320,7 +321,7 @@ describe("DeviceView channels", () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
       channelRow("network"),
       channelRow("bluetooth", {
-        state: { state: "unconfigured", code: { code: "bluetooth_peer_not_nearby" } },
+        status: "down", reason: "bluetooth_peer_not_nearby",
       }),
     ]);
 

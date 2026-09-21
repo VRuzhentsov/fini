@@ -23,14 +23,14 @@ interface PeerSessionDebugStatus {
   peer_session_count: number;
 }
 
-interface ChannelStatusCode {
-  code: string;
-}
-
 interface ChannelStatus {
   kind: 'network' | 'bluetooth';
   primary: boolean;
-  state: { state: 'unconfigured'; code: ChannelStatusCode } | { state: 'configured'; code: ChannelStatusCode | null };
+  // The category, straight from the backend. Green is `connected` -- the
+  // ping/ack proof having completed -- rather than a shape the test has to
+  // decode for itself.
+  status: 'off' | 'waiting' | 'down' | 'connecting' | 'fading' | 'connected';
+  reason: string | null;
 }
 
 /**
@@ -247,7 +247,7 @@ export async function waitForGreenChannel(
       peerDeviceId,
     });
     const bluetooth = statuses.find((status) => status.kind === 'bluetooth');
-    return (bluetooth?.state.state === 'configured' && bluetooth.state.code === null) || false;
+    return bluetooth?.status === 'connected' || false;
   }, timeoutMs, 1_000);
 }
 

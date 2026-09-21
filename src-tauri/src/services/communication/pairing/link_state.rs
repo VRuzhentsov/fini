@@ -26,7 +26,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::channel_status::ChannelStatusCode;
+use super::channel_status::{BluetoothStatusCode, ChannelReason, ChannelStatusCode, NetworkStatusCode};
 
 /// How long a lapsed liveness proof is tolerated before the link is torn down.
 ///
@@ -63,7 +63,7 @@ pub(crate) enum LinkState {
     /// Preconditions for this channel aren't met: no adapter, disabled for
     /// this pair, no stored address, not OS-bonded, no network presence.
     /// Nothing to attempt until that changes.
-    Unavailable { reason: ChannelStatusCode },
+    Unavailable { reason: ChannelReason },
     /// Eligible, nothing in flight. `retry_at` carries dial backoff: `Some`
     /// means "eligible, but not before this instant".
     Idle { retry_at: Option<Instant> },
@@ -89,7 +89,7 @@ pub(crate) enum LinkState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LinkEvent {
     /// Preconditions are no longer met (and why).
-    PreconditionsLost { reason: ChannelStatusCode },
+    PreconditionsLost { reason: ChannelReason },
     /// Preconditions are met again.
     PreconditionsMet,
     /// The caller decided to dial and has started doing so.
@@ -280,14 +280,14 @@ mod tests {
         let start = t0();
         let (state, effects) = LinkState::Live.apply(
             LinkEvent::PreconditionsLost {
-                reason: ChannelStatusCode::BluetoothDisabled,
+                reason: ChannelReason::Any(ChannelStatusCode::Disabled),
             },
             start,
         );
         assert_eq!(
             state,
             LinkState::Unavailable {
-                reason: ChannelStatusCode::BluetoothDisabled
+                reason: ChannelReason::Any(ChannelStatusCode::Disabled)
             }
         );
         assert_eq!(effects, vec![LinkEffect::TearDownSession]);
@@ -298,7 +298,7 @@ mod tests {
         let start = t0();
         let (_, effects) = LinkState::Idle { retry_at: None }.apply(
             LinkEvent::PreconditionsLost {
-                reason: ChannelStatusCode::BluetoothNoAddress,
+                reason: ChannelReason::Bluetooth(BluetoothStatusCode::NoAddress),
             },
             start,
         );
@@ -348,7 +348,7 @@ mod tests {
             LinkState::Idle { retry_at: None },
             LinkState::GaveUp { since: start },
             LinkState::Unavailable {
-                reason: ChannelStatusCode::NetworkUnavailable,
+                reason: ChannelReason::Network(NetworkStatusCode::PeerNotOnNetwork),
             },
         ] {
             let (next, effects) = state.apply(LinkEvent::ProofLapsed, start);
@@ -365,7 +365,7 @@ mod tests {
         let start = t0();
         let states = [
             LinkState::Unavailable {
-                reason: ChannelStatusCode::BluetoothDisabled,
+                reason: ChannelReason::Any(ChannelStatusCode::Disabled),
             },
             LinkState::Idle { retry_at: None },
             LinkState::Dialing { since: start },
@@ -377,7 +377,7 @@ mod tests {
         ];
         let events = [
             LinkEvent::PreconditionsLost {
-                reason: ChannelStatusCode::BluetoothDisabled,
+                reason: ChannelReason::Any(ChannelStatusCode::Disabled),
             },
             LinkEvent::PreconditionsMet,
             LinkEvent::DialStarted,

@@ -4,7 +4,7 @@ import { StarIcon as StarSolid } from "@heroicons/vue/24/solid";
 import { StarIcon as StarOutline, InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./ChannelIcon.vue";
 import type { DeviceChannelStatus } from "../../../stores/device";
-import { channelRowLabel, channelRowState, channelStatusText } from "../../../utils/channelStatusCodes";
+import { channelRowLabel, channelStatusText } from "../../../utils/channelStatusCodes";
 
 const props = defineProps<{
   status: DeviceChannelStatus;
@@ -36,15 +36,20 @@ const CHANNEL_NAME = { network: "Network", bluetooth: "Bluetooth" } as const;
 // to see state. The info button is the only way in.
 const reasonOpen = ref(false);
 
-const rowState = computed(() => channelRowState(props.status.state, enabled.value));
+// Straight from the backend. This used to be recomputed here from the
+// status code, which is how one channel's failure modes ended up deciding
+// a generic row's colour.
+const rowState = computed(() => props.status.status);
 const label = computed(() => channelRowLabel(rowState.value));
 
 // The row's own reason, in the person's words. `off` says nothing: the
 // user turned it off and does not need that explained back to them.
 const reason = computed(() => {
   if (rowState.value === "off") return null;
-  const code = props.status.state.code;
-  return code ? channelStatusText(code, props.peerName) : null;
+  const code = props.status.reason;
+  return code
+    ? channelStatusText(code, props.peerName, CHANNEL_NAME[props.status.kind])
+    : null;
 });
 
 // Moving the star is a connected-channel action: pinning a dead row would
@@ -57,11 +62,10 @@ const reason = computed(() => {
 // choice had been forgotten, when reconnecting will honour it.
 const canPin = computed(() => rowState.value === "connected" || rowState.value === "fading");
 
-const retryable = computed(
-  () =>
-    props.status.state.state === "unconfigured" &&
-    props.status.state.code.code === "bluetooth_dial_exhausted",
-);
+// Asks the reason, not the channel. The row renders both channels, so
+// matching a Bluetooth code here made a generic component carry one
+// channel's vocabulary.
+const retryable = computed(() => props.status.reason === "bluetooth_dial_exhausted");
 
 // Unlinking is only offered for a channel that exists, and only once it is
 // off. Shown disabled rather than hidden while it is on, so the control is

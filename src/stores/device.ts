@@ -16,40 +16,39 @@ export interface PairedDevice {
   // primary flag and learned address.
 }
 
-// Mirrors the backend's ChannelStatusCode (communication::pairing::channel_status,
-// ADR-0003 revision) -- a machine-readable reason, not display text. See
-// `../utils/channelStatusCodes.ts` for the code -> English lookup (the
-// only place text is attached to these; swap that file for a locale-aware
-// lookup when i18n lands).
-export type ChannelStatusCode =
-  | { code: "network_unavailable" }
-  | { code: "network_disabled" }
-  | { code: "bluetooth_not_supported" }
-  | { code: "bluetooth_disabled" }
-  // The channel is on for this pair but this machine's own radio refused
-  // the last time it was used -- the "on, waiting" row. Not a failure: the
-  // channel stays on and starts by itself once the radio comes back.
-  | { code: "bluetooth_adapter_off" }
-  | { code: "bluetooth_no_address" }
-  | { code: "bluetooth_peer_not_nearby" }
-  | { code: "bluetooth_dial_exhausted" }
-  | { code: "connecting" }
-  | { code: "awaiting_first_ack" }
-  | { code: "ping_missed"; count: number };
+// The category: what a channel row *is*. Mirrors the backend's
+// `ChannelRowState`, and it is the only thing the dot's colour comes from.
+//
+// It used to be derived here, by switching on Bluetooth codes to decide
+// whether a row was "waiting" or "down". That put one channel's failure
+// modes inside the one piece of code meant to work for every channel. The
+// channel categorises its own reasons now and sends the answer.
+export type ChannelRowState =
+  | "off"
+  | "waiting"
+  | "down"
+  | "connecting"
+  | "fading"
+  | "connected";
 
-// Mirrors the backend's RowState (communication::pairing::channel_status, ADR-0003
-// revision): shared shape between the Network and Bluetooth rows. Gray ->
-// amber -> green, per row, independent of which channel is primary:
-// - unconfigured: local preconditions aren't met at all (gray); `code` is
-//   why.
-// - configured, code present: preconditions met and a session is claimed,
-//   but the bidirectional ping/ack proof isn't currently complete (amber).
-// - configured, code null: the ping/ack proof is currently complete
-//   (green). "Currently" -- this isn't sticky, a lapsed proof falls back
-//   to amber on its own even without the channel disconnecting.
-export type DeviceChannelRowState =
-  | { state: "unconfigured"; code: ChannelStatusCode }
-  | { state: "configured"; code: ChannelStatusCode | null };
+// The stable key for the sentence behind the information button, or null
+// when the row has nothing to explain. Never rendered as-is: see
+// `../utils/channelStatusCodes.ts` for the key -> English lookup, which is
+// the only place text is attached and the seam a locale table replaces.
+export type ChannelStatusCode =
+  // Reasons that read the same on any channel.
+  | "disabled"
+  | "connecting"
+  | "awaiting_first_ack"
+  | "not_answering"
+  // Network's own.
+  | "peer_not_on_network"
+  // Bluetooth's own.
+  | "bluetooth_not_supported"
+  | "bluetooth_adapter_off"
+  | "bluetooth_no_address"
+  | "bluetooth_peer_not_nearby"
+  | "bluetooth_dial_exhausted";
 
 export type ChannelKind = "network" | "bluetooth";
 
@@ -68,7 +67,10 @@ export interface DeviceChannelStatus {
   // Where the channel last reached the peer. Diagnostics only; nothing
   // dials it.
   address: string | null;
-  state: DeviceChannelRowState;
+  // The category, and the only input to the row's colour.
+  status: ChannelRowState;
+  // The message key, or null when there is nothing to explain.
+  reason: ChannelStatusCode | null;
 }
 
 export interface DiscoveredDevice {
@@ -595,28 +597,46 @@ export const useDeviceStore = defineStore("device", () => {
   // it can't intercept that case.
   function applyLiveness(
     status: DeviceChannelStatus,
-    entry: { connected: boolean; code: ChannelStatusCode | null; dial_exhausted: boolean } | undefined,
+    entry: { connected: boolean; reason: ChannelStatusCode | null; dial_exhausted: boolean } | undefined,
   ): DeviceChannelStatus {
     if (!entry) return status;
     // A channel that is off, or was never set up, has no live state to
     // patch: its row is what the user chose, not what a radio is doing.
     if (!status.enabled) return status;
-    if (status.state.state === "unconfigured" && !entry.connected) {
+    // Already reporting a reason of its own and still not connected: the
+    // full status knows more than this poll does, so leave it alone.
+    if (status.reason !== null && !entry.connected) {
       return status;
     }
     if (!entry.connected && entry.dial_exhausted) {
-      return {
-        ...status,
-        state: { state: "unconfigured", code: { code: "bluetooth_dial_exhausted" } },
-      };
+      return { ...status, status: "down", reason: "bluetooth_dial_exhausted" };
     }
+    if (!entry.connected) {
+      return { ...status, status: "connecting", reason: "connecting" };
+    }
+    // Connected: the reason, if any, is the proof state -- and it carries
+    // its own category, so this no longer decides which one applies.
     return {
       ...status,
-      state: {
-        state: "configured",
-        code: entry.connected ? entry.code : { code: "connecting" },
-      },
+      status: entry.reason === null ? "connected" : categoryOf(entry.reason),
+      reason: entry.reason,
     };
+  }
+
+  // The one place the frontend maps a reason to a category, and it exists
+  // only because the liveness poll is a lighter shape that carries the key
+  // without the category. Everything else reads `status` straight from the
+  // backend.
+  function categoryOf(reason: ChannelStatusCode): ChannelRowState {
+    switch (reason) {
+      case "not_answering":
+        return "fading";
+      case "awaiting_first_ack":
+      case "connecting":
+        return "connecting";
+      default:
+        return "down";
+    }
   }
 
   // On Linux, `device_connection_channel_statuses` re-checks OS bond
@@ -648,7 +668,7 @@ export const useDeviceStore = defineStore("device", () => {
           kind: "network" | "bluetooth";
           connected: boolean;
           primary: boolean;
-          code: ChannelStatusCode | null;
+          reason: ChannelStatusCode | null;
           dial_exhausted: boolean;
         }>
       >("device_connection_channel_liveness", { peerDeviceId });
@@ -1540,7 +1560,7 @@ export const useDeviceStore = defineStore("device", () => {
     // so a peer whose page has never been opened simply has none cached and
     // falls through to the presence check below, exactly as before.
     const provenLink = (channelStatusesByPeer.value[device.peer_device_id] ?? []).some(
-      (channel) => channel.state.state === "configured" && channel.state.code === null,
+      (channel) => channel.status === "connected",
     );
     if (provenLink) return true;
 

@@ -22,108 +22,139 @@ pub struct BluetoothChannelMetadata {
     pub os_paired: bool,
 }
 
-/// Machine-readable reason code for a channel row's current state.
-/// ADR-0003 revision: replaces every free-text `reason: String` the row
-/// shapes used to carry. The frontend looks each variant up in its own
-/// code -> display-text map (`channelStatusCodes.ts`) to render the "i"
-/// icon's tooltip -- the variant name (its serialized `code` tag) is the
-/// stable key a future locale file keys translations off of; nothing here
-/// is meant to be shown to a user directly.
+/// What a channel row *is*, independent of which channel it is.
+///
+/// The category, and the only thing that decides the colour of the dot —
+/// deliberately not named as a colour, because the name has to survive a
+/// redesign that repaints them.
+///
+/// This used to be derived in the frontend, by switching on Bluetooth
+/// codes: `bluetooth_adapter_off` and `bluetooth_not_supported` meant
+/// "waiting", everything else meant "down". So the one piece of code that
+/// is supposed to be channel-agnostic was the piece that had to know one
+/// channel's failure modes, and a third channel would have had to teach it
+/// more. A channel categorises its own reasons now; only the category
+/// crosses the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "code", rename_all = "snake_case")]
-pub enum ChannelStatusCode {
-    /// Network row, `Unconfigured`: no discovery presence for this peer.
-    NetworkUnavailable,
-    /// Network row, `Unconfigured`: switched off for this pair, the
-    /// counterpart to `BluetoothDisabled`. Checked before presence, so a
-    /// channel the user turned off says so rather than blaming the peer's
-    /// network.
-    NetworkDisabled,
-    /// Bluetooth row, `Unconfigured`: no adapter registered on this
-    /// platform at all -- `Radio::available` is false, so no build of this app
-    /// on this OS could use it.
-    BluetoothNotSupported,
-    /// Bluetooth row, `Unconfigured`: disabled for this pair.
-    BluetoothDisabled,
-    /// Bluetooth row, `Unconfigured`: the channel is on for this pair, but
-    /// the *local* radio refused the last time this process tried to use it
-    /// -- Bluetooth switched off at the OS level, or an adapter that
-    /// reports itself present and then declines to scan.
-    ///
-    /// This is the one `Unconfigured` code the user is expected to sit in
-    /// deliberately: switching a channel on while the radio is off does not
-    /// fail and does not snap the switch back, it parks here and starts by
-    /// itself once the condition clears. See
-    /// `ble::is_bluetooth_adapter_unavailable`.
-    ///
-    /// Ordered before `BluetoothPeerNotNearby` on purpose, and the ordering
-    /// is load-bearing rather than cosmetic: with our own radio off we have
-    /// not looked for the peer at all, so reporting "isn't nearby" would be
-    /// a statement we have no evidence for, about the wrong device.
-    BluetoothAdapterOff,
-    /// Bluetooth row, `Unconfigured`: enabled, but no address/reconnect
-    /// metadata stored yet.
-    BluetoothNoAddress,
-    /// Bluetooth row, `Unconfigured`: has metadata, but the OS isn't
-    /// currently bonded to it.
-    /// ADR-0006 slice 4. This slot used to be `BluetoothNotOsPaired`, and
-    /// the reuse is deliberate: dropping the bond freed a reason, and "the
-    /// peer is not advertising" is the genuine precondition that replaces
-    /// it. Unlike the bond, this one is something the user can see and act
-    /// on -- the other device is off, out of range, or has Bluetooth
-    /// disabled.
-    BluetoothPeerNotNearby,
-    /// Bluetooth row, `Unconfigured`: preconditions are otherwise met, but
-    /// automatic dial retries gave up after `ble::AUTO_RETRY_WINDOW` of no
-    /// successful auth (real device evidence: a flaky link that connects,
-    /// negotiates MTU, completes service discovery, then dies before the
-    /// app-level Auth reply -- repeatedly, for minutes, with an indefinite
-    /// "Still connecting..." the only visible symptom). Distinct from every
-    /// other `Unconfigured` code: those describe a *precondition* that
-    /// isn't met; this one means the precondition *was* met and dialling
-    /// genuinely tried and failed. The row stays clickable in this state --
-    /// see `ble::retry_bluetooth_dial` -- specifically to resume trying.
-    BluetoothDialExhausted,
-    /// `Configured`, amber: preconditions are met but no session is
-    /// claimed on this channel yet -- a dial is presumably in flight (or
-    /// about to be). Distinct from `AwaitingFirstAck`: that means a session
-    /// *is* claimed and the ping/ack proof just hasn't completed its first
-    /// round yet, which the frontend surfaces as "Connected -- waiting for
-    /// the first ping/ack exchange." Reporting that same text here would be
-    /// actively misleading for the common case of a presenced peer whose
-    /// WebSocket port is unreachable -- no session has ever existed, let
-    /// alone one about to prove itself.
+#[serde(rename_all = "snake_case")]
+pub enum ChannelRowState {
+    /// The switch is off. Nothing is happening because the person said so.
+    Off,
+    /// On, and what is missing is on *this* machine — so it is not a
+    /// failure, and the channel starts by itself once the condition clears.
+    Waiting,
+    /// On, this machine is fine, and the other device is out of reach.
+    Down,
+    /// Dialling, or dialled and not yet proven.
     Connecting,
-    /// `Configured`, amber: a session is claimed on this channel but the
-    /// bidirectional ping/ack proof hasn't completed even once yet.
-    AwaitingFirstAck,
-    /// `Configured`, amber: the bidirectional ping/ack proof was complete
-    /// at some point but has since lapsed -- `count` is the number of
-    /// consecutive missed cycles on whichever side (own outbound or the
-    /// peer's inbound) is currently behind. See `ChannelAckState`.
-    PingMissed { count: u32 },
+    /// Proven live, and the proof has since lapsed.
+    Fading,
+    /// Proven live right now.
+    Connected,
 }
 
-/// Unified per-row status shape (ADR-0003 revision): each channel
-/// supplies its own condition logic for which state applies (see
-/// `build_channel_statuses`), but the UI only ever has to render these
-/// two cases, for either row. There is no separate "Live" case any more --
-/// with both channels potentially connected and green at once, "which
-/// one is carrying real traffic" is `ChannelStatus::primary`, orthogonal
-/// to a row's own gray/amber/green state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum RowState {
-    /// Gray: local preconditions for this channel aren't met at all --
-    /// nothing to prove yet, it simply can't carry a session right now.
-    Unconfigured { code: ChannelStatusCode },
-    /// Amber (`code: Some`) or green (`code: None`): preconditions are met
-    /// and a session is claimed on this channel. Green requires the
-    /// bidirectional ping/ack proof to be currently complete
-    /// (`DeviceConnectionState::channel_reliable`) -- "continuously
-    /// re-proven," not sticky, so a lapsed proof falls back to amber on its
-    /// own without the channel having disconnected.
-    Configured { code: Option<ChannelStatusCode> },
+/// Reasons that read the same on every channel.
+///
+/// `Disabled` replaces what used to be `NetworkDisabled` and
+/// `BluetoothDisabled`: two codes for one sentence with the channel's name
+/// substituted into it, which is a thing the wording layer can do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelStatusCode {
+    /// Switched off for this pair.
+    Disabled,
+    /// A session is being established.
+    Connecting,
+    /// Connected, and the first ping/ack proof has not completed yet.
+    AwaitingFirstAck,
+    /// The proof was complete and has lapsed.
+    NotAnswering,
+}
+
+/// Why the Network channel cannot reach this peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkStatusCode {
+    /// No discovery presence for this peer.
+    PeerNotOnNetwork,
+}
+
+/// Why the Bluetooth channel cannot reach this peer.
+///
+/// The ordering these are produced in is load-bearing rather than
+/// cosmetic — see `bluetooth_unconfigured_code`. Each one is a claim about
+/// a *different machine*, and the wrong order states something confident
+/// about the wrong device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BluetoothStatusCode {
+    /// No adapter on this platform at all: no build of this app on this OS
+    /// could use it.
+    NotSupported,
+    /// The local radio refused the last time this process tried to use it —
+    /// switched off at the OS level, or present and declining to scan.
+    AdapterOff,
+    /// Enabled, with no address learned yet.
+    NoAddress,
+    /// Not heard advertising recently: off, out of range, or its own
+    /// Bluetooth is disabled.
+    PeerNotNearby,
+    /// Dialling tried and gave up. The one reason a person can act on by
+    /// asking for another try.
+    DialExhausted,
+}
+
+/// One reason, whichever kind it is.
+///
+/// The type split is what the channels themselves work in; this is how a
+/// reason travels once it has been decided. Each variant knows two things:
+/// the category it belongs to, and the stable key the wording is looked up
+/// by — so adding a reason cannot forget to say which colour it implies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelReason {
+    Any(ChannelStatusCode),
+    Network(NetworkStatusCode),
+    Bluetooth(BluetoothStatusCode),
+}
+
+impl ChannelReason {
+    /// The category this reason puts the row in.
+    pub fn category(self) -> ChannelRowState {
+        match self {
+            ChannelReason::Any(ChannelStatusCode::Disabled) => ChannelRowState::Off,
+            ChannelReason::Any(ChannelStatusCode::Connecting)
+            | ChannelReason::Any(ChannelStatusCode::AwaitingFirstAck) => ChannelRowState::Connecting,
+            ChannelReason::Any(ChannelStatusCode::NotAnswering) => ChannelRowState::Fading,
+            ChannelReason::Network(NetworkStatusCode::PeerNotOnNetwork) => ChannelRowState::Down,
+            // The two that are about this machine rather than the peer. The
+            // switch is on and the missing piece is here, so the person is
+            // waiting rather than looking at a failure.
+            ChannelReason::Bluetooth(BluetoothStatusCode::NotSupported)
+            | ChannelReason::Bluetooth(BluetoothStatusCode::AdapterOff) => ChannelRowState::Waiting,
+            ChannelReason::Bluetooth(_) => ChannelRowState::Down,
+        }
+    }
+
+    /// The stable key the wording is keyed by. Chosen so a locale table can
+    /// translate without the backend changing.
+    pub fn code(self) -> &'static str {
+        match self {
+            ChannelReason::Any(ChannelStatusCode::Disabled) => "disabled",
+            ChannelReason::Any(ChannelStatusCode::Connecting) => "connecting",
+            ChannelReason::Any(ChannelStatusCode::AwaitingFirstAck) => "awaiting_first_ack",
+            ChannelReason::Any(ChannelStatusCode::NotAnswering) => "not_answering",
+            ChannelReason::Network(NetworkStatusCode::PeerNotOnNetwork) => "peer_not_on_network",
+            ChannelReason::Bluetooth(BluetoothStatusCode::NotSupported) => "bluetooth_not_supported",
+            ChannelReason::Bluetooth(BluetoothStatusCode::AdapterOff) => "bluetooth_adapter_off",
+            ChannelReason::Bluetooth(BluetoothStatusCode::NoAddress) => "bluetooth_no_address",
+            ChannelReason::Bluetooth(BluetoothStatusCode::PeerNotNearby) => "bluetooth_peer_not_nearby",
+            ChannelReason::Bluetooth(BluetoothStatusCode::DialExhausted) => "bluetooth_dial_exhausted",
+        }
+    }
+
+    /// Whether this is the one reason a person can act on by asking for
+    /// another try. Read by the row instead of matching a Bluetooth code,
+    /// which is how the retry button used to decide.
+    pub fn retryable(self) -> bool {
+        matches!(self, ChannelReason::Bluetooth(BluetoothStatusCode::DialExhausted))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,7 +177,17 @@ pub struct ChannelStatus {
     /// Where this channel last reached the peer -- diagnostics only, and
     /// `None` until it has reached it once. Nothing dials it (ADR-0006).
     pub address: Option<String>,
-    pub state: RowState,
+    /// The category: what this row is, and the only thing the colour is
+    /// decided from.
+    pub status: ChannelRowState,
+    /// The stable key for the sentence behind the information button, or
+    /// `None` when the row has nothing to explain. Never shown as-is.
+    ///
+    /// Two fields rather than one code carrying both jobs: the category is
+    /// the same question on every channel, the sentence is not, and mixing
+    /// them is what forced the frontend to learn Bluetooth's failure modes
+    /// in order to pick a colour.
+    pub reason: Option<String>,
 }
 
 /// Lightweight, in-memory-only per-channel liveness -- the same signal
@@ -166,11 +207,15 @@ pub struct ChannelStatus {
 /// in that case too (nothing to say without the heavier check that knows
 /// *why*); the frontend leaves `state` as last-known rather than inferring
 /// `Unconfigured` from this alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelLiveness {
     pub kind: ChannelKind,
     pub connected: bool,
-    pub code: Option<ChannelStatusCode>,
+    /// The stable key for the sentence, matching `ChannelStatus::reason`.
+    /// A key rather than a typed code because this shape is a DTO for a
+    /// poll the frontend reads directly; the typed enums are what the
+    /// channels decide in.
+    pub reason: Option<String>,
     /// `ble::is_bluetooth_dial_exhausted` -- always `false` for the network
     /// row. A P1 review finding: without this, the 5s live-poll timer
     /// (`refreshLiveConnectedState`, chosen specifically to avoid this
@@ -234,8 +279,8 @@ pub struct ChannelStatusInputs {
     /// decision tables those answers come from are
     /// `network_unconfigured_code` and `bluetooth_unconfigured_code` below,
     /// kept pure so their ordering stays testable without a radio.
-    pub network_unconfigured_code: Option<ChannelStatusCode>,
-    pub bluetooth_unconfigured_code: Option<ChannelStatusCode>,
+    pub network_unconfigured_code: Option<ChannelReason>,
+    pub bluetooth_unconfigured_code: Option<ChannelReason>,
     /// Whether a session is currently claimed on this channel --
     /// `DeviceConnectionState::has_session_on`.
     pub network_connected: bool,
@@ -248,8 +293,8 @@ pub struct ChannelStatusInputs {
     /// `DeviceConnectionState::channel_liveness_code` -- the amber
     /// reason, or `None` for green. Only consulted when `*_connected` is
     /// true.
-    pub network_code: Option<ChannelStatusCode>,
-    pub bluetooth_code: Option<ChannelStatusCode>,
+    pub network_code: Option<ChannelReason>,
+    pub bluetooth_code: Option<ChannelReason>,
 }
 
 pub fn build_channel_statuses(inputs: ChannelStatusInputs) -> Vec<ChannelStatus> {
@@ -277,7 +322,8 @@ pub fn build_channel_statuses(inputs: ChannelStatusInputs) -> Vec<ChannelStatus>
             enabled: network_enabled,
             primary: network_primary,
             address: network_address,
-            state: row_state(network_unconfigured_code, network_connected, network_code),
+            status: row_status(network_unconfigured_code, network_connected, network_code).0,
+            reason: row_status(network_unconfigured_code, network_connected, network_code).1,
         },
         ChannelStatus {
             kind: ChannelKind::Bluetooth,
@@ -285,53 +331,43 @@ pub fn build_channel_statuses(inputs: ChannelStatusInputs) -> Vec<ChannelStatus>
             enabled: bluetooth_enabled,
             primary: bluetooth_primary,
             address: bluetooth_address,
-            state: row_state(bluetooth_unconfigured_code, bluetooth_connected, bluetooth_code),
+            status: row_status(bluetooth_unconfigured_code, bluetooth_connected, bluetooth_code).0,
+            reason: row_status(bluetooth_unconfigured_code, bluetooth_connected, bluetooth_code).1,
         },
     ]
 }
 
-/// Shared shape for both rows: given whether (and why) a channel isn't
-/// configured at all, and if it is, whether a session is claimed and what
-/// amber code (if any) applies, decide which `RowState` case applies.
-/// Transport-specific work stays in each channel's own "why unconfigured"
-/// logic (`bluetooth_unconfigured_code`, inline for Network above) -- this
-/// function only knows the shared shape.
-fn row_state(
-    unconfigured_code: Option<ChannelStatusCode>,
+/// Shared shape for both rows: given whether (and why) a channel cannot
+/// carry a session, and if it can, whether one is claimed and proven,
+/// decide the category and the sentence.
+///
+/// It no longer decides *which* category a reason implies — the reason
+/// does, via `ChannelReason::category`. This only knows the shape every
+/// channel has in common.
+fn row_status(
+    unconfigured: Option<ChannelReason>,
     connected: bool,
-    code: Option<ChannelStatusCode>,
-) -> RowState {
-    if let Some(code) = unconfigured_code {
-        return RowState::Unconfigured { code };
+    code: Option<ChannelReason>,
+) -> (ChannelRowState, Option<String>) {
+    if let Some(reason) = unconfigured {
+        return (reason.category(), Some(reason.code().to_string()));
     }
     if !connected {
-        return RowState::Configured {
-            code: Some(ChannelStatusCode::Connecting),
-        };
+        let reason = ChannelReason::Any(ChannelStatusCode::Connecting);
+        return (reason.category(), Some(reason.code().to_string()));
     }
-    RowState::Configured { code }
+    match code {
+        Some(reason) => (reason.category(), Some(reason.code().to_string())),
+        None => (ChannelRowState::Connected, None),
+    }
 }
 
-/// ADR-0006 replaced the two arms that used to live here. A stored address
-/// and a live OS bond were both preconditions; neither is any more, since a
-/// peer is found by its advertisement and identified by the `Auth` frame.
-///
-/// In their place is one real precondition: whether the peer is advertising
-/// at all. Ordered after `enabled` and before `dial_exhausted` on purpose --
-/// a peer that was never in range has not "failed to connect after a minute
-/// of trying", and saying so would send the user to retry a dial that has
-/// nothing to dial.
-/// Why the Network channel cannot reach a peer.
-///
-/// `enabled` is checked before presence deliberately: a channel the person
-/// switched off must say so rather than blaming the peer's network, which
-/// is a claim about the wrong machine and one they cannot act on.
-pub fn network_unconfigured_code(enabled: bool, present: bool) -> Option<ChannelStatusCode> {
+pub fn network_unconfigured_code(enabled: bool, present: bool) -> Option<ChannelReason> {
     if !enabled {
-        return Some(ChannelStatusCode::NetworkDisabled);
+        return Some(ChannelReason::Any(ChannelStatusCode::Disabled));
     }
     if !present {
-        return Some(ChannelStatusCode::NetworkUnavailable);
+        return Some(ChannelReason::Network(NetworkStatusCode::PeerNotOnNetwork));
     }
     None
 }
@@ -339,21 +375,21 @@ pub fn network_unconfigured_code(enabled: bool, present: bool) -> Option<Channel
 pub fn bluetooth_unconfigured_code(
     implemented: bool, enabled: bool, adapter_available: bool, peer_nearby: bool,
     dial_exhausted: bool,
-) -> Option<ChannelStatusCode> {
+) -> Option<ChannelReason> {
     if !implemented {
-        return Some(ChannelStatusCode::BluetoothNotSupported);
+        return Some(ChannelReason::Bluetooth(BluetoothStatusCode::NotSupported));
     }
     if !enabled {
-        return Some(ChannelStatusCode::BluetoothDisabled);
+        return Some(ChannelReason::Any(ChannelStatusCode::Disabled));
     }
     if !adapter_available {
-        return Some(ChannelStatusCode::BluetoothAdapterOff);
+        return Some(ChannelReason::Bluetooth(BluetoothStatusCode::AdapterOff));
     }
     if !peer_nearby {
-        return Some(ChannelStatusCode::BluetoothPeerNotNearby);
+        return Some(ChannelReason::Bluetooth(BluetoothStatusCode::PeerNotNearby));
     }
     if dial_exhausted {
-        return Some(ChannelStatusCode::BluetoothDialExhausted);
+        return Some(ChannelReason::Bluetooth(BluetoothStatusCode::DialExhausted));
     }
     None
 }
@@ -460,15 +496,12 @@ mod tests {
     #[test]
     fn a_channel_with_no_session_reports_unconfigured_or_connecting() {
         let not_present = build_channel_statuses(ChannelStatusInputs {
-            network_unconfigured_code: Some(ChannelStatusCode::NetworkUnavailable),
+            network_unconfigured_code: Some(ChannelReason::Network(NetworkStatusCode::PeerNotOnNetwork)),
             ..ready_inputs()
         });
-        assert_eq!(
-            find(&not_present, ChannelKind::Network).state,
-            RowState::Unconfigured {
-                code: ChannelStatusCode::NetworkUnavailable
-            }
-        );
+        let row = find(&not_present, ChannelKind::Network);
+        assert_eq!(row.status, ChannelRowState::Down);
+        assert_eq!(row.reason.as_deref(), Some("peer_not_on_network"));
 
         // Present but not yet connected: not unconfigured (preconditions
         // are met), but no session claimed yet either -- a P1 review
@@ -477,12 +510,9 @@ mod tests {
         // proof is pending), or a peer whose WebSocket port is
         // permanently unreachable would misleadingly read as "connected."
         let presenced_only = build_channel_statuses(ready_inputs());
-        assert_eq!(
-            find(&presenced_only, ChannelKind::Network).state,
-            RowState::Configured {
-                code: Some(ChannelStatusCode::Connecting)
-            }
-        );
+        let row = find(&presenced_only, ChannelKind::Network);
+        assert_eq!(row.status, ChannelRowState::Connecting);
+        assert_eq!(row.reason.as_deref(), Some("connecting"));
     }
 
     /// ADR-0003 revision's core new behavior: a claimed session isn't green
@@ -503,11 +533,12 @@ mod tests {
         });
         let network = find(&statuses, ChannelKind::Network);
         let bluetooth = find(&statuses, ChannelKind::Bluetooth);
-        assert_eq!(network.state, RowState::Configured { code: None });
+        assert_eq!(network.status, ChannelRowState::Connected);
+        assert_eq!(network.reason, None);
         assert!(network.primary);
         assert_eq!(
-            bluetooth.state,
-            RowState::Configured { code: None },
+            bluetooth.status,
+            ChannelRowState::Connected,
             "bluetooth can be green while not primary"
         );
         assert!(!bluetooth.primary);
@@ -517,27 +548,21 @@ mod tests {
     fn a_connected_channel_awaiting_or_missing_ack_reports_amber() {
         let awaiting = build_channel_statuses(ChannelStatusInputs {
             network_connected: true,
-            network_code: Some(ChannelStatusCode::AwaitingFirstAck),
+            network_code: Some(ChannelReason::Any(ChannelStatusCode::AwaitingFirstAck)),
             ..ready_inputs()
         });
-        assert_eq!(
-            find(&awaiting, ChannelKind::Network).state,
-            RowState::Configured {
-                code: Some(ChannelStatusCode::AwaitingFirstAck)
-            }
-        );
+        let row = find(&awaiting, ChannelKind::Network);
+        assert_eq!(row.status, ChannelRowState::Connecting);
+        assert_eq!(row.reason.as_deref(), Some("awaiting_first_ack"));
 
         let lapsed = build_channel_statuses(ChannelStatusInputs {
             network_connected: true,
-            network_code: Some(ChannelStatusCode::PingMissed { count: 2 }),
+            network_code: Some(ChannelReason::Any(ChannelStatusCode::NotAnswering)),
             ..ready_inputs()
         });
-        assert_eq!(
-            find(&lapsed, ChannelKind::Network).state,
-            RowState::Configured {
-                code: Some(ChannelStatusCode::PingMissed { count: 2 })
-            }
-        );
+        let row = find(&lapsed, ChannelKind::Network);
+        assert_eq!(row.status, ChannelRowState::Fading);
+        assert_eq!(row.reason.as_deref(), Some("not_answering"));
     }
 
     /// The Bluetooth reasons, in the order they are checked.
@@ -559,31 +584,31 @@ mod tests {
             (
                 "no adapter on this platform at all outranks everything",
                 (false, false, false, false, true),
-                Some(ChannelStatusCode::BluetoothNotSupported),
+                Some(ChannelReason::Bluetooth(BluetoothStatusCode::NotSupported)),
             ),
             (
                 "a channel the person switched off has no business \
                  complaining about hardware",
                 (true, false, false, false, true),
-                Some(ChannelStatusCode::BluetoothDisabled),
+                Some(ChannelReason::Any(ChannelStatusCode::Disabled)),
             ),
             (
                 "with our own radio off nothing has scanned, so 'isn't \
                  nearby' would assert what we never looked for",
                 (true, true, false, false, true),
-                Some(ChannelStatusCode::BluetoothAdapterOff),
+                Some(ChannelReason::Bluetooth(BluetoothStatusCode::AdapterOff)),
             ),
             (
                 "a peer that was never in range has not failed to connect \
                  after a minute of trying",
                 (true, true, true, false, true),
-                Some(ChannelStatusCode::BluetoothPeerNotNearby),
+                Some(ChannelReason::Bluetooth(BluetoothStatusCode::PeerNotNearby)),
             ),
             (
                 "exhaustion means anything only once dialling was actually \
                  attempted, so it is checked last",
                 (true, true, true, true, true),
-                Some(ChannelStatusCode::BluetoothDialExhausted),
+                Some(ChannelReason::Bluetooth(BluetoothStatusCode::DialExhausted)),
             ),
             (
                 "nothing in the way",
@@ -610,15 +635,15 @@ mod tests {
     fn the_network_switch_outranks_presence() {
         assert_eq!(
             network_unconfigured_code(false, false),
-            Some(ChannelStatusCode::NetworkDisabled)
+            Some(ChannelReason::Any(ChannelStatusCode::Disabled))
         );
         assert_eq!(
             network_unconfigured_code(false, true),
-            Some(ChannelStatusCode::NetworkDisabled),
+            Some(ChannelReason::Any(ChannelStatusCode::Disabled)),
         );
         assert_eq!(
             network_unconfigured_code(true, false),
-            Some(ChannelStatusCode::NetworkUnavailable)
+            Some(ChannelReason::Network(NetworkStatusCode::PeerNotOnNetwork))
         );
         assert_eq!(network_unconfigured_code(true, true), None);
     }
@@ -630,21 +655,16 @@ mod tests {
     #[test]
     fn a_reason_makes_the_row_gray_and_its_absence_makes_it_connecting() {
         let statuses = build_channel_statuses(ChannelStatusInputs {
-            bluetooth_unconfigured_code: Some(ChannelStatusCode::BluetoothPeerNotNearby),
+            bluetooth_unconfigured_code: Some(ChannelReason::Bluetooth(BluetoothStatusCode::PeerNotNearby)),
             ..ready_inputs()
         });
 
-        assert_eq!(
-            find(&statuses, ChannelKind::Bluetooth).state,
-            RowState::Unconfigured {
-                code: ChannelStatusCode::BluetoothPeerNotNearby
-            }
-        );
-        assert_eq!(
-            find(&statuses, ChannelKind::Network).state,
-            RowState::Configured {
-                code: Some(ChannelStatusCode::Connecting)
-            }
-        );
+        let bluetooth = find(&statuses, ChannelKind::Bluetooth);
+        assert_eq!(bluetooth.status, ChannelRowState::Down);
+        assert_eq!(bluetooth.reason.as_deref(), Some("bluetooth_peer_not_nearby"));
+
+        let network = find(&statuses, ChannelKind::Network);
+        assert_eq!(network.status, ChannelRowState::Connecting);
+        assert_eq!(network.reason.as_deref(), Some("connecting"));
     }
 }

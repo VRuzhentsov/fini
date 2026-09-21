@@ -230,7 +230,8 @@ describe("device store channel liveness", () => {
         enabled: true,
         primary: true,
         address: null,
-        state: { state: "configured", code: { code: "awaiting_first_ack" } },
+        status: "connecting",
+        reason: "awaiting_first_ack",
       },
       {
         kind: "bluetooth",
@@ -238,32 +239,30 @@ describe("device store channel liveness", () => {
         enabled: false,
         primary: false,
         address: null,
-        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+        status: "off",
+        reason: "disabled",
       },
     ]);
 
     const store = useDeviceStore();
     await store.refreshChannelStatuses("peer-1");
-    expect(store.getChannelStatuses("peer-1")[0].state).toEqual({
-      state: "configured",
-      code: { code: "awaiting_first_ack" },
-    });
+    expect(store.getChannelStatuses("peer-1")[0].status).toBe("connecting");
+    expect(store.getChannelStatuses("peer-1")[0].reason).toBe("awaiting_first_ack");
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: true, code: null },
-      { kind: "bluetooth", connected: false, code: null },
+      { kind: "network", connected: true, reason: null },
+      { kind: "bluetooth", connected: false, reason: null },
     ]);
     await store.refreshLiveConnectedState("peer-1");
 
     const [network, bluetooth] = store.getChannelStatuses("peer-1");
-    expect(network.state).toEqual({ state: "configured", code: null });
+    expect(network.status).toBe("connected");
+    expect(network.reason).toBeNull();
     expect(network.primary).toBe(true);
     // Switched off: there is no live state to patch, because the row says
     // what the person chose rather than what a radio is doing.
-    expect(bluetooth.state).toEqual({
-      state: "unconfigured",
-      code: { code: "bluetooth_disabled" },
-    });
+    expect(bluetooth.status).toBe("off");
+    expect(bluetooth.reason).toBe("disabled");
   });
 
   // Regression test for a P2 review finding: a configured-but-not-yet-
@@ -282,7 +281,8 @@ describe("device store channel liveness", () => {
         enabled: true,
         primary: false,
         address: null,
-        state: { state: "configured", code: null },
+        status: "connected",
+        reason: null,
       },
       {
         kind: "bluetooth",
@@ -290,7 +290,8 @@ describe("device store channel liveness", () => {
         enabled: false,
         primary: false,
         address: null,
-        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+        status: "off",
+        reason: "disabled",
       },
     ]);
 
@@ -298,12 +299,13 @@ describe("device store channel liveness", () => {
     await store.refreshChannelStatuses("peer-1");
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: false, code: null },
-      { kind: "bluetooth", connected: false, code: null },
+      { kind: "network", connected: false, reason: null },
+      { kind: "bluetooth", connected: false, reason: null },
     ]);
     await store.refreshLiveConnectedState("peer-1");
 
     const [network] = store.getChannelStatuses("peer-1");
-    expect(network.state).toEqual({ state: "configured", code: { code: "connecting" } });
+    expect(network.status).toBe("connecting");
+    expect(network.reason).toBe("connecting");
   });
 });
