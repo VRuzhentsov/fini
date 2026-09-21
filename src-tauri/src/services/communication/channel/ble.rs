@@ -965,7 +965,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                     );
                     let state = state.clone();
                     let db_path = db_path.clone();
-                    tokio::spawn(session::run_peer_gate(link, state, db_path));
+                    tokio::spawn(crate::services::communication::pairing::run_peer_gate(link, state, db_path));
                 }
                 _ = add_mode_rx.changed() => {
                     log::info!("[transport][ble] add-mode changed; re-advertising");

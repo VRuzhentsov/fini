@@ -3,6 +3,8 @@ pub(crate) mod link_state;
 mod runtime;
 pub(crate) mod channel_status;
 pub(crate) mod channels;
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) mod gate;
 pub(crate) mod types;
 
 use std::net::Ipv4Addr;
@@ -36,6 +38,9 @@ pub use commands::{
     device_connection_channel_liveness,
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
+
+#[cfg(any(feature = "ui-plane", test))]
+pub use gate::run_peer_gate;
 
 pub use commands::bluetooth_dial_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]

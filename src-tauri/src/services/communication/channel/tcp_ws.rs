@@ -180,8 +180,8 @@ impl Transport for TcpWsTransport {
 
 /// Run the network transport's server loop: bind `state.space_sync_ws_port`,
 /// accept connections, WS-upgrade each, and hand off to the shared
-/// transport-neutral gate (`session::run_peer_gate`). `ui-plane`/`test`
-/// only — see `session::run_peer_gate`'s doc comment.
+/// transport-neutral gate (`crate::services::communication::pairing::run_peer_gate`). `ui-plane`/`test`
+/// only — see `crate::services::communication::pairing::run_peer_gate`'s doc comment.
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     let port = state.space_sync_ws_port;
@@ -214,7 +214,7 @@ pub(crate) async fn run_server_on_port(
                     match accept_async(stream).await {
                         Ok(ws) => {
                             let link: Box<dyn DataLink> = Box::new(TcpWsDataLink::new_plain(ws, peer_addr));
-                            session::run_peer_gate(link, state, db_path).await;
+                            crate::services::communication::pairing::run_peer_gate(link, state, db_path).await;
                         }
                         Err(err) => log::warn!("[transport][tcp_ws] WS handshake failed: {err}"),
                     }

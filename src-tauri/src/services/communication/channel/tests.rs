@@ -1,5 +1,5 @@
 //! End-to-end proof that the transport abstraction works: two independent
-//! adapters (`tcp_ws`, `sim`) carry the exact same `session::run_peer_gate`/
+//! adapters (`tcp_ws`, `sim`) carry the exact same `crate::services::communication::pairing::run_peer_gate`/
 //! `run_session` engine, both transports can be simultaneously connected
 //! for the same peer (ADR-0003 revision), and both satisfy the `Transport`
 //! trait polymorphically. This is the protocol-level coverage referenced by
@@ -442,7 +442,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_server, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
 
@@ -538,7 +538,7 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_server, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
 
@@ -1447,7 +1447,7 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_server, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1497,7 +1497,7 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_server, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1558,7 +1558,7 @@ async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
         // real Android peer, which advertises under a rotating address that
         // by construction matches nothing stored.
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_server, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1596,7 +1596,7 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_receiver, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1656,7 +1656,7 @@ async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_receiver, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1762,7 +1762,7 @@ async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_receiver, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1812,7 +1812,7 @@ async fn bluetooth_probe_gets_no_reply_when_the_channel_is_switched_off() {
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_receiver, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
@@ -1848,7 +1848,7 @@ async fn bluetooth_probe_gets_no_reply_from_an_unpaired_device_id() {
             return;
         };
         let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
-        session::run_peer_gate(link, gate_receiver, gate_db).await;
+        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();

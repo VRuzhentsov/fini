@@ -116,7 +116,7 @@ impl Transport for LoopbackTransport {
 
 /// Start the loopback listener if `FINI_LOOPBACK_PORT` is configured; no-op
 /// otherwise. Mirrors `channel::tcp_ws::run_server` but with raw framing.
-/// `ui-plane`/`test` only — see `session::run_peer_gate`'s doc comment.
+/// `ui-plane`/`test` only — see `crate::services::communication::pairing::run_peer_gate`'s doc comment.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn maybe_spawn_server(state: DeviceConnectionState, db_path: PathBuf) {
     let Some(port) = configured_listen_port() else {
@@ -143,7 +143,7 @@ pub(crate) async fn run_server(state: DeviceConnectionState, db_path: PathBuf, p
                 let link: Box<dyn DataLink> = Box::new(LoopbackDataLink::new(stream));
                 let state = state.clone();
                 let db_path = db_path.clone();
-                tokio::spawn(session::run_peer_gate(link, state, db_path));
+                tokio::spawn(crate::services::communication::pairing::run_peer_gate(link, state, db_path));
             }
             Err(err) => eprintln!("[channel][loopback] accept error: {err}"),
         }
