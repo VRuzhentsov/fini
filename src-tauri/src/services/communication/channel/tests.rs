@@ -2014,3 +2014,73 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
         "a later connection from the same peer must be able to claim the freed slot"
     );
 }
+
+/// Both ends of a loopback pair running a real session, which is what the
+/// `actors-loopback` e2e lane does and what no test here did.
+///
+/// Every other loopback test dials, authenticates, and then holds the link
+/// itself -- so the dialer never runs `run_session`, and a session that dies
+/// the instant both sides start talking looked green from in here. In the
+/// lane it died immediately, with the accepting side reading a frame length
+/// of two billion: the bytes were `{"v`, the start of an envelope written
+/// without its length prefix.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loopback_session_survives_both_ends_running_it() {
+    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
+
+    let (server, server_db) = server_state("loopback-both-ends-server");
+    let (client, client_db) = server_state("loopback-both-ends-client");
+
+    seed_paired_device(&server_db, &client.identity.device_id);
+    seed_bluetooth_enabled_peer(&server_db, &client.identity.device_id, "AA:BB:CC:DD:EE:01");
+    seed_paired_device(&client_db, &server.identity.device_id);
+    seed_bluetooth_enabled_peer(&client_db, &server.identity.device_id, "AA:BB:CC:DD:EE:02");
+
+    // Both ends listen, and the dialer's candidate list carries its own
+    // port first -- which is what the harness hands every actor, so every
+    // actor dials itself before it reaches the peer.
+    let port = free_port().await;
+    let client_port = free_port().await;
+    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), port));
+    tokio::spawn(loopback::run_server(client.clone(), client_db.clone(), client_port));
+    sleep(Duration::from_millis(100)).await;
+
+    // The real dialer, not a hand-held link: it authenticates, claims the
+    // session and runs the loop, exactly as the lane does.
+    let dialer_peer = server.identity.device_id.clone();
+    tokio::spawn(loopback::dial_with_backoff(
+        client.clone(),
+        client_db.clone(),
+        dialer_peer.clone(),
+        vec![client_port, port],
+    ));
+
+    // Tick both sides while the session runs, which the lane does and the
+    // other tests here never did. The tick is what re-enters the dial loop
+    // and what drains the outbox, so a session is only really exercised
+    // with it running.
+    for _ in 0..6 {
+        {
+            let mut conn = open_db_at_path(&server_db);
+            let _ = crate::services::communication::sync::commands::space_sync_tick_impl(
+                &mut conn, &server,
+            );
+        }
+        {
+            let mut conn = open_db_at_path(&client_db);
+            let _ = crate::services::communication::sync::commands::space_sync_tick_impl(
+                &mut conn, &client,
+            );
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+
+    assert!(
+        client.has_session_on(&dialer_peer, ChannelKind::Bluetooth),
+        "the dialing side should still hold its session"
+    );
+    assert!(
+        server.has_session_on(&client.identity.device_id, ChannelKind::Bluetooth),
+        "the accepting side should still hold its session"
+    );
+}

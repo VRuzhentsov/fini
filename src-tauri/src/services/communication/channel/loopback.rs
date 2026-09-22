@@ -61,7 +61,19 @@ impl DataLink for LoopbackDataLink {
         match length_delimited::read(&mut self.stream).await {
             Ok(Some(payload)) => Some(Ok(payload)),
             Ok(None) => None,
-            Err(err) => Some(Err(err)),
+            // Name the socket, with its port. `peer_addr()` above cannot:
+            // pairing stores that value as the peer's observed address, so
+            // it has to stay an address. Here the port is the whole point --
+            // on loopback it is the only thing that says which connection,
+            // and therefore which writer, this came from.
+            Err(err) => {
+                let from = self
+                    .stream
+                    .peer_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|_| "?".to_string());
+                Some(Err(format!("{err} (from {from})")))
+            }
         }
     }
 
