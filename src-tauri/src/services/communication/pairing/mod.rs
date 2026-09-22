@@ -70,10 +70,9 @@ pub use commands::{
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
-// and is what the `channels` table stores. Since the loopback radio stopped
-// being a kind of its own it says exactly what
-// `communication::channel::ChannelKind` says, and the two enums are one
-// mechanical rename from being the same type.
+// and is what the `channels` table stores. Re-exported from `channel`,
+// where it is defined; there is no second enum saying the same thing any
+// more.
 pub use channel_status::{
     build_channel_statuses, BluetoothStatusCode, ChannelKind, ChannelLiveness, ChannelReason,
     ChannelRowState, ChannelStatus, ChannelStatusCode, ChannelStatusInputs, NetworkStatusCode,
@@ -440,8 +439,28 @@ impl DeviceConnectionState {
         // `bluetooth_enabled` at all (see `recompute_primary_locked`'s doc
         // comment).
         if kind == ChannelKind::Bluetooth {
-            let (_, still_enabled) = Self::bluetooth_primary_eligibility(db_path, peer_device_id);
-            if !still_enabled {
+            // Only a definite "switched off" tears this down.
+            //
+            // This read used to be `bluetooth_primary_eligibility`, which
+            // answers `false` both when the channel is off and when the
+            // database could not be read at all -- `channels::find` ends in
+            // `.ok().flatten()`, so an error and an absent row are the same
+            // answer. Everywhere else that is the right direction to fail:
+            // a gate refusing an unknown channel costs a retry a second
+            // later. Here it is the wrong direction, because this is the one
+            // place that reads a switch in order to *destroy* something, and
+            // a transient `database is locked` -- of which there are plenty
+            // at claim time, with the tick and the gate both holding
+            // connections -- then reads exactly like the person having
+            // flipped the switch.
+            //
+            // Found while chasing a loopback session that died on claim, and
+            // it turned out not to be that -- logging proved this branch
+            // never ran. It is a latent defect on its own: nothing else
+            // reads a switch in order to close something, so nothing else
+            // turns a failed read into a destroyed session.
+            let still_enabled = Self::read_bluetooth_switch(db_path, peer_device_id);
+            if still_enabled == Some(false) {
                 self.close_session_on(peer_device_id, kind);
             } else {
                 // A P1 review finding: `ble::check_accepting_side_
@@ -577,6 +596,20 @@ impl DeviceConnectionState {
     /// `db_path` rather than trusting a field on `self`, and callers here
     /// (dial loops, `run_peer_gate`/`run_session`) already have the correct
     /// one in scope from their own parameters.
+    /// The pair's Bluetooth switch, or `None` when the database could not be
+    /// read at all.
+    ///
+    /// Distinct from `bluetooth_primary_eligibility`, which folds an
+    /// unreadable database into "not eligible". That is harmless when
+    /// choosing which channel is primary and destructive when deciding
+    /// whether to close a session, which is the whole reason this exists.
+    fn read_bluetooth_switch(db_path: &Path, peer_device_id: &str) -> Option<bool> {
+        tokio::task::block_in_place(|| {
+            let mut conn = crate::services::db::open_db_at_path(db_path);
+            channels::read_enabled(&mut conn, peer_device_id, ChannelKind::Bluetooth)
+        })
+    }
+
     fn bluetooth_primary_eligibility(db_path: &Path, peer_device_id: &str) -> (bool, bool) {
         tokio::task::block_in_place(|| {
             let mut conn = crate::services::db::open_db_at_path(db_path);

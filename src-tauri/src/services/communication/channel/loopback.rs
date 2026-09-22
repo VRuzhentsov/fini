@@ -258,7 +258,14 @@ pub(crate) async fn dial_with_backoff(
                     // to notice if that session never actually materializes.
                     eprintln!("[channel][loopback] lost claim race with {peer_id} via :{port}");
                 }
-                Err(_) => continue, // wrong-guess port, or peer not yet listening
+                Err(err) => {
+                    // Was discarded entirely, which made every failure here
+                    // look identical to "that port was a wrong guess" -- and
+                    // this loop dials its own listener too, so wrong guesses
+                    // are normal and hid the rest.
+                    eprintln!("[channel][loopback] auth via :{port} failed: {err}");
+                    continue;
+                }
             }
         }
 

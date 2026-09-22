@@ -129,7 +129,17 @@ pub async fn run_session(
     loop {
         tokio::select! {
             inbound = recv_frame(link.as_mut()) => {
-                let Some(Ok(frame)) = inbound else { break };
+                let frame = match inbound {
+                    Some(Ok(frame)) => frame,
+                    Some(Err(err)) => {
+                        log::info!("[session] {peer_device_id} {kind:?}: link error: {err}");
+                        break;
+                    }
+                    None => {
+                        log::info!("[session] {peer_device_id} {kind:?}: peer closed the link");
+                        break;
+                    }
+                };
                 handle_inbound(frame, link.as_mut(), &state, &db_path, &peer_device_id).await;
             }
             Some(command) = rx.recv() => {
@@ -145,7 +155,10 @@ pub async fn run_session(
                     // just this device unilaterally deciding a channel it
                     // no longer wants to use (Bluetooth disabled for the
                     // pair) should stop being live. See `close_session_on`.
-                    SessionCommand::Close => break,
+                    SessionCommand::Close => {
+                        log::info!("[session] {peer_device_id} {kind:?}: asked to close");
+                        break;
+                    }
                 }
             }
             _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {

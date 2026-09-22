@@ -46,6 +46,32 @@ pub fn is_enabled(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKin
     find(conn, device_id, kind).is_some_and(|channel| channel.enabled)
 }
 
+/// Whether this channel is switched on, distinguishing "off" from "could
+/// not tell".
+///
+/// `is_enabled` answers `false` to both, which is the right direction for a
+/// gate: an unknown channel must not carry traffic, and a refused
+/// connection is retried a second later. It is the wrong direction for
+/// anything that *destroys* something working -- a transient
+/// `database is locked` then reads exactly like the person having flipped
+/// the switch, and a healthy session is torn down for it.
+///
+/// `None` means the read itself failed. Callers that act destructively
+/// must treat that as "leave it alone".
+pub fn read_enabled(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    kind: ChannelKind,
+) -> Option<bool> {
+    channels::table
+        .find((device_id, kind.code()))
+        .select(Channel::as_select())
+        .first(conn)
+        .optional()
+        .ok()
+        .map(|row| row.is_some_and(|channel| channel.enabled))
+}
+
 /// Whether the person set this channel up and then switched it off --
 /// distinct from never having set it up, which is what made
 /// `bluetooth_disabled_by_user` a separate column before rows were lazy.
@@ -192,4 +218,48 @@ pub fn peers_with_channel_enabled(conn: &mut SqliteConnection, kind: ChannelKind
         .select(channels::device_id)
         .load(&mut *conn)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::db::open_db_at_path;
+
+    /// The distinction the claim-time teardown depends on.
+    ///
+    /// `is_enabled` cannot tell "the person switched it off" from "I could
+    /// not read the table", and a caller that closes a live session on the
+    /// strength of that answer will close it for a blip. `read_enabled`
+    /// keeps the two apart so such a caller can refuse to act on the second.
+    #[test]
+    fn read_enabled_separates_switched_off_from_unreadable() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = open_db_at_path(&db_path);
+
+        // `channels.device_id` references `paired_devices`, so the pair has
+        // to exist before it can have a channel.
+        diesel::sql_query(
+            "INSERT INTO paired_devices (peer_device_id, display_name, paired_at) \
+             VALUES ('peer', 'Peer', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&mut conn)
+        .expect("seed pair");
+
+        // No row at all: definitely not on, and definitely readable.
+        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), Some(false));
+
+        configure(&mut conn, "peer", ChannelKind::Bluetooth, true, None).expect("configure");
+        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), Some(true));
+
+        set_enabled(&mut conn, "peer", ChannelKind::Bluetooth, false).expect("switch off");
+        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), Some(false));
+
+        // And the case the whole thing exists for: a table that cannot be
+        // read answers `None`, where `is_enabled` answers a confident and
+        // wrong `false`.
+        diesel::sql_query("DROP TABLE channels").execute(&mut conn).expect("drop");
+        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), None);
+        assert!(!is_enabled(&mut conn, "peer", ChannelKind::Bluetooth));
+    }
 }
