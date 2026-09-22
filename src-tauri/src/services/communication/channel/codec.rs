@@ -64,6 +64,84 @@ pub mod length_delimited {
             .map_err(|err| format!("flush frame: {err}"))
     }
 
+    /// A reader that survives being cancelled mid-frame.
+    ///
+    /// `read` below is not cancellation-safe, and the session loop reads
+    /// inside a `tokio::select!` -- so every ping it has to send and every
+    /// outbox event it has to forward drops the in-flight read. Dropped
+    /// after the four length bytes and before the payload, those four bytes
+    /// are simply gone: the next read then takes the payload's first four
+    /// bytes as a length. For our frames that is `{"v`, or 2065856034,
+    /// which fails the size check and kills an authenticated session.
+    ///
+    /// This keeps whatever has arrived in a buffer that belongs to the
+    /// link rather than to the future, and fills it with `read_buf`, which
+    /// *is* cancellation-safe: if the future is dropped, nothing was taken
+    /// from the socket that is not already in the buffer. Cancelling costs
+    /// a wasted poll and nothing else.
+    #[derive(Default)]
+    pub struct FrameReader {
+        pending: Vec<u8>,
+    }
+
+    impl FrameReader {
+        /// One frame, or `None` at a clean EOF.
+        pub async fn read<R: tokio::io::AsyncRead + Unpin>(
+            &mut self,
+            reader: &mut R,
+        ) -> Option<Result<Option<Vec<u8>>, String>> {
+            loop {
+                match self.take_frame() {
+                    Some(Ok(frame)) => return Some(Ok(Some(frame))),
+                    Some(Err(err)) => return Some(Err(err)),
+                    None => {}
+                }
+                match reader.read_buf(&mut self.pending).await {
+                    Ok(0) => {
+                        return if self.pending.is_empty() {
+                            Some(Ok(None))
+                        } else {
+                            // A frame was promised and the socket closed
+                            // inside it. Saying EOF here would report a
+                            // clean shutdown for a truncated one.
+                            Some(Err(format!(
+                                "connection closed mid-frame with {} bytes buffered",
+                                self.pending.len()
+                            )))
+                        }
+                    }
+                    Ok(_) => continue,
+                    Err(err) => return Some(Err(format!("read frame: {err}"))),
+                }
+            }
+        }
+
+        fn take_frame(&mut self) -> Option<Result<Vec<u8>, String>> {
+            if self.pending.len() < 4 {
+                return None;
+            }
+            let len = u32::from_be_bytes([
+                self.pending[0],
+                self.pending[1],
+                self.pending[2],
+                self.pending[3],
+            ]);
+            if len > MAX_FRAME_LEN {
+                return Some(Err(format!(
+                    "frame length {len} exceeds max {MAX_FRAME_LEN}; first bytes were {:?}",
+                    String::from_utf8_lossy(&self.pending[..4])
+                )));
+            }
+            let total = 4 + len as usize;
+            if self.pending.len() < total {
+                return None;
+            }
+            let frame = self.pending[4..total].to_vec();
+            self.pending.drain(..total);
+            Some(Ok(frame))
+        }
+    }
+
     /// `Ok(None)` means clean EOF (peer closed the connection).
     pub async fn read<R: tokio::io::AsyncRead + Unpin>(
         reader: &mut R,
@@ -97,6 +175,52 @@ pub mod length_delimited {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A read that loses a `select!` race must not eat the bytes it had.
+    ///
+    /// This is the shape that killed every loopback session in the
+    /// `actors-loopback` lane: the session loop reads inside a `select!`,
+    /// so a ping to send or an event to forward drops the read future.
+    /// With `read_exact` the four length bytes went with it, and the next
+    /// read took the payload for a length -- `{"v`, two billion, session
+    /// over. Here the read is cancelled between the length and the
+    /// payload, deliberately, and the frame still has to arrive whole.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_read_keeps_the_bytes_it_already_took() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let payload = b"{\"v\":1,\"enc\":\"none\",\"payload\":\"AAAA\"}".to_vec();
+
+        // The length first, then a pause, then the body -- which is exactly
+        // how a real socket delivers a frame that spans two packets.
+        client
+            .write_all(&(payload.len() as u32).to_be_bytes())
+            .await
+            .expect("write length");
+        client.flush().await.expect("flush length");
+
+        let mut reader = length_delimited::FrameReader::default();
+
+        // Lose the race, repeatedly, while only the length is available.
+        for _ in 0..5 {
+            tokio::select! {
+                _ = reader.read(&mut server) => panic!("no whole frame is available yet"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            }
+        }
+
+        client.write_all(&payload).await.expect("write payload");
+        client.flush().await.expect("flush payload");
+
+        let frame = reader
+            .read(&mut server)
+            .await
+            .expect("a frame, not EOF")
+            .expect("a readable frame")
+            .expect("a payload");
+        assert_eq!(frame, payload, "the frame must survive the cancellations");
+    }
 
     #[test]
     fn round_trips_a_peer_frame() {

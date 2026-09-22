@@ -35,6 +35,12 @@ use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport
 
 pub struct LoopbackDataLink {
     stream: TcpStream,
+    /// Whatever has arrived but is not yet a whole frame.
+    ///
+    /// It lives on the link, not inside the read future, because the
+    /// session loop reads this link from a `tokio::select!` and therefore
+    /// cancels the read constantly -- see `length_delimited::FrameReader`.
+    reader: length_delimited::FrameReader,
 }
 
 impl LoopbackDataLink {
@@ -43,7 +49,7 @@ impl LoopbackDataLink {
     /// peer in the TCP-failure-reset regression test, without needing the
     /// full `run_server` accept loop.
     pub(crate) fn new(stream: TcpStream) -> Self {
-        Self { stream }
+        Self { stream, reader: length_delimited::FrameReader::default() }
     }
 }
 
@@ -58,14 +64,9 @@ impl DataLink for LoopbackDataLink {
     }
 
     async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
-        match length_delimited::read(&mut self.stream).await {
+        match self.reader.read(&mut self.stream).await? {
             Ok(Some(payload)) => Some(Ok(payload)),
             Ok(None) => None,
-            // Name the socket, with its port. `peer_addr()` above cannot:
-            // pairing stores that value as the peer's observed address, so
-            // it has to stay an address. Here the port is the whole point --
-            // on loopback it is the only thing that says which connection,
-            // and therefore which writer, this came from.
             Err(err) => {
                 let from = self
                     .stream
