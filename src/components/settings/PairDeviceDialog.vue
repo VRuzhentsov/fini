@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { XMarkIcon, CheckIcon, ClockIcon, MagnifyingGlassIcon } from "@heroicons/vue/24/outline";
+import { XMarkIcon, CheckIcon, ClockIcon, MagnifyingGlassIcon, ExclamationCircleIcon } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./device/ChannelIcon.vue";
 import { useDeviceStore, type DiscoveredDevice } from "../../stores/device";
 
@@ -87,6 +87,9 @@ const step = computed(() => {
     // plainly, because the person who asked is otherwise left guessing what
     // the other one saw.
     if (request.status === "rejected") return "declined";
+    // Not a decline: this side never got the request out. Saying "they said
+    // no" here would be a claim about someone who never saw it.
+    if (request.status === "send_failed") return "sendFailed";
     // Covers both "nobody answered" and "the peer vanished mid-ceremony":
     // the request expiring is the only signal this side genuinely has for
     // either, so claiming to tell them apart would be invention. What
@@ -343,6 +346,22 @@ function close() {
           </div>
         </template>
 
+        <!-- 2b-ii. The request never left this device. Distinct from a
+             decline: naming the peer as having refused would be a claim
+             about a device that never received the question. -->
+        <template v-else-if="step === 'sendFailed'">
+          <div class="flex flex-col items-center gap-3 py-2 text-center">
+            <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
+              <ExclamationCircleIcon class="size-6" />
+            </span>
+            <h4 class="text-[15px] font-semibold">Couldn't reach {{ outgoing?.to_hostname }}</h4>
+            <p class="text-[12.5px] text-[var(--fg-2)]">
+              The request never got out, so nothing was asked of it. It may have gone to sleep or
+              moved out of range.
+            </p>
+          </div>
+        </template>
+
         <!-- 2c. Ran out. The causes are physical -- asleep, locked, walked
              off -- so name those rather than "request timed out". When a
              code had already been issued, say it is dead: otherwise someone
@@ -442,7 +461,7 @@ function close() {
           <span class="flex-1" />
           <button class="btn btn-primary btn-sm" @click="keepLooking()">Keep looking</button>
         </template>
-        <template v-else-if="step === 'declined' || step === 'timeout'">
+        <template v-else-if="step === 'declined' || step === 'timeout' || step === 'sendFailed'">
           <button class="btn btn-ghost btn-sm" @click="emit('close')">Close</button>
           <span class="flex-1" />
           <button class="btn btn-primary btn-sm" data-testid="pair-ask-again" @click="startOver()">

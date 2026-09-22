@@ -286,6 +286,13 @@ async fn handle_inbound(
                 space_id,
                 ended_at,
             });
+            // The same wake its two neighbours raise, and it was the only
+            // one of the three without it. Arriving after this tick had
+            // already drained the queue, the end would sit in memory until
+            // something unrelated woke the keeper -- and since this PR
+            // removed the periodic backstop, "unrelated" can mean never.
+            // The peer would stay mapped on a space it had stopped sharing.
+            crate::services::communication::sync::commands::notify_sync_work_pending();
         }
         PeerFrame::BootstrapStart { space_id } => {
             let db = db_path.clone();

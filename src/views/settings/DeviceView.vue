@@ -71,8 +71,12 @@ const hasMappingChanges = computed(() => {
 // Which spaces the unlink confirmation names. The design's rule is that a
 // destructive confirmation states what actually stops, not a generic
 // warning -- so it lists the spaces by name.
+// Read from what is saved, not from the checkbox draft: unlinking removes
+// the persisted mappings, so those are what stop. Someone who ticks a box
+// and then unlinks without saving would otherwise be told a space stops
+// syncing that was never mapped, or not told about one that is.
 const mappedSpaceNames = computed(() =>
-  mappedSelection.value
+  savedMappedSelection.value
     .map((id) => spaceStore.spaces.find((space) => space.id === id)?.name)
     .filter((name): name is string => Boolean(name)),
 );

@@ -105,7 +105,11 @@ export interface OutgoingPairRequest {
   to_hostname: string;
   created_at: string;
   expires_at: string;
-  status: "pending" | "awaiting_code" | "expired" | "paired" | "rejected";
+  // "rejected" means the peer answered no. "send_failed" means this side
+  // never got the request out -- a different thing, and the two were
+  // reported identically until the dialog started telling people they had
+  // been declined by a device that had not heard from them.
+  status: "pending" | "awaiting_code" | "expired" | "paired" | "rejected" | "send_failed";
   sender_code: string | null;
 }
 
@@ -603,13 +607,20 @@ export const useDeviceStore = defineStore("device", () => {
     // A channel that is off, or was never set up, has no live state to
     // patch: its row is what the user chose, not what a radio is doing.
     if (!status.enabled) return status;
-    // Already reporting a reason of its own and still not connected: the
-    // full status knows more than this poll does, so leave it alone.
-    if (status.reason !== null && !entry.connected) {
-      return status;
-    }
+    // Exhaustion first, before deferring to the fuller status below.
+    //
+    // A Bluetooth-only peer starts out with a reason of its own --
+    // `connecting` -- and gets no session event to refresh it, so the poll
+    // is the only thing that ever learns the automatic retries gave up.
+    // Deferring first meant that row sat on "Connecting…" forever, and the
+    // one control that could act on it, "Try again", never appeared.
     if (!entry.connected && entry.dial_exhausted) {
       return { ...status, status: "down", reason: "bluetooth_dial_exhausted" };
+    }
+    // Otherwise, a reason of its own and still not connected: the full
+    // status knows more than this poll does, so leave it alone.
+    if (status.reason !== null && !entry.connected) {
+      return status;
     }
     if (!entry.connected) {
       return { ...status, status: "connecting", reason: "connecting" };
@@ -1378,9 +1389,13 @@ export const useDeviceStore = defineStore("device", () => {
     } catch (error) {
       console.warn("[device-connection] pair request send failed", error);
       if (outgoingRequest.value) {
+        // The send itself failed: the peer vanished, its radio is
+        // unavailable, the connection errored. No decline frame exists in
+        // the protocol at all, so calling this "rejected" invented an
+        // answer from a device that never received the question.
         outgoingRequest.value = {
           ...outgoingRequest.value,
-          status: "rejected",
+          status: "send_failed",
         };
       }
     }
