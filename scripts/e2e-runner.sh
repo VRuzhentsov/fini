@@ -66,12 +66,31 @@ sleep 1
 lanes="${FINI_E2E_LANES:-main loopback ble}"
 has_lane() { case " $lanes " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# Each lane spawns its own app processes and stops them itself. When one
+# does not -- a fixture that failed before its teardown, a test killed by
+# its own timeout -- the survivors keep their listeners and keep dialling,
+# and the next lane inherits a peer it never asked for.
+#
+# Measured, not assumed: on one image and one commit, the loopback lane
+# passed alone in twelve seconds and failed in a minute when it followed
+# the main lane. Lanes share a container, so the only thing between them
+# is this.
+reap_actors() {
+  pkill -f '/usr/local/bin/fini-app' 2>/dev/null || true
+  pkill -f '/usr/local/bin/ble-mock-broker' 2>/dev/null || true
+  # Long enough for the kernel to release the listeners before the next
+  # lane binds its own.
+  sleep 3
+}
+
 status=0
 if has_lane main; then
   DISPLAY=:99 npm run test:e2e:ci || status=$?
+  reap_actors
 fi
 if has_lane loopback; then
   DISPLAY=:99 npm run test:e2e:ci:loopback || status=$?
+  reap_actors
 fi
 # actors-ble's actors set FINI_BLE_MOCK_BROKER, which routes ble.rs's
 # backend() to the cross-process mock radio instead of LinuxBackend::new()
