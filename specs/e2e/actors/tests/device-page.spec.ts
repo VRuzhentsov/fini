@@ -1,6 +1,10 @@
 import { test, expect } from '../fixtures.ts';
 import { ensureSyncedActors } from '../helpers/device-sync.ts';
-import { ensurePersonalSpaceSync, openDeviceDetailsFromSettings } from '../helpers/personal-sync.ts';
+import {
+  ensurePersonalSpaceSync,
+  openDeviceDetailsFromSettings,
+  waitForMappingControlsReady,
+} from '../helpers/personal-sync.ts';
 import {
   anyChannelConnected,
   channelReason,
@@ -169,6 +173,10 @@ test('unlinking names the spaces that stop syncing and promises nothing is delet
   );
 
   await openDeviceDetailsFromSettings(actorA, syncedB.identity.device_id);
+  // The page renders its space rows from the space list, which arrives
+  // before the per-pair mappings do. Asserting on the names without waiting
+  // for those read whatever had loaded so far -- usually nothing.
+  await waitForMappingControlsReady(actorA, '1');
   await actorA.page.waitForSelector('[data-testid="unlink-device"]', 30_000);
   await actorA.page.click('[data-testid="unlink-device"]');
 

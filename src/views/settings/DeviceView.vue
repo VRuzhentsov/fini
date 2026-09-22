@@ -76,9 +76,16 @@ const hasMappingChanges = computed(() => {
 // and then unlinks without saving would otherwise be told a space stops
 // syncing that was never mapped, or not told about one that is.
 const mappedSpaceNames = computed(() =>
-  savedMappedSelection.value
-    .map((id) => spaceStore.spaces.find((space) => space.id === id)?.name)
-    .filter((name): name is string => Boolean(name)),
+  savedMappedSelection.value.map(
+    (id) =>
+      // An id whose name has not arrived yet is still a space that stops
+      // syncing. Dropping it made the count fall to zero while mappings
+      // existed, and the confirmation then told the person that nothing is
+      // shared with this device -- "I do not know its name" rendered as
+      // "there is nothing here", on the one screen where being wrong costs
+      // them a decision.
+      spaceStore.spaces.find((space) => space.id === id)?.name ?? "a space",
+  ),
 );
 
 const LIVE_POLL_INTERVAL_MS = 5_000;
@@ -399,6 +406,9 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           <template v-if="mappedSpaceNames.length > 0">
             <b>{{ mappedSpaceNames.join(", ") }}</b>
             {{ mappedSpaceNames.length > 1 ? "stop" : "stops" }} syncing. Nothing is deleted.
+          </template>
+          <template v-else-if="!mappingsLoaded">
+            Checking what is shared with this device… Nothing is deleted.
           </template>
           <template v-else>
             No spaces are shared with this device, so nothing stops syncing. Nothing is deleted.
