@@ -132,7 +132,10 @@ pub async fn run_session(
                 let frame = match inbound {
                     Some(Ok(frame)) => frame,
                     Some(Err(err)) => {
-                        log::info!("[session] {peer_device_id} {kind:?}: link error: {err}");
+                        let from = link.peer_addr().unwrap_or_else(|| "?".to_string());
+                        log::info!(
+                            "[session] {peer_device_id} {kind:?} from {from}: link error: {err}"
+                        );
                         break;
                     }
                     None => {

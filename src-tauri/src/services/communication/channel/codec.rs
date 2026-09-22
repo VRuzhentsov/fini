@@ -76,7 +76,14 @@ pub mod length_delimited {
         }
         let len = u32::from_be_bytes(len_buf);
         if len > MAX_FRAME_LEN {
-            return Err(format!("frame length {len} exceeds max {MAX_FRAME_LEN}"));
+            // Show the bytes, not just the number they decoded to. A length
+            // this wrong means the stream is not carrying length-prefixed
+            // frames at all, and what it *is* carrying names the writer --
+            // "{\"ty" reads very differently from an HTTP verb.
+            return Err(format!(
+                "frame length {len} exceeds max {MAX_FRAME_LEN}; first bytes were {:?}",
+                String::from_utf8_lossy(&len_buf)
+            ));
         }
         let mut payload = vec![0_u8; len as usize];
         reader
