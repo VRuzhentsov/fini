@@ -202,7 +202,23 @@ impl ChannelService for NetworkChannelService {
     }
 
     fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelReason> {
-        channel_status::network_unconfigured_code(enabled, self.is_reachable(peer_device_id))
+        channel_status::network_unconfigured_code(
+            enabled,
+            // A live session outranks presence, exactly as it does on the
+            // Bluetooth row below and for the same reason: presence is how
+            // a peer is *found*, not evidence about whether we are talking
+            // to it. A beacon can lapse -- a missed multicast, a moment of
+            // load -- while the session carries traffic perfectly well, and
+            // the row would then announce that the peer is not on this
+            // network while it is answering.
+            //
+            // It is the same mistake the devices list made in the other
+            // direction, showing green for a peer it had merely heard of.
+            // Presence and connection are different claims; only one of
+            // them is about the session.
+            self.state.has_session_on(peer_device_id, ChannelKind::Network)
+                || self.is_reachable(peer_device_id),
+        )
     }
 }
 
