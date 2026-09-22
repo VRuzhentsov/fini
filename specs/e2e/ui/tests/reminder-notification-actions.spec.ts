@@ -93,8 +93,16 @@ async function createQuestWithTodayReminder(
     throw new Error('quest not found as a backlog row or the active quest: ' + ${JSON.stringify(title)});
   })()`);
 
+  // Each control is waited for before it is clicked. They were clicked
+  // blind, one after another, so the editor only had to render a fraction
+  // late for a click to land on nothing -- and the failure then arrived much
+  // later and somewhere else, as a quest with no reminder or a test that sat
+  // until its own timeout.
+  await tauriPage.waitForSelector('[data-testid="quest-reminder"]', 30_000);
   await tauriPage.click('[data-testid="quest-reminder"]');
+  await tauriPage.waitForSelector('[data-testid="reminder-today"]', 30_000);
   await tauriPage.click('[data-testid="reminder-today"]');
+  await tauriPage.waitForSelector('[data-testid="reminder-done"]', 30_000);
   await tauriPage.click('[data-testid="reminder-done"]');
 
   const quests = await invokeTauri<Quest[]>(tauriPage, 'get_quests');
