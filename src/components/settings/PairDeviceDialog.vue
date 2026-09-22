@@ -15,7 +15,14 @@ import { useDeviceStore, type DiscoveredDevice } from "../../stores/device";
 // The first question is which channel, asked out loud. The previous screen
 // inferred it from whichever radio happened to find something and captioned
 // the result "via network" / "via Bluetooth" after the fact.
-const props = defineProps<{ open: boolean }>();
+const props = defineProps<{
+  open: boolean;
+  // Which incoming request to show, when the caller opened the dialog from
+  // a specific row. Without it the dialog always showed the newest, so with
+  // two devices asking at once, "Open request" on the older row answered
+  // the wrong person -- and the older one could not be accepted at all.
+  requestId?: string | null;
+}>();
 const emit = defineEmits<{ close: [] }>();
 
 const deviceStore = useDeviceStore();
@@ -34,7 +41,17 @@ const outgoing = computed(() => deviceStore.outgoingRequest);
 // Someone asking to pair with *this* device takes priority over whatever
 // the user was doing: they are waiting on an answer, and a request that
 // expires unseen is the worst outcome of the whole flow.
-const incoming = computed(() => deviceStore.incomingRequests[0] ?? null);
+const incoming = computed(() => {
+  const requests = deviceStore.incomingRequests;
+  if (props.requestId) {
+    const chosen = requests.find((request) => request.request_id === props.requestId);
+    // Falls back rather than showing nothing: the chosen request can expire
+    // while the dialog is open, and an empty dialog would say less than the
+    // next person waiting.
+    if (chosen) return chosen;
+  }
+  return requests[0] ?? null;
+});
 
 // Read from the per-channel lists, not from `discoveredDevices`.
 //

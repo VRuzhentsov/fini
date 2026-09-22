@@ -17,16 +17,33 @@ const props = defineProps<{
 
 const deviceStore = useDeviceStore();
 const pairDialogOpen = ref(false);
+// Which request the person pressed "Open request" on. Null means they came
+// in through "Add device", where there is no particular one to show.
+const pairDialogRequestId = ref<string | null>(null);
 
 watch(
   () => props.pairRequests ?? 0,
   (requests, previous) => {
-    if (requests > (previous ?? 0)) pairDialogOpen.value = true;
+    if (requests > (previous ?? 0)) {
+      pairDialogRequestId.value = null;
+      pairDialogOpen.value = true;
+    }
   },
 );
 
 function closePairDialog() {
   pairDialogOpen.value = false;
+  pairDialogRequestId.value = null;
+}
+
+function openAddDevice() {
+  pairDialogRequestId.value = null;
+  pairDialogOpen.value = true;
+}
+
+function openIncomingRequest(requestId: string) {
+  pairDialogRequestId.value = requestId;
+  pairDialogOpen.value = true;
 }
 
 // Someone asking to pair surfaces here, on the devices page, rather than
@@ -113,7 +130,11 @@ const renderFlags = computed(() => ({
         </span>
       </div>
       <div class="flex gap-2 px-3 pb-2.5">
-        <button class="btn btn-primary btn-xs" data-testid="open-pair-request" @click="pairDialogOpen = true">
+        <button
+          class="btn btn-primary btn-xs"
+          data-testid="open-pair-request"
+          @click="openIncomingRequest(request.request_id)"
+        >
           Open request
         </button>
         <button
@@ -177,13 +198,13 @@ const renderFlags = computed(() => ({
         <span class="opacity-70">No paired devices yet</span>
       </SettingsListItem>
 
-      <SettingsListItem button testid="add-device-link" @click="pairDialogOpen = true">
+      <SettingsListItem button testid="add-device-link" @click="openAddDevice()">
         <template #leading><PlusIcon class="size-4" /></template>
         <template #start><span class="font-medium">Add device</span></template>
         <template #trailing><span class="text-sm opacity-50">›</span></template>
       </SettingsListItem>
     </SettingsListGroup>
 
-    <PairDeviceDialog :open="pairDialogOpen" @close="closePairDialog()" />
+    <PairDeviceDialog :open="pairDialogOpen" :request-id="pairDialogRequestId" @close="closePairDialog()" />
   </section>
 </template>
