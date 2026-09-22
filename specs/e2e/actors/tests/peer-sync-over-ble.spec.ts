@@ -27,7 +27,7 @@ interface Quest {
  * (`FINI_E2E_TRANSPORT=ble` -> `FINI_DISCOVERY_DISABLED=1`), dial the real
  * `ble.rs` code path (dial loop, peripheral accept, session claim) against
  * a cross-process mock radio instead of hardware -- the same acceptance
- * shape `peer-sync-over-loopback.spec.ts` proves for the loopback radio, one layer
+ * shape the network lane proves for its own channel, one layer
  * more real. See `helpers/ble-sync.ts`, `specs/e2e/transports.md`, and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  *

@@ -15,8 +15,6 @@
 //!   WebSocket link).
 //! - `ble` — how the Bluetooth channel connects (Linux BlueZ, Android GATT,
 //!   both via `ble-gatt`; see that module's doc comment).
-//! - `loopback` — how the Bluetooth channel connects where there is no
-//!   radio at all, for CI. Not a channel of its own; see `radio`.
 //!
 //! A `DataLink` moves opaque byte datagrams (whole payloads, boundaries
 //! preserved); each adapter owns its own chunking/framing. Above `DataLink` sits
@@ -31,7 +29,6 @@ pub mod envelope;
 pub mod radio;
 pub mod selection;
 pub mod service;
-pub mod loopback;
 pub mod tcp_ws;
 
 #[cfg(test)]
@@ -63,8 +60,7 @@ pub enum ChannelKind {
     /// mDNS/UDP presence + a WebSocket link.
     #[default]
     Network,
-    /// GATT via `ble-gatt` on a real device, a loopback TCP connection
-    /// where there is no radio (`radio::Radio`).
+    /// GATT, via `ble-gatt`.
     Bluetooth,
 }
 
@@ -123,12 +119,10 @@ pub trait DataLink: Send {
 }
 
 /// One piece of connection code for a `ChannelKind`.
-/// `tcp_ws::TcpWsTransport` and `loopback::LoopbackTransport` both implement
-/// this — proven polymorphically in `channel::tests` — but the production
-/// dial loops (`tcp_ws::spawn_dial_loop`, `loopback::spawn_fallback_dial_loop`)
-/// call each one's functions directly rather than through a dynamic
-/// `Box<dyn Transport>` registry. A registry becomes worth its weight once a
-/// channel arrives that this list cannot name.
+/// `tcp_ws::TcpWsTransport` implements it. The production dial loop calls
+/// its functions directly rather than going through a dynamic
+/// `Box<dyn Transport>` registry; a registry becomes worth its weight once
+/// a channel arrives that this list cannot name.
 #[async_trait]
 #[allow(dead_code)]
 pub trait Transport: Send + Sync {

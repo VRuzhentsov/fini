@@ -63,7 +63,7 @@ sleep 1
 # so a lane that fails here has two possible explanations: it is broken, or
 # the lane before it left something behind. Telling those apart means running
 # it on its own, and that used to require editing this file.
-lanes="${FINI_E2E_LANES:-main loopback ble}"
+lanes="${FINI_E2E_LANES:-main ble}"
 has_lane() { case " $lanes " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # Each lane spawns its own app processes and stops them itself. When one
@@ -71,10 +71,9 @@ has_lane() { case " $lanes " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # its own timeout -- the survivors keep their listeners and keep dialling,
 # and the next lane inherits a peer it never asked for.
 #
-# Measured, not assumed: on one image and one commit, the loopback lane
-# passed alone in twelve seconds and failed in a minute when it followed
-# the main lane. Lanes share a container, so the only thing between them
-# is this.
+# Measured, not assumed: a lane that passed alone in twelve seconds failed
+# in a minute when it followed another. Lanes share a container, so the
+# only thing between them is this.
 reap_actors() {
   pkill -f '/usr/local/bin/fini-app' 2>/dev/null || true
   pkill -f '/usr/local/bin/ble-mock-broker' 2>/dev/null || true
@@ -86,10 +85,6 @@ reap_actors() {
 status=0
 if has_lane main; then
   DISPLAY=:99 npm run test:e2e:ci || status=$?
-  reap_actors
-fi
-if has_lane loopback; then
-  DISPLAY=:99 npm run test:e2e:ci:loopback || status=$?
   reap_actors
 fi
 # actors-ble's actors set FINI_BLE_MOCK_BROKER, which routes ble.rs's

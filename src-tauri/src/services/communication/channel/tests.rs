@@ -21,7 +21,235 @@ use crate::services::db::{open_db_at_path, temp_db_path};
 use crate::services::communication::pairing::{channels, DeviceConnectionState};
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, loopback, tcp_ws, DataLink, Transport, ChannelKind};
+use crate::services::communication::channel::{recv_frame, send_frame, tcp_ws, DataLink, Transport, ChannelKind};
+
+/// A Bluetooth-kind link for tests, carried over a plain TCP socket.
+///
+/// Production has no such thing any more, deliberately: a stand-in radio
+/// that shipped, appeared in the channel list and could be reached by
+/// setting an environment variable was worse than the gap it filled --
+/// `ble-gatt`'s mock broker covers that ground by faking the radio
+/// underneath `ble`, leaving the whole Bluetooth path above it real.
+///
+/// Tests still need a second channel they can drive without a radio, and
+/// that need is a test's own. So the stand-in lives here, where nothing
+/// ships it, and it carries the framing that went with it.
+mod bluetooth_stub {
+    use async_trait::async_trait;
+    use tokio::net::{TcpListener, TcpStream};
+
+    use crate::services::communication::channel::{DataLink, Transport, BoxDialFuture, ChannelKind};
+    use crate::services::communication::pairing::DeviceConnectionState;
+    use std::path::PathBuf;
+
+    pub mod length_delimited {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const MAX_FRAME_LEN: u32 = 8 * 1024 * 1024;
+
+        pub async fn write<W: tokio::io::AsyncWrite + Unpin>(
+            writer: &mut W,
+            payload: &[u8],
+        ) -> Result<(), String> {
+            let len = u32::try_from(payload.len()).map_err(|_| "frame too large".to_string())?;
+            writer
+                .write_all(&len.to_be_bytes())
+                .await
+                .map_err(|err| format!("write frame length: {err}"))?;
+            writer
+                .write_all(payload)
+                .await
+                .map_err(|err| format!("write frame payload: {err}"))?;
+            writer
+                .flush()
+                .await
+                .map_err(|err| format!("flush frame: {err}"))
+        }
+
+        /// A reader that survives being cancelled mid-frame.
+        ///
+        /// `read` below is not cancellation-safe, and the session loop reads
+        /// inside a `tokio::select!` -- so every ping it has to send and every
+        /// outbox event it has to forward drops the in-flight read. Dropped
+        /// after the four length bytes and before the payload, those four bytes
+        /// are simply gone: the next read then takes the payload's first four
+        /// bytes as a length. For our frames that is `{"v`, or 2065856034,
+        /// which fails the size check and kills an authenticated session.
+        ///
+        /// This keeps whatever has arrived in a buffer that belongs to the
+        /// link rather than to the future, and fills it with `read_buf`, which
+        /// *is* cancellation-safe: if the future is dropped, nothing was taken
+        /// from the socket that is not already in the buffer. Cancelling costs
+        /// a wasted poll and nothing else.
+        #[derive(Default)]
+        pub struct FrameReader {
+            pending: Vec<u8>,
+        }
+
+        impl FrameReader {
+            /// One frame, or `None` at a clean EOF.
+            pub async fn read<R: tokio::io::AsyncRead + Unpin>(
+                &mut self,
+                reader: &mut R,
+            ) -> Option<Result<Option<Vec<u8>>, String>> {
+                loop {
+                    match self.take_frame() {
+                        Some(Ok(frame)) => return Some(Ok(Some(frame))),
+                        Some(Err(err)) => return Some(Err(err)),
+                        None => {}
+                    }
+                    match reader.read_buf(&mut self.pending).await {
+                        Ok(0) => {
+                            return if self.pending.is_empty() {
+                                Some(Ok(None))
+                            } else {
+                                // A frame was promised and the socket closed
+                                // inside it. Saying EOF here would report a
+                                // clean shutdown for a truncated one.
+                                Some(Err(format!(
+                                    "connection closed mid-frame with {} bytes buffered",
+                                    self.pending.len()
+                                )))
+                            }
+                        }
+                        Ok(_) => continue,
+                        Err(err) => return Some(Err(format!("read frame: {err}"))),
+                    }
+                }
+            }
+
+            fn take_frame(&mut self) -> Option<Result<Vec<u8>, String>> {
+                if self.pending.len() < 4 {
+                    return None;
+                }
+                let len = u32::from_be_bytes([
+                    self.pending[0],
+                    self.pending[1],
+                    self.pending[2],
+                    self.pending[3],
+                ]);
+                if len > MAX_FRAME_LEN {
+                    return Some(Err(format!(
+                        "frame length {len} exceeds max {MAX_FRAME_LEN}; first bytes were {:?}",
+                        String::from_utf8_lossy(&self.pending[..4])
+                    )));
+                }
+                let total = 4 + len as usize;
+                if self.pending.len() < total {
+                    return None;
+                }
+                let frame = self.pending[4..total].to_vec();
+                self.pending.drain(..total);
+                Some(Ok(frame))
+            }
+        }
+
+        /// `Ok(None)` means clean EOF (peer closed the connection).
+        pub async fn read<R: tokio::io::AsyncRead + Unpin>(
+            reader: &mut R,
+        ) -> Result<Option<Vec<u8>>, String> {
+            let mut len_buf = [0_u8; 4];
+            match reader.read_exact(&mut len_buf).await {
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+                Err(err) => return Err(format!("read frame length: {err}")),
+            }
+            let len = u32::from_be_bytes(len_buf);
+            if len > MAX_FRAME_LEN {
+                // Show the bytes, not just the number they decoded to. A length
+                // this wrong means the stream is not carrying length-prefixed
+                // frames at all, and what it *is* carrying names the writer --
+                // "{\"ty" reads very differently from an HTTP verb.
+                return Err(format!(
+                    "frame length {len} exceeds max {MAX_FRAME_LEN}; first bytes were {:?}",
+                    String::from_utf8_lossy(&len_buf)
+                ));
+            }
+            let mut payload = vec![0_u8; len as usize];
+            reader
+                .read_exact(&mut payload)
+                .await
+                .map_err(|err| format!("read frame payload: {err}"))?;
+            Ok(Some(payload))
+        }
+    }
+
+
+    pub struct StubDataLink {
+        stream: TcpStream,
+        reader: length_delimited::FrameReader,
+    }
+
+    impl StubDataLink {
+        pub fn new(stream: TcpStream) -> Self {
+            Self { stream, reader: length_delimited::FrameReader::default() }
+        }
+    }
+
+    #[async_trait]
+    impl DataLink for StubDataLink {
+        fn kind(&self) -> ChannelKind {
+            ChannelKind::Bluetooth
+        }
+
+        async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {
+            length_delimited::write(&mut self.stream, &payload).await
+        }
+
+        async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
+            match self.reader.read(&mut self.stream).await? {
+                Ok(Some(payload)) => Some(Ok(payload)),
+                Ok(None) => None,
+                Err(err) => Some(Err(err)),
+            }
+        }
+
+        fn peer_addr(&self) -> Option<String> {
+            self.stream.peer_addr().ok().map(|addr| addr.ip().to_string())
+        }
+    }
+
+    pub async fn dial(port: u16) -> Result<Box<dyn DataLink>, String> {
+        let stream = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .map_err(|err| format!("stub connect 127.0.0.1:{port} failed: {err}"))?;
+        Ok(Box::new(StubDataLink::new(stream)))
+    }
+
+    pub struct StubTransport;
+
+    #[async_trait]
+    impl Transport for StubTransport {
+        fn kind(&self) -> ChannelKind {
+            ChannelKind::Bluetooth
+        }
+
+        fn dial(&self, _peer_device_id: &str, _addr: &str, port: u16) -> BoxDialFuture {
+            Box::pin(async move { dial(port).await })
+        }
+    }
+
+    pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf, port: u16) {
+        let listener = match TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(l) => l,
+            Err(err) => panic!("stub server failed to bind :{port}: {err}"),
+        };
+        loop {
+            match listener.accept().await {
+                Ok((stream, _addr)) => {
+                    let link: Box<dyn DataLink> = Box::new(StubDataLink::new(stream));
+                    let state = state.clone();
+                    let db_path = db_path.clone();
+                    tokio::spawn(crate::services::communication::pairing::run_peer_gate(
+                        link, state, db_path,
+                    ));
+                }
+                Err(err) => panic!("stub server accept failed: {err}"),
+            }
+        }
+    }
+}
+
 
 async fn free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -142,14 +370,14 @@ async fn set_preferred_channel_flips_primary_without_disturbing_either_session()
     let tcp_port = free_port().await;
     let loopback_port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), tcp_port));
-    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
+    tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let mut tcp_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port).await.expect("dial tcp");
     session::perform_client_auth(tcp_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("tcp auth should succeed for paired device");
-    let mut loopback_link = loopback::dial(loopback_port).await.expect("dial loopback");
+    let mut loopback_link = bluetooth_stub::dial(loopback_port).await.expect("dial loopback");
     session::perform_client_auth(loopback_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("sim (bluetooth-kind) auth should succeed for paired device");
@@ -348,14 +576,14 @@ async fn switching_bluetooth_off_releases_the_primary_and_flips_it_to_network() 
     let tcp_port = free_port().await;
     let loopback_port = free_port().await;
     tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), tcp_port));
-    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
+    tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let mut tcp_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port).await.expect("dial tcp");
     session::perform_client_auth(tcp_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("tcp auth should succeed for paired device");
-    let mut loopback_link = loopback::dial(loopback_port).await.expect("dial loopback");
+    let mut loopback_link = bluetooth_stub::dial(loopback_port).await.expect("dial loopback");
     session::perform_client_auth(loopback_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("sim (bluetooth-kind) auth should succeed for paired device");
@@ -441,7 +669,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
         let Ok((stream, _addr)) = ble_listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
@@ -452,7 +680,7 @@ async fn disabling_bluetooth_excludes_it_from_primary_fallback_even_before_its_s
         .expect("tcp auth should succeed for paired device");
 
     let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
-    let mut ble_link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(ble_stream));
+    let mut ble_link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(ble_stream));
     session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
@@ -537,13 +765,13 @@ async fn disabling_unpinned_bluetooth_flips_primary_immediately() {
         let Ok((stream, _addr)) = ble_listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
     sleep(Duration::from_millis(100)).await;
 
     let ble_stream = TcpStream::connect(("127.0.0.1", ble_port)).await.unwrap();
-    let mut ble_link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(ble_stream));
+    let mut ble_link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(ble_stream));
     session::perform_client_auth(ble_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("bluetooth-kind auth should succeed for a bonded, enabled paired device");
@@ -1063,10 +1291,10 @@ async fn loopback_gate_accepts_a_paired_device_and_claims_the_bluetooth_session(
     // in -- exactly as a real radio would.
     seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
     let port = free_port().await;
-    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), port));
+    tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = loopback::dial(port).await.expect("dial");
+    let mut link = bluetooth_stub::dial(port).await.expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth should succeed for paired device");
@@ -1094,7 +1322,7 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
         server_db.clone(),
         tcp_port,
     ));
-    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
+    tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let mut first_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port)
@@ -1111,7 +1339,7 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
 
     // A second connection on a *different* transport must be accepted, not
     // rejected -- the old sticky single-session invariant no longer holds.
-    let mut second_link = loopback::dial(loopback_port).await.expect("dial loopback");
+    let mut second_link = bluetooth_stub::dial(loopback_port).await.expect("dial loopback");
     session::perform_client_auth(second_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("a session on a second transport must also be accepted");
@@ -1142,12 +1370,12 @@ async fn both_adapters_satisfy_the_transport_port() {
         server_db.clone(),
         tcp_port,
     ));
-    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), loopback_port));
+    tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let adapters: Vec<(Box<dyn Transport>, u16, ChannelKind)> = vec![
         (Box::new(tcp_ws::TcpWsTransport), tcp_port, ChannelKind::Network),
-        (Box::new(loopback::LoopbackTransport), loopback_port, ChannelKind::Bluetooth),
+        (Box::new(bluetooth_stub::StubTransport), loopback_port, ChannelKind::Bluetooth),
     ];
 
     for (adapter, port, expected_kind) in adapters {
@@ -1446,12 +1674,12 @@ async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("a paired but bluetooth-disabled device must be rejected over a Bluetooth-kind link");
@@ -1496,12 +1724,12 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("a bluetooth-enabled, bonded paired device should authenticate over a Bluetooth-kind link");
@@ -1557,12 +1785,12 @@ async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
         // neither the stored address nor OS-bonded -- the shape of every
         // real Android peer, which advertises under a rotating address that
         // by construction matches nothing stored.
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_server, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("an authenticated peer must be accepted regardless of its address");
@@ -1595,12 +1823,12 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::PairRequest(PairRequestPayload {
@@ -1655,12 +1883,12 @@ async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::PairComplete(PairCompletePayload {
@@ -1761,12 +1989,12 @@ async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {
@@ -1811,12 +2039,12 @@ async fn bluetooth_probe_gets_no_reply_when_the_channel_is_switched_off() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {
@@ -1847,12 +2075,12 @@ async fn bluetooth_probe_gets_no_reply_from_an_unpaired_device_id() {
         let Ok((stream, _addr)) = listener.accept().await else {
             return;
         };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(loopback::LoopbackDataLink::new(stream))));
+        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
         crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
     });
 
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(loopback::LoopbackDataLink::new(stream));
+    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     send_frame(
         link.as_mut(),
         &PeerFrame::BluetoothProbe {
@@ -2012,75 +2240,5 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
     assert!(
         server.try_claim_session("peer-client", ChannelKind::Network, tx2, &server_db),
         "a later connection from the same peer must be able to claim the freed slot"
-    );
-}
-
-/// Both ends of a loopback pair running a real session, which is what the
-/// `actors-loopback` e2e lane does and what no test here did.
-///
-/// Every other loopback test dials, authenticates, and then holds the link
-/// itself -- so the dialer never runs `run_session`, and a session that dies
-/// the instant both sides start talking looked green from in here. In the
-/// lane it died immediately, with the accepting side reading a frame length
-/// of two billion: the bytes were `{"v`, the start of an envelope written
-/// without its length prefix.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_loopback_session_survives_both_ends_running_it() {
-    let _guard = BLUETOOTH_ADDRESS_ENV_LOCK.lock().unwrap();
-
-    let (server, server_db) = server_state("loopback-both-ends-server");
-    let (client, client_db) = server_state("loopback-both-ends-client");
-
-    seed_paired_device(&server_db, &client.identity.device_id);
-    seed_bluetooth_enabled_peer(&server_db, &client.identity.device_id, "AA:BB:CC:DD:EE:01");
-    seed_paired_device(&client_db, &server.identity.device_id);
-    seed_bluetooth_enabled_peer(&client_db, &server.identity.device_id, "AA:BB:CC:DD:EE:02");
-
-    // Both ends listen, and the dialer's candidate list carries its own
-    // port first -- which is what the harness hands every actor, so every
-    // actor dials itself before it reaches the peer.
-    let port = free_port().await;
-    let client_port = free_port().await;
-    tokio::spawn(loopback::run_server(server.clone(), server_db.clone(), port));
-    tokio::spawn(loopback::run_server(client.clone(), client_db.clone(), client_port));
-    sleep(Duration::from_millis(100)).await;
-
-    // The real dialer, not a hand-held link: it authenticates, claims the
-    // session and runs the loop, exactly as the lane does.
-    let dialer_peer = server.identity.device_id.clone();
-    tokio::spawn(loopback::dial_with_backoff(
-        client.clone(),
-        client_db.clone(),
-        dialer_peer.clone(),
-        vec![client_port, port],
-    ));
-
-    // Tick both sides while the session runs, which the lane does and the
-    // other tests here never did. The tick is what re-enters the dial loop
-    // and what drains the outbox, so a session is only really exercised
-    // with it running.
-    for _ in 0..6 {
-        {
-            let mut conn = open_db_at_path(&server_db);
-            let _ = crate::services::communication::sync::commands::space_sync_tick_impl(
-                &mut conn, &server,
-            );
-        }
-        {
-            let mut conn = open_db_at_path(&client_db);
-            let _ = crate::services::communication::sync::commands::space_sync_tick_impl(
-                &mut conn, &client,
-            );
-        }
-        sleep(Duration::from_millis(500)).await;
-    }
-
-    assert!(
-        client.has_session_on(&dialer_peer, ChannelKind::Bluetooth),
-        "the dialing side should still hold its session"
-    );
-    assert!(
-        server.has_session_on(&client.identity.device_id, ChannelKind::Bluetooth),
-        "the accepting side should still hold its session"
     );
 }

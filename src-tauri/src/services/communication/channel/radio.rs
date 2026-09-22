@@ -9,21 +9,7 @@
 //! | | reaches a peer by | used where |
 //! |---|---|---|
 //! | `GattRadio` | BLE advertising, scanning and GATT, via `ble-gatt` | real devices |
-//! | `LoopbackRadio` | a TCP connection to `127.0.0.1` | CI, which has no radio |
 //!
-//! `LoopbackRadio` is what used to be called "Sim", and the rename is the
-//! point: it was read as a fourth kind of channel sitting beside Network and
-//! Bluetooth, which it never was. A person cannot choose it, it appears in no
-//! table and no screen, and it has no discovery of its own — peers are a list
-//! of port numbers in an environment variable. It is one implementation of
-//! the Bluetooth channel, chosen when the machine has no Bluetooth.
-//!
-//! It earns its place because CI genuinely has no radio, and the behaviour
-//! most worth testing is "the network is unavailable, so use the other
-//! channel". `ble-gatt`'s mock broker covers a different and more faithful
-//! case — all the real BLE code, with only the radio faked — and the two
-//! lanes prove different things.
-
 use async_trait::async_trait;
 
 use crate::services::communication::pairing::DeviceConnectionState;
@@ -200,45 +186,14 @@ impl Radio for GattRadio {
 
 /// The one for machines with no Bluetooth: a TCP connection to `127.0.0.1`,
 /// with peers given as a list of ports rather than discovered.
-pub struct LoopbackRadio;
-
-#[async_trait]
-impl Radio for LoopbackRadio {
-    /// Always. It is loopback — if the process is running, it works.
-    fn available(&self) -> bool {
-        true
-    }
-
-    #[cfg(any(feature = "ui-plane", test))]
-    fn serve(&self, state: &DeviceConnectionState) {
-        super::loopback::maybe_spawn_server(state.clone(), state.db_path.clone());
-    }
-
-    #[cfg(not(any(feature = "ui-plane", test)))]
-    fn serve(&self, _state: &DeviceConnectionState) {}
-
-    fn dial(&self, state: &DeviceConnectionState, peers: &[String]) {
-        let peers: std::collections::HashSet<String> = peers.iter().cloned().collect();
-        super::loopback::spawn_fallback_dial_loop(state, state.db_path.clone(), &peers);
-    }
-
-    /// No discovery to consult: a configured port either answers or it does
-    /// not, and finding that out is the dial. Saying "reachable" here lets
-    /// the dial be the test, which is what this radio is for.
-    fn is_reachable(&self, _peer_device_id: &str) -> bool {
-        true
-    }
-}
-
-/// Which radio this process should use.
+/// The radio this process uses.
 ///
-/// `FINI_LOOPBACK_PORT` being set is the injection point: nothing but a test
-/// harness sets it, and a build that has it set has, by construction, no
-/// radio to use instead.
+/// One implementation, chosen at compile time by the platform. There used
+/// to be a second -- a loopback TCP stand-in selected by an environment
+/// variable, for CI without a radio -- and this returned whichever the
+/// environment asked for. `ble-gatt`'s mock broker covers that ground
+/// better: it fakes the radio underneath `ble`, so the whole Bluetooth
+/// path above it is the real one.
 pub fn for_this_device() -> Box<dyn Radio> {
-    if super::loopback::configured_listen_port().is_some() {
-        Box::new(LoopbackRadio)
-    } else {
-        Box::new(GattRadio)
-    }
+    Box::new(GattRadio)
 }

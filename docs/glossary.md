@@ -145,22 +145,21 @@ Unrelated to everything above: the app-update track (stable/beta).
 ### Radio
 
 How the Bluetooth channel reaches a peer, injected into
-`BluetoothChannelService` rather than reached for. `GattRadio` on a real
-device; `LoopbackRadio` — a TCP connection to `127.0.0.1` — where there is no
-hardware, which is CI.
+`BluetoothChannelService` rather than reached for. `GattRadio`, via
+`ble-gatt`, is the only one.
 
-`LoopbackRadio` was called "Sim", and the rename is the point: it read as a
-fourth kind of channel beside Network and Bluetooth, which it never was. A
-person cannot choose it, it appears in no table and on no screen, and it has
-no discovery of its own. It is one way of connecting the Bluetooth channel,
-and its links say so — `ChannelKind::Bluetooth`, the same as any other.
+There was a second — a TCP stand-in on `127.0.0.1`, called "Sim" and then
+`LoopbackRadio` — for CI, which has no hardware. It is gone. Renaming it
+never fixed what was wrong with it: it still read as a third kind of channel
+beside Network and Bluetooth, it still had to be carried through every
+switch and table that talks about channels, and it still invited the
+question "which one am I on" that the whole channels model exists to remove.
 
-It is not a mock. Links go through the same `DataLink`, codec, gate and
-session loop as real ones, so a test over it exercises everything except the
-radio. `ble-gatt`'s **mock broker** is the other CI stand-in and sits one
-layer deeper: all the real BLE code, with only the radio faked. The two lanes
-prove different things — loopback proves fallback works, the broker proves
-Bluetooth works.
+`ble-gatt`'s **mock broker** covers CI properly, and one layer deeper: it
+fakes the radio underneath `ble`, so the dial loop, the peripheral accept,
+the session claim and the GATT roles above it are all the real code. That is
+a better proof than a stand-in channel was, and it costs nothing in the
+product.
 
 ## Known gaps
 

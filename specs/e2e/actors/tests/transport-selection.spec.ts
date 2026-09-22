@@ -2,11 +2,11 @@ import { test, expect } from '../fixtures.ts';
 import { ensureSyncedActors } from '../helpers/device-sync.ts';
 
 /**
- * Companion to `peer-sync-over-loopback.spec.ts`: proves the network-first half
+ * Companion to `peer-sync-over-ble.spec.ts`: proves the network-first half
  * of primary-transport selection in the real app. Normal actors (network
  * transport available, the default/common case) must report `tcp_ws` as
  * primary via the same `device_connection_session_channel` surface the
- * loopback test asserts `bluetooth` on. Together the two specs prove primary
+ * BLE test asserts `bluetooth` on. Together the two specs prove primary
  * selection end-to-end: network wins whenever it's connected. See
  * `specs/e2e/transports.md`.
  */

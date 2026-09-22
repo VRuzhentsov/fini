@@ -134,9 +134,6 @@ function externalActorPorts(): Map<string, number> {
  * channel has to carry the traffic, and differ in how far down the fake
  * goes:
  *
- * - 'loopback' swaps the whole radio for a TCP connection on 127.0.0.1
- *   (`radio::LoopbackRadio`). Proves fallback and selection without needing
- *   the BLE stack to run at all.
  * - 'ble' keeps all the real `ble.rs` code and fakes only the radio beneath
  *   it, via `ble-gatt`'s `mock-broker`. More faithful, and the only one that
  *   proves Bluetooth itself works — see `helpers/ble-sync.ts` and
@@ -144,10 +141,9 @@ function externalActorPorts(): Map<string, number> {
  *
  * See `specs/e2e/transports.md`.
  */
-export type ActorTransport = 'network' | 'loopback' | 'ble';
+export type ActorTransport = 'network' | 'ble';
 
 function actorTransport(): ActorTransport {
-  if (process.env.FINI_E2E_TRANSPORT === 'loopback') return 'loopback';
   if (process.env.FINI_E2E_TRANSPORT === 'ble') return 'ble';
   return 'network';
 }
@@ -165,8 +161,7 @@ function fakeBluetoothAddress(index: number): string {
 
 /**
  * Clear of the discovery/ws range (`baseDiscoveryPort + index*2` and
- * `+1`) and the loopback range (`baseDiscoveryPort + slugCount*2 + 1000..
- * +1000+slugCount-1`) computed above -- one broker shared by every actor,
+ * `+1`) computed above -- one broker shared by every actor,
  * not one per actor, so this doesn't take an index.
  */
 function bleBrokerPort(baseDiscoveryPort: number, slugCount: number): number {
@@ -286,23 +281,14 @@ function spawnActorProcess(
   const discoveryPort = baseDiscoveryPort + index * 2;
   const wsPort = discoveryPort + 1;
   const peerPorts = slugs.map((_, peerIndex) => String(baseDiscoveryPort + peerIndex * 2)).join(',');
-  const loopbackBasePort = baseDiscoveryPort + slugs.length * 2 + 1000;
-  const loopbackPort = loopbackBasePort + index;
-  const peerLoopbackPorts = slugs.map((_, peerIndex) => String(loopbackBasePort + peerIndex)).join(',');
   const transport = actorTransport();
 
   mkdirSync(dataDir, { recursive: true });
   rmSync(socketPath, { force: true });
 
   const transportEnv: Record<string, string> =
-    transport === 'loopback'
+    transport === 'ble'
       ? {
-          FINI_DISCOVERY_DISABLED: '1',
-          FINI_LOOPBACK_PORT: String(loopbackPort),
-          FINI_LOOPBACK_PEER_PORTS: peerLoopbackPorts,
-        }
-      : transport === 'ble'
-        ? {
             FINI_DISCOVERY_DISABLED: '1',
             FINI_BLE_MOCK_BROKER: `127.0.0.1:${bleBrokerPort(baseDiscoveryPort, slugs.length)}`,
             // Required by the mock broker: `ble.rs` refuses to start without
@@ -310,9 +296,9 @@ function spawnActorProcess(
             // satisfying an OS-bond check in `bluetooth_dial_candidates`.
             // ADR-0006 deleted that check, so the variable had no reader left
             // and was only telling the next person a gate existed.
-            FINI_LOCAL_BLUETOOTH_ADDRESS: fakeBluetoothAddress(index),
-          }
-        : {};
+          FINI_LOCAL_BLUETOOTH_ADDRESS: fakeBluetoothAddress(index),
+        }
+      : {};
 
   const child = spawn(binaryPath, [], {
     env: {
