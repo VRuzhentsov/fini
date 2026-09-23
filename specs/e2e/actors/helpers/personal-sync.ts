@@ -102,7 +102,7 @@ async function tickActors(actors: E2EActor[]): Promise<void> {
   }
 }
 
-async function waitForMappingControlsReady(actor: E2EActor, spaceId: string): Promise<void> {
+export async function waitForMappingControlsReady(actor: E2EActor, spaceId: string): Promise<void> {
   await pollUntil(`${actor.slug} mapping controls ready`, async () => {
     const state = await actor.page.evaluate<{ disabled: boolean; checked: boolean }>(`(() => {
       const checkbox = document.querySelector(${JSON.stringify(spaceCheckboxSelector(spaceId))});

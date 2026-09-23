@@ -1,0 +1,106 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import packageJson from "../../../package.json";
+import AboutCard from "../../components/settings/AboutCard.vue";
+import AutomaticUpdatesSettingsSection from "../../components/settings/AutomaticUpdatesSettingsSection.vue";
+import BackupSettingsSection from "../../components/settings/BackupSettingsSection.vue";
+import DevicesSettingsSection from "../../components/settings/DevicesSettingsSection.vue";
+import SettingsListGroup from "../../components/settings/SettingsListGroup.vue";
+import SettingsListItem from "../../components/settings/SettingsListItem.vue";
+import SpacesSettingsSection from "../../components/settings/SpacesSettingsSection.vue";
+import ThemeSelector from "../../components/settings/ThemeSelector.vue";
+import { useDeviceStore, type PairedDevice } from "../../stores/device";
+import { useSpaceStore } from "../../stores/space";
+
+const spaceStore = useSpaceStore();
+const deviceStore = useDeviceStore();
+const settingsSearchQuery = ref("");
+const startupAutoUpdateSupported = ref(false);
+// Counts requests to open the pairing dialog rather than flagging one, so a
+// second request after the dialog has been closed still registers.
+const pairRequests = ref(0);
+const appVersion = packageJson.version;
+const sourceUrl = "https://github.com/VRuzhentsov/fini";
+
+type SettingsSearchAction = "overview" | "add-device";
+interface SettingsSearchResult { id: string; title: string; description?: string; action?: SettingsSearchAction; to?: string; href?: string; }
+interface SettingsSearchGroup { id: string; title: string; results: SettingsSearchResult[]; }
+
+const normalizedSettingsSearchQuery = computed(() => settingsSearchQuery.value.trim().toLocaleLowerCase());
+function matchesSettingsSearch(parts: Array<string | null | undefined>) {
+  const query = normalizedSettingsSearchQuery.value;
+  return !query || parts.some((part) => part?.toLocaleLowerCase().includes(query));
+}
+function devicePresenceLabel(device: PairedDevice) {
+  return deviceStore.isDeviceOnline(device) ? "Online" : "Offline";
+}
+function visibleSearchResults(groupTitle: string, results: SettingsSearchResult[]) {
+  if (matchesSettingsSearch([groupTitle])) return results;
+  return results.filter((result) => matchesSettingsSearch([result.title, result.description]));
+}
+
+const renderLists = computed(() => ({
+  settingsSections: [
+    { id: "spaces", component: SpacesSettingsSection },
+    { id: "devices", component: DevicesSettingsSection, props: { pairRequests: pairRequests.value } },
+    { id: "appearance", component: ThemeSelector },
+    ...(startupAutoUpdateSupported.value ? [{ id: "updates", component: AutomaticUpdatesSettingsSection, props: { initialSupported: true } }] : []),
+    { id: "backup", component: BackupSettingsSection },
+    { id: "about", component: AboutCard, props: { version: appVersion, sourceUrl } },
+  ],
+  searchResultGroups: [
+    { id: "spaces", title: "Spaces", results: visibleSearchResults("Spaces", [...spaceStore.spaces.map((space) => ({ id: `space-${space.id}`, title: space.name, description: "Manage named contexts", action: "overview" as const })), { id: "add-space", title: "Add space", description: "New space name", action: "overview" as const }]) },
+    { id: "devices", title: "Devices", results: visibleSearchResults("Devices", [...deviceStore.pairedDevices.map((device) => ({ id: `device-${device.peer_device_id}`, title: device.display_name, description: devicePresenceLabel(device), to: `/settings/device/${device.peer_device_id}` })), { id: "add-device", title: "Add device", description: "Pair a new device", action: "add-device" as const }]) },
+    { id: "appearance", title: "Appearance", results: visibleSearchResults("Appearance", [{ id: "theme", title: "Theme", description: "System, Light, or Dark", action: "overview" }]) },
+    ...(startupAutoUpdateSupported.value ? [{ id: "updates", title: "Updates", results: visibleSearchResults("Updates", [{ id: "automatic-updates", title: "Automatic updates", description: "Install updates automatically on restart", action: "overview" as const }]) }] : []),
+    { id: "backup", title: "Backup", results: visibleSearchResults("Backup", [{ id: "export-backup", title: "Export backup", description: "Save spaces and quests to a portable file", action: "overview" }, { id: "import-backup", title: "Import backup", description: "Restore from a portable backup file", action: "overview" }]) },
+    { id: "about", title: "About", results: visibleSearchResults("About", [{ id: "version", title: "Version", description: appVersion, action: "overview" }, { id: "source-code", title: "Source code", description: "Project source repository", href: sourceUrl }]) },
+  ].filter((group): group is SettingsSearchGroup => group.results.length > 0),
+}));
+
+const renderFlags = computed(() => ({
+  settingsOverview: !normalizedSettingsSearchQuery.value,
+  settingsSearchResults: Boolean(normalizedSettingsSearchQuery.value) && renderLists.value.searchResultGroups.length > 0,
+  settingsSearchEmptyState: Boolean(normalizedSettingsSearchQuery.value) && renderLists.value.searchResultGroups.length === 0,
+}));
+
+onMounted(() => {
+  void spaceStore.fetchSpaces();
+  void deviceStore.hydrate();
+  void hydrateStartupAutoUpdateSupport();
+});
+
+async function hydrateStartupAutoUpdateSupport() {
+  try {
+    startupAutoUpdateSupported.value = await invoke<boolean>("startup_auto_update_supported");
+  } catch {
+    startupAutoUpdateSupported.value = false;
+  }
+}
+
+// Picking a result always returns to the overview. A result carrying an
+// action does one more thing on the way -- "Add device" opens the pairing
+// dialog, which lives in the devices section below.
+function openSearchResult(result: SettingsSearchResult) {
+  settingsSearchQuery.value = "";
+  if (result.action === "add-device") pairRequests.value += 1;
+}
+</script>
+
+<template>
+  <div class="flex flex-col gap-3 pb-24">
+    <label class="input input-bordered flex w-full items-center bg-base-100"><input v-model="settingsSearchQuery" type="search" class="w-full" placeholder="Search settings" aria-label="Search settings" data-testid="settings-search-input" /></label>
+
+    <div v-if="renderFlags.settingsSearchResults" class="flex flex-col gap-4" data-testid="settings-search-results">
+      <section v-for="group in renderLists.searchResultGroups" :key="group.id" class="rounded-xl bg-base-200 p-3" data-testid="settings-search-group">
+        <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide opacity-70">{{ group.title }}</h2>
+        <SettingsListGroup><SettingsListItem v-for="result in group.results" :key="result.id" :to="result.to" :href="result.href" :button="!result.to && !result.href" :testid="`settings-search-result-${result.id}`" @click="openSearchResult(result)"><template #start><div><span class="block font-medium">{{ result.title }}</span><span v-if="result.description" class="block text-xs opacity-60">{{ result.description }}</span></div></template><template #trailing><span class="text-sm opacity-50">›</span></template></SettingsListItem></SettingsListGroup>
+      </section>
+    </div>
+
+    <component v-for="section in renderLists.settingsSections" v-else-if="renderFlags.settingsOverview" :is="section.component" :key="section.id" v-bind="section.props" />
+
+    <section v-if="renderFlags.settingsSearchEmptyState" class="rounded-xl bg-base-200 p-6 text-center" data-testid="settings-search-empty"><h2 class="text-sm font-semibold">No settings found</h2><p class="mt-1 text-xs opacity-60">Try a different search term.</p></section>
+  </div>
+</template>

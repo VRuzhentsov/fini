@@ -26,7 +26,16 @@ src-tauri/
 Most of this tree is ordinary. These few are not: change them only with the
 linked decision record in hand, and expect a review to ask why.
 
-### `src/services/device_connection/link_state.rs` — the link state machine
+### `src/services/communication/` — how two devices reach each other
+
+Start at [its `README.md`](src/services/communication/README.md) before
+changing anything under `pairing/`, `channel/` or `sync/`. It is where
+`Channel`, `PeerSession`, `DataLink` and `PeerFrame` are told apart — four
+words that sound interchangeable and are not, and getting them confused is
+how the protocol ends up duplicated per channel. Definitions live in
+[`docs/glossary.md`](../docs/glossary.md).
+
+### `src/services/communication/pairing/link_state.rs` — the link state machine
 
 **Read [ADR-0005](../docs/adr/0005-transport-link-state-machine.md) before
 touching this file.**

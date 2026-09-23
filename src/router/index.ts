@@ -2,9 +2,8 @@ import { createRouter, createWebHashHistory } from "vue-router";
 import FocusView from "../views/FocusView.vue";
 import QuestsView from "../views/QuestsView.vue";
 import HistoryView from "../views/HistoryView.vue";
-import SettingsView from "../views/SettingsView.vue";
-import AddDeviceView from "../views/AddDeviceView.vue";
-import DeviceView from "../views/DeviceView.vue";
+import SettingsView from "../views/settings/SettingsView.vue";
+import DeviceView from "../views/settings/DeviceView.vue";
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -14,7 +13,11 @@ const router = createRouter({
     { path: "/quests", component: QuestsView },
     { path: "/history", component: HistoryView },
     { path: "/settings", component: SettingsView },
-    { path: "/settings/add-device", component: AddDeviceView },
+    // Adding a device has no route: it is a dialog on this page, a short
+    // ceremony you come back from rather than a place you navigate to. A
+    // path for it would be a URL that renders Settings and then opens
+    // something on top -- a second way to describe one screen, and one the
+    // back button would have to be taught about.
     { path: "/settings/device/:id", component: DeviceView },
   ],
 });

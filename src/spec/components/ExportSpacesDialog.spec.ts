@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import ExportSpacesDialog from "../../components/SettingsView/ExportSpacesDialog.vue";
+import ExportSpacesDialog from "../../components/settings/ExportSpacesDialog.vue";
 import { useSpaceStore } from "../../stores/space";
 import { useQuestStore } from "../../stores/quest";
 import { useBackupStore } from "../../stores/backup";

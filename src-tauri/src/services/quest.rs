@@ -23,11 +23,11 @@ use crate::services::db::{sync_timestamp, utc_now};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::device_connection::DeviceConnectionState;
+use crate::services::communication::pairing::DeviceConnectionState;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::reminder;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::space_sync::outbox::{emit_sync_event, emit_sync_event_at};
+use crate::services::communication::sync::outbox::{emit_sync_event, emit_sync_event_at};
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import MergeConflictDialog from "../../components/SettingsView/MergeConflictDialog.vue";
+import MergeConflictDialog from "../../components/settings/MergeConflictDialog.vue";
 
 const conflicts = [
   {

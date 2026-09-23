@@ -90,17 +90,28 @@ diesel::table! {
 
 diesel::table! {
     paired_devices (peer_device_id) {
-        peer_device_id             -> Text,
-        display_name               -> Text,
-        paired_at                  -> Text,
-        last_seen_at               -> Nullable<Text>,
-        pair_state                 -> Text,
-        bluetooth_enabled          -> Bool,
-        bluetooth_address          -> Nullable<Text>,
-        bluetooth_last_verified_at -> Nullable<Text>,
-        bluetooth_disabled_by_user -> Bool,
-        preferred_transport -> Nullable<Text>,
-        preferred_transport_set_at -> Nullable<Text>,
+        peer_device_id -> Text,
+        display_name   -> Text,
+        paired_at      -> Text,
+        last_seen_at   -> Nullable<Text>,
+        pair_state     -> Text,
+    }
+}
+
+diesel::table! {
+    channel_kinds (code) {
+        code -> Text,
+    }
+}
+
+diesel::table! {
+    channels (device_id, channel_kind) {
+        device_id     -> Text,
+        channel_kind  -> Text,
+        enabled       -> Bool,
+        is_primary    -> Bool,
+        address       -> Nullable<Text>,
+        configured_at -> Text,
     }
 }
 
@@ -178,6 +189,8 @@ diesel::joinable!(reminders -> quests (quest_id));
 diesel::joinable!(series_reminder_templates -> quest_series (series_id));
 diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
 diesel::joinable!(pair_space_mappings -> spaces (space_id));
+diesel::joinable!(channels -> paired_devices (device_id));
+diesel::joinable!(channels -> channel_kinds (channel_kind));
 diesel::joinable!(focus_history -> quests (quest_id));
 diesel::joinable!(checklist_activity -> quests (quest_id));
 
@@ -190,6 +203,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     series_reminder_templates,
     paired_devices,
     pair_space_mappings,
+    channel_kinds,
+    channels,
     focus_history,
     sync_outbox,
     sync_acks,

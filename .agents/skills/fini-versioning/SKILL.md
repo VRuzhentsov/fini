@@ -32,7 +32,7 @@ Treat these as app version surfaces:
 | `src-tauri/Cargo.toml` | Rust crate and CLI version metadata |
 | `src-tauri/Cargo.lock` | Resolved root crate version |
 | `src-tauri/tauri.conf.json` | Tauri app/bundle version metadata |
-| `src/views/SettingsView.vue` | About version read path |
+| `src/views/settings/SettingsView.vue` | About version read path |
 | `src-tauri/src/services/cli.rs` | CLI version read path through Clap package metadata |
 | Android build variables | Android `versionName` and `versionCode` behavior |
 | `.github/workflows/release-tag.yml` | Release CI build and packaging behavior |

@@ -6,31 +6,31 @@ import { openDeviceDetailsFromSettings } from './personal-sync.ts';
 
 /**
  * Readiness + pairing for the BLE-transport actor suite
- * (`FINI_E2E_TRANSPORT=ble`). Mirrors `sim-sync.ts` almost exactly -- same
- * reason: actors are spawned with `FINI_DISCOVERY_DISABLED=1`, so there is
- * nothing to discover by design and the normal `ensureSyncedActors` UI-pair
- * flow doesn't apply. The difference from Sim is what's underneath: these
+ * (`FINI_E2E_TRANSPORT=ble`). Actors are spawned with
+ * `FINI_DISCOVERY_DISABLED=1`, so there is nothing to discover by design and
+ * the normal `ensureSyncedActors` UI-pair flow doesn't apply. What is
+ * underneath is the real thing: these
  * actors dial the real `ble.rs` code path (dial loop, peripheral accept,
  * session claim) against a cross-process mock radio instead of a plain TCP
- * stand-in, and pairing is marked `viaBluetooth: true` with a real (fake)
- * address so `bluetooth_dial_candidates` actually has something to find.
- * See `fixtures.ts`'s `fakeBluetoothAddress`/`FINI_BLUETOOTH_PAIRED_ADDRESSES`
- * wiring and `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in
- * `ble-gatt`.
+ * stand-in, and pairing is marked `viaBluetooth: true` so the Bluetooth
+ * channel is switched on for the pair -- which is what
+ * `bluetooth_dial_candidates` actually reads. See `fixtures.ts`'s
+ * `fakeBluetoothAddress` wiring and
+ * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  */
 
 interface PeerSessionDebugStatus {
   peer_session_count: number;
 }
 
-interface TransportStatusCode {
-  code: string;
-}
-
-interface TransportStatus {
+interface ChannelStatus {
   kind: 'network' | 'bluetooth';
   primary: boolean;
-  state: { state: 'unconfigured'; code: TransportStatusCode } | { state: 'configured'; code: TransportStatusCode | null };
+  // The category, straight from the backend. Green is `connected` -- the
+  // ping/ack proof having completed -- rather than a shape the test has to
+  // decode for itself.
+  status: 'off' | 'waiting' | 'down' | 'connecting' | 'fading' | 'connected';
+  reason: string | null;
 }
 
 /**
@@ -98,17 +98,13 @@ export async function ensureBlePairedActors(
 
 interface PairedDeviceRow {
   peer_device_id: string;
-  bluetooth_enabled: boolean;
-  bluetooth_address: string | null;
 }
 
-/**
- * The hardware precondition, stated as an assertion rather than set up by the
- * test: this actor already knows the peer, has Bluetooth enabled for it, and
- * holds an address. A failure here means the devices were never paired over
- * Bluetooth, which is a setup problem the run cannot fix for itself -- and a
- * far clearer message than the timeout it would otherwise become.
- */
+interface ChannelStatusRow {
+  kind: 'network' | 'bluetooth';
+  enabled: boolean;
+}
+
 /**
  * Asserts the pairing this run depends on, then makes sure Bluetooth is
  * actually switched on for it.
@@ -137,23 +133,28 @@ async function ensureBluetoothEnabledForPeer(
   peerDeviceId: string,
 ): Promise<void> {
   const paired = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
-  const row = paired.find((entry) => entry.peer_device_id === peerDeviceId);
-  expect(row, `${actor.actor.slug} should already be paired with ${peerDeviceId}`).toBeTruthy();
+  expect(
+    paired.some((entry) => entry.peer_device_id === peerDeviceId),
+    `${actor.actor.slug} should already be paired with ${peerDeviceId}`,
+  ).toBe(true);
 
-  if (row?.bluetooth_enabled) {
+  // The switch lives in `channels` now, not on the paired row: a pair made
+  // over the network has no Bluetooth row at all, so asking the paired row
+  // whether Bluetooth is on can only ever answer "no".
+  const statuses = await actor.actor.invoke<ChannelStatusRow[]>(
+    'device_connection_channel_statuses',
+    { peerDeviceId },
+  );
+  if (statuses.find((status) => status.kind === 'bluetooth')?.enabled) {
     return;
   }
-  // snake_case inside `input`, camelCase only at the top level: Tauri
-  // converts its own argument names, but the fields of a command's payload
-  // struct go straight through serde, and `DeviceBluetoothTransportInput`
-  // declares no rename.
-  await actor.actor.invoke('device_connection_set_bluetooth_transport', {
-    input: { peer_device_id: peerDeviceId, enabled: true, bluetooth_address: null },
-  });
 
-  const after = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
+  const after = await actor.actor.invoke<ChannelStatusRow[]>(
+    'device_connection_set_channel_enabled',
+    { peerDeviceId, kind: 'bluetooth', enabled: true },
+  );
   expect(
-    after.find((entry) => entry.peer_device_id === peerDeviceId)?.bluetooth_enabled,
+    after.find((status) => status.kind === 'bluetooth')?.enabled,
     `${actor.actor.slug} should have Bluetooth enabled for ${peerDeviceId}`,
   ).toBe(true);
 }
@@ -178,7 +179,7 @@ export async function waitForBleSession(actor: E2EActor, timeoutMs = 60_000): Pr
  * off, and what must hold is that *this peer* is absent -- another device on
  * the desktop's network is irrelevant and must not fail the run.
  */
-export async function expectNetworkTransportUnavailable(
+export async function expectNetworkChannelUnavailable(
   actor: E2EActor,
   peerDeviceId?: string,
 ): Promise<void> {
@@ -235,47 +236,63 @@ const PRESENCE_FRESHNESS_MS = 60_000;
  * here directly guards that class of bug, not just "a session exists
  * somewhere."
  */
-export async function waitForGreenTransport(
+export async function waitForGreenChannel(
   actor: E2EActor,
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
   await pollUntil(`${actor.slug} bluetooth transport reports green`, async () => {
     await actor.invoke('space_sync_tick');
-    const statuses = await actor.invoke<TransportStatus[]>('device_connection_transport_statuses', {
+    const statuses = await actor.invoke<ChannelStatus[]>('device_connection_channel_statuses', {
       peerDeviceId,
     });
     const bluetooth = statuses.find((status) => status.kind === 'bluetooth');
-    return (bluetooth?.state.state === 'configured' && bluetooth.state.code === null) || false;
+    return bluetooth?.status === 'connected' || false;
   }, timeoutMs, 1_000);
 }
 
 /**
  * The UI-facing half of "green": not just that the backend reports a live
- * session, but that `DeviceView.vue`'s Bluetooth row actually renders
- * "Connected now" -- and, just as importantly, never renders "Still
- * connecting..." along the way. Throws the moment that text appears
- * (mirrors `waitForApproveDialogToClose`'s `state.error` pattern above) so
- * `pollUntil`'s timeout message names the actual regression instead of a
- * generic "timed out" -- a transient "Still connecting..." blip before
- * settling green is exactly the class of regression this e2e lane exists
- * to catch.
+ * session, but that `DeviceView.vue`'s Bluetooth row actually says so.
+ *
+ * Reads `data-channel-state` rather than the row's text. The row's wording
+ * is copy and moves with the design -- this assertion is about the state
+ * machine behind it, and keying on prose made an earlier version of this
+ * helper fail on a rename that changed nothing it was meant to protect.
+ *
+ * The regression guard survives ADR-0007 in a stronger form. It used to
+ * trip on "Still connecting…", a label the page invented after 30s of an
+ * unchanging amber row; since ADR-0005 the backend gives up on its own and
+ * reports `bluetooth_dial_exhausted`, which this row renders as `down` with
+ * a "Couldn't connect" reason. That is a real terminal failure rather than
+ * a cosmetic one, so reaching it aborts the poll immediately with a message
+ * naming the regression, instead of burning the full timeout.
  */
 export async function waitForBluetoothRowConnectedInUi(
   actor: E2EActor,
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  await pollUntil(`${actor.slug} bluetooth row shows Connected now in the UI`, async () => {
+  const selector = '[data-testid="channel-status-row"][data-channel-kind="bluetooth"]';
+
+  await pollUntil(`${actor.slug} bluetooth row reports a connected channel in the UI`, async () => {
     await openDeviceDetailsFromSettings(actor, peerDeviceId);
     await actor.invoke('space_sync_tick');
-    const text = await actor.page.textContent(
-      '[data-testid="transport-status-row"][data-transport-kind="bluetooth"]',
-    );
-    const value = text?.trim() ?? '';
-    if (value.includes('Still connecting')) {
-      throw new Error(`${actor.slug} bluetooth row shows "Still connecting..." -- regression guard tripped`);
+
+    const state = await actor.page.evaluate<string>(`(() => {
+      const row = document.querySelector(${JSON.stringify(selector)});
+      return row ? (row.getAttribute('data-channel-state') ?? '') : '';
+    })()`);
+
+    if (state === 'down') {
+      const text = await actor.page.textContent(selector);
+      if ((text ?? '').includes("Couldn't connect")) {
+        throw new Error(
+          `${actor.slug} bluetooth row gave up dialling -- regression guard tripped`,
+        );
+      }
     }
-    return value.includes('Connected now') ? value : false;
+
+    return state === 'connected' ? state : false;
   }, timeoutMs, 1_000);
 }

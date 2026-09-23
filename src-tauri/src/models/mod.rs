@@ -1,3 +1,4 @@
+pub mod channel;
 pub mod checklist_activity;
 pub mod focus_history;
 pub mod notification_snooze;
@@ -10,6 +11,7 @@ pub mod settings;
 pub mod space;
 pub mod sync;
 
+pub use channel::*;
 pub use checklist_activity::*;
 pub use focus_history::*;
 pub use notification_snooze::*;

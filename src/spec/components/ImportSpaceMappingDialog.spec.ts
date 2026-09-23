@@ -1,5 +1,5 @@
 import { mount } from "@vue/test-utils";
-import ImportSpaceMappingDialog from "../../components/SettingsView/ImportSpaceMappingDialog.vue";
+import ImportSpaceMappingDialog from "../../components/settings/ImportSpaceMappingDialog.vue";
 
 jest.mock("../../stores/space", () => ({
   SPACE_COLOR_CLASS: {},

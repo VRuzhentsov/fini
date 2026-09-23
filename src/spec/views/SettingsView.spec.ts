@@ -1,7 +1,7 @@
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import SettingsView from "../../views/SettingsView.vue";
+import SettingsView from "../../views/settings/SettingsView.vue";
 import { useSpaceStore } from "../../stores/space";
 import { useDeviceStore } from "../../stores/device";
 
@@ -71,42 +71,47 @@ jest.mock("../../composables/useBackupImport", () => ({
   }),
 }));
 
-jest.mock("../../components/SettingsView/AboutCard.vue", () => ({
+jest.mock("../../components/settings/AboutCard.vue", () => ({
   __esModule: true,
   default: { name: "AboutCard", template: "<section data-testid='about-card-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/ExportSpacesDialog.vue", () => ({
+jest.mock("../../components/settings/ExportSpacesDialog.vue", () => ({
   __esModule: true,
   default: { name: "ExportSpacesDialog", template: "<section data-testid='export-spaces-dialog-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/ImportSpaceMappingDialog.vue", () => ({
+jest.mock("../../components/settings/ImportSpaceMappingDialog.vue", () => ({
   __esModule: true,
   default: { name: "ImportSpaceMappingDialog", template: "<section data-testid='import-space-mapping-dialog-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/MergeConflictDialog.vue", () => ({
+jest.mock("../../components/settings/MergeConflictDialog.vue", () => ({
   __esModule: true,
   default: { name: "MergeConflictDialog", template: "<section data-testid='merge-conflict-dialog-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/ThemeSelector.vue", () => ({
+jest.mock("../../components/settings/ThemeSelector.vue", () => ({
   __esModule: true,
   default: { name: "ThemeSelector", template: "<section data-testid='theme-selector-stub' />" },
 }));
 
-jest.mock("../../components/SettingsView/SpacesSettingsSection.vue", () => ({
+jest.mock("../../components/settings/SpacesSettingsSection.vue", () => ({
   __esModule: true,
   default: { name: "SpacesSettingsSection", template: "<section data-testid='spaces-settings-section-stub' />" },
 }), { virtual: true });
 
-jest.mock("../../components/SettingsView/DevicesSettingsSection.vue", () => ({
+jest.mock("../../components/settings/DevicesSettingsSection.vue", () => ({
   __esModule: true,
-  default: { name: "DevicesSettingsSection", template: "<section data-testid='devices-settings-section-stub' />" },
+  default: {
+    name: "DevicesSettingsSection",
+    props: { pairRequests: { type: Number, default: 0 } },
+    template:
+      "<section data-testid='devices-settings-section-stub' :data-pair-requests='pairRequests' />",
+  },
 }), { virtual: true });
 
-jest.mock("../../components/SettingsView/BackupSettingsSection.vue", () => ({
+jest.mock("../../components/settings/BackupSettingsSection.vue", () => ({
   __esModule: true,
   default: { name: "BackupSettingsSection", template: "<section data-testid='backup-settings-section-stub' />" },
 }), { virtual: true });
@@ -341,8 +346,34 @@ describe("SettingsView search", () => {
     expect(results.exists()).toBe(true);
     expect(results.text()).toContain("Devices");
     expect(results.text()).toContain("Add device");
-    expect(results.find('[data-to="/settings/add-device"]').exists()).toBe(true);
+    // An action, not a destination: pairing is a dialog on this page, so
+    // there is no route for the result to point at.
+    const addDevice = results.find('[data-testid="settings-search-result-add-device"]');
+    expect(addDevice.exists()).toBe(true);
+    expect(addDevice.attributes("data-to")).toBeUndefined();
+    expect(addDevice.element.tagName).toBe("BUTTON");
     expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
+  });
+
+  // The search result has to actually do its one job. Asserting only that it
+  // renders as a button would pass for a button wired to nothing, which is
+  // exactly what dropping the route could have left behind.
+  it("opens the pairing dialog from the Add device search result", async () => {
+    mockSettingsStores();
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    const devicesSection = () => wrapper.find('[data-testid="devices-settings-section-stub"]');
+    expect(devicesSection().attributes("data-pair-requests")).toBe("0");
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("add device");
+    await flushUi();
+    await wrapper.find('[data-testid="settings-search-result-add-device"]').trigger("click");
+    await flushUi();
+
+    // Picking any result returns to the overview, so the devices section is
+    // on screen again -- now asked to open its dialog.
+    expect(devicesSection().attributes("data-pair-requests")).toBe("1");
   });
 
   it("includes the static Add space row in spaces search results", async () => {

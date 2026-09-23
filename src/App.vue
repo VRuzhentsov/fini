@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
-import IncomingSpaceResolutionDialog from "./components/DeviceView/IncomingSpaceResolutionDialog.vue";
+import IncomingSpaceResolutionDialog from "./components/settings/device/IncomingSpaceResolutionDialog.vue";
 import ToastStack from "./components/ToastStack.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import SpacePicker from "./components/SpacePicker.vue";

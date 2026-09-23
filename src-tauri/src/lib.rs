@@ -15,7 +15,7 @@ use services::backup::{backup_apply_import, backup_export, backup_preflight_impo
 #[cfg(feature = "ui-plane")]
 use services::db::{app_data_dir, try_open_db, AppDbConnection};
 #[cfg(feature = "ui-plane")]
-use services::device_connection::{
+use services::communication::pairing::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
     device_connection_discover_bluetooth_candidates, device_connection_discovery_snapshot,
     device_connection_enter_add_mode, device_connection_find_bluetooth_address,
@@ -26,9 +26,11 @@ use services::device_connection::{
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
     device_connection_retry_bluetooth_dial, device_connection_save_paired_device,
     device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
-    device_connection_session_transport, device_connection_set_bluetooth_transport,
-    device_connection_set_preferred_transport, device_connection_transport_liveness,
-    device_connection_transport_statuses, device_connection_unpair, device_connection_update_last_seen,
+    device_connection_probe_bluetooth_adapter,
+    device_connection_session_channel, device_connection_set_channel_enabled,
+    device_connection_unlink_channel,
+    device_connection_set_primary_channel, device_connection_channel_liveness,
+    device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
     DeviceConnectionState,
 };
 #[cfg(feature = "ui-plane")]
@@ -60,15 +62,13 @@ use services::settings::{self, ThemeMode};
 #[cfg(feature = "ui-plane")]
 use services::space::{create_space, delete_space, get_spaces, update_space};
 #[cfg(feature = "ui-plane")]
-use services::space_sync::{
+use services::communication::sync::{
     space_sync_apply_remote_mappings, space_sync_list_mappings,
-    space_sync_resolve_custom_space_mapping, space_sync_status, space_sync_tick,
+    space_sync_queue_summary,
+    space_sync_resolve_custom_space_mapping, space_sync_status,
+    space_sync_tick,
     space_sync_update_mappings,
 };
-#[cfg(all(feature = "ui-plane", target_os = "linux"))]
-use services::transport::ble;
-#[cfg(feature = "ui-plane")]
-use services::transport::{sim, tcp_ws};
 #[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
@@ -205,16 +205,15 @@ fn sync_native_theme(app: AppHandle, theme: String) {
 
 /// Payload for `SESSION_CHANGED_EVENT` — ADR-0003 Phase 2. `established`
 /// distinguishes the two `LifecycleEvent` variants; `kind` is the
-/// finer-grained `services::transport::TransportKind` the event itself
-/// carries (TcpWs/Sim/Bluetooth), not `device_connection::transport`'s
-/// coarser Network/Bluetooth row kind — the frontend doesn't need to
-/// interpret it, it's just enough for the listener to log/filter on if it
-/// ever wants to.
+/// `ChannelKind` the event carries — the same Network/Bluetooth the row on
+/// the Device page shows, since there is only one such type now. The
+/// frontend doesn't need to interpret it, it's just enough for the listener
+/// to log or filter on if it ever wants to.
 #[cfg(feature = "ui-plane")]
 #[derive(Clone, serde::Serialize)]
 struct SessionChangedEvent {
     peer_device_id: String,
-    kind: services::transport::TransportKind,
+    kind: services::communication::channel::ChannelKind,
     established: bool,
 }
 
@@ -229,10 +228,10 @@ const SESSION_CHANGED_EVENT: &str = "device-connection://session-changed";
 /// window instead of staying wrong indefinitely). See ADR-0003 Phase 2.
 #[cfg(feature = "ui-plane")]
 async fn forward_session_lifecycle_events(
-    mut events: tokio::sync::broadcast::Receiver<services::transport::selection::LifecycleEvent>,
+    mut events: tokio::sync::broadcast::Receiver<services::communication::channel::selection::LifecycleEvent>,
     app: AppHandle,
 ) {
-    use services::transport::selection::LifecycleEvent;
+    use services::communication::channel::selection::LifecycleEvent;
 
     loop {
         let event = match events.recv().await {
@@ -253,6 +252,35 @@ async fn forward_session_lifecycle_events(
             }
         };
         let _ = app.emit(SESSION_CHANGED_EVENT, payload);
+    }
+}
+
+#[cfg(feature = "ui-plane")]
+const SYNC_CHANGED_EVENT: &str = "space-sync://changed";
+
+/// Forwards "a peer's change was applied locally" to the frontend, so the UI
+/// re-reads on the change itself rather than on a timer (issue #171).
+///
+/// Same shape as `forward_session_lifecycle_events` above, and same
+/// reasoning about lag: a dropped notification costs one late refresh, which
+/// `device.ts`'s slow safety poll picks up.
+///
+/// Carries no payload. What changed is already in SQLite, and the frontend
+/// re-reads it through the same commands it uses everywhere else; inventing
+/// a delta shape here would be a second source of truth for no gain.
+#[cfg(feature = "ui-plane")]
+async fn forward_sync_changed_events(
+    mut events: tokio::sync::broadcast::Receiver<()>,
+    app: AppHandle,
+) {
+    loop {
+        match events.recv().await {
+            Ok(()) => {
+                let _ = app.emit(SYNC_CHANGED_EVENT, ());
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        }
     }
 }
 
@@ -429,12 +457,19 @@ pub fn run() {
 
             let data_dir = app_data_dir(&app_handle);
             let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
-            tauri::async_runtime::spawn(tcp_ws::run_server(dc_state.clone(), dc_state.db_path.clone()));
-            sim::maybe_spawn_server(dc_state.clone(), dc_state.db_path.clone());
-            #[cfg(target_os = "linux")]
-            tauri::async_runtime::spawn(ble::run_server(dc_state.clone(), dc_state.db_path.clone()));
+            // Each channel starts its own discovery and its own accept loop.
+            // A channel that cannot run on this platform declines from inside
+            // its service, so this stays one line however many channels exist.
+            for channel in services::communication::channel::service::services(&dc_state) {
+                channel.start_discovery();
+                channel.start_serving();
+            }
             tauri::async_runtime::spawn(forward_session_lifecycle_events(
                 dc_state.subscribe_lifecycle(),
+                app_handle.clone(),
+            ));
+            tauri::async_runtime::spawn(forward_sync_changed_events(
+                services::communication::sync::commands::subscribe_data_changed(),
                 app_handle.clone(),
             ));
             app.manage(dc_state);
@@ -483,14 +518,16 @@ pub fn run() {
             device_connection_debug_status,
             device_connection_get_paired_devices,
             device_connection_save_paired_device,
-            device_connection_session_transport,
-            device_connection_set_bluetooth_transport,
-            device_connection_set_preferred_transport,
+            device_connection_session_channel,
+            device_connection_set_channel_enabled,
+            device_connection_unlink_channel,
+            device_connection_probe_bluetooth_adapter,
+            device_connection_set_primary_channel,
             device_connection_find_bluetooth_address,
             device_connection_send_pair_request_bluetooth,
             device_connection_discover_bluetooth_candidates,
-            device_connection_transport_statuses,
-            device_connection_transport_liveness,
+            device_connection_channel_statuses,
+            device_connection_channel_liveness,
             device_connection_retry_bluetooth_dial,
             device_connection_unpair,
             device_connection_update_last_seen,
@@ -501,6 +538,7 @@ pub fn run() {
             space_sync_resolve_custom_space_mapping,
             space_sync_tick,
             space_sync_status,
+            space_sync_queue_summary,
             theme_hint,
             get_auto_update_enabled,
             set_auto_update_enabled,

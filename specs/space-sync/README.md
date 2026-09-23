@@ -34,8 +34,8 @@ Per-pair space mapping lifecycle, sync session establishment, bootstrap transfer
 
 ## Primary UI Surfaces
 
-- `src/views/DeviceView.vue`
-- `src/components/DeviceView/IncomingSpaceResolutionDialog.vue`
+- `src/views/settings/DeviceView.vue`
+- `src/components/settings/device/IncomingSpaceResolutionDialog.vue`
 
 ## Related Features
 

@@ -206,59 +206,67 @@ describe("device store sync status", () => {
   });
 });
 
-describe("device store transport liveness", () => {
+describe("device store channel liveness", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     (invoke as unknown as jest.Mock).mockReset();
   });
 
   // Regression test for a P1 review finding: the lightweight live-poll
-  // (`refreshLiveConnectedState`, backed by `device_connection_transport_
-  // liveness`) used to only patch `primary`, leaving `state`/`code` frozen
-  // at whatever the last full `refreshTransportStatuses` poll saw -- wrong
-  // once green/amber became a continuously-reproven ping/ack proof that
-  // can lapse or complete independent of which transport is primary.
-  it("refreshes the ping/ack code, not just primary, on the lightweight poll", async () => {
+  // (`refreshLiveConnectedState`, backed by
+  // `device_connection_channel_liveness`) used to leave `state`/`code`
+  // frozen at whatever the last full `refreshChannelStatuses` poll saw --
+  // wrong once green/amber became a continuously-reproven ping/ack proof
+  // that can lapse or complete on its own.
+  //
+  // The poll deliberately carries no `primary`: the star is the person's
+  // stored choice, and letting a liveness signal rewrite it is how a
+  // setting appears to move by itself.
+  it("refreshes the ping/ack code on the lightweight poll, and never the star", async () => {
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
       {
         kind: "network",
+        configured: true,
+        enabled: true,
         primary: true,
-        state: { state: "configured", code: { code: "awaiting_first_ack" } },
+        address: null,
+        status: "connecting",
+        reason: "awaiting_first_ack",
       },
       {
         kind: "bluetooth",
+        configured: true,
+        enabled: false,
         primary: false,
-        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+        address: null,
+        status: "off",
+        reason: "disabled",
       },
     ]);
 
     const store = useDeviceStore();
-    await store.refreshTransportStatuses("peer-1");
-    expect(store.getTransportStatuses("peer-1")[0].state).toEqual({
-      state: "configured",
-      code: { code: "awaiting_first_ack" },
-    });
+    await store.refreshChannelStatuses("peer-1");
+    expect(store.getChannelStatuses("peer-1")[0].status).toBe("connecting");
+    expect(store.getChannelStatuses("peer-1")[0].reason).toBe("awaiting_first_ack");
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: true, primary: true, code: null },
-      { kind: "bluetooth", connected: false, primary: false, code: null },
+      { kind: "network", connected: true, reason: null },
+      { kind: "bluetooth", connected: false, reason: null },
     ]);
     await store.refreshLiveConnectedState("peer-1");
 
-    const [network, bluetooth] = store.getTransportStatuses("peer-1");
-    expect(network.state).toEqual({ state: "configured", code: null });
+    const [network, bluetooth] = store.getChannelStatuses("peer-1");
+    expect(network.status).toBe("connected");
+    expect(network.reason).toBeNull();
     expect(network.primary).toBe(true);
-    // Not connected: the lightweight poll can't explain why (disabled?
-    // out of range?), so the unconfigured row is left exactly as the last
-    // full poll reported it, not overwritten with a guess.
-    expect(bluetooth.state).toEqual({
-      state: "unconfigured",
-      code: { code: "bluetooth_disabled" },
-    });
+    // Switched off: there is no live state to patch, because the row says
+    // what the person chose rather than what a radio is doing.
+    expect(bluetooth.status).toBe("off");
+    expect(bluetooth.reason).toBe("disabled");
   });
 
   // Regression test for a P2 review finding: a configured-but-not-yet-
-  // connected transport (dial in flight, no session claimed) must report
+  // connected channel (dial in flight, no session claimed) must report
   // "connecting", not "awaiting_first_ack" -- that code specifically means
   // a session *is* claimed and the ping/ack proof just hasn't completed
   // its first round, which the UI renders as "Connected -- waiting for the
@@ -267,24 +275,37 @@ describe("device store transport liveness", () => {
   // misleading.
   it("reports connecting, not awaiting_first_ack, for a configured row with no session yet", async () => {
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", primary: false, state: { state: "configured", code: null } },
+      {
+        kind: "network",
+        configured: true,
+        enabled: true,
+        primary: false,
+        address: null,
+        status: "connected",
+        reason: null,
+      },
       {
         kind: "bluetooth",
+        configured: true,
+        enabled: false,
         primary: false,
-        state: { state: "unconfigured", code: { code: "bluetooth_disabled" } },
+        address: null,
+        status: "off",
+        reason: "disabled",
       },
     ]);
 
     const store = useDeviceStore();
-    await store.refreshTransportStatuses("peer-1");
+    await store.refreshChannelStatuses("peer-1");
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: false, primary: false, code: null },
-      { kind: "bluetooth", connected: false, primary: false, code: null },
+      { kind: "network", connected: false, reason: null },
+      { kind: "bluetooth", connected: false, reason: null },
     ]);
     await store.refreshLiveConnectedState("peer-1");
 
-    const [network] = store.getTransportStatuses("peer-1");
-    expect(network.state).toEqual({ state: "configured", code: { code: "connecting" } });
+    const [network] = store.getChannelStatuses("peer-1");
+    expect(network.status).toBe("connecting");
+    expect(network.reason).toBe("connecting");
   });
 });

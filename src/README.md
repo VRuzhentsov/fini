@@ -11,6 +11,7 @@ src/
 ├── router/
 │   └── index.ts             # Route definitions
 ├── views/                   # Page-level route components
+│   └── settings/            # Settings and the pages it opens
 ├── stores/                  # Pinia stores, one per domain
 ├── components/
 │   ├── FocusView/           # Components specific to FocusView
@@ -19,11 +20,13 @@ src/
 │   ├── QuestsView/          # Transitional/shared list components
 │   │   ├── QuestList.vue
 │   │   └── RecurrenceScopeSheet.vue
+│   ├── settings/            # Settings sections and dialogs
+│   │   └── device/          # One paired device's page
 │   └── ToastStack.vue       # Global toast notifications
 └── composables/             # Shared Vue composables
 ```
 
-View-specific components live in a subfolder named after their view. Shared components sit at the `components/` root.
+View-specific components live in a subfolder named after their view. Shared components sit at the `components/` root. Where a group of views belongs to one area, the folder is named for the area rather than a single view and nests — `settings/`, with `settings/device/` under it; see `docs/naming.md`.
 
 Current primary tabs are `Focus`, `History`, and `Settings`. Active backlog management is part of `Focus` (route remains `/main` during transition).
 

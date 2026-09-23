@@ -1,0 +1,207 @@
+<script setup lang="ts">
+import { computed, ref } from "vue";
+import { StarIcon as StarSolid } from "@heroicons/vue/24/solid";
+import { StarIcon as StarOutline, InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
+import ChannelIcon from "./ChannelIcon.vue";
+import type { DeviceChannelStatus } from "../../../stores/device";
+import { channelRowLabel, channelStatusText } from "../../../utils/channelStatusCodes";
+
+const props = defineProps<{
+  status: DeviceChannelStatus;
+  // Whether this channel holds the star -- the user's stored choice of
+  // which one carries the traffic. The parent resolves it across the rows
+  // so exactly one can be starred.
+  starred: boolean;
+  peerName: string;
+  busy: boolean;
+}>();
+
+const emit = defineEmits<{
+  toggle: [enabled: boolean];
+  pin: [];
+  retry: [];
+  unlink: [];
+}>();
+
+// "Off" is a fact about what the user chose; every other row state is a
+// fact about the link. A channel that was never set up reads as off too --
+// the difference between the two is what the page offers, not what the
+// row says.
+const enabled = computed(() => props.status.enabled);
+
+const CHANNEL_NAME = { network: "Network", bluetooth: "Bluetooth" } as const;
+
+// Always starts closed. Nothing auto-expands any more: the row is a row,
+// and an explanation nobody asked for is noise on a page the person opened
+// to see state. The info button is the only way in.
+const reasonOpen = ref(false);
+
+// Straight from the backend. This used to be recomputed here from the
+// status code, which is how one channel's failure modes ended up deciding
+// a generic row's colour.
+const rowState = computed(() => props.status.status);
+const label = computed(() => channelRowLabel(rowState.value));
+
+// The row's own reason, in the person's words. `off` says nothing: the
+// user turned it off and does not need that explained back to them.
+const reason = computed(() => {
+  if (rowState.value === "off") return null;
+  const code = props.status.reason;
+  return code
+    ? channelStatusText(code, props.peerName, CHANNEL_NAME[props.status.kind])
+    : null;
+});
+
+// Moving the star is a connected-channel action: pinning a dead row would
+// promise a switch that silently does nothing.
+//
+// Showing it is a different question, and the answer is not the same. The
+// star is the person's stored choice of which channel carries the traffic --
+// a setting, not a live state -- so it stays visible on the channel that
+// holds it even while that channel is down. Hiding it there would say the
+// choice had been forgotten, when reconnecting will honour it.
+const canPin = computed(() => rowState.value === "connected" || rowState.value === "fading");
+
+// Asks the reason, not the channel. The row renders both channels, so
+// matching a Bluetooth code here made a generic component carry one
+// channel's vocabulary.
+const retryable = computed(() => props.status.reason === "bluetooth_dial_exhausted");
+
+// Unlinking is only offered for a channel that exists, and only once it is
+// off. Shown disabled rather than hidden while it is on, so the control is
+// where the person expects it and says what to do first -- hiding it would
+// make the page look as though unlinking were unavailable.
+const unlinkable = computed(() => props.status.configured);
+
+const dotClass = computed(() => {
+  switch (rowState.value) {
+    case "connected":
+      return "bg-success";
+    case "connecting":
+    case "fading":
+      return "bg-warning";
+    default:
+      // Gray covers off, waiting and down alike: none of them is an error,
+      // and colouring "not connected" red would make an ordinary state look
+      // like a fault.
+      return "bg-[var(--fg-5)]";
+  }
+});
+
+// The template's render contract, per fini-frontend: each key answers
+// whether one element on this row appears. `reasonInfo` and `reasonText`
+// are separate on purpose -- the button offers the explanation, the
+// paragraph is the explanation, and only the second waits on a click.
+const renderFlags = computed(() => ({
+  reasonInfo: reason.value !== null,
+  reasonText: reason.value !== null && reasonOpen.value,
+  starToggle: canPin.value || props.starred,
+  retryButton: retryable.value,
+  unlinkButton: unlinkable.value,
+}));
+</script>
+
+<template>
+  <li
+    class="flex flex-col gap-1 border-b border-base-200 bg-base-100 px-2 py-1.5 last:border-b-0"
+    data-testid="channel-status-row"
+    :data-channel-kind="status.kind"
+    :data-channel-state="rowState"
+  >
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-2">
+      <component
+        :is="canPin ? 'button' : 'div'"
+        :type="canPin ? 'button' : undefined"
+        class="-m-0.5 flex min-w-0 flex-1 items-center gap-2 rounded-md p-0.5 text-left"
+        :class="canPin ? 'cursor-pointer hover:bg-base-200' : ''"
+        :aria-pressed="canPin ? starred : undefined"
+        :aria-label="canPin ? `Make ${CHANNEL_NAME[status.kind]} primary` : undefined"
+        @click="canPin && emit('pin')"
+      >
+        <span class="size-2.5 shrink-0 rounded-full" :class="dotClass" />
+        <ChannelIcon :kind="status.kind" class="size-3.5 shrink-0 opacity-70" />
+        <span class="truncate text-sm font-semibold">{{ CHANNEL_NAME[status.kind] }}</span>
+        <span class="truncate text-[11px] text-[var(--fg-3)]">{{ label }}</span>
+
+        <button
+          v-if="renderFlags.reasonInfo"
+          type="button"
+          class="shrink-0 text-[var(--fg-4)] hover:text-[var(--fg-2)]"
+          data-testid="channel-status-info"
+          :aria-label="reason ?? undefined"
+          :aria-expanded="reasonOpen"
+          @click.stop="reasonOpen = !reasonOpen"
+        >
+          <InformationCircleIcon class="size-3.5" />
+        </button>
+
+        <span
+          v-if="renderFlags.starToggle"
+          class="ml-auto shrink-0"
+          data-testid="channel-star"
+          :data-starred="starred"
+          :class="starred ? 'text-warning' : 'text-[var(--fg-5)]'"
+        >
+          <component :is="starred ? StarSolid : StarOutline" class="size-3.5" />
+        </span>
+      </component>
+
+      <button
+        v-if="renderFlags.retryButton"
+        type="button"
+        class="btn btn-ghost btn-xs shrink-0"
+        data-testid="retry-bluetooth-dial"
+        :disabled="busy"
+        @click="emit('retry')"
+      >
+        Try again
+      </button>
+
+      <button
+        v-if="renderFlags.unlinkButton"
+        type="button"
+        class="shrink-0 text-[var(--fg-4)] hover:text-error disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-[var(--fg-4)]"
+        data-testid="unlink-channel"
+        aria-label="Unlink channel"
+        :title="enabled ? 'Turn the channel off first' : 'Unlink channel'"
+        :disabled="busy || enabled"
+        @click="emit('unlink')"
+      >
+        <TrashIcon class="size-3.5" />
+      </button>
+
+      <button
+        type="button"
+        class="shrink-0"
+        role="switch"
+        data-testid="channel-switch"
+        :aria-checked="enabled"
+        :aria-label="`Turn ${CHANNEL_NAME[status.kind]} ${enabled ? 'off' : 'on'}`"
+        :disabled="busy"
+        @click="emit('toggle', !enabled)"
+      >
+        <!-- The knob sits in the on position whenever the switch is on, but
+             the track stays gray until the channel can actually carry
+             something. That is what "on, waiting" looks like: the user's
+             choice is honoured and the state is not overstated. -->
+        <span
+          class="flex h-[22px] w-[38px] items-center rounded-full p-0.5 transition-colors"
+          :class="enabled ? (rowState === 'waiting' ? 'bg-[var(--fg-5)]' : 'bg-success') : 'bg-base-300'"
+        >
+          <span
+            class="size-[18px] rounded-full bg-base-100 shadow-sm transition-transform"
+            :class="enabled ? 'translate-x-4' : ''"
+          />
+        </span>
+      </button>
+    </div>
+
+    <p
+      v-if="renderFlags.reasonText"
+      class="pl-[18px] text-[11px] leading-snug text-[var(--fg-2)]"
+      data-testid="channel-status-reason"
+    >
+      {{ reason }}
+    </p>
+  </li>
+</template>

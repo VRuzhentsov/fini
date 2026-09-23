@@ -11,4 +11,11 @@ Kept terse on purpose: this file grows over time. Each rule stays one short para
 
 ## Rules
 
-**No magic strings.** A value compared or reused more than once gets a name — a `const ... as const` object with a derived union type in TypeScript, a real `enum` in Rust — not a repeated literal. A value used exactly once, inline, in an obviously self-explanatory spot doesn't need one. Exception: a TS literal matched to mirror an existing Rust `#[serde(tag = "...")]` enum's wire format (e.g. `TransportStatusCode` in `src/stores/device.ts`) is not a magic string — that literal *is* the contract; don't wrap it in a parallel constant. When fixing one, scope the fix to the value in front of you, not a codebase sweep.
+**Names come from `docs/glossary.md` and `docs/naming.md`.** The glossary
+holds the vocabulary — channel (transport), channel kind, DataLink, session,
+primary — and settles *which* word. `naming.md` holds how names are formed —
+plurals, case per language, `data-*` hooks, Tauri command prefixes — and
+settles how to spell it. Read the relevant one before inventing a name,
+renaming one, or arguing about one; don't restate their rules here.
+
+**No magic strings.** A value compared or reused more than once gets a name — a `const ... as const` object with a derived union type in TypeScript, a real `enum` in Rust — not a repeated literal. A value used exactly once, inline, in an obviously self-explanatory spot doesn't need one. Exception: a TS literal matched to mirror an existing Rust `#[serde(tag = "...")]` enum's wire format (e.g. `ChannelStatusCode` in `src/stores/device.ts`) is not a magic string — that literal *is* the contract; don't wrap it in a parallel constant. When fixing one, scope the fix to the value in front of you, not a codebase sweep.

@@ -216,6 +216,10 @@ Use `fini-scripting` for command architecture details. Default to Makefile for h
 
 Do not invent generic targets such as `make test`, `make lint`, or `make check` unless they exist in the current `Makefile`. If a desired target is missing, name the closest existing target from the table or state that no Makefile target exists for that check.
 
+## Naming
+
+Two files, and they answer different questions. `docs/glossary.md` is what the words **mean** — channel, DataLink, session, primary — and is where you go to choose *which* word. `docs/naming.md` is how names are **formed** — plurals, casing per language, `data-*` hooks, command prefixes — and is where you go to write it down. Read the relevant one before naming a new table, module, type, command or DOM hook, and before renaming one. Either file wins over what the code currently says. Load `fini-code-style` alongside them for the repo-wide rules that are not about names.
+
 ## Code Reuse
 
 Before adding a new constant, function, type, or utility, search for an existing one:

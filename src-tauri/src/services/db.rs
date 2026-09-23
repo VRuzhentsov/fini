@@ -25,12 +25,12 @@ pub fn utc_now() -> String {
 
 /// Same instant as `utc_now`, but to millisecond precision. Needed
 /// specifically for sync-event ordering (`sync_outbox.updated_at`, compared
-/// by `space_sync::merge::incoming_wins`): two events that are genuinely
+/// by `sync::merge::incoming_wins`): two events that are genuinely
 /// sequential -- e.g. a quest created on one device, then edited there or
 /// on a peer moments later -- can otherwise land in the same whole second,
 /// tying on `utc_now()`'s second-only precision and falling through to the
 /// origin-device-id tie-break, which has nothing to do with which edit is
-/// actually newer. Confirmed via the actors-ble/actors-sim e2e lanes: a
+/// actually newer. Confirmed via the actors-ble/actors-loopback e2e lanes: a
 /// create-then-immediate-edit sequence intermittently landed in the same
 /// second, and the objectively later edit silently lost the tie.
 pub fn sync_timestamp() -> String {
@@ -226,6 +226,97 @@ mod tests {
             "Family space id=2 must exist"
         );
         assert!(ids.iter().any(|id| id == "3"), "Work space id=3 must exist");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// Migration 23 turns six columns on `paired_devices` into `channels`
+    /// rows, and the backfill has to reconstruct what each pair had.
+    ///
+    /// Three cases, and getting any of them wrong is invisible until a real
+    /// person upgrades: a pair that never used Bluetooth must not come back
+    /// with a Bluetooth channel offered, a pair that switched Bluetooth off
+    /// must find it still off rather than on, and *every* pair must keep
+    /// syncing over the network -- defaulting Network off would silently
+    /// disconnect every pair in the field on first launch.
+    ///
+    /// Winds a fully-migrated database back to the pre-23 shape, seeds the
+    /// three cases into it, then runs the real SQL forward again rather
+    /// than a hand-rolled equivalent.
+    #[test]
+    fn migration_23_reconstructs_each_pairs_channels_from_the_old_columns() {
+        use crate::schema::channels;
+
+        let db_path = temp_db_path("migration-23-reconstructs-channels");
+        let mut conn = open_db_at_path(&db_path);
+
+        conn.revert_last_migration(MIGRATIONS)
+            .expect("wind back to the pre-channels shape");
+
+        diesel::sql_query(
+            "INSERT INTO paired_devices
+                 (peer_device_id, display_name, paired_at, pair_state,
+                  bluetooth_enabled, bluetooth_disabled_by_user,
+                  bluetooth_address, preferred_transport)
+             VALUES
+                 ('never-used-bt', 'Laptop',  '2026-01-01T00:00:00Z', 'paired', 0, 0, NULL, NULL),
+                 ('bt-on',         'Phone',   '2026-01-02T00:00:00Z', 'paired', 1, 0, 'AA:BB:CC:DD:EE:FF', 'bluetooth'),
+                 ('bt-switched-off','Tablet', '2026-01-03T00:00:00Z', 'paired', 0, 1, NULL, 'network')",
+        )
+        .execute(&mut conn)
+        .expect("seed the three pre-migration cases");
+
+        conn.run_pending_migrations(MIGRATIONS)
+            .expect("re-run migration 23 over pre-existing pairs");
+
+        let rows: Vec<(String, String, bool, bool, Option<String>)> = channels::table
+            .select((
+                channels::device_id,
+                channels::channel_kind,
+                channels::enabled,
+                channels::is_primary,
+                channels::address,
+            ))
+            .order((channels::device_id, channels::channel_kind))
+            .load(&mut conn)
+            .expect("load the backfilled channels");
+
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "bt-on".to_string(),
+                    "bluetooth".to_string(),
+                    true,
+                    true,
+                    Some("AA:BB:CC:DD:EE:FF".to_string())
+                ),
+                ("bt-on".to_string(), "network".to_string(), true, false, None),
+                (
+                    "bt-switched-off".to_string(),
+                    "bluetooth".to_string(),
+                    false,
+                    false,
+                    None
+                ),
+                (
+                    "bt-switched-off".to_string(),
+                    "network".to_string(),
+                    true,
+                    true,
+                    None
+                ),
+                (
+                    "never-used-bt".to_string(),
+                    "network".to_string(),
+                    true,
+                    false,
+                    None
+                ),
+            ],
+            "every pair keeps Network on; Bluetooth appears only where it was actually set up, \
+             switched off where the person had switched it off, and the primary carries over"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

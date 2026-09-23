@@ -2,10 +2,10 @@ import { test, expect } from '../fixtures.ts';
 import type { E2EActor } from '../fixtures.ts';
 import {
   ensureBlePairedActors,
-  expectNetworkTransportUnavailable,
+  expectNetworkChannelUnavailable,
   waitForBleSession,
   waitForBluetoothRowConnectedInUi,
-  waitForGreenTransport,
+  waitForGreenChannel,
 } from '../helpers/ble-sync.ts';
 import {
   ensurePersonalSpaceSync,
@@ -27,7 +27,7 @@ interface Quest {
  * (`FINI_E2E_TRANSPORT=ble` -> `FINI_DISCOVERY_DISABLED=1`), dial the real
  * `ble.rs` code path (dial loop, peripheral accept, session claim) against
  * a cross-process mock radio instead of hardware -- the same acceptance
- * shape `peer-sync-over-sim.spec.ts` proves for the Sim stand-in, one layer
+ * shape the network lane proves for its own channel, one layer
  * more real. See `helpers/ble-sync.ts`, `specs/e2e/transports.md`, and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  *
@@ -53,16 +53,16 @@ test('happy-path-BLE: session is carried by BLE alone, both sides go green, and 
 
   // Peer-scoped, so the same spec covers both lanes: spawned actors see no
   // presence at all, while on hardware only this peer must be absent.
-  await expectNetworkTransportUnavailable(actorA, syncedB.identity.device_id);
-  await expectNetworkTransportUnavailable(actorB, syncedA.identity.device_id);
+  await expectNetworkChannelUnavailable(actorA, syncedB.identity.device_id);
+  await expectNetworkChannelUnavailable(actorB, syncedA.identity.device_id);
 
   await waitForBleSession(actorA);
   await waitForBleSession(actorB);
 
-  const kindOnA = await actorA.invoke<string>('device_connection_session_transport', {
+  const kindOnA = await actorA.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedB.identity.device_id,
   });
-  const kindOnB = await actorB.invoke<string>('device_connection_session_transport', {
+  const kindOnB = await actorB.invoke<string>('device_connection_session_channel', {
     peerDeviceId: syncedA.identity.device_id,
   });
   expect(kindOnA).toBe('bluetooth');
@@ -70,12 +70,12 @@ test('happy-path-BLE: session is carried by BLE alone, both sides go green, and 
 
   // Green on both -- the backend's ping/ack-proven signal, and the UI row
   // that actually renders it (and never regresses through "Still
-  // connecting..." on the way there). See `waitForGreenTransport`'s doc
+  // connecting..." on the way there). See `waitForGreenChannel`'s doc
   // comment for why `code === null`, not just "a session exists", is the
   // bar here. This is the real regression guard this e2e lane exists for,
   // so it stays UI-asserted, unlike the quest-convergence checks below.
-  await waitForGreenTransport(actorA, syncedB.identity.device_id);
-  await waitForGreenTransport(actorB, syncedA.identity.device_id);
+  await waitForGreenChannel(actorA, syncedB.identity.device_id);
+  await waitForGreenChannel(actorB, syncedA.identity.device_id);
   await waitForBluetoothRowConnectedInUi(actorA, syncedB.identity.device_id);
   await waitForBluetoothRowConnectedInUi(actorB, syncedA.identity.device_id);
 

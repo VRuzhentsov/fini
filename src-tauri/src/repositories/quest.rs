@@ -294,7 +294,7 @@ impl<'a> QuestRepository<'a> {
     /// Sets `description` (as checklist text) for a local edit — not a sync-merge apply.
     /// Marks the quest `is_checklist` if it wasn't already. `checklist_base` is deliberately
     /// left untouched here — it only advances when a sync merge completes (see
-    /// `space_sync::commands::apply_sync_event`), so the next merge can still tell that this
+    /// `sync::commands::apply_sync_event`), so the next merge can still tell that this
     /// device has diverged from the last mutually-agreed state.
     pub fn set_checklist_description(
         &mut self,

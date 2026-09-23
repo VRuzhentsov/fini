@@ -4,7 +4,7 @@
 //!
 //! 1. **Bridging `tao`'s Android context into `ndk-context`.**
 //!    `ndk_context::initialize_android_context` panics if called more than
-//!    once, so every caller that needs it (`transport::ble`'s lazy backend,
+//!    once, so every caller that needs it (`channel::ble`'s lazy backend,
 //!    the OS-pairing check below) must go through one shared, idempotent
 //!    entry point rather than each running their own copy.
 //! 2. **Loading app-defined classes from a natively-attached thread.**
@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 /// independent sites.
 ///
 /// Must only be called from a point guaranteed to run after the
-/// Activity/WebView is up (see `transport::ble`'s module doc for why
+/// Activity/WebView is up (see `channel::ble`'s module doc for why
 /// `.setup()` itself is too early to read `ndk_context::android_context()`);
 /// every current caller only runs from the first real `space_sync_tick`
 /// invocation onward.
@@ -155,7 +155,7 @@ pub fn call_static_context_string_to_bool(class_binary_name: &str, method: &str,
 /// `false`, only that this check couldn't be completed. Use this instead
 /// of the plain-bool variant wherever the caller needs to tell "confirmed
 /// false" apart from "inconclusive" (e.g.
-/// `device_connection::commands::persist_bluetooth_address_and_maybe_enable`);
+/// `pairing::commands::persist_bluetooth_address_and_maybe_enable`);
 /// callers that are fine failing closed either way should keep using
 /// `call_static_context_string_to_bool`.
 pub fn call_static_context_string_to_optional_bool(

@@ -20,7 +20,7 @@ Local space model, built-in spaces, and Settings-based space management.
 
 ## Primary UI Surface
 
-- `src/views/SettingsView.vue`
+- `src/views/settings/SettingsView.vue`
 
 ## Related Feature
 
