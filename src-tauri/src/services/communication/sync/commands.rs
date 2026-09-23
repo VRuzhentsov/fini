@@ -1300,6 +1300,11 @@ fn tick_is_overdue() -> bool {
 /// pressure to everything else, including the auth gate. A keeper that only
 /// ever wakes on a signal cannot cause that: it runs exactly when there is
 /// something new to carry.
+/// How long the keeper waits after a wake before it opens its own
+/// connection. Long enough for an in-flight write to finish, short enough
+/// that nobody watching a screen can tell.
+const KEEPER_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
 fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
@@ -1331,6 +1336,24 @@ fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
                 {
                     notified.await;
                 }
+                // Let whatever raised the signal finish before opening a
+                // second connection to the same database.
+                //
+                // A wake means "there is something to carry", never "carry it
+                // this millisecond", and the thing that raised it is usually
+                // still holding the write lock -- a frame handler, a command
+                // the person is waiting on. Ticking straight into that is how
+                // this file's own history records 21 keeper ticks producing
+                // 21 `database is locked` failures, each doing no work and
+                // adding pressure to everything else. It cost a release gate:
+                // `database is locked` surfaced in a Tauri command while a
+                // sync-end wake ticked underneath it.
+                //
+                // A settle this short is imperceptible next to the interval
+                // it replaced, and it collapses a burst -- several frames
+                // arriving together now cost one tick rather than one each.
+                tokio::time::sleep(KEEPER_SETTLE).await;
+
                 let state = device_connection.clone();
                 // `space_sync_tick_impl` is blocking (SQLite plus the dial
                 // loops it spawns), so it must not run on the async worker
