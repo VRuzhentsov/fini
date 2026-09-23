@@ -1336,22 +1336,20 @@ fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
                 {
                     notified.await;
                 }
-                // Let whatever raised the signal finish before opening a
-                // second connection to the same database.
+                // Collapse a burst before ticking.
                 //
                 // A wake means "there is something to carry", never "carry it
-                // this millisecond", and the thing that raised it is usually
-                // still holding the write lock -- a frame handler, a command
-                // the person is waiting on. Ticking straight into that is how
-                // this file's own history records 21 keeper ticks producing
-                // 21 `database is locked` failures, each doing no work and
-                // adding pressure to everything else. It cost a release gate:
-                // `database is locked` surfaced in a Tauri command while a
-                // sync-end wake ticked underneath it.
+                // this millisecond". Frames arrive together -- a sync event,
+                // a mapping update and a sync-end from the same peer in the
+                // same breath -- and each one signals. Without a pause that
+                // is a tick apiece, each opening its own connection to do
+                // work the next one would have done anyway.
                 //
-                // A settle this short is imperceptible next to the interval
-                // it replaced, and it collapses a burst -- several frames
-                // arriving together now cost one tick rather than one each.
+                // This is not what fixed the `database is locked` in the
+                // v0.3.11 release gate; the pragmas never being applied was
+                // (see `db::try_open_db_at_path_once`). It stands on its own
+                // terms, and a settle this short is imperceptible next to
+                // the interval it replaced.
                 tokio::time::sleep(KEEPER_SETTLE).await;
 
                 let state = device_connection.clone();
