@@ -127,10 +127,16 @@ fn try_open_db_at_path_once(path: &Path) -> Result<SqliteConnection, String> {
     // 15000 and changing the journal mode both had "zero effect". Neither
     // value was ever applied. Without WAL a reader blocks a writer, and
     // without a busy timeout the loser fails instantly instead of waiting.
+    // `busy_timeout` first, and that order is load-bearing: switching a
+    // database to WAL needs a moment when no one else is mid-transaction,
+    // and with no timeout set yet that attempt fails instantly against any
+    // concurrent connection. Setting the timeout first gives the switch
+    // something to wait with -- otherwise this open, which previously
+    // "succeeded" by silently applying nothing, would now fail outright.
     for pragma in [
+        "PRAGMA busy_timeout = 15000",
         "PRAGMA foreign_keys = ON",
         "PRAGMA journal_mode = WAL",
-        "PRAGMA busy_timeout = 15000",
     ] {
         diesel::sql_query(pragma)
             .execute(&mut conn)
@@ -711,6 +717,37 @@ mod write_lock_tests {
         ))
         .execute(conn)
         .expect("seed space");
+    }
+
+    /// The same race, with the transaction taking the write lock up front.
+    ///
+    /// `immediate_transaction` asks for the write lock on `BEGIN` rather
+    /// than on the first write, so there is no read snapshot to go stale
+    /// and nothing for SQLite to refuse. A second writer now waits its turn
+    /// against `busy_timeout` instead of failing, which is the behaviour
+    /// everyone assumed they already had.
+    #[test]
+    fn an_immediate_transaction_keeps_the_write_lock_it_was_given() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("fini.db");
+        let mut writer = open_db_at_path(&path);
+        let mut other = open_db_at_path(&path);
+        seed_space(&mut writer, "space-a");
+
+        let outcome: Result<(), diesel::result::Error> = writer.immediate_transaction(|writer| {
+            diesel::sql_query("SELECT COUNT(*) FROM spaces").execute(&mut *writer)?;
+            // The other connection cannot slip a commit in here: this one
+            // already holds the write lock, so its own write still lands.
+            diesel::sql_query("UPDATE spaces SET name = 'T' WHERE id = 'space-a'")
+                .execute(&mut *writer)?;
+            Ok(())
+        });
+
+        outcome.expect("an immediate transaction must not lose its own write lock");
+
+        // And the database is usable afterwards, by the connection that was
+        // kept out while it ran.
+        seed_space(&mut other, "space-b");
     }
 
     /// The shape behind the `database is locked` that keeps surfacing in CI.
