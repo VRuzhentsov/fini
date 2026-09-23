@@ -30,6 +30,15 @@ on:
         type: string
         default: gate
 
+# A called workflow does not inherit the caller's `env`, so the version
+# release-tag.yml pins at its own top never reached here -- `node-version`
+# resolved to the empty string and setup-node took whatever the runner image
+# happened to ship. It shipped 24, which is why nothing broke; a runner image
+# bump would have moved the gate off the release's Node without a word. The
+# gate pins its own.
+env:
+  NODE_VERSION: "24"
+
 jobs:
   quality-gates:
     name: Quality Gates

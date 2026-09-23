@@ -31,6 +31,10 @@ jobs:
           filters: |
             app:
               - '.github/workflows/ci.yml'
+              # The gate itself lives in its own file now. Without this line a
+              # pull request that changes only the gate reads as "no app
+              # change" and skips every check -- including the gate it edits.
+              - '.github/workflows/quality-gates.yml'
               - 'Dockerfile'
               - 'Makefile'
               - 'com.fini.app.yml'
