@@ -224,10 +224,51 @@ jobs:
       - name: Run runtime smoke check
         run: docker run --rm fini-runtime-ci --help
 
+  # The same suite the pull-request gate runs, on its own runner for the
+  # same reason it has one there.
+  #
+  # It used to be the last steps of Quality Gates, after that job had
+  # already installed dependencies, compiled and run the backend tests,
+  # built the frontend and built and smoke-tested the runtime container --
+  # all on one hosted runner. The commands were identical to the PR gate's;
+  # the machine they ran on was not. So a green pull request predicted
+  # nothing about the release, which is exactly what kept happening: the
+  # release failed on races the PR never showed, on the same commit.
+  #
+  # Keep this job's steps and environment identical to `E2E Tests` in
+  # ci.yml. If the two drift, the guarantee goes with them.
+  e2e-gate:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: signing-readiness
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Resolve E2E image cache settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "FINI_E2E_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
+          echo "FINI_E2E_CACHE_PUSH=1" >> "$GITHUB_ENV"
+          echo "CONTAINER=docker" >> "$GITHUB_ENV"
+          echo "FINI_E2E_CI_RUN_ID=release-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
       - name: Build dev-runner image
         run: make pr-gate-e2e-build-dev-runner
 
-      - name: Run desktop e2e flow
+      - name: Run Playwright E2E suite
         run: make pr-gate-e2e-run
 
       - name: Print E2E artifacts on failure
@@ -251,7 +292,7 @@ jobs:
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
-    needs: quality-gates
+    needs: [quality-gates, e2e-gate]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -441,7 +482,7 @@ jobs:
             runner: windows-11-arm
             rust_target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
-    needs: quality-gates
+    needs: [quality-gates, e2e-gate]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -551,7 +592,7 @@ jobs:
   build-android:
     name: Build Android Artifact
     runs-on: ubuntu-latest
-    needs: quality-gates
+    needs: [quality-gates, e2e-gate]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -732,6 +773,7 @@ jobs:
     needs:
       - validate-tag
       - quality-gates
+      - e2e-gate
     permissions:
       contents: read
       packages: write
