@@ -225,12 +225,16 @@ pub async fn run_session(
                             log::info!(
                                 "[session] {peer_device_id}: announcing {announced:?} is set up here"
                             );
-                            if send_frame(link.as_mut(), &PeerFrame::ChannelEnabled { kind: announced })
-                                .await
-                                .is_err()
-                            {
-                                break;
+                            // Onto the queue first, then sent. A switch
+                            // flipped mid-session is owed exactly as much as
+                            // one found at startup -- send it directly and
+                            // the peer's silence after a failed write of its
+                            // own goes unanswered, because the ping tick
+                            // only ever resends what the queue holds.
+                            if !unannounced.contains(&announced) {
+                                unannounced.push(announced);
                             }
+                            send_channel_announcements(link.as_mut(), &[announced]).await;
                         }
                     }
                 }
