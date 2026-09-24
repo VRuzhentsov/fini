@@ -31,6 +31,10 @@ jobs:
           filters: |
             app:
               - '.github/workflows/ci.yml'
+              # The gate itself lives in its own file now. Without this line a
+              # pull request that changes only the gate reads as "no app
+              # change" and skips every check -- including the gate it edits.
+              - '.github/workflows/quality-gates.yml'
               - 'Dockerfile'
               - 'Makefile'
               - 'com.fini.app.yml'
@@ -59,134 +63,29 @@ jobs:
       - name: Run frontend unit tests
         run: CONTAINER=docker make pr-gate-fe-unit
 
-  be-unit-tests:
-    name: BE Unit Tests
+  # The release's own gate, run here so a green pull request means a green
+  # release rather than something close to it.
+  #
+  # This replaces what used to be three separate jobs -- BE Unit Tests, BE
+  # Compile and E2E Tests -- each on its own clean runner. That split was
+  # the whole problem: the release runs them together on one runner, and
+  # reached the E2E suite with its memory and disk already spent, so it
+  # failed on races CI could not produce on the same commit. Matching the
+  # release's shape is the point; running the pieces somewhere easier
+  # proves nothing about the thing that ships.
+  quality-gates:
+    name: Quality Gates
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    env:
-      CONTAINER: docker
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Resolve backend image cache settings
-        shell: bash
-        env:
-          CAN_PUSH_CACHE: "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
-        run: |
-          set -euo pipefail
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "FINI_BE_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
-          if [ "$CAN_PUSH_CACHE" = "true" ]; then
-            echo "FINI_BE_CACHE_PUSH=1" >> "$GITHUB_ENV"
-          else
-            echo "FINI_BE_CACHE_PUSH=0" >> "$GITHUB_ENV"
-          fi
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Run backend unit tests
-        run: make pr-gate-be-unit
-
-  be-compile:
-    name: BE Compile
-    needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    env:
-      CONTAINER: docker
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Resolve backend image cache settings
-        shell: bash
-        env:
-          CAN_PUSH_CACHE: "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
-        run: |
-          set -euo pipefail
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "FINI_BE_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
-          if [ "$CAN_PUSH_CACHE" = "true" ]; then
-            echo "FINI_BE_CACHE_PUSH=1" >> "$GITHUB_ENV"
-          else
-            echo "FINI_BE_CACHE_PUSH=0" >> "$GITHUB_ENV"
-          fi
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Compile backend tests
-        run: make pr-gate-be-compile
-
-  e2e-ci:
-    name: E2E Tests
-    needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    env:
-      CONTAINER: docker
-      FINI_E2E_CI_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Resolve E2E image cache settings
-        shell: bash
-        env:
-          CAN_PUSH_CACHE: "${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}"
-        run: |
-          set -euo pipefail
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "FINI_E2E_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
-          if [ "$CAN_PUSH_CACHE" = "true" ]; then
-            echo "FINI_E2E_CACHE_PUSH=1" >> "$GITHUB_ENV"
-          else
-            echo "FINI_E2E_CACHE_PUSH=0" >> "$GITHUB_ENV"
-          fi
-
-      - name: Login to GHCR
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Build dev-runner image
-        run: make pr-gate-e2e-build-dev-runner
-
-      - name: Run Playwright E2E suite
-        run: make pr-gate-e2e-run
-
-      - name: Print E2E artifacts on failure
-        if: failure()
-        run: make pr-gate-e2e-artifacts
-
-      - name: Cleanup E2E containers
-        if: always()
-        run: make pr-gate-e2e-cleanup
+    uses: ./.github/workflows/quality-gates.yml
+    with:
+      # A fork's token cannot write packages, so it reads the cache without
+      # pushing to it.
+      push_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      run_id_prefix: ci
 
   desktop-bundle-linux:
     name: Desktop Bundle (Linux x64)

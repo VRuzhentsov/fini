@@ -113,9 +113,35 @@ pub fn try_open_db_at_path(path: &Path) -> Result<SqliteConnection, String> {
 fn try_open_db_at_path_once(path: &Path) -> Result<SqliteConnection, String> {
     let mut conn = SqliteConnection::establish(path.to_str().ok_or("database path is not UTF-8")?)
         .map_err(|err| format!("failed to open database: {err}"))?;
-    diesel::sql_query("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 15000;")
-        .execute(&mut conn)
-        .map_err(|err| format!("failed to set database PRAGMAs: {err}"))?;
+    // One statement per call, deliberately.
+    //
+    // These lived in a single semicolon-separated string, and only the
+    // first of them ever ran: diesel prepares the statement rather than
+    // handing the whole script to `sqlite3_exec`, so everything after the
+    // first `;` was parsed and dropped. The database has therefore been
+    // running in `delete` journal mode with no busy timeout at all, while
+    // this line said otherwise.
+    //
+    // That is the whole explanation for the `database is locked` failures
+    // recorded above -- including why raising the timeout from 5000 to
+    // 15000 and changing the journal mode both had "zero effect". Neither
+    // value was ever applied. Without WAL a reader blocks a writer, and
+    // without a busy timeout the loser fails instantly instead of waiting.
+    // `busy_timeout` first, and that order is load-bearing: switching a
+    // database to WAL needs a moment when no one else is mid-transaction,
+    // and with no timeout set yet that attempt fails instantly against any
+    // concurrent connection. Setting the timeout first gives the switch
+    // something to wait with -- otherwise this open, which previously
+    // "succeeded" by silently applying nothing, would now fail outright.
+    for pragma in [
+        "PRAGMA busy_timeout = 15000",
+        "PRAGMA foreign_keys = ON",
+        "PRAGMA journal_mode = WAL",
+    ] {
+        diesel::sql_query(pragma)
+            .execute(&mut conn)
+            .map_err(|err| format!("failed to set {pragma}: {err}"))?;
+    }
     ensure_database_schema_is_supported(&mut conn)?;
     conn.run_pending_migrations(MIGRATIONS)
         .map_err(|err| format!("failed to run database migrations: {err}"))?;
@@ -678,5 +704,133 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(db_path);
+    }
+}
+
+#[cfg(test)]
+mod write_lock_tests {
+    use super::*;
+
+    fn seed_space(conn: &mut SqliteConnection, id: &str) {
+        diesel::sql_query(format!(
+            "INSERT INTO spaces (id, name, created_at) VALUES ('{id}', 'S', '2026-01-01T00:00:00Z')"
+        ))
+        .execute(conn)
+        .expect("seed space");
+    }
+
+    /// The same race, with the transaction taking the write lock up front.
+    ///
+    /// `immediate_transaction` asks for the write lock on `BEGIN` rather
+    /// than on the first write, so there is no read snapshot to go stale
+    /// and nothing for SQLite to refuse. A second writer now waits its turn
+    /// against `busy_timeout` instead of failing, which is the behaviour
+    /// everyone assumed they already had.
+    #[test]
+    fn an_immediate_transaction_keeps_the_write_lock_it_was_given() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("fini.db");
+        let mut writer = open_db_at_path(&path);
+        let mut other = open_db_at_path(&path);
+        seed_space(&mut writer, "space-a");
+
+        let outcome: Result<(), diesel::result::Error> = writer.immediate_transaction(|writer| {
+            diesel::sql_query("SELECT COUNT(*) FROM spaces").execute(&mut *writer)?;
+            // The other connection cannot slip a commit in here: this one
+            // already holds the write lock, so its own write still lands.
+            diesel::sql_query("UPDATE spaces SET name = 'T' WHERE id = 'space-a'")
+                .execute(&mut *writer)?;
+            Ok(())
+        });
+
+        outcome.expect("an immediate transaction must not lose its own write lock");
+
+        // And the database is usable afterwards, by the connection that was
+        // kept out while it ran.
+        seed_space(&mut other, "space-b");
+    }
+
+    /// The shape behind the `database is locked` that keeps surfacing in CI.
+    ///
+    /// Both connections carry `busy_timeout = 15000`, so the obvious reading
+    /// is that a busy database makes the loser wait fifteen seconds. It does
+    /// not. A transaction that begins deferred takes a *read* snapshot on its
+    /// first statement; when it later tries to write and another connection
+    /// has committed in between, SQLite fails it immediately with
+    /// `SQLITE_BUSY_SNAPSHOT`. Waiting cannot help -- the snapshot is already
+    /// stale -- so `busy_timeout` is not consulted at all.
+    ///
+    /// That is exactly what this file's own history describes: a lock error
+    /// that "survived both a `busy_timeout` bump (5000 -> 15000) and a
+    /// `journal_mode` change with zero effect". It was never a slow holder.
+    #[derive(diesel::QueryableByName)]
+    struct TextRow {
+        #[diesel(sql_type = diesel::sql_types::Text, column_name = journal_mode)]
+        value: String,
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct IntRow {
+        #[diesel(sql_type = diesel::sql_types::Integer, column_name = timeout)]
+        value: i32,
+    }
+
+    /// What the connection actually ends up configured with.
+    #[test]
+    fn opening_a_database_applies_every_pragma_it_names() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("fini.db");
+        let mut conn = open_db_at_path(&path);
+
+        let journal: Vec<TextRow> = diesel::sql_query("PRAGMA journal_mode")
+            .load(&mut conn)
+            .expect("read journal_mode");
+        let busy: Vec<IntRow> = diesel::sql_query("PRAGMA busy_timeout")
+            .load(&mut conn)
+            .expect("read busy_timeout");
+
+        assert_eq!(
+            journal[0].value.to_lowercase(),
+            "wal",
+            "journal_mode should be WAL"
+        );
+        assert_eq!(busy[0].value, 15_000, "busy_timeout should be 15s");
+    }
+
+    #[test]
+    fn a_deferred_read_then_write_loses_to_a_committed_writer_without_waiting() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("fini.db");
+        let mut reader = open_db_at_path(&path);
+        let mut writer = open_db_at_path(&path);
+        seed_space(&mut reader, "space-a");
+
+        let started = std::time::Instant::now();
+        let outcome: Result<(), diesel::result::Error> = reader.transaction(|reader| {
+            // A read first: this is what takes the snapshot, and it is the
+            // ordinary shape of "look at the row, then update it".
+            diesel::sql_query("SELECT COUNT(*) FROM spaces").execute(&mut *reader)?;
+
+            // Someone else commits while we hold that snapshot.
+            seed_space(&mut writer, "space-b");
+
+            // Now write. With a deferred transaction this is refused.
+            diesel::sql_query("UPDATE spaces SET name = 'T' WHERE id = 'space-a'")
+                .execute(&mut *reader)?;
+            Ok(())
+        });
+
+        let err = outcome.expect_err("the deferred transaction must lose this race");
+        assert!(
+            err.to_string().to_lowercase().contains("locked")
+                || err.to_string().to_lowercase().contains("busy"),
+            "expected a lock error, got: {err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "it failed immediately rather than waiting out busy_timeout, which is \
+             why raising that timeout never helped: {:?}",
+            started.elapsed()
+        );
     }
 }

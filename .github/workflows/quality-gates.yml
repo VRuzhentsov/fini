@@ -1,0 +1,142 @@
+# The gate, defined once.
+#
+# Both the pull-request run and the release run call this file, so what CI
+# proves is what the release will do -- not something close to it.
+#
+# That property was missing and it cost a release. The commands matched,
+# but the release ran them as one long job on a single hosted runner while
+# CI split them across fresh ones, so the release machine reached the E2E
+# suite with its memory and disk already spent. Races appeared there that
+# the pull request never showed, on the same commit, and a green PR
+# promised nothing.
+#
+# The shape here is the release's, deliberately: the stricter of the two.
+# Making the release softer to match CI would have removed the divergence
+# by hiding the failure, which is the wrong direction -- the point is that
+# CI fails wherever the release would.
+name: Quality Gates
+
+on:
+  workflow_call:
+    inputs:
+      push_cache:
+        description: >-
+          Whether this caller may push build caches to GHCR. False for
+          pull requests from forks, whose token cannot write packages.
+        type: boolean
+        default: true
+      run_id_prefix:
+        description: Distinguishes one caller's E2E run directory and containers from another's.
+        type: string
+        default: gate
+
+# A called workflow does not inherit the caller's `env`, so the version
+# release-tag.yml pins at its own top never reached here -- `node-version`
+# resolved to the empty string and setup-node took whatever the runner image
+# happened to ship. It shipped 24, which is why nothing broke; a runner image
+# bump would have moved the gate off the release's Node without a word. The
+# gate pins its own.
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # Only meaningful when the ref is a release tag. On a pull request
+      # `GITHUB_REF_NAME` is a branch, and `npm version <branch>` would
+      # fail -- so this is skipped there rather than made to guess. The
+      # tagged commit is supposed to carry the release version already
+      # (see the release policy); this stays as CI's defence against a tag
+      # that does not.
+      - name: Sync project version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm version "$version" --no-git-tag-version --allow-same-version
+          sed -i -E '/^\[package\]/,/^\[/{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.toml
+          sed -i -E '/^name = "fini"$/,/^version = /{s/^version = ".*"/version = "'"$version"'"/}' src-tauri/Cargo.lock
+          sed -i -E '0,/"version": "[^"]+"/{s//"version": "'"$version"'"/}' src-tauri/tauri.conf.json
+          grep -q "\"version\": \"$version\"" package.json
+          grep -q "^version = \"$version\"" src-tauri/Cargo.toml
+          grep -q "^version = \"$version\"" src-tauri/Cargo.lock
+          grep -q "\"version\": \"$version\"" src-tauri/tauri.conf.json
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Resolve E2E image cache settings
+        shell: bash
+        env:
+          PUSH_CACHE: ${{ inputs.push_cache && '1' || '0' }}
+          RUN_ID_PREFIX: ${{ inputs.run_id_prefix }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "FINI_BE_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
+          echo "FINI_BE_CACHE_PUSH=${PUSH_CACHE}" >> "$GITHUB_ENV"
+          echo "FINI_E2E_CACHE_IMAGE_PREFIX=ghcr.io/${owner}/fini" >> "$GITHUB_ENV"
+          echo "FINI_E2E_CACHE_PUSH=${PUSH_CACHE}" >> "$GITHUB_ENV"
+          echo "CONTAINER=docker" >> "$GITHUB_ENV"
+          echo "FINI_E2E_CI_RUN_ID=${RUN_ID_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Compile backend tests
+        run: make pr-gate-be-compile
+
+      - name: Run backend tests
+        run: make pr-gate-be-unit
+
+      - name: Run frontend build
+        run: npm run build
+
+      - name: Build runtime container
+        run: |
+          docker buildx build \
+            --target runtime \
+            --load \
+            --cache-from type=gha,scope=fini-runtime \
+            --cache-to type=gha,mode=max,scope=fini-runtime \
+            -t fini-runtime-ci \
+            .
+
+      - name: Run runtime smoke check
+        run: docker run --rm fini-runtime-ci --help
+
+      - name: Build dev-runner image
+        run: make pr-gate-e2e-build-dev-runner
+
+      - name: Run desktop e2e flow
+        run: make pr-gate-e2e-run
+
+      - name: Print E2E artifacts on failure
+        if: failure()
+        run: make pr-gate-e2e-artifacts
+
+      - name: Cleanup E2E containers
+        if: always()
+        run: make pr-gate-e2e-cleanup

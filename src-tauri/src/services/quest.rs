@@ -923,7 +923,19 @@ impl<'a> QuestService<'a> {
         device_id: &str,
         series_id: &str,
     ) -> Result<(), diesel::result::Error> {
-        self.repository.conn.transaction(|conn| {
+        // Immediate, not deferred: this reads the series and then writes to
+        // it, and a deferred transaction takes a read snapshot on that first
+        // statement. If another connection commits before the write, SQLite
+        // refuses it with `SQLITE_BUSY_SNAPSHOT` -- immediately, because no
+        // amount of waiting can refresh a snapshot. `busy_timeout` does not
+        // apply to it, which is why raising that timeout never helped (see
+        // `db::try_open_db_at_path_once`, and the test beside it).
+        //
+        // Taking the write lock up front makes the timeout apply again: a
+        // second writer waits its turn instead of failing. This loop also
+        // emits a sync event per quest, each waking the keeper, so it is
+        // precisely the long write most likely to have company.
+        self.repository.conn.immediate_transaction(|conn| {
             let (series_space_id, series_quests) = {
                 let mut repository = QuestRepository::new(conn);
                 let series_space_id = repository
