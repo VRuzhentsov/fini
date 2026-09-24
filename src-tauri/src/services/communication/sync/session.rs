@@ -4,6 +4,7 @@
 //! adapter's accept/dial code (`channel::tcp_ws`, `channel::loopback`, and
 //! the future real Bluetooth adapter).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -127,35 +128,34 @@ pub async fn run_session(
     // has never had: an existing row, a disabled one, and an unlinked one
     // are all left alone. So saying it again is the cheapest durable
     // delivery there is.
-    // What this side still owes the peer, emptied only by its
-    // acknowledgement.
+    // What the peer has confirmed. Everything enabled here and absent from
+    // this set is still owed -- recomputed from the database each time
+    // rather than snapshotted once at startup.
     //
-    // Nothing weaker is enough. A send can fail while the link stays up --
-    // a Bluetooth write that exhausts `BleDataLink::send`'s `GattBusy`
-    // retries does exactly that. A send can succeed into a peer whose
-    // database is locked, or one that dies between reading the frame and
-    // writing the row. Each leaves that side refusing a channel it was
-    // already told about, for the life of the session, and none of them is
-    // visible from here. So "delivered" is the receiver's word, not this
-    // side's, and whatever is still owed goes out again on the ping tick
-    // below -- which every peer new enough to understand the frame runs.
-    let mut unannounced: Vec<ChannelKind> = if peer_protocol_version
-        >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION
-    {
-        let db = db_path.clone();
-        let peer = peer_device_id.clone();
-        tokio::task::block_in_place(move || {
-            let mut conn = open_db_at_path(&db);
-            channels::configured(&mut conn, &peer)
-                .into_iter()
-                .filter(|channel| channel.enabled)
-                .filter_map(|channel| ChannelKind::from_code(&channel.channel_kind))
-                .collect()
-        })
-    } else {
-        Vec::new()
-    };
-    send_channel_announcements(link.as_mut(), &unannounced).await;
+    // The snapshot was the weak part. `channels::configured` turns a failed
+    // read into an empty list, so a database locked for a moment by the
+    // per-tick bookkeeping that runs alongside a fresh session looks
+    // exactly like "this pair has no channels enabled" -- and a session
+    // that starts owing nothing goes on owing nothing for its whole life,
+    // however long that is. Asking again costs one indexed read per ping
+    // and cannot get stuck in that state.
+    //
+    // Confirmation has to come from the peer for the same reason. A send
+    // can fail while the link stays up -- a Bluetooth write exhausting
+    // `BleDataLink::send`'s `GattBusy` retries does exactly that -- and a
+    // send can succeed into a peer whose own database is locked, or one
+    // that dies between reading the frame and writing the row. None of
+    // those is visible from this side, so "delivered" is not this side's
+    // word to give.
+    let announcements_enabled = peer_protocol_version
+        >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION;
+    let mut acknowledged: HashSet<ChannelKind> = HashSet::new();
+    if announcements_enabled {
+        let owed = tokio::task::block_in_place(|| {
+            channels_owed(&db_path, &peer_device_id, &acknowledged)
+        });
+        send_channel_announcements(link.as_mut(), &owed).await;
+    }
 
     // Re-checked periodically, not just once at session start: a network
     // session can stay live for a long time, and if the local Bluetooth
@@ -191,7 +191,7 @@ pub async fn run_session(
                 // access to what is still owed: the acknowledgement's whole
                 // job is to take a channel off this session's queue.
                 if let PeerFrame::ChannelEnabledAck { kind: acked } = frame {
-                    unannounced.retain(|pending| *pending != acked);
+                    acknowledged.insert(acked);
                     log::info!("[session] {peer_device_id}: {acked:?} acknowledged by the peer");
                     continue;
                 }
@@ -218,22 +218,16 @@ pub async fn run_session(
                     // it -- that peer still needs its switch flipped by
                     // hand, which is the behaviour it already had, rather
                     // than a dropped session.
+                    // Only ever a nudge to say it now rather than on the
+                    // next tick: the switch wrote the row before sending
+                    // this, so the channel is already owed by definition and
+                    // stays owed until the peer confirms it. Nothing here
+                    // has to be remembered.
                     SessionCommand::AnnounceChannel(announced) => {
-                        if peer_protocol_version
-                            >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION
-                        {
+                        if announcements_enabled {
                             log::info!(
                                 "[session] {peer_device_id}: announcing {announced:?} is set up here"
                             );
-                            // Onto the queue first, then sent. A switch
-                            // flipped mid-session is owed exactly as much as
-                            // one found at startup -- send it directly and
-                            // the peer's silence after a failed write of its
-                            // own goes unanswered, because the ping tick
-                            // only ever resends what the queue holds.
-                            if !unannounced.contains(&announced) {
-                                unannounced.push(announced);
-                            }
                             send_channel_announcements(link.as_mut(), &[announced]).await;
                         }
                     }
@@ -258,8 +252,10 @@ pub async fn run_session(
                 // heard is the difference between a channel that works and
                 // one it keeps refusing. Empty in the ordinary case, so
                 // this costs nothing.
-                if !unannounced.is_empty() {
-                    let owed = unannounced.clone();
+                if announcements_enabled {
+                    let owed = tokio::task::block_in_place(|| {
+                        channels_owed(&db_path, &peer_device_id, &acknowledged)
+                    });
                     send_channel_announcements(link.as_mut(), &owed).await;
                 }
                 state.note_ping_tick(&peer_device_id, kind);
@@ -321,6 +317,26 @@ fn bluetooth_recheck_interval() -> Duration {
 /// announcement is not self-correcting: the peer goes on refusing the
 /// channel for the life of the session. So a failure keeps its place in
 /// the queue instead of being dropped.
+/// The channels enabled on this device that the peer has not confirmed yet.
+///
+/// A read that fails answers "nothing owed right now" rather than an error,
+/// which is safe only because the caller asks again on every ping: the
+/// worst a locked database costs is one tick of delay, where a snapshot
+/// taken once would have cost the whole session.
+fn channels_owed(
+    db_path: &PathBuf,
+    peer_device_id: &str,
+    acknowledged: &HashSet<ChannelKind>,
+) -> Vec<ChannelKind> {
+    let mut conn = open_db_at_path(db_path);
+    channels::configured(&mut conn, peer_device_id)
+        .into_iter()
+        .filter(|channel| channel.enabled)
+        .filter_map(|channel| ChannelKind::from_code(&channel.channel_kind))
+        .filter(|kind| !acknowledged.contains(kind))
+        .collect()
+}
+
 async fn send_channel_announcements(link: &mut dyn DataLink, pending: &[ChannelKind]) {
     for announced in pending {
         // A failure keeps its place simply by staying in the caller's list:
