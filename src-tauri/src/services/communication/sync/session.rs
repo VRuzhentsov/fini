@@ -488,9 +488,35 @@ async fn handle_inbound(
             // local opt-out. `introduce` leaves any existing row alone --
             // switched off or unlinked included -- and says whether it
             // created one.
+            // Retried on a locked database, like the `BluetoothAddressUpdate`
+            // handler below and for the same measured reason: this lands
+            // right after a fresh auth, when per-tick session bookkeeping is
+            // contending for the same file. Giving up after one attempt
+            // would be the end of it -- the sender counts a frame it wrote
+            // as delivered, so nothing restates it while this session lives,
+            // and the peer would go on being refused on a channel it was
+            // told about. `introduce` is idempotent, which is what makes a
+            // retry safe.
             let applied = tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                channels::introduce(&mut conn, &peer, announced)
+                let mut last = Err("never attempted".to_string());
+                for attempt in 0..3 {
+                    if attempt > 0 {
+                        std::thread::sleep(Duration::from_millis(100 * attempt as u64));
+                    }
+                    last = channels::introduce(&mut conn, &peer, announced);
+                    match &last {
+                        Ok(_) => break,
+                        Err(err) => {
+                            let retriable = err.contains("database is locked")
+                                || err.contains("database is busy");
+                            if !retriable {
+                                break;
+                            }
+                        }
+                    }
+                }
+                last
             });
             match applied {
                 Ok(false) => {
