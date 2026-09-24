@@ -249,6 +249,25 @@ fn bluetooth_recheck_interval() -> Duration {
     Duration::from_secs(300)
 }
 
+/// Whether this device can be given a Bluetooth channel without a person
+/// present to answer a permission dialog.
+///
+/// True everywhere but Android, which gates the radio behind Nearby
+/// Devices and can only ask for it from a real click.
+fn bluetooth_may_be_enabled_without_asking() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        crate::services::android_context::call_static_context_to_bool(
+            "com.fini.app.BluetoothPairing",
+            "hasPermissions",
+        )
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
+}
+
 async fn handle_inbound(
     frame: PeerFrame,
     link: &mut dyn DataLink,
@@ -364,21 +383,48 @@ async fn handle_inbound(
         // paired peer, and the frame only says which channel that same pair
         // may now also use. It grants no trust that did not already exist.
         PeerFrame::ChannelEnabled { kind: announced } => {
+            // The switch is per device, and a peer does not get to flip
+            // ours. This only ever *adds* a channel the pair has never set
+            // up here -- #179's actual case, where the missing row is what
+            // makes the gate reject the peer. An existing row is left
+            // exactly as it is, including one this person deliberately
+            // switched off: re-enabling that would reverse an explicit
+            // local opt-out and quietly restart dialing on a channel they
+            // said no to.
+            if announced == ChannelKind::Bluetooth && !bluetooth_may_be_enabled_without_asking() {
+                // Android's Nearby Devices permission is requested from one
+                // place only: the local switch
+                // (`device_connection_set_channel_enabled_impl`), on a real
+                // click. Writing `enabled` here would record a channel that
+                // cannot advertise, scan or dial, with nothing able to
+                // prompt for the permission afterwards -- a row that says
+                // on and never works. Leaving it alone keeps the behaviour
+                // this pair already had: the person flips the switch, which
+                // is also what asks for the permission.
+                log::info!(
+                    "[session] {peer_device_id}: {announced:?} announced, but this device has no \
+                     Bluetooth permission yet -- leaving it for the switch to ask"
+                );
+                return;
+            }
             let db = db_path.clone();
             let peer = peer_device_id.to_string();
             let applied = tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                // Same two-step as the local switch
-                // (`device_connection_set_channel_enabled_impl`): a channel
-                // the pair has never used has no row to update, and
-                // `set_enabled` alone would update nothing and report
-                // success.
                 if channels::find(&mut conn, &peer, announced).is_some() {
-                    channels::set_enabled(&mut conn, &peer, announced, true)
-                } else {
-                    channels::configure(&mut conn, &peer, announced, true, None)
+                    return Ok(false);
                 }
+                channels::configure(&mut conn, &peer, announced, true, None).map(|_| true)
             });
+            let applied = match applied {
+                Ok(false) => {
+                    log::info!(
+                        "[session] {peer_device_id}: {announced:?} announced, already set up here"
+                    );
+                    return;
+                }
+                other => other,
+            };
             match applied {
                 Ok(_) => {
                     log::info!(

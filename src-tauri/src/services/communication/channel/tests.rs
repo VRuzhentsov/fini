@@ -2308,3 +2308,51 @@ async fn a_channel_announced_by_the_peer_is_set_up_on_the_receiving_side() {
          authentication and the pair waits for a person to flip a second switch by hand"
     );
 }
+
+/// The switch belongs to the device it is on. A peer announcing that it
+/// set a channel up must not flip a channel this person deliberately
+/// switched off -- that would reverse an explicit opt-out and restart
+/// dialing on a channel they said no to. #179 is only about *adding* a
+/// channel the pair has never set up here.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_announced_channel_never_re_enables_one_switched_off_here() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce-optout");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
+            .expect("set Bluetooth up but switched off");
+    }
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::ChannelEnabled {
+            kind: ChannelKind::Bluetooth,
+        },
+    )
+    .await
+    .expect("announce the channel");
+
+    // Long enough that the write would have landed if it were going to.
+    sleep(Duration::from_millis(500)).await;
+    let mut conn = open_db_at_path(&server_db);
+    assert!(
+        !channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
+        "a channel switched off on this device must stay off, whatever the peer announces"
+    );
+}
