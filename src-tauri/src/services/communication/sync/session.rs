@@ -127,27 +127,31 @@ pub async fn run_session(
     // has never had: an existing row, a disabled one, and an unlinked one
     // are all left alone. So saying it again is the cheapest durable
     // delivery there is.
-    if peer_protocol_version
+    // Carried rather than dropped when a send fails. Over Bluetooth a write
+    // can exhaust `BleDataLink::send`'s `GattBusy` retries and return an
+    // error while the link itself stays up, so a failed announcement is not
+    // a dead session to be noticed on the next read -- it is a live session
+    // whose peer never heard, and which would go on rejecting the channel
+    // for as long as it lasts. Whatever is left here is retried on the ping
+    // tick below, which every peer new enough to understand the frame also
+    // runs.
+    let mut unannounced: Vec<ChannelKind> = if peer_protocol_version
         >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION
     {
-        let enabled_here = {
-            let db = db_path.clone();
-            let peer = peer_device_id.clone();
-            tokio::task::block_in_place(move || {
-                let mut conn = open_db_at_path(&db);
-                channels::configured(&mut conn, &peer)
-                    .into_iter()
-                    .filter(|channel| channel.enabled)
-                    .filter_map(|channel| ChannelKind::from_code(&channel.channel_kind))
-                    .collect::<Vec<_>>()
-            })
-        };
-        for announced in enabled_here {
-            // A failure here is not handled separately: the link is dead,
-            // and the loop below notices on its first read.
-            let _ = send_frame(link.as_mut(), &PeerFrame::ChannelEnabled { kind: announced }).await;
-        }
-    }
+        let db = db_path.clone();
+        let peer = peer_device_id.clone();
+        tokio::task::block_in_place(move || {
+            let mut conn = open_db_at_path(&db);
+            channels::configured(&mut conn, &peer)
+                .into_iter()
+                .filter(|channel| channel.enabled)
+                .filter_map(|channel| ChannelKind::from_code(&channel.channel_kind))
+                .collect()
+        })
+    } else {
+        Vec::new()
+    };
+    unannounced = send_channel_announcements(link.as_mut(), unannounced).await;
 
     // Re-checked periodically, not just once at session start: a network
     // session can stay live for a long time, and if the local Bluetooth
@@ -234,6 +238,15 @@ pub async fn run_session(
                 }
             }
             _ = ping_interval.tick(), if ping_enabled => {
+                // Before the ping, because an announcement the peer never
+                // heard is the difference between a channel that works and
+                // one it keeps refusing. Empty in the ordinary case, so
+                // this costs nothing.
+                if !unannounced.is_empty() {
+                    unannounced =
+                        send_channel_announcements(link.as_mut(), std::mem::take(&mut unannounced))
+                            .await;
+                }
                 state.note_ping_tick(&peer_device_id, kind);
                 if send_frame(link.as_mut(), &PeerFrame::Ping).await.is_err() {
                     break;
@@ -283,6 +296,30 @@ fn bluetooth_recheck_interval() -> Duration {
         }
     }
     Duration::from_secs(300)
+}
+
+/// Tells the peer about each channel in `pending`, and hands back the ones
+/// that did not make it.
+///
+/// A send can fail without the link dying -- a Bluetooth write that
+/// exhausts its `GattBusy` retries does exactly that -- and a lost
+/// announcement is not self-correcting: the peer goes on refusing the
+/// channel for the life of the session. So a failure keeps its place in
+/// the queue instead of being dropped.
+async fn send_channel_announcements(
+    link: &mut dyn DataLink,
+    pending: Vec<ChannelKind>,
+) -> Vec<ChannelKind> {
+    let mut still_pending = Vec::new();
+    for announced in pending {
+        if send_frame(link, &PeerFrame::ChannelEnabled { kind: announced })
+            .await
+            .is_err()
+        {
+            still_pending.push(announced);
+        }
+    }
+    still_pending
 }
 
 /// Whether this device can be given a Bluetooth channel without a person
