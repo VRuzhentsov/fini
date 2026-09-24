@@ -2471,3 +2471,76 @@ async fn a_session_restates_the_channels_set_up_here_when_it_starts() {
          at switch-flip time cannot strand the pair with the peer rejecting the channel forever"
     );
 }
+
+/// The receiver is what makes an announcement "delivered".
+///
+/// The sender can only see that it managed to write a frame, and that is
+/// not the same thing: a Bluetooth write can succeed into a peer whose
+/// database is locked, or into one that dies between reading the frame and
+/// writing the row. Either way that side goes on refusing a channel it was
+/// already told about, invisibly, for the life of the session. So the
+/// receiver says when it has dealt with it -- for a channel it set up and
+/// for one it deliberately left alone, both being the announcement applied.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_receiver_acknowledges_an_announcement_it_has_applied() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce-ack");
+    seed_paired_device(&server_db, "peer-client");
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::ChannelEnabled {
+            kind: ChannelKind::Bluetooth,
+        },
+    )
+    .await
+    .expect("announce the channel");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
+    let mut acked = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
+            Ok(Some(Ok(PeerFrame::ChannelEnabledAck { kind })))
+                if kind == ChannelKind::Bluetooth =>
+            {
+                acked = true;
+                break;
+            }
+            Ok(Some(Ok(PeerFrame::Ping))) => {
+                let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
+            }
+            Ok(Some(Ok(_))) => {}
+            _ => break,
+        }
+    }
+    assert!(
+        acked,
+        "the receiver must confirm it applied the announcement -- a frame this side managed to \
+         write is not evidence the other side acted on it, and without the confirmation there \
+         is nothing to stop the retry or to prove the channel will be accepted"
+    );
+
+    let mut conn = open_db_at_path(&server_db);
+    assert!(
+        channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
+        "and the acknowledgement follows the row actually being written"
+    );
+}

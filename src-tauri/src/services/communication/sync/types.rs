@@ -202,6 +202,25 @@ pub enum PeerFrame {
     ChannelEnabled {
         kind: crate::services::communication::channel::ChannelKind,
     },
+    /// "I have dealt with what you told me about that channel."
+    ///
+    /// Sent for a channel set up on this side *and* for one deliberately
+    /// left alone -- switched off or unlinked here. Both are the
+    /// announcement having been applied; only a failure to read or write
+    /// the table is not, and that stays unacknowledged so the sender says
+    /// it again.
+    ///
+    /// Without this the sender can only know that it managed to *write* a
+    /// frame, which is not the same as the peer having acted on it. A
+    /// write that succeeds into a peer whose database is locked, a peer
+    /// that dies between reading and writing -- each leaves that side
+    /// refusing a channel it was already told about, for the life of the
+    /// session, with nothing to notice. Delivery is the receiver's to
+    /// confirm.
+    #[serde(rename = "channel_enabled_ack")]
+    ChannelEnabledAck {
+        kind: crate::services::communication::channel::ChannelKind,
+    },
     /// Catches any `type` tag this build doesn't recognize, instead of
     /// failing to decode outright. Without this, a peer running an older
     /// build that unconditionally receives a newer frame kind (e.g.

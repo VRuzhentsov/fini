@@ -127,14 +127,18 @@ pub async fn run_session(
     // has never had: an existing row, a disabled one, and an unlinked one
     // are all left alone. So saying it again is the cheapest durable
     // delivery there is.
-    // Carried rather than dropped when a send fails. Over Bluetooth a write
-    // can exhaust `BleDataLink::send`'s `GattBusy` retries and return an
-    // error while the link itself stays up, so a failed announcement is not
-    // a dead session to be noticed on the next read -- it is a live session
-    // whose peer never heard, and which would go on rejecting the channel
-    // for as long as it lasts. Whatever is left here is retried on the ping
-    // tick below, which every peer new enough to understand the frame also
-    // runs.
+    // What this side still owes the peer, emptied only by its
+    // acknowledgement.
+    //
+    // Nothing weaker is enough. A send can fail while the link stays up --
+    // a Bluetooth write that exhausts `BleDataLink::send`'s `GattBusy`
+    // retries does exactly that. A send can succeed into a peer whose
+    // database is locked, or one that dies between reading the frame and
+    // writing the row. Each leaves that side refusing a channel it was
+    // already told about, for the life of the session, and none of them is
+    // visible from here. So "delivered" is the receiver's word, not this
+    // side's, and whatever is still owed goes out again on the ping tick
+    // below -- which every peer new enough to understand the frame runs.
     let mut unannounced: Vec<ChannelKind> = if peer_protocol_version
         >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION
     {
@@ -151,7 +155,7 @@ pub async fn run_session(
     } else {
         Vec::new()
     };
-    unannounced = send_channel_announcements(link.as_mut(), unannounced).await;
+    send_channel_announcements(link.as_mut(), &unannounced).await;
 
     // Re-checked periodically, not just once at session start: a network
     // session can stay live for a long time, and if the local Bluetooth
@@ -183,6 +187,14 @@ pub async fn run_session(
                         break;
                     }
                 };
+                // Handled here rather than in `handle_inbound`, which has no
+                // access to what is still owed: the acknowledgement's whole
+                // job is to take a channel off this session's queue.
+                if let PeerFrame::ChannelEnabledAck { kind: acked } = frame {
+                    unannounced.retain(|pending| *pending != acked);
+                    log::info!("[session] {peer_device_id}: {acked:?} acknowledged by the peer");
+                    continue;
+                }
                 handle_inbound(frame, link.as_mut(), &state, &db_path, &peer_device_id).await;
             }
             Some(command) = rx.recv() => {
@@ -243,9 +255,8 @@ pub async fn run_session(
                 // one it keeps refusing. Empty in the ordinary case, so
                 // this costs nothing.
                 if !unannounced.is_empty() {
-                    unannounced =
-                        send_channel_announcements(link.as_mut(), std::mem::take(&mut unannounced))
-                            .await;
+                    let owed = unannounced.clone();
+                    send_channel_announcements(link.as_mut(), &owed).await;
                 }
                 state.note_ping_tick(&peer_device_id, kind);
                 if send_frame(link.as_mut(), &PeerFrame::Ping).await.is_err() {
@@ -306,20 +317,12 @@ fn bluetooth_recheck_interval() -> Duration {
 /// announcement is not self-correcting: the peer goes on refusing the
 /// channel for the life of the session. So a failure keeps its place in
 /// the queue instead of being dropped.
-async fn send_channel_announcements(
-    link: &mut dyn DataLink,
-    pending: Vec<ChannelKind>,
-) -> Vec<ChannelKind> {
-    let mut still_pending = Vec::new();
+async fn send_channel_announcements(link: &mut dyn DataLink, pending: &[ChannelKind]) {
     for announced in pending {
-        if send_frame(link, &PeerFrame::ChannelEnabled { kind: announced })
-            .await
-            .is_err()
-        {
-            still_pending.push(announced);
-        }
+        // A failure keeps its place simply by staying in the caller's list:
+        // nothing is removed from it until the peer acknowledges.
+        let _ = send_frame(link, &PeerFrame::ChannelEnabled { kind: *announced }).await;
     }
-    still_pending
 }
 
 /// Whether this device can be given a Bluetooth channel without a person
@@ -450,6 +453,11 @@ async fn handle_inbound(
         PeerFrame::Pong => {
             state.note_pong_received(peer_device_id, link.kind());
         }
+        // Intercepted by `run_session` before it reaches here, because what
+        // it clears lives in that loop's own scope. Reaching this arm means
+        // an acknowledgement arrived somewhere with nothing outstanding --
+        // harmless, and not worth a log line per occurrence.
+        PeerFrame::ChannelEnabledAck { .. } => {}
         // #179: the peer set this channel up for our pair, so set it up
         // here too. Safe because this arm is only reachable from inside an
         // authenticated session -- the sender has already proved it is this
@@ -518,6 +526,13 @@ async fn handle_inbound(
                 }
                 last
             });
+            // Acknowledged for both outcomes: a channel added here and one
+            // deliberately left alone are each the announcement having been
+            // *applied*. Only a database failure goes unacknowledged, which
+            // is exactly when the sender should say it again.
+            if applied.is_ok() {
+                let _ = send_frame(link, &PeerFrame::ChannelEnabledAck { kind: announced }).await;
+            }
             match applied {
                 Ok(false) => {
                     log::info!(
