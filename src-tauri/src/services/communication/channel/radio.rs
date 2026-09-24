@@ -95,12 +95,20 @@ impl Radio for GattRadio {
 
     #[cfg(any(feature = "ui-plane", test))]
     fn serve(&self, state: &DeviceConnectionState) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        // Linux only, deliberately. Android starts the same loop from `dial`
+        // below, once its Activity context exists -- and starting it here as
+        // well gave Android *two* accept loops. Both then received the same
+        // inbound central and ran the gate on it: one claimed the session,
+        // the other was rejected as a duplicate, and dropping the rejected
+        // link released the session the first one was already using. Every
+        // inbound Bluetooth link died ~170ms after authenticating, with
+        // `no live notify session` as the only trace.
+        #[cfg(target_os = "linux")]
         tauri::async_runtime::spawn(super::ble::run_server(
             state.clone(),
             state.db_path.clone(),
         ));
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        #[cfg(not(target_os = "linux"))]
         let _ = state;
     }
 

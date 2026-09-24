@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use crate::schema::pair_space_mappings;
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::{
-    ChannelKind, DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
+    channels, ChannelKind, DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
     IncomingSyncAck,
 };
 use crate::services::communication::sync::outbox::load_events_for_space;
@@ -161,6 +161,25 @@ pub async fn run_session(
                     SessionCommand::Close => {
                         log::info!("[session] {peer_device_id} {kind:?}: asked to close");
                         break;
+                    }
+                    // #179. Silently dropped for a peer too old to decode
+                    // it -- that peer still needs its switch flipped by
+                    // hand, which is the behaviour it already had, rather
+                    // than a dropped session.
+                    SessionCommand::AnnounceChannel(announced) => {
+                        if peer_protocol_version
+                            >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION
+                        {
+                            log::info!(
+                                "[session] {peer_device_id}: announcing {announced:?} is set up here"
+                            );
+                            if send_frame(link.as_mut(), &PeerFrame::ChannelEnabled { kind: announced })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -338,6 +357,52 @@ async fn handle_inbound(
         }
         PeerFrame::Pong => {
             state.note_pong_received(peer_device_id, link.kind());
+        }
+        // #179: the peer set this channel up for our pair, so set it up
+        // here too. Safe because this arm is only reachable from inside an
+        // authenticated session -- the sender has already proved it is this
+        // paired peer, and the frame only says which channel that same pair
+        // may now also use. It grants no trust that did not already exist.
+        PeerFrame::ChannelEnabled { kind: announced } => {
+            let db = db_path.clone();
+            let peer = peer_device_id.to_string();
+            let applied = tokio::task::block_in_place(|| {
+                let mut conn = open_db_at_path(&db);
+                // Same two-step as the local switch
+                // (`device_connection_set_channel_enabled_impl`): a channel
+                // the pair has never used has no row to update, and
+                // `set_enabled` alone would update nothing and report
+                // success.
+                if channels::find(&mut conn, &peer, announced).is_some() {
+                    channels::set_enabled(&mut conn, &peer, announced, true)
+                } else {
+                    channels::configure(&mut conn, &peer, announced, true, None)
+                }
+            });
+            match applied {
+                Ok(_) => {
+                    log::info!(
+                        "[session] {peer_device_id}: {announced:?} set up here at the peer's request"
+                    );
+                    // The peer is dialing us on that channel right now, and
+                    // until this landed the gate was rejecting it. Wake the
+                    // work loop so our own side reaches for it too rather
+                    // than waiting for the next backstop.
+                    if announced == ChannelKind::Bluetooth {
+                        #[cfg(any(target_os = "linux", target_os = "android"))]
+                        crate::services::communication::channel::ble::retry_bluetooth_dial(
+                            state,
+                            peer_device_id,
+                        );
+                    }
+                    crate::services::communication::sync::commands::notify_sync_work_pending();
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[session] {peer_device_id}: could not set up {announced:?} on request: {err}"
+                    );
+                }
+            }
         }
         PeerFrame::BluetoothAddressUpdate { address } => {
             let Some(address) = crate::services::communication::pairing::normalize_bluetooth_address(&address)

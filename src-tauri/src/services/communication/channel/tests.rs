@@ -2242,3 +2242,69 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
         "a later connection from the same peer must be able to claim the freed slot"
     );
 }
+
+/// #179. ADR-0007 promises that adding a second channel to a paired device
+/// "does not interrupt the other person" — trust belongs to the pair, not
+/// to a channel. Nothing carried that across the wire, so the receiving
+/// side kept no row for the new channel, `run_peer_gate` answered
+/// `is_enabled = false`, and every authentication on it was rejected while
+/// the initiating device's dialog said the peer had nothing to do.
+///
+/// Here the client authenticates over Network and announces that Bluetooth
+/// is now set up for this pair. The server must end up with that channel
+/// configured and enabled, without anyone touching the server.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_announced_by_the_peer_is_set_up_on_the_receiving_side() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce");
+    seed_paired_device(&server_db, "peer-client");
+
+    {
+        let mut conn = open_db_at_path(&server_db);
+        assert!(
+            channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
+            "precondition: this pair has never used Bluetooth on the receiving side"
+        );
+    }
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::ChannelEnabled {
+            kind: ChannelKind::Bluetooth,
+        },
+    )
+    .await
+    .expect("announce the channel");
+
+    let mut enabled = false;
+    for _ in 0..100 {
+        {
+            let mut conn = open_db_at_path(&server_db);
+            if channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth) {
+                enabled = true;
+                break;
+            }
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        enabled,
+        "the peer announced Bluetooth over the channel it was already trusted on, so this \
+         side must set it up itself — otherwise its own gate rejects every Bluetooth \
+         authentication and the pair waits for a person to flip a second switch by hand"
+    );
+}

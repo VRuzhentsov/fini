@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -310,7 +310,23 @@ const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
 /// `AddDeviceView.vue`'s tight 4s scan pass, so there's ample room for a
 /// larger per-candidate share without starving out other candidates in
 /// practice.
-const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(4);
+///
+/// 4s did not honour that reasoning: it has to fit *two* sequential
+/// dial+handshake round trips, while `CANDIDATE_PROBE_TIMEOUT` above
+/// budgets 3s for one. Against a real phone the dial alone took the whole
+/// 4s and the future was dropped mid-connect, every time:
+///
+/// ```text
+/// 02:05:13  connect: dialling 52:E1:52:02:7D:37
+/// 02:05:17  connect: abandoned before completing (connect guard dropped)
+/// ```
+///
+/// 15s fits both round trips with room for `BleDataLink::send`'s ~1.4s
+/// `GattBusy` retry, and still leaves the 60s button budget enough for
+/// four candidates -- more than a room ever holds. The background dial
+/// loop, doing the same work, has always had 30s
+/// (`DIAL_CANDIDATE_TIMEOUT`).
+const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Shared add-mode state, watched by `run_server`'s peripheral loop so a
 /// toggle can trigger a fresh advertisement carrying (or dropping) the
@@ -452,12 +468,34 @@ async fn backend() -> Result<Arc<dyn Backend>, String> {
 /// `#[tauri::command]`, whose first real invocation can only happen once
 /// the WebView/Activity has actually dispatched an IPC call, a strictly
 /// later and safer point than anything obtainable from `.setup()` itself.
+/// The `Once` stays as a cheap filter -- this runs from every tick, and
+/// without it each one would spawn a task only for `claim_peripheral_role`
+/// to turn it away. The guard below is the actual invariant; this just
+/// keeps the common path quiet.
 #[cfg(target_os = "android")]
 pub fn start_peripheral_once(state: DeviceConnectionState, db_path: PathBuf) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
         tauri::async_runtime::spawn(run_server(state, db_path));
     });
+}
+
+/// One peripheral acceptor per process, enforced where the loop actually
+/// runs rather than at each call site.
+///
+/// This used to be a `Once` inside `start_peripheral_once`, which guarded
+/// only that one caller. `GattRadio::serve` spawned `run_server` directly
+/// as well, so on Android both ran: two accept loops, both handed the same
+/// inbound central, both running the gate on it. One claimed the session,
+/// the other was rejected as a duplicate, and dropping the rejected link
+/// released the session the winner was using.
+///
+/// Guarding the loop itself makes a second one impossible whatever calls
+/// it, on any platform -- which is also what makes the invariant testable
+/// without an Android device (see `peripheral_role_tests`).
+fn claim_peripheral_role() -> bool {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    !RUNNING.swap(true, Ordering::SeqCst)
 }
 
 pub struct BleDataLink {
@@ -874,6 +912,11 @@ impl Transport for BleTransport {
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     use futures_util::StreamExt;
+
+    if !claim_peripheral_role() {
+        log::warn!("[transport][ble] peripheral acceptor already running; ignoring a second start");
+        return;
+    }
 
     // Before the first `datagram_config()` below builds an advertisement:
     // the fingerprint is what lets a scanning peer tell this device apart
@@ -1879,6 +1922,29 @@ async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The peripheral acceptor must be a singleton, whatever starts it.
+    ///
+    /// It was not: `GattRadio::serve` spawned `run_server` on Linux *and*
+    /// Android, while Android also started it from `dial` via
+    /// `start_peripheral_once`. Two accept loops then received the same
+    /// inbound central and both ran the gate on it -- one claimed the
+    /// session, the other was rejected as a duplicate, and dropping the
+    /// rejected link released the session the winner was using. Observed on
+    /// hardware as an inbound link dying ~170ms after authenticating, with
+    /// `no live notify session` as the only trace.
+    ///
+    /// The `cfg` fix alone is not testable off Android, since the wrong
+    /// branch never compiles here. Guarding the loop itself is: the
+    /// invariant stops being platform-conditional, and this asserts it.
+    #[test]
+    fn only_one_peripheral_acceptor_can_run_at_a_time() {
+        assert!(claim_peripheral_role(), "the first start takes the role");
+        assert!(
+            !claim_peripheral_role(),
+            "a second start must be refused -- two acceptors race each other's session"
+        );
+    }
 
     #[test]
     fn should_dial_only_from_the_lower_device_id_and_only_without_a_session() {
