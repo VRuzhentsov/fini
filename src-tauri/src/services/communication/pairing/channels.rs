@@ -20,6 +20,7 @@ use super::channel_status::ChannelKind;
 pub fn configured(conn: &mut SqliteConnection, device_id: &str) -> Vec<Channel> {
     channels::table
         .filter(channels::device_id.eq(device_id))
+        .filter(channels::unlinked_at.is_null())
         .select(Channel::as_select())
         .load(&mut *conn)
         .map(|mut rows: Vec<Channel>| {
@@ -30,6 +31,18 @@ pub fn configured(conn: &mut SqliteConnection, device_id: &str) -> Vec<Channel> 
 }
 
 pub fn find(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> Option<Channel> {
+    row(conn, device_id, kind).filter(|channel| channel.unlinked_at.is_none())
+}
+
+/// The stored row whether or not it was unlinked.
+///
+/// Private, and used by exactly the three places that must see past the
+/// tombstone: `configure`, which has to update the existing row rather than
+/// insert a duplicate key; `unlink`, which writes it; and `ever_configured`,
+/// which is what tells a peer's request apart from a first-time setup.
+/// Everything else wants `find`, where an unlinked channel reads as absent
+/// -- the meaning it had when unlinking deleted the row.
+fn row(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> Option<Channel> {
     channels::table
         .find((device_id, kind.code()))
         .select(Channel::as_select())
@@ -37,6 +50,15 @@ pub fn find(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> 
         .optional()
         .ok()
         .flatten()
+}
+
+/// Whether this pair has ever had this channel, including one it unlinked.
+///
+/// The question `PeerFrame::ChannelEnabled` has to ask: a peer may
+/// introduce a channel this pair has never used, and may not resurrect one
+/// this person switched off or unlinked.
+pub fn ever_configured(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> bool {
+    row(conn, device_id, kind).is_some()
 }
 
 /// Whether this channel is configured *and* switched on. A missing row reads
@@ -65,6 +87,7 @@ pub fn read_enabled(
 ) -> Option<bool> {
     channels::table
         .find((device_id, kind.code()))
+        .filter(channels::unlinked_at.is_null())
         .select(Channel::as_select())
         .first(conn)
         .optional()
@@ -90,9 +113,16 @@ pub fn configure(
     enabled: bool,
     address: Option<&str>,
 ) -> Result<(), String> {
-    if find(conn, device_id, kind).is_some() {
+    // `row`, not `find`: an unlinked channel still occupies the primary key,
+    // so inserting over it would fail. Setting one up again is also the one
+    // thing that should clear the tombstone -- the person is undoing their
+    // own decision, which is exactly who is allowed to.
+    if row(conn, device_id, kind).is_some() {
         diesel::update(channels::table.find((device_id, kind.code())))
-            .set(channels::enabled.eq(enabled))
+            .set((
+                channels::enabled.eq(enabled),
+                channels::unlinked_at.eq(None::<String>),
+            ))
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
         if let Some(address) = address {
@@ -203,7 +233,16 @@ pub fn unlink(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -
     if channel.enabled {
         return Err("Turn the channel off first".to_string());
     }
-    diesel::delete(channels::table.find((device_id, kind.code())))
+    // Stamped, not deleted. The row reads as absent everywhere (`find` and
+    // `configured` filter it out), so the page still offers to set the
+    // channel up again -- but the decision survives, and a peer announcing
+    // the same channel cannot undo it. See the migration's own note.
+    diesel::update(channels::table.find((device_id, kind.code())))
+        .set((
+            channels::unlinked_at.eq(Some(utc_now())),
+            channels::address.eq(None::<String>),
+            channels::is_primary.eq(false),
+        ))
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
     Ok(())

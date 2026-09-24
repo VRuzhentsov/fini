@@ -276,8 +276,19 @@ mod tests {
         let db_path = temp_db_path("migration-23-reconstructs-channels");
         let mut conn = open_db_at_path(&db_path);
 
-        conn.revert_last_migration(MIGRATIONS)
-            .expect("wind back to the pre-channels shape");
+        // Wind back until `channels` is gone, which is what "before this
+        // migration" means -- asked of the schema rather than counted in
+        // migrations, so nothing here has to know how many have landed
+        // since. A single `revert_last_migration` stopped meaning
+        // pre-channels the moment another migration existed, and the seed
+        // below then inserted into columns that were already gone.
+        while diesel::sql_query("SELECT 1 FROM channels LIMIT 1")
+            .execute(&mut conn)
+            .is_ok()
+        {
+            conn.revert_last_migration(MIGRATIONS)
+                .expect("wind back to the pre-channels shape");
+        }
 
         diesel::sql_query(
             "INSERT INTO paired_devices

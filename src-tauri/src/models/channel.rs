@@ -23,6 +23,13 @@ pub struct Channel {
     /// for diagnostics only -- ADR-0006 dials nothing by address.
     pub address: Option<String>,
     pub configured_at: String,
+    /// When "unlink channel" removed it, if it did. A row carrying this is
+    /// absent as far as every reader is concerned -- `channels::find` and
+    /// `channels::configured` filter it out, so "configured" keeps meaning
+    /// what it meant. It exists so the decision outlives the row: a peer
+    /// asking for this channel (`PeerFrame::ChannelEnabled`) must not be
+    /// able to recreate something this person deliberately removed.
+    pub unlinked_at: Option<String>,
 }
 
 #[derive(Debug, Insertable)]

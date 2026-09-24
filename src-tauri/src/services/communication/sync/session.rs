@@ -113,6 +113,42 @@ pub async fn run_session(
         }
     }
 
+    // #179: every session restates which channels are set up here, rather
+    // than trusting the single send made at the moment a switch was
+    // flipped. That one can be lost -- a full session mailbox, or a
+    // session that ends between accepting the command and writing the
+    // frame -- and losing it strands the pair: this side shows the channel
+    // on while the peer goes on rejecting authentication on it, until
+    // somebody cycles the switch. It also covers the case the switch-time
+    // send cannot reach at all, a pair with no live session to announce
+    // over.
+    //
+    // Safe to repeat because the receiver only ever *adds* a channel it
+    // has never had: an existing row, a disabled one, and an unlinked one
+    // are all left alone. So saying it again is the cheapest durable
+    // delivery there is.
+    if peer_protocol_version
+        >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION
+    {
+        let enabled_here = {
+            let db = db_path.clone();
+            let peer = peer_device_id.clone();
+            tokio::task::block_in_place(move || {
+                let mut conn = open_db_at_path(&db);
+                channels::configured(&mut conn, &peer)
+                    .into_iter()
+                    .filter(|channel| channel.enabled)
+                    .filter_map(|channel| ChannelKind::from_code(&channel.channel_kind))
+                    .collect::<Vec<_>>()
+            })
+        };
+        for announced in enabled_here {
+            // A failure here is not handled separately: the link is dead,
+            // and the loop below notices on its first read.
+            let _ = send_frame(link.as_mut(), &PeerFrame::ChannelEnabled { kind: announced }).await;
+        }
+    }
+
     // Re-checked periodically, not just once at session start: a network
     // session can stay live for a long time, and if the local Bluetooth
     // controller changes underneath it (e.g. a USB dongle swap) with
@@ -411,7 +447,11 @@ async fn handle_inbound(
             let peer = peer_device_id.to_string();
             let applied = tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                if channels::find(&mut conn, &peer, announced).is_some() {
+                // `ever_configured`, not `find`: unlinking leaves a
+                // tombstone precisely so a peer cannot resurrect a channel
+                // this person removed. An unlinked row reads as absent
+                // everywhere else, and must not here.
+                if channels::ever_configured(&mut conn, &peer, announced) {
                     return Ok(false);
                 }
                 channels::configure(&mut conn, &peer, announced, true, None).map(|_| true)
