@@ -52,6 +52,20 @@ fn row(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> Optio
         .flatten()
 }
 
+/// The kinds this pair has switched on, in `configured`'s stable order.
+///
+/// A failed read answers "none", like every other read here: callers ask
+/// repeatedly rather than once, so a locked database costs a round instead
+/// of an answer. A caller that cannot survive that distinction wants
+/// `read_enabled`, which keeps it.
+pub fn enabled_kinds(conn: &mut SqliteConnection, device_id: &str) -> Vec<ChannelKind> {
+    configured(conn, device_id)
+        .into_iter()
+        .filter(|channel| channel.enabled)
+        .filter_map(|channel| ChannelKind::from_code(&channel.channel_kind))
+        .collect()
+}
+
 /// Set this channel up, switched on, only if the pair has never had it --
 /// counting one it unlinked as having had it. `Ok(true)` if that created
 /// the row, `Ok(false)` if something was already there.

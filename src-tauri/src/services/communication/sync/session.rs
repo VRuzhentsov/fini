@@ -319,20 +319,19 @@ fn bluetooth_recheck_interval() -> Duration {
 /// the queue instead of being dropped.
 /// The channels enabled on this device that the peer has not confirmed yet.
 ///
-/// A read that fails answers "nothing owed right now" rather than an error,
-/// which is safe only because the caller asks again on every ping: the
-/// worst a locked database costs is one tick of delay, where a snapshot
-/// taken once would have cost the whole session.
+/// Which ones are on is `channels`' question and is asked there; which of
+/// those this session still owes is this session's, and lives in the set
+/// it keeps. A read that fails answers "none on" -- safe only because the
+/// caller asks again on every ping, so a locked database costs a round
+/// rather than an answer.
 fn channels_owed(
     db_path: &PathBuf,
     peer_device_id: &str,
     acknowledged: &HashSet<ChannelKind>,
 ) -> Vec<ChannelKind> {
     let mut conn = open_db_at_path(db_path);
-    channels::configured(&mut conn, peer_device_id)
+    channels::enabled_kinds(&mut conn, peer_device_id)
         .into_iter()
-        .filter(|channel| channel.enabled)
-        .filter_map(|channel| ChannelKind::from_code(&channel.channel_kind))
         .filter(|kind| !acknowledged.contains(kind))
         .collect()
 }
