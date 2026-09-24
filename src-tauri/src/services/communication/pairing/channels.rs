@@ -52,13 +52,38 @@ fn row(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> Optio
         .flatten()
 }
 
-/// Whether this pair has ever had this channel, including one it unlinked.
+/// Set this channel up, switched on, only if the pair has never had it --
+/// counting one it unlinked as having had it. `Ok(true)` if that created
+/// the row, `Ok(false)` if something was already there.
 ///
-/// The question `PeerFrame::ChannelEnabled` has to ask: a peer may
-/// introduce a channel this pair has never used, and may not resurrect one
-/// this person switched off or unlinked.
-pub fn ever_configured(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> bool {
-    row(conn, device_id, kind).is_some()
+/// What a peer is allowed to do (`PeerFrame::ChannelEnabled`): introduce a
+/// channel this pair has never used, and nothing else.
+///
+/// One statement, deliberately. Asking `find`/`row` first and then calling
+/// `configure` reads the table twice, and the first read answers `None` for
+/// a transient `database is locked` exactly as it does for a row that
+/// isn't there -- after which `configure` finds the row on its own second
+/// read and switches it on, reversing the opt-out the check existed to
+/// protect. `ON CONFLICT DO NOTHING` leaves whatever is there alone, and a
+/// failure stays a failure instead of reading as permission.
+pub fn introduce(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    kind: ChannelKind,
+) -> Result<bool, String> {
+    let created = diesel::insert_into(channels::table)
+        .values(&NewChannel {
+            device_id: device_id.to_string(),
+            channel_kind: kind.code().to_string(),
+            enabled: true,
+            is_primary: false,
+            address: None,
+            configured_at: utc_now(),
+        })
+        .on_conflict_do_nothing()
+        .execute(&mut *conn)
+        .map_err(|e| e.to_string())?;
+    Ok(created > 0)
 }
 
 /// Whether this channel is configured *and* switched on. A missing row reads
@@ -300,5 +325,56 @@ mod tests {
         diesel::sql_query("DROP TABLE channels").execute(&mut conn).expect("drop");
         assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), None);
         assert!(!is_enabled(&mut conn, "peer", ChannelKind::Bluetooth));
+    }
+
+    /// What a peer is allowed to do to this pair's channels, in one
+    /// statement: add one that was never here, and nothing else.
+    ///
+    /// The single statement is the point. Checking first and writing after
+    /// reads the table twice, and the first read cannot tell "no row" from
+    /// "could not read" -- so a lock held for a moment reads as permission,
+    /// and the write then finds the row and switches it on. That is a local
+    /// opt-out reversed by a transient error, which is why this is an
+    /// insert that declines a conflict rather than a lookup.
+    #[test]
+    fn introduce_adds_only_a_channel_this_pair_never_had() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = open_db_at_path(&db_path);
+        diesel::sql_query(
+            "INSERT INTO paired_devices (peer_device_id, display_name, paired_at) \
+             VALUES ('peer', 'Peer', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&mut conn)
+        .expect("seed pair");
+
+        // Never had it: this is the one case that creates anything.
+        assert_eq!(
+            introduce(&mut conn, "peer", ChannelKind::Bluetooth),
+            Ok(true)
+        );
+        assert!(is_enabled(&mut conn, "peer", ChannelKind::Bluetooth));
+
+        // Switched off here: left alone.
+        set_enabled(&mut conn, "peer", ChannelKind::Bluetooth, false).expect("switch off");
+        assert_eq!(
+            introduce(&mut conn, "peer", ChannelKind::Bluetooth),
+            Ok(false)
+        );
+        assert!(!is_enabled(&mut conn, "peer", ChannelKind::Bluetooth));
+
+        // Unlinked here: also left alone, and still absent to every reader.
+        unlink(&mut conn, "peer", ChannelKind::Bluetooth).expect("unlink");
+        assert_eq!(
+            introduce(&mut conn, "peer", ChannelKind::Bluetooth),
+            Ok(false)
+        );
+        assert!(find(&mut conn, "peer", ChannelKind::Bluetooth).is_none());
+        assert!(!is_enabled(&mut conn, "peer", ChannelKind::Bluetooth));
+
+        // And an unreadable table is an error, never a quiet `true` that
+        // would let the caller write.
+        diesel::sql_query("DROP TABLE channels").execute(&mut conn).expect("drop");
+        assert!(introduce(&mut conn, "peer", ChannelKind::Bluetooth).is_err());
     }
 }

@@ -445,28 +445,23 @@ async fn handle_inbound(
             }
             let db = db_path.clone();
             let peer = peer_device_id.to_string();
+            // One statement, not a check followed by a write: a read that
+            // fails transiently must not read as "this pair never had the
+            // channel", which is the one answer that lets a peer undo a
+            // local opt-out. `introduce` leaves any existing row alone --
+            // switched off or unlinked included -- and says whether it
+            // created one.
             let applied = tokio::task::block_in_place(|| {
                 let mut conn = open_db_at_path(&db);
-                // `ever_configured`, not `find`: unlinking leaves a
-                // tombstone precisely so a peer cannot resurrect a channel
-                // this person removed. An unlinked row reads as absent
-                // everywhere else, and must not here.
-                if channels::ever_configured(&mut conn, &peer, announced) {
-                    return Ok(false);
-                }
-                channels::configure(&mut conn, &peer, announced, true, None).map(|_| true)
+                channels::introduce(&mut conn, &peer, announced)
             });
-            let applied = match applied {
+            match applied {
                 Ok(false) => {
                     log::info!(
                         "[session] {peer_device_id}: {announced:?} announced, already set up here"
                     );
-                    return;
                 }
-                other => other,
-            };
-            match applied {
-                Ok(_) => {
+                Ok(true) => {
                     log::info!(
                         "[session] {peer_device_id}: {announced:?} set up here at the peer's request"
                     );
