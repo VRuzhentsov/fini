@@ -112,6 +112,7 @@ diesel::table! {
         is_primary    -> Bool,
         address       -> Nullable<Text>,
         configured_at -> Text,
+        unlinked_at   -> Nullable<Text>,
     }
 }
 

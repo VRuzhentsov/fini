@@ -1135,6 +1135,9 @@ async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_sess
     // The session's own app-level ping/ack loop (ADR-0003 revision) also
     // runs concurrently now -- skip past any incidental `Ping` (replying
     // `Pong`, same as a real peer would) while waiting for the refresh.
+    // Same for the channel announcements a session restates at its start
+    // (#179): this test is about the self-report, not about which frames
+    // happen to sit either side of it.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1146,6 +1149,7 @@ async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_sess
             Ok(Some(Ok(PeerFrame::Ping))) => {
                 let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
             }
+            Ok(Some(Ok(PeerFrame::ChannelEnabled { .. }))) => {}
             other => panic!("expected a refreshed BluetoothAddressUpdate after the address changed, got {other:?}"),
         }
     }
@@ -2240,5 +2244,303 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
     assert!(
         server.try_claim_session("peer-client", ChannelKind::Network, tx2, &server_db),
         "a later connection from the same peer must be able to claim the freed slot"
+    );
+}
+
+/// #179. ADR-0007 promises that adding a second channel to a paired device
+/// "does not interrupt the other person" — trust belongs to the pair, not
+/// to a channel. Nothing carried that across the wire, so the receiving
+/// side kept no row for the new channel, `run_peer_gate` answered
+/// `is_enabled = false`, and every authentication on it was rejected while
+/// the initiating device's dialog said the peer had nothing to do.
+///
+/// Here the client authenticates over Network and announces that Bluetooth
+/// is now set up for this pair. The server must end up with that channel
+/// configured and enabled, without anyone touching the server.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_announced_by_the_peer_is_set_up_on_the_receiving_side() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce");
+    seed_paired_device(&server_db, "peer-client");
+
+    {
+        let mut conn = open_db_at_path(&server_db);
+        assert!(
+            channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
+            "precondition: this pair has never used Bluetooth on the receiving side"
+        );
+    }
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::ChannelEnabled {
+            kind: ChannelKind::Bluetooth,
+        },
+    )
+    .await
+    .expect("announce the channel");
+
+    let mut enabled = false;
+    for _ in 0..100 {
+        {
+            let mut conn = open_db_at_path(&server_db);
+            if channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth) {
+                enabled = true;
+                break;
+            }
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        enabled,
+        "the peer announced Bluetooth over the channel it was already trusted on, so this \
+         side must set it up itself — otherwise its own gate rejects every Bluetooth \
+         authentication and the pair waits for a person to flip a second switch by hand"
+    );
+}
+
+/// The switch belongs to the device it is on. A peer announcing that it
+/// set a channel up must not flip a channel this person deliberately
+/// switched off -- that would reverse an explicit opt-out and restart
+/// dialing on a channel they said no to. #179 is only about *adding* a
+/// channel the pair has never set up here.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_announced_channel_never_re_enables_one_switched_off_here() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce-optout");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
+            .expect("set Bluetooth up but switched off");
+    }
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::ChannelEnabled {
+            kind: ChannelKind::Bluetooth,
+        },
+    )
+    .await
+    .expect("announce the channel");
+
+    // Long enough that the write would have landed if it were going to.
+    sleep(Duration::from_millis(500)).await;
+    let mut conn = open_db_at_path(&server_db);
+    assert!(
+        !channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
+        "a channel switched off on this device must stay off, whatever the peer announces"
+    );
+}
+
+/// Unlinking is a decision, and a peer does not get to undo it.
+///
+/// "Unlink channel" used to delete the row, which made a deliberately
+/// removed channel indistinguishable from one this pair never had -- so a
+/// peer announcing the same channel would recreate it, switched on.
+/// Migration 24 leaves a tombstone instead, and this is what it is for.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_announced_channel_never_resurrects_one_unlinked_here() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce-unlinked");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
+            .expect("set Bluetooth up");
+        channels::unlink(&mut conn, "peer-client", ChannelKind::Bluetooth).expect("unlink it");
+        assert!(
+            channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
+            "an unlinked channel must read as absent, exactly as it did when the row was deleted"
+        );
+    }
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::ChannelEnabled {
+            kind: ChannelKind::Bluetooth,
+        },
+    )
+    .await
+    .expect("announce the channel");
+
+    sleep(Duration::from_millis(500)).await;
+    let mut conn = open_db_at_path(&server_db);
+    assert!(
+        channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
+        "a channel unlinked on this device must stay unlinked, whatever the peer announces"
+    );
+    assert!(
+        !channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
+        "and certainly must not come back switched on"
+    );
+}
+
+/// The announcement cannot rely on the single send made when a switch was
+/// flipped: that one is dropped if the session mailbox is full or the
+/// session ends mid-send, and a pair with no live session has nothing to
+/// send it over at all. Every session restates what is set up here, which
+/// is safe because the receiver only ever adds a channel it has never had.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_restates_the_channels_set_up_here_when_it_starts() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce-restate");
+    // Configures Network, enabled.
+    seed_paired_device(&server_db, "peer-client");
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
+    let mut announced = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
+            Ok(Some(Ok(PeerFrame::ChannelEnabled { kind }))) if kind == ChannelKind::Network => {
+                announced = true;
+                break;
+            }
+            Ok(Some(Ok(PeerFrame::Ping))) => {
+                let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
+            }
+            // Anything else the session says at startup is not this test's
+            // business -- only that the announcement is among it.
+            Ok(Some(Ok(_))) => {}
+            _ => break,
+        }
+    }
+    assert!(
+        announced,
+        "a session must restate the channels this device has set up, so an announcement lost \
+         at switch-flip time cannot strand the pair with the peer rejecting the channel forever"
+    );
+}
+
+/// The receiver is what makes an announcement "delivered".
+///
+/// The sender can only see that it managed to write a frame, and that is
+/// not the same thing: a Bluetooth write can succeed into a peer whose
+/// database is locked, or into one that dies between reading the frame and
+/// writing the row. Either way that side goes on refusing a channel it was
+/// already told about, invisibly, for the life of the session. So the
+/// receiver says when it has dealt with it -- for a channel it set up and
+/// for one it deliberately left alone, both being the announcement applied.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_receiver_acknowledges_an_announcement_it_has_applied() {
+    let (server, server_db) = server_state("transport-tcpws-channel-announce-ack");
+    seed_paired_device(&server_db, "peer-client");
+
+    let port = free_port().await;
+    tokio::spawn(tcp_ws::run_server_on_port(
+        server.clone(),
+        server_db.clone(),
+        port,
+    ));
+    sleep(Duration::from_millis(100)).await;
+
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth should succeed for paired device");
+
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::ChannelEnabled {
+            kind: ChannelKind::Bluetooth,
+        },
+    )
+    .await
+    .expect("announce the channel");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
+    let mut acked = false;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
+            Ok(Some(Ok(PeerFrame::ChannelEnabledAck { kind })))
+                if kind == ChannelKind::Bluetooth =>
+            {
+                acked = true;
+                break;
+            }
+            Ok(Some(Ok(PeerFrame::Ping))) => {
+                let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
+            }
+            Ok(Some(Ok(_))) => {}
+            _ => break,
+        }
+    }
+    assert!(
+        acked,
+        "the receiver must confirm it applied the announcement -- a frame this side managed to \
+         write is not evidence the other side acted on it, and without the confirmation there \
+         is nothing to stop the retry or to prove the channel will be accepted"
+    );
+
+    let mut conn = open_db_at_path(&server_db);
+    assert!(
+        channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
+        "and the acknowledgement follows the row actually being written"
     );
 }

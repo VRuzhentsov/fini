@@ -1091,6 +1091,16 @@ pub fn device_connection_set_channel_enabled_impl(
     }
 
     if enabled {
+        // #179. ADR-0007 promises the other person does not have to do
+        // anything, and this is what carries that across: the peer writes
+        // the same row, so its own gate stops rejecting the channel we are
+        // about to dial it on. Best-effort by design -- it needs a live
+        // session on some *other* channel to travel over, and a pair with
+        // no live session at all has nothing to announce over. Such a pair
+        // falls back to the behaviour it already had (each side flips its
+        // own switch), rather than failing the switch the person just
+        // flipped.
+        state.announce_channel_to_peer(&peer_device_id, kind);
         match kind {
             // Switching a channel on is one of the five moments work becomes
             // sendable (ADR-0007): the peer was filtered out of the dial loop

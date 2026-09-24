@@ -4,6 +4,7 @@
 //! adapter's accept/dial code (`channel::tcp_ws`, `channel::loopback`, and
 //! the future real Bluetooth adapter).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::schema::pair_space_mappings;
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::{
-    ChannelKind, DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
+    channels, ChannelKind, DeviceConnectionState, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
     IncomingSyncAck,
 };
 use crate::services::communication::sync::outbox::load_events_for_space;
@@ -113,6 +114,49 @@ pub async fn run_session(
         }
     }
 
+    // #179: every session restates which channels are set up here, rather
+    // than trusting the single send made at the moment a switch was
+    // flipped. That one can be lost -- a full session mailbox, or a
+    // session that ends between accepting the command and writing the
+    // frame -- and losing it strands the pair: this side shows the channel
+    // on while the peer goes on rejecting authentication on it, until
+    // somebody cycles the switch. It also covers the case the switch-time
+    // send cannot reach at all, a pair with no live session to announce
+    // over.
+    //
+    // Safe to repeat because the receiver only ever *adds* a channel it
+    // has never had: an existing row, a disabled one, and an unlinked one
+    // are all left alone. So saying it again is the cheapest durable
+    // delivery there is.
+    // What the peer has confirmed. Everything enabled here and absent from
+    // this set is still owed -- recomputed from the database each time
+    // rather than snapshotted once at startup.
+    //
+    // The snapshot was the weak part. `channels::configured` turns a failed
+    // read into an empty list, so a database locked for a moment by the
+    // per-tick bookkeeping that runs alongside a fresh session looks
+    // exactly like "this pair has no channels enabled" -- and a session
+    // that starts owing nothing goes on owing nothing for its whole life,
+    // however long that is. Asking again costs one indexed read per ping
+    // and cannot get stuck in that state.
+    //
+    // Confirmation has to come from the peer for the same reason. A send
+    // can fail while the link stays up -- a Bluetooth write exhausting
+    // `BleDataLink::send`'s `GattBusy` retries does exactly that -- and a
+    // send can succeed into a peer whose own database is locked, or one
+    // that dies between reading the frame and writing the row. None of
+    // those is visible from this side, so "delivered" is not this side's
+    // word to give.
+    let announcements_enabled = peer_protocol_version
+        >= crate::services::communication::sync::types::CHANNEL_ENABLED_MIN_PROTOCOL_VERSION;
+    let mut acknowledged: HashSet<ChannelKind> = HashSet::new();
+    if announcements_enabled {
+        let owed = tokio::task::block_in_place(|| {
+            channels_owed(&db_path, &peer_device_id, &acknowledged)
+        });
+        send_channel_announcements(link.as_mut(), &owed).await;
+    }
+
     // Re-checked periodically, not just once at session start: a network
     // session can stay live for a long time, and if the local Bluetooth
     // controller changes underneath it (e.g. a USB dongle swap) with
@@ -143,6 +187,14 @@ pub async fn run_session(
                         break;
                     }
                 };
+                // Handled here rather than in `handle_inbound`, which has no
+                // access to what is still owed: the acknowledgement's whole
+                // job is to take a channel off this session's queue.
+                if let PeerFrame::ChannelEnabledAck { kind: acked } = frame {
+                    acknowledged.insert(acked);
+                    log::info!("[session] {peer_device_id}: {acked:?} acknowledged by the peer");
+                    continue;
+                }
                 handle_inbound(frame, link.as_mut(), &state, &db_path, &peer_device_id).await;
             }
             Some(command) = rx.recv() => {
@@ -162,6 +214,23 @@ pub async fn run_session(
                         log::info!("[session] {peer_device_id} {kind:?}: asked to close");
                         break;
                     }
+                    // #179. Silently dropped for a peer too old to decode
+                    // it -- that peer still needs its switch flipped by
+                    // hand, which is the behaviour it already had, rather
+                    // than a dropped session.
+                    // Only ever a nudge to say it now rather than on the
+                    // next tick: the switch wrote the row before sending
+                    // this, so the channel is already owed by definition and
+                    // stays owed until the peer confirms it. Nothing here
+                    // has to be remembered.
+                    SessionCommand::AnnounceChannel(announced) => {
+                        if announcements_enabled {
+                            log::info!(
+                                "[session] {peer_device_id}: announcing {announced:?} is set up here"
+                            );
+                            send_channel_announcements(link.as_mut(), &[announced]).await;
+                        }
+                    }
                 }
             }
             _ = bluetooth_recheck.tick(), if bluetooth_self_report_enabled => {
@@ -179,6 +248,16 @@ pub async fn run_session(
                 }
             }
             _ = ping_interval.tick(), if ping_enabled => {
+                // Before the ping, because an announcement the peer never
+                // heard is the difference between a channel that works and
+                // one it keeps refusing. Empty in the ordinary case, so
+                // this costs nothing.
+                if announcements_enabled {
+                    let owed = tokio::task::block_in_place(|| {
+                        channels_owed(&db_path, &peer_device_id, &acknowledged)
+                    });
+                    send_channel_announcements(link.as_mut(), &owed).await;
+                }
                 state.note_ping_tick(&peer_device_id, kind);
                 if send_frame(link.as_mut(), &PeerFrame::Ping).await.is_err() {
                     break;
@@ -228,6 +307,60 @@ fn bluetooth_recheck_interval() -> Duration {
         }
     }
     Duration::from_secs(300)
+}
+
+/// Tells the peer about each channel in `pending`, and hands back the ones
+/// that did not make it.
+///
+/// A send can fail without the link dying -- a Bluetooth write that
+/// exhausts its `GattBusy` retries does exactly that -- and a lost
+/// announcement is not self-correcting: the peer goes on refusing the
+/// channel for the life of the session. So a failure keeps its place in
+/// the queue instead of being dropped.
+/// The channels enabled on this device that the peer has not confirmed yet.
+///
+/// Which ones are on is `channels`' question and is asked there; which of
+/// those this session still owes is this session's, and lives in the set
+/// it keeps. A read that fails answers "none on" -- safe only because the
+/// caller asks again on every ping, so a locked database costs a round
+/// rather than an answer.
+fn channels_owed(
+    db_path: &PathBuf,
+    peer_device_id: &str,
+    acknowledged: &HashSet<ChannelKind>,
+) -> Vec<ChannelKind> {
+    let mut conn = open_db_at_path(db_path);
+    channels::enabled_kinds(&mut conn, peer_device_id)
+        .into_iter()
+        .filter(|kind| !acknowledged.contains(kind))
+        .collect()
+}
+
+async fn send_channel_announcements(link: &mut dyn DataLink, pending: &[ChannelKind]) {
+    for announced in pending {
+        // A failure keeps its place simply by staying in the caller's list:
+        // nothing is removed from it until the peer acknowledges.
+        let _ = send_frame(link, &PeerFrame::ChannelEnabled { kind: *announced }).await;
+    }
+}
+
+/// Whether this device can be given a Bluetooth channel without a person
+/// present to answer a permission dialog.
+///
+/// True everywhere but Android, which gates the radio behind Nearby
+/// Devices and can only ask for it from a real click.
+fn bluetooth_may_be_enabled_without_asking() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        crate::services::android_context::call_static_context_to_bool(
+            "com.fini.app.BluetoothPairing",
+            "hasPermissions",
+        )
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        true
+    }
 }
 
 async fn handle_inbound(
@@ -338,6 +471,116 @@ async fn handle_inbound(
         }
         PeerFrame::Pong => {
             state.note_pong_received(peer_device_id, link.kind());
+        }
+        // Intercepted by `run_session` before it reaches here, because what
+        // it clears lives in that loop's own scope. Reaching this arm means
+        // an acknowledgement arrived somewhere with nothing outstanding --
+        // harmless, and not worth a log line per occurrence.
+        PeerFrame::ChannelEnabledAck { .. } => {}
+        // #179: the peer set this channel up for our pair, so set it up
+        // here too. Safe because this arm is only reachable from inside an
+        // authenticated session -- the sender has already proved it is this
+        // paired peer, and the frame only says which channel that same pair
+        // may now also use. It grants no trust that did not already exist.
+        PeerFrame::ChannelEnabled { kind: announced } => {
+            // The switch is per device, and a peer does not get to flip
+            // ours. This only ever *adds* a channel the pair has never set
+            // up here -- #179's actual case, where the missing row is what
+            // makes the gate reject the peer. An existing row is left
+            // exactly as it is, including one this person deliberately
+            // switched off: re-enabling that would reverse an explicit
+            // local opt-out and quietly restart dialing on a channel they
+            // said no to.
+            if announced == ChannelKind::Bluetooth && !bluetooth_may_be_enabled_without_asking() {
+                // Android's Nearby Devices permission is requested from one
+                // place only: the local switch
+                // (`device_connection_set_channel_enabled_impl`), on a real
+                // click. Writing `enabled` here would record a channel that
+                // cannot advertise, scan or dial, with nothing able to
+                // prompt for the permission afterwards -- a row that says
+                // on and never works. Leaving it alone keeps the behaviour
+                // this pair already had: the person flips the switch, which
+                // is also what asks for the permission.
+                log::info!(
+                    "[session] {peer_device_id}: {announced:?} announced, but this device has no \
+                     Bluetooth permission yet -- leaving it for the switch to ask"
+                );
+                return;
+            }
+            let db = db_path.clone();
+            let peer = peer_device_id.to_string();
+            // One statement, not a check followed by a write: a read that
+            // fails transiently must not read as "this pair never had the
+            // channel", which is the one answer that lets a peer undo a
+            // local opt-out. `introduce` leaves any existing row alone --
+            // switched off or unlinked included -- and says whether it
+            // created one.
+            // Retried on a locked database, like the `BluetoothAddressUpdate`
+            // handler below and for the same measured reason: this lands
+            // right after a fresh auth, when per-tick session bookkeeping is
+            // contending for the same file. Giving up after one attempt
+            // would be the end of it -- the sender counts a frame it wrote
+            // as delivered, so nothing restates it while this session lives,
+            // and the peer would go on being refused on a channel it was
+            // told about. `introduce` is idempotent, which is what makes a
+            // retry safe.
+            let applied = tokio::task::block_in_place(|| {
+                let mut conn = open_db_at_path(&db);
+                let mut last = Err("never attempted".to_string());
+                for attempt in 0..3 {
+                    if attempt > 0 {
+                        std::thread::sleep(Duration::from_millis(100 * attempt as u64));
+                    }
+                    last = channels::introduce(&mut conn, &peer, announced);
+                    match &last {
+                        Ok(_) => break,
+                        Err(err) => {
+                            let retriable = err.contains("database is locked")
+                                || err.contains("database is busy");
+                            if !retriable {
+                                break;
+                            }
+                        }
+                    }
+                }
+                last
+            });
+            // Acknowledged for both outcomes: a channel added here and one
+            // deliberately left alone are each the announcement having been
+            // *applied*. Only a database failure goes unacknowledged, which
+            // is exactly when the sender should say it again.
+            if applied.is_ok() {
+                let _ = send_frame(link, &PeerFrame::ChannelEnabledAck { kind: announced }).await;
+            }
+            match applied {
+                Ok(false) => {
+                    log::info!(
+                        "[session] {peer_device_id}: {announced:?} announced, already set up here"
+                    );
+                }
+                Ok(true) => {
+                    log::info!(
+                        "[session] {peer_device_id}: {announced:?} set up here at the peer's request"
+                    );
+                    // The peer is dialing us on that channel right now, and
+                    // until this landed the gate was rejecting it. Wake the
+                    // work loop so our own side reaches for it too rather
+                    // than waiting for the next backstop.
+                    if announced == ChannelKind::Bluetooth {
+                        #[cfg(any(target_os = "linux", target_os = "android"))]
+                        crate::services::communication::channel::ble::retry_bluetooth_dial(
+                            state,
+                            peer_device_id,
+                        );
+                    }
+                    crate::services::communication::sync::commands::notify_sync_work_pending();
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[session] {peer_device_id}: could not set up {announced:?} on request: {err}"
+                    );
+                }
+            }
         }
         PeerFrame::BluetoothAddressUpdate { address } => {
             let Some(address) = crate::services::communication::pairing::normalize_bluetooth_address(&address)

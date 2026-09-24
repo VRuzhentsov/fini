@@ -1,0 +1,15 @@
+-- Unlinking a channel is a decision, and it has to survive the peer.
+--
+-- "Unlink channel" deleted the row, which made a deliberately unlinked
+-- channel indistinguishable from one this pair never had. That was fine
+-- while only a local click could create a row. It stopped being fine with
+-- #179, where the peer can now ask for a channel to be set up: a pair that
+-- unlinked Bluetooth would have it silently recreated, and switched on,
+-- the next time the other device announced it.
+--
+-- So the row stays and carries when it was unlinked. Every reader treats a
+-- row with `unlinked_at` set as absent, which is what it meant before;
+-- only the code that decides whether a channel may be created looks past
+-- that, and refuses. Setting the channel up again locally clears it --
+-- a person undoing their own decision is the one thing that should.
+ALTER TABLE channels ADD COLUMN unlinked_at TEXT;

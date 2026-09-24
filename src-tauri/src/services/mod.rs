@@ -14,6 +14,8 @@ pub mod db;
 pub mod desktop_update;
 pub mod due_time;
 pub mod migration_import;
+#[cfg(test)]
+mod migrations_tests;
 #[cfg(any(feature = "ui-plane", test))]
 pub mod notification;
 pub mod quest;

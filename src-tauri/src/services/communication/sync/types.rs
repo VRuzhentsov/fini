@@ -34,6 +34,14 @@ pub struct SyncEventEnvelope {
 pub enum SessionCommand {
     Forward(PeerFrame),
     Close,
+    /// "This pair now has that channel set up on my side" (#179).
+    ///
+    /// Not a `Forward` of a ready-made frame, because whether it is safe to
+    /// send at all depends on the peer's protocol version -- which only
+    /// `run_session` knows, having learned it from the `Auth`/`AuthOk`
+    /// exchange. A caller flipping a switch has no access to it, so it says
+    /// what happened and lets the session decide.
+    AnnounceChannel(crate::services::communication::channel::ChannelKind),
 }
 
 pub type SessionSender = mpsc::Sender<SessionCommand>;
@@ -52,7 +60,7 @@ pub type SessionSender = mpsc::Sender<SessionCommand>;
 /// other actually supports version-gated frames before sending one; an
 /// older peer's `Auth`/`AuthOk` simply omits the field (`#[serde(default)]`
 /// -> `0`), which reads as "supports nothing past the original protocol."
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The fixed protocol version that introduced `PeerFrame::Ping`/`Pong`
 /// (ADR-0003 revision) -- deliberately a separate constant from
@@ -63,6 +71,11 @@ pub const PROTOCOL_VERSION: u32 = 3;
 /// suddenly fail this check and silently lose the ability to ever reach
 /// green.
 pub const PING_MIN_PROTOCOL_VERSION: u32 = 3;
+
+/// The fixed protocol version that introduced `PeerFrame::ChannelEnabled`
+/// (#179). Separate constant, same reasoning as `PING_MIN_PROTOCOL_VERSION`
+/// above.
+pub const CHANNEL_ENABLED_MIN_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -168,6 +181,46 @@ pub enum PeerFrame {
     /// Reply to an inbound `Ping`, sent immediately.
     #[serde(rename = "pong")]
     Pong,
+    /// "This pair now has this channel set up on my side" (#179).
+    ///
+    /// ADR-0007 promises trust is established once, for the pair, not per
+    /// channel: adding a second channel to a paired device "needs no
+    /// passcode and does not interrupt the other person". Nothing carried
+    /// that promise across the wire, so the receiving side's
+    /// `run_peer_gate` found no row for the new channel, answered
+    /// `is_enabled = false` and rejected every authentication on it -- the
+    /// dialog said "they don't need to do anything" while the switch sat at
+    /// `connecting` until the other person turned the same channel on by
+    /// hand.
+    ///
+    /// Only meaningful on an already-authenticated session, which is what
+    /// makes it safe to act on: the sender has already proved it is a
+    /// paired peer, and all this says is which channel that same pair may
+    /// now also use. Gated behind `CHANNEL_ENABLED_MIN_PROTOCOL_VERSION`
+    /// like `Ping`, for the reason `Unknown` describes.
+    #[serde(rename = "channel_enabled")]
+    ChannelEnabled {
+        kind: crate::services::communication::channel::ChannelKind,
+    },
+    /// "I have dealt with what you told me about that channel."
+    ///
+    /// Sent for a channel set up on this side *and* for one deliberately
+    /// left alone -- switched off or unlinked here. Both are the
+    /// announcement having been applied; only a failure to read or write
+    /// the table is not, and that stays unacknowledged so the sender says
+    /// it again.
+    ///
+    /// Without this the sender can only know that it managed to *write* a
+    /// frame, which is not the same as the peer having acted on it. A
+    /// write that succeeds into a peer whose database is locked, a peer
+    /// that dies between reading and writing -- each leaves that side
+    /// refusing a channel it was already told about, for the life of the
+    /// session, with nothing to notice. Delivery is the receiver's to
+    /// confirm.
+    #[serde(rename = "channel_enabled_ack")]
+    ChannelEnabledAck {
+        kind: crate::services::communication::channel::ChannelKind,
+    },
     /// Catches any `type` tag this build doesn't recognize, instead of
     /// failing to decode outright. Without this, a peer running an older
     /// build that unconditionally receives a newer frame kind (e.g.

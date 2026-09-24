@@ -933,6 +933,32 @@ impl DeviceConnectionState {
         }
     }
 
+    /// Tell the peer that this pair now has `kind` set up here (#179).
+    ///
+    /// Goes over the primary channel like `push_to_peer`, for the same
+    /// reason: it is the one already authenticated and live. Announcing
+    /// Bluetooth therefore travels over Network, which is exactly the case
+    /// that was broken -- the new channel cannot carry its own
+    /// announcement, because the peer rejects it until the announcement
+    /// arrives.
+    pub fn announce_channel_to_peer(
+        &self,
+        peer_device_id: &str,
+        kind: crate::services::communication::channel::ChannelKind,
+    ) -> bool {
+        let guard = match self.runtime.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let Some(primary) = guard.peer_primary_transport.get(peer_device_id).copied() else {
+            return false;
+        };
+        match guard.peer_sessions.get(&(peer_device_id.to_string(), primary)) {
+            Some(sender) => sender.try_send(SessionCommand::AnnounceChannel(kind)).is_ok(),
+            None => false,
+        }
+    }
+
     /// True if the peer has a claimed session on *any* channel.
     /// ADR-0003 revision: with both channels independently connectable,
     /// "has a session" no longer implies a single channel -- callers that
