@@ -30,9 +30,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::radio::{for_this_device, Radio};
-use crate::services::communication::pairing::{
-    channel_status, ChannelKind, ChannelReason, DeviceConnectionState,
-};
+use crate::services::communication::pairing::{ChannelKind, ChannelProblem, DeviceConnectionState};
 
 /// Everything one channel can do. Implemented once per `ChannelKind`.
 ///
@@ -82,48 +80,22 @@ pub trait ChannelService: Send + Sync {
     /// no inbound acceptor, so every channel's server is compiled out there.
     fn start_serving(&self) {}
 
-    /// Dial every peer in `peers` that this channel could reach and does not
-    /// already have a session with. Called on each sync tick.
-    ///
-    /// Takes the whole set rather than one peer because that is the shape
-    /// every channel's dial loop actually has today — it needs to know which
-    /// peers are *not* worth trying as much as which are.
-    fn start_dialing(&self, peers: &[String]);
+    /// Start an exchange with this peer unless one is running (ADR-0008
+    /// D10): straight away when the peer is present, otherwise through this
+    /// channel's delivery search (D12). Called when there is work for it.
+    fn request_exchange(&self, peer_device_id: &str);
 
-    /// Whether this channel could reach this peer right now, as far as it
-    /// can tell without trying. A peer's beacon arriving, or its
-    /// advertisement being heard recently.
-    fn is_reachable(&self, peer_device_id: &str) -> bool;
+    /// Whether the peer was seen on this channel within its channel timeout
+    /// (ADR-0008 D9) -- green on the row.
+    fn is_present(&self, peer_device_id: &str) -> bool;
 
-    /// Give this peer a fresh retry window after its automatic attempts gave
-    /// up. A no-op where the channel has no backoff to clear.
-    fn retry_now(&self, peer_device_id: &str) {
-        let _ = peer_device_id;
-    }
+    /// A problem on this device's side of the channel, if any (ADR-0008
+    /// D6, D19) -- orange on the row, explained behind ⓘ.
+    fn problem(&self) -> Option<ChannelProblem>;
 
-    /// Whether this channel's automatic attempts at this peer have given up.
-    ///
-    /// Surfaced on its own, separate from `why_not`, because the row stays
-    /// clickable in that state — it is the one reason a person can act on by
-    /// asking for another try.
-    fn dial_exhausted(&self, peer_device_id: &str) -> bool {
-        let _ = peer_device_id;
-        false
-    }
-
-    /// Why this channel cannot reach this peer, or `None` if nothing is in
-    /// the way. What the row on the Device page says out loud.
-    ///
-    /// Only the channel can answer honestly. "Bluetooth is off on this
-    /// computer" and "Pixel 8 isn't nearby" are claims about different
-    /// machines, and only one of them is something the person can act on
-    /// where they are standing — so the answer has to come from whichever
-    /// channel actually knows, not from a caller guessing between them.
-    ///
-    /// `enabled` is the pair's own switch, passed in because it is a fact
-    /// about the row rather than about the channel; where it sits in each
-    /// channel's ordering is the channel's business.
-    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelReason>;
+    /// Keep this channel able to answer a peer, on every tick. A no-op where
+    /// the accept loop was started once at startup.
+    fn keep_serving(&self) {}
 }
 
 /// The channel services for one `DeviceConnectionState`. One per kind.
@@ -192,40 +164,18 @@ impl ChannelService for NetworkChannelService {
         ));
     }
 
-    fn start_dialing(&self, peers: &[String]) {
-        let peers: std::collections::HashSet<String> = peers.iter().cloned().collect();
-        super::tcp_ws::spawn_dial_loop(&self.state, self.state.db_path.clone(), &peers);
+    fn request_exchange(&self, peer_device_id: &str) {
+        super::tcp_ws::start_exchange(&self.state, peer_device_id);
     }
 
-    fn is_reachable(&self, peer_device_id: &str) -> bool {
+    fn is_present(&self, peer_device_id: &str) -> bool {
         self.state.network_peer_available(peer_device_id)
     }
 
-    /// Nothing to clear: the network dial loop backs off per attempt and
-    /// never gives up on a peer outright, so there is no exhausted state a
-    /// person could be stuck behind.
-    fn retry_now(&self, _peer_device_id: &str) {
-        crate::services::communication::sync::commands::notify_sync_work_pending();
-    }
-
-    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelReason> {
-        channel_status::network_unconfigured_code(
-            enabled,
-            // A live session outranks presence, exactly as it does on the
-            // Bluetooth row below and for the same reason: presence is how
-            // a peer is *found*, not evidence about whether we are talking
-            // to it. A beacon can lapse -- a missed multicast, a moment of
-            // load -- while the session carries traffic perfectly well, and
-            // the row would then announce that the peer is not on this
-            // network while it is answering.
-            //
-            // It is the same mistake the devices list made in the other
-            // direction, showing green for a peer it had merely heard of.
-            // Presence and connection are different claims; only one of
-            // them is about the session.
-            self.state.has_session_on(peer_device_id, ChannelKind::Network)
-                || self.is_reachable(peer_device_id),
-        )
+    fn problem(&self) -> Option<ChannelProblem> {
+        self.state
+            .network_broadcast_failing()
+            .then_some(ChannelProblem::NetworkUnavailable)
     }
 }
 
@@ -273,36 +223,25 @@ impl ChannelService for BluetoothChannelService {
         self.radio.serve(&self.state);
     }
 
-    fn start_dialing(&self, peers: &[String]) {
-        self.radio.dial(&self.state, peers);
+    fn request_exchange(&self, peer_device_id: &str) {
+        self.radio.request_exchange(&self.state, peer_device_id);
     }
 
-    fn is_reachable(&self, peer_device_id: &str) -> bool {
+    fn is_present(&self, peer_device_id: &str) -> bool {
         self.radio.is_reachable(peer_device_id)
     }
 
-    fn retry_now(&self, peer_device_id: &str) {
-        self.radio.retry_now(&self.state, peer_device_id);
+    fn problem(&self) -> Option<ChannelProblem> {
+        if !self.radio.available() {
+            Some(ChannelProblem::BluetoothNotSupported)
+        } else if !self.radio.adapter_available() {
+            Some(ChannelProblem::BluetoothUnavailable)
+        } else {
+            None
+        }
     }
 
-    fn dial_exhausted(&self, peer_device_id: &str) -> bool {
-        self.radio.dial_exhausted(peer_device_id)
-    }
-
-    fn why_not(&self, peer_device_id: &str, enabled: bool) -> Option<ChannelReason> {
-        channel_status::bluetooth_unconfigured_code(
-            self.radio.available(),
-            enabled,
-            self.radio.adapter_available(),
-            // A live session is the strongest evidence of nearness there is,
-            // and it outranks the advertisement record entirely: scanning
-            // stops while a session is up, so the last-seen stamp goes stale
-            // and the row would report "not nearby" about a peer it is
-            // actively talking to.
-            self.state
-                .has_session_on(peer_device_id, super::ChannelKind::Bluetooth)
-                || self.radio.is_reachable(peer_device_id),
-            self.radio.dial_exhausted(peer_device_id),
-        )
+    fn keep_serving(&self) {
+        self.radio.keep_serving(&self.state);
     }
 }

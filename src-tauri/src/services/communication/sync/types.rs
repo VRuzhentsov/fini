@@ -57,15 +57,6 @@ pub type SessionSender = mpsc::Sender<SessionCommand>;
 /// -> `0`), which reads as "supports nothing past the original protocol."
 pub const PROTOCOL_VERSION: u32 = 4;
 
-/// The fixed protocol version that introduced `PeerFrame::Ping`/`Pong`
-/// (ADR-0003 revision) -- deliberately a separate constant from
-/// `PROTOCOL_VERSION` above, not an alias for it, for the same reason
-/// `BluetoothAddressUpdate`'s `>= 1` gate is: if a later, unrelated feature
-/// bumps `PROTOCOL_VERSION` again, a peer on version 3 (which understands
-/// Ping/Pong fine, just not whatever feature came after it) must not
-/// suddenly fail this check and silently lose the ability to ever reach
-/// green.
-pub const PING_MIN_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -149,22 +140,6 @@ pub enum PeerFrame {
     /// Reply to `Hello`; carries the replier's own device id.
     #[serde(rename = "hello_ack")]
     HelloAck { device_id: String },
-    /// ADR-0003 revision: app-level liveness proof, sent on *every*
-    /// connected channel (not just the primary one) every `PING_INTERVAL`
-    /// -- see `session::run_session`'s ping loop and
-    /// `ChannelAckState`'s doc comment for the full green/amber
-    /// bookkeeping this drives. Gated behind `PROTOCOL_VERSION >=
-    /// PING_MIN_PROTOCOL_VERSION` the same way `BluetoothAddressUpdate` is
-    /// gated behind `>= 1` -- an older peer that doesn't understand it
-    /// would otherwise decode-fail and drop the whole session (see
-    /// `Unknown`'s doc comment); such a peer's channels simply stay
-    /// amber forever, which is the correct (if degraded) outcome for a
-    /// pre-upgrade peer rather than a dropped connection.
-    #[serde(rename = "ping")]
-    Ping,
-    /// Reply to an inbound `Ping`, sent immediately.
-    #[serde(rename = "pong")]
-    Pong,
     /// "I unlinked this channel on my side" (ADR-0008 D14). The receiver
     /// removes its own row for it and answers `ChannelUnlinkedAck`; the
     /// sender keeps saying it on every exchange until then.
@@ -217,6 +192,6 @@ mod tests {
             reason: "private detail".to_string(),
         };
         assert_eq!(frame.wire_type(), "auth_fail");
-        assert_eq!(PeerFrame::Ping.wire_type(), "ping");
+        assert_eq!(PeerFrame::DiscoveryHello.wire_type(), "discovery_hello");
     }
 }

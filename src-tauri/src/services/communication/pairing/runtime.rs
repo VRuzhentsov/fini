@@ -434,6 +434,7 @@ fn broadcast_beacon(
 
             if let Ok(mut guard) = runtime.lock() {
                 guard.last_broadcast_at = Some(beacon.sent_at);
+                guard.network_broadcast_failing = !sent;
                 if sent {
                     guard.tx_count += 1;
                 }

@@ -2,13 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::services::communication::sync::types::{SessionSender, SyncEventEnvelope};
+use crate::services::communication::sync::types::{PeerFrame, SessionSender, SyncEventEnvelope};
 // One kind, at one granularity: the channel a person chose is the same
 // thing the live session runs on. This used to be two types -- an adapter
 // kind and a row kind -- which is why several comments nearby drew a
 // distinction that no longer exists.
 use crate::services::communication::channel::ChannelKind;
-use super::link_state::LinkState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceIdentity {
@@ -222,39 +221,6 @@ pub(super) struct SeenPeer {
     pub last_seen_mono: Instant,
 }
 
-/// ADR-0003 revision: per-(peer, channel) bidirectional ping/ack proof.
-/// "Green" (`DeviceConnectionState::channel_reliable`) requires both
-/// `own_ping_acked` and `peer_ping_received` true -- this device's own
-/// outbound ping was acked (proves this device can send *and* receive), and
-/// this device has received a ping from the peer and replied (proves the
-/// peer's own send reaches this device). Both sides run the identical
-/// protocol at the same 15s cadence (`PING_INTERVAL`), so a healthy link
-/// converges both peers to green within one interval of each other without
-/// needing an explicit shared/synced value beyond the ping/pong itself.
-/// "Continuously re-proven": neither flag is sticky. Each is cleared after
-/// 3 consecutive missed cycles on its own side -- reusing Phase 1's
-/// interval/threshold shape -- so a link that stops actually exchanging
-/// pings decays back to amber within ~45s even if the underlying channel
-/// never reports a hard disconnect.
-#[derive(Debug, Clone, Default)]
-pub(super) struct ChannelAckState {
-    /// True once a `Pong` has answered this device's own most recent `Ping`.
-    pub own_ping_acked: bool,
-    /// True while a `Ping` this device sent is still awaiting its `Pong` --
-    /// distinguishes "haven't sent one yet" from "sent one, no reply yet"
-    /// so the tick handler knows whether a miss occurred.
-    pub own_ping_awaiting_pong: bool,
-    /// Consecutive tick cycles where an outstanding own-ping went unanswered.
-    /// Reset to 0 on any `Pong`; at 3, `own_ping_acked` flips to false.
-    pub consecutive_missed_own_pings: u32,
-    /// True while an inbound `Ping` from the peer has been seen recently
-    /// enough (within `PING_MISS_THRESHOLD` ticks).
-    pub peer_ping_received: bool,
-    /// Ticks elapsed since the last inbound `Ping` from the peer. Reset to
-    /// 0 whenever one arrives; at 3, `peer_ping_received` flips to false.
-    pub ticks_since_peer_ping: u32,
-}
-
 #[derive(Debug, Default)]
 pub(super) struct DiscoveryRuntime {
     pub add_mode_enabled: bool,
@@ -272,41 +238,15 @@ pub(super) struct DiscoveryRuntime {
     pub incoming_space_sync_ends: HashMap<String, IncomingSpaceSyncEnd>,
     pub incoming_sync_events: HashMap<String, SyncEventEnvelope>,
     pub incoming_sync_acks: HashMap<String, IncomingSyncAck>,
-    /// ADR-0003 revision: one session *per channel*, not one per peer --
-    /// both Network and Bluetooth stay connected simultaneously so either
-    /// can earn a real (not remembered) green. Keyed by `(peer_device_id,
-    /// ChannelKind)`. See `DeviceConnectionState::try_claim_session`.
+    /// The exchanges running right now, one per (peer, channel) at most
+    /// (ADR-0008 D10). Each ends on its own once idle.
     pub peer_sessions: HashMap<(String, ChannelKind), SessionSender>,
-    /// The owned link state machine per `(peer_device_id, ChannelKind)`
-    /// (ADR-0005). Lives beside `peer_sessions` deliberately: a transition and
-    /// a read of the session table then happen under one lock, so the two
-    /// cannot drift the way `peer_sessions` and `peer_channel_ack` used to.
-    /// `peer_sessions` holds the *handle* to a live session; this holds what
-    /// the link's state actually is, and owns every decision about it.
-    pub peer_link_state: HashMap<(String, ChannelKind), LinkState>,
-    /// Which channel is *primary* for each peer -- the one carrying real
-    /// application traffic (SyncEvent, BootstrapEnd, etc.), reported as
-    /// `RowState::Live`. Both channels can be connected and green at
-    /// once; only one is ever primary. `None` until at least one channel
-    /// has claimed a session for this peer.
-    pub peer_primary_transport: HashMap<String, ChannelKind>,
-    /// Per-(peer, channel) bidirectional ping/ack state -- see
-    /// `PeerFrame::Ping`/`Pong` and `DeviceConnectionState::channel_ack_state`.
-    pub peer_channel_ack: HashMap<(String, ChannelKind), ChannelAckState>,
-    /// Last-known `bluetooth_enabled` per peer, written every time
-    /// `recompute_primary_locked` runs (it already reads this from the DB
-    /// for its own purposes). A P1 review finding: `reselect_primary_from_
-    /// runtime_only` -- the DB-free fallback `release_session` uses so
-    /// `peer_primary_transport` never dangles while a fallible DB read is
-    /// still in flight -- otherwise has no way to know Bluetooth was *just*
-    /// disabled (its session may still be in `peer_sessions`, since
-    /// `close_session_on`'s `Close` is delivered asynchronously) and could
-    /// pick it as the fallback primary anyway. Missing entry is treated as
-    /// `false` (fail closed, matching the disable contract's own
-    /// direction) -- self-corrects within one DB-backed recompute either
-    /// way, so a brief false negative here is far cheaper than a false
-    /// positive routing real traffic over an opted-out channel.
-    pub peer_bluetooth_enabled_cache: HashMap<String, bool>,
+    /// Frames waiting for the next exchange with each peer -- a mapping
+    /// update or a space-sync end raised while nothing was connected.
+    pub pending_frames: HashMap<String, Vec<PeerFrame>>,
+    /// Whether the last presence beacon failed to go out at all: the
+    /// Network channel's problem signal (ADR-0008 D19).
+    pub network_broadcast_failing: bool,
     /// ADR-0008 D1/D2: the channels this device is running a setup search
     /// for right now, and how far each one's init has got.
     pub channel_setups: HashMap<(String, ChannelKind), ChannelSetup>,

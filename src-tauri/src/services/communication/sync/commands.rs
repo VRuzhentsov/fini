@@ -408,43 +408,39 @@ fn apply_mappings_in_db(
     list_mappings_for_peer(conn, peer_device_id)
 }
 
+/// Delivered with the next exchange if none is running (ADR-0008 D10).
 fn send_mapping_update_to_peer(
     device_connection: &DeviceConnectionState,
     peer_device_id: &str,
     mapped_space_ids: &[String],
     custom_spaces: &[CustomSpaceDescriptor],
 ) -> Result<(), String> {
-    if device_connection.push_to_peer(
+    device_connection.queue_for_peer(
         peer_device_id,
         PeerFrame::SpaceMappingUpdate {
             mapped_space_ids: mapped_space_ids.to_vec(),
             custom_spaces: custom_spaces.to_vec(),
             sent_at: utc_now(),
         },
-    ) {
-        Ok(())
-    } else {
-        Err(format!("no active session for peer {peer_device_id}"))
-    }
+    );
+    Ok(())
 }
 
+/// Delivered with the next exchange if none is running (ADR-0008 D10).
 fn send_space_sync_end_to_peer(
     device_connection: &DeviceConnectionState,
     peer_device_id: &str,
     space_id: &str,
     ended_at: &str,
 ) -> Result<(), String> {
-    if device_connection.push_to_peer(
+    device_connection.queue_for_peer(
         peer_device_id,
         PeerFrame::SpaceSyncEnd {
             space_id: space_id.to_string(),
             ended_at: ended_at.to_string(),
         },
-    ) {
-        Ok(())
-    } else {
-        Err(format!("no active session for peer {peer_device_id}"))
-    }
+    );
+    Ok(())
 }
 
 fn send_sync_event_to_peer(
@@ -464,16 +460,15 @@ fn send_sync_ack_to_peer(
     peer_device_id: &str,
     event_id: &str,
 ) -> Result<(), String> {
-    if device_connection.push_to_peer(
+    // Queued if the exchange that carried the event has already closed, so
+    // the peer stops resending it on the next one.
+    device_connection.queue_for_peer(
         peer_device_id,
         PeerFrame::Ack {
             event_id: event_id.to_string(),
         },
-    ) {
-        Ok(())
-    } else {
-        Err(format!("no active session for peer {peer_device_id}"))
-    }
+    );
+    Ok(())
 }
 
 fn peer_has_mapping_for_space(
@@ -1418,31 +1413,15 @@ pub fn space_sync_tick_impl(
         .load(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    // Ensure a session is open on every channel independently for peers
-    // where we are the dialer (ADR-0003 revision: both connect
-    // unconditionally, regardless of each other's state).
-    //
-    // Each channel asks for its own candidates rather than sharing one
-    // paired-peer set: the two no longer agree on who is eligible, which is
-    // the whole point of a per-pair switch.
-    //
-    // ...and except where the user has switched the Network channel off for a
-    // pair, so the switch genuinely stops the dialling instead of only
-    // greying the row. This decides who gets a dial task *started*; the task
-    // itself re-asks the same question on every retry
-    // (`tcp_ws::is_still_network_eligible`), because a loop that outlives
-    // many ticks cannot be stopped from here. The Bluetooth side has the
-    // same pair of gates.
-    let network_peer_ids: Vec<String> = crate::services::communication::pairing::channels::
-        peers_with_channel_enabled(
-            &mut *conn,
-            crate::services::communication::pairing::ChannelKind::Network,
-        );
+    // Keep this device reachable: on Android the peripheral starts from the
+    // first tick, and whether to advertise at all follows the channels and
+    // setups as they are now (ADR-0008 D8).
     crate::services::communication::channel::service::service_for(
         device_connection,
-        crate::services::communication::pairing::ChannelKind::Network,
+        crate::services::communication::pairing::ChannelKind::Bluetooth,
     )
-    .start_dialing(&network_peer_ids);
+    .keep_serving();
+
     // Started on every platform now, but see `start_tick_keeper_once`: only
     // Android gets the periodic backstop, which is what ADR-0004 needed it
     // for (a backgrounded WebView has its timers throttled, so ticks stop).
@@ -1468,27 +1447,6 @@ pub fn space_sync_tick_impl(
     #[cfg(target_os = "android")]
     start_sync_service_once();
 
-    // Reuses the connection this function was already handed rather than
-    // opening a second one: this runs on every tick, for the life of the
-    // process, so a redundant `open_db_at_path` here was a fresh SQLite
-    // connection opened every time, indefinitely, for every running
-    // instance. The Network candidates above don't need this because they
-    // come through this same `conn`.
-    //
-    // No platform gate here any more: which radio this build has is the
-    // service's business, and on a machine with none the loopback one takes
-    // over. Gating the call site was how "does this platform have Bluetooth"
-    // leaked out of the Bluetooth channel in the first place.
-    {
-        let candidates =
-            crate::services::communication::pairing::bluetooth_dial_candidates(&mut conn);
-        crate::services::communication::channel::service::service_for(
-            device_connection,
-            crate::services::communication::pairing::ChannelKind::Bluetooth,
-        )
-        .start_dialing(&candidates);
-    }
-
     let ticked_at = utc_now();
     let mut transferred_by_peer: std::collections::HashMap<String, (usize, usize, usize)> =
         std::collections::HashMap::new();
@@ -1504,12 +1462,16 @@ pub fn space_sync_tick_impl(
 
     let mut sent_events_total = 0usize;
 
+    // ADR-0008 D10: a peer with anything waiting for it gets an exchange.
+    let mut peers_with_work: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for peer_device_id in &peer_ids {
         let mapped = list_mappings_for_peer(&mut conn, &peer_device_id)?;
         let pending = load_unacked_events_for_peer(&mut conn, &peer_device_id, &mapped)?;
         if pending.is_empty() {
             continue;
         }
+        peers_with_work.insert(peer_device_id.clone());
 
         let mut sent_events = 0usize;
         let mut resend_tracker = event_resend_tracker().lock().unwrap();
@@ -1554,9 +1516,6 @@ pub fn space_sync_tick_impl(
     }
 
     for peer_device_id in &peer_ids {
-        if !device_connection.has_session(peer_device_id) {
-            continue;
-        }
         let unsynced: Vec<String> = pair_space_mappings::table
             .filter(pair_space_mappings::peer_device_id.eq(peer_device_id))
             .filter(pair_space_mappings::last_synced_at.is_null())
@@ -1564,6 +1523,13 @@ pub fn space_sync_tick_impl(
             .select(pair_space_mappings::space_id)
             .load(&mut *conn)
             .map_err(|e| e.to_string())?;
+        if unsynced.is_empty() {
+            continue;
+        }
+        if !device_connection.has_session(peer_device_id) {
+            peers_with_work.insert(peer_device_id.clone());
+            continue;
+        }
         for space_id in unsynced {
             device_connection.push_to_peer(peer_device_id, PeerFrame::BootstrapStart { space_id });
         }
@@ -1675,6 +1641,19 @@ pub fn space_sync_tick_impl(
         .collect();
     peers.sort_by(|a, b| a.peer_device_id.cmp(&b.peer_device_id));
 
+    for peer_device_id in &peer_ids {
+        if device_connection.has_queued_frames(peer_device_id)
+            || !crate::services::communication::pairing::channels::pending_unlink_notices(
+                &mut conn,
+                peer_device_id,
+            )
+            .is_empty()
+        {
+            peers_with_work.insert(peer_device_id.clone());
+        }
+    }
+    request_exchanges(&mut conn, device_connection, &peers_with_work);
+
     let _ = cleanup_old_tombstones(&mut conn);
 
     // Only when a peer's change actually landed in our database. This is what
@@ -1693,6 +1672,33 @@ pub fn space_sync_tick_impl(
         peers,
         ticked_at,
     })
+}
+
+/// Starts an exchange with each peer that has work and none running
+/// (ADR-0008 D10): over Network when the peer is present there, otherwise
+/// over Bluetooth, whose delivery search finds it (D12). A channel that is
+/// not `On` for the pair is never used.
+fn request_exchanges(
+    conn: &mut SqliteConnection,
+    device_connection: &DeviceConnectionState,
+    peers_with_work: &std::collections::HashSet<String>,
+) {
+    use crate::services::communication::channel::service::service_for;
+    use crate::services::communication::pairing::{channels, ChannelKind};
+
+    for peer_device_id in peers_with_work {
+        if device_connection.has_session(peer_device_id) {
+            continue;
+        }
+        let network = service_for(device_connection, ChannelKind::Network);
+        if channels::is_enabled(conn, peer_device_id, ChannelKind::Network)
+            && network.is_present(peer_device_id)
+        {
+            network.request_exchange(peer_device_id);
+        } else if channels::is_enabled(conn, peer_device_id, ChannelKind::Bluetooth) {
+            service_for(device_connection, ChannelKind::Bluetooth).request_exchange(peer_device_id);
+        }
+    }
 }
 
 /// Kept for callers that still ask for a tick explicitly -- the CLI, tests,
@@ -3126,7 +3132,6 @@ mod tests {
             "peer-a",
             ChannelKind::Network,
             tx,
-            &db_path,
         ));
 
         let tick = space_sync_tick_impl(&mut conn, &device_connection).unwrap();
@@ -3147,3 +3152,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(app_dir);
     }
 }
+

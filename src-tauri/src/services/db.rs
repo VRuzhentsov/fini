@@ -306,12 +306,11 @@ mod tests {
         conn.run_pending_migrations(MIGRATIONS)
             .expect("re-run migration 23 over pre-existing pairs");
 
-        let rows: Vec<(String, String, bool, bool, Option<String>)> = channels::table
+        let rows: Vec<(String, String, bool, Option<String>)> = channels::table
             .select((
                 channels::device_id,
                 channels::channel_kind,
                 channels::enabled,
-                channels::is_primary,
                 channels::address,
             ))
             .order((channels::device_id, channels::channel_kind))
@@ -325,34 +324,15 @@ mod tests {
                     "bt-on".to_string(),
                     "bluetooth".to_string(),
                     true,
-                    true,
                     Some("AA:BB:CC:DD:EE:FF".to_string())
                 ),
-                ("bt-on".to_string(), "network".to_string(), true, false, None),
-                (
-                    "bt-switched-off".to_string(),
-                    "bluetooth".to_string(),
-                    false,
-                    false,
-                    None
-                ),
-                (
-                    "bt-switched-off".to_string(),
-                    "network".to_string(),
-                    true,
-                    true,
-                    None
-                ),
-                (
-                    "never-used-bt".to_string(),
-                    "network".to_string(),
-                    true,
-                    false,
-                    None
-                ),
+                ("bt-on".to_string(), "network".to_string(), true, None),
+                ("bt-switched-off".to_string(), "bluetooth".to_string(), false, None),
+                ("bt-switched-off".to_string(), "network".to_string(), true, None),
+                ("never-used-bt".to_string(), "network".to_string(), true, None),
             ],
             "every pair keeps Network on; Bluetooth appears only where it was actually set up, \
-             switched off where the person had switched it off, and the primary carries over"
+             switched off where the person had switched it off"
         );
 
         let _ = std::fs::remove_file(db_path);

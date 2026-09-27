@@ -34,32 +34,6 @@ pub fn is_enabled(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKin
     find(conn, device_id, kind).is_some_and(|channel| channel.enabled)
 }
 
-/// Whether this channel is switched on, distinguishing "off" from "could
-/// not tell".
-///
-/// `is_enabled` answers `false` to both, which is the right direction for a
-/// gate: an unknown channel must not carry traffic, and a refused
-/// connection is retried a second later. It is the wrong direction for
-/// anything that *destroys* something working -- a transient
-/// `database is locked` then reads exactly like the person having flipped
-/// the switch, and a healthy session is torn down for it.
-///
-/// `None` means the read itself failed. Callers that act destructively
-/// must treat that as "leave it alone".
-pub fn read_enabled(
-    conn: &mut SqliteConnection,
-    device_id: &str,
-    kind: ChannelKind,
-) -> Option<bool> {
-    channels::table
-        .find((device_id, kind.code()))
-        .select(Channel::as_select())
-        .first(conn)
-        .optional()
-        .ok()
-        .map(|row| row.is_some_and(|channel| channel.enabled))
-}
-
 /// Set a channel up, or turn an existing one back on. Idempotent: calling it
 /// for a channel that already exists updates the switch and, when one is
 /// supplied, the address -- it never re-stamps `configured_at`, which
@@ -90,7 +64,6 @@ pub fn configure(
             device_id: device_id.to_string(),
             channel_kind: kind.code().to_string(),
             enabled,
-            is_primary: false,
             address: address.map(str::to_string),
             configured_at: utc_now(),
         })
@@ -99,62 +72,18 @@ pub fn configure(
     Ok(())
 }
 
-/// Turn a configured channel on or off. Turning it off also releases the
-/// primary, in one transaction: a channel that is off and still primary
-/// would suppress the other one while being unable to carry anything
-/// itself, stranding the pair.
+/// Turn an existing channel on or off (ADR-0008 D15).
 pub fn set_enabled(
     conn: &mut SqliteConnection,
     device_id: &str,
     kind: ChannelKind,
     enabled: bool,
 ) -> Result<(), String> {
-    conn.transaction::<(), diesel::result::Error, _>(|conn| {
-        diesel::update(channels::table.find((device_id, kind.code())))
-            .set(channels::enabled.eq(enabled))
-            .execute(conn)?;
-        if !enabled {
-            diesel::update(channels::table.find((device_id, kind.code())))
-                .set(channels::is_primary.eq(false))
-                .execute(conn)?;
-        }
-        Ok(())
-    })
-    .map_err(|e| e.to_string())
-}
-
-/// Make one channel the primary, or clear the pair's primary entirely.
-/// `channels_one_primary_per_device` makes at most one possible; clearing
-/// first is what keeps the write from tripping it.
-pub fn set_primary(
-    conn: &mut SqliteConnection,
-    device_id: &str,
-    kind: Option<ChannelKind>,
-) -> Result<(), String> {
-    conn.transaction::<(), diesel::result::Error, _>(|conn| {
-        diesel::update(channels::table.filter(channels::device_id.eq(device_id)))
-            .set(channels::is_primary.eq(false))
-            .execute(conn)?;
-        if let Some(kind) = kind {
-            diesel::update(channels::table.find((device_id, kind.code())))
-                .set(channels::is_primary.eq(true))
-                .execute(conn)?;
-        }
-        Ok(())
-    })
-    .map_err(|e| e.to_string())
-}
-
-/// The channel the person chose to carry this pair's traffic, if they chose
-/// one. `None` means automatic (network-first) selection.
-pub fn primary_kind(conn: &mut SqliteConnection, device_id: &str) -> Option<ChannelKind> {
-    channels::table
-        .filter(channels::device_id.eq(device_id))
-        .filter(channels::is_primary.eq(true))
-        .select(channels::channel_kind)
-        .first::<String>(&mut *conn)
-        .ok()
-        .and_then(|code| ChannelKind::from_code(&code))
+    diesel::update(channels::table.find((device_id, kind.code())))
+        .set(channels::enabled.eq(enabled))
+        .execute(&mut *conn)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Record where this channel last reached the peer, for diagnostics.
@@ -252,44 +181,6 @@ pub fn peers_with_channel_enabled(conn: &mut SqliteConnection, kind: ChannelKind
 mod tests {
     use super::*;
     use crate::services::db::open_db_at_path;
-
-    /// The distinction the claim-time teardown depends on.
-    ///
-    /// `is_enabled` cannot tell "the person switched it off" from "I could
-    /// not read the table", and a caller that closes a live session on the
-    /// strength of that answer will close it for a blip. `read_enabled`
-    /// keeps the two apart so such a caller can refuse to act on the second.
-    #[test]
-    fn read_enabled_separates_switched_off_from_unreadable() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let db_path = dir.path().join("fini.db");
-        let mut conn = open_db_at_path(&db_path);
-
-        // `channels.device_id` references `paired_devices`, so the pair has
-        // to exist before it can have a channel.
-        diesel::sql_query(
-            "INSERT INTO paired_devices (peer_device_id, display_name, paired_at) \
-             VALUES ('peer', 'Peer', '2026-01-01T00:00:00Z')",
-        )
-        .execute(&mut conn)
-        .expect("seed pair");
-
-        // No row at all: definitely not on, and definitely readable.
-        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), Some(false));
-
-        configure(&mut conn, "peer", ChannelKind::Bluetooth, true, None).expect("configure");
-        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), Some(true));
-
-        set_enabled(&mut conn, "peer", ChannelKind::Bluetooth, false).expect("switch off");
-        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), Some(false));
-
-        // And the case the whole thing exists for: a table that cannot be
-        // read answers `None`, where `is_enabled` answers a confident and
-        // wrong `false`.
-        diesel::sql_query("DROP TABLE channels").execute(&mut conn).expect("drop");
-        assert_eq!(read_enabled(&mut conn, "peer", ChannelKind::Bluetooth), None);
-        assert!(!is_enabled(&mut conn, "peer", ChannelKind::Bluetooth));
-    }
 
     /// ADR-0008 D14: unlinking removes the row and leaves a notice for the
     /// peer, and a notice the peer acknowledges is gone.

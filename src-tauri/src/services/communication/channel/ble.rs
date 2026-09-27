@@ -435,7 +435,7 @@ async fn mock_backend(endpoint: &str) -> Result<Arc<dyn Backend>, String> {
 /// work is deferred by `LazyAndroidBackend` to its first real use (the first
 /// `capabilities`/`scan`/`connect`/`advertise` call), which by construction
 /// only happens from a genuine post-startup JS -> Rust command (see
-/// `start_peripheral_once` and `spawn_dial_loop`'s callers), never from
+/// `start_peripheral_once` and `start_exchange`'s callers), never from
 /// `.setup()`. See `android_lazy`'s module doc for why an eager attempt
 /// there would crash.
 #[cfg(target_os = "android")]
@@ -881,7 +881,15 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(60);
 
+    let mut advertising_wanted = advertising_wanted_sender().subscribe();
     loop {
+        // ADR-0008 D8: advertise only while there is someone this device
+        // should be reachable by.
+        while !*advertising_wanted.borrow_and_update() {
+            if advertising_wanted.changed().await.is_err() {
+                return;
+            }
+        }
         let backend = match backend().await {
             Ok(backend) => backend,
             Err(err) => {
@@ -961,6 +969,13 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                     restarting_for_add_mode_change = true;
                     break;
                 }
+                _ = advertising_wanted.changed() => {
+                    if !*advertising_wanted.borrow() {
+                        log::info!("[transport][ble] nothing to be reachable for; stopping advertising");
+                        restarting_for_add_mode_change = true;
+                        break;
+                    }
+                }
             }
         }
         if restarting_for_add_mode_change {
@@ -983,86 +998,50 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     }
 }
 
-/// Dial loop: for every paired, Bluetooth-enabled, OS-paired peer with no
-/// active session on this transport, attempt a central-role connect.
-/// `candidates` is (peer_device_id, bluetooth_address) for peers meeting
-/// those stored-metadata conditions — gathered by the caller from
-/// `paired_devices` (see `pairing::commands::
-/// bluetooth_dial_candidates`), since unlike `tcp_ws`/`sim` there is no
-/// presence worker or static port list to draw from here. ADR-0003
-/// revision: dials unconditionally now, independent of Network's own state
-/// or the pin -- see `tcp_ws::spawn_dial_loop`'s own doc comment.
-pub fn spawn_dial_loop(state: &DeviceConnectionState, db_path: PathBuf, candidates: &[String]) {
-    // While the user is adding a device, the dial loop gives up the adapter.
-    //
-    // One adapter supports one discovery session, and this loop holds one
-    // for 8s out of every scan period. `scan_add_mode_candidates` opening a
-    // second concurrent scan does not fail -- it returns a stream that
-    // simply never yields, which is why Add Device found nothing while this
-    // loop was finding the same phone every few seconds. Measured directly:
-    // `add-mode scan saw 0 advertiser(s)` repeating once per poll, against
-    // `scan: discovered ...` from this loop in the same log at the same time.
-    //
-    // Yielding is the right way round. Pairing is a short window the user is
-    // actively waiting on; reconnecting an existing peer is background work
-    // that loses nothing by pausing for it, and resumes on the next tick.
-    if *add_mode_sender().borrow() {
-        return;
-    }
+/// The Bluetooth half of ADR-0008 D10/D12: presence, search and exchanges.
+///
+/// - **Presence**: a paired peer whose advertisement was heard within
+///   `BLUETOOTH_CHANNEL_TIMEOUT` is present (green).
+/// - **Status search**: while the Device page is open, the radio listens in
+///   back-to-back `STATUS_SEARCH_WINDOW`s so presence stays current.
+/// - **Delivery search**: when there is work for a peer, one search of up to
+///   `SEARCH_WINDOW` looks for it and connects as soon as it is heard. A peer
+///   not found is tried again after `DELIVERY_RETRY` steps, until it appears.
+/// - **Exchange**: connect, authenticate, push and acknowledge, then close
+///   once idle (`session::run_session`).
+///
+/// Nothing here runs when there is no reason to: no work, no open page, no
+/// setup -- the radio only advertises and listens for connections.
+const SEARCH_WINDOW: Duration = Duration::from_secs(60);
 
-    let my_id = state.identity.device_id.clone();
+/// Per-candidate cap for one dial + authentication inside a delivery search:
+/// an advertiser that accepts the connection and never answers must not
+/// hold the whole window.
+const DIAL_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
-    for peer_id in candidates {
-        if !should_dial_peer(&my_id, peer_id, state.has_session_on(peer_id, ChannelKind::Bluetooth)) {
-            continue;
-        }
-        if is_backing_off(&dial_backoff_until().lock().unwrap(), peer_id, Instant::now()) {
-            continue;
-        }
-        if is_bluetooth_dial_exhausted(peer_id) {
-            continue;
-        }
-        // One retry loop per peer, not one per tick: `space_sync_tick`
-        // (and therefore this function) runs every few seconds from the
-        // frontend, and `dial_with_backoff` itself already loops with
-        // backoff until a session claims or the peer stops being
-        // eligible. Without this guard, every tick while a peer stays
-        // unreachable would spawn *another* concurrent retry loop for the
-        // same peer on top of the ones already running — unbounded tasks
-        // and increasingly concurrent connection attempts to one address.
-        if !in_flight_dials().lock().unwrap().insert(peer_id.clone()) {
-            continue;
-        }
-        let state = state.clone();
-        let db_path = db_path.clone();
-        let peer_id = peer_id.clone();
-        tauri::async_runtime::spawn(async move {
-            dial_with_backoff(state, db_path, peer_id.clone()).await;
-            in_flight_dials().lock().unwrap().remove(&peer_id);
-        });
-    }
-}
+/// How long one status-search window listens while the Device page is open.
+const STATUS_SEARCH_WINDOW: Duration = Duration::from_secs(20);
 
-/// Peers with a `dial_with_backoff` task currently running. See the doc
-/// comment on the guard in `spawn_dial_loop` for why this exists.
-fn in_flight_dials() -> &'static StdMutex<HashSet<String>> {
+/// How long a heard advertisement keeps a peer present: three status-search
+/// windows, so one missed window does not flicker the row (ADR-0008 D12).
+const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// When a delivery search does not find the peer, the next one waits this
+/// long, one step further each time and then the last step forever: 1, 5
+/// and 15 minutes, then every 15 (ADR-0008 D12). A first thoughtful guess
+/// for battery, to be revised from measurements on hardware.
+const DELIVERY_RETRY: [Duration; 3] = [
+    Duration::from_secs(60),
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(15 * 60),
+];
+
+/// Peers with an exchange attempt in flight -- one at a time per peer.
+fn in_flight_exchanges() -> &'static StdMutex<HashSet<String>> {
     static IN_FLIGHT: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
     IN_FLIGHT.get_or_init(|| StdMutex::new(HashSet::new()))
 }
 
-/// Peers whose Bluetooth dial should not be retried before this instant --
-/// a P1 review finding: `dial_with_backoff` giving up terminally (a
-/// rejection that won't resolve itself by retrying sooner, e.g. a pre-v3
-/// peer's own sticky-single-session code rejecting our now-unconditional
-/// Bluetooth attempt with "session already active on another transport"
-/// while it already has a Network session with us) used to just clear
-/// `in_flight_dials`' guard and let the very next `space_sync_tick`
-/// (every few seconds) spawn a brand new attempt -- a continuous
-/// connect/reject/disconnect cycle for as long as the peer stays on an
-/// incompatible build (or, pre-existing and not new to this PR: for any
-/// peer that outright doesn't recognize us as paired). Entries are never
-/// removed once their deadline passes -- `spawn_dial_loop`'s own check
-/// just stops treating them as blocking, so there's nothing to clean up.
 /// One Bluetooth scan at a time, process-wide. Every `backend.scan` call
 /// holds this for as long as its discovery stream lives.
 ///
@@ -1079,241 +1058,109 @@ fn scan_lease() -> &'static tokio::sync::Mutex<()> {
     LEASE.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-fn dial_backoff_until() -> &'static StdMutex<HashMap<String, Instant>> {
-    static BACKOFF: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
-    BACKOFF.get_or_init(|| StdMutex::new(HashMap::new()))
+/// Per peer: how many delivery searches in a row found nothing, and when
+/// the next one is due.
+fn delivery_schedule() -> &'static StdMutex<HashMap<String, (usize, Instant)>> {
+    static SCHEDULE: OnceLock<StdMutex<HashMap<String, (usize, Instant)>>> = OnceLock::new();
+    SCHEDULE.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
-/// Pure decision `spawn_dial_loop` delegates to -- split out so it's
-/// directly unit-testable with synthetic timestamps, the same way
-/// `should_dial_peer` is: `ble::dial` talks to real Bluetooth hardware, so
-/// an end-to-end integration test of the backoff (actually rejecting a
-/// dial and observing the next tick skip it) isn't constructible in this
-/// test environment.
-fn is_backing_off(backoff: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
-    backoff.get(peer_id).is_some_and(|until| now < *until)
+/// When the next delivery search is due after `misses` searches in a row
+/// found nothing.
+fn next_delivery_search(misses: usize, now: Instant) -> Instant {
+    now + DELIVERY_RETRY[misses.saturating_sub(1).min(DELIVERY_RETRY.len() - 1)]
 }
 
-/// How long a terminal rejection suppresses further Bluetooth dial
-/// attempts for that peer. Fixed, not exponential -- still a 20x reduction
-/// in attempt frequency against `space_sync_tick`'s few-second cadence,
-/// without needing to persist a growing failure count anywhere.
-const DIAL_BACKOFF: Duration = Duration::from_secs(60);
-
-/// How long one continuous streak of connect/auth attempts (see
-/// `dial_with_backoff`'s `streak_deadline`) is allowed to keep retrying
-/// automatically before giving up and requiring an explicit
-/// `retry_bluetooth_dial` call to resume. Distinct from `DIAL_BACKOFF`: that
-/// one is for a *terminal* rejection (the peer explicitly said no); this one
-/// is for a link that never even gets far enough to be rejected -- it just
-/// keeps connecting, sometimes completing GATT setup, and dying before an
-/// `AuthOk`/`AuthFail` ever arrives. Matches the frontend's own
-/// `CONNECTING_TIMEOUT_MS` "stuck" threshold in spirit (see
-/// `DeviceView.vue`), but this one actually stops the background work
-/// instead of only relabelling it -- an indefinite silent retry loop behind
-/// an unchanging "Still connecting..." was the actual user complaint (real
-/// device evidence, 2026-09-01: repeated connect/MTU/discover/subscribe
-/// successes each followed by "connection closed before auth reply" a few
-/// seconds to tens of seconds later, for minutes, with nothing in this
-/// crate or `ble-gatt` ever calling `disconnect()` on any deadline that
-/// would explain it -- a real, unresolved radio-layer instability, not a
-/// bug in this loop's own timeout logic before this constant existed).
-const AUTO_RETRY_WINDOW: Duration = Duration::from_secs(60);
-
-/// Peers whose Bluetooth dial has stopped auto-retrying after
-/// `AUTO_RETRY_WINDOW` of no successful auth. Cleared only by
-/// `retry_bluetooth_dial` (an explicit user action) or by Bluetooth being
-/// disabled and re-enabled for the pair (`device_connection_commands`'s
-/// enable path) -- deliberately *not* on any timer, matching the "wait for
-/// the user to ask again" behavior that's the whole point of giving up in
-/// the first place.
-fn dial_exhausted() -> &'static StdMutex<HashSet<String>> {
-    static EXHAUSTED: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
-    EXHAUSTED.get_or_init(|| StdMutex::new(HashSet::new()))
+/// Whether a delivery search for this peer is due. A present peer is always
+/// due: connecting to it is one dial, not a search.
+fn delivery_due(peer_id: &str) -> bool {
+    if peer_seen_advertising_recently(peer_id) {
+        return true;
+    }
+    match delivery_schedule().lock() {
+        Ok(schedule) => schedule.get(peer_id).is_none_or(|(_, next)| Instant::now() >= *next),
+        Err(_) => true,
+    }
 }
 
-/// Whether `peer_id`'s Bluetooth dial is currently paused after exhausting
-/// `AUTO_RETRY_WINDOW` -- consulted when building this peer's
-/// `ChannelStatusCode` so the row can show a distinct, honest state
-/// instead of an indefinite "Connecting...".
-pub fn is_bluetooth_dial_exhausted(peer_id: &str) -> bool {
-    dial_exhausted().lock().unwrap().contains(peer_id)
+fn note_delivery_missed(peer_id: &str) {
+    if let Ok(mut schedule) = delivery_schedule().lock() {
+        let misses = schedule.get(peer_id).map_or(0, |(misses, _)| *misses) + 1;
+        schedule.insert(peer_id.to_string(), (misses, next_delivery_search(misses, Instant::now())));
+    }
 }
 
-/// Called from `DeviceConnectionState::try_claim_session` whenever a
-/// Bluetooth session is actually claimed, regardless of which side dialed --
-/// a P1 review finding on top of `check_accepting_side_exhaustion`'s own
-/// session-branch: that only runs on the next `space_sync_tick` (a few
-/// seconds out), so a session that authenticates and then drops again
-/// *within* one tick interval was never observed as connected by the poll,
-/// leaving a stale `dial_exhausted` entry (and `accepting_side_
-/// unconnected_since` timestamp) in place indefinitely -- `spawn_dial_loop`
-/// then kept skipping the peer even after the poll eventually ran. This is
-/// the same clearing `check_accepting_side_exhaustion` already does, just
-/// triggered by the actual claim event instead of waiting for a poll to
-/// observe it.
-pub fn note_bluetooth_session_claimed(peer_id: &str) {
-    dial_exhausted().lock().unwrap().remove(peer_id);
-    accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
+fn note_delivery_reached(peer_id: &str) {
+    if let Ok(mut schedule) = delivery_schedule().lock() {
+        schedule.remove(peer_id);
+    }
 }
 
-/// Drops every per-peer Bluetooth dial tracker this file keeps in process
-/// memory, keyed by `peer_id` -- called on unpair and on a fresh pairing
-/// (see call sites in `pairing::commands`). A P2 review finding:
-/// these are process-global maps/sets, so a peer that exhausted, got
-/// unpaired, and was paired again under the same `peer_device_id` without an
-/// app restart used to come back already exhausted -- `spawn_dial_loop`
-/// would see the stale flag and skip it, and the row would report exhausted
-/// immediately instead of getting a fresh `AUTO_RETRY_WINDOW`.
-/// `paired_devices` itself has no such staleness problem
-/// (`device_connection_unpair_impl` deletes the row outright), only this
-/// crate's own in-memory trackers do. Broader than what `retry_bluetooth_
-/// dial` itself clears (that function's doc comment covers just the two
-/// give-up trackers a retry click is meant to reset): this also drops
-/// `dial_backoff_until`, a *terminal-rejection* backoff that's equally
-/// stale-by-`peer_device_id` across an unpair/re-pair, but that an ordinary
-/// retry click was never meant to bypass.
-pub fn clear_dial_exhaustion(peer_id: &str) {
-    dial_exhausted().lock().unwrap().remove(peer_id);
-    accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
-    dial_backoff_until().lock().unwrap().remove(peer_id);
-}
-
-/// Resume Bluetooth dial retries for `peer_id` after
-/// `is_bluetooth_dial_exhausted` -- the backend half of the Device page's
-/// "click the row to try again" affordance. A no-op if the peer is already
-/// connected. Clears both give-up trackers synchronously, then spawns a
-/// one-off `dial_with_backoff` streak for `peer_id` directly -- *not* gated
-/// by `should_dial_peer`.
-///
-/// That bypass is the actual fix for a P1 review finding: on the accepting
-/// side of a pair (`my_id > peer_id`), `should_dial_peer` is false forever
-/// -- it's not a fact that changes -- so `spawn_dial_loop` would never spawn
-/// anything for this peer no matter how many ticks pass. Before this, retry
-/// on that side only cleared the flags above and relied on the *next*
-/// `spawn_dial_loop` tick to actually dial, which never came; the row would
-/// just sit on "Connecting..." for another `AUTO_RETRY_WINDOW` and land back
-/// on exhausted with nothing having attempted a connection. `dial_with_backoff`
-/// itself never consults `should_dial_peer` -- it's agnostic about which side
-/// is "supposed" to dial -- so spawning it directly here works for both
-/// sides identically. `in_flight_dials`'s existing guard is what keeps this
-/// safe if an automatic streak (dialing side) or an earlier retry click is
-/// already running for the same peer: the `insert` below just fails and this
-/// becomes a no-op instead of a second concurrent attempt, and
-/// `try_claim_session` inside `dial_with_backoff`/`run_session` is the
-/// existing collision-safety net if both sides' connections happen to
-/// complete auth around the same time.
-///
-/// Deliberately takes no `candidates` list -- two P2 review findings on
-/// earlier revisions of this function both had the same root cause: a
-/// caller reading the peer's dial address via its own DB connection first
-/// (once the shared, Mutex-guarded `AppDbConnection` used by every other
-/// Tauri command), so the OS bond check inside that lookup (a `bluetoothctl`
-/// subprocess call, up to 5s) ran while that shared lock was held. Looking
-/// the address up here instead, on the spawned task, with its own fresh
-/// connection via `open_db_at_path` -- exactly `is_still_bluetooth_eligible`'s
-/// own established pattern -- means neither caller's lock is ever touched by
-/// this at all.
-pub fn retry_bluetooth_dial(state: &DeviceConnectionState, peer_id: &str) {
-    dial_exhausted().lock().unwrap().remove(peer_id);
-    // Also give the accepting-side tracker (below) a fresh window: without
-    // this, a peer we never dial ourselves (we're the accepting side for
-    // it) would just get marked exhausted again the moment the spawned
-    // attempt below fails, since its "unconnected since" clock would still
-    // read the distant past.
-    accepting_side_unconnected_since().lock().unwrap().remove(peer_id);
-
-    if state.has_session_on(peer_id, ChannelKind::Bluetooth) {
+/// Start an exchange with this peer over Bluetooth unless one is running or
+/// being attempted (ADR-0008 D10). Called when there is work for the peer.
+pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
+    if state.has_session_on(peer_id, ChannelKind::Bluetooth) || !delivery_due(peer_id) {
         return;
     }
-    if !in_flight_dials().lock().unwrap().insert(peer_id.to_string()) {
+    // While a device is being added, the adapter belongs to that search.
+    if *add_mode_sender().borrow() {
         return;
     }
-
-    let db_path = state.db_path.clone();
+    if !in_flight_exchanges().lock().unwrap().insert(peer_id.to_string()) {
+        return;
+    }
     let state = state.clone();
     let peer_id = peer_id.to_string();
-    tauri::async_runtime::spawn(async move {
-        if !is_still_bluetooth_eligible(&db_path, &peer_id) {
-            in_flight_dials().lock().unwrap().remove(&peer_id);
-            return;
-        }
-        dial_with_backoff(state, db_path, peer_id.clone()).await;
-        in_flight_dials().lock().unwrap().remove(&peer_id);
+    tokio::spawn(async move {
+        exchange_with(&state, &peer_id).await;
+        in_flight_exchanges().lock().unwrap().remove(&peer_id);
     });
 }
 
-/// Per-peer timestamp of the first tick this process observed itself as
-/// the *accepting* side (`my_id > peer_id`, so `should_dial_peer` never
-/// spawns a `dial_with_backoff` for it) with no Bluetooth session claimed.
-/// A P1 review finding: `AUTO_RETRY_WINDOW`/`streak_deadline` above only
-/// exist on the dialing side -- without an equivalent here, the accepting
-/// side had no way to ever stop reporting "Connecting..." even after its
-/// peer legitimately gave up dialing and showed "Unavailable" on its own
-/// screen, a real cross-device asymmetry (plausibly the exact gray-vs-
-/// amber mismatch observed between two real paired devices in the field).
-fn accepting_side_unconnected_since() -> &'static StdMutex<HashMap<String, Instant>> {
-    static UNCONNECTED_SINCE: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
-    UNCONNECTED_SINCE.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-/// Called every `space_sync_tick` alongside `spawn_dial_loop`, over the
-/// same candidate list, for the peers *this* process never dials --
-/// gives the passive/accepting side the same "give up after
-/// `AUTO_RETRY_WINDOW`" reporting the dialing side already gets from
-/// `dial_with_backoff`, without needing a new wire message: the accepting
-/// side has no attempt of its own to bound, only the absence of a session
-/// to time. Reuses `dial_exhausted`/`is_bluetooth_dial_exhausted` for the
-/// actual reporting, so every downstream consumer (both status polls, the
-/// frontend's retry affordance) already works identically for both roles.
-pub fn check_accepting_side_exhaustion(state: &DeviceConnectionState, candidates: &[String]) {
-    let my_id = &state.identity.device_id;
-    let now = Instant::now();
-    let mut unconnected_since = accepting_side_unconnected_since().lock().unwrap();
-    for peer_id in candidates {
-        if state.has_session_on(peer_id, ChannelKind::Bluetooth) {
-            unconnected_since.remove(peer_id);
-            // A session existing at all is proof the link can work right
-            // now, regardless of how it got established (the peer could
-            // have dialed in while we still held a stale exhausted flag
-            // from an earlier streak) -- if it drops again later, that's a
-            // fresh streak and deserves its own full window, not an
-            // immediate re-report of exhaustion left over from before.
-            //
-            // A P1 review finding: this check used to run *after* the
-            // `my_id < peer_id` skip below, so it never fired at all on the
-            // dialing side. `retry_bluetooth_dial`'s direct dial bypasses
-            // `should_dial_peer`, so the *accepting* side can now be the one
-            // that establishes a session -- leaving the dialing side's own
-            // stale `dial_exhausted` flag (set by its own earlier
-            // `dial_with_backoff` giving up) never cleared. When that
-            // session later dropped, `spawn_dial_loop` kept honoring the
-            // stale flag and refused to ever dial this peer again,
-            // one-manual-retry-per-session forever. Checking every
-            // candidate's session state before the dialer-role filter below
-            // fixes that for both roles identically.
-            dial_exhausted().lock().unwrap().remove(peer_id);
-            continue;
+/// One delivery: search for the peer (connecting as soon as it is heard),
+/// authenticate, and run the exchange to its idle end.
+async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
+    let db_path = state.db_path.clone();
+    if !is_still_bluetooth_eligible(&db_path, peer_id) {
+        return;
+    }
+    match connect_by_advertisement(state, peer_id, SEARCH_WINDOW).await {
+        AdvertisementDial::Connected {
+            link,
+            protocol_version,
+            address,
+        } => {
+            note_delivery_reached(peer_id);
+            log::info!("[transport][ble] exchange with {peer_id} via {address}");
+            // The switch could have been turned off during the search.
+            if !is_still_bluetooth_eligible(&db_path, peer_id) {
+                return;
+            }
+            // Diagnostics only: nothing dials a stored address.
+            note_observed_bluetooth_address(&db_path, peer_id, &address);
+            let (tx, rx) = tokio::sync::mpsc::channel(64);
+            if state.try_claim_session(peer_id, ChannelKind::Bluetooth, tx) {
+                session::run_session(
+                    link,
+                    rx,
+                    state.clone(),
+                    db_path,
+                    peer_id.to_string(),
+                    protocol_version,
+                    session::EXCHANGE_IDLE,
+                )
+                .await;
+            }
         }
-        if my_id < peer_id {
-            // should_dial_peer's own rule: we dial this one ourselves, so
-            // dial_with_backoff's streak_deadline already covers the
-            // no-session case.
-            continue;
-        }
-        let since = *unconnected_since.entry(peer_id.clone()).or_insert(now);
-        if now.duration_since(since) >= AUTO_RETRY_WINDOW {
-            dial_exhausted().lock().unwrap().insert(peer_id.clone());
+        AdvertisementDial::NoneReachable { last_auth_error } => {
+            if let Some(err) = last_auth_error {
+                log::info!("[transport][ble] {peer_id} refused the exchange: {err}");
+            } else {
+                log::info!("[transport][ble] {peer_id} not heard within the search window");
+            }
+            note_delivery_missed(peer_id);
         }
     }
-}
-
-/// Deterministic dialer rule, mirroring `tcp_ws::should_dial_peer`/
-/// `loopback::should_dial_fallback_peer`: exactly one side of a pair ever
-/// attempts to dial, so both peers dialling each other in the same tick
-/// can't race to claim the same session on both ends.
-fn should_dial_peer(my_id: &str, peer_id: &str, has_session: bool) -> bool {
-    my_id < peer_id && !has_session
 }
 
 /// Re-reads `paired_devices` for the current, live answer to "is this peer
@@ -1328,9 +1175,6 @@ fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str) -> bool
     })
 }
 
-/// `block_in_place` wrapper around the diagnostic address write, matching
-/// `is_still_bluetooth_eligible`'s pattern for a blocking DB call made from
-/// inside an async loop.
 fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, address: &str) {
     tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
@@ -1338,119 +1182,154 @@ fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, add
     })
 }
 
-/// How long one `connect_by_advertisement` pass listens for candidates
-/// before giving up on this attempt. The *window*; `idle_scan_period`
-/// below decides how often the window opens.
-const DIAL_SCAN_WINDOW: Duration = Duration::from_secs(8);
-
-/// Longest gap between scan windows while a peer is unreachable, when the
-/// user is watching (ADR-0006 slice 3).
-const SCAN_PERIOD_FOREGROUND: Duration = Duration::from_secs(30);
-
-/// The same, for the background daemon. Double, because nobody is waiting
-/// on the row and the phone is on battery.
-const SCAN_PERIOD_BACKGROUND: Duration = Duration::from_secs(60);
-
-/// How long to wait before opening the next scan window.
-///
-/// Duty-cycling at all is not a micro-optimisation: continuous scanning
-/// destabilised the development desktop's adapter badly enough to drop the
-/// machine's unrelated Bluetooth devices, which is recorded under ADR-0005's
-/// method traps. On the phone it is also simply expensive -- and the phone
-/// already runs Google's own continuous Nearby scanner, so ours is not the
-/// only consumer of that radio.
-///
-/// The two periods are a deliberate first guess, not a tuned answer. Issue
-/// #171 changes what a *connected* pair costs, and both halves spend one
-/// battery budget, so the numbers should be settled together once that
-/// lands. See ADR-0006's design review.
-/// One cadence, not two.
-///
-/// This used to pick between a foreground and a background period by asking
-/// whether the frontend had ticked recently. That made the webview a driver
-/// of backend behaviour, which it no longer is: the backend owns every tick,
-/// and the frontend only renders and listens. With no frontend signal there
-/// is nothing to adapt to, and inventing one from platform lifecycle would
-/// be a larger change than this is worth.
-///
-/// The background period is the one kept, which is the same trade taken
-/// everywhere else here: a peer returning is noticed within a minute rather
-/// than thirty seconds, and the radio is left alone the rest of the time.
-fn idle_scan_period() -> Duration {
-    SCAN_PERIOD_BACKGROUND
-}
-
-/// How long one candidate gets for its own dial plus auth handshake.
-///
-/// Deliberately much larger than `FIND_PEER_CANDIDATE_TIMEOUT` (4s), which
-/// bounds the *discovery* probe where giving up fast and moving on is the
-/// right trade. Here we have already decided to talk to this peer, and a
-/// real BLE connect on this hardware has been measured at ~28s on its own
-/// (see `dial_with_backoff`). Bounded by the caller's remaining give-up
-/// window regardless, so this never extends the advertised 60s.
-///
-/// Hardware evidence for splitting the two budgets at all: sharing one
-/// deadline with the scan window above meant a candidate discovered 6s into
-/// an 8s window got 2s to connect, and every dial was abandoned mid-connect
-/// with "connect guard dropped".
-const DIAL_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// When each peer was last seen advertising a matching fingerprint.
-///
-/// ADR-0006 slice 4: this is what lets a transport row say "not nearby"
-/// honestly instead of sitting on amber "connecting…" at a peer that is in
-/// another building. It is only ever written from a fingerprint match, so
-/// "seen" means "seen advertising *as this peer*", not merely "some Fini
-/// device was in range".
-fn last_seen_advertising() -> &'static StdMutex<HashMap<String, Instant>> {
-    static LAST_SEEN: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
+/// When each peer was last heard advertising a matching fingerprint, and at
+/// which address. Only ever written from a fingerprint match, so "heard"
+/// means "heard advertising *as this peer*".
+fn last_seen_advertising() -> &'static StdMutex<HashMap<String, (Instant, String)>> {
+    static LAST_SEEN: OnceLock<StdMutex<HashMap<String, (Instant, String)>>> = OnceLock::new();
     LAST_SEEN.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
-fn note_peer_advertising(peer_id: &str) {
-    let freshness = idle_scan_period() * 3;
-    let newly_reachable = match last_seen_advertising().lock() {
-        Ok(mut seen) => {
-            let was_stale = seen
-                .insert(peer_id.to_string(), Instant::now())
-                .is_none_or(|previous| previous.elapsed() >= freshness);
-            was_stale
-        }
+fn note_peer_advertising(peer_id: &str, address: &str) {
+    let newly_present = match last_seen_advertising().lock() {
+        Ok(mut seen) => seen
+            .insert(peer_id.to_string(), (Instant::now(), address.to_string()))
+            .is_none_or(|(previous, _)| previous.elapsed() >= BLUETOOTH_CHANNEL_TIMEOUT),
         Err(_) => false,
     };
-
-    // A peer coming back into range is a moment dialling becomes possible,
-    // in the same family as a local edit creating work or a session claim
-    // making existing work sendable. Without it, reconnecting waits for the
-    // periodic backstop -- which matters little at a 30s tick and decides
-    // everything at an hourly one.
-    //
-    // Only on the transition. `note_peer_advertising` runs for every matched
-    // advertisement, several times per scan window, and waking the keeper on
-    // each would turn a backstop into a poll by another name.
-    if newly_reachable {
+    // A peer appearing is the moment waiting work becomes deliverable
+    // (ADR-0008 D8). Only on the transition: a peer heard on every window
+    // must not turn the keeper into a poll.
+    if newly_present {
         crate::services::communication::sync::commands::notify_sync_work_pending();
     }
 }
 
-/// Whether `peer_id` has advertised recently enough to still count as
-/// nearby.
-///
-/// The window is derived from the scan period rather than picked: it has to
-/// span several scan cycles, because a single missed beacon is ordinary --
-/// the listening window is 8s out of every 30s or 60s, so most of a peer's
-/// advertisements are simply not heard. A window shorter than a few cycles
-/// would flap the row between "nearby" and "not nearby" while nothing
-/// changed.
-///
-/// The cost is that the row is honest but unhurried: after a peer really
-/// leaves, it can take up to three minutes in the background to say so.
+/// Whether `peer_id` advertised within the channel timeout (ADR-0008 D9).
 pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
-    let freshness = idle_scan_period() * 3;
     match last_seen_advertising().lock() {
-        Ok(seen) => seen.get(peer_id).is_some_and(|at| at.elapsed() < freshness),
+        Ok(seen) => seen
+            .get(peer_id)
+            .is_some_and(|(at, _)| at.elapsed() < BLUETOOTH_CHANNEL_TIMEOUT),
         Err(_) => false,
     }
+}
+
+/// Whether the Device page asked for a status search (ADR-0008 D12).
+fn status_search_sender() -> &'static tokio::sync::watch::Sender<bool> {
+    static SENDER: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
+}
+
+/// Turn the status search on while the Device page is open, off when it
+/// closes. Green is never computed in the background (ADR-0008 D12).
+pub fn set_status_search(state: &DeviceConnectionState, active: bool) {
+    let _ = status_search_sender().send(active);
+    if active {
+        start_status_search_once(state.clone());
+    }
+}
+
+fn start_status_search_once(state: DeviceConnectionState) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        tokio::spawn(async move { run_status_search(state).await });
+    });
+}
+
+/// Listens in back-to-back windows while the page is open, recording which
+/// paired peers with Bluetooth on are heard. Releases the scan between
+/// windows so a delivery or setup search can take its turn.
+async fn run_status_search(state: DeviceConnectionState) {
+    use futures_util::StreamExt;
+
+    let mut active = status_search_sender().subscribe();
+    loop {
+        if !*active.borrow_and_update() {
+            if active.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+        let peers = tokio::task::block_in_place(|| {
+            let mut conn = open_db_at_path(&state.db_path);
+            crate::services::communication::pairing::channels::peers_with_channel_enabled(
+                &mut conn,
+                ChannelKind::Bluetooth,
+            )
+        });
+        let wanted: HashMap<[u8; FINGERPRINT_LEN], String> =
+            peers.into_iter().map(|peer| (fingerprint_of(&peer), peer)).collect();
+        if wanted.is_empty() {
+            let _ = tokio::time::timeout(STATUS_SEARCH_WINDOW, active.changed()).await;
+            continue;
+        }
+        let Ok(backend) = backend().await else {
+            note_adapter_unreachable();
+            let _ = tokio::time::timeout(STATUS_SEARCH_WINDOW, active.changed()).await;
+            continue;
+        };
+        let scan = scan_lease().lock().await;
+        let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
+            note_adapter_unreachable();
+            drop(scan);
+            let _ = tokio::time::timeout(STATUS_SEARCH_WINDOW, active.changed()).await;
+            continue;
+        };
+        note_adapter_reachable();
+        let deadline = tokio::time::Instant::now() + STATUS_SEARCH_WINDOW;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, discovered.next()).await {
+                Ok(Some(Ok(candidate))) => {
+                    let advertised = advertised_fingerprint(
+                        candidate
+                            .manufacturer_data
+                            .get(&FINI_MANUFACTURER_ID)
+                            .map(|payload| payload.as_slice()),
+                    );
+                    if let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) {
+                        note_peer_advertising(peer, &candidate.address.0);
+                    }
+                }
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+            }
+        }
+        drop(discovered);
+        drop(scan);
+    }
+}
+
+/// Whether this device should advertise (ADR-0008 D8): while it has a
+/// Bluetooth channel on, is setting one up, or is being paired. Otherwise
+/// the radio stays quiet -- there is nobody it should be reachable by.
+fn advertising_wanted_sender() -> &'static tokio::sync::watch::Sender<bool> {
+    static SENDER: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
+}
+
+/// Recompute whether to advertise, from the stored channels and the setups
+/// running now. Cheap; called whenever one of its inputs may have changed.
+pub fn refresh_advertising(db_path: &std::path::Path, state: &DeviceConnectionState) {
+    let any_channel_on = tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        !crate::services::communication::pairing::channels::peers_with_channel_enabled(
+            &mut conn,
+            ChannelKind::Bluetooth,
+        )
+        .is_empty()
+    });
+    let wanted = any_channel_on
+        || state.any_channel_setup(ChannelKind::Bluetooth)
+        || *add_mode_sender().borrow();
+    advertising_wanted_sender().send_if_modified(|current| {
+        let changed = *current != wanted;
+        *current = wanted;
+        changed
+    });
 }
 
 /// Whether the *local* Bluetooth radio could actually be used the last time
@@ -1465,7 +1344,7 @@ pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
 /// Deliberately *observed* rather than polled. Asking BlueZ whether the
 /// adapter is powered costs a D-Bus round trip, and the transport row is
 /// polled every few seconds for every paired peer; the dial loop already
-/// scans once per `SCAN_PERIOD_*`, so recording what those attempts found
+/// searches whenever it has a reason to, so recording what those attempts find
 /// keeps this fresh for free. It is also the truer signal: "we asked the
 /// radio to do something and it refused" is what the user actually cares
 /// about, and it catches an adapter that reports itself powered while
@@ -1551,9 +1430,9 @@ pub async fn probe_adapter_available() -> bool {
 ///
 /// Every candidate costs a dial plus a handshake, so this is bounded twice:
 /// by `budget` overall (the caller's remaining give-up window) and by
-/// `DIAL_SCAN_WINDOW` on the listening itself. A later ADR-0006 slice adds
-/// an advertised identity fingerprint, which turns this from "try each
-/// advertiser" into "try the one whose fingerprint matches".
+/// `SEARCH_WINDOW` on the listening itself (ADR-0008 D12: a search lasts up
+/// to 60s and ends as soon as it finds the peer). Only an advertiser whose
+/// fingerprint matches is dialled.
 async fn connect_by_advertisement(
     state: &DeviceConnectionState, peer_id: &str, budget: Duration,
 ) -> AdvertisementDial {
@@ -1586,7 +1465,7 @@ async fn connect_by_advertisement(
         // discovery and establish a connection at the same moment, so
         // scanning while dialling meant competing with ourselves.
         let scan = scan_lease().lock().await;
-        let scan_deadline = tokio::time::Instant::now() + DIAL_SCAN_WINDOW;
+        let scan_deadline = tokio::time::Instant::now() + SEARCH_WINDOW.min(budget);
         let found = {
             let _scan = scan;
             let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
@@ -1634,7 +1513,7 @@ async fn connect_by_advertisement(
                         // is provably in range whether or not connecting to
                         // it then succeeds, and those are different facts
                         // for the row to report.
-                        note_peer_advertising(peer_id);
+                        note_peer_advertising(peer_id, &address);
                         if tried.insert(address.clone()) {
                             found = Some(address);
                             break;
@@ -1662,8 +1541,8 @@ async fn connect_by_advertisement(
         // Bounded per candidate as well as overall: an advertiser that
         // accepts the connection but never answers `Auth` would otherwise
         // hold the whole window on its own. `dial` and `perform_client_auth`
-        // each wait unboundedly by themselves -- see `dial_with_backoff`'s
-        // note on real-device evidence of a single `connect()` taking ~28s.
+        // each wait unboundedly by themselves, and one real `connect()` was
+        // measured at ~28s.
         let attempt = tokio::time::timeout(budget_left.min(DIAL_CANDIDATE_TIMEOUT), async {
             let mut link = dial(&address).await?;
             let version =
@@ -1713,184 +1592,6 @@ enum AdvertisementDial {
     NoneReachable { last_auth_error: Option<String> },
 }
 
-async fn dial_with_backoff(state: DeviceConnectionState, db_path: PathBuf, peer_id: String) {
-    let mut delay = Duration::from_secs(2);
-    // Real-device evidence (2026-09-01, actual BLE hardware, not the mock
-    // radio): a flaky link can keep connecting, negotiating MTU, and even
-    // completing GATT service discovery, then dying before the app-level
-    // Auth reply arrives -- repeatedly, for minutes, with no code-level
-    // timeout anywhere in this loop or `perform_client_auth` ever calling it
-    // off. Every one of those failed attempts left the UI showing an
-    // unchanging, indefinite "Still connecting..." with no way to tell
-    // whether it was making progress or stuck. Cap how long one continuous
-    // unsuccessful streak auto-retries before giving up and surfacing that
-    // giving-up as a distinct, visible state (`retry_bluetooth_dial`'s doc
-    // comment) instead of retrying forever in the background.
-    let mut streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
-
-    loop {
-        if state.has_session_on(&peer_id, ChannelKind::Bluetooth) {
-            return;
-        }
-        // Re-checked every retry, not just at the moment this task was
-        // spawned: the candidate list `spawn_dial_loop` built is a single
-        // snapshot, so a peer reachable only later in this backoff loop
-        // would otherwise still complete auth and claim a session even
-        // after the user disabled Bluetooth for them or unpaired them
-        // entirely in the meantime — a setting meant to stop future
-        // Bluetooth use silently not taking effect.
-        if !is_still_bluetooth_eligible(&db_path, &peer_id) {
-            log::info!(
-                "[transport][ble] {peer_id} is no longer Bluetooth-enabled; stopping dial retries"
-            );
-            return;
-        }
-        // The same adapter hand-off `spawn_dial_loop` performs, for a task
-        // that was already running when add-mode began. Returning rather
-        // than sleeping: the next `space_sync_tick` after add-mode ends
-        // spawns a fresh attempt, and holding a task open across an
-        // arbitrarily long pairing session would keep this peer's
-        // `in_flight_dials` slot occupied for no benefit.
-        if *add_mode_sender().borrow() {
-            log::info!("[transport][ble] pausing dial to {peer_id}: add-mode is using the adapter");
-            return;
-        }
-        if tokio::time::Instant::now() >= streak_deadline {
-            // A P1 review finding: a session for this peer can be claimed
-            // elsewhere (an inbound connection this process accepts, or the
-            // peer's own direct retry dial) while `is_still_bluetooth_
-            // eligible` above was still scanning -- on Linux that scan can
-            // take up to 5s per Bluetooth-enabled peer. A claim landing in
-            // that window calls `note_bluetooth_session_claimed`, clearing
-            // `dial_exhausted`; without this recheck, this branch would
-            // then blindly write it right back while the just-recovered
-            // session is still live. Re-checking `has_session_on`
-            // immediately before the write, not just at the top of the
-            // loop, closes that TOCTOU window.
-            if state.has_session_on(&peer_id, ChannelKind::Bluetooth) {
-                return;
-            }
-            log::info!(
-                "[transport][ble] {peer_id} did not complete auth within {AUTO_RETRY_WINDOW:?}; \
-                 pausing automatic retries until the user asks again"
-            );
-            dial_exhausted().lock().unwrap().insert(peer_id.clone());
-            return;
-        }
-
-        // The top-of-loop deadline check above only fires between
-        // attempts -- neither `dial` nor `perform_client_auth` has any
-        // timeout of its own (confirmed: `ble_gatt::backend::android::
-        // connect` waits unboundedly on its callback channel, and
-        // `perform_client_auth` waits unboundedly on `recv_frame`), so a
-        // single slow or hung attempt could keep this loop from ever
-        // reaching that check again -- a P1 review finding: real-device
-        // evidence already showed one raw `connect()` alone take ~28s
-        // against the same 60s budget this is supposed to bound. Bound
-        // each attempt by whatever's left of `streak_deadline`, not a
-        // separate fixed timeout, so the advertised total give-up window
-        // holds regardless of how that time gets spent.
-        let attempt_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
-        match connect_by_advertisement(&state, &peer_id, attempt_budget).await {
-            AdvertisementDial::Connected {
-                link,
-                protocol_version,
-                address,
-            } => {
-                log::info!("[transport][ble] auth OK with {peer_id} via {address}");
-                // The scan+connect+auth round trip is real wall-clock time
-                // during which the user could disable Bluetooth or unpair
-                // entirely; without this, a disable/unpair that lands in
-                // that window would still be raced by a session claim that
-                // started before it. Re-run the same eligibility check the
-                // top of this loop uses, right before claiming, to close
-                // that window.
-                if !is_still_bluetooth_eligible(&db_path, &peer_id) {
-                    log::info!(
-                        "[transport][ble] {peer_id} became ineligible during the \
-                         connect/auth handshake; discarding this session"
-                    );
-                    return;
-                }
-                // Diagnostics only. Since ADR-0006 nothing dials this
-                // address -- it records "where we last saw this peer", which
-                // is what keeps a hardware log readable after the fact.
-                note_observed_bluetooth_address(&db_path, &peer_id, &address);
-                let (tx, rx) = tokio::sync::mpsc::channel(64);
-                if state.try_claim_session(&peer_id, ChannelKind::Bluetooth, tx, &db_path) {
-                    session::run_session(
-                        link,
-                        rx,
-                        state.clone(),
-                        db_path.clone(),
-                        peer_id.clone(),
-                        protocol_version,
-                    )
-                    .await;
-                    log::info!("[transport][ble] session with {peer_id} ended");
-                }
-                // Auth actually succeeding is real forward progress,
-                // independent of how long the eventual session lasted
-                // -- give the next streak (if the session later
-                // drops) its own full patience window rather than
-                // carrying over elapsed time from before this proof
-                // the link *can* work.
-                delay = Duration::from_secs(2);
-                streak_deadline = tokio::time::Instant::now() + AUTO_RETRY_WINDOW;
-            }
-            AdvertisementDial::NoneReachable {
-                last_auth_error: Some(err),
-            } => {
-                log::warn!("[transport][ble] no candidate authenticated as {peer_id}: {err}");
-                // "bluetooth disabled" is not permanent the way "unknown
-                // device" is -- the user could re-enable at any time. Keep
-                // retrying rather than giving up outright. The old "not
-                // currently OS-paired" rejection is gone entirely: ADR-0006
-                // removed the gate that produced it.
-                if err.starts_with("auth rejected")
-                    && !err.contains("bluetooth disabled for this pair")
-                {
-                    // Not just "don't retry within this task" --
-                    // `spawn_dial_loop` would otherwise spawn a
-                    // fresh one on the very next tick regardless.
-                    // See `dial_backoff_until`'s own doc comment.
-                    dial_backoff_until()
-                        .lock()
-                        .unwrap()
-                        .insert(peer_id.clone(), Instant::now() + DIAL_BACKOFF);
-                    return; // not paired; don't retry
-                }
-            }
-            AdvertisementDial::NoneReachable {
-                last_auth_error: None,
-            } => {
-                // Nothing in the air answered as this peer within the
-                // window. Ordinary: the peer is out of range, its radio is
-                // off, or its advertisement simply did not land in this
-                // listening window.
-                log::info!("[transport][ble] {peer_id} did not answer in the air this round");
-            }
-        }
-
-        // P2 review finding: this sleep is reached by the unsuccessful arms
-        // above, which (unlike the old `Err(_elapsed)` arms) don't `continue`
-        // past it, so a failure landing shortly before `streak_deadline`
-        // could still sleep the full (up to 30s) `delay` before the
-        // top-of-loop check gets another chance to run, pushing the
-        // advertised 60s give-up noticeably later. Bound it the same way the
-        // attempt budget above is bounded, rather than duplicating a deadline
-        // check into each unsuccessful arm individually.
-        //
-        // The ceiling is re-read every iteration rather than captured once:
-        // the app can move between foreground and background during a single
-        // unsuccessful streak, and the cadence should follow it rather than
-        // stay on whatever it was when the streak began.
-        let remaining_budget = streak_deadline.saturating_duration_since(tokio::time::Instant::now());
-        tokio::time::sleep(delay.min(remaining_budget)).await;
-        delay = (delay * 2).min(idle_scan_period());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1918,38 +1619,15 @@ mod tests {
         );
     }
 
+    /// ADR-0008 D12: a peer not found is searched for again after 1, 5 and
+    /// 15 minutes, then every 15 minutes.
     #[test]
-    fn should_dial_only_from_the_lower_device_id_and_only_without_a_session() {
-        assert!(should_dial_peer("local-a", "peer-b", false));
-        assert!(!should_dial_peer("peer-b", "local-a", false));
-        assert!(!should_dial_peer("local-a", "peer-b", true));
-        assert!(!should_dial_peer("same-id", "same-id", false));
-    }
-
-    /// Regression test for a P1 review finding: a terminal auth rejection
-    /// (e.g. a pre-v3 peer's own sticky-single-session code rejecting our
-    /// now-unconditional Bluetooth dial) must suppress `spawn_dial_loop`
-    /// from immediately spawning a fresh attempt against that peer on the
-    /// very next tick, not just stop the one task that just failed.
-    #[test]
-    fn dial_backoff_suppresses_a_peer_until_its_deadline_passes() {
-        let mut backoff = HashMap::new();
+    fn delivery_searches_back_off_one_five_fifteen_then_every_fifteen() {
         let now = Instant::now();
-        assert!(!is_backing_off(&backoff, "peer-a", now), "no entry yet -- must not back off");
-
-        backoff.insert("peer-a".to_string(), now + Duration::from_secs(60));
-        assert!(
-            is_backing_off(&backoff, "peer-a", now),
-            "within the backoff window -- must skip"
-        );
-        assert!(
-            !is_backing_off(&backoff, "peer-b", now),
-            "a different peer's entry must not affect this one"
-        );
-        assert!(
-            !is_backing_off(&backoff, "peer-a", now + Duration::from_secs(61)),
-            "once the deadline passes, the peer is eligible again"
-        );
+        let waits: Vec<u64> = (1..=5)
+            .map(|misses| next_delivery_search(misses, now).duration_since(now).as_secs())
+            .collect();
+        assert_eq!(waits, vec![60, 300, 900, 900, 900]);
     }
 
     /// `add_mode_sender` is a process-global singleton (mirrors the real

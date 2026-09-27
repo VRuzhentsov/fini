@@ -17,3 +17,8 @@ CREATE TABLE channel_unlink_notices (
     created_at   TEXT NOT NULL,
     PRIMARY KEY (device_id, channel_kind)
 );
+
+-- The primary-channel pin goes too: an exchange uses whichever channel is
+-- On and reaches the peer, Network first (ADR-0008 D10, D19 has no pin).
+DROP INDEX channels_one_primary_per_device;
+ALTER TABLE channels DROP COLUMN is_primary;

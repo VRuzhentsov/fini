@@ -1,5 +1,4 @@
 mod commands;
-pub(crate) mod link_state;
 mod runtime;
 pub(crate) mod channel_status;
 pub(crate) mod channels;
@@ -32,12 +31,11 @@ pub use commands::{
     device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
     device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
     device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
-    device_connection_retry_bluetooth_dial, device_connection_save_paired_device,
+    device_connection_save_paired_device,
     device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
     device_connection_probe_bluetooth_adapter,
     device_connection_session_channel, device_connection_set_channel_enabled,
-    device_connection_set_primary_channel, device_connection_unlink_channel,
-    device_connection_channel_liveness,
+    device_connection_unlink_channel, device_connection_watch_presence,
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
 
@@ -66,8 +64,7 @@ pub use commands::{
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
     device_connection_send_pair_request_impl, device_connection_session_channel_impl,
     device_connection_set_channel_enabled_impl, device_connection_unlink_channel_impl,
-    device_connection_set_primary_channel_impl,
-    device_connection_channel_liveness_impl, device_connection_channel_statuses_impl,
+    device_connection_channel_statuses_impl,
     device_connection_unpair_impl, device_connection_update_last_seen_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
@@ -76,8 +73,7 @@ use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // where it is defined; there is no second enum saying the same thing any
 // more.
 pub use channel_status::{
-    build_channel_statuses, BluetoothStatusCode, ChannelKind, ChannelLiveness, ChannelReason,
-    ChannelRowState, ChannelStatus, ChannelStatusCode, ChannelStatusInputs, NetworkStatusCode,
+    channel_status, ChannelKind, ChannelProblem, ChannelState, ChannelStatus,
 };
 use types::DiscoveryRuntime;
 pub use types::ChannelSetup;
@@ -288,109 +284,12 @@ impl DeviceConnectionState {
             .collect()
     }
 
-    /// ADR-0003 revision: sessions are claimed *per channel*, not one per
-    /// peer -- both Network and Bluetooth can be (and normally are) live at
-    /// once. Succeeds (and claims this specific `(peer, kind)` slot) only if
-    /// no session already exists on *this* channel for `peer_device_id`;
-    /// a session already live on the *other* channel is no longer a
-    /// reason to refuse. Callers must check the return value the same way
-    /// as before -- on `false`, the caller's link must not proceed to
-    /// Submit an event to this peer's link state machine and carry out
-    /// whatever the transition demands (ADR-0005).
-    ///
-    /// The transition runs under the runtime lock, so it sees the session
-    /// table as it is at that instant, but effects are carried out *after*
-    /// the lock is dropped: sending into a session's command channel while
-    /// holding this lock would let one stalled session block every other
-    /// peer's bookkeeping -- the same class of stall a P1 finding already
-    /// fixed in `try_claim_session` for its DB read.
-    pub(super) fn submit_link_event(
-        &self,
-        peer_device_id: &str,
-        kind: ChannelKind,
-        event: link_state::LinkEvent,
-    ) {
-        self.submit_link_event_at(peer_device_id, kind, event, std::time::Instant::now());
-    }
-
-    /// `submit_link_event` with the clock supplied by the caller.
-    ///
-    /// Exists so tests can step the machine past deadlines measured in tens of
-    /// seconds without sleeping for them. The transition function is already
-    /// pure (`LinkState::apply` takes `now`); this keeps that property intact
-    /// all the way out to the effect boundary, which is the half that actually
-    /// closes sessions and so is the half worth testing.
-    pub(crate) fn submit_link_event_at(
-        &self,
-        peer_device_id: &str,
-        kind: ChannelKind,
-        event: link_state::LinkEvent,
-        now: std::time::Instant,
-    ) {
-        let key = (peer_device_id.to_string(), kind);
-        let mut to_close: Vec<SessionSender> = Vec::new();
-        {
-            let Ok(mut guard) = self.runtime.lock() else { return };
-            let current = guard
-                .peer_link_state
-                .get(&key)
-                .cloned()
-                .unwrap_or_else(link_state::LinkState::new);
-            let (next, effects) = current.apply(event.clone(), now);
-            if next != current {
-                log::debug!(
-                    "[link-state] {peer_device_id} {kind:?}: {current:?} + {event:?} -> {next:?}"
-                );
-            }
-            guard.peer_link_state.insert(key.clone(), next);
-            for effect in effects {
-                match effect {
-                    link_state::LinkEffect::TearDownSession => {
-                        if let Some(sender) = guard.peer_sessions.get(&key) {
-                            log::info!(
-                                "[link-state] {peer_device_id} {kind:?}: tearing down a session the machine no longer believes in"
-                            );
-                            to_close.push(sender.clone());
-                        }
-                    }
-                }
-            }
-        }
-        for sender in to_close {
-            // `try_send` rather than a blocking send: a session whose channel
-            // is full is already not draining, and blocking here would stall
-            // the caller (a ping tick, a sync tick) on it. The session also
-            // ends on its own when its link dies, so a dropped Close costs a
-            // retry, not correctness.
-            let _ = sender.try_send(SessionCommand::Close);
-        }
-    }
-
-    /// `AuthOk`/the session loop.
-    pub fn try_claim_session(
-        &self,
-        peer_device_id: &str,
-        kind: ChannelKind,
-        sender: SessionSender,
-        db_path: &Path,
-    ) -> bool {
-        // Fast-path pre-check, and the DB read below, both happen *before*
-        // taking `self.runtime`'s lock -- a P1 review finding: this read
-        // (now retried up to 5x against a 15s busy_timeout each, see
-        // `db::try_open_db_at_path`) used to run *while the lock was held*,
-        // which could block every other peer's sends/ping-bookkeeping/
-        // status reads for over a minute, and would poison the lock for
-        // the rest of the process if `open_db_at_path` panicked mid-hold.
-        // The real insert below re-checks `contains_key` after
-        // re-acquiring the lock, so a claim racing with this unlocked
-        // window is still refused correctly, not just optimistically
-        // skipped.
-        if self.has_session_on(peer_device_id, kind) {
-            return false;
-        }
-        let (pinned_to_bluetooth, bluetooth_enabled) =
-            Self::bluetooth_primary_eligibility(db_path, peer_device_id);
-        {
+    /// Register an exchange that just authenticated (ADR-0008 D10). At most
+    /// one per (peer, channel); `false` means one is already running there
+    /// and the caller's link must not proceed. Frames queued for the peer
+    /// while nothing was connected go out first.
+    pub fn try_claim_session(&self, peer_device_id: &str, kind: ChannelKind, sender: SessionSender) -> bool {
+        let queued = {
             let Ok(mut guard) = self.runtime.lock() else {
                 return false;
             };
@@ -398,468 +297,51 @@ impl DeviceConnectionState {
             if guard.peer_sessions.contains_key(&key) {
                 return false;
             }
-            guard.peer_sessions.insert(key.clone(), sender);
-            guard.peer_channel_ack.insert(key, types::ChannelAckState::default());
-            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
+            guard.peer_sessions.insert(key, sender.clone());
+            guard.pending_frames.remove(peer_device_id).unwrap_or_default()
+        };
+        for frame in queued {
+            let _ = sender.try_send(SessionCommand::Forward(frame));
         }
-        // Both events, in order: a claim only ever happens after a link came
-        // up *and* auth succeeded, but the gate learns the peer's identity
-        // from the Auth frame, so this is the first point either can be
-        // reported. Submitting only `AuthSucceeded` would leave the machine in
-        // `Idle` while a session exists -- a violation of its own invariant.
-        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::LinkEstablished);
-        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::AuthSucceeded);
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
             kind,
         });
-        // A channel coming up is the third moment work becomes sendable, and
-        // it was the missing one. The other two -- a local edit, an inbound
-        // frame -- raise this because they *create* work; this one raises it
-        // because work that already existed could not be sent until now.
-        //
-        // Observed on hardware: two quests emitted while the peer was
-        // unreachable sat in the outbox after the session came back, because
-        // the keeper had already woken once, found nothing sendable, and gone
-        // back to waiting. A forced tick drained both immediately, which is
-        // what proved the send path was fine and only the trigger missing.
-        //
-        // Matters most where there is no periodic backstop to paper over it:
-        // on desktop the keeper waits on this signal alone.
+        // A connection coming up makes waiting work sendable.
         crate::services::communication::sync::commands::notify_sync_work_pending();
-        // Re-validate Bluetooth specifically -- a P1 review finding: the
-        // pre-lock read above is a time-of-check/time-of-use window. If
-        // Bluetooth gets disabled for this pair *between* that read and
-        // this claim landing, `close_session_on` (the disable path's own
-        // teardown) can run and find nothing to close yet, and this claim
-        // then commits with a now-stale `bluetooth_enabled = true`
-        // snapshot -- surviving the opt-out. Self-corrects by tearing down
-        // what was just claimed if Bluetooth is (now) disabled, narrowing
-        // the race to the much smaller window between this second read and
-        // a *new* disable landing -- which `close_session_on`'s own retry
-        // (see its doc comment) still catches, since the session exists by
-        // then. the loopback radio don't need this: they aren't gated by
-        // `bluetooth_enabled` at all (see `recompute_primary_locked`'s doc
-        // comment).
-        if kind == ChannelKind::Bluetooth {
-            // Only a definite "switched off" tears this down.
-            //
-            // This read used to be `bluetooth_primary_eligibility`, which
-            // answers `false` both when the channel is off and when the
-            // database could not be read at all -- `channels::find` ends in
-            // `.ok().flatten()`, so an error and an absent row are the same
-            // answer. Everywhere else that is the right direction to fail:
-            // a gate refusing an unknown channel costs a retry a second
-            // later. Here it is the wrong direction, because this is the one
-            // place that reads a switch in order to *destroy* something, and
-            // a transient `database is locked` -- of which there are plenty
-            // at claim time, with the tick and the gate both holding
-            // connections -- then reads exactly like the person having
-            // flipped the switch.
-            //
-            // Found while chasing a loopback session that died on claim, and
-            // it turned out not to be that -- logging proved this branch
-            // never ran. It is a latent defect on its own: nothing else
-            // reads a switch in order to close something, so nothing else
-            // turns a failed read into a destroyed session.
-            let still_enabled = Self::read_bluetooth_switch(db_path, peer_device_id);
-            if still_enabled == Some(false) {
-                self.close_session_on(peer_device_id, kind);
-            } else {
-                // A P1 review finding: `ble::check_accepting_side_
-                // exhaustion`'s own session-based clearing only runs on the
-                // next `space_sync_tick` (a few seconds out) -- a session
-                // that authenticates and then drops again *within* one tick
-                // interval was never observed as connected by that poll,
-                // leaving a stale `dial_exhausted` entry in place
-                // indefinitely. Clearing right here, at the actual claim
-                // event, doesn't wait for a poll to notice.
-                //
-                // `channel::ble` itself is gated to linux/android (real
-                // BLE hardware only) -- a real-release regression: this
-                // call was originally added unguarded, which compiled fine
-                // on Linux (where this was verified) but broke the Windows
-                // build outright, silently blocking that release's publish
-                // gate for every platform, not just Windows.
-                #[cfg(any(target_os = "linux", target_os = "android"))]
-                crate::services::communication::channel::ble::note_bluetooth_session_claimed(peer_device_id);
-            }
-        }
         true
     }
 
-    pub fn release_session(&self, peer_device_id: &str, kind: ChannelKind, db_path: &Path) {
-        // Removal happens *before* the DB read, not after -- a P1 review
-        // finding: with the DB read (up to ~75s worst case across 5
-        // retries against a 15s busy_timeout each) ordered first, a dead
-        // session stayed `has_session_on == true` for the whole retry
-        // window, stalling reconnect loops (`should_dial_peer`'s own
-        // `has_session_on` check) and leaving `push_to_peer` route traffic
-        // into a link that already stopped processing frames. Removal
-        // itself needs no DB access, so nothing about making it prompt
-        // costs anything; only the *primary recompute* genuinely depends
-        // on a fresh read, and that can safely lag a beat behind removal
-        // becoming visible.
+    pub fn release_session(&self, peer_device_id: &str, kind: ChannelKind) {
         let removed = {
             let Ok(mut guard) = self.runtime.lock() else {
                 return;
             };
-            let key = (peer_device_id.to_string(), kind);
-            if guard.peer_sessions.remove(&key).is_none() {
-                return; // wasn't claimed on this channel; nothing to release
-            }
-            guard.peer_channel_ack.remove(&key);
-            // The machine is told below, outside the lock. Nothing is removed
-            // from `peer_link_state` here: the machine keeps describing the
-            // link after the session ends (`Idle`, `GaveUp`), which is the
-            // point -- it is the state of the *link*, not of the session.
-            // A P1 review finding on the removal-before-DB-read fix above:
-            // without this, `peer_primary_transport` can keep pointing at
-            // the session just removed for the *entire* duration of the
-            // fallible read below (up to ~75s across retries, or forever
-            // if `open_db_at_path` ultimately panics) -- and `push_to_peer`
-            // reads `peer_primary_transport` directly, so it would return
-            // `false` for every send in the meantime even when the *other*
-            // channel is still healthily connected. This reselects from
-            // runtime state alone (no DB, atomic with the removal, so
-            // there's no window at all) whenever the current primary no
-            // longer has a claimed session; `recompute_primary_locked`
-            // below only ever *refines* this once the pin is known, never
-            // corrects a dangling reference, since there isn't one left
-            // to correct.
-            Self::reselect_primary_from_runtime_only(&mut guard, peer_device_id);
-            true
+            guard.peer_sessions.remove(&(peer_device_id.to_string(), kind)).is_some()
         };
-        debug_assert!(removed);
-        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::SessionEnded);
-        let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
-            peer_device_id: peer_device_id.to_string(),
-            kind,
-        });
-        let (pinned_to_bluetooth, bluetooth_enabled) =
-            Self::bluetooth_primary_eligibility(db_path, peer_device_id);
-        if let Ok(mut guard) = self.runtime.lock() {
-            self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
+        if removed {
+            let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
+                peer_device_id: peer_device_id.to_string(),
+                kind,
+            });
         }
     }
 
-    /// DB-free primary reselection: if the peer's current primary no
-    /// longer has a claimed session (e.g. it was just removed), picks
-    /// whatever channel *is* still connected instead -- Network
-    /// preferred, matching the default no-pin rule -- or clears primary
-    /// entirely if nothing is connected. Ignores the manual pin
-    /// deliberately: this only exists to guarantee `peer_primary_transport`
-    /// never dangles, not to make the pin-aware choice, which
-    /// `recompute_primary_locked` still owns and applies moments later
-    /// once the (fallible, DB-backed) pin read completes.
-    ///
-    /// Bluetooth candidacy still respects `peer_bluetooth_enabled_cache`
-    /// (last-known, not fresh) -- a P1 review finding: without this, a
-    /// Bluetooth session disabled moments ago but not yet torn down
-    /// (`close_session_on`'s `Close` is delivered asynchronously) would
-    /// still be sitting in `peer_sessions` and could get picked as the
-    /// fallback primary here, resuming `push_to_peer` traffic over an
-    /// opted-out channel until the next DB-backed recompute corrects it
-    /// -- or indefinitely, if that read panics. A missing cache entry
-    /// fails closed (treated as disabled): self-corrects on the very next
-    /// DB-backed recompute either way, so a brief false negative here costs
-    /// far less than a false positive would. the loopback radio are exempt, same
-    /// as `recompute_primary_locked`'s own exclusion -- they aren't
-    /// governed by `bluetooth_enabled` at all.
-    fn reselect_primary_from_runtime_only(guard: &mut types::DiscoveryRuntime, peer_device_id: &str) {
-        let still_valid = guard
-            .peer_primary_transport
-            .get(peer_device_id)
-            .is_some_and(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
-        if still_valid {
-            return;
-        }
-        let bluetooth_enabled = guard
-            .peer_bluetooth_enabled_cache
-            .get(peer_device_id)
-            .copied()
-            .unwrap_or(false);
-        let fallback = [ChannelKind::Network, ChannelKind::Bluetooth]
-            .into_iter()
-            .filter(|kind| *kind != ChannelKind::Bluetooth || bluetooth_enabled)
-            .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
-        match fallback {
-            Some(kind) => {
-                guard.peer_primary_transport.insert(peer_device_id.to_string(), kind);
-            }
-            None => {
-                guard.peer_primary_transport.remove(peer_device_id);
-            }
-        }
-    }
-
-    /// Reads this pair's primary choice and Bluetooth switch from `db_path`
-    /// -- a plain, explicit path, not `self.db_path`: every other DB-touching
-    /// helper in this module (`check_paired`, etc.) takes the caller's own
-    /// `db_path` rather than trusting a field on `self`, and callers here
-    /// (dial loops, `run_peer_gate`/`run_session`) already have the correct
-    /// one in scope from their own parameters.
-    /// The pair's Bluetooth switch, or `None` when the database could not be
-    /// read at all.
-    ///
-    /// Distinct from `bluetooth_primary_eligibility`, which folds an
-    /// unreadable database into "not eligible". That is harmless when
-    /// choosing which channel is primary and destructive when deciding
-    /// whether to close a session, which is the whole reason this exists.
-    fn read_bluetooth_switch(db_path: &Path, peer_device_id: &str) -> Option<bool> {
-        tokio::task::block_in_place(|| {
-            let mut conn = crate::services::db::open_db_at_path(db_path);
-            channels::read_enabled(&mut conn, peer_device_id, ChannelKind::Bluetooth)
-        })
-    }
-
-    fn bluetooth_primary_eligibility(db_path: &Path, peer_device_id: &str) -> (bool, bool) {
-        tokio::task::block_in_place(|| {
-            let mut conn = crate::services::db::open_db_at_path(db_path);
-            let pinned_to_bluetooth = commands::peer_primary_channel(&mut conn, peer_device_id)
-                == Some(channel_status::ChannelKind::Bluetooth);
-            let bluetooth_enabled = commands::peer_bluetooth_enabled(&mut conn, peer_device_id);
-            (pinned_to_bluetooth, bluetooth_enabled)
-        })
-    }
-
-    /// Recomputes and stores which channel is *primary* for
-    /// `peer_device_id`, given which channels currently have a claimed
-    /// session, `pinned_to_bluetooth` (the caller's own read of
-    /// `preferred_transport`), and `bluetooth_enabled` (the caller's own
-    /// read of the pair's Bluetooth toggle). Network wins whenever it's
-    /// connected, unless the pair is explicitly pinned to Bluetooth and
-    /// Bluetooth is connected. A pin to a channel that isn't connected
-    /// yet falls back to whatever *is* connected -- there's nothing to make
-    /// primary otherwise.
-    ///
-    /// `bluetooth_enabled` excludes Bluetooth from candidacy entirely
-    /// (neither pinned nor fallback) regardless of whether a session for it
-    /// still happens to be in `peer_sessions` -- a P1 review finding on
-    /// this PR: disabling Bluetooth while a session is already live doesn't
-    /// synchronously remove it (`close_session_on` tears it down
-    /// asynchronously, via the mailbox), so without this check a session
-    /// disabled moments ago could still win the fallback race and have
-    /// `push_to_peer` resume real traffic over a channel the user just
-    /// turned off. This check is what actually closes that race -- the
-    /// async teardown then just catches up and removes the now-provably-
-    /// never-primary entry from `peer_sessions` shortly after.
-    ///
-    /// Called after every claim or release (and, via `refresh_primary`,
-    /// every manual pin change), so this is always a pure function of
-    /// current connection state, not something that can drift or need
-    /// manual invalidation.
-    fn recompute_primary_locked(
-        &self,
-        guard: &mut types::DiscoveryRuntime,
-        peer_device_id: &str,
-        pinned_to_bluetooth: bool,
-        bluetooth_enabled: bool,
-    ) {
-        // Feeds `reselect_primary_from_runtime_only`'s DB-free fallback --
-        // see its own doc comment and `peer_bluetooth_enabled_cache`'s.
-        guard
-            .peer_bluetooth_enabled_cache
-            .insert(peer_device_id.to_string(), bluetooth_enabled);
-        let network_connected = guard
-            .peer_sessions
-            .contains_key(&(peer_device_id.to_string(), ChannelKind::Network));
-        // `bluetooth_enabled` only ever gates the real `Bluetooth` kind --
-        let bluetooth_connected = bluetooth_enabled
-            .then_some(ChannelKind::Bluetooth)
-            .filter(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)));
-
-        let pick = if pinned_to_bluetooth && bluetooth_connected.is_some() {
-            bluetooth_connected
-        } else if network_connected {
-            Some(ChannelKind::Network)
-        } else {
-            bluetooth_connected
-        };
-
-        match pick {
-            Some(kind) => {
-                guard.peer_primary_transport.insert(peer_device_id.to_string(), kind);
-            }
-            None => {
-                guard.peer_primary_transport.remove(peer_device_id);
-            }
-        }
-    }
-
-    /// Re-runs primary-channel selection for `peer_device_id` right now,
-    /// without waiting for the next claim/release event. The only external
-    /// caller is `device_connection_set_primary_channel_impl`: a manual
-    /// pin change must be reflected immediately (both rows already
-    /// connected, nothing to reconnect), not only whenever a channel
-    /// happens to reconnect next.
-    pub fn refresh_primary(&self, peer_device_id: &str, pinned_to_bluetooth: bool, bluetooth_enabled: bool) {
-        let Ok(mut guard) = self.runtime.lock() else { return };
-        self.recompute_primary_locked(&mut guard, peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
-    }
-
-    /// Which channel is *primary* for this peer right now -- the one
-    /// carrying real application traffic, reported as `RowState::Live`.
-    /// `None` means neither channel is currently connected. Exposed via
-    /// `device_connection_session_channel`. Renamed from the old
-    /// `session_kind` (ADR-0003 revision: there can be a session on each
-    /// channel at once now, so "the" session no longer names a single
-    /// thing -- this specifically means the *primary* one).
-    pub fn primary_transport(&self, peer_device_id: &str) -> Option<ChannelKind> {
+    /// The channel of an exchange running with this peer right now, if any
+    /// -- Network first when both are.
+    pub fn active_exchange_channel(&self, peer_device_id: &str) -> Option<ChannelKind> {
         let guard = self.runtime.lock().ok()?;
-        guard.peer_primary_transport.get(peer_device_id).copied()
+        [ChannelKind::Network, ChannelKind::Bluetooth]
+            .into_iter()
+            .find(|kind| guard.peer_sessions.contains_key(&(peer_device_id.to_string(), *kind)))
     }
 
-    /// Whether a session is currently claimed on this specific channel
-    /// for this peer -- independent of whether it's primary. Dial loops use
-    /// this (not `primary_transport`) to decide whether they still need to
-    /// keep trying: each channel now dials/connects independently of the
-    /// other's state.
+    /// Whether an exchange is running with this peer on this channel.
     pub fn has_session_on(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
         guard.peer_sessions.contains_key(&(peer_device_id.to_string(), kind))
-    }
-
-    /// `run_session`'s ping-interval tick, called just before it sends a
-    /// fresh `Ping`: accounts for an unanswered previous ping and a stale
-    /// inbound-ping streak (see `ChannelAckState`'s doc comment for the
-    /// exact 3-miss decay rule), then marks a ping as newly outstanding.
-    /// No-op if this (peer, channel) has no claimed session -- the
-    /// session may have just ended between the tick firing and this call.
-    pub(super) fn note_ping_tick(&self, peer_device_id: &str, kind: ChannelKind) {
-        let lapsed = {
-            let Ok(mut guard) = self.runtime.lock() else { return };
-            let Some(ack) = guard.peer_channel_ack.get_mut(&(peer_device_id.to_string(), kind))
-            else {
-                return;
-            };
-            let proven_before = ack.own_ping_acked && ack.peer_ping_received;
-            if ack.own_ping_awaiting_pong {
-                ack.consecutive_missed_own_pings += 1;
-                if ack.consecutive_missed_own_pings >= 3 {
-                    ack.own_ping_acked = false;
-                }
-            }
-            ack.ticks_since_peer_ping += 1;
-            if ack.ticks_since_peer_ping >= 3 {
-                ack.peer_ping_received = false;
-            }
-            ack.own_ping_awaiting_pong = true;
-            proven_before && !(ack.own_ping_acked && ack.peer_ping_received)
-        };
-        // Outside the lock -- `submit_link_event` takes it itself, and this
-        // mutex is not reentrant.
-        if lapsed {
-            self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::ProofLapsed);
-        }
-        // Every session's ping loop doubles as the machine's clock, which is
-        // what lets `Fading` reach its grace deadline at all. Submitted on
-        // every tick, not only on a lapse: the deadline is time-based, so it
-        // needs the passage of time reported even when nothing else changed.
-        self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::Tick);
-    }
-
-    /// A `Pong` answering this device's own outstanding `Ping` arrived.
-    pub(super) fn note_pong_received(&self, peer_device_id: &str, kind: ChannelKind) {
-        let proven = {
-            let Ok(mut guard) = self.runtime.lock() else { return };
-            let Some(ack) = guard.peer_channel_ack.get_mut(&(peer_device_id.to_string(), kind))
-            else {
-                return;
-            };
-            ack.own_ping_acked = true;
-            ack.own_ping_awaiting_pong = false;
-            ack.consecutive_missed_own_pings = 0;
-            ack.own_ping_acked && ack.peer_ping_received
-        };
-        if proven {
-            self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::ProofComplete);
-        }
-    }
-
-    /// An inbound `Ping` from the peer arrived (the caller replies with a
-    /// `Pong` separately -- this just records the proof).
-    pub(super) fn note_ping_received(&self, peer_device_id: &str, kind: ChannelKind) {
-        let proven = {
-            let Ok(mut guard) = self.runtime.lock() else { return };
-            let Some(ack) = guard.peer_channel_ack.get_mut(&(peer_device_id.to_string(), kind))
-            else {
-                return;
-            };
-            ack.peer_ping_received = true;
-            ack.ticks_since_peer_ping = 0;
-            ack.own_ping_acked && ack.peer_ping_received
-        };
-        if proven {
-            self.submit_link_event(peer_device_id, kind, link_state::LinkEvent::ProofComplete);
-        }
-    }
-
-    /// Green: both directions of the ping/ack exchange are currently
-    /// proven for this (peer, channel). `false` (amber) whenever a
-    /// session is claimed but the bidirectional proof hasn't completed yet
-    /// or has lapsed; also `false` if there's no session on this channel
-    /// at all (gray -- callers distinguish gray from amber via
-    /// `has_session_on`).
-    /// Read off the machine (ADR-0005), not off the ack table: `Live` is the
-    /// one green state by definition, so green can no longer disagree with
-    /// what the link's state says it is. The ack table still feeds the
-    /// transitions that get the machine there -- it is the evidence, not the
-    /// verdict.
-    pub fn channel_reliable(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
-        let Ok(guard) = self.runtime.lock() else { return false };
-        matches!(
-            guard.peer_link_state.get(&(peer_device_id.to_string(), kind)),
-            Some(link_state::LinkState::Live)
-        )
-    }
-
-    /// The amber reason for this (peer, channel)'s connected-but-not-yet-
-    /// green state, or `None` once it's actually green. `None` is also
-    /// returned (meaningless to the caller either way) when there's no
-    /// session on this channel at all -- callers only call this once
-    /// `has_session_on` is already known true, matching how
-    /// `build_channel_statuses` uses it.
-    pub fn channel_liveness_code(
-        &self,
-        peer_device_id: &str,
-        kind: ChannelKind,
-    ) -> Option<channel_status::ChannelReason> {
-        let key = (peer_device_id.to_string(), kind);
-        let guard = self.runtime.lock().ok()?;
-        // Which amber applies is now read off the machine's state rather than
-        // re-derived from ack counters (ADR-0005). The two could previously
-        // disagree -- most visibly a session that had been dead for over an
-        // hour still reporting itself connected-but-amber, because the code
-        // described the counters while nothing described the link.
-        let code = match guard.peer_link_state.get(&key)? {
-            link_state::LinkState::Live => return None,
-            link_state::LinkState::Proving { .. } | link_state::LinkState::Authenticating { .. } => {
-                channel_status::ChannelReason::Any(
-                    channel_status::ChannelStatusCode::AwaitingFirstAck,
-                )
-            }
-            link_state::LinkState::Fading { .. } => {
-                // `count` stays sourced from the ack table: it is a measure of
-                // the evidence, not of the state, and the state has no reason
-                // to carry a number the transition never reads.
-                // The count this used to carry was never rendered: the
-                // sentence is "Not answering" either way. It went with the
-                // rest of the payload nothing reads.
-                channel_status::ChannelReason::Any(channel_status::ChannelStatusCode::NotAnswering)
-            }
-            // Not a session state: the caller only reaches here once
-            // `has_session_on` is known true, so this is a race between the two
-            // reads. Reporting "waiting for the first ack" is the honest
-            // answer for a session too young or too gone to have proven
-            // anything.
-            _ => channel_status::ChannelReason::Any(
-                channel_status::ChannelStatusCode::AwaitingFirstAck,
-            ),
-        };
-        Some(code)
     }
 
     /// Whether this device is currently discoverable for pairing —
@@ -917,23 +399,44 @@ impl DeviceConnectionState {
         self.lifecycle_tx.subscribe()
     }
 
-    /// Sends application traffic (SyncEvent, BootstrapStart, etc.) over the
-    /// peer's *primary* channel. `Ping`/`Pong` don't go through this --
-    /// `run_session`'s ping/ack loop already owns its `DataLink` directly and
-    /// sends on it inline, since every connected channel exchanges those
-    /// on its own, not just the primary one.
+    /// Sends a frame over a running exchange with this peer (Network first).
+    /// `false` when none is running; see `queue_for_peer` for frames that
+    /// must still arrive.
     pub fn push_to_peer(&self, peer_device_id: &str, msg: PeerFrame) -> bool {
-        let guard = match self.runtime.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-        let Some(kind) = guard.peer_primary_transport.get(peer_device_id).copied() else {
+        let Ok(guard) = self.runtime.lock() else {
             return false;
         };
-        match guard.peer_sessions.get(&(peer_device_id.to_string(), kind)) {
-            Some(sender) => sender.try_send(SessionCommand::Forward(msg)).is_ok(),
-            None => false,
+        [ChannelKind::Network, ChannelKind::Bluetooth]
+            .into_iter()
+            .filter_map(|kind| guard.peer_sessions.get(&(peer_device_id.to_string(), kind)))
+            .next()
+            .is_some_and(|sender| sender.try_send(SessionCommand::Forward(msg)).is_ok())
+    }
+
+    /// Sends a frame now if an exchange is running, otherwise keeps it for
+    /// the next one and asks for one (ADR-0008 D10: the peer's appearing is
+    /// what delivers it). In memory only: what must survive a restart lives
+    /// in the outbox.
+    pub fn queue_for_peer(&self, peer_device_id: &str, msg: PeerFrame) {
+        if self.push_to_peer(peer_device_id, msg.clone()) {
+            return;
         }
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard
+                .pending_frames
+                .entry(peer_device_id.to_string())
+                .or_default()
+                .push(msg);
+        }
+        crate::services::communication::sync::commands::notify_sync_work_pending();
+    }
+
+    /// Whether frames are waiting for the next exchange with this peer.
+    pub fn has_queued_frames(&self, peer_device_id: &str) -> bool {
+        self.runtime
+            .lock()
+            .map(|guard| guard.pending_frames.get(peer_device_id).is_some_and(|q| !q.is_empty()))
+            .unwrap_or(false)
     }
 
     /// Ask every live session with this peer to send the unlink notices it
@@ -948,11 +451,7 @@ impl DeviceConnectionState {
         }
     }
 
-    /// True if the peer has a claimed session on *any* channel.
-    /// ADR-0003 revision: with both channels independently connectable,
-    /// "has a session" no longer implies a single channel -- callers that
-    /// need to know *which* channel should use `has_session_on` or
-    /// `primary_transport` instead.
+    /// Whether an exchange is running with this peer on any channel.
     pub fn has_session(&self, peer_device_id: &str) -> bool {
         let Ok(guard) = self.runtime.lock() else {
             return false;
@@ -963,28 +462,10 @@ impl DeviceConnectionState {
             .any(|(id, _)| id == peer_device_id)
     }
 
-    /// Forces the peer's currently claimed session on this specific
-    /// channel closed, without a transport-level failure. The only
-    /// caller is `device_connection_set_channel_enabled_impl`'s
-    /// disable path: a still-open Bluetooth 
-    /// session must actually stop -- not just stop counting toward primary
-    /// selection (`recompute_primary_locked` already excludes a disabled
-    /// pair's Bluetooth from that, closing the race between this and the
-    /// async teardown below) -- to honor `specs/device-connect/README.md`'s
-    /// "disabling ... prevents future Bluetooth use" contract. `false`
-    /// means there was no live session on this channel to close (not an
-    /// error) *or* delivery failed after retrying -- see the P1 review
-    /// finding this retry addresses: the mailbox is bounded (64) and
-    /// shared with data frames (`SessionCommand::Forward`), so a burst of
-    /// application traffic right when a disable happens could otherwise
-    /// silently drop the `Close` and leave the session claimed (and
-    /// possibly primary) after the DB already says it's disabled. Clones
-    /// the sender and retries outside the lock -- never sleeps while
-    /// holding `self.runtime`, matching `try_claim_session`/
-    /// `release_session`'s own fix for the same class of problem.
-    /// Fire-and-forget once accepted into the mailbox: the actual teardown
-    /// (and `release_session`) happens once `run_session`'s loop processes
-    /// it, not synchronously with this call.
+    /// Ends a running exchange on this channel now -- the switch was turned
+    /// off, or the channel unlinked. `false` if none was running or the
+    /// close could not be delivered; the exchange then ends on its own idle
+    /// timeout.
     pub fn close_session_on(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
         let sender = {
             let guard = match self.runtime.lock() {
@@ -1105,24 +586,6 @@ impl DeviceConnectionState {
         Ok(())
     }
 
-    /// Returns (device_id, addr, ws_port) for every presenced peer (seen within TTL).
-    pub fn list_presenced_peers(&self) -> Vec<(String, String, u16)> {
-        let Ok(guard) = self.runtime.lock() else {
-            return Vec::new();
-        };
-        guard
-            .presence
-            .iter()
-            .map(|(id, peer)| {
-                (
-                    id.clone(),
-                    peer.addr.clone(),
-                    peer.ws_port.unwrap_or(self.space_sync_ws_port),
-                )
-            })
-            .collect()
-    }
-
     /// Raw discovery presence: is this peer's beacon reaching us right now?
     /// ADR-0003 revision: this is now the *only* network-availability
     /// signal that matters for dialing -- `tcp_ws::spawn_dial_loop` dials
@@ -1137,6 +600,14 @@ impl DeviceConnectionState {
         guard.presence.contains_key(peer_device_id)
     }
 
+    /// Whether the last Network presence beacon failed to go out at all.
+    pub fn network_broadcast_failing(&self) -> bool {
+        self.runtime
+            .lock()
+            .map(|guard| guard.network_broadcast_failing)
+            .unwrap_or(false)
+    }
+
     /// Start a setup search for this peer's channel (ADR-0008 D2). While it
     /// runs, this device answers the peer's hello on that channel; nothing
     /// else makes it answer. Starting again keeps the progress so far.
@@ -1147,6 +618,14 @@ impl DeviceConnectionState {
                 .entry((peer_device_id.to_string(), kind))
                 .or_default();
         }
+    }
+
+    /// Whether any setup search is running on this channel.
+    pub fn any_channel_setup(&self, kind: ChannelKind) -> bool {
+        self.runtime
+            .lock()
+            .map(|guard| guard.channel_setups.keys().any(|(_, k)| *k == kind))
+            .unwrap_or(false)
     }
 
     /// End the setup search, returning how far its init got.

@@ -236,7 +236,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     }
 
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);
-    if !state.try_claim_session(&device_id, kind, tx, &db_path) {
+    if !state.try_claim_session(&device_id, kind, tx) {
         // If this fires repeatedly for a peer that has no other live session
         // on this channel (check `device_connection_debug_status` / the
         // sibling session logs), the claim is stale -- a slot never released
@@ -267,10 +267,19 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     .is_err()
     {
         log::warn!("[space_sync][gate] {kind:?} auth OK for {device_id} but AuthOk send failed; releasing claim");
-        state.release_session(&device_id, kind, &db_path);
+        state.release_session(&device_id, kind);
         return;
     }
 
-    log::info!("[space_sync][gate] {kind:?} auth OK for {device_id}; starting session");
-    run_session(link, rx, state, db_path, device_id, peer_protocol_version).await;
+    log::info!("[space_sync][gate] {kind:?} auth OK for {device_id}; starting exchange");
+    run_session(
+        link,
+        rx,
+        state,
+        db_path,
+        device_id,
+        peer_protocol_version,
+        crate::services::communication::sync::session::EXCHANGE_IDLE,
+    )
+    .await;
 }

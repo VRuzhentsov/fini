@@ -34,6 +34,9 @@ const BLUETOOTH_ROUND_FAILURE_PAUSE: Duration = Duration::from_secs(5);
 pub fn start(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind) {
     let already_running = state.channel_setup(peer_device_id, kind).is_some();
     state.begin_channel_setup(peer_device_id, kind);
+    // The peer must be able to reach this device while it searches, so a
+    // setup is a reason to advertise (ADR-0008 D8); the keeper applies it.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
     if already_running {
         return;
     }
@@ -56,6 +59,7 @@ pub fn finish(
     if setup.is_some_and(|setup| setup.initialized()) {
         channels::configure(conn, peer_device_id, kind, switch_on, None)?;
     }
+    crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(setup)
 }
 
