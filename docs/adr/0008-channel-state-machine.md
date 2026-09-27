@@ -204,6 +204,39 @@ it and never re-derives state.
   explanatory text on the row.
 - There is no "Try again", "Connecting…" or "Fading".
 
+**D20 — One setup dialog for every use case.** Adding a new device and adding
+a channel to a known device use the same dialog, replacing today's
+`PairDeviceDialog.vue` and `ChannelSetupDialog.vue`.
+
+| # | Use case | Known about the peer beforehand |
+|---|---|---|
+| UC1 | Add a new device, never paired | Nothing |
+| UC2 | Add a channel to an already-paired device | Its identity |
+| UC3 | Re-add a channel after unlink | Same as UC2 |
+| UC4 | Pair again after unpairing | Same as UC1 |
+
+| Step | New device (UC1, UC4) | Known device (UC2, UC3) |
+|---|---|---|
+| 1. Channel | Choose Network or Bluetooth | Skipped: set by the row's Add |
+| 2. Search | Live list of every Fini device in range | Same list; the known peer is marked and preselected |
+| 3. Selection | Explicit pick | Preselected; another device can be picked |
+| 4. Identity | Code ceremony (code shown on one side, entered on the other) | Automatic hello exchange (D1); the code ceremony only as a fallback when automatic confirmation fails |
+| 5. Ready | OK available once both sides confirmed | Same |
+
+Branches, for both columns:
+
+| Situation | Result |
+|---|---|
+| The other device has not opened its dialog yet | The list keeps waiting; the search runs while the dialog is open (D12) |
+| The peer declined | "Declined", back to the list |
+| The peer closed its dialog midway | Back to the list; the peer drops out of it (D2) |
+| Code does not match | Back to the code step |
+| Dialog closed before step 5 | Nothing saved; state stays `None` |
+| Dialog closed after step 5 without OK | `Off` (D15) |
+
+There is no "nobody found" step, no "Try again", and no inline explanatory
+text; hints are behind ⓘ.
+
 ## Worth investigating later
 
 - Two app instances fighting over one Bluetooth adapter. ADR-0005 recorded the
@@ -218,5 +251,4 @@ it and never re-derives state.
 
 ## Open questions
 
-- The setup dialog (Add): what it shows while searching and when OK becomes
-  available.
+None at present.
