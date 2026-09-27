@@ -188,6 +188,22 @@ D12 numbers; Network uses its own mechanism (today mDNS and a UDP multicast
 beacon, `pairing/runtime.rs`) and sets its own timings behind the same
 interface.
 
+**D19 — Channel row presentation.** The backend derives one presentation per
+channel row from the D15 state plus runtime facts; the frontend only draws
+it and never re-derives state.
+
+| Colour | What it means | Stored state | Controls | ⓘ |
+|---|---|---|---|---|
+| Green | Peer seen within the channel timeout; data will go through | `On` | toggle | — |
+| Grey | Peer not seen: out of range, or their channel is off | `On` | toggle | — |
+| Orange | Problem on this device's channel (Bluetooth adapter off, a network issue, anything the channel reports) | `On` | toggle | popup explaining the problem |
+| Empty circle | Channel switched off | `Off` | toggle, unlink | — |
+| (no dot) | Channel not added | `None` | Add | — |
+
+- ⓘ appears only on orange rows and opens a popup; there is no inline
+  explanatory text on the row.
+- There is no "Try again", "Connecting…" or "Fading".
+
 ## Worth investigating later
 
 - Two app instances fighting over one Bluetooth adapter. ADR-0005 recorded the
@@ -202,6 +218,5 @@ interface.
 
 ## Open questions
 
-- How the UI presents channel state (a separate mapping from D15; to be
-  grilled separately, including the no-inline-text, info-icon-popup and
-  no-"Try again" rules).
+- The setup dialog (Add): what it shows while searching and when OK becomes
+  available.
