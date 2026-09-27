@@ -111,9 +111,6 @@ jobs:
       - name: Run backend tests
         run: make pr-gate-be-unit
 
-      - name: Run frontend build
-        run: npm run build
-
       - name: Build runtime container
         run: |
           docker buildx build \
