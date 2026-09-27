@@ -1272,6 +1272,56 @@ fn a_late_result_from_a_closed_setup_does_not_count_for_the_next() {
     assert!(state.channel_setup("peer-client", ChannelKind::Bluetooth).unwrap().hello_acked_by_peer);
 }
 
+/// ADR-0008 D9: a peer whose Network beacons stopped stops being present
+/// once the channel timeout passes.
+#[test]
+fn network_presence_expires_after_the_channel_timeout() {
+    let (state, _db) = server_state("adr-0008-network-presence-expiry");
+    state.note_presence_for_test("peer-client", "127.0.0.1", 1);
+    assert!(state.network_peer_available("peer-client"));
+    assert!(state.network_presence_address("peer-client").is_some());
+
+    state.age_presence_for_test(
+        "peer-client",
+        crate::services::communication::pairing::NETWORK_CHANNEL_TIMEOUT,
+    );
+    assert!(!state.network_peer_available("peer-client"));
+    assert!(state.network_presence_address("peer-client").is_none());
+}
+
+/// A completed init survives a failed write of its channel, so pressing OK
+/// again works without both people repeating the setup.
+#[test]
+fn a_completed_setup_survives_a_failed_channel_write() {
+    let (state, db_path) = server_state("adr-0008-finish-write-fails");
+    // No paired device: the channel row cannot be written.
+    let mut conn = open_db_at_path(&db_path);
+    state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
+    state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| {
+        s.acked_peer_hello = true;
+        s.hello_acked_by_peer = true;
+    });
+
+    crate::services::communication::pairing::setup::finish(
+        &mut conn, &state, "peer-client", ChannelKind::Bluetooth, true,
+    )
+    .expect_err("the write fails");
+    assert!(state
+        .channel_setup("peer-client", ChannelKind::Bluetooth)
+        .is_some_and(|s| s.initialized()));
+
+    seed_paired_device(&db_path, "peer-client");
+    crate::services::communication::pairing::setup::finish(
+        &mut conn, &state, "peer-client", ChannelKind::Bluetooth, true,
+    )
+    .expect("the retry writes it");
+    assert_eq!(
+        channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).map(|c| c.enabled),
+        Some(true)
+    );
+    assert!(state.channel_setup("peer-client", ChannelKind::Bluetooth).is_none());
+}
+
 /// ADR-0008 D15: a channel that does not exist is set up, not switched on.
 #[test]
 fn switching_on_a_channel_that_was_never_set_up_is_refused() {

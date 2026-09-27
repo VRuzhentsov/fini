@@ -94,6 +94,11 @@ use types::{
 
 pub const DISCOVERY_INTERVAL_MS: u64 = 5_000;
 pub const HEARTBEAT_INTERVAL_MS: u64 = 60_000;
+/// How long a peer's last Network beacon keeps it present (ADR-0008 D9):
+/// two and a half heartbeats, so one or two lost datagrams do not turn the
+/// row grey, but a peer that went away does.
+pub(crate) const NETWORK_CHANNEL_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(HEARTBEAT_INTERVAL_MS * 5 / 2);
 
 pub(crate) const DISCOVERY_PROTOCOL: &str = "fini-device-sync-v1";
 pub(crate) const DISCOVERY_PORT: u16 = 45_454;
@@ -434,6 +439,16 @@ impl DeviceConnectionState {
         }
     }
 
+    /// Test-only: makes this peer's last Network beacon `by` older.
+    #[cfg(test)]
+    pub fn age_presence_for_test(&self, peer_device_id: &str, by: std::time::Duration) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            if let Some(peer) = guard.presence.get_mut(peer_device_id) {
+                peer.last_seen_mono -= by;
+            }
+        }
+    }
+
     /// Live channel-changed/connect/disconnect rows: `lib.rs`'s
     /// `forward_session_lifecycle_events` subscribes once at app setup and
     /// forwards each event to the frontend (ADR-0003 Phase 2).
@@ -650,7 +665,10 @@ impl DeviceConnectionState {
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
-        guard.presence.contains_key(peer_device_id)
+        guard
+            .presence
+            .get(peer_device_id)
+            .is_some_and(|peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT)
     }
 
     /// Whether the last Network presence beacon failed to go out at all.
@@ -744,6 +762,7 @@ impl DeviceConnectionState {
         guard
             .presence
             .get(peer_device_id)
+            .filter(|peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT)
             .map(|peer| (peer.addr.clone(), peer.ws_port.unwrap_or(self.space_sync_ws_port)))
     }
 }

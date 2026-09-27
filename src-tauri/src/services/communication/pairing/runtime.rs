@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::{
     DISCOVERY_INTERVAL_MS, DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, HEARTBEAT_INTERVAL_MS,
-    MDNS_SERVICE_TYPE, MULTICAST_GROUP, PAIR_REQUEST_TTL_SECS,
+    MDNS_SERVICE_TYPE, MULTICAST_GROUP, NETWORK_CHANNEL_TIMEOUT, PAIR_REQUEST_TTL_SECS,
 };
 use crate::services::communication::pairing::types::{
     DeviceIdentity, DiscoveryBeacon, DiscoveryRuntime, IncomingPairRequest, PairAcceptPayload,
@@ -717,6 +717,11 @@ pub(super) fn spawn_discovery_worker(
                 guard
                     .discovered
                     .retain(|_, peer| peer.last_seen_mono.elapsed() <= discovery_ttl);
+                // A peer whose beacons stopped is no longer present, and its
+                // next beacon counts as arriving anew.
+                guard
+                    .presence
+                    .retain(|_, peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT);
                 prune_expired_incoming_requests(&mut guard);
 
                 if !guard.add_mode_enabled {
