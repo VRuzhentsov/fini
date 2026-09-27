@@ -1,10 +1,32 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { XMarkIcon, CheckIcon, ClockIcon, MagnifyingGlassIcon, ExclamationCircleIcon } from "@heroicons/vue/24/outline";
+import {
+  XMarkIcon,
+  CheckIcon,
+  ClockIcon,
+  MagnifyingGlassIcon,
+  ExclamationCircleIcon,
+  InformationCircleIcon,
+} from "@heroicons/vue/24/outline";
 import ChannelIcon from "./device/ChannelIcon.vue";
-import { useDeviceStore, type DiscoveredDevice } from "../../stores/device";
+import {
+  useDeviceStore,
+  type ChannelKind,
+  type ChannelSetupStatus,
+  type DiscoveredDevice,
+} from "../../stores/device";
 
-// Pairing a device that is not paired yet.
+// The one setup dialog (ADR-0008 D20), for every way two devices come to
+// share a channel:
+//
+// - a new device (never paired, or paired again after unpairing): choose a
+//   channel, pick the device, confirm with the code ceremony;
+// - a known device getting a channel (added, or re-added after unlink):
+//   both devices search and say hello to each other; once both hellos are
+//   acknowledged the channel's init is complete and OK switches it on.
+//
+// Explanations live behind ⓘ, never as text in the dialog, and there is no
+// "nobody found" dead end: the search simply keeps going while it is open.
 //
 // A modal rather than a page, because it is a short two-person ceremony
 // with a beginning and an end: one person acts while the other waits, and
@@ -22,6 +44,10 @@ const props = defineProps<{
   // two devices asking at once, "Open request" on the older row answered
   // the wrong person -- and the older one could not be accepted at all.
   requestId?: string | null;
+  // Set for a known device: the channel being set up with it.
+  peerDeviceId?: string | null;
+  peerName?: string;
+  kind?: ChannelKind | null;
 }>();
 const emit = defineEmits<{ close: [] }>();
 
@@ -65,17 +91,36 @@ const candidates = computed<DiscoveredDevice[]>(() =>
   channel.value ? deviceStore.discoveredByChannel[channel.value] : [],
 );
 
-// How long an empty list is ordinary before it is worth explaining.
-// Bluetooth gets far longer than Network on purpose: scanning is
-// duty-cycled, so tens of seconds of nothing is the expected shape of a
-// working scan rather than a symptom (ADR-0006).
-const EMPTY_LIST_PATIENCE_MS = { network: 20_000, bluetooth: 45_000 } as const;
+const knownDevice = computed(() => Boolean(props.peerDeviceId && props.kind));
 
-// When the current channel's search started, so "nobody found" is reported
-// after a wait rather than in the first second of one.
-const lookingSince = ref(0);
+// The known-device list (ADR-0008 D20 steps 2-3): the known peer is marked
+// and preselected at the top, and every other device in range can still be
+// picked. Picking one -- or the known peer showing up as a device to pair
+// with, because automatic confirmation cannot work with it -- goes through
+// the code ceremony.
+const renderLists = computed(() => ({
+  otherCandidates: knownDevice.value
+    ? candidates.value.filter((device) => device.device_id !== props.peerDeviceId)
+    : candidates.value,
+  knownPeerAsCandidate: knownDevice.value
+    ? candidates.value.filter((device) => device.device_id === props.peerDeviceId)
+    : [],
+}));
+
+// The known-device branch's own progress, polled while the dialog is open.
+const setupStatus = ref<ChannelSetupStatus | null>(null);
+const setupError = ref<string | null>(null);
+let setupPoll: ReturnType<typeof setInterval> | null = null;
+const SETUP_POLL_MS = 1_000;
+// Set once OK or close ended the setup, so unmounting does not end it twice.
+let setupFinished = false;
 
 const step = computed(() => {
+  // Known device, automatic path (ADR-0008 D20 step 4): the hello exchange.
+  if (knownDevice.value) {
+    if (setupError.value) return "setupFailed";
+    if (setupStatus.value?.initialized) return "setupReady";
+  }
   if (deviceStore.pairCompletedAt) return "paired";
   if (incoming.value) {
     return acceptedRequestId.value === incoming.value.request_id ? "entercode" : "incoming";
@@ -100,20 +145,51 @@ const step = computed(() => {
     if (request.status === "pending" || request.status === "awaiting_code") return "sent";
   }
 
-  if (!channel.value) return "channel";
-  if (
-    candidates.value.length === 0 &&
-    lookingSince.value > 0 &&
-    nowMs.value - lookingSince.value > EMPTY_LIST_PATIENCE_MS[channel.value]
-  ) {
-    return "none";
+  if (knownDevice.value) {
+    if (setupStatus.value?.helloAckedByPeer || setupStatus.value?.ackedPeerHello) return "setupFound";
+    return "setupSearching";
   }
+  if (!channel.value) return "channel";
   return "looking";
 });
 
 const CHANNEL_NAME: Record<Channel, string> = { network: "Network", bluetooth: "Bluetooth" };
 
-const title = computed(() => (step.value === "channel" ? "Add device" : "Add device"));
+const title = computed(() =>
+  knownDevice.value && props.kind ? `Add ${CHANNEL_NAME[props.kind]}` : "Add device",
+);
+
+// What ⓘ in the header explains for the step on screen, or null when there
+// is nothing to add. The dialog itself carries no explanatory text.
+const hint = computed<string | null>(() => {
+  switch (step.value) {
+    case "setupSearching":
+    case "setupFound":
+      return `Open Add ${props.kind ? CHANNEL_NAME[props.kind] : ""} on ${props.peerName ?? "the other device"} too — OK becomes available once both devices have found each other.`;
+    case "looking":
+      return "Open Add device on the other device too — it appears here once it is also looking.";
+    case "declined":
+      return "Nothing was shared, and no code was created.";
+    case "sendFailed":
+      return "The request never got out. The other device may be asleep or out of range.";
+    case "timeout":
+      return outgoing.value?.sender_code
+        ? "That code no longer works. The other device may be asleep, locked, or out of range."
+        : "The other device may be asleep, locked, or out of range.";
+    default:
+      return null;
+  }
+});
+
+// The known-device steps' render contract, per fini-frontend.
+const renderFlags = computed(() => ({
+  hintInfo: hint.value !== null,
+  setupSearch: step.value === "setupSearching" || step.value === "setupFound",
+  setupReady: step.value === "setupReady",
+  setupFailed: step.value === "setupFailed",
+  setupFooter: ["setupSearching", "setupFound", "setupReady", "setupFailed"].includes(step.value),
+  otherCandidates: renderLists.value.otherCandidates.length > 0,
+}));
 
 function secondsLeft(iso: string): number {
   const diff = Date.parse(iso) - nowMs.value;
@@ -144,11 +220,65 @@ function stopAddMode() {
   void deviceStore.leaveAddMode();
 }
 
+// A known device needs no add mode: both devices run a setup search for
+// each other instead (ADR-0008 D2), and this polls how far it got.
+async function startChannelSetup() {
+  setupFinished = false;
+  setupStatus.value = null;
+  setupError.value = null;
+  if (!props.peerDeviceId || !props.kind) return;
+  try {
+    await deviceStore.beginChannelSetup(props.peerDeviceId, props.kind);
+  } catch (error) {
+    setupError.value = String(error);
+    return;
+  }
+  stopSetupPoll();
+  setupPoll = setInterval(() => void pollChannelSetup(), SETUP_POLL_MS);
+}
+
+async function pollChannelSetup() {
+  if (!props.peerDeviceId || !props.kind) return;
+  setupStatus.value = await deviceStore.channelSetupStatus(props.peerDeviceId, props.kind);
+}
+
+function stopSetupPoll() {
+  if (setupPoll) {
+    clearInterval(setupPoll);
+    setupPoll = null;
+  }
+}
+
+// OK switches the channel on; closing leaves it Off if the init completed
+// and writes nothing otherwise (ADR-0008 D15) -- the backend decides.
+async function finishChannelSetup(switchOn: boolean) {
+  stopSetupPoll();
+  if (setupFinished) return;
+  setupFinished = true;
+  if (!props.peerDeviceId || !props.kind || setupError.value) return;
+  await deviceStore.endChannelSetup(props.peerDeviceId, props.kind, switchOn);
+}
+
+// A known device runs both: the setup search for the automatic path, and
+// add mode so the list and the code fallback work (ADR-0008 D20).
+function begin() {
+  startAddMode();
+  if (knownDevice.value) {
+    channel.value = props.kind ?? null;
+    void startChannelSetup();
+  }
+}
+
+function end() {
+  if (knownDevice.value) void finishChannelSetup(false);
+  stopAddMode();
+}
+
 watch(
   () => props.open,
   (open) => {
-    if (open) startAddMode();
-    else stopAddMode();
+    if (open) begin();
+    else end();
   },
 );
 
@@ -156,7 +286,7 @@ watch(
 // call `leaveAddMode` on every mount that starts closed, which is the
 // common case, tearing down discovery another surface may be using.
 onMounted(() => {
-  if (props.open) startAddMode();
+  if (props.open) begin();
 });
 
 function stopClock() {
@@ -170,30 +300,19 @@ function stopClock() {
 // too, or this device keeps advertising itself as looking for a pair with
 // no screen left to show it.
 onUnmounted(() => {
-  if (props.open) stopAddMode();
+  if (props.open) end();
   else stopClock();
+  stopSetupPoll();
 });
 
 function pickChannel(kind: Channel) {
   channel.value = kind;
-  lookingSince.value = Date.now();
 }
 
-// "Try Bluetooth instead" / "Try Network instead" from the nobody-found
-// screen: a dead end on one channel is a channel choice, not a failure, so
-// the way out is the other one rather than a retry of the same nothing.
-function switchChannel() {
-  pickChannel(channel.value === "network" ? "bluetooth" : "network");
-}
-
-function keepLooking() {
-  lookingSince.value = Date.now();
-}
-
+// Back to the list. A known device keeps its channel: the row's Add set it.
 function startOver() {
   deviceStore.cancelOutgoingRequest();
-  channel.value = null;
-  lookingSince.value = 0;
+  channel.value = knownDevice.value ? (props.kind ?? null) : null;
 }
 
 async function requestPair(device: DiscoveredDevice) {
@@ -227,6 +346,11 @@ function close() {
   deviceStore.cancelOutgoingRequest();
   emit("close");
 }
+
+async function confirmChannelSetup() {
+  await finishChannelSetup(true);
+  emit("close");
+}
 </script>
 
 <template>
@@ -250,14 +374,82 @@ function close() {
       <div class="relative w-full max-w-[428px] overflow-hidden rounded-xl bg-base-100 shadow-2xl">
         <div class="flex items-center gap-2 p-3">
         <h3 class="flex-1 text-sm font-semibold">{{ title }}</h3>
+        <div v-if="renderFlags.hintInfo" class="dropdown dropdown-end">
+          <button
+            type="button"
+            tabindex="0"
+            class="btn btn-ghost btn-xs px-1"
+            data-testid="setup-hint-info"
+            aria-label="About this step"
+          >
+            <InformationCircleIcon class="size-4" />
+          </button>
+          <p
+            tabindex="0"
+            class="dropdown-content z-10 w-64 rounded-box bg-base-200 p-2 text-xs shadow"
+            data-testid="setup-hint-popup"
+          >
+            {{ hint }}
+          </p>
+        </div>
         <button class="btn btn-ghost btn-xs px-1" aria-label="Close" @click="close()">
           <XMarkIcon class="size-4" />
         </button>
       </div>
 
       <div class="flex flex-col gap-3 px-3 pb-3">
+        <!-- Known device: both devices search for each other (ADR-0008 D1). -->
+        <template v-if="renderFlags.setupSearch || renderFlags.setupReady">
+          <div
+            class="flex items-center gap-2.5 rounded-lg bg-base-200 px-2 py-2"
+            data-testid="setup-peer-row"
+            :data-setup-step="step"
+          >
+            <span
+              class="size-2.5 shrink-0 rounded-full"
+              :class="renderFlags.setupReady ? 'bg-success' : 'bg-[var(--fg-5)]'"
+            />
+            <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ peerName }}</span>
+            <span v-if="renderFlags.setupSearch" class="loading loading-dots loading-xs opacity-60" />
+            <CheckIcon v-if="renderFlags.setupReady" class="size-4 text-success" />
+            <button
+              v-for="device in renderLists.knownPeerAsCandidate"
+              :key="device.device_id"
+              class="btn btn-ghost btn-xs"
+              data-testid="setup-pair-with-code"
+              @click="void requestPair(device)"
+            >Pair with code</button>
+          </div>
+          <ul v-if="renderFlags.otherCandidates" class="flex list-none flex-col overflow-hidden rounded-lg">
+            <li
+              v-for="device in renderLists.otherCandidates"
+              :key="device.device_id"
+              class="flex items-center gap-2.5 border-b border-base-200 bg-base-100 px-2 py-2 last:border-b-0"
+              data-testid="nearby-device-row"
+              :data-device-id="device.device_id"
+            >
+              <span class="size-2.5 shrink-0 rounded-full bg-success" />
+              <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ device.hostname }}</span>
+              <button
+                class="btn btn-primary btn-xs"
+                data-testid="request-pair"
+                @click="void requestPair(device)"
+              >Pair</button>
+            </li>
+          </ul>
+        </template>
+
+        <template v-else-if="renderFlags.setupFailed">
+          <div class="flex flex-col items-center gap-3 py-2 text-center" data-testid="setup-failed">
+            <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
+              <ExclamationCircleIcon class="size-6" />
+            </span>
+            <h4 class="text-[15px] font-semibold">{{ setupError }}</h4>
+          </div>
+        </template>
+
         <!-- 1. The channel, chosen rather than inferred. -->
-        <template v-if="step === 'channel'">
+        <template v-else-if="step === 'channel'">
           <button
             v-for="kind in (['network', 'bluetooth'] as Channel[])"
             :key="kind"
@@ -287,9 +479,6 @@ function close() {
             <h4 class="text-[15px] font-semibold">
               Looking for devices on {{ CHANNEL_NAME[channel!] }}
             </h4>
-            <p class="text-[12px] leading-snug text-[var(--fg-2)]">
-              Open <b>Add device</b> on the other device too — it only appears here once it is also asking.
-            </p>
           </div>
 
           <ul v-else class="flex list-none flex-col overflow-hidden rounded-lg">
@@ -313,27 +502,6 @@ function close() {
           </ul>
         </template>
 
-        <!-- 2a. Nobody found. Network fails quietly for reasons the person
-             can act on, so name them in the order they are likely rather
-             than reporting "no devices found" and stopping. -->
-        <template v-else-if="step === 'none'">
-          <div class="flex flex-col items-center gap-3 py-2 text-center">
-            <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
-              <MagnifyingGlassIcon class="size-6" />
-            </span>
-            <h4 class="text-[15px] font-semibold">Nobody found</h4>
-          </div>
-          <ul class="flex list-none flex-col gap-1.5 text-[12px] leading-snug text-[var(--fg-2)]">
-            <li>Is <b>Add device</b> open on the other device?</li>
-            <li v-if="channel === 'network'">Are both devices on the same network?</li>
-            <li v-else>Is Bluetooth on there, and the device within a few metres?</li>
-            <li v-if="channel === 'network'">
-              Guest and work networks often stop devices from seeing each other.
-            </li>
-            <li v-else>Some phones stop answering when the screen has been off a while.</li>
-          </ul>
-        </template>
-
         <!-- 2b. Declined. Nothing was shared and no code was ever generated
              -- worth saying, or the asker is left guessing. -->
         <template v-else-if="step === 'declined'">
@@ -342,7 +510,6 @@ function close() {
               <XMarkIcon class="size-6" />
             </span>
             <h4 class="text-[15px] font-semibold">{{ outgoing?.to_hostname }} said no</h4>
-            <p class="text-[12.5px] text-[var(--fg-2)]">Nothing was shared, and no code was created.</p>
           </div>
         </template>
 
@@ -355,10 +522,6 @@ function close() {
               <ExclamationCircleIcon class="size-6" />
             </span>
             <h4 class="text-[15px] font-semibold">Couldn't reach {{ outgoing?.to_hostname }}</h4>
-            <p class="text-[12.5px] text-[var(--fg-2)]">
-              The request never got out, so nothing was asked of it. It may have gone to sleep or
-              moved out of range.
-            </p>
           </div>
         </template>
 
@@ -372,14 +535,6 @@ function close() {
               <ClockIcon class="size-6" />
             </span>
             <h4 class="text-[15px] font-semibold">The request ran out</h4>
-            <p class="text-[12.5px] text-[var(--fg-2)]">
-              <template v-if="outgoing?.sender_code">
-                {{ outgoing.to_hostname }} may be asleep or have walked off. That code no longer works.
-              </template>
-              <template v-else>
-                {{ outgoing?.to_hostname }} may be asleep, locked, or out of range.
-              </template>
-            </p>
           </div>
         </template>
 
@@ -446,20 +601,23 @@ function close() {
       </div>
 
       <div class="flex items-center gap-2 border-t border-base-200 p-3">
-        <template v-if="step === 'looking'">
+        <template v-if="renderFlags.setupFooter">
+          <button class="btn btn-ghost btn-sm" data-testid="setup-close" @click="close()">Close</button>
+          <span class="flex-1" />
+          <button
+            class="btn btn-primary btn-sm"
+            data-testid="setup-ok"
+            :disabled="!renderFlags.setupReady"
+            @click="void confirmChannelSetup()"
+          >OK</button>
+        </template>
+        <template v-else-if="step === 'looking'">
           <button class="btn btn-ghost btn-sm" @click="channel = null">Back</button>
           <span class="flex-1" />
           <span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--fg-4)]">
             <MagnifyingGlassIcon class="size-3.5" />
             looking
           </span>
-        </template>
-        <template v-else-if="step === 'none'">
-          <button class="btn btn-ghost btn-sm" data-testid="pair-switch-channel" @click="switchChannel()">
-            Try {{ channel === "network" ? "Bluetooth" : "Network" }} instead
-          </button>
-          <span class="flex-1" />
-          <button class="btn btn-primary btn-sm" @click="keepLooking()">Keep looking</button>
         </template>
         <template v-else-if="step === 'declined' || step === 'timeout' || step === 'sendFailed'">
           <button class="btn btn-ghost btn-sm" @click="emit('close')">Close</button>

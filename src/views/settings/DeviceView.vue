@@ -6,7 +6,7 @@ import SettingsListGroup from "../../components/settings/SettingsListGroup.vue";
 import SettingsListItem from "../../components/settings/SettingsListItem.vue";
 import ChannelRow from "../../components/settings/device/ChannelRow.vue";
 import SyncQueueSection from "../../components/settings/device/SyncQueueSection.vue";
-import ChannelSetupDialog from "../../components/settings/device/ChannelSetupDialog.vue";
+import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
 import { useDeviceStore, type ChannelKind } from "../../stores/device";
 import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
@@ -17,7 +17,8 @@ const deviceStore = useDeviceStore();
 const spaceStore = useSpaceStore();
 
 const unpairDialog = ref<HTMLDialogElement | null>(null);
-const channelSetupOpen = ref(false);
+// The channel being added with the setup dialog, or null when it is closed.
+const channelBeingAdded = ref<ChannelKind | null>(null);
 const mappedSelection = ref<string[]>([]);
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
@@ -35,20 +36,15 @@ const channelStatuses = computed(() =>
 );
 const syncQueue = computed(() => (deviceId.value ? deviceStore.getSyncQueue(deviceId.value) : null));
 
-// The star is the user's stored choice, not whichever channel happens to
-// be carrying traffic at this moment -- so it stays put across a
-// disconnect, and says what will govern the next reconnect. Null when they
-// have not chosen and selection is automatic.
-const starredChannel = computed<ChannelKind | null>(
-  () => channelStatuses.value.find((status) => status.primary)?.kind ?? null,
-);
+// The template's render contract, per fini-frontend.
+const renderFlags = computed(() => ({
+  channelSetupDialog: device.value !== null && device.value !== undefined && channelBeingAdded.value !== null,
+}));
 
-// Drives the sync queue's "sending now" vs "nothing can reach it" line.
-// Anything actually carrying a proven link counts, primary or not.
+// Drives the sync queue's "sending now" vs "nothing can reach it" line:
+// a green channel is one data can go over (ADR-0008 D9).
 const anyChannelConnected = computed(() =>
-  channelStatuses.value.some(
-    (status) => status.status === "connected",
-  ),
+  channelStatuses.value.some((status) => status.color === "green"),
 );
 
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() =>
@@ -88,6 +84,9 @@ const mappedSpaceNames = computed(() =>
   ),
 );
 
+// While this page is open the backend searches for the peer so green is
+// current (ADR-0008 D12), and the rows are re-read from it; neither runs in
+// the background.
 const LIVE_POLL_INTERVAL_MS = 5_000;
 let livePollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -96,16 +95,11 @@ onMounted(() => {
   void spaceStore.fetchSpaces();
   void deviceStore.runSpaceSyncTick();
   void loadDeviceState();
+  void deviceStore.watchPresence(true);
 
-  // The store's periodic presence loop only touches paired devices that
-  // appear in the *network* presence snapshot, which a Bluetooth-only
-  // session never does -- without an independent poll here, a row goes
-  // stale the moment such a session connects or drops while this page is
-  // open. Uses the lightweight liveness call, not the full status reload:
-  // only the live connected state needs to be this fresh.
   livePollTimer = setInterval(() => {
     if (!deviceId.value) return;
-    void deviceStore.refreshLiveConnectedState(deviceId.value);
+    void deviceStore.refreshChannelStatuses(deviceId.value);
     void deviceStore.refreshSyncQueue(deviceId.value);
   }, LIVE_POLL_INTERVAL_MS);
 });
@@ -115,12 +109,13 @@ onUnmounted(() => {
     clearInterval(livePollTimer);
     livePollTimer = null;
   }
+  void deviceStore.watchPresence(false);
 });
 
 watch(deviceId, () => {
   mappingsDirty.value = false;
   channelError.value = null;
-  channelSetupOpen.value = false;
+  channelBeingAdded.value = null;
   void loadDeviceState();
 });
 
@@ -175,38 +170,30 @@ async function saveMappings() {
   }
 }
 
-// One handler for both channels. Turning a channel on never fails and never
-// snaps the switch back: if the condition it needs isn't met the channel
-// stays on and starts by itself, and the row says why. The only thing the
-// probe changes is *when* the row can say it -- immediately, rather than
-// whenever the background dial loop next tries.
+// The switch on an existing channel (ADR-0008 D15). Refused by the backend
+// when the channel cannot work on this device (D6); the error says why.
 async function toggleChannel(kind: ChannelKind, enabled: boolean) {
   if (!deviceId.value || busyChannel.value) return;
-
-  // Switching on a channel that was never set up *is* the request to set it
-  // up, so the switch opens the dialog and the setup flow owns the rest.
-  // There is no separate "Set up Bluetooth" button any more: a page with
-  // both made the switch look like it did something different from the
-  // button, when they were two ways to ask for the same thing.
-  const status = channelStatuses.value.find((entry) => entry.kind === kind);
-  if (enabled && kind === "bluetooth" && status && !status.configured) {
-    channelSetupOpen.value = true;
-    return;
-  }
-
   busyChannel.value = kind;
   channelError.value = null;
   try {
     await deviceStore.setChannelEnabled(deviceId.value, kind, enabled);
-    if (kind === "bluetooth" && enabled) {
-      await deviceStore.probeBluetoothAdapter();
-      await deviceStore.refreshChannelStatuses(deviceId.value);
-    }
   } catch (error) {
     channelError.value = String(error);
+    await deviceStore.refreshChannelStatuses(deviceId.value);
   } finally {
     busyChannel.value = null;
   }
+}
+
+// "Add" on a channel that does not exist yet opens the setup dialog.
+function addChannel(kind: ChannelKind) {
+  channelBeingAdded.value = kind;
+}
+
+async function closeChannelSetup() {
+  channelBeingAdded.value = null;
+  if (deviceId.value) await deviceStore.refreshChannelStatuses(deviceId.value);
 }
 
 // Forgetting a channel, as opposed to switching it off. The backend
@@ -220,29 +207,6 @@ async function unlinkChannel(kind: ChannelKind) {
     await deviceStore.unlinkChannel(deviceId.value, kind);
   } catch (error) {
     channelError.value = String(error);
-  } finally {
-    busyChannel.value = null;
-  }
-}
-
-async function pinChannel(kind: ChannelKind) {
-  if (!deviceId.value || busyChannel.value) return;
-  busyChannel.value = kind;
-  channelError.value = null;
-  try {
-    await deviceStore.setPrimaryChannel(deviceId.value, kind);
-  } catch (error) {
-    channelError.value = String(error);
-  } finally {
-    busyChannel.value = null;
-  }
-}
-
-async function retryChannel() {
-  if (!deviceId.value || busyChannel.value) return;
-  busyChannel.value = "bluetooth";
-  try {
-    await deviceStore.retryBluetoothDial(deviceId.value);
   } finally {
     busyChannel.value = null;
   }
@@ -287,12 +251,9 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
             v-for="status in channelStatuses"
             :key="status.kind"
             :status="status"
-            :starred="starredChannel === status.kind"
-            :peer-name="peerName"
             :busy="busyChannel === status.kind"
             @toggle="(next) => toggleChannel(status.kind, next)"
-            @pin="pinChannel(status.kind)"
-            @retry="retryChannel()"
+            @add="addChannel(status.kind)"
             @unlink="unlinkChannel(status.kind)"
           />
         </ul>
@@ -389,12 +350,13 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
       <router-link to="/settings" class="btn btn-sm mt-2">Back to settings</router-link>
     </section>
 
-    <ChannelSetupDialog
-      v-if="device"
-      :open="channelSetupOpen"
-      :peer-device-id="device.peer_device_id"
+    <DeviceSetupDialog
+      v-if="renderFlags.channelSetupDialog"
+      :open="true"
+      :peer-device-id="device?.peer_device_id ?? null"
       :peer-name="peerName"
-      @close="channelSetupOpen = false"
+      :kind="channelBeingAdded"
+      @close="closeChannelSetup"
     />
 
     <dialog ref="unpairDialog" class="modal" data-testid="unlink-dialog">

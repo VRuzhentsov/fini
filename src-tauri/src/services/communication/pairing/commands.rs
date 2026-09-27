@@ -9,7 +9,9 @@ use tauri::State;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 
-use super::{channels, setup, ChannelSetup};
+use super::{channels, ChannelSetup};
+#[cfg(any(feature = "ui-plane", test))]
+use super::setup;
 use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;

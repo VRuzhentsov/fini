@@ -6,16 +6,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 export type ChannelKind = 'network' | 'bluetooth';
 
-// The row's own vocabulary (`channelRowState` in
-// `src/utils/channelStatusCodes.ts`), not the backend's -- the two answer
-// different questions, and this is the one the person reads.
-export type ChannelRowState =
-  | 'off'
-  | 'waiting'
-  | 'down'
-  | 'connecting'
-  | 'fading'
-  | 'connected';
+// The row's colour (ADR-0008 D19), decided by the backend and drawn as-is.
+export type ChannelColor = 'green' | 'grey' | 'orange' | 'off' | 'none';
 
 export function channelRowSelector(kind: ChannelKind): string {
   return `[data-testid="channel-status-row"][data-channel-kind="${kind}"]`;
@@ -24,57 +16,37 @@ export function channelRowSelector(kind: ChannelKind): string {
 /**
  * Waits for a channel row to reach `expected`.
  *
- * Reads `data-channel-state` rather than the row's text on purpose: the
- * wording is copy and moves with the design, while this attribute is the
- * state machine behind it. An earlier version of the BLE lane asserted on
- * the words and broke on a rename that changed nothing it was protecting.
+ * Reads `data-channel-color` rather than the row's text on purpose: the
+ * wording is copy and moves with the design, while the colour is the claim
+ * the row makes (ADR-0008 D19).
  */
-export async function waitForChannelState(
+export async function waitForChannelColor(
   actor: E2EActor,
   peerDeviceId: string,
   kind: ChannelKind,
-  expected: ChannelRowState,
+  expected: ChannelColor,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<void> {
   const selector = channelRowSelector(kind);
-  await pollUntil(`${actor.slug} ${kind} row is "${expected}"`, async () => {
+  await pollUntil(`${actor.slug} ${kind} row is ${expected}`, async () => {
     await openDeviceDetailsFromSettings(actor, peerDeviceId);
     await actor.invoke('space_sync_tick');
-    const state = await actor.page.evaluate<string>(`(() => {
+    const color = await actor.page.evaluate<string>(`(() => {
       const row = document.querySelector(${JSON.stringify(selector)});
-      return row ? (row.getAttribute('data-channel-state') ?? '') : '';
+      return row ? (row.getAttribute('data-channel-color') ?? '') : '';
     })()`);
-    return state === expected ? state : false;
+    return color === expected ? color : false;
   }, timeoutMs, 1_000);
 }
 
 /**
- * The plain-language reason for a row, asked for the way a person asks for
- * it: by pressing the row's information button.
- *
- * It clicks rather than just reading, because no row expands its reason on
- * its own any more -- reading the page without asking would return '' for
- * every state. Only clicks when the reason is not already open, so calling
- * this twice does not toggle it shut again.
- *
- * Returns '' when the row has no reason at all, which is a connected row.
+ * The problem a row's ⓘ explains, or '' when it has none. The popup's text
+ * is in the page whether or not it is open; only orange rows carry one.
  */
-export async function channelReason(actor: E2EActor, kind: ChannelKind): Promise<string> {
-  const rowSelector = channelRowSelector(kind);
-  const reasonSelector = `${rowSelector} [data-testid="channel-status-reason"]`;
-  const infoSelector = `${rowSelector} [data-testid="channel-status-info"]`;
-
-  const needsOpening = await actor.page.evaluate<boolean>(`(() => {
-    const reason = document.querySelector(${JSON.stringify(reasonSelector)});
-    const info = document.querySelector(${JSON.stringify(infoSelector)});
-    return !reason && !!info;
-  })()`);
-  if (needsOpening) {
-    await actor.page.click(infoSelector);
-  }
-
+export async function channelProblem(actor: E2EActor, kind: ChannelKind): Promise<string> {
+  const popupSelector = `${channelRowSelector(kind)} [data-testid="channel-problem-popup"]`;
   return actor.page.evaluate<string>(`(() => {
-    const el = document.querySelector(${JSON.stringify(reasonSelector)});
+    const el = document.querySelector(${JSON.stringify(popupSelector)});
     return el ? (el.textContent ?? '').trim() : '';
   })()`);
 }
@@ -111,7 +83,7 @@ export async function waitForSyncQueue(
  * colour.
  *
  * Reads `data-connected` rather than the Tailwind class, for the reason
- * `waitForChannelState` reads `data-channel-state` -- the class is styling
+ * `waitForChannelColor` reads `data-channel-color` -- the class is styling
  * and moves with the design, the attribute is the claim being made.
  */
 export async function deviceDotConnected(
@@ -129,7 +101,7 @@ export async function deviceDotConnected(
   })()`);
 }
 
-/** Whether any channel row on the device page is in the connected state. */
+/** Whether any channel row on the device page is green. */
 export async function anyChannelConnected(
   actor: E2EActor,
   peerDeviceId: string,
@@ -137,43 +109,34 @@ export async function anyChannelConnected(
   await openDeviceDetailsFromSettings(actor, peerDeviceId);
   return actor.page.evaluate<boolean>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="channel-status-row"]')];
-    return rows.some((row) => row.getAttribute('data-channel-state') === 'connected');
+    return rows.some((row) => row.getAttribute('data-channel-color') === 'green');
   })()`);
 }
 
 /**
- * Switch a channel on that was never set up, which now opens the setup
- * dialog rather than writing anything: search for the peer, then accept the
- * outcome either way.
- *
- * "Turn on anyway" is the branch this takes in the container, where there is
- * no `bluetoothd` and the search cannot succeed -- and it is the branch a
- * person with the radio switched off takes too. The switch alone used to do
- * this; the dialog owns it now, so the test has to walk the same path.
+ * Press Add on a channel that does not exist yet and return what the setup
+ * dialog settles on: `ready` once OK is available, or the failure it shows
+ * (ADR-0008 D20). Leaves the dialog open; `closeSetupDialog` ends it.
  */
-export async function setUpChannelViaDialog(
+export async function addChannelViaDialog(
   actor: E2EActor,
   kind: ChannelKind,
   timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<void> {
-  await actor.page.click(`${channelRowSelector(kind)} [data-testid="channel-switch"]`);
-  await actor.page.waitForSelector('[data-testid="channel-setup-dialog"]', timeoutMs);
-  await actor.page.click(`[data-testid="setup-${kind}"]`);
-
-  // Either the search found it or it did not; both end somewhere with a way
-  // forward, and the dialog is what decides which.
-  await pollUntil(`${actor.slug} ${kind} setup offers a way to turn it on`, async () => {
-    return actor.page.evaluate<boolean>(`(() => {
-      return !!document.querySelector('[data-testid="turn-on-${kind}"], [data-testid="turn-on-${kind}-anyway"]');
+): Promise<{ ready: boolean; failure: string }> {
+  await actor.page.click(`${channelRowSelector(kind)} [data-testid="add-channel"]`);
+  await actor.page.waitForSelector('[data-testid="pair-device-dialog"]', timeoutMs);
+  return pollUntil(`${actor.slug} ${kind} setup settles`, async () => {
+    const outcome = await actor.page.evaluate<{ ready: boolean; failure: string } | null>(`(() => {
+      const ok = document.querySelector('[data-testid="setup-ok"]');
+      const failed = document.querySelector('[data-testid="setup-failed"]');
+      if (failed) return { ready: false, failure: (failed.textContent ?? '').trim() };
+      if (ok && !ok.hasAttribute('disabled')) return { ready: true, failure: '' };
+      return null;
     })()`);
+    return outcome ?? false;
   }, timeoutMs, 500);
+}
 
-  const found = await actor.page.evaluate<boolean>(`(() => {
-    return !!document.querySelector('[data-testid="turn-on-${kind}"]');
-  })()`);
-  await actor.page.click(
-    found ? `[data-testid="turn-on-${kind}"]` : `[data-testid="turn-on-${kind}-anyway"]`,
-  );
-
-  await actor.page.click('[data-testid="channel-setup-backdrop"]');
+export async function closeSetupDialog(actor: E2EActor): Promise<void> {
+  await actor.page.click('[data-testid="setup-close"]');
 }

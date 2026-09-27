@@ -4,13 +4,13 @@ Route: `/settings/device/:id`. Parent: [[SettingsView]].
 
 ## Concept
 
-Everything about one paired device. Redesigned by `docs/adr/0007-channels-connect-and-stay-in-sync.md`.
+Everything about one paired device. Redesigned by `docs/adr/0007-channels-connect-and-stay-in-sync.md`; channels follow `docs/adr/0008-channel-state-machine.md`.
 
 The page exists to answer three questions at a glance, and every section is there to serve one of them:
 
 - **Is it connected?** — the Channels list
 - **Has my stuff synced?** — the Sync queue section
-- **If not, why not?** — the reason on each channel row
+- **If not, why not?** — the ⓘ on an orange channel row
 
 Features: `specs/device-connect/README.md`, `specs/space-sync/README.md`.
 
@@ -24,14 +24,21 @@ Features: `specs/device-connect/README.md`, `specs/space-sync/README.md`.
 
 ## Channels
 
-Each row carries live state, the reason it isn't connected, a last connected/synced stamp, a star for the primary channel, and its own on/off switch.
+Each row is a colour, a name and controls. The backend decides the colour (ADR-0008 D19); the row only draws it:
 
-- **Row state** is derived by `channelRowState` in [[channelStatusCodes]]: `off` / `waiting` / `down` / `connecting` / `fading` / `connected`. It combines the backend's `RowState` with the pair's own switch, because "off" is a fact about what the user chose and every other state is a fact about the link.
-- **The reason** is plain language and names the device — "Pixel 8 isn't nearby", "Bluetooth is off on this computer". Never a status code, never a bare coloured dot. It lives in the row's information button, and *only* there: no state expands it by itself, because an explanation nobody asked for is noise on a page opened to see state.
-- **Setting a channel up** has no button of its own. Switching on a channel that was never configured is the request to configure it, so the switch opens [[ChannelSetupDialog]] and writes nothing; the dialog enables the channel once it succeeds. A separate "Set up Bluetooth" button was a second way to ask for the same thing, sitting beside a switch that looked like it did something else.
-- **`waiting`** ("On, waiting") is the state the user sits in after switching a channel on while this machine's own radio is off. The switch stays on with a gray track, and the channel starts by itself when the radio returns. Its reason waits in the information button like every other reason; it used to expand itself, which put a sentence about this computer's radio on a page the person opened to read state.
-- **The star** shows on whichever channel holds it, connected or not: it is the person's stored choice, a setting rather than a live state, and hiding it on a dead row would say the choice had been forgotten. *Moving* it stays a connected-channel action, since pinning a dead row would promise a switch that does nothing.
-- Switching a channel on never fails and never reverts; see the ADR.
+| Colour | State | Meaning | Controls |
+|---|---|---|---|
+| green | on | the peer was heard on this channel within its timeout, or an exchange is open | switch |
+| grey | on | the peer was not heard lately | switch |
+| orange | on | a problem on this device (radio unavailable, network unreachable) | switch, ⓘ |
+| empty circle | off | switched off by the person | switch, unlink |
+| no dot | none | the channel does not exist | Add |
+
+- **ⓘ** appears only on orange, and opens a popup naming this device's problem. A peer that is simply away is grey, not a problem, and has nothing to explain. Nothing explanatory is rendered inline.
+- **Add** opens [[DeviceSetupDialog]] for that channel. The channel exists only once both devices confirmed each other there (D1); closing the dialog before that writes nothing.
+- **The switch** turns an existing channel on or off. Turning on is refused when the channel cannot work on this device (D6), with the reason shown.
+- **Unlink** (trash) exists only on an off channel: forgetting a channel is a second, deliberate act (D14). It deletes the channel and tells the peer.
+- **Presence** is searched for only while this page is open (D12); the rows are re-read every 5 seconds.
 
 ## Sync queue
 
@@ -65,5 +72,4 @@ Each row carries live state, the reason it isn't connected, a last connected/syn
 ## Deferred
 
 - Inline rename of the header — designed, owned by issue #117
-- Per-channel delete distinct from the on/off switch; see the ADR for why it is not built
 - Mapping presets/templates

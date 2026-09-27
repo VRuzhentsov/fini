@@ -11,66 +11,38 @@ export interface PairedDevice {
   last_seen_at: string | null;
   pair_state: string;
   // Nothing about *how* the two devices reach each other lives here. That
-  // is per channel, and comes from `device_connection_channel_statuses`
-  // (ADR-0007) -- one row per configured channel, with its own switch,
-  // primary flag and learned address.
+  // is per channel, and comes from `device_connection_channel_statuses`.
 }
-
-// The category: what a channel row *is*. Mirrors the backend's
-// `ChannelRowState`, and it is the only thing the dot's colour comes from.
-//
-// It used to be derived here, by switching on Bluetooth codes to decide
-// whether a row was "waiting" or "down". That put one channel's failure
-// modes inside the one piece of code meant to work for every channel. The
-// channel categorises its own reasons now and sends the answer.
-export type ChannelRowState =
-  | "off"
-  | "waiting"
-  | "down"
-  | "connecting"
-  | "fading"
-  | "connected";
-
-// The stable key for the sentence behind the information button, or null
-// when the row has nothing to explain. Never rendered as-is: see
-// `../utils/channelStatusCodes.ts` for the key -> English lookup, which is
-// the only place text is attached and the seam a locale table replaces.
-export type ChannelStatusCode =
-  // Reasons that read the same on any channel.
-  | "disabled"
-  | "connecting"
-  | "awaiting_first_ack"
-  | "not_answering"
-  // Network's own.
-  | "peer_not_on_network"
-  // Bluetooth's own.
-  | "bluetooth_not_supported"
-  | "bluetooth_adapter_off"
-  | "bluetooth_no_address"
-  | "bluetooth_peer_not_nearby"
-  | "bluetooth_dial_exhausted";
 
 export type ChannelKind = "network" | "bluetooth";
 
+// ADR-0008 D15: what is stored for a channel. "none" is no channel at all.
+export type ChannelState = "none" | "off" | "on";
+
+// ADR-0008 D19: the row's colour, derived by the backend and only drawn here.
+export type ChannelColor = "green" | "grey" | "orange" | "off" | "none";
+
+// What the ⓘ popup on an orange row explains. Never rendered as-is: see
+// `../utils/channelStatusCodes.ts` for the key -> English lookup.
+export type ChannelProblem =
+  | "bluetooth_not_supported"
+  | "bluetooth_unavailable"
+  | "network_unavailable";
+
 export interface DeviceChannelStatus {
   kind: ChannelKind;
-  // Whether this pair has this channel set up at all. `false` is the "you
-  // have not added this yet" row, which offers to set it up.
-  configured: boolean;
-  // The switch. Always false when `configured` is.
-  enabled: boolean;
-  // The channel the user chose to carry this pair's traffic -- a setting,
-  // not a live state, so it shows whether or not the channel is connected
-  // right now. All rows false means they have not chosen and selection is
-  // automatic (network-first).
-  primary: boolean;
-  // Where the channel last reached the peer. Diagnostics only; nothing
-  // dials it.
-  address: string | null;
-  // The category, and the only input to the row's colour.
-  status: ChannelRowState;
-  // The message key, or null when there is nothing to explain.
-  reason: ChannelStatusCode | null;
+  state: ChannelState;
+  color: ChannelColor;
+  // Set only on an orange row.
+  problem: ChannelProblem | null;
+}
+
+// Where a channel's init stands during a setup search (ADR-0008 D1).
+export interface ChannelSetupStatus {
+  helloAckedByPeer: boolean;
+  ackedPeerHello: boolean;
+  // Both halves done: OK can be pressed (D4).
+  initialized: boolean;
 }
 
 export interface DiscoveredDevice {
@@ -584,123 +556,6 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  // Single source of truth for how one row absorbs a live-poll entry --
-  // keeps the three-way branch (still-unconfigured / exhausted /
-  // configured) out of the `.map()` call site. The "leave an unconfigured
-  // row alone" branch runs first and wins over `entry.dial_exhausted`: this
-  // backend-only `dial_exhausted` flag is never cleared when Bluetooth gets
-  // disabled (only on explicit retry or re-enable), so a row the heavy poll
-  // has already reported as e.g. `bluetooth_disabled` must keep that more
-  // specific, more authoritative reason -- a P2 review finding: with the
-  // reverse order, disabling Bluetooth right after it exhausted left the
-  // stale in-memory flag clobbering the correctly-reported "disabled" row
-  // back to "exhausted" on the very next 5s poll, making it look retryable
-  // despite the explicit opt-out. A row that WAS configured ("Connecting...")
-  // when the backend gave up still transitions to exhausted correctly here,
-  // since this branch only ever fires for a row already `unconfigured` --
-  // it can't intercept that case.
-  function applyLiveness(
-    status: DeviceChannelStatus,
-    entry: { connected: boolean; reason: ChannelStatusCode | null; dial_exhausted: boolean } | undefined,
-  ): DeviceChannelStatus {
-    if (!entry) return status;
-    // A channel that is off, or was never set up, has no live state to
-    // patch: its row is what the user chose, not what a radio is doing.
-    if (!status.enabled) return status;
-    // Exhaustion first, before deferring to the fuller status below.
-    //
-    // A Bluetooth-only peer starts out with a reason of its own --
-    // `connecting` -- and gets no session event to refresh it, so the poll
-    // is the only thing that ever learns the automatic retries gave up.
-    // Deferring first meant that row sat on "Connecting…" forever, and the
-    // one control that could act on it, "Try again", never appeared.
-    if (!entry.connected && entry.dial_exhausted) {
-      return { ...status, status: "down", reason: "bluetooth_dial_exhausted" };
-    }
-    // Otherwise, a reason of its own and still not connected: the full
-    // status knows more than this poll does, so leave it alone.
-    if (status.reason !== null && !entry.connected) {
-      return status;
-    }
-    if (!entry.connected) {
-      return { ...status, status: "connecting", reason: "connecting" };
-    }
-    // Connected: the reason, if any, is the proof state -- and it carries
-    // its own category, so this no longer decides which one applies.
-    return {
-      ...status,
-      status: entry.reason === null ? "connected" : categoryOf(entry.reason),
-      reason: entry.reason,
-    };
-  }
-
-  // The one place the frontend maps a reason to a category, and it exists
-  // only because the liveness poll is a lighter shape that carries the key
-  // without the category. Everything else reads `status` straight from the
-  // backend.
-  function categoryOf(reason: ChannelStatusCode): ChannelRowState {
-    switch (reason) {
-      case "not_answering":
-        return "fading";
-      case "awaiting_first_ack":
-      case "connecting":
-        return "connecting";
-      default:
-        return "down";
-    }
-  }
-
-  // On Linux, `device_connection_channel_statuses` re-checks OS bond
-  // status via a `bluetoothctl` subprocess call on every invocation --
-  // fine for a one-shot load, but not something a live-status poll should
-  // rerun every few seconds while a device's page stays open (a stalled
-  // BlueZ/D-Bus would hold up every other DB-backed command for as long as
-  // the view stays mounted). `device_connection_channel_liveness` is the
-  // lightweight sibling: in-memory only, no DB read, no subprocess -- but
-  // (unlike the plain-primary-only signal this used to read) it also
-  // carries each row's current ping/ack `code`, so this patches both
-  // `primary` and `state` from it. Fixes a P1 review finding: green/amber
-  // is a continuously-reproven proof that can lapse or complete
-  // independent of `primary`, and a Bluetooth-only peer never appears in
-  // the network-presence-gated poll that would otherwise trigger a fresh
-  // full `refreshChannelStatuses` load -- without this, such a peer's
-  // row could stay frozen amber indefinitely after the backend proved it
-  // green, or vice versa. `unconfigured` rows are left alone when not
-  // connected: this lightweight check doesn't know *why* (disabled? not
-  // paired? out of range?), only the heavier poll does -- same
-  // self-healing-within-a-few-seconds philosophy as the push/poll split
-  // above, not a new gap.
-  async function refreshLiveConnectedState(peerDeviceId: string) {
-    if (!channelStatusesByPeer.value[peerDeviceId]?.length) return;
-
-    try {
-      const liveness = await invoke<
-        Array<{
-          kind: "network" | "bluetooth";
-          connected: boolean;
-          primary: boolean;
-          reason: ChannelStatusCode | null;
-          dial_exhausted: boolean;
-        }>
-      >("device_connection_channel_liveness", { peerDeviceId });
-      // Re-read *after* the await, not the array captured before it: an
-      // enable/disable operation's full refresh (`setBluetoothChannel`)
-      // can land while this invoke is pending, and patching on top of the
-      // pre-await snapshot would silently revert `state` back to a stale
-      // value -- with nothing else to correct it afterward for a
-      // Bluetooth-only peer, since it never appears in the network
-      // presence snapshot that would otherwise trigger a fresh full load.
-      const current = channelStatusesByPeer.value[peerDeviceId];
-      if (!current || current.length === 0) return;
-      const byKind = new Map(liveness.map((entry) => [entry.kind, entry]));
-      channelStatusesByPeer.value[peerDeviceId] = current.map((status) =>
-        applyLiveness(status, byKind.get(status.kind)),
-      );
-    } catch (error) {
-      console.warn("[device-connection] failed to refresh live connected state", error);
-    }
-  }
-
   // The switch on a channel row, for either kind. One action rather than a
   // pair of them, matching the backend: both rows on the device page drive
   // the same thing, so neither reads as the special one.
@@ -757,73 +612,47 @@ export const useDeviceStore = defineStore("device", () => {
     }
   }
 
-  // The Network channel's switch, the counterpart to
-  // Asks the radio directly whether it can be used, and is called only from
-  // the moment a Bluetooth channel is switched on.
-  //
-  // The row's own reason refreshes passively, off whatever the background
-  // dial loop last observed -- honest, but since ADR-0007 up to 30s stale.
-  // That is invisible in the background and wrong in the one moment the
-  // person is watching the switch they just flipped, so the flip pays for a
-  // direct probe and nothing else does.
-  //
-  // `false` is not an error. The channel stays on and starts by itself; the
-  // row says so via `bluetooth_adapter_off`.
-  async function probeBluetoothAdapter(): Promise<boolean> {
-    try {
-      return await invoke<boolean>("device_connection_probe_bluetooth_adapter");
-    } catch (error) {
-      console.warn("[device-connection] bluetooth adapter probe failed", error);
-      // Treat an unanswerable probe as "nothing to report" rather than as a
-      // dead radio: the passive signal will correct the row soon enough,
-      // and inventing a hardware fault here would be the one lie this whole
-      // row exists to prevent.
-      return true;
-    }
+  // ADR-0008 D2: start the setup search for a paired device's channel.
+  // Rejects when Bluetooth does not work on this device (D6).
+  async function beginChannelSetup(peerDeviceId: string, kind: ChannelKind): Promise<void> {
+    await invoke("device_connection_begin_channel_setup", { peerDeviceId, kind });
   }
 
-  // Chooses which channel carries this pair's traffic -- the star on a row.
-  // Sticky until the user chooses again, and shown whether or not that
-  // channel is connected right now. Both channels stay connected regardless
-  // of the choice, so there is nothing to force-close: the backend stores it
-  // and re-runs primary selection.
-  async function setPrimaryChannel(
+  // How far the channel's init has got; null when no search is running.
+  async function channelSetupStatus(
     peerDeviceId: string,
-    kind: ChannelKind | null,
+    kind: ChannelKind,
+  ): Promise<ChannelSetupStatus | null> {
+    return await invoke<ChannelSetupStatus | null>("device_connection_channel_setup_status", {
+      peerDeviceId,
+      kind,
+    });
+  }
+
+  // OK (`switchOn`) or closing the dialog. The backend writes the channel
+  // only if its init completed (ADR-0008 D15).
+  async function endChannelSetup(
+    peerDeviceId: string,
+    kind: ChannelKind,
+    switchOn: boolean,
   ): Promise<DeviceChannelStatus[]> {
-    const statuses = await invoke<DeviceChannelStatus[]>(
-      "device_connection_set_primary_channel",
-      { peerDeviceId, primary: kind },
-    );
+    const statuses = await invoke<DeviceChannelStatus[]>("device_connection_end_channel_setup", {
+      peerDeviceId,
+      kind,
+      switchOn,
+    });
     channelStatusesByPeer.value[peerDeviceId] = statuses;
     return statuses;
   }
 
-  // The Device page's "tap to try again" affordance on a `bluetooth_dial_
-  // exhausted` row (see the backend's `ble::retry_bluetooth_dial` doc
-  // comment): resumes the backend's automatic dial retries for one more
-  // `AUTO_RETRY_WINDOW`. `refreshChannelStatuses` afterward is what makes
-  // the row switch back to "Connecting..." immediately instead of waiting
-  // for the next 5s poll.
-  async function retryBluetoothDial(peerDeviceId: string): Promise<void> {
-    await invoke("device_connection_retry_bluetooth_dial", { peerDeviceId });
-    await refreshChannelStatuses(peerDeviceId);
-  }
-
-  // Phase 1 of ADR 0002's "Find via Bluetooth" button: scans for up to 60s
-  // and, on a match, the backend has already persisted the address (and
-  // enabled Bluetooth for the pair, if this machine is already OS-bonded
-  // with it) -- so this just re-loads state afterward rather than
-  // constructing the update itself, unlike setBluetoothChannel above.
-  async function findBluetoothAddress(peerDeviceId: string): Promise<string | null> {
-    const address = await invoke<string | null>("device_connection_find_bluetooth_address", {
-      peerDeviceId,
-    });
-    if (address) {
-      await loadPairedDevices();
-      await refreshChannelStatuses(peerDeviceId);
+  // The Device page is open (or closed): presence is searched for only while
+  // someone is looking (ADR-0008 D12).
+  async function watchPresence(active: boolean): Promise<void> {
+    try {
+      await invoke("device_connection_watch_presence", { active });
+    } catch (error) {
+      console.warn("[device-connection] failed to toggle presence search", error);
     }
-    return address;
   }
 
   async function runSpaceSyncTick() {
@@ -1230,19 +1059,16 @@ export const useDeviceStore = defineStore("device", () => {
     });
   }
 
-  // ADR 0003 Phase 2: pushes `refreshLiveConnectedState` the moment a
-  // session actually connects/disconnects backend-side, instead of relying
-  // solely on `TRANSPORT_STATUS_POLL_INTERVAL_MS`'s next tick. Deliberately
-  // not the sole source of truth -- that poll stays running too, so a
-  // missed/dropped event here self-heals within its interval rather than
-  // leaving the row stuck stale indefinitely.
+  // Re-reads a device's channel rows the moment an exchange opens or closes
+  // backend-side, rather than waiting for the Device page's next poll. Not
+  // the sole source of truth: the poll self-heals a missed event.
   async function startSessionChangedListener() {
     if (sessionChangedListenerStarted) return;
     sessionChangedListenerStarted = true;
     await listen<{ peer_device_id: string; kind: string; established: boolean }>(
       "device-connection://session-changed",
       (event) => {
-        void refreshLiveConnectedState(event.payload.peer_device_id);
+        void refreshChannelStatuses(event.payload.peer_device_id);
       },
     );
   }
@@ -1559,23 +1385,12 @@ export const useDeviceStore = defineStore("device", () => {
   }
 
   function isDeviceOnline(device: PairedDevice): boolean {
-    // A proven live link on *any* channel means the peer is reachable right
-    // now, whatever the presence beacon last saw. `last_seen_at` alone is a
-    // network-only signal: it is refreshed by the mDNS/UDP presence worker, so
-    // with Wi-Fi off it goes stale even while Bluetooth carries real traffic.
-    // Observed on hardware: the Device page read "Offline" directly above
-    // "Bluetooth — Connected now", which is the row contradicting itself.
-    //
-    // Green only (`configured` with no code): that is the state where the
-    // bidirectional ping/ack proof is currently complete. Amber deliberately
-    // does not count -- a claimed-but-unproven session is "connecting", and
-    // calling that Online is the same overclaim this fix exists to remove.
-    //
-    // Statuses are loaded per peer (see `refreshChannelStatuses`' callers),
-    // so a peer whose page has never been opened simply has none cached and
-    // falls through to the presence check below, exactly as before.
+    // A green channel (ADR-0008 D9: the peer was seen on it within the
+    // channel timeout) means the peer is reachable now, whatever the network
+    // presence beacon last saw -- Bluetooth presence never reaches
+    // `last_seen_at`.
     const provenLink = (channelStatusesByPeer.value[device.peer_device_id] ?? []).some(
-      (channel) => channel.status === "connected",
+      (channel) => channel.color === "green",
     );
     if (provenLink) return true;
 
@@ -1631,15 +1446,14 @@ export const useDeviceStore = defineStore("device", () => {
     getLastSyncedAtForSpace,
     getChannelStatuses,
     refreshChannelStatuses,
-    refreshLiveConnectedState,
     getSyncQueue,
     refreshSyncQueue,
     setChannelEnabled,
     unlinkChannel,
-    probeBluetoothAdapter,
-    setPrimaryChannel,
-    retryBluetoothDial,
-    findBluetoothAddress,
+    beginChannelSetup,
+    channelSetupStatus,
+    endChannelSetup,
+    watchPresence,
     isSyncingPeer,
     runSpaceSyncTick,
     enterAddMode,

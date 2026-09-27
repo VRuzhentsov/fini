@@ -12,7 +12,7 @@ Device routes:
 
 - `/settings/device/:id` -> [[DeviceView]]
 
-Pairing has no route of its own. It is [[PairDeviceDialog]] on this page — a short two-person ceremony you come back from, not a place you navigate to. A path for it would be a URL that renders Settings and then opens something on top: a second way to describe one screen, and one the back button would have to be taught about. The Settings search entry for "Add device" is therefore an action rather than a destination.
+Pairing has no route of its own. It is [[DeviceSetupDialog]] on this page — a short two-person ceremony you come back from, not a place you navigate to. A path for it would be a URL that renders Settings and then opens something on top: a second way to describe one screen, and one the back button would have to be taught about. The Settings search entry for "Add device" is therefore an action rather than a destination.
 
 ## Sections
 
@@ -33,7 +33,7 @@ Device connection entry point. See `specs/device-connect/README.md` and `specs/s
 
 - `DeviceList` is visible inline on `/settings`
 - Device rows navigate to [[DeviceView]]
-- `Add device` row is always last and opens [[PairDeviceDialog]]
+- `Add device` row is always last and opens [[DeviceSetupDialog]]
 - Incoming pair requests surface here, not only inside the pairing flow: a request that expires unseen because the user was on another screen is the worst outcome of the ceremony
 - Device status uses green/gray presence indicator
 - Device rows show display name plus a plain-language summary line ("Network · connected", "Not connected · pixel-8 isn't nearby"); UUIDs stay out of visible Settings list rows
