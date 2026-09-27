@@ -1686,3 +1686,20 @@ async fn channel_rows_follow_state_presence_and_problem() {
     let bluetooth = row(&mut conn, ChannelKind::Bluetooth);
     assert_eq!((bluetooth.state, bluetooth.color), (ChannelState::None, ChannelColor::None));
 }
+
+/// Synchronous Tauri commands (`space_sync_tick`, `watch_presence`) run on
+/// the main thread, outside any Tokio runtime. What they start must not
+/// need one: `tokio::spawn` there panics, and every later invoke hangs --
+/// which is how the whole actors e2e lane timed out.
+#[test]
+fn exchanges_and_setups_start_from_outside_a_tokio_runtime() {
+    let (state, db_path) = server_state("sync-command-spawn");
+    seed_paired_device(&db_path, "peer-sync-command");
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::communication::channel::ble::start_exchange(&state, "peer-sync-command");
+    crate::services::communication::pairing::setup::start(&state, "peer-sync-command", ChannelKind::Network);
+
+    assert!(state.channel_setup("peer-sync-command", ChannelKind::Network).is_some());
+    state.end_channel_setup("peer-sync-command", ChannelKind::Network);
+}

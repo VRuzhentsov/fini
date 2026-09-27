@@ -103,8 +103,10 @@ fn start_once() {
         return;
     }
     static STARTED: std::sync::Once = std::sync::Once::new();
+    // Tauri's runtime, not `tokio::spawn`: this is reached from synchronous
+    // commands, which run on the main thread outside any Tokio context.
     STARTED.call_once(|| {
-        tokio::spawn(run());
+        tauri::async_runtime::spawn(run());
     });
 }
 

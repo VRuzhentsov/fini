@@ -42,7 +42,7 @@ pub fn start(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelK
     }
     let state = state.clone();
     let peer_device_id = peer_device_id.to_string();
-    tokio::spawn(async move { run(state, peer_device_id, kind).await });
+    tauri::async_runtime::spawn(async move { run(state, peer_device_id, kind).await });
 }
 
 /// End the setup search. If the init completed, the channel is created

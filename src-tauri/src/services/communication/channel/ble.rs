@@ -1107,7 +1107,7 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
     }
     let state = state.clone();
     let peer_id = peer_id.to_string();
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         exchange_with(&state, &peer_id).await;
         in_flight_exchanges().lock().unwrap().remove(&peer_id);
     });
