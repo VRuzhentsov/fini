@@ -66,9 +66,12 @@ Bluetooth service for this device only. It can be pressed only once init has
 completed on both devices (each side can tell from D1). Nothing is switched on
 remotely.
 
-**D5 — A network pairing counts as Network init.** A device paired over
-Bluetooth has an uninitialized Network channel until the two devices meet on a
-network.
+**D5 — Pairing initializes only the channel it happened over.** A pairing
+completed over Network counts as Network init; one completed over Bluetooth
+counts as Bluetooth init. There is no implicit setup through another
+channel: a pair made over Bluetooth has no Network channel until someone
+adds it in the setup dialog (D20), even when the two devices meet on a
+network, and the reverse holds for Bluetooth.
 
 **D6 — Adapter loss does not change the switch.** The Bluetooth service cannot
 be switched on while Bluetooth does not work on this device. If the adapter
