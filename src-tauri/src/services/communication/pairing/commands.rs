@@ -1299,10 +1299,9 @@ pub fn device_connection_channel_statuses(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, active: bool) {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::set_status_search(&state, active);
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let _ = (state, active);
+    for service in crate::services::communication::channel::service::services(state.inner()) {
+        service.watch_presence(active);
+    }
 }
 
 /// Every paired peer eligible for a Bluetooth dial attempt right now: the

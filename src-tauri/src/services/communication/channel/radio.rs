@@ -42,6 +42,9 @@ pub trait Radio: Send + Sync {
     /// Whether the peer advertised within the channel timeout.
     fn is_reachable(&self, peer_device_id: &str) -> bool;
 
+    /// Run (or stop) the status search, for presence (ADR-0008 D12).
+    fn watch_presence(&self, _state: &DeviceConnectionState, _active: bool) {}
+
     /// The passive counterpart to `probe`: `true` until a real use of the
     /// radio failed, so an untried radio is never accused of being off.
     fn adapter_available(&self) -> bool {
@@ -113,6 +116,13 @@ impl Radio for GattRadio {
         super::ble::start_exchange(state, peer_device_id);
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = (state, peer_device_id);
+    }
+
+    fn watch_presence(&self, state: &DeviceConnectionState, active: bool) {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        super::ble::set_status_search(state, active);
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let _ = (state, active);
     }
 
     fn is_reachable(&self, peer_device_id: &str) -> bool {

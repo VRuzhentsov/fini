@@ -85,6 +85,14 @@ pub trait ChannelService: Send + Sync {
     /// channel's delivery search (D12). Called when there is work for it.
     fn request_exchange(&self, peer_device_id: &str);
 
+    /// Run the status search while `active`: someone is looking at the
+    /// channel rows, so presence must stay current (ADR-0008 D12, D13).
+    /// Delivery and setup searches are asked for by `request_exchange` and
+    /// the setup flow; each channel merges all of them into one search of
+    /// its own kind (D18). A no-op for a channel whose presence signal is
+    /// always heard, like Network's beacon.
+    fn watch_presence(&self, _active: bool) {}
+
     /// Whether the peer was seen on this channel within its channel timeout
     /// (ADR-0008 D9) -- green on the row.
     fn is_present(&self, peer_device_id: &str) -> bool;
@@ -225,6 +233,10 @@ impl ChannelService for BluetoothChannelService {
 
     fn request_exchange(&self, peer_device_id: &str) {
         self.radio.request_exchange(&self.state, peer_device_id);
+    }
+
+    fn watch_presence(&self, active: bool) {
+        self.radio.watch_presence(&self.state, active);
     }
 
     fn is_present(&self, peer_device_id: &str) -> bool {

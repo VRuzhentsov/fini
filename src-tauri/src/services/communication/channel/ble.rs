@@ -184,6 +184,8 @@ use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::{recv_frame, send_frame, BoxDialFuture, DataLink, Transport, ChannelKind};
 
+mod search;
+
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
 /// to find each other's service. Distinct from any third-party device's own
@@ -608,60 +610,30 @@ async fn hello_candidate(state: &DeviceConnectionState, address: &str, peer_id: 
     }
 }
 
-/// One Bluetooth setup-search round for `peer_id` (ADR-0008 D12): listens
-/// for up to `timeout`, says hello to each Fini advertiser it hears, and
-/// ends early once `peer_id` acknowledges. `Ok(true)` if it did.
+/// One Bluetooth setup-search round for `peer_id` (ADR-0008 D12): asks the
+/// search coordinator for the peer for up to `timeout`, and says hello the
+/// moment it is heard. `Ok(true)` if the peer acknowledged; `Err` when the
+/// radio itself is unusable, so the caller can pause.
 pub async fn setup_hello_round(
     state: DeviceConnectionState, peer_id: String, timeout: Duration,
 ) -> Result<bool, String> {
-    use futures_util::StreamExt;
-
-    let backend = backend().await?;
-    // Held for the whole round: this stream stays open across the hello
-    // dials below.
-    let _scan = scan_lease().lock().await;
-    let mut discovered = backend
-        .scan(datagram_config().service)
-        .await
-        .map_err(|err| format!("ble scan failed: {err}"))?;
-
-    let mut tried: HashSet<String> = HashSet::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
+    let Some(found) = search::find(&peer_id, search::Purpose::Setup, timeout).await else {
+        if is_bluetooth_adapter_unavailable() {
+            return Err("bluetooth adapter unavailable".to_string());
         }
-        let candidate = match tokio::time::timeout(remaining, discovered.next()).await {
-            Ok(Some(Ok(candidate))) => candidate,
-            // A backend-level scan failure means Bluetooth itself is
-            // unusable right now, not merely "nobody answered yet".
-            Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
-            Ok(None) | Err(_) => return Ok(false),
-        };
-        let address = candidate.address.0;
-        if !tried.insert(address.clone()) {
-            continue;
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(false);
-        }
-        // Bounded by the round's own deadline: a candidate that accepts the
-        // connection and never answers must not hold the round open.
-        let acknowledged = tokio::time::timeout(
-            remaining.min(FIND_PEER_CANDIDATE_TIMEOUT),
-            hello_candidate(&state, &address, &peer_id),
-        )
-        .await
-        .ok()
-        .flatten()
-        .is_some();
-        if acknowledged {
-            return Ok(true);
-        }
-    }
+        return Ok(false);
+    };
+    // Bounded: a candidate that accepts the connection and never answers
+    // must not hold the round open.
+    let acknowledged = tokio::time::timeout(
+        FIND_PEER_CANDIDATE_TIMEOUT,
+        hello_candidate(&state, &found.address, &peer_id),
+    )
+    .await
+    .ok()
+    .flatten()
+    .is_some();
+    Ok(acknowledged)
 }
 
 /// A nearby, not-yet-paired device discovered via BLE while both sides are
@@ -1002,11 +974,13 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
 ///
 /// - **Presence**: a paired peer whose advertisement was heard within
 ///   `BLUETOOTH_CHANNEL_TIMEOUT` is present (green).
-/// - **Status search**: while the Device page is open, the radio listens in
-///   back-to-back `STATUS_SEARCH_WINDOW`s so presence stays current.
-/// - **Delivery search**: when there is work for a peer, one search of up to
-///   `SEARCH_WINDOW` looks for it and connects as soon as it is heard. A peer
-///   not found is tried again after `DELIVERY_RETRY` steps, until it appears.
+/// - **Search** is one coordinator (`search`, ADR-0008 D13) serving every
+///   purpose with a single scan:
+///   - status, while the Device page is open, keeps presence current;
+///   - delivery, when there is work for a peer, searches up to
+///     `SEARCH_WINDOW` and connects as soon as it is heard; a peer not found
+///     is tried again after `DELIVERY_RETRY` steps, until it appears;
+///   - setup, while the setup dialog is open, says hello to the peer.
 /// - **Exchange**: connect, authenticate, push and acknowledge, then close
 ///   once idle (`session::run_session`).
 ///
@@ -1117,49 +1091,105 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
     });
 }
 
-/// One delivery: search for the peer (connecting as soon as it is heard),
-/// authenticate, and run the exchange to its idle end.
+/// One delivery (ADR-0008 D8, D12): a present peer is one dial to where it
+/// was last heard; otherwise a delivery search of up to `SEARCH_WINDOW`
+/// connects the moment the peer is heard. Then authenticate and run the
+/// exchange to its idle end.
 async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
     let db_path = state.db_path.clone();
     if !is_still_bluetooth_eligible(&db_path, peer_id) {
         return;
     }
-    match connect_by_advertisement(state, peer_id, SEARCH_WINDOW).await {
-        AdvertisementDial::Connected {
-            link,
-            protocol_version,
-            address,
-        } => {
-            note_delivery_reached(peer_id);
-            log::info!("[transport][ble] exchange with {peer_id} via {address}");
-            // The switch could have been turned off during the search.
-            if !is_still_bluetooth_eligible(&db_path, peer_id) {
-                return;
+    let deadline = tokio::time::Instant::now() + SEARCH_WINDOW;
+    let mut last_error = None;
+
+    if let Some(address) = last_seen_address(peer_id) {
+        let guard = search::DialGuard::new();
+        match connect_and_auth(state, peer_id, &address).await {
+            Ok((link, version)) => {
+                drop(guard);
+                return run_exchange(state, peer_id, link, version, &address).await;
             }
-            // Diagnostics only: nothing dials a stored address.
-            note_observed_bluetooth_address(&db_path, peer_id, &address);
-            let (tx, rx) = tokio::sync::mpsc::channel(64);
-            if state.try_claim_session(peer_id, ChannelKind::Bluetooth, tx) {
-                session::run_session(
-                    link,
-                    rx,
-                    state.clone(),
-                    db_path,
-                    peer_id.to_string(),
-                    protocol_version,
-                    session::EXCHANGE_IDLE,
-                )
-                .await;
-            }
+            Err(err) => last_error = Some(err),
         }
-        AdvertisementDial::NoneReachable { last_auth_error } => {
-            if let Some(err) = last_auth_error {
-                log::info!("[transport][ble] {peer_id} refused the exchange: {err}");
-            } else {
-                log::info!("[transport][ble] {peer_id} not heard within the search window");
+    }
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let found = if remaining.is_zero() {
+            None
+        } else {
+            search::find(peer_id, search::Purpose::Delivery, remaining).await
+        };
+        let Some(found) = found else {
+            match last_error {
+                Some(err) => log::info!("[transport][ble] {peer_id} refused the exchange: {err}"),
+                None => log::info!("[transport][ble] {peer_id} not heard within the search window"),
             }
             note_delivery_missed(peer_id);
+            return;
+        };
+        match connect_and_auth(state, peer_id, &found.address).await {
+            Ok((link, version)) => {
+                let address = found.address.clone();
+                drop(found);
+                return run_exchange(state, peer_id, link, version, &address).await;
+            }
+            Err(err) => last_error = Some(err),
         }
+    }
+}
+
+/// Dial `address` and authenticate as talking to `peer_id`, bounded so an
+/// advertiser that accepts the connection and never answers cannot hold the
+/// search. One real `connect()` was measured at ~28s.
+async fn connect_and_auth(
+    state: &DeviceConnectionState, peer_id: &str, address: &str,
+) -> Result<(Box<dyn DataLink>, u32), String> {
+    let attempt = tokio::time::timeout(DIAL_CANDIDATE_TIMEOUT, async {
+        let mut link = dial(address).await?;
+        let version =
+            session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id).await?;
+        Ok::<_, String>((link, version))
+    })
+    .await;
+    match attempt {
+        Ok(Ok(connected)) => Ok(connected),
+        Ok(Err(err)) => {
+            log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
+            Err(err)
+        }
+        Err(_elapsed) => {
+            log::info!("[transport][ble] candidate {address} did not finish connect+auth in time");
+            Err("connect+auth timed out".to_string())
+        }
+    }
+}
+
+async fn run_exchange(
+    state: &DeviceConnectionState, peer_id: &str, link: Box<dyn DataLink>, version: u32, address: &str,
+) {
+    note_delivery_reached(peer_id);
+    log::info!("[transport][ble] exchange with {peer_id} via {address}");
+    let db_path = state.db_path.clone();
+    // The switch could have been turned off during the search.
+    if !is_still_bluetooth_eligible(&db_path, peer_id) {
+        return;
+    }
+    // Diagnostics only: nothing dials a stored address.
+    note_observed_bluetooth_address(&db_path, peer_id, address);
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    if state.try_claim_session(peer_id, ChannelKind::Bluetooth, tx) {
+        session::run_session(
+            link,
+            rx,
+            state.clone(),
+            db_path,
+            peer_id.to_string(),
+            version,
+            session::EXCHANGE_IDLE,
+        )
+        .await;
     }
 }
 
@@ -1205,6 +1235,18 @@ fn note_peer_advertising(peer_id: &str, address: &str) {
     }
 }
 
+/// Where `peer_id` was last heard advertising, if within the channel
+/// timeout: a present peer is reached by one dial, not a search.
+fn last_seen_address(peer_id: &str) -> Option<String> {
+    match last_seen_advertising().lock() {
+        Ok(seen) => seen
+            .get(peer_id)
+            .filter(|(at, _)| at.elapsed() < BLUETOOTH_CHANNEL_TIMEOUT)
+            .map(|(_, address)| address.clone()),
+        Err(_) => None,
+    }
+}
+
 /// Whether `peer_id` advertised within the channel timeout (ADR-0008 D9).
 pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
     match last_seen_advertising().lock() {
@@ -1215,92 +1257,11 @@ pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
     }
 }
 
-/// Whether the Device page asked for a status search (ADR-0008 D12).
-fn status_search_sender() -> &'static tokio::sync::watch::Sender<bool> {
-    static SENDER: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
-    SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
-}
-
 /// Turn the status search on while the Device page is open, off when it
-/// closes. Green is never computed in the background (ADR-0008 D12).
+/// closes. Green is never computed in the background (ADR-0008 D12); the
+/// search coordinator merges it with any delivery or setup search running.
 pub fn set_status_search(state: &DeviceConnectionState, active: bool) {
-    let _ = status_search_sender().send(active);
-    if active {
-        start_status_search_once(state.clone());
-    }
-}
-
-fn start_status_search_once(state: DeviceConnectionState) {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        tokio::spawn(async move { run_status_search(state).await });
-    });
-}
-
-/// Listens in back-to-back windows while the page is open, recording which
-/// paired peers with Bluetooth on are heard. Releases the scan between
-/// windows so a delivery or setup search can take its turn.
-async fn run_status_search(state: DeviceConnectionState) {
-    use futures_util::StreamExt;
-
-    let mut active = status_search_sender().subscribe();
-    loop {
-        if !*active.borrow_and_update() {
-            if active.changed().await.is_err() {
-                return;
-            }
-            continue;
-        }
-        let peers = tokio::task::block_in_place(|| {
-            let mut conn = open_db_at_path(&state.db_path);
-            crate::services::communication::pairing::channels::peers_with_channel_enabled(
-                &mut conn,
-                ChannelKind::Bluetooth,
-            )
-        });
-        let wanted: HashMap<[u8; FINGERPRINT_LEN], String> =
-            peers.into_iter().map(|peer| (fingerprint_of(&peer), peer)).collect();
-        if wanted.is_empty() {
-            let _ = tokio::time::timeout(STATUS_SEARCH_WINDOW, active.changed()).await;
-            continue;
-        }
-        let Ok(backend) = backend().await else {
-            note_adapter_unreachable();
-            let _ = tokio::time::timeout(STATUS_SEARCH_WINDOW, active.changed()).await;
-            continue;
-        };
-        let scan = scan_lease().lock().await;
-        let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
-            note_adapter_unreachable();
-            drop(scan);
-            let _ = tokio::time::timeout(STATUS_SEARCH_WINDOW, active.changed()).await;
-            continue;
-        };
-        note_adapter_reachable();
-        let deadline = tokio::time::Instant::now() + STATUS_SEARCH_WINDOW;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match tokio::time::timeout(remaining, discovered.next()).await {
-                Ok(Some(Ok(candidate))) => {
-                    let advertised = advertised_fingerprint(
-                        candidate
-                            .manufacturer_data
-                            .get(&FINI_MANUFACTURER_ID)
-                            .map(|payload| payload.as_slice()),
-                    );
-                    if let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) {
-                        note_peer_advertising(peer, &candidate.address.0);
-                    }
-                }
-                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
-            }
-        }
-        drop(discovered);
-        drop(scan);
-    }
+    search::set_status(active.then(|| state.db_path.clone()));
 }
 
 /// Whether this device should advertise (ADR-0008 D8): while it has a
@@ -1416,180 +1377,6 @@ pub async fn probe_adapter_available() -> bool {
             false
         }
     }
-}
-
-/// Finds `peer_id` in the air and returns an authenticated link to it.
-///
-/// This is ADR-0006's core move. There is no stored address to dial: Android
-/// advertises under a rotating resolvable private address, so the only
-/// reliable way to reach a peer is to connect to whoever is advertising
-/// Fini's service UUID and let the app-level `Auth` frame say who answered.
-/// `perform_client_auth` already rejects a peer whose `device_id` is not the
-/// expected one, and `specs/device-connect/README.md` already names that
-/// exchange — not the OS bond — as the trust boundary.
-///
-/// Every candidate costs a dial plus a handshake, so this is bounded twice:
-/// by `budget` overall (the caller's remaining give-up window) and by
-/// `SEARCH_WINDOW` on the listening itself (ADR-0008 D12: a search lasts up
-/// to 60s and ends as soon as it finds the peer). Only an advertiser whose
-/// fingerprint matches is dialled.
-async fn connect_by_advertisement(
-    state: &DeviceConnectionState, peer_id: &str, budget: Duration,
-) -> AdvertisementDial {
-    use futures_util::StreamExt;
-
-    let mut last_auth_error = None;
-    let Ok(backend) = backend().await else {
-        note_adapter_unreachable();
-        return AdvertisementDial::NoneReachable { last_auth_error };
-    };
-
-    // Two deadlines, not one. `scan_deadline` bounds how long we listen for
-    // candidates; `overall_deadline` bounds the whole pass on the caller's
-    // behalf. Collapsing them means a candidate discovered late in the
-    // listening window inherits only its leftovers as its connect budget,
-    // which on hardware abandoned every dial 2s in.
-    let started = tokio::time::Instant::now();
-    let overall_deadline = started + budget;
-    let wanted_fingerprint = fingerprint_of(peer_id);
-    let mut tried: HashSet<String> = HashSet::new();
-
-    loop {
-        // Scan and dial are strictly sequential, never concurrent, and the
-        // discovery stream is dropped before any dial begins.
-        //
-        // Hardware evidence for this shape: holding the stream open across
-        // the dial made BlueZ answer `Connect` with nothing at all until
-        // ble-gatt's own 20s timeout fired, every single time, on a peer
-        // sitting at rssi -62. An adapter cannot usefully drive active
-        // discovery and establish a connection at the same moment, so
-        // scanning while dialling meant competing with ourselves.
-        let scan = scan_lease().lock().await;
-        let scan_deadline = tokio::time::Instant::now() + SEARCH_WINDOW.min(budget);
-        let found = {
-            let _scan = scan;
-            let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
-                note_adapter_unreachable();
-                return AdvertisementDial::NoneReachable { last_auth_error };
-            };
-            // The radio accepted a discovery session, which is the only
-            // evidence that actually clears a previously-recorded failure.
-            note_adapter_reachable();
-            let mut found = None;
-            loop {
-                let listen_remaining =
-                    scan_deadline.saturating_duration_since(tokio::time::Instant::now());
-                if listen_remaining.is_zero() {
-                    break;
-                }
-                match tokio::time::timeout(listen_remaining, discovered.next()).await {
-                    Ok(Some(Ok(candidate))) => {
-                        let address = candidate.address.0;
-                        // Only dial an advertiser whose fingerprint matches
-                        // the peer we want. A missing fingerprint is *not*
-                        // tolerated, and that is a deliberate reversal of
-                        // this code's first version.
-                        //
-                        // The `Auth` frame carries our own `device_id` and
-                        // the expected peer's in plaintext and proves
-                        // nothing cryptographically (issue #162), so dialling
-                        // an unknown advertiser hands both identifiers to
-                        // whoever happens to be advertising Fini's service
-                        // nearby. Tolerating a missing fingerprint for the
-                        // sake of older builds would keep that door open
-                        // permanently. Fini is in open alpha with a
-                        // no-legacy policy, so the older build upgrades
-                        // instead.
-                        let advertised = advertised_fingerprint(
-                            candidate
-                                .manufacturer_data
-                                .get(&FINI_MANUFACTURER_ID)
-                                .map(|payload| payload.as_slice()),
-                        );
-                        if advertised != Some(wanted_fingerprint) {
-                            continue;
-                        }
-                        // Recorded on the match, before the dial: the peer
-                        // is provably in range whether or not connecting to
-                        // it then succeeds, and those are different facts
-                        // for the row to report.
-                        note_peer_advertising(peer_id, &address);
-                        if tried.insert(address.clone()) {
-                            found = Some(address);
-                            break;
-                        }
-                    }
-                    // A backend-level scan failure means Bluetooth itself is
-                    // unusable right now; either way this pass is over, and
-                    // the caller's backoff decides what happens next.
-                    Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
-                }
-            }
-            found
-            // `discovered` is dropped here, stopping discovery, before the
-            // dial below runs.
-        };
-
-        let Some(address) = found else {
-            return AdvertisementDial::NoneReachable { last_auth_error };
-        };
-
-        let budget_left = overall_deadline.saturating_duration_since(tokio::time::Instant::now());
-        if budget_left.is_zero() {
-            return AdvertisementDial::NoneReachable { last_auth_error };
-        }
-        // Bounded per candidate as well as overall: an advertiser that
-        // accepts the connection but never answers `Auth` would otherwise
-        // hold the whole window on its own. `dial` and `perform_client_auth`
-        // each wait unboundedly by themselves, and one real `connect()` was
-        // measured at ~28s.
-        let attempt = tokio::time::timeout(budget_left.min(DIAL_CANDIDATE_TIMEOUT), async {
-            let mut link = dial(&address).await?;
-            let version =
-                session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id)
-                    .await?;
-            Ok((link, version))
-        })
-        .await;
-
-        match attempt {
-            Ok(Ok((link, version))) => {
-                return AdvertisementDial::Connected {
-                    link,
-                    protocol_version: version,
-                    address,
-                }
-            }
-            // Logged at info, not debug: this is the load-bearing path while
-            // ADR-0006 is being brought up, and a silent candidate failure
-            // is indistinguishable from "nothing was advertising" in a
-            // hardware log -- which already cost one debugging round.
-            Ok(Err(err)) => {
-                log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
-                last_auth_error = Some(err);
-            }
-            Err(_elapsed) => {
-                log::info!(
-                    "[transport][ble] candidate {address} did not finish connect+auth in time"
-                );
-            }
-        }
-    }
-}
-
-/// What one `connect_by_advertisement` pass found.
-enum AdvertisementDial {
-    Connected {
-        link: Box<dyn DataLink>,
-        protocol_version: u32,
-        address: String,
-    },
-    /// Nothing in the air authenticated as this peer. `last_auth_error`
-    /// carries the last candidate's failure, if any candidate was tried at
-    /// all. The caller reads it the same way the old address-based path read
-    /// its auth result: an `auth rejected` prefix is a real peer refusing us
-    /// and earns a backoff, anything else is ordinary radio noise.
-    NoneReachable { last_auth_error: Option<String> },
 }
 
 #[cfg(test)]
