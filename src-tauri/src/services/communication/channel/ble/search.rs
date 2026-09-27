@@ -26,8 +26,8 @@ use std::time::Duration;
 use tokio::sync::{oneshot, watch, Notify};
 
 use super::{
-    advertised_fingerprint, backend, datagram_config, fingerprint_of, note_adapter_reachable,
-    note_adapter_unreachable, note_peer_advertising, open_db_at_path, scan_lease, FINGERPRINT_LEN,
+    advertised_fingerprint, backend, datagram_config, fingerprint_of, note_adapter_unreachable,
+    note_peer_advertising, open_db_at_path, scan_lease, RunningScan, FINGERPRINT_LEN,
     FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
 };
 use crate::services::communication::pairing::ChannelKind;
@@ -216,7 +216,7 @@ async fn run() {
             let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, changed().notified()).await;
             continue;
         };
-        note_adapter_reachable();
+        let running = RunningScan::start();
 
         // One window at a time: the wanted set is re-read between windows,
         // and at once whenever a search starts or ends.
@@ -245,6 +245,7 @@ async fn run() {
             }
         }
         // Stop discovery before any dial the hand-off starts.
+        drop(running);
         drop(discovered);
         drop(scan);
     }

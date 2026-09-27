@@ -14,20 +14,8 @@ export interface PairedDevice {
   // is per channel, and comes from `device_connection_channel_statuses`.
 }
 
-export type ChannelKind = "network" | "bluetooth";
-
-// ADR-0008 D15: what is stored for a channel. "none" is no channel at all.
-export type ChannelState = "none" | "off" | "on";
-
-// ADR-0008 D19: the row's colour, derived by the backend and only drawn here.
-export type ChannelColor = "green" | "grey" | "orange" | "off" | "none";
-
-// What the ⓘ popup on an orange row explains. Never rendered as-is: see
-// `../utils/channelStatusCodes.ts` for the key -> English lookup.
-export type ChannelProblem =
-  | "bluetooth_not_supported"
-  | "bluetooth_unavailable"
-  | "network_unavailable";
+import { ChannelColor, ChannelKind, ChannelProblem, ChannelState } from "../utils/channel";
+export { ChannelColor, ChannelKind, ChannelProblem, ChannelState };
 
 export interface DeviceChannelStatus {
   kind: ChannelKind;
@@ -55,7 +43,7 @@ export interface DiscoveredDevice {
   // Which discovery mechanism found this candidate -- ADR 0002 Phase 3.
   // `addr` carries a Bluetooth MAC (and `discovery_port`/`ws_port` are
   // meaningless) when this is "bluetooth".
-  channel_kind: "network" | "bluetooth";
+  channel_kind: ChannelKind;
 }
 
 export interface IncomingPairRequest {
@@ -267,9 +255,9 @@ export const useDeviceStore = defineStore("device", () => {
   const channelStatusesByPeer = ref<Record<string, DeviceChannelStatus[]>>({});
   const syncQueueByPeer = ref<Record<string, SyncQueueSummary | null>>({});
   // Per-channel discovery candidates. See `recomputeDiscovered`.
-  const discoveredByChannel = ref<Record<"network" | "bluetooth", DiscoveredDevice[]>>({
-    network: [],
-    bluetooth: [],
+  const discoveredByChannel = ref<Record<ChannelKind, DiscoveredDevice[]>>({
+    [ChannelKind.Network]: [],
+    [ChannelKind.Bluetooth]: [],
   });
   const lastAppliedSyncAt = ref<string | null>(null);
   const incomingExpectedCode = ref<Record<string, string>>({});
@@ -754,8 +742,8 @@ export const useDeviceStore = defineStore("device", () => {
       item.device_id !== identity.value.device_id && !pairedDeviceIds.value.has(item.device_id);
 
     discoveredByChannel.value = {
-      network: latestNetworkDiscovered.filter(eligible),
-      bluetooth: latestBluetoothDiscovered.filter(eligible),
+      [ChannelKind.Network]: latestNetworkDiscovered.filter(eligible),
+      [ChannelKind.Bluetooth]: latestBluetoothDiscovered.filter(eligible),
     };
 
     // Network always wins over Bluetooth for the same device_id, regardless
@@ -1171,7 +1159,7 @@ export const useDeviceStore = defineStore("device", () => {
     latestNetworkDiscovered = [];
     latestBluetoothDiscovered = [];
     discoveredDevices.value = [];
-    discoveredByChannel.value = { network: [], bluetooth: [] };
+    discoveredByChannel.value = { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] };
     addModeLastRefreshAt.value = null;
     void refreshDebugStatus();
   }
@@ -1195,7 +1183,7 @@ export const useDeviceStore = defineStore("device", () => {
     };
 
     try {
-      if (device.channel_kind === "bluetooth") {
+      if (device.channel_kind === ChannelKind.Bluetooth) {
         const payload: DevicePairRequestBluetoothInput = {
           request_id: requestId,
           to_device_id: device.device_id,
@@ -1390,7 +1378,7 @@ export const useDeviceStore = defineStore("device", () => {
     // presence beacon last saw -- Bluetooth presence never reaches
     // `last_seen_at`.
     const provenLink = (channelStatusesByPeer.value[device.peer_device_id] ?? []).some(
-      (channel) => channel.color === "green",
+      (channel) => channel.color === ChannelColor.Green,
     );
     if (provenLink) return true;
 

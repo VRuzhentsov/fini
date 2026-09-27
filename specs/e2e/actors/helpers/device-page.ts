@@ -1,13 +1,12 @@
 import type { E2EActor } from '../fixtures.ts';
 import { pollUntil } from './dom.ts';
 import { openDeviceDetailsFromSettings } from './personal-sync.ts';
+import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
+
+export { ChannelColor, ChannelKind };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-export type ChannelKind = 'network' | 'bluetooth';
-
-// The row's colour (ADR-0008 D19), decided by the backend and drawn as-is.
-export type ChannelColor = 'green' | 'grey' | 'orange' | 'off' | 'none';
 
 export function channelRowSelector(kind: ChannelKind): string {
   return `[data-testid="channel-status-row"][data-channel-kind="${kind}"]`;
@@ -109,7 +108,7 @@ export async function anyChannelConnected(
   await openDeviceDetailsFromSettings(actor, peerDeviceId);
   return actor.page.evaluate<boolean>(`(() => {
     const rows = [...document.querySelectorAll('[data-testid="channel-status-row"]')];
-    return rows.some((row) => row.getAttribute('data-channel-color') === 'green');
+    return rows.some((row) => row.getAttribute('data-channel-color') === ${JSON.stringify(ChannelColor.Green)});
   })()`);
 }
 

@@ -7,7 +7,8 @@ import SettingsListItem from "../../components/settings/SettingsListItem.vue";
 import ChannelRow from "../../components/settings/device/ChannelRow.vue";
 import SyncQueueSection from "../../components/settings/device/SyncQueueSection.vue";
 import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
-import { useDeviceStore, type ChannelKind } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device";
+import { ChannelColor, type ChannelKind } from "../../utils/channel";
 import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
 
@@ -44,7 +45,7 @@ const renderFlags = computed(() => ({
 // Drives the sync queue's "sending now" vs "nothing can reach it" line:
 // a green channel is one data can go over (ADR-0008 D9).
 const anyChannelConnected = computed(() =>
-  channelStatuses.value.some((status) => status.color === "green"),
+  channelStatuses.value.some((status) => status.color === ChannelColor.Green),
 );
 
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() =>

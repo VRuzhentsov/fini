@@ -2,7 +2,8 @@
 import { computed } from "vue";
 import { InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./ChannelIcon.vue";
-import type { ChannelColor, DeviceChannelStatus } from "../../../stores/device";
+import type { DeviceChannelStatus } from "../../../stores/device";
+import { ChannelColor, ChannelState } from "../../../utils/channel";
 import { channelName, channelProblemText } from "../../../utils/channelStatusCodes";
 
 // One channel of a paired device (ADR-0008 D19). The backend decides the
@@ -27,26 +28,26 @@ const emit = defineEmits<{
 }>();
 
 const name = computed(() => channelName(props.status.kind));
-const switchedOn = computed(() => props.status.state === "on");
+const switchedOn = computed(() => props.status.state === ChannelState.On);
 const problem = computed(() =>
   props.status.problem ? channelProblemText(props.status.problem) : null,
 );
 
 const DOT_CLASS: Record<ChannelColor, string> = {
-  green: "bg-success",
-  grey: "bg-[var(--fg-5)]",
-  orange: "bg-warning",
-  off: "border border-[var(--fg-4)] bg-transparent",
-  none: "",
+  [ChannelColor.Green]: "bg-success",
+  [ChannelColor.Grey]: "bg-[var(--fg-5)]",
+  [ChannelColor.Orange]: "bg-warning",
+  [ChannelColor.Off]: "border border-[var(--fg-4)] bg-transparent",
+  [ChannelColor.None]: "",
 };
 
 // The template's render contract, per fini-frontend.
 const renderFlags = computed(() => ({
-  dot: props.status.color !== "none",
+  dot: props.status.color !== ChannelColor.None,
   problemInfo: problem.value !== null,
-  addButton: props.status.state === "none",
-  unlinkButton: props.status.state === "off",
-  channelSwitch: props.status.state !== "none",
+  addButton: props.status.state === ChannelState.None,
+  unlinkButton: props.status.state === ChannelState.Off,
+  channelSwitch: props.status.state !== ChannelState.None,
 }));
 
 function handleToggle() {

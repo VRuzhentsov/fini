@@ -11,10 +11,11 @@ import {
 import ChannelIcon from "./device/ChannelIcon.vue";
 import {
   useDeviceStore,
-  type ChannelKind,
   type ChannelSetupStatus,
   type DiscoveredDevice,
 } from "../../stores/device";
+import { ChannelKind } from "../../utils/channel";
+import { channelName } from "../../utils/channelStatusCodes";
 
 // The one setup dialog (ADR-0008 D20), for every way two devices come to
 // share a channel:
@@ -53,9 +54,7 @@ const emit = defineEmits<{ close: [] }>();
 
 const deviceStore = useDeviceStore();
 
-type Channel = "network" | "bluetooth";
-
-const channel = ref<Channel | null>(null);
+const channel = ref<ChannelKind | null>(null);
 const codeInput = ref("");
 const acceptedRequestId = ref<string | null>(null);
 const codeError = ref<string | null>(null);
@@ -153,10 +152,15 @@ const step = computed(() => {
   return "looking";
 });
 
-const CHANNEL_NAME: Record<Channel, string> = { network: "Network", bluetooth: "Bluetooth" };
+// The first step's choices, and what each one is for.
+const CHANNEL_CHOICES = Object.values(ChannelKind);
+
+function channelChoiceHint(kind: ChannelKind): string {
+  return kind === ChannelKind.Network ? "Same network" : "Nearby, no network";
+}
 
 const title = computed(() =>
-  knownDevice.value && props.kind ? `Add ${CHANNEL_NAME[props.kind]}` : "Add device",
+  knownDevice.value && props.kind ? `Add ${channelName(props.kind)}` : "Add device",
 );
 
 // What ⓘ in the header explains for the step on screen, or null when there
@@ -165,7 +169,7 @@ const hint = computed<string | null>(() => {
   switch (step.value) {
     case "setupSearching":
     case "setupFound":
-      return `Open Add ${props.kind ? CHANNEL_NAME[props.kind] : ""} on ${props.peerName ?? "the other device"} too — OK becomes available once both devices have found each other.`;
+      return `Open Add ${props.kind ? channelName(props.kind) : ""} on ${props.peerName ?? "the other device"} too — OK becomes available once both devices have found each other.`;
     case "looking":
       return "Open Add device on the other device too — it appears here once it is also looking.";
     case "declined":
@@ -305,7 +309,7 @@ onUnmounted(() => {
   stopSetupPoll();
 });
 
-function pickChannel(kind: Channel) {
+function pickChannel(kind: ChannelKind) {
   channel.value = kind;
 }
 
@@ -451,7 +455,7 @@ async function confirmChannelSetup() {
         <!-- 1. The channel, chosen rather than inferred. -->
         <template v-else-if="step === 'channel'">
           <button
-            v-for="kind in (['network', 'bluetooth'] as Channel[])"
+            v-for="kind in CHANNEL_CHOICES"
             :key="kind"
             class="flex w-full items-start gap-3 rounded-[10px] border border-base-300 p-3 text-left hover:border-primary hover:bg-base-200"
             :data-testid="`pair-channel-${kind}`"
@@ -461,9 +465,9 @@ async function confirmChannelSetup() {
               <ChannelIcon :kind="kind" class="size-5 opacity-70" />
             </span>
             <span class="flex min-w-0 flex-1 flex-col gap-0.5">
-              <b class="text-[13px] font-semibold">{{ CHANNEL_NAME[kind] }}</b>
+              <b class="text-[13px] font-semibold">{{ channelName(kind) }}</b>
               <span class="text-[11.5px] text-[var(--fg-3)]">
-                {{ kind === "network" ? "Same network" : "Nearby, no network" }}
+                {{ channelChoiceHint(kind) }}
               </span>
             </span>
           </button>
@@ -477,7 +481,7 @@ async function confirmChannelSetup() {
               <ChannelIcon :kind="channel!" class="size-6 opacity-70" />
             </span>
             <h4 class="text-[15px] font-semibold">
-              Looking for devices on {{ CHANNEL_NAME[channel!] }}
+              Looking for devices on {{ channelName(channel!) }}
             </h4>
           </div>
 

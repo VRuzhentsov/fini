@@ -6,6 +6,7 @@ import SettingsListItem from "./SettingsListItem.vue";
 import DeviceSetupDialog from "./DeviceSetupDialog.vue";
 import { useDeviceStore, type PairedDevice } from "../../stores/device";
 import { channelName, channelProblemText } from "../../utils/channelStatusCodes";
+import { ChannelColor, type ChannelKind } from "../../utils/channel";
 
 const props = defineProps<{
   // Bumped by the Settings search when someone picks "Add device". A counter
@@ -54,10 +55,10 @@ const incoming = computed(() => deviceStore.incomingRequests);
 
 // Which channel, if any, is green for this device: the peer was heard on
 // it within the channel timeout (ADR-0008 D9).
-function connectedChannel(device: PairedDevice): "network" | "bluetooth" | null {
+function connectedChannel(device: PairedDevice): ChannelKind | null {
   const live = deviceStore
     .getChannelStatuses(device.peer_device_id)
-    .find((status) => status.color === "green");
+    .find((status) => status.color === ChannelColor.Green);
   return live?.kind ?? null;
 }
 

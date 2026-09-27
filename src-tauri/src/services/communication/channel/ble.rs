@@ -691,9 +691,9 @@ pub async fn scan_add_mode_candidates(
         let mut discovered = backend
             .scan(datagram_config().service)
             .await
-            .inspect(|_| note_adapter_reachable())
             .inspect_err(|_| note_adapter_unreachable())
             .map_err(|err| format!("ble scan failed: {err}"))?;
+        let _running = RunningScan::start();
 
         // Listening gets at most half the caller's window, so the probe
         // phase always has something left. Splitting scan from probe fixed
@@ -1014,6 +1014,28 @@ const DELIVERY_RETRY: [Duration; 3] = [
 fn in_flight_exchanges() -> &'static StdMutex<HashSet<String>> {
     static IN_FLIGHT: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
     IN_FLIGHT.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+/// Set while a discovery session is actually running: `scan()` returned
+/// Ok and the stream is alive. Holding `scan_lease` is not enough -- the
+/// holder may still be waiting on an adapter that will refuse it.
+static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Marks a started discovery session; clears the mark when dropped.
+struct RunningScan;
+
+impl RunningScan {
+    fn start() -> Self {
+        SCAN_RUNNING.store(true, Ordering::SeqCst);
+        note_adapter_reachable();
+        Self
+    }
+}
+
+impl Drop for RunningScan {
+    fn drop(&mut self) {
+        SCAN_RUNNING.store(false, Ordering::SeqCst);
+    }
 }
 
 /// One Bluetooth scan at a time, process-wide. Every `backend.scan` call
@@ -1355,29 +1377,46 @@ pub fn is_bluetooth_adapter_unavailable() -> bool {
 ///
 /// A scan already running elsewhere answers the question without a second
 /// one: the adapter accepted that discovery session, so it is reachable.
-/// Starting our own would only be refused (see `scan_lease`).
+/// Starting our own would only be refused (see `scan_lease`). A caller that
+/// merely holds the lease proves nothing yet -- its scan may still be
+/// refused -- so the probe waits for it to start or finish.
 pub async fn probe_adapter_available() -> bool {
-    let Ok(_scan) = scan_lease().try_lock() else {
-        note_adapter_reachable();
-        return true;
-    };
-    let Ok(backend) = backend().await else {
-        note_adapter_unreachable();
-        return false;
-    };
-    match backend.scan(datagram_config().service).await {
-        Ok(stream) => {
-            drop(stream);
+    let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
+    loop {
+        if SCAN_RUNNING.load(Ordering::SeqCst) {
             note_adapter_reachable();
-            true
+            return true;
         }
-        Err(err) => {
-            log::warn!("[transport][ble] adapter probe failed: {err}");
-            note_adapter_unreachable();
-            false
+        if let Ok(_scan) = scan_lease().try_lock() {
+            let Ok(backend) = backend().await else {
+                note_adapter_unreachable();
+                return false;
+            };
+            return match backend.scan(datagram_config().service).await {
+                Ok(stream) => {
+                    drop(stream);
+                    note_adapter_reachable();
+                    true
+                }
+                Err(err) => {
+                    log::warn!("[transport][ble] adapter probe failed: {err}");
+                    note_adapter_unreachable();
+                    false
+                }
+            };
         }
+        // Another caller holds the lease but its scan has not started: wait
+        // for it to start (the adapter works) or give the lease up.
+        if tokio::time::Instant::now() >= deadline {
+            return !is_bluetooth_adapter_unavailable();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// How long the probe waits on another caller's scan that is still being
+/// set up, before falling back to the last recorded adapter health.
+const PROBE_WAIT_FOR_OTHER_SCAN: Duration = Duration::from_secs(10);
 
 #[cfg(test)]
 mod tests {
@@ -1554,6 +1593,7 @@ mod tests {
     #[tokio::test]
     async fn adapter_probe_during_another_scan_reports_the_adapter_reachable() {
         let _other_scan = scan_lease().lock().await;
+        let _running = RunningScan::start();
         note_adapter_unreachable();
 
         assert!(
@@ -1561,5 +1601,20 @@ mod tests {
             "a scan in flight means the adapter accepted a discovery session"
         );
         assert!(!is_bluetooth_adapter_unavailable());
+    }
+
+    /// Holding the lease is not a running scan. The add-mode scan takes the
+    /// lease and then waits on the adapter; a probe in that window used to
+    /// report a missing radio as working, so adding Bluetooth never failed.
+    #[tokio::test(start_paused = true)]
+    async fn adapter_probe_does_not_trust_a_scan_that_has_not_started() {
+        let other_scan = scan_lease().lock().await;
+        note_adapter_unreachable();
+
+        let probe = tokio::spawn(probe_adapter_available());
+        tokio::time::sleep(PROBE_WAIT_FOR_OTHER_SCAN + Duration::from_secs(1)).await;
+        drop(other_scan);
+
+        assert!(!probe.await.unwrap(), "no scan ever started, and the adapter was last seen unreachable");
     }
 }

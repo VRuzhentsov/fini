@@ -3,6 +3,7 @@ import { nextTick } from "vue";
 import DeviceView from "../../views/settings/DeviceView.vue";
 import { useDeviceStore } from "../../stores/device";
 import { useSpaceStore } from "../../stores/space";
+import { ChannelColor, ChannelKind, ChannelProblem, ChannelState } from "../../utils/channel";
 
 const mockRouterPush = jest.fn();
 jest.mock("vue-router", () => ({
@@ -34,11 +35,11 @@ async function flushUi() {
 
 // One row per channel, as the backend sends it (ADR-0008 D19): both on and
 // green is a pair whose peer was heard on both channels just now.
-function channelRow(kind: "network" | "bluetooth", overrides: Record<string, unknown> = {}) {
-  return { kind, state: "on", color: "green", problem: null, ...overrides };
+function channelRow(kind: ChannelKind, overrides: Record<string, unknown> = {}) {
+  return { kind, state: ChannelState.On, color: ChannelColor.Green, problem: null, ...overrides };
 }
 
-const GREEN_ROWS = [channelRow("network"), channelRow("bluetooth")];
+const GREEN_ROWS = [channelRow(ChannelKind.Network), channelRow(ChannelKind.Bluetooth)];
 
 function pairedDevice(overrides: Record<string, unknown> = {}) {
   return {
@@ -81,7 +82,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     cancelOutgoingRequest: jest.fn(),
     outgoingRequest: null,
     incomingRequests: [],
-    discoveredByChannel: { network: [], bluetooth: [] },
+    discoveredByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
     pairCompletedAt: null,
     saveMappedSpaces: jest.fn().mockResolvedValue([]),
     resolveCustomSpaceMapping: jest.fn().mockResolvedValue(undefined),
@@ -161,8 +162,8 @@ describe("DeviceView channels", () => {
 
   it("draws one row per channel in the colour the backend chose", async () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow("network"),
-      channelRow("bluetooth", { color: "grey" }),
+      channelRow(ChannelKind.Network),
+      channelRow(ChannelKind.Bluetooth, { color: ChannelColor.Grey }),
     ]);
     const wrapper = mountView();
     await flushUi();
@@ -170,9 +171,9 @@ describe("DeviceView channels", () => {
     const rows = wrapper.findAll('[data-testid="channel-status-row"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].text()).toContain("Network");
-    expect(rows[0].attributes("data-channel-color")).toBe("green");
+    expect(rows[0].attributes("data-channel-color")).toBe(ChannelColor.Green);
     expect(rows[1].text()).toContain("Bluetooth");
-    expect(rows[1].attributes("data-channel-color")).toBe("grey");
+    expect(rows[1].attributes("data-channel-color")).toBe(ChannelColor.Grey);
   });
 
   it("searches for the peer only while the page is open", async () => {
@@ -194,15 +195,15 @@ describe("DeviceView channels", () => {
 
     expect(deviceStoreMock.setChannelEnabled).toHaveBeenCalledWith(
       "peer-device-123",
-      "network",
+      ChannelKind.Network,
       false,
     );
   });
 
   it("turns an off channel back on through the same switch", async () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow("network"),
-      channelRow("bluetooth", { state: "off", color: "off" }),
+      channelRow(ChannelKind.Network),
+      channelRow(ChannelKind.Bluetooth, { state: ChannelState.Off, color: ChannelColor.Off }),
     ]);
     const wrapper = mountView();
     await flushUi();
@@ -213,7 +214,7 @@ describe("DeviceView channels", () => {
 
     expect(deviceStoreMock.setChannelEnabled).toHaveBeenCalledWith(
       "peer-device-123",
-      "bluetooth",
+      ChannelKind.Bluetooth,
       true,
     );
   });
@@ -222,8 +223,8 @@ describe("DeviceView channels", () => {
   // exists only on a channel that is already off.
   it("offers unlink only once the channel is off", async () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow("network"),
-      channelRow("bluetooth", { state: "off", color: "off" }),
+      channelRow(ChannelKind.Network),
+      channelRow(ChannelKind.Bluetooth, { state: ChannelState.Off, color: ChannelColor.Off }),
     ]);
 
     const wrapper = mountView();
@@ -235,15 +236,15 @@ describe("DeviceView channels", () => {
     await rows[1].find('[data-testid="unlink-channel"]').trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.unlinkChannel).toHaveBeenCalledWith("peer-device-123", "bluetooth");
+    expect(deviceStoreMock.unlinkChannel).toHaveBeenCalledWith("peer-device-123", ChannelKind.Bluetooth);
   });
 
   // A channel that does not exist has nothing to switch or forget -- only
   // Add, which opens the setup dialog for that channel (ADR-0008 D20).
   it("opens the setup dialog from Add on a channel that does not exist", async () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow("network"),
-      channelRow("bluetooth", { state: "none", color: "none" }),
+      channelRow(ChannelKind.Network),
+      channelRow(ChannelKind.Bluetooth, { state: ChannelState.None, color: ChannelColor.None }),
     ]);
 
     const wrapper = mountView();
@@ -257,7 +258,7 @@ describe("DeviceView channels", () => {
     await row.find('[data-testid="add-channel"]').trigger("click");
     await flushUi();
 
-    expect(deviceStoreMock.beginChannelSetup).toHaveBeenCalledWith("peer-device-123", "bluetooth");
+    expect(deviceStoreMock.beginChannelSetup).toHaveBeenCalledWith("peer-device-123", ChannelKind.Bluetooth);
     wrapper.unmount();
   });
 
@@ -265,8 +266,8 @@ describe("DeviceView channels", () => {
   // that is simply away is grey, with nothing to explain (ADR-0008 D19).
   it("explains a problem on this device behind ⓘ, and only then", async () => {
     deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow("network", { color: "grey" }),
-      channelRow("bluetooth", { color: "orange", problem: "bluetooth_unavailable" }),
+      channelRow(ChannelKind.Network, { color: ChannelColor.Grey }),
+      channelRow(ChannelKind.Bluetooth, { color: ChannelColor.Orange, problem: ChannelProblem.BluetoothUnavailable }),
     ]);
 
     const wrapper = mountView();

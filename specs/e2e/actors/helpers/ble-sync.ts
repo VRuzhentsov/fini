@@ -3,6 +3,7 @@ import type { E2EActor } from '../fixtures.ts';
 import { pollUntil } from './dom.ts';
 import { waitForActorsReady, type SyncedActor } from './device-sync.ts';
 import { openDeviceDetailsFromSettings } from './personal-sync.ts';
+import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/channel.ts';
 
 /**
  * Readiness + pairing for the BLE-transport actor suite
@@ -18,10 +19,6 @@ import { openDeviceDetailsFromSettings } from './personal-sync.ts';
  * `fakeBluetoothAddress` wiring and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  */
-
-interface PeerSessionDebugStatus {
-  peer_session_count: number;
-}
 
 /**
  * Every actor's fake address is deterministic from its index alone (see
@@ -78,9 +75,9 @@ interface PairedDeviceRow {
 }
 
 interface ChannelStatusRow {
-  kind: 'network' | 'bluetooth';
-  state: 'none' | 'off' | 'on';
-  color: 'green' | 'grey' | 'orange' | 'off' | 'none';
+  kind: ChannelKind;
+  state: ChannelState;
+  color: ChannelColor;
 }
 
 /**
@@ -123,8 +120,8 @@ async function ensureBluetoothEnabledForPeer(
     'device_connection_channel_statuses',
     { peerDeviceId },
   );
-  const bluetooth = statuses.find((status) => status.kind === 'bluetooth');
-  if (bluetooth?.state === 'on') {
+  const bluetooth = statuses.find((status) => status.kind === ChannelKind.Bluetooth);
+  if (bluetooth?.state === ChannelState.On) {
     return;
   }
   // A channel that does not exist can only be set up with the peer, in the
@@ -133,24 +130,16 @@ async function ensureBluetoothEnabledForPeer(
   expect(
     bluetooth?.state,
     `${actor.actor.slug} has no Bluetooth channel with ${peerDeviceId} -- set it up in the app first`,
-  ).toBe('off');
+  ).toBe(ChannelState.Off);
 
   const after = await actor.actor.invoke<ChannelStatusRow[]>(
     'device_connection_set_channel_enabled',
-    { peerDeviceId, kind: 'bluetooth', enabled: true },
+    { peerDeviceId, kind: ChannelKind.Bluetooth, enabled: true },
   );
   expect(
-    after.find((status) => status.kind === 'bluetooth')?.state,
+    after.find((status) => status.kind === ChannelKind.Bluetooth)?.state,
     `${actor.actor.slug} should have Bluetooth on for ${peerDeviceId}`,
-  ).toBe('on');
-}
-
-export async function waitForBleSession(actor: E2EActor, timeoutMs = 60_000): Promise<void> {
-  await pollUntil(`${actor.slug} session established over BLE transport`, async () => {
-    await actor.invoke('space_sync_tick');
-    const status = await actor.invoke<PeerSessionDebugStatus>('device_connection_debug_status');
-    return status.peer_session_count > 0 || false;
-  }, timeoutMs, 1_000);
+  ).toBe(ChannelState.On);
 }
 
 /**
@@ -227,8 +216,8 @@ export async function waitForGreenChannel(
     const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', {
       peerDeviceId,
     });
-    const bluetooth = statuses.find((status) => status.kind === 'bluetooth');
-    return bluetooth?.color === 'green' || false;
+    const bluetooth = statuses.find((status) => status.kind === ChannelKind.Bluetooth);
+    return bluetooth?.color === ChannelColor.Green || false;
   }, timeoutMs, 1_000);
 }
 
@@ -245,7 +234,7 @@ export async function waitForBluetoothRowConnectedInUi(
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  const selector = '[data-testid="channel-status-row"][data-channel-kind="bluetooth"]';
+  const selector = `[data-testid="channel-status-row"][data-channel-kind="${ChannelKind.Bluetooth}"]`;
 
   await pollUntil(`${actor.slug} bluetooth row is green in the UI`, async () => {
     await openDeviceDetailsFromSettings(actor, peerDeviceId);
@@ -256,10 +245,10 @@ export async function waitForBluetoothRowConnectedInUi(
       return row ? (row.getAttribute('data-channel-color') ?? '') : '';
     })()`);
 
-    if (color === 'orange') {
+    if (color === ChannelColor.Orange) {
       throw new Error(`${actor.slug} bluetooth row reports a problem on this device`);
     }
 
-    return color === 'green' ? color : false;
+    return color === ChannelColor.Green ? color : false;
   }, timeoutMs, 1_000);
 }

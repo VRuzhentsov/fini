@@ -14,6 +14,7 @@ import {
   waitForChannelColor,
   waitForSyncQueue,
 } from '../helpers/device-page.ts';
+import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
 
 /**
  * The Device page, as ADR-0007 rebuilt it: channels with their own
@@ -37,13 +38,13 @@ test('turning a channel off stops the traffic, not just the colour of the row', 
     syncedA.identity.device_id,
   );
 
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'network', 'green');
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Green);
 
   // Off. A greyed row over a live session would be the exact lie this
   // design exists to remove, so assert the session itself is gone rather
   // than trusting the row.
-  await toggleChannel(actorA, 'network');
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'network', 'off');
+  await toggleChannel(actorA, ChannelKind.Network);
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Off);
 
   // Sampled repeatedly, not once. A single check moments after the toggle
   // passes even when the switch does nothing: the peer's own dial loop simply
@@ -59,14 +60,14 @@ test('turning a channel off stops the traffic, not just the colour of the row', 
     expect(
       transport,
       'network session must stay closed while the channel is off, including against an inbound dial',
-    ).not.toBe('network');
+    ).not.toBe(ChannelKind.Network);
     await actorA.invoke('space_sync_tick');
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
 
   // And back on again: the switch has to be a switch, not a one-way door.
-  await toggleChannel(actorA, 'network');
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'network', 'green', 60_000);
+  await toggleChannel(actorA, ChannelKind.Network);
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Green, 60_000);
 });
 
 /**
@@ -86,14 +87,14 @@ test('adding Bluetooth with no usable radio is refused, and blames this device',
   const [, syncedB] = await ensureSyncedActors([actorA, actorB], { pairViaUi: true });
 
   await openDeviceDetailsFromSettings(actorA, syncedB.identity.device_id);
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'bluetooth', 'none');
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Bluetooth, ChannelColor.None);
 
-  const outcome = await addChannelViaDialog(actorA, 'bluetooth');
+  const outcome = await addChannelViaDialog(actorA, ChannelKind.Bluetooth);
   expect(outcome.ready, 'setup cannot complete without a radio').toBe(false);
   expect(outcome.failure, 'the failure must name this device').toContain('this device');
 
   await closeSetupDialog(actorA);
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'bluetooth', 'none');
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Bluetooth, ChannelColor.None);
 });
 
 /**
@@ -116,9 +117,9 @@ test('the sync queue reports what cannot move, then that it has moved', async ({
     syncedA.identity.device_id,
   );
 
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'network', 'green');
-  await toggleChannel(actorA, 'network');
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'network', 'off');
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Green);
+  await toggleChannel(actorA, ChannelKind.Network);
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Off);
 
   const title = `queued quest ${Date.now()}`;
   await actorA.invoke('create_quest', {
@@ -133,8 +134,8 @@ test('the sync queue reports what cannot move, then that it has moved', async ({
   );
   expect(stalled).toContain('waiting');
 
-  await toggleChannel(actorA, 'network');
-  await waitForChannelColor(actorA, syncedB.identity.device_id, 'network', 'green', 60_000);
+  await toggleChannel(actorA, ChannelKind.Network);
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Green, 60_000);
 
   const drained = await waitForSyncQueue(
     actorA,
@@ -195,15 +196,15 @@ test('the devices list dot agrees with the channel rows', async ({ actorA, actor
   const [, syncedB] = await ensureSyncedActors([actorA, actorB], { pairViaUi: true });
   const peerId = syncedB.identity.device_id;
 
-  await waitForChannelColor(actorA, peerId, 'network', 'green');
+  await waitForChannelColor(actorA, peerId, ChannelKind.Network, ChannelColor.Green);
   expect(await anyChannelConnected(actorA, peerId), 'a channel row is connected').toBe(true);
   expect(await deviceDotConnected(actorA, peerId), 'so the dot is the connected colour').toBe(true);
 
   // Nothing connected. The dot follows the channels: with the only channel
   // switched off, nothing is green, whatever the network beacon says.
   await openDeviceDetailsFromSettings(actorA, peerId);
-  await toggleChannel(actorA, 'network');
-  await waitForChannelColor(actorA, peerId, 'network', 'off');
+  await toggleChannel(actorA, ChannelKind.Network);
+  await waitForChannelColor(actorA, peerId, ChannelKind.Network, ChannelColor.Off);
 
   expect(await anyChannelConnected(actorA, peerId), 'no channel row is connected').toBe(false);
   expect(await deviceDotConnected(actorA, peerId), 'so the dot must not be green').toBe(false);
@@ -221,6 +222,6 @@ test('the devices list dot agrees with the channel rows', async ({ actorA, actor
   expect(detail.hasInfo, 'but the detail must still be reachable').toBe(true);
 
   await openDeviceDetailsFromSettings(actorA, peerId);
-  await toggleChannel(actorA, 'network');
-  await waitForChannelColor(actorA, peerId, 'network', 'green', 60_000);
+  await toggleChannel(actorA, ChannelKind.Network);
+  await waitForChannelColor(actorA, peerId, ChannelKind.Network, ChannelColor.Green, 60_000);
 });

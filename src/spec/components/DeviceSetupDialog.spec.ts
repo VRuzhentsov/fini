@@ -2,6 +2,7 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
 import { useDeviceStore } from "../../stores/device";
+import { ChannelKind } from "../../utils/channel";
 
 jest.mock("../../stores/device", () => ({
   useDeviceStore: jest.fn(),
@@ -13,7 +14,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     outgoingRequest: null,
     incomingRequests: [],
     discoveredDevices: [],
-    discoveredByChannel: { network: [], bluetooth: [] },
+    discoveredByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
     pairCompletedAt: null,
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
@@ -72,13 +73,13 @@ describe("DeviceSetupDialog, new device", () => {
       discovery_port: 0,
       ws_port: null,
       last_seen_at: new Date().toISOString(),
-      channel_kind: "bluetooth" as const,
+      channel_kind: ChannelKind.Bluetooth,
     };
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(
       storeMock({
         // Deduplicated list keeps only the Network entry, as the store does.
-        discoveredDevices: [{ ...peer, channel_kind: "network" as const }],
-        discoveredByChannel: { network: [{ ...peer, channel_kind: "network" as const }], bluetooth: [peer] },
+        discoveredDevices: [{ ...peer, channel_kind: ChannelKind.Network }],
+        discoveredByChannel: { [ChannelKind.Network]: [{ ...peer, channel_kind: ChannelKind.Network }], [ChannelKind.Bluetooth]: [peer] },
       }),
     );
 
@@ -89,7 +90,7 @@ describe("DeviceSetupDialog, new device", () => {
 
     const rows = wrapper.findAll('[data-testid="nearby-device-row"]');
     expect(rows).toHaveLength(1);
-    expect(rows[0].attributes("data-channel-kind")).toBe("bluetooth");
+    expect(rows[0].attributes("data-channel-kind")).toBe(ChannelKind.Bluetooth);
   });
 
   it("enters add mode on open, because that is what makes this device discoverable", async () => {
@@ -262,7 +263,7 @@ describe("DeviceSetupDialog, new device", () => {
 });
 
 describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
-  const known = { peerDeviceId: "peer-1", peerName: "Pixel 8", kind: "bluetooth" };
+  const known = { peerDeviceId: "peer-1", peerName: "Pixel 8", kind: ChannelKind.Bluetooth };
 
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
@@ -274,7 +275,7 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
     await flushUi();
 
     expect(wrapper.find('[data-testid="pair-channel-network"]').exists()).toBe(false);
-    expect(store.beginChannelSetup).toHaveBeenCalledWith("peer-1", "bluetooth");
+    expect(store.beginChannelSetup).toHaveBeenCalledWith("peer-1", ChannelKind.Bluetooth);
     expect(wrapper.find('[data-testid="setup-peer-row"]').text()).toContain("Pixel 8");
   });
 
@@ -297,7 +298,7 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
     await wrapper.find('[data-testid="setup-ok"]').trigger("click");
     await flushUi();
 
-    expect(store.endChannelSetup).toHaveBeenCalledWith("peer-1", "bluetooth", true);
+    expect(store.endChannelSetup).toHaveBeenCalledWith("peer-1", ChannelKind.Bluetooth, true);
     expect(wrapper.emitted("close")).toBeTruthy();
   });
 
@@ -312,7 +313,7 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
     await flushUi();
 
     expect(store.endChannelSetup).toHaveBeenCalledTimes(1);
-    expect(store.endChannelSetup).toHaveBeenCalledWith("peer-1", "bluetooth", false);
+    expect(store.endChannelSetup).toHaveBeenCalledWith("peer-1", ChannelKind.Bluetooth, false);
   });
 
   it("lists other devices in range, and offers the code when the peer asks for one", async () => {
@@ -323,12 +324,12 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
       discovery_port: 0,
       ws_port: null,
       last_seen_at: new Date().toISOString(),
-      channel_kind: "bluetooth" as const,
+      channel_kind: ChannelKind.Bluetooth,
     });
     const store = storeMock({
       discoveredByChannel: {
-        network: [],
-        bluetooth: [nearby("peer-1", "Pixel 8"), nearby("other", "Thinkpad")],
+        [ChannelKind.Network]: [],
+        [ChannelKind.Bluetooth]: [nearby("peer-1", "Pixel 8"), nearby("other", "Thinkpad")],
       },
     });
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
