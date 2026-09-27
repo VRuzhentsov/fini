@@ -9,7 +9,7 @@ use tauri::State;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 
-use super::channels;
+use super::{channels, setup, ChannelSetup};
 use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;
@@ -1035,9 +1035,9 @@ pub fn device_connection_save_paired_device(
 /// a person who just switched a channel on is asking for an attempt now,
 /// not at the end of whatever window a previous failure opened.
 ///
-/// Enabling never fails on a precondition. If the condition the channel
-/// needs is absent -- no radio, peer away -- the channel stays on and the
-/// row says so (ADR-0007).
+/// Switching on needs a channel that exists (ADR-0008 D15: `On` is reached
+/// only through init, so a `None` channel is set up, not switched on) and,
+/// for Bluetooth, an adapter that works on this device (D6).
 pub fn device_connection_set_channel_enabled_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1080,27 +1080,17 @@ pub fn device_connection_set_channel_enabled_impl(
         }
     }
 
-    // `configure`, not `set_enabled`: flipping the switch on a channel that
-    // has no row is how a channel gets set up in the first place, and the
-    // page offers exactly that for a channel a pair has never used.
-    // `set_enabled` on its own would update nothing and report success.
-    if channels::find(&mut *conn, &peer_device_id, kind).is_some() {
-        channels::set_enabled(&mut *conn, &peer_device_id, kind, enabled)?;
-    } else {
-        channels::configure(&mut *conn, &peer_device_id, kind, enabled, None)?;
+    if channels::find(&mut *conn, &peer_device_id, kind).is_none() {
+        return Err("Set the channel up first".to_string());
     }
+    if enabled
+        && !crate::services::communication::channel::service::service_for(state, kind).usable()
+    {
+        return Err(format!("{kind:?} is unavailable on this device"));
+    }
+    channels::set_enabled(&mut *conn, &peer_device_id, kind, enabled)?;
 
     if enabled {
-        // #179. ADR-0007 promises the other person does not have to do
-        // anything, and this is what carries that across: the peer writes
-        // the same row, so its own gate stops rejecting the channel we are
-        // about to dial it on. Best-effort by design -- it needs a live
-        // session on some *other* channel to travel over, and a pair with
-        // no live session at all has nothing to announce over. Such a pair
-        // falls back to the behaviour it already had (each side flips its
-        // own switch), rather than failing the switch the person just
-        // flipped.
-        state.announce_channel_to_peer(&peer_device_id, kind);
         match kind {
             // Switching a channel on is one of the five moments work becomes
             // sendable (ADR-0007): the peer was filtered out of the dial loop
@@ -1187,6 +1177,7 @@ pub fn device_connection_unlink_channel_impl(
     kind: ChannelKind,
 ) -> Result<Vec<ChannelStatus>, String> {
     channels::unlink(&mut *conn, &peer_device_id, kind)?;
+    state.send_unlink_notices_to_peer(&peer_device_id);
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
@@ -1289,26 +1280,40 @@ pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String>
     }
 }
 
-/// The "Find via Bluetooth" button on `DeviceView.vue` — Phase 1's discovery
-/// mechanism (ADR 0002) for a peer that hasn't self-reported an address
-/// (Android peers can't; see `local_bluetooth_address`'s doc comment) or
-/// simply hasn't connected over network since this feature existed. Scans
-/// for up to 60 seconds; `Ok(None)` means nothing matched in that window,
-/// not an error -- the frontend shows "not found" rather than an error
-/// state for that case. A genuine `Err` means Bluetooth itself couldn't be
-/// used at all (no adapter, permission denied, etc).
+/// Where a channel's init stands on this device (ADR-0008 D1): `None` when
+/// no setup search is running for it.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelSetupStatus {
+    pub hello_acked_by_peer: bool,
+    pub acked_peer_hello: bool,
+    /// Both halves done: OK can be pressed (D4).
+    pub initialized: bool,
+}
+
+impl From<ChannelSetup> for ChannelSetupStatus {
+    fn from(setup: ChannelSetup) -> Self {
+        Self {
+            hello_acked_by_peer: setup.hello_acked_by_peer,
+            acked_peer_hello: setup.acked_peer_hello,
+            initialized: setup.initialized(),
+        }
+    }
+}
+
+/// Start the setup search for a paired device's channel (ADR-0008 D2).
+/// Refused for a Bluetooth channel while Bluetooth does not work on this
+/// device (D6).
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub async fn device_connection_find_bluetooth_address(
+pub async fn device_connection_begin_channel_setup(
     state: State<'_, DeviceConnectionState>,
     peer_device_id: String,
-) -> Result<Option<String>, String> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        // Same click-triggered permission request as the "Enable Bluetooth"
-        // toggle above -- this button is exactly the same class of genuine
-        // user action, not a background/startup path. See
-        // BluetoothPairing.requestPermissionsIfNeeded's doc comment.
+    kind: ChannelKind,
+) -> Result<(), String> {
+    if kind == ChannelKind::Bluetooth {
+        // An explicit click -- the one kind of moment Android lets us ask
+        // for the Nearby Devices permission.
         #[cfg(target_os = "android")]
         {
             crate::services::android_context::call_static_context_void(
@@ -1325,22 +1330,40 @@ pub async fn device_connection_find_bluetooth_address(
                 );
             }
         }
+        let service =
+            crate::services::communication::channel::service::service_for(state.inner(), kind);
+        if !service.probe().await {
+            return Err("Bluetooth is unavailable on this device".to_string());
+        }
+    }
+    setup::start(state.inner(), &peer_device_id, kind);
+    Ok(())
+}
 
-        let device_connection = state.inner().clone();
-        let db_path = device_connection.db_path.clone();
-        crate::services::communication::channel::ble::find_peer_address(
-            device_connection,
-            db_path,
-            peer_device_id,
-            Duration::from_secs(60),
-        )
-        .await
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        let _ = peer_device_id;
-        Err("Bluetooth is not available on this platform".to_string())
-    }
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_channel_setup_status(
+    state: State<'_, DeviceConnectionState>,
+    peer_device_id: String,
+    kind: ChannelKind,
+) -> Option<ChannelSetupStatus> {
+    state.channel_setup(&peer_device_id, kind).map(ChannelSetupStatus::from)
+}
+
+/// End the setup search: OK (`switch_on`) or closing the dialog. Writes the
+/// channel only if its init completed (ADR-0008 D15).
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_end_channel_setup(
+    db: State<'_, AppDbConnection>,
+    state: State<'_, DeviceConnectionState>,
+    peer_device_id: String,
+    kind: ChannelKind,
+    switch_on: bool,
+) -> Result<Vec<ChannelStatus>, String> {
+    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    setup::finish(&mut conn, state.inner(), &peer_device_id, kind, switch_on)?;
+    device_connection_channel_statuses_impl(&mut conn, state.inner(), peer_device_id)
 }
 
 /// The pure in-memory half of `ChannelStatusInputs` -- everything
@@ -1946,6 +1969,9 @@ mod tests {
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
 
         let (mut conn, state) = test_state();
+        // ADR-0008 D15: the channel exists (set up by an init), switched off.
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
+            .expect("a channel that went through init");
         let statuses = device_connection_set_channel_enabled_impl(
             &mut conn,
             &state,
@@ -1959,7 +1985,7 @@ mod tests {
             .iter()
             .find(|status| status.kind == ChannelKind::Bluetooth)
             .expect("a Bluetooth row");
-        assert!(row.configured, "the switch is what sets a channel up");
+        assert!(row.configured);
         assert!(row.enabled);
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");

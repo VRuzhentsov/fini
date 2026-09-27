@@ -64,26 +64,6 @@ fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) 
     })
 }
 
-/// Whether this device set this pair's Bluetooth channel up and then
-/// switched it off or unlinked it -- checked by `BluetoothProbe`'s pre-auth
-/// handler so an explicit switch-off isn't bypassed by "Find via
-/// Bluetooth". That flow's whole point is discovering an address for a pair that has *never* had
-/// Bluetooth set up (see its own doc comment), but a pair the person
-/// actively turned off is a different case entirely. Replying would let the
-/// other side believe discovery succeeded and record the address on its own
-/// end, only for every real session attempt to then be rejected by
-/// `check_channel_enabled` here.
-///
-/// Fails open, the opposite of `check_channel_enabled`: a pair with no
-/// Bluetooth row has nothing to have been switched off, which is exactly
-/// the never-set-up case this flow is for.
-fn check_bluetooth_switched_off(db_path: &PathBuf, device_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = open_db_at_path(db_path);
-        channels::is_switched_off(&mut conn, device_id, ChannelKind::Bluetooth)
-    })
-}
-
 /// Server-side gate: read the first frame off a freshly accepted `DataLink` and
 /// dispatch it. Pre-auth pairing messages (`PairRequest`/`PairAccept`/
 /// `PairComplete`) are handled and the link is then closed — discovery and
@@ -121,23 +101,26 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 state.receive_ws_pair_complete(payload, from_addr, kind == ChannelKind::Bluetooth);
             return;
         }
-        PeerFrame::BluetoothProbe { device_id } => {
-            // Deliberately `check_paired`, not `check_channel_enabled`:
-            // this exists precisely so "Find via Bluetooth" can confirm an
-            // address for a pair that doesn't have Bluetooth enabled yet.
-            // But an *explicit* disable is a different case from
-            // never-enabled -- see `check_bluetooth_switched_off`'s
-            // doc comment for why that one must still gate the reply.
-            if check_paired(&db_path, &device_id)
-                && !check_bluetooth_switched_off(&db_path, &device_id)
-            {
-                let _ = send_frame(
+        // ADR-0008 D1/D2: half of a channel's init. Answered only while
+        // this device is itself running a setup search for that peer on
+        // this channel -- an init needs both people at it. Anything else
+        // (not paired, not searching, switched off, unlinked) gets silence.
+        PeerFrame::Hello { device_id } => {
+            if check_paired(&db_path, &device_id) && state.channel_setup(&device_id, kind).is_some() {
+                if send_frame(
                     link.as_mut(),
-                    &PeerFrame::BluetoothProbeReply {
+                    &PeerFrame::HelloAck {
                         device_id: state.identity.device_id.clone(),
                     },
                 )
-                .await;
+                .await
+                .is_ok()
+                {
+                    state.note_channel_setup(&device_id, kind, |setup| setup.acked_peer_hello = true);
+                }
+                // Keep the link open briefly so the ack is read before the
+                // stream closes, as the `DiscoveryHello` arm below does.
+                let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
             }
             return;
         }

@@ -280,7 +280,7 @@ const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
 const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 
 /// Per-candidate cap for a dial+probe+reply confirmation round trip
-/// (`probe_candidate`/`probe_discovery_hello`), separate from the overall
+/// (`hello_candidate`/`probe_discovery_hello`), separate from the overall
 /// scan deadline: without this, a single candidate that accepts the
 /// connection but never replies could consume the *entire* remaining scan
 /// budget, starving out every other candidate that might otherwise have
@@ -301,31 +301,19 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// complete fails *every* candidate, not just the ones behind a slow one.
 const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
 
-/// `find_peer_address`'s own per-candidate cap, larger than
-/// `CANDIDATE_PROBE_TIMEOUT`: `probe_candidate` tries a legacy
-/// `perform_client_auth` fallback after `BluetoothProbe` goes unanswered
-/// (see its doc comment), so a confirmation attempt here can be two
-/// sequential dial+handshake round trips, not one. `find_peer_address`'s
-/// own budget is the 60s "Find via Bluetooth" button timeout, not
-/// `AddDeviceView.vue`'s tight 4s scan pass, so there's ample room for a
-/// larger per-candidate share without starving out other candidates in
-/// practice.
+/// `setup_hello_round`'s per-candidate cap for one dial + hello + ack.
 ///
-/// 4s did not honour that reasoning: it has to fit *two* sequential
-/// dial+handshake round trips, while `CANDIDATE_PROBE_TIMEOUT` above
-/// budgets 3s for one. Against a real phone the dial alone took the whole
-/// 4s and the future was dropped mid-connect, every time:
+/// Against a real phone the dial alone takes 1-2s, and `BleDataLink::send`
+/// retries a `GattBusy` rejection for up to ~1.4s on top; 4s was once too
+/// short and dropped every attempt mid-connect:
 ///
 /// ```text
 /// 02:05:13  connect: dialling 52:E1:52:02:7D:37
 /// 02:05:17  connect: abandoned before completing (connect guard dropped)
 /// ```
 ///
-/// 15s fits both round trips with room for `BleDataLink::send`'s ~1.4s
-/// `GattBusy` retry, and still leaves the 60s button budget enough for
-/// four candidates -- more than a room ever holds. The background dial
-/// loop, doing the same work, has always had 30s
-/// (`DIAL_CANDIDATE_TIMEOUT`).
+/// 15s leaves a 60s setup round room for four candidates -- more than a
+/// room ever holds.
 const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Shared add-mode state, watched by `run_server`'s peripheral loop so a
@@ -531,7 +519,7 @@ impl DataLink for BleDataLink {
         //
         // Sized to the tightest caller on this path: `scan_add_mode_candidates`
         // gets `BLUETOOTH_SCAN_DURATION_MS` (4s) for the *whole* pass, dial
-        // included, and `find_peer_address` allows `FIND_PEER_CANDIDATE_TIMEOUT`
+        // included, and `setup_hello_round` allows `FIND_PEER_CANDIDATE_TIMEOUT`
         // (4s) per candidate. With a dial typically eating 1-2s of that, the
         // ~1.4s worst case below still leaves the caller room to fail cleanly
         // instead of being cut off mid-retry.
@@ -601,63 +589,35 @@ pub async fn dial(address: &str) -> Result<Box<dyn DataLink>, String> {
 /// connection is dropped either way: this function's job is identity
 /// confirmation, not establishing the real session — the next
 /// `space_sync_tick`'s dial loop picks the now-eligible peer up normally.
-/// Dials `address` and confirms it's genuinely `peer_id` via `BluetoothProbe`
-/// (not `perform_client_auth`: the ordinary Auth path requires Bluetooth to
-/// already be enabled for this pair, which is exactly the precondition
-/// `find_peer_address` exists to help establish -- reusing it would mean
-/// this discovery flow could never succeed for its actual target case).
-///
-/// Falls back to `perform_client_auth` if `BluetoothProbe` goes
-/// unanswered: a peer still running a build from before that frame
-/// existed can't decode it at all and just silently closes the
-/// connection, indistinguishable here from "not paired." The ordinary
-/// Auth path still works against such a peer *if* Bluetooth happens to
-/// already be enabled for this pair (the one case its
-/// `check_bluetooth_enabled` gate allows), recovering "Find via
-/// Bluetooth" for the "already enabled, address changed" scenario even
-/// against a peer that can't speak the newer discovery protocol. A
-/// never-enabled pair against such a peer remains a genuine limit of
-/// protocol evolution -- there's no discovery flow to fall back to that
-/// doesn't equally require the peer to understand it.
-///
-/// `None` on any failure along the way; the caller is responsible for
-/// bounding how long this (now up to two sequential dial+handshake
-/// attempts) is allowed to run -- see `FIND_PEER_CANDIDATE_TIMEOUT`.
-async fn probe_candidate(state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
-    if let Ok(mut link) = dial(address).await {
-        if send_frame(
-            link.as_mut(),
-            &PeerFrame::BluetoothProbe {
-                device_id: state.identity.device_id.clone(),
-            },
-        )
-        .await
-        .is_ok()
-        {
-            if let Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) =
-                recv_frame(link.as_mut()).await
-            {
-                if device_id == peer_id {
-                    return Some(());
-                }
-            }
-        }
+/// Dials `address` and sends this device's hello (ADR-0008 D1). `Some(())`
+/// if the device there is `peer_id` and acknowledged it -- which it does
+/// only while it is running its own setup search for us (D2).
+async fn hello_candidate(state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
+    let mut link = dial(address).await.ok()?;
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::Hello {
+            device_id: state.identity.device_id.clone(),
+        },
+    )
+    .await
+    .ok()?;
+    match recv_frame(link.as_mut()).await {
+        Some(Ok(PeerFrame::HelloAck { device_id })) if device_id == peer_id => Some(()),
+        _ => None,
     }
-
-    let mut fallback_link = dial(address).await.ok()?;
-    session::perform_client_auth(fallback_link.as_mut(), &state.identity.device_id, peer_id)
-        .await
-        .ok()
-        .map(|_protocol_version| ())
 }
 
-pub async fn find_peer_address(
-    state: DeviceConnectionState, db_path: PathBuf, peer_id: String, timeout: Duration,
-) -> Result<Option<String>, String> {
+/// One Bluetooth setup-search round for `peer_id` (ADR-0008 D12): listens
+/// for up to `timeout`, says hello to each Fini advertiser it hears, and
+/// ends early once `peer_id` acknowledges. `Ok(true)` if it did.
+pub async fn setup_hello_round(
+    state: DeviceConnectionState, peer_id: String, timeout: Duration,
+) -> Result<bool, String> {
     use futures_util::StreamExt;
 
     let backend = backend().await?;
-    // Held for the whole search: this stream stays open across the probe
+    // Held for the whole round: this stream stays open across the hello
     // dials below.
     let _scan = scan_lease().lock().await;
     let mut discovered = backend
@@ -671,53 +631,35 @@ pub async fn find_peer_address(
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Ok(None);
+            return Ok(false);
         }
         let candidate = match tokio::time::timeout(remaining, discovered.next()).await {
             Ok(Some(Ok(candidate))) => candidate,
-            // A backend-level scan failure (e.g. Android's async
-            // `onScanFailed` for an adapter, registration, or permission
-            // problem) means Bluetooth itself is unusable right now, not
-            // merely "no candidate seen yet" -- surface it as an error so
-            // the caller doesn't report a misleading "not found".
+            // A backend-level scan failure means Bluetooth itself is
+            // unusable right now, not merely "nobody answered yet".
             Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
-            // Timed out, or the stream ended with nothing left to poll:
-            // both are a genuine "not found within the deadline".
-            Ok(None) | Err(_) => return Ok(None),
+            Ok(None) | Err(_) => return Ok(false),
         };
         let address = candidate.address.0;
         if !tried.insert(address.clone()) {
             continue;
         }
-        // The dial+probe+reply round trip is bounded by the *remaining*
-        // scan deadline too, not left unbounded -- a candidate that
-        // accepts the connection but never answers `BluetoothProbe` would
-        // otherwise leave `recv_frame` waiting indefinitely, well past the
-        // `timeout` this function promises its caller (and the "Find via
-        // Bluetooth" button's advertised bound).
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Ok(None);
+            return Ok(false);
         }
-        let confirmed = tokio::time::timeout(
+        // Bounded by the round's own deadline: a candidate that accepts the
+        // connection and never answers must not hold the round open.
+        let acknowledged = tokio::time::timeout(
             remaining.min(FIND_PEER_CANDIDATE_TIMEOUT),
-            probe_candidate(&state, &address, &peer_id),
+            hello_candidate(&state, &address, &peer_id),
         )
         .await
         .ok()
         .flatten()
         .is_some();
-        if confirmed {
-            let db_path = db_path.clone();
-            let peer_id = peer_id.clone();
-            let address_owned = address.clone();
-            tokio::task::block_in_place(|| {
-                let mut conn = open_db_at_path(&db_path);
-                crate::services::communication::pairing::persist_bluetooth_address_and_maybe_enable(
-                    &mut conn, &peer_id, &address_owned,
-                )
-            })?;
-            return Ok(Some(address));
+        if acknowledged {
+            return Ok(true);
         }
     }
 }
@@ -749,7 +691,7 @@ async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
 /// the advertising side.
 ///
 /// Returns everything found within `timeout`, not just the first match
-/// (unlike `find_peer_address`, this feeds a picker list, not a single
+/// (unlike `setup_hello_round`, this feeds a picker list, not a single
 /// confirm-and-persist action) — callers needing an ongoing view call this
 /// repeatedly rather than once for a long window.
 pub async fn scan_add_mode_candidates(
@@ -802,7 +744,7 @@ pub async fn scan_add_mode_candidates(
                 // A backend-level scan failure (e.g. Android's async
                 // `onScanFailed`) means Bluetooth itself is unusable, not
                 // merely "no more candidates" -- propagate it like
-                // `find_peer_address` does, rather than reporting an
+                // `setup_hello_round` does, rather than reporting an
                 // apparently-successful empty/partial scan.
                 Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
                 // Timed out, or the stream ended: stop with whatever was

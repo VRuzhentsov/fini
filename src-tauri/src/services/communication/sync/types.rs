@@ -34,14 +34,9 @@ pub struct SyncEventEnvelope {
 pub enum SessionCommand {
     Forward(PeerFrame),
     Close,
-    /// "This pair now has that channel set up on my side" (#179).
-    ///
-    /// Not a `Forward` of a ready-made frame, because whether it is safe to
-    /// send at all depends on the peer's protocol version -- which only
-    /// `run_session` knows, having learned it from the `Auth`/`AuthOk`
-    /// exchange. A caller flipping a switch has no access to it, so it says
-    /// what happened and lets the session decide.
-    AnnounceChannel(crate::services::communication::channel::ChannelKind),
+    /// Send any unlink notices still owed to this peer now, rather than at
+    /// the start of the next exchange (ADR-0008 D14).
+    SendUnlinkNotices,
 }
 
 pub type SessionSender = mpsc::Sender<SessionCommand>;
@@ -71,11 +66,6 @@ pub const PROTOCOL_VERSION: u32 = 4;
 /// suddenly fail this check and silently lose the ability to ever reach
 /// green.
 pub const PING_MIN_PROTOCOL_VERSION: u32 = 3;
-
-/// The fixed protocol version that introduced `PeerFrame::ChannelEnabled`
-/// (#179). Separate constant, same reasoning as `PING_MIN_PROTOCOL_VERSION`
-/// above.
-pub const CHANNEL_ENABLED_MIN_PROTOCOL_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -146,25 +136,19 @@ pub enum PeerFrame {
     /// in add-mode are pairing candidates."
     #[serde(rename = "discovery_hello_reply")]
     DiscoveryHelloReply { device_id: String, hostname: String },
-    /// Pre-auth, sent by `channel::ble::find_peer_address` ("Find via
-    /// Bluetooth") to confirm a freshly-scanned address genuinely belongs
-    /// to an already-paired peer, *without* requiring Bluetooth to already
-    /// be enabled for that pair. This can't reuse the ordinary `Auth`/
-    /// `AuthOk` handshake: `run_peer_gate`'s Bluetooth branch enforces
-    /// `check_bluetooth_enabled` as a precondition, which is exactly the
-    /// flag "Find via Bluetooth" exists to help the user turn on in the
-    /// first place -- reusing it would mean the discovery flow could never
-    /// succeed for its actual target case. Untrusted, same trust model as
-    /// `DiscoveryHello`: this only proves "you already know a device_id I
-    /// have paired," not cryptographic identity -- Fini's own pairing
-    /// handshake remains the trust boundary (`specs/device-connect/README.md`).
-    #[serde(rename = "bluetooth_probe")]
-    BluetoothProbe { device_id: String },
-    /// Reply to `BluetoothProbe`, sent only if the sender's claimed
-    /// `device_id` is already one of this device's paired peers
-    /// (`check_paired` -- deliberately not `check_bluetooth_enabled`).
-    #[serde(rename = "bluetooth_probe_reply")]
-    BluetoothProbeReply { device_id: String },
+    /// ADR-0008 D1/D2: one half of a channel's init. Pre-auth, sent over a
+    /// fresh link by a device running a setup search for a paired peer.
+    /// Answered with `HelloAck` only if the receiver has this device paired
+    /// *and* is running a setup search for it on this channel itself -- so
+    /// an init needs both people searching, and a device that is not
+    /// setting the channel up (switched off, unlinked, or simply not asked)
+    /// says nothing. Not a trust boundary: it proves "you know a device id
+    /// I have paired", the same as `DiscoveryHello` (see #184).
+    #[serde(rename = "hello")]
+    Hello { device_id: String },
+    /// Reply to `Hello`; carries the replier's own device id.
+    #[serde(rename = "hello_ack")]
+    HelloAck { device_id: String },
     /// ADR-0003 revision: app-level liveness proof, sent on *every*
     /// connected channel (not just the primary one) every `PING_INTERVAL`
     /// -- see `session::run_session`'s ping loop and
@@ -181,44 +165,17 @@ pub enum PeerFrame {
     /// Reply to an inbound `Ping`, sent immediately.
     #[serde(rename = "pong")]
     Pong,
-    /// "This pair now has this channel set up on my side" (#179).
-    ///
-    /// ADR-0007 promises trust is established once, for the pair, not per
-    /// channel: adding a second channel to a paired device "needs no
-    /// passcode and does not interrupt the other person". Nothing carried
-    /// that promise across the wire, so the receiving side's
-    /// `run_peer_gate` found no row for the new channel, answered
-    /// `is_enabled = false` and rejected every authentication on it -- the
-    /// dialog said "they don't need to do anything" while the switch sat at
-    /// `connecting` until the other person turned the same channel on by
-    /// hand.
-    ///
-    /// Only meaningful on an already-authenticated session, which is what
-    /// makes it safe to act on: the sender has already proved it is a
-    /// paired peer, and all this says is which channel that same pair may
-    /// now also use. Gated behind `CHANNEL_ENABLED_MIN_PROTOCOL_VERSION`
-    /// like `Ping`, for the reason `Unknown` describes.
-    #[serde(rename = "channel_enabled")]
-    ChannelEnabled {
+    /// "I unlinked this channel on my side" (ADR-0008 D14). The receiver
+    /// removes its own row for it and answers `ChannelUnlinkedAck`; the
+    /// sender keeps saying it on every exchange until then.
+    #[serde(rename = "channel_unlinked")]
+    ChannelUnlinked {
         kind: crate::services::communication::channel::ChannelKind,
     },
-    /// "I have dealt with what you told me about that channel."
-    ///
-    /// Sent for a channel set up on this side *and* for one deliberately
-    /// left alone -- switched off or unlinked here. Both are the
-    /// announcement having been applied; only a failure to read or write
-    /// the table is not, and that stays unacknowledged so the sender says
-    /// it again.
-    ///
-    /// Without this the sender can only know that it managed to *write* a
-    /// frame, which is not the same as the peer having acted on it. A
-    /// write that succeeds into a peer whose database is locked, a peer
-    /// that dies between reading and writing -- each leaves that side
-    /// refusing a channel it was already told about, for the life of the
-    /// session, with nothing to notice. Delivery is the receiver's to
-    /// confirm.
-    #[serde(rename = "channel_enabled_ack")]
-    ChannelEnabledAck {
+    /// "I removed that channel too." Only a failure to write the table goes
+    /// unacknowledged, so the sender says it again.
+    #[serde(rename = "channel_unlinked_ack")]
+    ChannelUnlinkedAck {
         kind: crate::services::communication::channel::ChannelKind,
     },
     /// Catches any `type` tag this build doesn't recognize, instead of

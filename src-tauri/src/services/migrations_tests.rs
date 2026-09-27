@@ -17,19 +17,25 @@ use diesel_migrations::MigrationHarness;
 use crate::schema::channels;
 use crate::services::db::{open_db_at_path, temp_db_path, MIGRATIONS};
 
-/// `channels.unlinked_at` is what lets a channel someone unlinked stay
-/// unlinked when the peer asks for it back (#179).
+/// Migration 25 (ADR-0008 D14) turns every unlinked channel back into an
+/// absent one and keeps every other channel exactly as it was.
 ///
-/// The thing to prove is the direction of its default on an existing
-/// database. Every channel already out there predates the column, so it
-/// arrives NULL -- and NULL has to mean *linked*. The opposite reading
-/// would take every pair's working channels away on first launch, which
-/// is exactly the class of damage that is unrecoverable by the time
-/// anyone notices.
+/// The damage to guard against is the reverse: deleting a working channel
+/// takes it away from a pair in the field on first launch.
 #[test]
-fn an_upgraded_database_keeps_every_channel_it_already_had() {
-    let db_path = temp_db_path("upgrade-keeps-existing-channels-linked");
+fn hard_unlink_migration_drops_only_unlinked_channels() {
+    let db_path = temp_db_path("hard-unlink-drops-only-unlinked");
     let mut conn = open_db_at_path(&db_path);
+
+    // Wind back until the notices table is gone -- asked of the schema, so
+    // this keeps meaning "before migration 25" however many land after it.
+    while diesel::sql_query("SELECT 1 FROM channel_unlink_notices LIMIT 1")
+        .execute(&mut conn)
+        .is_ok()
+    {
+        conn.revert_last_migration(MIGRATIONS)
+            .expect("wind back past the hard-unlink migration");
+    }
 
     diesel::sql_query(
         "INSERT INTO paired_devices (peer_device_id, display_name, paired_at, pair_state)
@@ -38,41 +44,24 @@ fn an_upgraded_database_keeps_every_channel_it_already_had() {
     .execute(&mut conn)
     .expect("seed a pair");
     diesel::sql_query(
-        "INSERT INTO channels (device_id, channel_kind, enabled, is_primary, address, configured_at)
-         VALUES ('upgraded-pair', 'network', 1, 1, NULL, '2026-01-01T00:00:00Z')",
+        "INSERT INTO channels (device_id, channel_kind, enabled, is_primary, address, configured_at, unlinked_at)
+         VALUES ('upgraded-pair', 'network', 1, 1, NULL, '2026-01-01T00:00:00Z', NULL),
+                ('upgraded-pair', 'bluetooth', 0, 0, NULL, '2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z')",
     )
     .execute(&mut conn)
-    .expect("seed a channel");
+    .expect("seed a linked and an unlinked channel");
 
-    // Wind back until the column is gone -- asked of the schema rather
-    // than counted in migrations, so this keeps meaning "before the
-    // tombstone" however many land after it.
-    while channels::table
-        .select(channels::unlinked_at)
-        .limit(1)
-        .load::<Option<String>>(&mut conn)
-        .is_ok()
-    {
-        conn.revert_last_migration(MIGRATIONS)
-            .expect("wind back past the tombstone column");
-    }
     conn.run_pending_migrations(MIGRATIONS)
-        .expect("upgrade a database that already had channels");
+        .expect("upgrade a database that had a tombstoned channel");
 
-    let rows: Vec<(String, bool, Option<String>)> = channels::table
-        .select((
-            channels::channel_kind,
-            channels::enabled,
-            channels::unlinked_at,
-        ))
+    let rows: Vec<(String, bool, bool)> = channels::table
+        .select((channels::channel_kind, channels::enabled, channels::is_primary))
         .load(&mut conn)
         .expect("load the upgraded channels");
-
     assert_eq!(
         rows,
-        vec![("network".to_string(), true, None)],
-        "a channel that predates the column keeps its switch and reads as linked -- anything \
-         else takes working channels away from every pair in the field on first launch"
+        vec![("network".to_string(), true, true)],
+        "the linked channel survives untouched; the unlinked one is gone"
     );
 
     let _ = std::fs::remove_file(db_path);

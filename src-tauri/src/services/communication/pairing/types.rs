@@ -307,4 +307,25 @@ pub(super) struct DiscoveryRuntime {
     /// way, so a brief false negative here is far cheaper than a false
     /// positive routing real traffic over an opted-out channel.
     pub peer_bluetooth_enabled_cache: HashMap<String, bool>,
+    /// ADR-0008 D1/D2: the channels this device is running a setup search
+    /// for right now, and how far each one's init has got.
+    pub channel_setups: HashMap<(String, ChannelKind), ChannelSetup>,
+}
+
+/// One channel's init in progress (ADR-0008 D1). Complete once both halves
+/// are true: this device's hello was acknowledged by the peer, and this
+/// device acknowledged the peer's hello.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelSetup {
+    /// The peer answered this device's hello.
+    pub hello_acked_by_peer: bool,
+    /// This device answered the peer's hello.
+    pub acked_peer_hello: bool,
+}
+
+impl ChannelSetup {
+    pub fn initialized(&self) -> bool {
+        self.hello_acked_by_peer && self.acked_peer_hello
+    }
 }

@@ -49,6 +49,13 @@ pub trait ChannelService: Send + Sync {
     /// person could switch on and wait for.
     fn available(&self) -> bool;
 
+    /// Whether this channel can be switched on right now (ADR-0008 D6): the
+    /// platform supports it and, as far as the passive signals know, the
+    /// hardware is working.
+    fn usable(&self) -> bool {
+        self.available()
+    }
+
     /// Ask the hardware directly, right now.
     ///
     /// Separate from `available` because the answer can change while the app
@@ -252,6 +259,10 @@ impl ChannelService for BluetoothChannelService {
 
     async fn probe(&self) -> bool {
         self.radio.probe().await
+    }
+
+    fn usable(&self) -> bool {
+        self.radio.available() && self.radio.adapter_available()
     }
 
     fn start_discovery(&self) {

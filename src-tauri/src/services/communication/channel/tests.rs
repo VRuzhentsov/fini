@@ -1135,9 +1135,9 @@ async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_sess
     // The session's own app-level ping/ack loop (ADR-0003 revision) also
     // runs concurrently now -- skip past any incidental `Ping` (replying
     // `Pong`, same as a real peer would) while waiting for the refresh.
-    // Same for the channel announcements a session restates at its start
-    // (#179): this test is about the self-report, not about which frames
-    // happen to sit either side of it.
+    // Same for any unlink notices a session restates at its start
+    // (ADR-0008 D14): this test is about the self-report, not about which
+    // frames happen to sit either side of it.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -1149,7 +1149,7 @@ async fn bluetooth_self_report_refreshes_when_the_local_address_changes_mid_sess
             Ok(Some(Ok(PeerFrame::Ping))) => {
                 let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
             }
-            Ok(Some(Ok(PeerFrame::ChannelEnabled { .. }))) => {}
+            Ok(Some(Ok(PeerFrame::ChannelUnlinked { .. }))) => {}
             other => panic!("expected a refreshed BluetoothAddressUpdate after the address changed, got {other:?}"),
         }
     }
@@ -1974,130 +1974,135 @@ async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
     );
 }
 
-/// Regression test: `BluetoothProbe` ("Find via Bluetooth"'s confirmation
-/// step) must succeed for a paired peer whose Bluetooth transport is *not*
-/// enabled yet -- that's the normal case this discovery flow exists for.
-/// Before this fix, `find_peer_address` reused the ordinary Auth/AuthOk
-/// handshake, whose `check_bluetooth_enabled` precondition made this
-/// scenario impossible to ever complete.
-#[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_probe_confirms_a_paired_device_even_when_bluetooth_is_not_yet_enabled() {
-    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-not-enabled");
-    seed_paired_device(&receiver_db, "peer-client");
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let gate_receiver = receiver.clone();
-    let gate_db = receiver_db.clone();
-    tokio::spawn(async move {
-        let Ok((stream, _addr)) = listener.accept().await else {
-            return;
-        };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
-        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
-    });
-
-    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
+/// Sends a hello from `from_device_id` to this device's gate and returns
+/// whatever came back within a short window (`None` for silence).
+async fn say_hello(
+    state: DeviceConnectionState,
+    db_path: PathBuf,
+    from_device_id: &str,
+) -> Option<PeerFrame> {
+    let mut link = dial_bluetooth_gate(state, db_path).await;
     send_frame(
         link.as_mut(),
-        &PeerFrame::BluetoothProbe {
-            device_id: "peer-client".to_string(),
+        &PeerFrame::Hello {
+            device_id: from_device_id.to_string(),
         },
     )
     .await
-    .expect("send bluetooth probe");
+    .expect("the hello itself sends fine -- the peer is reachable");
+    match tokio::time::timeout(Duration::from_millis(800), recv_frame(link.as_mut())).await {
+        Ok(Some(Ok(frame))) => Some(frame),
+        _ => None,
+    }
+}
 
-    match recv_frame(link.as_mut()).await {
-        Some(Ok(PeerFrame::BluetoothProbeReply { device_id })) => {
+/// ADR-0008 D1/D2: while this device runs a setup search for a paired peer,
+/// it acknowledges that peer's hello -- and records that half of the init.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hello_is_acknowledged_while_this_device_searches_for_the_peer() {
+    let (receiver, receiver_db) = server_state("adr-0008-hello-while-searching");
+    seed_paired_device(&receiver_db, "peer-client");
+    receiver.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
+
+    match say_hello(receiver.clone(), receiver_db, "peer-client").await {
+        Some(PeerFrame::HelloAck { device_id }) => {
             assert_eq!(device_id, receiver.identity.device_id);
         }
-        other => panic!("expected a BluetoothProbeReply, got {other:?}"),
+        other => panic!("expected a HelloAck, got {other:?}"),
+    }
+    let setup = receiver
+        .channel_setup("peer-client", ChannelKind::Bluetooth)
+        .expect("the search is still running");
+    assert!(setup.acked_peer_hello, "this device's half of the init is recorded");
+    assert!(!setup.initialized(), "the other half is the peer acknowledging our hello");
+}
+
+/// ADR-0008 D2: a device that is not running a setup search says nothing,
+/// whatever its channel's state -- never set up, `Off` or `On`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hello_goes_unanswered_when_this_device_is_not_searching() {
+    for enabled in [None, Some(false), Some(true)] {
+        let (receiver, receiver_db) = server_state("adr-0008-hello-not-searching");
+        seed_paired_device(&receiver_db, "peer-client");
+        if let Some(enabled) = enabled {
+            let mut conn = open_db_at_path(&receiver_db);
+            channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, enabled, None)
+                .expect("set the channel up");
+        }
+        assert!(
+            say_hello(receiver, receiver_db, "peer-client").await.is_none(),
+            "channel {enabled:?}: a device that is not searching must stay silent"
+        );
     }
 }
 
-/// Regression test for the P2 review finding: a probe from a peer whose
-/// Bluetooth channel this device set up and then *switched off* must get no
-/// reply -- replying would let that peer believe "Find via Bluetooth"
-/// succeeded and record the address on its own end, only for every real
-/// session attempt to then be rejected by this device's own
-/// `check_channel_enabled` gate. Distinct from the never-set-up case above:
-/// that one must still reply (it's the whole point of this discovery flow),
-/// a switched-off channel must not. A row that exists and is off is exactly
-/// what tells the two apart.
+/// A hello from a device this one never paired gets no reply, even while it
+/// is searching for someone else.
 #[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_probe_gets_no_reply_when_the_channel_is_switched_off() {
-    let (receiver, receiver_db) = server_state("channel-bluetooth-probe-switched-off");
+async fn a_hello_from_an_unpaired_device_goes_unanswered() {
+    let (receiver, receiver_db) = server_state("adr-0008-hello-unpaired");
     seed_paired_device(&receiver_db, "peer-client");
-    {
-        let mut conn = open_db_at_path(&receiver_db);
-        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
-            .expect("set the channel up, switched off");
-    }
+    receiver.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
+    receiver.begin_channel_setup("a-stranger", ChannelKind::Bluetooth);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let gate_receiver = receiver.clone();
-    let gate_db = receiver_db.clone();
-    tokio::spawn(async move {
-        let Ok((stream, _addr)) = listener.accept().await else {
-            return;
-        };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
-        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
-    });
+    assert!(say_hello(receiver, receiver_db, "a-stranger").await.is_none());
+}
 
-    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::BluetoothProbe {
-            device_id: "peer-client".to_string(),
-        },
+/// ADR-0008 D15: finishing a setup writes the channel only when its init
+/// completed -- `On` for OK, `Off` for closing the dialog -- and nothing
+/// when it did not.
+#[test]
+fn finishing_a_setup_writes_the_channel_only_after_a_complete_init() {
+    let (state, db_path) = server_state("adr-0008-finish-setup");
+    seed_paired_device(&db_path, "peer-client");
+    let mut conn = open_db_at_path(&db_path);
+
+    state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
+    state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| s.acked_peer_hello = true);
+    crate::services::communication::pairing::setup::finish(
+        &mut conn, &state, "peer-client", ChannelKind::Bluetooth, true,
     )
-    .await
-    .expect("send bluetooth probe");
+    .expect("finish a half-done init");
+    assert!(
+        channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
+        "half an init is no init: nothing is written"
+    );
 
-    match recv_frame(link.as_mut()).await {
-        None | Some(Err(_)) => {}
-        other => panic!("an explicitly disabled pair must not reply to BluetoothProbe, got {other:?}"),
+    for (switch_on, expected) in [(true, true), (false, false)] {
+        state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
+        state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| {
+            s.acked_peer_hello = true;
+            s.hello_acked_by_peer = true;
+        });
+        crate::services::communication::pairing::setup::finish(
+            &mut conn, &state, "peer-client", ChannelKind::Bluetooth, switch_on,
+        )
+        .expect("finish a complete init");
+        assert_eq!(
+            channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).map(|c| c.enabled),
+            Some(expected),
+        );
+        assert!(state.channel_setup("peer-client", ChannelKind::Bluetooth).is_none());
     }
 }
 
-/// Mirror of the above: a probe from a device_id that isn't actually paired
-/// must get no reply at all -- same "silently ignore, don't confirm/deny"
-/// pattern `DiscoveryHello` uses.
-#[tokio::test(flavor = "multi_thread")]
-async fn bluetooth_probe_gets_no_reply_from_an_unpaired_device_id() {
-    let (receiver, receiver_db) = server_state("transport-bluetooth-probe-unpaired");
+/// ADR-0008 D15: a channel that does not exist is set up, not switched on.
+#[test]
+fn switching_on_a_channel_that_was_never_set_up_is_refused() {
+    let (state, db_path) = server_state("adr-0008-switch-on-none");
+    seed_paired_device(&db_path, "peer-client");
+    let mut conn = open_db_at_path(&db_path);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let gate_receiver = receiver.clone();
-    let gate_db = receiver_db.clone();
-    tokio::spawn(async move {
-        let Ok((stream, _addr)) = listener.accept().await else {
-            return;
-        };
-        let link: Box<dyn DataLink> = Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
-        crate::services::communication::pairing::run_peer_gate(link, gate_receiver, gate_db).await;
-    });
-
-    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::BluetoothProbe {
-            device_id: "a-stranger".to_string(),
-        },
+    let err = crate::services::communication::pairing::device_connection_set_channel_enabled_impl(
+        &mut conn,
+        &state,
+        "peer-client".to_string(),
+        ChannelKind::Bluetooth,
+        true,
     )
-    .await
-    .expect("send bluetooth probe");
-
-    match recv_frame(link.as_mut()).await {
-        None | Some(Err(_)) => {}
-        other => panic!("an unpaired probe must not get a reply, got {other:?}"),
-    }
+    .expect_err("None cannot be switched on");
+    assert!(err.contains("Set the channel up first"), "unexpected error: {err}");
+    assert!(channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none());
 }
 
 /// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
@@ -2247,302 +2252,100 @@ async fn a_lapsed_proof_tears_the_session_down_once_grace_expires() {
     );
 }
 
-/// #179. ADR-0007 promises that adding a second channel to a paired device
-/// "does not interrupt the other person" — trust belongs to the pair, not
-/// to a channel. Nothing carried that across the wire, so the receiving
-/// side kept no row for the new channel, `run_peer_gate` answered
-/// `is_enabled = false`, and every authentication on it was rejected while
-/// the initiating device's dialog said the peer had nothing to do.
-///
-/// Here the client authenticates over Network and announces that Bluetooth
-/// is now set up for this pair. The server must end up with that channel
-/// configured and enabled, without anyone touching the server.
+/// ADR-0008 D14: a peer that unlinked a channel says so, and this side
+/// removes its own row for it and acknowledges -- whatever its switch said.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_channel_announced_by_the_peer_is_set_up_on_the_receiving_side() {
-    let (server, server_db) = server_state("transport-tcpws-channel-announce");
+async fn a_channel_the_peer_unlinked_is_removed_here_and_acknowledged() {
+    let (server, server_db) = server_state("adr-0008-peer-unlinked");
     seed_paired_device(&server_db, "peer-client");
-
     {
         let mut conn = open_db_at_path(&server_db);
-        assert!(
-            channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
-            "precondition: this pair has never used Bluetooth on the receiving side"
-        );
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, true, None)
+            .expect("Bluetooth set up and on here");
     }
 
     let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(
-        server.clone(),
-        server_db.clone(),
-        port,
-    ));
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
-        .await
-        .expect("dial");
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
-        .expect("auth should succeed for paired device");
+        .expect("auth over the network channel");
+    send_frame(link.as_mut(), &PeerFrame::ChannelUnlinked { kind: ChannelKind::Bluetooth })
+        .await
+        .expect("tell the server Bluetooth was unlinked");
 
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::ChannelEnabled {
-            kind: ChannelKind::Bluetooth,
-        },
-    )
-    .await
-    .expect("announce the channel");
-
-    let mut enabled = false;
-    for _ in 0..100 {
-        {
-            let mut conn = open_db_at_path(&server_db);
-            if channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth) {
-                enabled = true;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
+            Ok(Some(Ok(PeerFrame::ChannelUnlinkedAck { kind }))) => {
+                assert_eq!(kind, ChannelKind::Bluetooth);
                 break;
             }
+            Ok(Some(Ok(_))) => continue,
+            other => panic!("expected ChannelUnlinkedAck, got {other:?}"),
         }
-        sleep(Duration::from_millis(20)).await;
-    }
-    assert!(
-        enabled,
-        "the peer announced Bluetooth over the channel it was already trusted on, so this \
-         side must set it up itself — otherwise its own gate rejects every Bluetooth \
-         authentication and the pair waits for a person to flip a second switch by hand"
-    );
-}
-
-/// The switch belongs to the device it is on. A peer announcing that it
-/// set a channel up must not flip a channel this person deliberately
-/// switched off -- that would reverse an explicit opt-out and restart
-/// dialing on a channel they said no to. #179 is only about *adding* a
-/// channel the pair has never set up here.
-#[tokio::test(flavor = "multi_thread")]
-async fn an_announced_channel_never_re_enables_one_switched_off_here() {
-    let (server, server_db) = server_state("transport-tcpws-channel-announce-optout");
-    seed_paired_device(&server_db, "peer-client");
-    {
-        let mut conn = open_db_at_path(&server_db);
-        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
-            .expect("set Bluetooth up but switched off");
     }
 
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(
-        server.clone(),
-        server_db.clone(),
-        port,
-    ));
-    sleep(Duration::from_millis(100)).await;
-
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
-        .await
-        .expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
-        .await
-        .expect("auth should succeed for paired device");
-
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::ChannelEnabled {
-            kind: ChannelKind::Bluetooth,
-        },
-    )
-    .await
-    .expect("announce the channel");
-
-    // Long enough that the write would have landed if it were going to.
-    sleep(Duration::from_millis(500)).await;
-    let mut conn = open_db_at_path(&server_db);
-    assert!(
-        !channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
-        "a channel switched off on this device must stay off, whatever the peer announces"
-    );
-}
-
-/// Unlinking is a decision, and a peer does not get to undo it.
-///
-/// "Unlink channel" used to delete the row, which made a deliberately
-/// removed channel indistinguishable from one this pair never had -- so a
-/// peer announcing the same channel would recreate it, switched on.
-/// Migration 24 leaves a tombstone instead, and this is what it is for.
-#[tokio::test(flavor = "multi_thread")]
-async fn an_announced_channel_never_resurrects_one_unlinked_here() {
-    let (server, server_db) = server_state("transport-tcpws-channel-announce-unlinked");
-    seed_paired_device(&server_db, "peer-client");
-    {
-        let mut conn = open_db_at_path(&server_db);
-        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
-            .expect("set Bluetooth up");
-        channels::unlink(&mut conn, "peer-client", ChannelKind::Bluetooth).expect("unlink it");
-        assert!(
-            channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
-            "an unlinked channel must read as absent, exactly as it did when the row was deleted"
-        );
-    }
-
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(
-        server.clone(),
-        server_db.clone(),
-        port,
-    ));
-    sleep(Duration::from_millis(100)).await;
-
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
-        .await
-        .expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
-        .await
-        .expect("auth should succeed for paired device");
-
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::ChannelEnabled {
-            kind: ChannelKind::Bluetooth,
-        },
-    )
-    .await
-    .expect("announce the channel");
-
-    sleep(Duration::from_millis(500)).await;
     let mut conn = open_db_at_path(&server_db);
     assert!(
         channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
-        "a channel unlinked on this device must stay unlinked, whatever the peer announces"
-    );
-    assert!(
-        !channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
-        "and certainly must not come back switched on"
+        "the pair is broken for this channel, so this side's row goes too"
     );
 }
 
-/// The announcement cannot rely on the single send made when a switch was
-/// flipped: that one is dropped if the session mailbox is full or the
-/// session ends mid-send, and a pair with no live session has nothing to
-/// send it over at all. Every session restates what is set up here, which
-/// is safe because the receiver only ever adds a channel it has never had.
+/// ADR-0008 D14: an exchange starts by restating the unlink notices still
+/// owed, and the peer's acknowledgement clears each one.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_session_restates_the_channels_set_up_here_when_it_starts() {
-    let (server, server_db) = server_state("transport-tcpws-channel-announce-restate");
-    // Configures Network, enabled.
+async fn an_exchange_delivers_owed_unlink_notices_until_acknowledged() {
+    let (server, server_db) = server_state("adr-0008-unlink-notice");
     seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
+            .expect("Bluetooth set up, off");
+        channels::unlink(&mut conn, "peer-client", ChannelKind::Bluetooth).expect("unlink it");
+    }
 
     let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(
-        server.clone(),
-        server_db.clone(),
-        port,
-    ));
+    tokio::spawn(tcp_ws::run_server_on_port(server.clone(), server_db.clone(), port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
-        .await
-        .expect("dial");
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
-        .expect("auth should succeed for paired device");
+        .expect("auth over the network channel");
 
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
-    let mut announced = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
         match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
-            Ok(Some(Ok(PeerFrame::ChannelEnabled { kind }))) if kind == ChannelKind::Network => {
-                announced = true;
+            Ok(Some(Ok(PeerFrame::ChannelUnlinked { kind }))) => {
+                assert_eq!(kind, ChannelKind::Bluetooth);
                 break;
             }
-            Ok(Some(Ok(PeerFrame::Ping))) => {
-                let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
-            }
-            // Anything else the session says at startup is not this test's
-            // business -- only that the announcement is among it.
-            Ok(Some(Ok(_))) => {}
-            _ => break,
+            Ok(Some(Ok(_))) => continue,
+            other => panic!("expected the owed ChannelUnlinked notice, got {other:?}"),
         }
     }
-    assert!(
-        announced,
-        "a session must restate the channels this device has set up, so an announcement lost \
-         at switch-flip time cannot strand the pair with the peer rejecting the channel forever"
-    );
-}
-
-/// The receiver is what makes an announcement "delivered".
-///
-/// The sender can only see that it managed to write a frame, and that is
-/// not the same thing: a Bluetooth write can succeed into a peer whose
-/// database is locked, or into one that dies between reading the frame and
-/// writing the row. Either way that side goes on refusing a channel it was
-/// already told about, invisibly, for the life of the session. So the
-/// receiver says when it has dealt with it -- for a channel it set up and
-/// for one it deliberately left alone, both being the announcement applied.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_receiver_acknowledges_an_announcement_it_has_applied() {
-    let (server, server_db) = server_state("transport-tcpws-channel-announce-ack");
-    seed_paired_device(&server_db, "peer-client");
-
-    let port = free_port().await;
-    tokio::spawn(tcp_ws::run_server_on_port(
-        server.clone(),
-        server_db.clone(),
-        port,
-    ));
-    sleep(Duration::from_millis(100)).await;
-
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    send_frame(link.as_mut(), &PeerFrame::ChannelUnlinkedAck { kind: ChannelKind::Bluetooth })
         .await
-        .expect("dial");
-    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
-        .await
-        .expect("auth should succeed for paired device");
+        .expect("acknowledge it");
 
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::ChannelEnabled {
-            kind: ChannelKind::Bluetooth,
-        },
-    )
-    .await
-    .expect("announce the channel");
-
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
-    let mut acked = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
+        let owed = {
+            let mut conn = open_db_at_path(&server_db);
+            channels::pending_unlink_notices(&mut conn, "peer-client")
+        };
+        if owed.is_empty() {
             break;
         }
-        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
-            Ok(Some(Ok(PeerFrame::ChannelEnabledAck { kind })))
-                if kind == ChannelKind::Bluetooth =>
-            {
-                acked = true;
-                break;
-            }
-            Ok(Some(Ok(PeerFrame::Ping))) => {
-                let _ = send_frame(link.as_mut(), &PeerFrame::Pong).await;
-            }
-            Ok(Some(Ok(_))) => {}
-            _ => break,
-        }
+        assert!(tokio::time::Instant::now() < deadline, "the ack must clear the notice");
+        sleep(Duration::from_millis(20)).await;
     }
-    assert!(
-        acked,
-        "the receiver must confirm it applied the announcement -- a frame this side managed to \
-         write is not evidence the other side acted on it, and without the confirmation there \
-         is nothing to stop the retry or to prove the channel will be accepted"
-    );
-
-    let mut conn = open_db_at_path(&server_db);
-    assert!(
-        channels::is_enabled(&mut conn, "peer-client", ChannelKind::Bluetooth),
-        "and the acknowledgement follows the row actually being written"
-    );
 }
 
 // ADR-0008 reproductions. Adapted from the handoff's hardware-driven repros
@@ -2608,28 +2411,14 @@ async fn adr_0008_an_unlinked_channel_refuses_the_exchange() {
     assert!(err.contains("bluetooth disabled for this pair"), "unexpected refusal: {err}");
 }
 
-/// Inventory 4.3: an unlinked channel must not confirm a "Find". It used to,
-/// because the probe gate read the channel through `find`, which hides the
-/// tombstone -- so the searching side was told "found" by a peer that would
-/// refuse every exchange that followed.
+/// Inventory 4.3: an unlinked channel must not confirm a setup search. It
+/// used to answer "Find", so the searching side was told "found" by a peer
+/// that would refuse every exchange after it.
 #[tokio::test(flavor = "multi_thread")]
-async fn adr_0008_an_unlinked_channel_does_not_answer_a_probe() {
-    let (server, server_db) = server_state("adr-0008-unlinked-probe");
+async fn adr_0008_an_unlinked_channel_does_not_answer_a_hello() {
+    let (server, server_db) = server_state("adr-0008-unlinked-hello");
     seed_paired_device(&server_db, "peer-client");
     seed_bluetooth_channel_off(&server_db, true);
 
-    let mut link = dial_bluetooth_gate(server, server_db).await;
-    send_frame(
-        link.as_mut(),
-        &PeerFrame::BluetoothProbe {
-            device_id: "peer-client".to_string(),
-        },
-    )
-    .await
-    .expect("the probe itself sends fine -- the peer is reachable");
-
-    match recv_frame(link.as_mut()).await {
-        None | Some(Err(_)) => {}
-        other => panic!("an unlinked channel must not answer a probe, got {other:?}"),
-    }
+    assert!(say_hello(server, server_db, "peer-client").await.is_none());
 }

@@ -3,6 +3,7 @@ pub(crate) mod link_state;
 mod runtime;
 pub(crate) mod channel_status;
 pub(crate) mod channels;
+pub(crate) mod setup;
 #[cfg(any(feature = "ui-plane", test))]
 pub(crate) mod gate;
 pub(crate) mod types;
@@ -24,7 +25,8 @@ pub(crate) use commands::BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK;
 pub use commands::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
     device_connection_discover_bluetooth_candidates, device_connection_discovery_snapshot,
-    device_connection_enter_add_mode, device_connection_find_bluetooth_address,
+    device_connection_enter_add_mode, device_connection_begin_channel_setup,
+    device_connection_channel_setup_status, device_connection_end_channel_setup,
     device_connection_get_identity, device_connection_get_paired_devices,
     device_connection_leave_add_mode, device_connection_pair_accept_request,
     device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
@@ -78,6 +80,7 @@ pub use channel_status::{
     ChannelRowState, ChannelStatus, ChannelStatusCode, ChannelStatusInputs, NetworkStatusCode,
 };
 use types::DiscoveryRuntime;
+pub use types::ChannelSetup;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
     IncomingSyncAck,
@@ -933,29 +936,15 @@ impl DeviceConnectionState {
         }
     }
 
-    /// Tell the peer that this pair now has `kind` set up here (#179).
-    ///
-    /// Goes over the primary channel like `push_to_peer`, for the same
-    /// reason: it is the one already authenticated and live. Announcing
-    /// Bluetooth therefore travels over Network, which is exactly the case
-    /// that was broken -- the new channel cannot carry its own
-    /// announcement, because the peer rejects it until the announcement
-    /// arrives.
-    pub fn announce_channel_to_peer(
-        &self,
-        peer_device_id: &str,
-        kind: crate::services::communication::channel::ChannelKind,
-    ) -> bool {
-        let guard = match self.runtime.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-        let Some(primary) = guard.peer_primary_transport.get(peer_device_id).copied() else {
-            return false;
-        };
-        match guard.peer_sessions.get(&(peer_device_id.to_string(), primary)) {
-            Some(sender) => sender.try_send(SessionCommand::AnnounceChannel(kind)).is_ok(),
-            None => false,
+    /// Ask every live session with this peer to send the unlink notices it
+    /// is still owed now (ADR-0008 D14). Best-effort: with no live session
+    /// the notices simply go out at the start of the next exchange.
+    pub fn send_unlink_notices_to_peer(&self, peer_device_id: &str) {
+        let Ok(guard) = self.runtime.lock() else { return };
+        for ((peer, _kind), sender) in guard.peer_sessions.iter() {
+            if peer == peer_device_id {
+                let _ = sender.try_send(SessionCommand::SendUnlinkNotices);
+            }
         }
     }
 
@@ -1146,5 +1135,53 @@ impl DeviceConnectionState {
             return false;
         };
         guard.presence.contains_key(peer_device_id)
+    }
+
+    /// Start a setup search for this peer's channel (ADR-0008 D2). While it
+    /// runs, this device answers the peer's hello on that channel; nothing
+    /// else makes it answer. Starting again keeps the progress so far.
+    pub fn begin_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard
+                .channel_setups
+                .entry((peer_device_id.to_string(), kind))
+                .or_default();
+        }
+    }
+
+    /// End the setup search, returning how far its init got.
+    pub fn end_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> Option<ChannelSetup> {
+        let mut guard = self.runtime.lock().ok()?;
+        guard.channel_setups.remove(&(peer_device_id.to_string(), kind))
+    }
+
+    /// The setup search running for this peer's channel, if any.
+    pub fn channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> Option<ChannelSetup> {
+        let guard = self.runtime.lock().ok()?;
+        guard.channel_setups.get(&(peer_device_id.to_string(), kind)).copied()
+    }
+
+    /// Record one half of an init. A no-op when no setup search is running
+    /// for that channel: an init only counts while both people are at it.
+    pub fn note_channel_setup(
+        &self,
+        peer_device_id: &str,
+        kind: ChannelKind,
+        update: impl FnOnce(&mut ChannelSetup),
+    ) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            if let Some(setup) = guard.channel_setups.get_mut(&(peer_device_id.to_string(), kind)) {
+                update(setup);
+            }
+        }
+    }
+
+    /// Where the Network channel last heard this peer's presence beacon.
+    pub fn network_presence_address(&self, peer_device_id: &str) -> Option<(String, u16)> {
+        let guard = self.runtime.lock().ok()?;
+        guard
+            .presence
+            .get(peer_device_id)
+            .map(|peer| (peer.addr.clone(), peer.ws_port.unwrap_or(self.space_sync_ws_port)))
     }
 }
