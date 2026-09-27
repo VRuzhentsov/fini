@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, being written during the design grill. Not accepted.
+Accepted. Written during the design grill. Follow-ups: #183 (stale peers and unlink propagation), #184 (peer authentication).
 
 ## Context
 
@@ -21,7 +21,7 @@ result is state combinations that mean nothing to the person, for example:
 - A row that switches between two orderings every 5s, because the frontend
   derives state a second time.
 
-## Glossary (proposed, being agreed)
+## Glossary
 
 Main term first; synonyms in brackets mean the same thing and are not
 separate mechanisms. Text in this ADR and in code uses the main term only.

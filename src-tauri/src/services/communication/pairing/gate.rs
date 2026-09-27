@@ -65,9 +65,9 @@ fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) 
 }
 
 /// Whether this device set this pair's Bluetooth channel up and then
-/// switched it off -- checked by `BluetoothProbe`'s pre-auth handler so an
-/// explicit switch-off isn't bypassed by "Find via Bluetooth". That flow's
-/// whole point is discovering an address for a pair that has *never* had
+/// switched it off or unlinked it -- checked by `BluetoothProbe`'s pre-auth
+/// handler so an explicit switch-off isn't bypassed by "Find via
+/// Bluetooth". That flow's whole point is discovering an address for a pair that has *never* had
 /// Bluetooth set up (see its own doc comment), but a pair the person
 /// actively turned off is a different case entirely. Replying would let the
 /// other side believe discovery succeeded and record the address on its own
@@ -168,8 +168,11 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             peer_device_id,
             protocol_version,
         } => (device_id, peer_device_id, protocol_version),
-        _ => {
-            log::warn!("[space_sync][gate] {kind:?} link from {from_addr}: expected auth first, got a different frame");
+        other => {
+            log::warn!(
+                "[space_sync][gate] {kind:?} link from {from_addr}: expected auth first, got `{}`",
+                other.wire_type()
+            );
             let _ = send_frame(
                 link.as_mut(),
                 &PeerFrame::AuthFail {

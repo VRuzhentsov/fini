@@ -134,11 +134,16 @@ pub fn read_enabled(
         .map(|row| row.is_some_and(|channel| channel.enabled))
 }
 
-/// Whether the person set this channel up and then switched it off --
-/// distinct from never having set it up, which is what made
+/// Whether the person set this channel up and then switched it off or
+/// unlinked it -- distinct from never having set it up, which is what made
 /// `bluetooth_disabled_by_user` a separate column before rows were lazy.
+///
+/// Reads past the tombstone on purpose: through `find` an unlinked channel
+/// looks never-configured, and this answered `false` for exactly the
+/// channel the person removed (ADR-0008, inventory 4.3).
 pub fn is_switched_off(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> bool {
-    find(conn, device_id, kind).is_some_and(|channel| !channel.enabled)
+    row(conn, device_id, kind)
+        .is_some_and(|channel| channel.unlinked_at.is_some() || !channel.enabled)
 }
 
 /// Set a channel up, or turn an existing one back on. Idempotent: calling it

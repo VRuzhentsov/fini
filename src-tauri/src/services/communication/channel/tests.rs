@@ -2544,3 +2544,92 @@ async fn the_receiver_acknowledges_an_announcement_it_has_applied() {
         "and the acknowledgement follows the row actually being written"
     );
 }
+
+// ADR-0008 reproductions. Adapted from the handoff's hardware-driven repros
+// to the accepted model: a channel is `None`, `Off` or `On` (D15), and a
+// peer whose channel is not `On` refuses the exchange. Unlinking is still a
+// tombstone in the schema until D14 lands; these assert the behaviour the
+// person sees, so they hold across that change.
+
+/// Runs this device's gate for one inbound Bluetooth-kind link and returns
+/// the dialling side of it.
+async fn dial_bluetooth_gate(state: DeviceConnectionState, db_path: PathBuf) -> Box<dyn DataLink> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((stream, _addr)) = listener.accept().await else {
+            return;
+        };
+        let link: Box<dyn DataLink> =
+            Box::new(AsBluetooth(Box::new(bluetooth_stub::StubDataLink::new(stream))));
+        crate::services::communication::pairing::run_peer_gate(link, state, db_path).await;
+    });
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    Box::new(bluetooth_stub::StubDataLink::new(stream))
+}
+
+/// Sets up this pair's Bluetooth channel switched off, and unlinks it when
+/// asked -- the `Off` and removed states of ADR-0008 D15.
+fn seed_bluetooth_channel_off(db_path: &PathBuf, unlink: bool) {
+    let mut conn = open_db_at_path(db_path);
+    channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
+        .expect("set Bluetooth up, switched off");
+    if unlink {
+        channels::unlink(&mut conn, "peer-client", ChannelKind::Bluetooth).expect("unlink it");
+    }
+}
+
+/// D15: an `Off` channel refuses the exchange, and says why on the wire.
+#[tokio::test(flavor = "multi_thread")]
+async fn adr_0008_an_off_channel_refuses_the_exchange() {
+    let (server, server_db) = server_state("adr-0008-off-refuses");
+    seed_paired_device(&server_db, "peer-client");
+    seed_bluetooth_channel_off(&server_db, false);
+
+    let mut link = dial_bluetooth_gate(server.clone(), server_db).await;
+    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect_err("an Off channel must refuse");
+    assert!(err.contains("bluetooth disabled for this pair"), "unexpected refusal: {err}");
+}
+
+/// D14/D15: a channel the person unlinked refuses the exchange, exactly as
+/// one that never existed.
+#[tokio::test(flavor = "multi_thread")]
+async fn adr_0008_an_unlinked_channel_refuses_the_exchange() {
+    let (server, server_db) = server_state("adr-0008-unlinked-refuses");
+    seed_paired_device(&server_db, "peer-client");
+    seed_bluetooth_channel_off(&server_db, true);
+
+    let mut link = dial_bluetooth_gate(server.clone(), server_db).await;
+    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect_err("an unlinked channel must refuse");
+    assert!(err.contains("bluetooth disabled for this pair"), "unexpected refusal: {err}");
+}
+
+/// Inventory 4.3: an unlinked channel must not confirm a "Find". It used to,
+/// because the probe gate read the channel through `find`, which hides the
+/// tombstone -- so the searching side was told "found" by a peer that would
+/// refuse every exchange that followed.
+#[tokio::test(flavor = "multi_thread")]
+async fn adr_0008_an_unlinked_channel_does_not_answer_a_probe() {
+    let (server, server_db) = server_state("adr-0008-unlinked-probe");
+    seed_paired_device(&server_db, "peer-client");
+    seed_bluetooth_channel_off(&server_db, true);
+
+    let mut link = dial_bluetooth_gate(server, server_db).await;
+    send_frame(
+        link.as_mut(),
+        &PeerFrame::BluetoothProbe {
+            device_id: "peer-client".to_string(),
+        },
+    )
+    .await
+    .expect("the probe itself sends fine -- the peer is reachable");
+
+    match recv_frame(link.as_mut()).await {
+        None | Some(Err(_)) => {}
+        other => panic!("an unlinked channel must not answer a probe, got {other:?}"),
+    }
+}

@@ -236,3 +236,30 @@ pub enum PeerFrame {
     #[serde(other)]
     Unknown,
 }
+
+impl PeerFrame {
+    /// The frame's wire `type` alone, without its payload -- safe to log,
+    /// where the frame itself may carry quest data.
+    pub fn wire_type(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The log line for an unexpected first frame names the frame by its
+    /// wire type and nothing else: a payload can carry quest data.
+    #[test]
+    fn wire_type_names_the_frame_without_its_payload() {
+        let frame = PeerFrame::AuthFail {
+            reason: "private detail".to_string(),
+        };
+        assert_eq!(frame.wire_type(), "auth_fail");
+        assert_eq!(PeerFrame::Ping.wire_type(), "ping");
+    }
+}

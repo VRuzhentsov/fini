@@ -657,6 +657,9 @@ pub async fn find_peer_address(
     use futures_util::StreamExt;
 
     let backend = backend().await?;
+    // Held for the whole search: this stream stays open across the probe
+    // dials below.
+    let _scan = scan_lease().lock().await;
     let mut discovered = backend
         .scan(datagram_config().service)
         .await
@@ -770,6 +773,7 @@ pub async fn scan_add_mode_candidates(
     // is mechanical and mirrors `connect_by_advertisement`, but the symptom
     // it is meant to cure has only been observed in that sibling.
     let flagged_addresses = {
+        let _scan = scan_lease().lock().await;
         let mut discovered = backend
             .scan(datagram_config().service)
             .await
@@ -1117,6 +1121,22 @@ fn in_flight_dials() -> &'static StdMutex<HashSet<String>> {
 /// peer that outright doesn't recognize us as paired). Entries are never
 /// removed once their deadline passes -- `spawn_dial_loop`'s own check
 /// just stops treating them as blocking, so there's nothing to clean up.
+/// One Bluetooth scan at a time, process-wide. Every `backend.scan` call
+/// holds this for as long as its discovery stream lives.
+///
+/// Android's backend refuses a second scan while one is running ("a scan is
+/// already active"), and each caller read that refusal as "the adapter is
+/// unavailable" -- so the adapter check a person triggers by switching a
+/// channel on, landing inside the dial loop's scan window, reported their
+/// working Bluetooth as off, and the dial loop did the same in reverse.
+/// Linux has no such refusal, but an adapter driving two discovery sessions
+/// competes with itself (see `connect_by_advertisement`), so the lease
+/// applies on every platform.
+fn scan_lease() -> &'static tokio::sync::Mutex<()> {
+    static LEASE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LEASE.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 fn dial_backoff_until() -> &'static StdMutex<HashMap<String, Instant>> {
     static BACKOFF: OnceLock<StdMutex<HashMap<String, Instant>>> = OnceLock::new();
     BACKOFF.get_or_init(|| StdMutex::new(HashMap::new()))
@@ -1550,7 +1570,15 @@ pub fn is_bluetooth_adapter_unavailable() -> bool {
 /// to be powered and then refuses to scan is a real failure mode, and the
 /// question worth answering is "can we do the thing", not "does the
 /// hardware feel well".
+///
+/// A scan already running elsewhere answers the question without a second
+/// one: the adapter accepted that discovery session, so it is reachable.
+/// Starting our own would only be refused (see `scan_lease`).
 pub async fn probe_adapter_available() -> bool {
+    let Ok(_scan) = scan_lease().try_lock() else {
+        note_adapter_reachable();
+        return true;
+    };
     let Ok(backend) = backend().await else {
         note_adapter_unreachable();
         return false;
@@ -1615,8 +1643,10 @@ async fn connect_by_advertisement(
         // sitting at rssi -62. An adapter cannot usefully drive active
         // discovery and establish a connection at the same moment, so
         // scanning while dialling meant competing with ourselves.
+        let scan = scan_lease().lock().await;
         let scan_deadline = tokio::time::Instant::now() + DIAL_SCAN_WINDOW;
         let found = {
+            let _scan = scan;
             let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
                 note_adapter_unreachable();
                 return AdvertisementDial::NoneReachable { last_auth_error };
@@ -2108,5 +2138,21 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("FINI_LOCAL_BLUETOOTH_ADDRESS"));
+    }
+
+    /// A scan already running is proof the adapter works, so the check a
+    /// person triggers by switching Bluetooth on must say so -- not start a
+    /// second scan, which Android refuses ("a scan is already active") and
+    /// which used to be recorded as "Bluetooth is unavailable on this device".
+    #[tokio::test]
+    async fn adapter_probe_during_another_scan_reports_the_adapter_reachable() {
+        let _other_scan = scan_lease().lock().await;
+        note_adapter_unreachable();
+
+        assert!(
+            probe_adapter_available().await,
+            "a scan in flight means the adapter accepted a discovery session"
+        );
+        assert!(!is_bluetooth_adapter_unavailable());
     }
 }
