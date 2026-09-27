@@ -91,5 +91,6 @@ Before handing off frontend template changes, check:
 - Template conditionals use `renderFlags` for product/platform rendering decisions.
 - Non-trivial list rendering uses a named computed list source.
 - Event bindings call exactly one named function; branching logic lives in that function, not the template.
+- No value from a closed set (state, kind, colour, problem code) is written as a string literal — in components, stores, specs or e2e helpers it goes through its named const (`fini-code-style`).
 - Tests cover important visible and hidden render states.
 - `npm run build` or the relevant frontend test target passes.
