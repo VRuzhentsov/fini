@@ -254,7 +254,7 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
     if state.has_session_on(peer_id, ChannelKind::Network) || !state.network_peer_available(peer_id) {
         return;
     }
-    if is_cooling_down(&failure_cooldown().lock().unwrap(), peer_id, Instant::now()) {
+    if recently_failed(peer_id) {
         return;
     }
     if !in_flight_exchanges().lock().unwrap().insert(peer_id.to_string()) {
@@ -291,6 +291,12 @@ const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 fn failure_cooldown() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
     static COOLDOWN: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = std::sync::OnceLock::new();
     COOLDOWN.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Whether the last exchange attempt with this peer failed within
+/// `FAILURE_COOLDOWN`.
+pub fn recently_failed(peer_id: &str) -> bool {
+    is_cooling_down(&failure_cooldown().lock().unwrap(), peer_id, Instant::now())
 }
 
 fn is_cooling_down(cooldown: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {

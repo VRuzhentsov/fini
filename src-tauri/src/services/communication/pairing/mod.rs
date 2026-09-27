@@ -319,8 +319,28 @@ impl DeviceConnectionState {
             guard.peer_sessions.insert(key, sender.clone());
             guard.pending_frames.remove(peer_device_id).unwrap_or_default()
         };
+        // What the new mailbox cannot take stays queued, ahead of anything
+        // queued since, for this exchange's end to ask for the next one.
+        let mut left_over = Vec::new();
         for frame in queued {
-            let _ = sender.try_send(SessionCommand::Forward(frame));
+            if !left_over.is_empty() {
+                left_over.push(frame);
+                continue;
+            }
+            if let Err(err) = sender.try_send(SessionCommand::Forward(frame)) {
+                if let SessionCommand::Forward(frame) = err.into_inner() {
+                    left_over.push(frame);
+                }
+            }
+        }
+        if !left_over.is_empty() {
+            if let Ok(mut guard) = self.runtime.lock() {
+                guard
+                    .pending_frames
+                    .entry(peer_device_id.to_string())
+                    .or_default()
+                    .splice(0..0, left_over);
+            }
         }
         let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEstablished {
             peer_device_id: peer_device_id.to_string(),
@@ -442,12 +462,14 @@ impl DeviceConnectionState {
     /// in the outbox.
     pub fn queue_for_peer(&self, peer_device_id: &str, msg: PeerFrame) {
         // Send-or-queue under one lock, so an exchange cannot be claimed
-        // between the two and miss the frame.
+        // between the two and miss the frame. Frames already waiting go
+        // first, so this one waits behind them.
         let sent = {
             let Ok(mut guard) = self.runtime.lock() else {
                 return;
             };
-            let sent = forward_to_running_exchange(&guard, peer_device_id, msg.clone());
+            let waiting = guard.pending_frames.get(peer_device_id).is_some_and(|q| !q.is_empty());
+            let sent = !waiting && forward_to_running_exchange(&guard, peer_device_id, msg.clone());
             if !sent {
                 guard
                     .pending_frames

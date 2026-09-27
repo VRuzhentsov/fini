@@ -1545,6 +1545,38 @@ async fn an_exchange_closes_once_nothing_moves() {
     );
 }
 
+/// Frames queued while the peer was away that a new exchange's mailbox
+/// cannot all take stay queued, in order, ahead of anything queued later.
+#[test]
+fn frames_a_new_exchange_cannot_take_stay_queued_in_order() {
+    let (state, _db) = server_state("adr-0008-claim-overflow");
+    let frame = |space: &str| PeerFrame::BootstrapStart { space_id: space.to_string() };
+    for space in ["first", "second", "third"] {
+        state.queue_for_peer("peer-client", frame(space));
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    assert!(state.try_claim_session("peer-client", ChannelKind::Network, tx));
+    state.queue_for_peer("peer-client", frame("later"));
+    state.release_session("peer-client", ChannelKind::Network);
+
+    let (next_tx, mut next_rx) = tokio::sync::mpsc::channel(8);
+    assert!(state.try_claim_session("peer-client", ChannelKind::Network, next_tx));
+    let spaces = |rx: &mut tokio::sync::mpsc::Receiver<crate::services::communication::sync::types::SessionCommand>| {
+        let mut out = Vec::new();
+        while let Ok(crate::services::communication::sync::types::SessionCommand::Forward(
+            PeerFrame::BootstrapStart { space_id },
+        )) = rx.try_recv()
+        {
+            out.push(space_id);
+        }
+        out
+    };
+    assert_eq!(spaces(&mut rx), ["first"]);
+    assert_eq!(spaces(&mut next_rx), ["second", "third", "later"]);
+    assert!(!state.has_queued_frames("peer-client"));
+}
+
 /// A frame that finds the running exchange's mailbox full waits for the next
 /// exchange, which gets it first -- it is neither dropped nor left behind.
 #[test]

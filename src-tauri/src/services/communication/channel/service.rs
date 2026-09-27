@@ -104,6 +104,12 @@ pub trait ChannelService: Send + Sync {
     /// (ADR-0008 D9) -- green on the row.
     fn is_present(&self, peer_device_id: &str) -> bool;
 
+    /// Whether the last exchange with this peer over this channel failed
+    /// recently, so another channel should carry the work meanwhile.
+    fn recently_failed(&self, _peer_device_id: &str) -> bool {
+        false
+    }
+
     /// A problem on this device's side of the channel, if any (ADR-0008
     /// D6, D19) -- orange on the row, explained behind ⓘ.
     #[cfg(any(feature = "ui-plane", test))]
@@ -187,6 +193,10 @@ impl ChannelService for NetworkChannelService {
 
     fn is_present(&self, peer_device_id: &str) -> bool {
         self.state.network_peer_available(peer_device_id)
+    }
+
+    fn recently_failed(&self, peer_device_id: &str) -> bool {
+        super::tcp_ws::recently_failed(peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]

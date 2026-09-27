@@ -1696,8 +1696,10 @@ pub fn space_sync_tick_impl(
 
 /// Starts an exchange with each peer that has work and none running
 /// (ADR-0008 D10): over Network when the peer is present there, otherwise
-/// over Bluetooth, whose delivery search finds it (D12). A channel that is
-/// not `On` for the pair is never used.
+/// over Bluetooth, whose delivery search finds it (D12). Bluetooth also
+/// carries the work while a Network exchange with a present peer keeps
+/// failing (a blocked port, say). A channel that is not `On` for the pair
+/// is never used.
 fn request_exchanges(
     conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
@@ -1713,6 +1715,7 @@ fn request_exchanges(
         let network = service_for(device_connection, ChannelKind::Network);
         if channels::is_enabled(conn, peer_device_id, ChannelKind::Network)
             && network.is_present(peer_device_id)
+            && !network.recently_failed(peer_device_id)
         {
             network.request_exchange(peer_device_id);
         } else if channels::is_enabled(conn, peer_device_id, ChannelKind::Bluetooth) {

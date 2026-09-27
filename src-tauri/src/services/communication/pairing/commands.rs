@@ -1246,7 +1246,7 @@ pub async fn device_connection_begin_channel_setup(
         }
         let service =
             crate::services::communication::channel::service::service_for(state.inner(), kind);
-        if !service.probe().await {
+        if !service.available() || !service.probe().await {
             return Err("Bluetooth is unavailable on this device".to_string());
         }
     }
