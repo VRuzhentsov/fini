@@ -209,8 +209,9 @@ test('the devices list dot agrees with the channel rows', async ({ actorA, actor
   expect(await anyChannelConnected(actorA, peerId), 'no channel row is connected').toBe(false);
   expect(await deviceDotConnected(actorA, peerId), 'so the dot must not be green').toBe(false);
 
-  // And the row says nothing on its own. The detail exists, but only for
-  // someone who presses the button for it.
+  // And the row says nothing on its own. A channel switched off is the
+  // person's own choice, not a problem on this device, so there is no ⓘ
+  // either: it explains problems only (ADR-0008 D19).
   const detail = await actorA.page.evaluate<{ shown: boolean; hasInfo: boolean }>(`(() => {
     const row = document.querySelector('[data-testid="paired-device-row"]');
     return {
@@ -219,7 +220,7 @@ test('the devices list dot agrees with the channel rows', async ({ actorA, actor
     };
   })()`);
   expect(detail.shown, 'the list must not explain each device unasked').toBe(false);
-  expect(detail.hasInfo, 'but the detail must still be reachable').toBe(true);
+  expect(detail.hasInfo, 'a channel switched off is not a problem to explain').toBe(false);
 
   await openDeviceDetailsFromSettings(actorA, peerId);
   await toggleChannel(actorA, ChannelKind.Network);

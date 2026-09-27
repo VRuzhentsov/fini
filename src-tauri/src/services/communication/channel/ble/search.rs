@@ -194,7 +194,7 @@ async fn run() {
         // Never scan while a dial runs.
         let _ = dials.wait_for(|count| *count == 0).await;
 
-        let wanted = wanted();
+        let mut wanted = wanted();
         if wanted.is_empty() {
             // With the page open, a channel set up meanwhile joins the next
             // window; otherwise only a new search can change anything.
@@ -243,7 +243,15 @@ async fn run() {
                     }
                     Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
                 },
-                _ = changed().notified() => break,
+                // What is wanted changed: keep the scan running over the
+                // new set rather than restarting the radio, and stop only
+                // once nothing is wanted any more.
+                _ = changed().notified() => {
+                    wanted = self::wanted();
+                    if wanted.is_empty() {
+                        break;
+                    }
+                }
             }
         }
         // Stop discovery before any dial the hand-off starts.

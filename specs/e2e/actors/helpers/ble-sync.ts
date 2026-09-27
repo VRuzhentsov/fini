@@ -236,14 +236,21 @@ export async function waitForBluetoothRowConnectedInUi(
 ): Promise<void> {
   const selector = `[data-testid="channel-status-row"][data-channel-kind="${ChannelKind.Bluetooth}"]`;
 
+  // Opened once and left open: the open page is what runs the status search
+  // (ADR-0008 D12), and it re-reads its rows every few seconds. Re-opening it
+  // on every poll restarted the search each time, too briefly to hear anyone.
+  await openDeviceDetailsFromSettings(actor, peerDeviceId);
   await pollUntil(`${actor.slug} bluetooth row is green in the UI`, async () => {
-    await openDeviceDetailsFromSettings(actor, peerDeviceId);
     await actor.invoke('space_sync_tick');
 
     const color = await actor.page.evaluate<string>(`(() => {
       const row = document.querySelector(${JSON.stringify(selector)});
       return row ? (row.getAttribute('data-channel-color') ?? '') : '';
     })()`);
+    if (color === '') {
+      await openDeviceDetailsFromSettings(actor, peerDeviceId);
+      return false;
+    }
 
     if (color === ChannelColor.Orange) {
       throw new Error(`${actor.slug} bluetooth row reports a problem on this device`);
