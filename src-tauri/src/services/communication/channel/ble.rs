@@ -25,6 +25,7 @@
 //! checks for the enable command.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(any(feature = "ui-plane", test))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -181,8 +182,11 @@ use crate::services::communication::pairing::{
     DeviceConnectionState,
 };
 use crate::services::communication::sync::session;
+#[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, BoxDialFuture, DataLink, Transport, ChannelKind};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::communication::channel::{recv_frame, send_frame};
+use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, ChannelKind};
 
 mod search;
 
@@ -301,6 +305,7 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// The trade this accepts: with several candidates, one silent peer can now
 /// take most of a pass. That is the lesser evil -- a probe too short to ever
 /// complete fails *every* candidate, not just the ones behind a slow one.
+#[cfg(any(feature = "ui-plane", test))]
 const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
 
 /// `setup_hello_round`'s per-candidate cap for one dial + hello + ack.
@@ -316,6 +321,7 @@ const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
 ///
 /// 15s leaves a 60s setup round room for four candidates -- more than a
 /// room ever holds.
+#[cfg(any(feature = "ui-plane", test))]
 const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Shared add-mode state, watched by `run_server`'s peripheral loop so a
@@ -483,6 +489,7 @@ pub fn start_peripheral_once(state: DeviceConnectionState, db_path: PathBuf) {
 /// Guarding the loop itself makes a second one impossible whatever calls
 /// it, on any platform -- which is also what makes the invariant testable
 /// without an Android device (see `peripheral_role_tests`).
+#[cfg(any(feature = "ui-plane", test))]
 fn claim_peripheral_role() -> bool {
     static RUNNING: AtomicBool = AtomicBool::new(false);
     !RUNNING.swap(true, Ordering::SeqCst)
@@ -594,6 +601,7 @@ pub async fn dial(address: &str) -> Result<Box<dyn DataLink>, String> {
 /// Dials `address` and sends this device's hello (ADR-0008 D1). `Some(())`
 /// if the device there is `peer_id` and acknowledged it -- which it does
 /// only while it is running its own setup search for us (D2).
+#[cfg(any(feature = "ui-plane", test))]
 async fn hello_candidate(state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
     let mut link = dial(address).await.ok()?;
     send_frame(
@@ -614,6 +622,7 @@ async fn hello_candidate(state: &DeviceConnectionState, address: &str, peer_id: 
 /// search coordinator for the peer for up to `timeout`, and says hello the
 /// moment it is heard. `Ok(true)` if the peer acknowledged; `Err` when the
 /// radio itself is unusable, so the caller can pause.
+#[cfg(any(feature = "ui-plane", test))]
 pub async fn setup_hello_round(
     state: DeviceConnectionState, peer_id: String, timeout: Duration,
 ) -> Result<bool, String> {
@@ -639,6 +648,7 @@ pub async fn setup_hello_round(
 /// A nearby, not-yet-paired device discovered via BLE while both sides are
 /// in add-mode — the Bluetooth-side entry `AddDeviceView.vue`'s unified
 /// candidate list merges alongside mDNS-discovered ones (ADR 0002 Phase 3).
+#[cfg(any(feature = "ui-plane", test))]
 pub struct AddModeCandidate {
     pub address: String,
     pub device_id: String,
@@ -648,6 +658,7 @@ pub struct AddModeCandidate {
 /// Dials `address` and exchanges `DiscoveryHello`/`DiscoveryHelloReply`.
 /// `None` on any failure along the way (dial, send, no/wrong reply); the
 /// caller is responsible for bounding how long this is allowed to run.
+#[cfg(any(feature = "ui-plane", test))]
 async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
     let mut link = dial(address).await.ok()?;
     send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.ok()?;
@@ -666,6 +677,7 @@ async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
 /// (unlike `setup_hello_round`, this feeds a picker list, not a single
 /// confirm-and-persist action) — callers needing an ongoing view call this
 /// repeatedly rather than once for a long window.
+#[cfg(any(feature = "ui-plane", test))]
 pub async fn scan_add_mode_candidates(
     my_device_id: &str, timeout: Duration,
 ) -> Result<Vec<AddModeCandidate>, String> {
@@ -1282,6 +1294,7 @@ pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
 /// Turn the status search on while the Device page is open, off when it
 /// closes. Green is never computed in the background (ADR-0008 D12); the
 /// search coordinator merges it with any delivery or setup search running.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn set_status_search(state: &DeviceConnectionState, active: bool) {
     search::set_status(active.then(|| state.db_path.clone()));
 }
@@ -1355,6 +1368,7 @@ fn note_adapter_unreachable() {
 
 /// `true` only once a genuine attempt has failed -- never merely because
 /// nothing has been tried yet. See `ADAPTER_HEALTH`.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn is_bluetooth_adapter_unavailable() -> bool {
     ADAPTER_HEALTH.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
 }
@@ -1380,6 +1394,7 @@ pub fn is_bluetooth_adapter_unavailable() -> bool {
 /// Starting our own would only be refused (see `scan_lease`). A caller that
 /// merely holds the lease proves nothing yet -- its scan may still be
 /// refused -- so the probe waits for it to start or finish.
+#[cfg(any(feature = "ui-plane", test))]
 pub async fn probe_adapter_available() -> bool {
     let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
     loop {
@@ -1416,6 +1431,7 @@ pub async fn probe_adapter_available() -> bool {
 
 /// How long the probe waits on another caller's scan that is still being
 /// set up, before falling back to the last recorded adapter health.
+#[cfg(any(feature = "ui-plane", test))]
 const PROBE_WAIT_FOR_OTHER_SCAN: Duration = Duration::from_secs(10);
 
 #[cfg(test)]

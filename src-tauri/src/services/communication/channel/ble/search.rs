@@ -38,6 +38,7 @@ use crate::services::communication::pairing::ChannelKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
     Delivery,
+    #[cfg(any(feature = "ui-plane", test))]
     Setup,
 }
 
@@ -137,6 +138,7 @@ pub async fn find(peer: &str, purpose: Purpose, window: Duration) -> Option<Foun
 
 /// Turn the status search on while the Device page is open, off when it
 /// closes (ADR-0008 D12).
+#[cfg(any(feature = "ui-plane", test))]
 pub fn set_status(db_path: Option<PathBuf>) {
     requests().lock().unwrap().status = db_path;
     start_once();

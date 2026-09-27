@@ -73,6 +73,7 @@ pub fn configure(
 }
 
 /// Turn an existing channel on or off (ADR-0008 D15).
+#[cfg(any(feature = "ui-plane", test))]
 pub fn set_enabled(
     conn: &mut SqliteConnection,
     device_id: &str,
@@ -111,6 +112,7 @@ pub fn note_address(conn: &mut SqliteConnection, device_id: &str, kind: ChannelK
 /// removes its own side too. Creating the channel again takes a mutual
 /// init, which the peer cannot start on its own -- that, not a tombstone,
 /// is what keeps an unlinked channel unlinked.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn unlink(conn: &mut SqliteConnection, device_id: &str, kind: ChannelKind) -> Result<(), String> {
     let Some(channel) = find(conn, device_id, kind) else {
         return Ok(());

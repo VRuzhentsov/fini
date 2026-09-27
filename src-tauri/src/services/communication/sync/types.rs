@@ -20,22 +20,19 @@ pub struct SyncEventEnvelope {
     pub created_at: String,
 }
 
-/// What can be sent through a claimed session's mailbox (`run_session`'s
-/// `rx`): forward a frame to the peer over the wire, or close this session
-/// locally without one. ADR-0003 revision: a pin change alone no longer
-/// needs `Close` (both channels stay connected regardless of which is
-/// primary) -- but an explicit user action that makes a channel
-/// *ineligible* still does: `device_connection_set_bluetooth_channel_
-/// with_state_impl`'s disable path uses this to actually tear down a live
-/// Bluetooth session the moment Bluetooth is turned off for a pair,
-/// not just stop counting it toward primary selection. See
-/// `DeviceConnectionState::close_session_on`.
+/// What can be sent through a running exchange's mailbox (`run_session`'s
+/// `rx`). `Forward` carries a frame to the peer; the other two come from the
+/// app's channel commands alone, so the CLI build has no use for them.
 #[derive(Debug)]
 pub enum SessionCommand {
     Forward(PeerFrame),
+    /// End this exchange now, without a frame: its channel was switched off
+    /// (ADR-0008 D15).
+    #[cfg(any(feature = "ui-plane", test))]
     Close,
     /// Send any unlink notices still owed to this peer now, rather than at
     /// the start of the next exchange (ADR-0008 D14).
+    #[cfg(any(feature = "ui-plane", test))]
     SendUnlinkNotices,
 }
 
@@ -172,6 +169,7 @@ pub enum PeerFrame {
 impl PeerFrame {
     /// The frame's wire `type` alone, without its payload -- safe to log,
     /// where the frame itself may carry quest data.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn wire_type(&self) -> String {
         serde_json::to_value(self)
             .ok()

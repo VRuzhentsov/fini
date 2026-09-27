@@ -1,7 +1,9 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[cfg(any(feature = "ui-plane", test))]
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 #[cfg(any(feature = "ui-plane", test))]
@@ -84,6 +86,7 @@ pub struct SpaceSyncStatus {
 /// `entity_type` and the frontend supplies the wording, next to the rest of
 /// the app's copy.
 #[derive(Debug, Clone, Serialize)]
+#[cfg(any(feature = "ui-plane", test))]
 pub struct SyncQueueEntry {
     pub entity_type: String,
     pub entity_id: String,
@@ -98,6 +101,7 @@ pub struct SyncQueueEntry {
 /// the real total, and is what both the "N changes waiting" line and the
 /// "+ more" arithmetic below the list are computed from.
 #[derive(Debug, Clone, Serialize)]
+#[cfg(any(feature = "ui-plane", test))]
 pub struct SyncQueueSummary {
     pub peer_device_id: String,
     pub pending_count: usize,
@@ -1171,6 +1175,7 @@ pub fn space_sync_resolve_custom_space_mapping(
 /// follows -- an advertisement seen on every scan window, or an mDNS
 /// re-resolve, must not wake anything, or the backstop becomes a poll
 /// wearing a different name.
+#[cfg(target_os = "android")]
 const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Raised whenever something lands in the outbox, so the keeper can send it
@@ -1232,6 +1237,7 @@ pub(crate) fn note_data_changed() {
 
 /// Subscribe to "a peer's change was applied locally". See
 /// [`note_data_changed`].
+#[cfg(any(feature = "ui-plane", test))]
 pub fn subscribe_data_changed() -> tokio::sync::broadcast::Receiver<()> {
     data_changed_tx().subscribe()
 }
@@ -1248,6 +1254,7 @@ fn note_tick_ran() {
 }
 
 
+#[cfg(target_os = "android")]
 fn tick_is_overdue() -> bool {
     let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
     match cell.lock() {
@@ -1813,8 +1820,10 @@ pub fn space_sync_status(
 /// How many entries the Device page's sync-queue accordion asks for. The
 /// accordion shows ten and then says how many more there are, so loading
 /// the rest would be work nobody ever sees.
+#[cfg(any(feature = "ui-plane", test))]
 pub const SYNC_QUEUE_ENTRY_LIMIT: usize = 10;
 
+#[cfg(any(feature = "ui-plane", test))]
 pub fn space_sync_queue_summary_impl(
     conn: &mut SqliteConnection,
     peer_device_id: String,

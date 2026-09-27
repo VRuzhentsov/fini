@@ -128,10 +128,12 @@ pub async fn run_session(
                             break;
                         }
                     }
+                    #[cfg(any(feature = "ui-plane", test))]
                     SessionCommand::Close => {
                         log::info!("[exchange] {peer_device_id} {kind:?}: asked to close");
                         break;
                     }
+                    #[cfg(any(feature = "ui-plane", test))]
                     SessionCommand::SendUnlinkNotices => {
                         send_unlink_notices(link.as_mut(), &db_path, &peer_device_id).await;
                     }

@@ -13,6 +13,7 @@
 //! | off | switched off | `Off` |
 //! | none | not added | `None` |
 
+#[cfg(any(feature = "ui-plane", test))]
 use serde::{Deserialize, Serialize};
 
 pub use crate::services::communication::channel::ChannelKind;
@@ -20,6 +21,7 @@ pub use crate::services::communication::channel::ChannelKind;
 /// A channel's stored state (ADR-0008 D15). `None` is the absence of a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg(any(feature = "ui-plane", test))]
 pub enum ChannelState {
     None,
     Off,
@@ -29,6 +31,7 @@ pub enum ChannelState {
 /// The row's colour (ADR-0008 D19).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg(any(feature = "ui-plane", test))]
 pub enum ChannelColor {
     Green,
     Grey,
@@ -41,6 +44,7 @@ pub enum ChannelColor {
 /// explains. Each channel reports its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg(any(feature = "ui-plane", test))]
 pub enum ChannelProblem {
     /// This platform has no Bluetooth support at all.
     BluetoothNotSupported,
@@ -53,6 +57,7 @@ pub enum ChannelProblem {
 /// One row on the Device page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(any(feature = "ui-plane", test))]
 pub struct ChannelStatus {
     pub kind: ChannelKind,
     pub state: ChannelState,
@@ -66,6 +71,7 @@ pub struct ChannelStatus {
 /// A problem outranks presence: a peer "seen" through a channel this
 /// device cannot use is not a peer data can reach, and the person can only
 /// act on the problem.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn channel_status(
     kind: ChannelKind,
     state: ChannelState,

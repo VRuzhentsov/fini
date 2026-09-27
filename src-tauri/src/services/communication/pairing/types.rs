@@ -129,6 +129,7 @@ pub struct DevicePairRequestInput {
 /// The BLE-first pairing equivalent of `DevicePairRequestInput` (ADR 0002
 /// Phase 3) — no port, since a BLE connection is addressed by MAC alone.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg(any(feature = "ui-plane", test))]
 pub struct DevicePairRequestBluetoothInput {
     pub request_id: String,
     pub to_device_id: String,
@@ -265,6 +266,7 @@ pub struct ChannelSetup {
 }
 
 impl ChannelSetup {
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn initialized(&self) -> bool {
         self.hello_acked_by_peer && self.acked_peer_hello
     }

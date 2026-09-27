@@ -30,7 +30,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::radio::{for_this_device, Radio};
-use crate::services::communication::pairing::{ChannelKind, ChannelProblem, DeviceConnectionState};
+use crate::services::communication::pairing::{ChannelKind, DeviceConnectionState};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::communication::pairing::ChannelProblem;
 
 /// Everything one channel can do. Implemented once per `ChannelKind`.
 ///
@@ -45,11 +47,13 @@ pub trait ChannelService: Send + Sync {
     /// fact, not a per-pair one. False means no build of this app on this OS
     /// can use it, so the Device page must never offer it as something a
     /// person could switch on and wait for.
+    #[cfg(any(feature = "ui-plane", test))]
     fn available(&self) -> bool;
 
     /// Whether this channel can be switched on right now (ADR-0008 D6): the
     /// platform supports it and, as far as the passive signals know, the
     /// hardware is working.
+    #[cfg(any(feature = "ui-plane", test))]
     fn usable(&self) -> bool {
         self.available()
     }
@@ -61,6 +65,7 @@ pub trait ChannelService: Send + Sync {
     /// enough that it is called when a person flips a switch and is watching,
     /// never on a polling path — the passive signal behind `why_not` covers
     /// the rest of the time.
+    #[cfg(any(feature = "ui-plane", test))]
     async fn probe(&self) -> bool {
         self.available()
     }
@@ -78,6 +83,7 @@ pub trait ChannelService: Send + Sync {
     ///
     /// A no-op outside `ui-plane`: `cli-plane` dials out for sync but runs
     /// no inbound acceptor, so every channel's server is compiled out there.
+    #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self) {}
 
     /// Start an exchange with this peer unless one is running (ADR-0008
@@ -91,6 +97,7 @@ pub trait ChannelService: Send + Sync {
     /// the setup flow; each channel merges all of them into one search of
     /// its own kind (D18). A no-op for a channel whose presence signal is
     /// always heard, like Network's beacon.
+    #[cfg(any(feature = "ui-plane", test))]
     fn watch_presence(&self, _active: bool) {}
 
     /// Whether the peer was seen on this channel within its channel timeout
@@ -99,6 +106,7 @@ pub trait ChannelService: Send + Sync {
 
     /// A problem on this device's side of the channel, if any (ADR-0008
     /// D6, D19) -- orange on the row, explained behind ⓘ.
+    #[cfg(any(feature = "ui-plane", test))]
     fn problem(&self) -> Option<ChannelProblem>;
 
     /// Keep this channel able to answer a peer, on every tick. A no-op where
@@ -156,6 +164,7 @@ impl ChannelService for NetworkChannelService {
 
     /// Every platform Fini runs on has a network stack. Whether a *peer* is
     /// reachable over it is `is_reachable`'s question, not this one.
+    #[cfg(any(feature = "ui-plane", test))]
     fn available(&self) -> bool {
         true
     }
@@ -180,6 +189,7 @@ impl ChannelService for NetworkChannelService {
         self.state.network_peer_available(peer_device_id)
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn problem(&self) -> Option<ChannelProblem> {
         self.state
             .network_broadcast_failing()
@@ -211,14 +221,17 @@ impl ChannelService for BluetoothChannelService {
         ChannelKind::Bluetooth
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn available(&self) -> bool {
         self.radio.available()
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     async fn probe(&self) -> bool {
         self.radio.probe().await
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn usable(&self) -> bool {
         self.radio.available() && self.radio.adapter_available()
     }
@@ -227,6 +240,7 @@ impl ChannelService for BluetoothChannelService {
         self.radio.start_discovery(&self.state);
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self) {
         self.radio.serve(&self.state);
     }
@@ -235,6 +249,7 @@ impl ChannelService for BluetoothChannelService {
         self.radio.request_exchange(&self.state, peer_device_id);
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn watch_presence(&self, active: bool) {
         self.radio.watch_presence(&self.state, active);
     }
@@ -243,6 +258,7 @@ impl ChannelService for BluetoothChannelService {
         self.radio.is_reachable(peer_device_id)
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn problem(&self) -> Option<ChannelProblem> {
         if !self.radio.available() {
             Some(ChannelProblem::BluetoothNotSupported)

@@ -9,7 +9,9 @@ use tauri::State;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 
-use super::{channels, ChannelSetup};
+use super::channels;
+#[cfg(any(feature = "ui-plane", test))]
+use super::ChannelSetup;
 #[cfg(any(feature = "ui-plane", test))]
 use super::setup;
 use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
@@ -20,13 +22,16 @@ use crate::services::db::AppDbConnection;
 use crate::services::communication::pairing::runtime::{
     generate_passcode, prune_expired_incoming_requests, utc_now,
 };
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::communication::pairing::types::DevicePairRequestBluetoothInput;
 use crate::services::communication::pairing::types::{
     DeviceConnectionDebugStatus, DeviceIdentity,
-    DevicePairRequestAckInput, DevicePairRequestBluetoothInput, DevicePairRequestInput,
+    DevicePairRequestAckInput, DevicePairRequestInput,
     DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairAcceptPayload,
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::communication::pairing::DeviceConnectionState;
+#[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::pairing::{channel_status, ChannelState, ChannelStatus};
 use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::ChannelKind;
@@ -352,6 +357,7 @@ pub fn device_connection_send_pair_request(
 /// needs to know the difference. `to_device_id` here comes from a prior
 /// `scan_add_mode_candidates`/`DiscoveryHelloReply`, not typed in by the
 /// user.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_send_pair_request_bluetooth_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestBluetoothInput,
@@ -1034,6 +1040,7 @@ pub fn device_connection_save_paired_device(
 /// Switching on needs a channel that exists (ADR-0008 D15: `On` is reached
 /// only through init, so a `None` channel is set up, not switched on) and,
 /// for Bluetooth, an adapter that works on this device (D6).
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_set_channel_enabled_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1117,6 +1124,7 @@ pub fn device_connection_set_channel_enabled(
 /// one stops existing, and the page offers to set it up again from scratch.
 /// Refused while the channel is on, so it is always a deliberate second act
 /// rather than something one click can do to a working connection.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_unlink_channel_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1174,6 +1182,7 @@ pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String>
 /// no setup search is running for it.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(any(feature = "ui-plane", test))]
 pub struct ChannelSetupStatus {
     pub hello_acked_by_peer: bool,
     pub acked_peer_hello: bool,
@@ -1181,6 +1190,7 @@ pub struct ChannelSetupStatus {
     pub initialized: bool,
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 impl From<ChannelSetup> for ChannelSetupStatus {
     fn from(setup: ChannelSetup) -> Self {
         Self {
@@ -1259,6 +1269,7 @@ pub fn device_connection_end_channel_setup(
 /// Every channel row for this pair (ADR-0008 D19): its stored state, and
 /// for an `On` channel whether the peer is present or the channel reports a
 /// problem on this device. Network first, so rows never reorder.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_channel_statuses_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1334,6 +1345,7 @@ pub fn note_observed_bluetooth_address(conn: &mut SqliteConnection, peer_id: &st
     channels::note_address(conn, peer_id, ChannelKind::Bluetooth, address);
 }
 
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_session_channel_impl(
     state: &DeviceConnectionState,
     peer_device_id: String,

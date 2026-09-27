@@ -2,6 +2,7 @@ mod commands;
 mod runtime;
 pub(crate) mod channel_status;
 pub(crate) mod channels;
+#[cfg(any(feature = "ui-plane", test))]
 pub(crate) mod setup;
 #[cfg(any(feature = "ui-plane", test))]
 pub(crate) mod gate;
@@ -62,20 +63,24 @@ pub use commands::{
     device_connection_pair_incoming_requests_impl,
     device_connection_pair_outgoing_completions_impl, device_connection_pair_outgoing_updates_impl,
     device_connection_presence_snapshot_impl, device_connection_save_paired_device_impl,
-    device_connection_send_pair_request_impl, device_connection_session_channel_impl,
-    device_connection_set_channel_enabled_impl, device_connection_unlink_channel_impl,
-    device_connection_channel_statuses_impl,
+    device_connection_send_pair_request_impl,
     device_connection_unpair_impl, device_connection_update_last_seen_impl,
 };
+// Channel commands only the app offers; the app reaches them through
+// `commands` directly, so only the tests need them here.
+#[cfg(test)]
+pub use commands::{device_connection_channel_statuses_impl, device_connection_set_channel_enabled_impl};
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
 // and is what the `channels` table stores. Re-exported from `channel`,
 // where it is defined; there is no second enum saying the same thing any
 // more.
-pub use channel_status::{
-    channel_status, ChannelKind, ChannelProblem, ChannelState, ChannelStatus,
-};
+pub use channel_status::ChannelKind;
+// How a channel row is drawn (ADR-0008 D19) -- the app's concern alone.
+#[cfg(any(feature = "ui-plane", test))]
+pub use channel_status::{channel_status, ChannelProblem, ChannelState, ChannelStatus};
 use types::DiscoveryRuntime;
+#[cfg(any(feature = "ui-plane", test))]
 pub use types::ChannelSetup;
 pub use types::{
     CustomSpaceDescriptor, DeviceIdentity, IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd,
@@ -141,6 +146,7 @@ impl DeviceConnectionState {
         Self::from_db_path(app_data_dir, app_data_dir.join("fini.db"))
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn from_db_path(app_data_dir: &Path, db_path: PathBuf) -> Self {
         Self::try_from_db_path(app_data_dir, db_path)
             .expect("failed to create device connection state")
@@ -329,6 +335,7 @@ impl DeviceConnectionState {
 
     /// The channel of an exchange running with this peer right now, if any
     /// -- Network first when both are.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn active_exchange_channel(&self, peer_device_id: &str) -> Option<ChannelKind> {
         let guard = self.runtime.lock().ok()?;
         [ChannelKind::Network, ChannelKind::Bluetooth]
@@ -350,6 +357,7 @@ impl DeviceConnectionState {
     /// `DiscoveryHello` handling (ADR 0002 Phase 3) to decide whether to
     /// reply at all, the BLE-scan equivalent of the existing check
     /// `receive_ws_pair_request` already makes for network `PairRequest`s.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn is_add_mode_enabled(&self) -> bool {
         self.runtime.lock().map(|guard| guard.add_mode_enabled).unwrap_or(false)
     }
@@ -395,6 +403,7 @@ impl DeviceConnectionState {
     /// forwards each event to the frontend (ADR-0003 Phase 2).
     /// `device_connection_channel_statuses` stays the source of truth for
     /// a one-shot/polled read; this is the push side of the same signal.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn subscribe_lifecycle(&self) -> tokio::sync::broadcast::Receiver<LifecycleEvent> {
         self.lifecycle_tx.subscribe()
     }
@@ -442,6 +451,7 @@ impl DeviceConnectionState {
     /// Ask every live session with this peer to send the unlink notices it
     /// is still owed now (ADR-0008 D14). Best-effort: with no live session
     /// the notices simply go out at the start of the next exchange.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn send_unlink_notices_to_peer(&self, peer_device_id: &str) {
         let Ok(guard) = self.runtime.lock() else { return };
         for ((peer, _kind), sender) in guard.peer_sessions.iter() {
@@ -466,6 +476,7 @@ impl DeviceConnectionState {
     /// off, or the channel unlinked. `false` if none was running or the
     /// close could not be delivered; the exchange then ends on its own idle
     /// timeout.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn close_session_on(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
         let sender = {
             let guard = match self.runtime.lock() {
@@ -601,6 +612,7 @@ impl DeviceConnectionState {
     }
 
     /// Whether the last Network presence beacon failed to go out at all.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn network_broadcast_failing(&self) -> bool {
         self.runtime
             .lock()
@@ -611,6 +623,7 @@ impl DeviceConnectionState {
     /// Start a setup search for this peer's channel (ADR-0008 D2). While it
     /// runs, this device answers the peer's hello on that channel; nothing
     /// else makes it answer. Starting again keeps the progress so far.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn begin_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) {
         if let Ok(mut guard) = self.runtime.lock() {
             guard
@@ -629,12 +642,14 @@ impl DeviceConnectionState {
     }
 
     /// End the setup search, returning how far its init got.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn end_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> Option<ChannelSetup> {
         let mut guard = self.runtime.lock().ok()?;
         guard.channel_setups.remove(&(peer_device_id.to_string(), kind))
     }
 
     /// The setup search running for this peer's channel, if any.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> Option<ChannelSetup> {
         let guard = self.runtime.lock().ok()?;
         guard.channel_setups.get(&(peer_device_id.to_string(), kind)).copied()
@@ -642,6 +657,7 @@ impl DeviceConnectionState {
 
     /// Record one half of an init. A no-op when no setup search is running
     /// for that channel: an init only counts while both people are at it.
+    #[cfg(any(feature = "ui-plane", test))]
     pub fn note_channel_setup(
         &self,
         peer_device_id: &str,

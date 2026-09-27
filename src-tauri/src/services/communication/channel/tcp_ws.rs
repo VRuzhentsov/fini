@@ -7,16 +7,21 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+#[cfg(any(feature = "ui-plane", test))]
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
+#[cfg(any(feature = "ui-plane", test))]
+use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{accept_async, connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+#[cfg(any(feature = "ui-plane", test))]
+use tokio_tungstenite::accept_async;
 
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::DeviceConnectionState;
@@ -65,6 +70,7 @@ impl TcpWsDataLink {
     /// stream) — matches how the original `ws_server::handle_connection`
     /// captured it, and is what makes `PairAccept`/`PairComplete` able to
     /// address their reply back to the pre-auth `PairRequest` sender.
+    #[cfg(any(feature = "ui-plane", test))]
     fn new_plain(ws: WebSocketStream<TcpStream>, peer_addr: Option<String>) -> Self {
         let (sink, source) = ws.split();
         Self {

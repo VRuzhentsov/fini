@@ -17,9 +17,11 @@ use crate::services::communication::pairing::DeviceConnectionState;
 #[async_trait]
 pub trait Radio: Send + Sync {
     /// Whether this platform has Bluetooth at all.
+    #[cfg(any(feature = "ui-plane", test))]
     fn available(&self) -> bool;
 
     /// Ask the hardware directly, right now, whether it works.
+    #[cfg(any(feature = "ui-plane", test))]
     async fn probe(&self) -> bool {
         self.available()
     }
@@ -29,6 +31,7 @@ pub trait Radio: Send + Sync {
     }
 
     /// Start the accept loop that lets a peer connect to this device.
+    #[cfg(any(feature = "ui-plane", test))]
     fn serve(&self, state: &DeviceConnectionState);
 
     /// See `ChannelService::keep_serving`.
@@ -43,10 +46,12 @@ pub trait Radio: Send + Sync {
     fn is_reachable(&self, peer_device_id: &str) -> bool;
 
     /// Run (or stop) the status search, for presence (ADR-0008 D12).
+    #[cfg(any(feature = "ui-plane", test))]
     fn watch_presence(&self, _state: &DeviceConnectionState, _active: bool) {}
 
     /// The passive counterpart to `probe`: `true` until a real use of the
     /// radio failed, so an untried radio is never accused of being off.
+    #[cfg(any(feature = "ui-plane", test))]
     fn adapter_available(&self) -> bool {
         true
     }
@@ -56,10 +61,12 @@ pub struct GattRadio;
 
 #[async_trait]
 impl Radio for GattRadio {
+    #[cfg(any(feature = "ui-plane", test))]
     fn available(&self) -> bool {
         cfg!(any(target_os = "linux", target_os = "android"))
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     async fn probe(&self) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
@@ -89,6 +96,7 @@ impl Radio for GattRadio {
     }
 
     #[cfg(not(any(feature = "ui-plane", test)))]
+    #[cfg(any(feature = "ui-plane", test))]
     fn serve(&self, _state: &DeviceConnectionState) {}
 
     fn keep_serving(&self, state: &DeviceConnectionState) {
@@ -118,6 +126,7 @@ impl Radio for GattRadio {
         let _ = (state, peer_device_id);
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn watch_presence(&self, state: &DeviceConnectionState, active: bool) {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         super::ble::set_status_search(state, active);
@@ -137,6 +146,7 @@ impl Radio for GattRadio {
         }
     }
 
+    #[cfg(any(feature = "ui-plane", test))]
     fn adapter_available(&self) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
