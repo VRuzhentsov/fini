@@ -202,7 +202,22 @@ pub(crate) async fn run_server_on_port(
         }
     };
     log::info!("[transport][tcp_ws] listening on :{port}");
+    serve(state, db_path, listener).await;
+}
 
+/// Binds a free port and serves it, returning the port. Binding before
+/// handing the port back is the point: picking a free port, releasing it
+/// and binding it later let a test running in parallel take it first.
+#[cfg(test)]
+pub(crate) async fn spawn_server_on_free_port(state: DeviceConnectionState, db_path: PathBuf) -> u16 {
+    let listener = TcpListener::bind("0.0.0.0:0").await.expect("bind a free port");
+    let port = listener.local_addr().expect("bound address").port();
+    tokio::spawn(serve(state, db_path, listener));
+    port
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+async fn serve(state: DeviceConnectionState, db_path: PathBuf, listener: TcpListener) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
