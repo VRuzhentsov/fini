@@ -1216,6 +1216,10 @@ pub fn notify_sync_work_pending() {
     outbox_notify().notify_one();
 }
 
+/// How soon to ask again for bootstrap requests a live exchange's full
+/// mailbox refused.
+const BOOTSTRAP_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Wake the keeper once `delay` has passed: a retry that is due later.
 ///
 /// A failed exchange records when it may be tried again (the Bluetooth
@@ -1550,8 +1554,14 @@ pub fn space_sync_tick_impl(
             peers_with_work.insert(peer_device_id.clone());
             continue;
         }
+        let mut all_taken = true;
         for space_id in unsynced {
-            device_connection.push_to_peer(peer_device_id, PeerFrame::BootstrapStart { space_id });
+            all_taken &= device_connection.push_to_peer(peer_device_id, PeerFrame::BootstrapStart { space_id });
+        }
+        // A full mailbox refused some; the spaces are still unsynced, so a
+        // tick shortly after asks again.
+        if !all_taken {
+            notify_sync_work_pending_after(BOOTSTRAP_RETRY);
         }
     }
 
