@@ -113,6 +113,19 @@ pub struct DeviceConnectionState {
     lifecycle_tx: LifecycleBus,
 }
 
+/// Hands a frame to the running exchange with this peer, if there is one.
+fn forward_to_running_exchange(
+    runtime: &DiscoveryRuntime,
+    peer_device_id: &str,
+    msg: PeerFrame,
+) -> bool {
+    [ChannelKind::Network, ChannelKind::Bluetooth]
+        .into_iter()
+        .filter_map(|kind| runtime.peer_sessions.get(&(peer_device_id.to_string(), kind)))
+        .next()
+        .is_some_and(|sender| sender.try_send(SessionCommand::Forward(msg)).is_ok())
+}
+
 fn env_port(name: &str, fallback: u16) -> u16 {
     std::env::var(name)
         .ok()
@@ -325,6 +338,11 @@ impl DeviceConnectionState {
             };
             guard.peer_sessions.remove(&(peer_device_id.to_string(), kind)).is_some()
         };
+        // Frames queued while this exchange ran (its mailbox was full) wait
+        // for the next one; ask for it rather than for unrelated work.
+        if self.has_queued_frames(peer_device_id) {
+            crate::services::communication::sync::commands::notify_sync_work_pending();
+        }
         if removed {
             let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
                 peer_device_id: peer_device_id.to_string(),
@@ -415,11 +433,7 @@ impl DeviceConnectionState {
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
-        [ChannelKind::Network, ChannelKind::Bluetooth]
-            .into_iter()
-            .filter_map(|kind| guard.peer_sessions.get(&(peer_device_id.to_string(), kind)))
-            .next()
-            .is_some_and(|sender| sender.try_send(SessionCommand::Forward(msg)).is_ok())
+        forward_to_running_exchange(&guard, peer_device_id, msg)
     }
 
     /// Sends a frame now if an exchange is running, otherwise keeps it for
@@ -427,17 +441,25 @@ impl DeviceConnectionState {
     /// what delivers it). In memory only: what must survive a restart lives
     /// in the outbox.
     pub fn queue_for_peer(&self, peer_device_id: &str, msg: PeerFrame) {
-        if self.push_to_peer(peer_device_id, msg.clone()) {
-            return;
+        // Send-or-queue under one lock, so an exchange cannot be claimed
+        // between the two and miss the frame.
+        let sent = {
+            let Ok(mut guard) = self.runtime.lock() else {
+                return;
+            };
+            let sent = forward_to_running_exchange(&guard, peer_device_id, msg.clone());
+            if !sent {
+                guard
+                    .pending_frames
+                    .entry(peer_device_id.to_string())
+                    .or_default()
+                    .push(msg);
+            }
+            sent
+        };
+        if !sent {
+            crate::services::communication::sync::commands::notify_sync_work_pending();
         }
-        if let Ok(mut guard) = self.runtime.lock() {
-            guard
-                .pending_frames
-                .entry(peer_device_id.to_string())
-                .or_default()
-                .push(msg);
-        }
-        crate::services::communication::sync::commands::notify_sync_work_pending();
     }
 
     /// Whether frames are waiting for the next exchange with this peer.

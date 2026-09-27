@@ -1230,7 +1230,9 @@ fn finishing_a_setup_writes_the_channel_only_after_a_complete_init() {
         "half an init is no init: nothing is written"
     );
 
-    for (switch_on, expected) in [(true, true), (false, false)] {
+    // Closing creates the channel `Off`; OK switches it on; closing a later
+    // setup (the code fallback may have set it up meanwhile) leaves it `On`.
+    for (switch_on, expected) in [(false, false), (true, true), (false, true)] {
         state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
         state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| {
             s.acked_peer_hello = true;
@@ -1541,6 +1543,34 @@ async fn an_exchange_closes_once_nothing_moves() {
         !server.has_session_on("peer-client", ChannelKind::Bluetooth),
         "a closed exchange releases its slot"
     );
+}
+
+/// A frame that finds the running exchange's mailbox full waits for the next
+/// exchange, which gets it first -- it is neither dropped nor left behind.
+#[test]
+fn a_frame_the_running_exchange_cannot_take_goes_to_the_next_one() {
+    let (state, _db) = server_state("adr-0008-queue-full-mailbox");
+    let frame = |space: &str| PeerFrame::BootstrapStart { space_id: space.to_string() };
+
+    let (busy_tx, mut busy_rx) = tokio::sync::mpsc::channel(1);
+    assert!(state.try_claim_session("peer-client", ChannelKind::Network, busy_tx));
+    state.queue_for_peer("peer-client", frame("taken"));
+    state.queue_for_peer("peer-client", frame("left over"));
+    assert!(busy_rx.try_recv().is_ok(), "the first frame went to the running exchange");
+    assert!(state.has_queued_frames("peer-client"), "the second waits");
+
+    state.release_session("peer-client", ChannelKind::Network);
+    assert!(state.has_queued_frames("peer-client"), "ending the exchange keeps it");
+
+    let (next_tx, mut next_rx) = tokio::sync::mpsc::channel(4);
+    assert!(state.try_claim_session("peer-client", ChannelKind::Network, next_tx));
+    match next_rx.try_recv() {
+        Ok(crate::services::communication::sync::types::SessionCommand::Forward(
+            PeerFrame::BootstrapStart { space_id },
+        )) => assert_eq!(space_id, "left over"),
+        other => panic!("the next exchange did not get the frame first: {other:?}"),
+    }
+    assert!(!state.has_queued_frames("peer-client"));
 }
 
 /// A frame raised while no exchange runs waits for the next one, and the

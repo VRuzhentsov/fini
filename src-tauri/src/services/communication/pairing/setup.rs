@@ -47,7 +47,9 @@ pub fn start(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelK
 
 /// End the setup search. If the init completed, the channel is created
 /// `On` when the person pressed OK and `Off` when they closed the dialog
-/// without it (ADR-0008 D15); otherwise nothing is written.
+/// without it (ADR-0008 D15); otherwise nothing is written. Closing never
+/// switches off a channel that already exists -- the code fallback may have
+/// set it up `On` while the automatic search ran.
 pub fn finish(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -56,7 +58,9 @@ pub fn finish(
     switch_on: bool,
 ) -> Result<Option<ChannelSetup>, String> {
     let setup = state.end_channel_setup(peer_device_id, kind);
-    if setup.is_some_and(|setup| setup.initialized()) {
+    if setup.is_some_and(|setup| setup.initialized())
+        && (switch_on || channels::find(conn, peer_device_id, kind).is_none())
+    {
         channels::configure(conn, peer_device_id, kind, switch_on, None)?;
     }
     crate::services::communication::sync::commands::notify_sync_work_pending();

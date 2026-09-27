@@ -1204,6 +1204,13 @@ impl From<ChannelSetup> for ChannelSetupStatus {
     }
 }
 
+/// How long starting a Bluetooth setup waits for the person to answer the
+/// Android permission dialog it opened, and how often it looks.
+#[cfg(target_os = "android")]
+const PERMISSION_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(target_os = "android")]
+const PERMISSION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Start the setup search for a paired device's channel (ADR-0008 D2).
 /// Refused for a Bluetooth channel while Bluetooth does not work on this
 /// device (D6).
@@ -1223,14 +1230,18 @@ pub async fn device_connection_begin_channel_setup(
                 "com.fini.app.BluetoothPairing",
                 "requestPermissionsIfNeeded",
             );
-            if !crate::services::android_context::call_static_context_to_bool(
+            // The request only opens the system dialog; the answer comes
+            // later. Wait for the person to answer instead of failing
+            // before they could.
+            let deadline = tokio::time::Instant::now() + PERMISSION_ANSWER_WAIT;
+            while !crate::services::android_context::call_static_context_to_bool(
                 "com.fini.app.BluetoothPairing",
                 "hasPermissions",
             ) {
-                return Err(
-                    "Bluetooth permission required -- grant it in the dialog, then try again"
-                        .to_string(),
-                );
+                if tokio::time::Instant::now() >= deadline {
+                    return Err("Bluetooth permission was not granted".to_string());
+                }
+                tokio::time::sleep(PERMISSION_POLL_INTERVAL).await;
             }
         }
         let service =
