@@ -83,6 +83,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     outgoingRequest: null,
     incomingRequests: [],
     discoveredByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
+    discoveredWithPairedByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
     pairCompletedAt: null,
     saveMappedSpaces: jest.fn().mockResolvedValue([]),
     resolveCustomSpaceMapping: jest.fn().mockResolvedValue(undefined),

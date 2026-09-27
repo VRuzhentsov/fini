@@ -255,6 +255,13 @@ export const useDeviceStore = defineStore("device", () => {
   const channelStatusesByPeer = ref<Record<string, DeviceChannelStatus[]>>({});
   const syncQueueByPeer = ref<Record<string, SyncQueueSummary | null>>({});
   // Per-channel discovery candidates. See `recomputeDiscovered`.
+  // Every device in range per channel, paired ones included: the setup
+  // dialog for a known device needs to see that device too, to offer the
+  // code ceremony when automatic confirmation cannot work (ADR-0008 D20).
+  const discoveredWithPairedByChannel = ref<Record<ChannelKind, DiscoveredDevice[]>>({
+    [ChannelKind.Network]: [],
+    [ChannelKind.Bluetooth]: [],
+  });
   const discoveredByChannel = ref<Record<ChannelKind, DiscoveredDevice[]>>({
     [ChannelKind.Network]: [],
     [ChannelKind.Bluetooth]: [],
@@ -745,6 +752,11 @@ export const useDeviceStore = defineStore("device", () => {
       [ChannelKind.Network]: latestNetworkDiscovered.filter(eligible),
       [ChannelKind.Bluetooth]: latestBluetoothDiscovered.filter(eligible),
     };
+    const notSelf = (item: DiscoveredDevice) => item.device_id !== identity.value.device_id;
+    discoveredWithPairedByChannel.value = {
+      [ChannelKind.Network]: latestNetworkDiscovered.filter(notSelf),
+      [ChannelKind.Bluetooth]: latestBluetoothDiscovered.filter(notSelf),
+    };
 
     // Network always wins over Bluetooth for the same device_id, regardless
     // of which poll happened to finish more recently -- ADR 0002's selection
@@ -1160,6 +1172,7 @@ export const useDeviceStore = defineStore("device", () => {
     latestBluetoothDiscovered = [];
     discoveredDevices.value = [];
     discoveredByChannel.value = { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] };
+    discoveredWithPairedByChannel.value = { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] };
     addModeLastRefreshAt.value = null;
     void refreshDebugStatus();
   }
@@ -1401,6 +1414,7 @@ export const useDeviceStore = defineStore("device", () => {
     pairedDevices,
     discoveredDevices,
     discoveredByChannel,
+    discoveredWithPairedByChannel,
     incomingRequests,
     outgoingRequest,
     outgoingRequestSecondsLeft,

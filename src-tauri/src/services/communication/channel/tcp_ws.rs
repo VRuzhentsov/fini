@@ -268,6 +268,10 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
                 .lock()
                 .unwrap()
                 .insert(peer_id.clone(), Instant::now() + FAILURE_COOLDOWN);
+            // Try again once the cooldown is over, while the work still waits.
+            crate::services::communication::sync::commands::notify_sync_work_pending_after(
+                FAILURE_COOLDOWN,
+            );
         }
         in_flight_exchanges().lock().unwrap().remove(&peer_id);
     });

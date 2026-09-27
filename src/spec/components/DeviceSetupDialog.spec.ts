@@ -15,6 +15,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     incomingRequests: [],
     discoveredDevices: [],
     discoveredByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
+    discoveredWithPairedByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
     pairCompletedAt: null,
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
@@ -326,8 +327,14 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
       last_seen_at: new Date().toISOString(),
       channel_kind: ChannelKind.Bluetooth,
     });
+    // As the store has it: the known peer is paired, so only the list that
+    // keeps paired devices contains it.
     const store = storeMock({
       discoveredByChannel: {
+        [ChannelKind.Network]: [],
+        [ChannelKind.Bluetooth]: [nearby("other", "Thinkpad")],
+      },
+      discoveredWithPairedByChannel: {
         [ChannelKind.Network]: [],
         [ChannelKind.Bluetooth]: [nearby("peer-1", "Pixel 8"), nearby("other", "Thinkpad")],
       },
@@ -342,5 +349,30 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
 
     await wrapper.find('[data-testid="setup-pair-with-code"]').trigger("click");
     expect(store.requestPair).toHaveBeenCalledWith(expect.objectContaining({ device_id: "peer-1" }));
+  });
+
+  // Closing while the begin still waits on the radio or a permission prompt
+  // ran the end before the backend search existed; the search that started
+  // afterwards must be ended too, not left running with no dialog.
+  it("ends a setup search that finishes starting after the dialog closed", async () => {
+    let resolveBegin: () => void = () => {};
+    const store = storeMock({
+      beginChannelSetup: jest.fn(
+        () => new Promise<void>((resolve) => { resolveBegin = resolve; }),
+      ),
+    });
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+
+    wrapper.unmount();
+    await flushUi();
+    resolveBegin();
+    await flushUi();
+
+    expect(store.endChannelSetup).toHaveBeenCalledTimes(2);
+    expect(store.endChannelSetup).toHaveBeenLastCalledWith("peer-1", ChannelKind.Bluetooth, false);
+    jest.advanceTimersByTime(5_000);
+    expect(store.channelSetupStatus).not.toHaveBeenCalled();
   });
 });

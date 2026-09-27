@@ -1216,6 +1216,19 @@ pub fn notify_sync_work_pending() {
     outbox_notify().notify_one();
 }
 
+/// Wake the keeper once `delay` has passed: a retry that is due later.
+///
+/// A failed exchange records when it may be tried again (the Bluetooth
+/// delivery schedule, the Network cooldown), but only a tick acts on that,
+/// and the desktop keeper has no periodic tick. Without this, work for a
+/// peer that was unreachable once waited for some unrelated wake-up.
+pub fn notify_sync_work_pending_after(delay: std::time::Duration) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(delay).await;
+        notify_sync_work_pending();
+    });
+}
+
 /// Announces that a peer's change has been applied to our database, so the
 /// UI can refresh without polling for it.
 ///

@@ -101,9 +101,14 @@ const renderLists = computed(() => ({
   otherCandidates: knownDevice.value
     ? candidates.value.filter((device) => device.device_id !== props.peerDeviceId)
     : candidates.value,
-  knownPeerAsCandidate: knownDevice.value
-    ? candidates.value.filter((device) => device.device_id === props.peerDeviceId)
-    : [],
+  // Read from the list that keeps paired devices: the known peer is paired,
+  // so the ordinary candidate list never contains it.
+  knownPeerAsCandidate:
+    knownDevice.value && props.kind
+      ? deviceStore.discoveredWithPairedByChannel[props.kind].filter(
+          (device) => device.device_id === props.peerDeviceId,
+        )
+      : [],
 }));
 
 // The known-device branch's own progress, polled while the dialog is open.
@@ -231,10 +236,19 @@ async function startChannelSetup() {
   setupStatus.value = null;
   setupError.value = null;
   if (!props.peerDeviceId || !props.kind) return;
+  const peerDeviceId = props.peerDeviceId;
+  const kind = props.kind;
   try {
-    await deviceStore.beginChannelSetup(props.peerDeviceId, props.kind);
+    await deviceStore.beginChannelSetup(peerDeviceId, kind);
   } catch (error) {
-    setupError.value = String(error);
+    if (!setupFinished) setupError.value = String(error);
+    return;
+  }
+  // Closed while the begin was still waiting on the radio or a permission
+  // prompt: the end already ran, before the backend search existed, so end
+  // the search that has just started instead of leaving it running.
+  if (setupFinished) {
+    await deviceStore.endChannelSetup(peerDeviceId, kind, false);
     return;
   }
   stopSetupPoll();

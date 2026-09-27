@@ -1092,10 +1092,20 @@ fn delivery_due(peer_id: &str) -> bool {
 }
 
 fn note_delivery_missed(peer_id: &str) {
-    if let Ok(mut schedule) = delivery_schedule().lock() {
-        let misses = schedule.get(peer_id).map_or(0, |(misses, _)| *misses) + 1;
-        schedule.insert(peer_id.to_string(), (misses, next_delivery_search(misses, Instant::now())));
-    }
+    let now = Instant::now();
+    let next = match delivery_schedule().lock() {
+        Ok(mut schedule) => {
+            let misses = schedule.get(peer_id).map_or(0, |(misses, _)| *misses) + 1;
+            let next = next_delivery_search(misses, now);
+            schedule.insert(peer_id.to_string(), (misses, next));
+            next
+        }
+        Err(_) => return,
+    };
+    // The next search is due then; wake the keeper for it (ADR-0008 D12).
+    crate::services::communication::sync::commands::notify_sync_work_pending_after(
+        next.saturating_duration_since(now),
+    );
 }
 
 fn note_delivery_reached(peer_id: &str) {
