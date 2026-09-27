@@ -1250,6 +1250,28 @@ fn finishing_a_setup_writes_the_channel_only_after_a_complete_init() {
     }
 }
 
+/// A setup closed and reopened for the same channel is a new attempt: what
+/// the closed one's search brings back late does not count for it.
+#[test]
+fn a_late_result_from_a_closed_setup_does_not_count_for_the_next() {
+    let (state, _db) = server_state("adr-0008-setup-attempts");
+    let closed = state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
+    assert_eq!(state.begin_channel_setup("peer-client", ChannelKind::Bluetooth), closed, "joins the running one");
+    state.end_channel_setup("peer-client", ChannelKind::Bluetooth);
+
+    let reopened = state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
+    assert_ne!(reopened, closed);
+    state.note_channel_setup_attempt("peer-client", ChannelKind::Bluetooth, closed, |s| {
+        s.hello_acked_by_peer = true
+    });
+    assert!(!state.channel_setup("peer-client", ChannelKind::Bluetooth).unwrap().hello_acked_by_peer);
+
+    state.note_channel_setup_attempt("peer-client", ChannelKind::Bluetooth, reopened, |s| {
+        s.hello_acked_by_peer = true
+    });
+    assert!(state.channel_setup("peer-client", ChannelKind::Bluetooth).unwrap().hello_acked_by_peer);
+}
+
 /// ADR-0008 D15: a channel that does not exist is set up, not switched on.
 #[test]
 fn switching_on_a_channel_that_was_never_set_up_is_refused() {

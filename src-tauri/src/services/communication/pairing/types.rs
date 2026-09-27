@@ -259,6 +259,11 @@ pub(super) struct DiscoveryRuntime {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelSetup {
+    /// Which setup this is. A search closed and reopened for the same
+    /// channel is a new attempt, and what the old one's task still brings
+    /// back must not count for it.
+    #[serde(skip)]
+    pub attempt: u64,
     /// The peer answered this device's hello.
     pub hello_acked_by_peer: bool,
     /// This device answered the peer's hello.

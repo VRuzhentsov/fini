@@ -666,13 +666,20 @@ impl DeviceConnectionState {
     /// runs, this device answers the peer's hello on that channel; nothing
     /// else makes it answer. Starting again keeps the progress so far.
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn begin_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) {
-        if let Ok(mut guard) = self.runtime.lock() {
-            guard
-                .channel_setups
-                .entry((peer_device_id.to_string(), kind))
-                .or_default();
-        }
+    /// Returns the attempt it joined or started (see `ChannelSetup::attempt`).
+    pub fn begin_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> u64 {
+        static NEXT_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let Ok(mut guard) = self.runtime.lock() else {
+            return 0;
+        };
+        guard
+            .channel_setups
+            .entry((peer_device_id.to_string(), kind))
+            .or_insert_with(|| ChannelSetup {
+                attempt: NEXT_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                ..ChannelSetup::default()
+            })
+            .attempt
     }
 
     /// Whether any setup search is running on this channel.
@@ -711,6 +718,24 @@ impl DeviceConnectionState {
                 update(setup);
             }
         }
+    }
+
+    /// `note_channel_setup`, but only while `attempt` is still the running
+    /// one: a result from a search that was closed does not count for the
+    /// next.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn note_channel_setup_attempt(
+        &self,
+        peer_device_id: &str,
+        kind: ChannelKind,
+        attempt: u64,
+        update: impl FnOnce(&mut ChannelSetup),
+    ) {
+        self.note_channel_setup(peer_device_id, kind, |setup| {
+            if setup.attempt == attempt {
+                update(setup);
+            }
+        });
     }
 
     /// Where the Network channel last heard this peer's presence beacon.

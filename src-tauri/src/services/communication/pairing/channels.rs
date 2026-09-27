@@ -69,6 +69,9 @@ pub fn configure(
         })
         .execute(&mut *conn)
         .map_err(|e| e.to_string())?;
+    // A new channel supersedes an unlink of the old one this device still
+    // owed the peer: sent now, it would remove the channel both just set up.
+    clear_unlink_notice(conn, device_id, kind);
     Ok(())
 }
 
@@ -210,6 +213,28 @@ mod tests {
         assert_eq!(pending_unlink_notices(&mut conn, "peer"), vec![ChannelKind::Bluetooth]);
 
         clear_unlink_notice(&mut conn, "peer", ChannelKind::Bluetooth);
+        assert!(pending_unlink_notices(&mut conn, "peer").is_empty());
+    }
+
+    /// A channel set up again supersedes the unlink this device still owed
+    /// for the old one: sending it would remove the new channel.
+    #[test]
+    fn setting_a_channel_up_again_drops_the_unlink_still_owed_for_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("fini.db");
+        let mut conn = open_db_at_path(&db_path);
+        diesel::sql_query(
+            "INSERT INTO paired_devices (peer_device_id, display_name, paired_at) \
+             VALUES ('peer', 'Peer', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&mut conn)
+        .expect("seed pair");
+
+        configure(&mut conn, "peer", ChannelKind::Bluetooth, false, None).expect("configure");
+        unlink(&mut conn, "peer", ChannelKind::Bluetooth).expect("unlink");
+        assert_eq!(pending_unlink_notices(&mut conn, "peer"), vec![ChannelKind::Bluetooth]);
+
+        configure(&mut conn, "peer", ChannelKind::Bluetooth, true, None).expect("set up again");
         assert!(pending_unlink_notices(&mut conn, "peer").is_empty());
     }
 }

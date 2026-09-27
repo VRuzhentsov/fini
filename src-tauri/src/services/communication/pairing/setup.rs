@@ -33,7 +33,7 @@ const BLUETOOTH_ROUND_FAILURE_PAUSE: Duration = Duration::from_secs(5);
 /// runs until `finish` ends it.
 pub fn start(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind) {
     let already_running = state.channel_setup(peer_device_id, kind).is_some();
-    state.begin_channel_setup(peer_device_id, kind);
+    let attempt = state.begin_channel_setup(peer_device_id, kind);
     // The peer must be able to reach this device while it searches, so a
     // setup is a reason to advertise (ADR-0008 D8); the keeper applies it.
     crate::services::communication::sync::commands::notify_sync_work_pending();
@@ -42,7 +42,7 @@ pub fn start(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelK
     }
     let state = state.clone();
     let peer_device_id = peer_device_id.to_string();
-    tauri::async_runtime::spawn(async move { run(state, peer_device_id, kind).await });
+    tauri::async_runtime::spawn(async move { run(state, peer_device_id, kind, attempt).await });
 }
 
 /// End the setup search. If the init completed, the channel is created
@@ -67,13 +67,12 @@ pub fn finish(
     Ok(setup)
 }
 
-/// Says hello until the peer acknowledges it or the search ends.
-async fn run(state: DeviceConnectionState, peer_device_id: String, kind: ChannelKind) {
+/// Says hello until the peer acknowledges it or this attempt ends.
+async fn run(state: DeviceConnectionState, peer_device_id: String, kind: ChannelKind, attempt: u64) {
     loop {
         match state.channel_setup(&peer_device_id, kind) {
-            None => return,
-            Some(setup) if setup.hello_acked_by_peer => return,
-            Some(_) => {}
+            Some(setup) if setup.attempt == attempt && !setup.hello_acked_by_peer => {}
+            _ => return,
         }
         let acknowledged = match kind {
             ChannelKind::Bluetooth => bluetooth_round(&state, &peer_device_id).await,
@@ -86,7 +85,9 @@ async fn run(state: DeviceConnectionState, peer_device_id: String, kind: Channel
             }
         };
         if acknowledged {
-            state.note_channel_setup(&peer_device_id, kind, |setup| setup.hello_acked_by_peer = true);
+            state.note_channel_setup_attempt(&peer_device_id, kind, attempt, |setup| {
+                setup.hello_acked_by_peer = true
+            });
             return;
         }
     }
