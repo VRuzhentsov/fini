@@ -1213,9 +1213,18 @@ async fn a_hello_is_acknowledged_while_this_device_searches_for_the_peer() {
         }
         other => panic!("expected a HelloAck, got {other:?}"),
     }
-    let setup = receiver
-        .channel_setup("peer-client", ChannelKind::Bluetooth)
-        .expect("the search is still running");
+    // The gate records its half only once the ack is sent, so the test can
+    // read the ack a moment before the record lands.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let setup = loop {
+        let setup = receiver
+            .channel_setup("peer-client", ChannelKind::Bluetooth)
+            .expect("the search is still running");
+        if setup.acked_peer_hello || tokio::time::Instant::now() >= deadline {
+            break setup;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
     assert!(setup.acked_peer_hello, "this device's half of the init is recorded");
     assert!(!setup.initialized(), "the other half is the peer acknowledging our hello");
 }
