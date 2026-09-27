@@ -983,6 +983,12 @@ pub fn device_connection_save_paired_device_impl(
         channels::note_address(&mut *conn, &peer_device_id, ChannelKind::Bluetooth, address);
     }
 
+    // The pairing set a channel up, so whether to advertise may have changed
+    // (ADR-0008 D8), and there may be work for the new pair. The keeper's
+    // tick is what applies both; without this a device paired over Bluetooth
+    // stayed silent until something unrelated woke it.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
+
     paired_devices::table
         .find(&peer_device_id)
         .select(PairedDevice::as_select())
@@ -1354,6 +1360,8 @@ pub fn device_connection_unpair_impl(
     diesel::delete(paired_devices::table.find(&peer_device_id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
+    // Its channels went with it, which can leave nobody to advertise for.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
 
