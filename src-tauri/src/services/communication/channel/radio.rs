@@ -42,6 +42,10 @@ pub trait Radio: Send + Sync {
     /// See `ChannelService::request_exchange`.
     fn request_exchange(&self, state: &DeviceConnectionState, peer_device_id: &str);
 
+    /// See `ChannelService::forget_failures`.
+    #[cfg(any(feature = "ui-plane", test))]
+    fn forget_failures(&self, _peer_device_id: &str) {}
+
     /// Whether the peer advertised within the channel timeout.
     fn is_reachable(&self, peer_device_id: &str) -> bool;
 
@@ -124,6 +128,14 @@ impl Radio for GattRadio {
         super::ble::start_exchange(state, peer_device_id);
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = (state, peer_device_id);
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    fn forget_failures(&self, peer_device_id: &str) {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        super::ble::forget_delivery_misses(peer_device_id);
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let _ = peer_device_id;
     }
 
     #[cfg(any(feature = "ui-plane", test))]

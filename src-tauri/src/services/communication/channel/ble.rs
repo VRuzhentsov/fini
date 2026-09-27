@@ -1108,6 +1108,13 @@ fn note_delivery_missed(peer_id: &str) {
     );
 }
 
+/// See `ChannelService::forget_failures`: the next delivery search is due
+/// at once.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn forget_delivery_misses(peer_id: &str) {
+    note_delivery_reached(peer_id);
+}
+
 fn note_delivery_reached(peer_id: &str) {
     if let Ok(mut schedule) = delivery_schedule().lock() {
         schedule.remove(peer_id);
@@ -1480,6 +1487,17 @@ mod tests {
             .map(|misses| next_delivery_search(misses, now).duration_since(now).as_secs())
             .collect();
         assert_eq!(waits, vec![60, 300, 900, 900, 900]);
+    }
+
+    /// Switching Bluetooth on tries again at once, whatever retry delay
+    /// earlier misses left behind.
+    #[test]
+    fn forgetting_delivery_misses_makes_the_next_search_due_now() {
+        let peer = "peer-forget-delivery-misses";
+        note_delivery_missed(peer);
+        assert!(!delivery_due(peer), "a miss delays the next search");
+        forget_delivery_misses(peer);
+        assert!(delivery_due(peer));
     }
 
     /// `add_mode_sender` is a process-global singleton (mirrors the real

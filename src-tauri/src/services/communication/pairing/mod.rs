@@ -327,10 +327,8 @@ impl DeviceConnectionState {
                 left_over.push(frame);
                 continue;
             }
-            if let Err(err) = sender.try_send(SessionCommand::Forward(frame)) {
-                if let SessionCommand::Forward(frame) = err.into_inner() {
-                    left_over.push(frame);
-                }
+            if sender.try_send(SessionCommand::Forward(frame.clone())).is_err() {
+                left_over.push(frame);
             }
         }
         if !left_over.is_empty() {

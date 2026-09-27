@@ -95,7 +95,10 @@ pub async fn run_session(
     // ADR-0008 D14: every exchange restates the unlink notices this device
     // still owes the peer, until the peer acknowledges each one. Safe to
     // repeat: removing a channel that is already gone changes nothing.
-    send_unlink_notices(link.as_mut(), &db_path, &peer_device_id).await;
+    // Grows only in the app build, where a live exchange can be asked to
+    // resend (`SessionCommand::SendUnlinkNotices`).
+    #[cfg_attr(not(any(feature = "ui-plane", test)), allow(unused_mut))]
+    let mut notices_sent = send_unlink_notices(link.as_mut(), &db_path, &peer_device_id).await;
 
     let idle = tokio::time::sleep(idle_after);
     tokio::pin!(idle);
@@ -135,7 +138,8 @@ pub async fn run_session(
                     }
                     #[cfg(any(feature = "ui-plane", test))]
                     SessionCommand::SendUnlinkNotices => {
-                        send_unlink_notices(link.as_mut(), &db_path, &peer_device_id).await;
+                        notices_sent
+                            .extend(send_unlink_notices(link.as_mut(), &db_path, &peer_device_id).await);
                     }
                 }
             }
@@ -147,19 +151,37 @@ pub async fn run_session(
     }
 
     state.release_session(&peer_device_id, kind);
+
+    // A notice owed since this exchange started, that it never got to send
+    // (it closed first, or its mailbox was full), is work for the next one.
+    let owed = tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(&db_path);
+        channels::pending_unlink_notices(&mut conn, &peer_device_id)
+    });
+    if owed.iter().any(|kind| !notices_sent.contains(kind)) {
+        crate::services::communication::sync::commands::notify_sync_work_pending();
+    }
 }
 
 /// Sends every unlink notice still owed to this peer. A notice stays owed
 /// until the peer's `ChannelUnlinkedAck` clears it, so a failed send simply
-/// goes out again on the next exchange.
-async fn send_unlink_notices(link: &mut dyn DataLink, db_path: &PathBuf, peer_device_id: &str) {
+/// goes out again on the next exchange. Returns the ones sent.
+async fn send_unlink_notices(
+    link: &mut dyn DataLink,
+    db_path: &PathBuf,
+    peer_device_id: &str,
+) -> Vec<ChannelKind> {
     let owed = tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
         channels::pending_unlink_notices(&mut conn, peer_device_id)
     });
+    let mut sent = Vec::new();
     for kind in owed {
-        let _ = send_frame(link, &PeerFrame::ChannelUnlinked { kind }).await;
+        if send_frame(link, &PeerFrame::ChannelUnlinked { kind }).await.is_ok() {
+            sent.push(kind);
+        }
     }
+    sent
 }
 
 async fn handle_inbound(
@@ -286,6 +308,9 @@ async fn handle_inbound(
                 Ok(()) => {
                     log::info!("[session] {peer_device_id}: peer unlinked {kind:?}; removed it here");
                     let _ = send_frame(link, &PeerFrame::ChannelUnlinkedAck { kind }).await;
+                    // Whether this device should still advertise, and which
+                    // channel carries waiting work, may have changed.
+                    crate::services::communication::sync::commands::notify_sync_work_pending();
                 }
                 Err(err) => {
                     log::warn!("[session] {peer_device_id}: could not remove unlinked {kind:?}: {err}");

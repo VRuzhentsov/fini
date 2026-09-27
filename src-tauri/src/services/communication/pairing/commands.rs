@@ -1093,7 +1093,12 @@ pub fn device_connection_set_channel_enabled_impl(
     }
     channels::set_enabled(&mut *conn, &peer_device_id, kind, enabled)?;
 
-    if !enabled {
+    if enabled {
+        // An explicit switch-on is tried now, not after an earlier retry
+        // delay runs out.
+        crate::services::communication::channel::service::service_for(state, kind)
+            .forget_failures(&peer_device_id);
+    } else {
         // An exchange running on the channel ends now: off means off.
         state.close_session_on(&peer_device_id, kind);
     }

@@ -299,6 +299,12 @@ pub fn recently_failed(peer_id: &str) -> bool {
     is_cooling_down(&failure_cooldown().lock().unwrap(), peer_id, Instant::now())
 }
 
+/// See `ChannelService::forget_failures`.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn forget_failures(peer_id: &str) {
+    failure_cooldown().lock().unwrap().remove(peer_id);
+}
+
 fn is_cooling_down(cooldown: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
     cooldown.get(peer_id).is_some_and(|until| now < *until)
 }

@@ -110,6 +110,11 @@ pub trait ChannelService: Send + Sync {
         false
     }
 
+    /// Forget earlier failed attempts with this peer, so the next exchange
+    /// is tried at once. For a person switching the channel on.
+    #[cfg(any(feature = "ui-plane", test))]
+    fn forget_failures(&self, _peer_device_id: &str) {}
+
     /// A problem on this device's side of the channel, if any (ADR-0008
     /// D6, D19) -- orange on the row, explained behind ⓘ.
     #[cfg(any(feature = "ui-plane", test))]
@@ -200,6 +205,11 @@ impl ChannelService for NetworkChannelService {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
+    fn forget_failures(&self, peer_device_id: &str) {
+        super::tcp_ws::forget_failures(peer_device_id);
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
     fn problem(&self) -> Option<ChannelProblem> {
         self.state
             .network_broadcast_failing()
@@ -257,6 +267,11 @@ impl ChannelService for BluetoothChannelService {
 
     fn request_exchange(&self, peer_device_id: &str) {
         self.radio.request_exchange(&self.state, peer_device_id);
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    fn forget_failures(&self, peer_device_id: &str) {
+        self.radio.forget_failures(peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
