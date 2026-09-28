@@ -268,7 +268,10 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
                 .lock()
                 .unwrap()
                 .insert(peer_id.clone(), Instant::now() + FAILURE_COOLDOWN);
-            // Try again once the cooldown is over, while the work still waits.
+            // Look again now, while the failure still counts, so the work
+            // can go over Bluetooth meanwhile; and once the cooldown is over,
+            // to try Network again.
+            crate::services::communication::sync::commands::notify_sync_work_pending();
             crate::services::communication::sync::commands::notify_sync_work_pending_after(
                 FAILURE_COOLDOWN,
             );
