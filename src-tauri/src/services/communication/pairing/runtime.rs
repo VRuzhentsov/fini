@@ -342,7 +342,7 @@ fn spawn_mdns_worker(
                         .map(|id| {
                             runtime_worker
                                 .lock()
-                                .map(|guard| !guard.presence.contains_key(id))
+                                .map(|guard| !is_present(&guard.presence, id))
                                 .unwrap_or(false)
                         })
                         .unwrap_or(false);
@@ -563,7 +563,7 @@ pub(super) fn spawn_discovery_worker(
                             // tick. Read before the upsert below.
                             let newly_present = runtime
                                 .lock()
-                                .map(|guard| !guard.presence.contains_key(beacon.device_id.as_str()))
+                                .map(|guard| !is_present(&guard.presence, beacon.device_id.as_str()))
                                 .unwrap_or(false);
 
                             if let Ok(mut guard) = runtime.lock() {
@@ -1010,5 +1010,42 @@ mod tests {
             !dir.join("device_identity.json").exists(),
             "stale deprecated identity file should be deleted"
         );
+    }
+}
+
+/// Whether a peer's last Network beacon is recent enough to count: an entry
+/// past the channel timeout is a peer that went away, and its next beacon
+/// is an arrival, even before the worker prunes the entry.
+fn is_present(presence: &HashMap<String, SeenPeer>, device_id: &str) -> bool {
+    presence
+        .get(device_id)
+        .is_some_and(|peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT)
+}
+
+#[cfg(test)]
+mod presence_tests {
+    use super::*;
+
+    fn seen(ago: Duration) -> SeenPeer {
+        SeenPeer {
+            hostname: "peer".to_string(),
+            addr: "127.0.0.1".to_string(),
+            discovery_port: 0,
+            ws_port: None,
+            last_seen_at: crate::services::db::utc_now(),
+            last_seen_mono: Instant::now() - ago,
+        }
+    }
+
+    /// A beacon from a peer whose entry outlived the channel timeout is an
+    /// arrival, pruned or not.
+    #[test]
+    fn a_stale_entry_does_not_count_as_present() {
+        let mut presence = HashMap::new();
+        presence.insert("fresh".to_string(), seen(Duration::ZERO));
+        presence.insert("stale".to_string(), seen(NETWORK_CHANNEL_TIMEOUT));
+        assert!(is_present(&presence, "fresh"));
+        assert!(!is_present(&presence, "stale"));
+        assert!(!is_present(&presence, "unknown"));
     }
 }

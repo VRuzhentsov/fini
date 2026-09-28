@@ -57,6 +57,15 @@ impl DialGuard {
         dials().send_modify(|count| *count += 1);
         Self(())
     }
+
+    /// A guard for a dial the coordinator did not hand off: the running
+    /// scan sees the guard and stops, and this returns once it has (the
+    /// scan lease is free), so the dial never overlaps a scan.
+    pub async fn acquire() -> Self {
+        let guard = Self::new();
+        drop(super::scan_lease().lock().await);
+        guard
+    }
 }
 
 impl Drop for DialGuard {
@@ -245,6 +254,8 @@ async fn run() {
                     }
                     Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
                 },
+                // A dial started outside a hand-off: stop for it.
+                _ = dials.wait_for(|count| *count > 0) => break,
                 // What is wanted changed: keep the scan running over the
                 // new set rather than restarting the radio, and stop only
                 // once nothing is wanted any more.
@@ -269,6 +280,23 @@ mod tests {
 
     fn searching(peer: &str) -> bool {
         requests().lock().unwrap().searches.iter().any(|request| request.peer == peer)
+    }
+
+    /// A dial started outside a hand-off waits until the scan holding the
+    /// adapter has stopped, and the scan sees the dial.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dial_waits_for_the_running_scan_to_stop() {
+        let scan = super::super::scan_lease().lock().await;
+        let dial = tokio::spawn(DialGuard::acquire());
+        while *dials().borrow() == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!dial.is_finished(), "no dial while the scan holds the adapter");
+
+        drop(scan);
+        let guard = tokio::time::timeout(Duration::from_secs(2), dial).await.unwrap().unwrap();
+        drop(guard);
     }
 
     #[tokio::test(flavor = "multi_thread")]

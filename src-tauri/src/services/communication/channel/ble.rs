@@ -1155,7 +1155,7 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
     let mut last_error = None;
 
     if let Some(address) = last_seen_address(peer_id) {
-        let guard = search::DialGuard::new();
+        let guard = search::DialGuard::acquire().await;
         match connect_and_auth(state, peer_id, &address).await {
             Ok((link, version)) => {
                 drop(guard);
