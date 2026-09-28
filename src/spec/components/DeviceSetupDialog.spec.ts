@@ -303,6 +303,52 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
     expect(wrapper.emitted("close")).toBeTruthy();
   });
 
+  it("lets OK be pressed again when writing the channel failed", async () => {
+    const store = storeMock({
+      channelSetupStatus: jest.fn().mockResolvedValue({
+        helloAckedByPeer: true,
+        ackedPeerHello: true,
+        initialized: true,
+      }),
+      endChannelSetup: jest
+        .fn()
+        .mockRejectedValueOnce(new Error("database is locked"))
+        .mockResolvedValue([]),
+    });
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const wrapper = mountDialog(known);
+    await flushUi();
+    jest.advanceTimersByTime(1_000);
+    await flushUi();
+
+    await wrapper.find('[data-testid="setup-ok"]').trigger("click");
+    await flushUi();
+    expect(wrapper.emitted("close")).toBeFalsy();
+
+    await wrapper.find('[data-testid="setup-ok"]').trigger("click");
+    await flushUi();
+    expect(store.endChannelSetup).toHaveBeenCalledTimes(2);
+    expect(wrapper.emitted("close")).toBeTruthy();
+    warn.mockRestore();
+  });
+
+  it("leaves the Bluetooth half of add mode off when adding a Network channel", async () => {
+    const store = storeMock();
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    mountDialog({ ...known, kind: ChannelKind.Network });
+    await flushUi();
+    expect(store.enterAddMode).toHaveBeenCalledWith({ bluetooth: false });
+  });
+
+  it("uses the Bluetooth half of add mode when adding a Bluetooth channel", async () => {
+    const store = storeMock();
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    mountDialog(known);
+    await flushUi();
+    expect(store.enterAddMode).toHaveBeenCalledWith({ bluetooth: true });
+  });
+
   it("ends the setup without switching on when closed", async () => {
     const store = storeMock();
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);

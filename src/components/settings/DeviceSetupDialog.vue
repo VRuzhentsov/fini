@@ -212,12 +212,18 @@ const digits = computed(() => codeInput.value.replace(/\D/g, "").slice(0, 6));
 // being mounted already-open. The parent can flip its flag during its own
 // setup, before this component exists, and a plain `watch` on the prop
 // would never see that transition: the nearby list would sit empty forever.
+// Adding a known device's Network channel has no use for the Bluetooth
+// half of add mode.
+const addModeUsesBluetooth = computed(
+  () => !(knownDevice.value && props.kind === ChannelKind.Network),
+);
+
 function startAddMode() {
   channel.value = null;
   codeInput.value = "";
   codeError.value = null;
   acceptedRequestId.value = null;
-  void deviceStore.enterAddMode();
+  void deviceStore.enterAddMode({ bluetooth: addModeUsesBluetooth.value });
   stopClock();
   clockTimer = setInterval(() => {
     nowMs.value = Date.now();
@@ -269,12 +275,21 @@ function stopSetupPoll() {
 
 // OK switches the channel on; closing leaves it Off if the init completed
 // and writes nothing otherwise (ADR-0008 D15) -- the backend decides.
-async function finishChannelSetup(switchOn: boolean) {
+// `false` when writing the channel failed: the backend keeps the completed
+// init, so OK can be pressed again.
+async function finishChannelSetup(switchOn: boolean): Promise<boolean> {
   stopSetupPoll();
-  if (setupFinished) return;
+  if (setupFinished) return true;
   setupFinished = true;
-  if (!props.peerDeviceId || !props.kind || setupError.value) return;
-  await deviceStore.endChannelSetup(props.peerDeviceId, props.kind, switchOn);
+  if (!props.peerDeviceId || !props.kind || setupError.value) return true;
+  try {
+    await deviceStore.endChannelSetup(props.peerDeviceId, props.kind, switchOn);
+    return true;
+  } catch (error) {
+    console.warn("[device-setup] finishing the channel setup failed", error);
+    setupFinished = false;
+    return false;
+  }
 }
 
 // A known device runs both: the setup search for the automatic path, and
@@ -366,8 +381,7 @@ function close() {
 }
 
 async function confirmChannelSetup() {
-  await finishChannelSetup(true);
-  emit("close");
+  if (await finishChannelSetup(true)) emit("close");
 }
 </script>
 

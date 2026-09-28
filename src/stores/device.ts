@@ -1098,7 +1098,9 @@ export const useDeviceStore = defineStore("device", () => {
     void runSpaceSyncTick();
   }
 
-  async function enterAddMode() {
+  // `bluetooth: false` when only the Network channel is being added: no
+  // Bluetooth advertising, permission prompt, or scan for it.
+  async function enterAddMode({ bluetooth = true }: { bluetooth?: boolean } = {}) {
     // Guards against `leaveAddMode` completing first if the view unmounts
     // while this is still awaiting `refreshIdentity`/the backend invoke
     // (e.g. the user navigates away moments after opening Add Device):
@@ -1113,7 +1115,7 @@ export const useDeviceStore = defineStore("device", () => {
     if (generation !== addModeGeneration) return;
 
     try {
-      await invoke("device_connection_enter_add_mode");
+      await invoke("device_connection_enter_add_mode", { bluetooth });
     } catch (error) {
       console.warn("[device-connection] enter add mode failed", error);
     }
@@ -1139,7 +1141,7 @@ export const useDeviceStore = defineStore("device", () => {
     }
 
     startDiscoveryLoop();
-    startBluetoothScanLoop();
+    if (bluetooth) startBluetoothScanLoop();
   }
 
   async function leaveAddMode() {

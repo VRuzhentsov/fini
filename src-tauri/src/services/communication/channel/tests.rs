@@ -657,7 +657,7 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
 
     let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-send-pair-request-receiver");
-    device_connection_enter_add_mode_impl(&receiver).expect("enter add mode");
+    device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
     let port = tcp_ws::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
@@ -718,8 +718,8 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     let (requester, requester_db) =
         server_state_on_port("transport-pair-round-trip-requester", requester_port);
     let (accepter, accepter_db) = server_state("transport-pair-round-trip-accepter");
-    device_connection_enter_add_mode_impl(&requester).expect("enter add mode (requester)");
-    device_connection_enter_add_mode_impl(&accepter).expect("enter add mode (accepter)");
+    device_connection_enter_add_mode_impl(&requester, true).expect("enter add mode (requester)");
+    device_connection_enter_add_mode_impl(&accepter, true).expect("enter add mode (accepter)");
 
     tokio::spawn(tcp_ws::run_server_on_port(
         requester.clone(),
@@ -975,7 +975,7 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
 
     let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-pair-request-bluetooth");
-    device_connection_enter_add_mode_impl(&receiver).expect("enter add mode");
+    device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

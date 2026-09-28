@@ -229,7 +229,13 @@ pub fn device_connection_get_identity(
     device_connection_get_identity_impl(&state)
 }
 
-pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> Result<(), String> {
+/// `bluetooth` is false when only the Network channel is being added: then
+/// the Bluetooth half (advertising the add flag, the Android permission
+/// prompt) stays off.
+pub fn device_connection_enter_add_mode_impl(
+    state: &DeviceConnectionState,
+    bluetooth: bool,
+) -> Result<(), String> {
     let mut guard = state
         .runtime
         .lock()
@@ -244,7 +250,9 @@ pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> R
     // makes this device discoverable over Bluetooth too, not just the
     // existing mDNS beacon.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::set_add_mode(true);
+    if bluetooth {
+        crate::services::communication::channel::ble::set_add_mode(true);
+    }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
     // prompt -- see `BluetoothPairing.requestPermissionsIfNeeded`'s doc
@@ -255,17 +263,24 @@ pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> R
     // again on every retry after the user has already explicitly denied
     // it once would violate that same contract.
     #[cfg(target_os = "android")]
-    crate::services::android_context::call_static_context_void(
-        "com.fini.app.BluetoothPairing",
-        "requestPermissionsIfNeeded",
-    );
+    if bluetooth {
+        crate::services::android_context::call_static_context_void(
+            "com.fini.app.BluetoothPairing",
+            "requestPermissionsIfNeeded",
+        );
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let _ = bluetooth;
     Ok(())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_enter_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
-    device_connection_enter_add_mode_impl(&state)
+pub fn device_connection_enter_add_mode(
+    state: State<DeviceConnectionState>,
+    bluetooth: bool,
+) -> Result<(), String> {
+    device_connection_enter_add_mode_impl(&state, bluetooth)
 }
 
 pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> Result<(), String> {
