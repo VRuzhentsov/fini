@@ -285,6 +285,10 @@ async fn run() {
 mod tests {
     use super::*;
 
+    /// The dial counter is process-global: tests that change it or assert
+    /// on it run one at a time, or one's guard shows up in another's count.
+    static DIAL_COUNTER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn searching(peer: &str) -> bool {
         requests().lock().unwrap().searches.iter().any(|request| request.peer == peer)
     }
@@ -293,6 +297,7 @@ mod tests {
     /// adapter has stopped, and the scan sees the dial.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_dial_waits_for_the_running_scan_to_stop() {
+        let _serial = DIAL_COUNTER_TEST_LOCK.lock().await;
         let scan = super::super::scan_lease().lock().await;
         let dial = tokio::spawn(DialGuard::acquire());
         while *dials().borrow() == 0 {
@@ -308,6 +313,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn searches_for_different_peers_share_one_scan() {
+        let _serial = DIAL_COUNTER_TEST_LOCK.lock().await;
         let first = tokio::spawn(find("coord-merge-a", Purpose::Delivery, Duration::from_secs(5)));
         let second = tokio::spawn(find("coord-merge-b", Purpose::Setup, Duration::from_secs(5)));
         while !(searching("coord-merge-a") && searching("coord-merge-b")) {
@@ -326,6 +332,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_heard_peer_reaches_every_search_waiting_for_it_and_pauses_the_scan() {
+        let _serial = DIAL_COUNTER_TEST_LOCK.lock().await;
         let delivery = tokio::spawn(find("coord-both", Purpose::Delivery, Duration::from_secs(5)));
         let setup = tokio::spawn(find("coord-both", Purpose::Setup, Duration::from_secs(5)));
         while requests().lock().unwrap().searches.iter().filter(|r| r.peer == "coord-both").count() < 2 {
