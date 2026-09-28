@@ -1322,6 +1322,53 @@ fn a_completed_setup_survives_a_failed_channel_write() {
     assert!(state.channel_setup("peer-client", ChannelKind::Bluetooth).is_none());
 }
 
+/// ADR-0007: the primary is the person's choice of channel, shown on its
+/// row. Only a channel that is on can be chosen, and switching the chosen
+/// one off releases the choice.
+#[test]
+fn the_primary_channel_is_chosen_shown_and_released_when_switched_off() {
+    use crate::services::communication::pairing::{
+        device_connection_set_channel_enabled_impl, device_connection_set_primary_channel_impl,
+    };
+    let (state, db_path) = server_state("adr-0007-primary-channel");
+    seed_paired_device(&db_path, "peer-client");
+    let mut conn = open_db_at_path(&db_path);
+    channels::configure(&mut conn, "peer-client", ChannelKind::Network, true, None).unwrap();
+    channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None).unwrap();
+
+    let err = device_connection_set_primary_channel_impl(
+        &mut conn, &state, "peer-client".to_string(), Some(ChannelKind::Bluetooth),
+    )
+    .expect_err("an Off channel cannot be the primary");
+    assert!(err.contains("Switch the channel on first"), "unexpected error: {err}");
+
+    let rows = device_connection_set_primary_channel_impl(
+        &mut conn, &state, "peer-client".to_string(), Some(ChannelKind::Network),
+    )
+    .expect("choose Network");
+    let starred: Vec<_> = rows.iter().filter(|row| row.primary).map(|row| row.kind).collect();
+    assert_eq!(starred, vec![ChannelKind::Network]);
+    assert_eq!(channels::primary_kind(&mut conn, "peer-client"), Some(ChannelKind::Network));
+
+    device_connection_set_channel_enabled_impl(
+        &mut conn, &state, "peer-client".to_string(), ChannelKind::Network, false,
+    )
+    .expect("switch Network off");
+    assert_eq!(channels::primary_kind(&mut conn, "peer-client"), None, "off releases the primary");
+
+    device_connection_set_channel_enabled_impl(
+        &mut conn, &state, "peer-client".to_string(), ChannelKind::Network, true,
+    )
+    .expect("switch Network on");
+    device_connection_set_primary_channel_impl(
+        &mut conn, &state, "peer-client".to_string(), Some(ChannelKind::Network),
+    )
+    .expect("choose Network again");
+    let rows = device_connection_set_primary_channel_impl(&mut conn, &state, "peer-client".to_string(), None)
+        .expect("clear the choice");
+    assert!(rows.iter().all(|row| !row.primary), "no primary: automatic selection");
+}
+
 /// ADR-0008 D15: a channel that does not exist is set up, not switched on.
 #[test]
 fn switching_on_a_channel_that_was_never_set_up_is_refused() {

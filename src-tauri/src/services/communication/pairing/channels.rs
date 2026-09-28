@@ -64,6 +64,7 @@ pub fn configure(
             device_id: device_id.to_string(),
             channel_kind: kind.code().to_string(),
             enabled,
+            is_primary: false,
             address: address.map(str::to_string),
             configured_at: utc_now(),
         })
@@ -75,7 +76,10 @@ pub fn configure(
     Ok(())
 }
 
-/// Turn an existing channel on or off (ADR-0008 D15).
+/// Turn an existing channel on or off (ADR-0008 D15). Turning it off also
+/// releases the primary, in one transaction: a channel that is off and
+/// still primary would be preferred while unable to carry anything
+/// (ADR-0007).
 #[cfg(any(feature = "ui-plane", test))]
 pub fn set_enabled(
     conn: &mut SqliteConnection,
@@ -83,11 +87,53 @@ pub fn set_enabled(
     kind: ChannelKind,
     enabled: bool,
 ) -> Result<(), String> {
-    diesel::update(channels::table.find((device_id, kind.code())))
-        .set(channels::enabled.eq(enabled))
-        .execute(&mut *conn)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        diesel::update(channels::table.find((device_id, kind.code())))
+            .set(channels::enabled.eq(enabled))
+            .execute(conn)?;
+        if !enabled {
+            diesel::update(channels::table.find((device_id, kind.code())))
+                .set(channels::is_primary.eq(false))
+                .execute(conn)?;
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Make one channel the primary, or clear the pair's primary entirely
+/// (ADR-0007). `channels_one_primary_per_device` allows at most one;
+/// clearing first is what keeps the write from tripping it.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn set_primary(
+    conn: &mut SqliteConnection,
+    device_id: &str,
+    kind: Option<ChannelKind>,
+) -> Result<(), String> {
+    conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        diesel::update(channels::table.filter(channels::device_id.eq(device_id)))
+            .set(channels::is_primary.eq(false))
+            .execute(conn)?;
+        if let Some(kind) = kind {
+            diesel::update(channels::table.find((device_id, kind.code())))
+                .set(channels::is_primary.eq(true))
+                .execute(conn)?;
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// The channel the person chose to carry this pair's traffic, if they chose
+/// one. `None` means automatic (Network first) selection.
+pub fn primary_kind(conn: &mut SqliteConnection, device_id: &str) -> Option<ChannelKind> {
+    channels::table
+        .filter(channels::device_id.eq(device_id))
+        .filter(channels::is_primary.eq(true))
+        .select(channels::channel_kind)
+        .first::<String>(&mut *conn)
+        .ok()
+        .and_then(|code| ChannelKind::from_code(&code))
 }
 
 /// Record where this channel last reached the peer, for diagnostics.

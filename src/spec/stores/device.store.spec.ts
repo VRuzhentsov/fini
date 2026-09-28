@@ -215,8 +215,8 @@ describe("device store channel rows (ADR-0008)", () => {
 
   it("stores the backend's rows as they are, colour and problem included", async () => {
     const rows = [
-      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null },
-      { kind: ChannelKind.Bluetooth, state: ChannelState.On, color: ChannelColor.Orange, problem: ChannelProblem.BluetoothUnavailable },
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.On, color: ChannelColor.Orange, problem: ChannelProblem.BluetoothUnavailable, primary: false },
     ];
     (invoke as unknown as jest.Mock).mockResolvedValueOnce(rows);
 
@@ -234,15 +234,15 @@ describe("device store channel rows (ADR-0008)", () => {
     const device = { peer_device_id: "peer-1", last_seen_at: null } as never;
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Grey, problem: null },
-      { kind: ChannelKind.Bluetooth, state: ChannelState.Off, color: ChannelColor.Off, problem: null },
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Grey, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.Off, color: ChannelColor.Off, problem: null, primary: false },
     ]);
     await store.refreshChannelStatuses("peer-1");
     expect(store.isDeviceOnline(device)).toBe(false);
 
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null },
-      { kind: ChannelKind.Bluetooth, state: ChannelState.Off, color: ChannelColor.Off, problem: null },
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.Off, color: ChannelColor.Off, problem: null, primary: false },
     ]);
     await store.refreshChannelStatuses("peer-1");
     expect(store.isDeviceOnline(device)).toBe(true);
@@ -297,5 +297,29 @@ describe("device store presence watching (ADR-0008 D12)", () => {
 
     await store.watchPresence(false);
     expect(invoke).toHaveBeenLastCalledWith("device_connection_watch_presence", { active: false });
+  });
+});
+
+describe("device store primary channel (ADR-0007)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (invoke as unknown as jest.Mock).mockReset();
+  });
+
+  it("asks the backend to pin the channel and keeps the rows it returns", async () => {
+    const rows = [
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: true },
+    ];
+    (invoke as unknown as jest.Mock).mockResolvedValueOnce(rows);
+
+    const store = useDeviceStore();
+    await store.setPrimaryChannel("peer-1", ChannelKind.Bluetooth);
+
+    expect(invoke).toHaveBeenCalledWith("device_connection_set_primary_channel", {
+      peerDeviceId: "peer-1",
+      primary: ChannelKind.Bluetooth,
+    });
+    expect(store.getChannelStatuses("peer-1")).toEqual(rows);
   });
 });

@@ -36,6 +36,7 @@ pub use commands::{
     device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
     device_connection_probe_bluetooth_adapter,
     device_connection_session_channel, device_connection_set_channel_enabled,
+    device_connection_set_primary_channel,
     device_connection_unlink_channel, device_connection_watch_presence,
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
@@ -69,7 +70,10 @@ pub use commands::{
 // Channel commands only the app offers; the app reaches them through
 // `commands` directly, so only the tests need them here.
 #[cfg(test)]
-pub use commands::{device_connection_channel_statuses_impl, device_connection_set_channel_enabled_impl};
+pub use commands::{
+    device_connection_channel_statuses_impl, device_connection_set_channel_enabled_impl,
+    device_connection_set_primary_channel_impl,
+};
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
 // and is what the `channels` table stores. Re-exported from `channel`,

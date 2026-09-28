@@ -64,6 +64,9 @@ pub struct ChannelStatus {
     pub color: ChannelColor,
     /// Set only on an orange row.
     pub problem: Option<ChannelProblem>,
+    /// The person's chosen channel for this pair's traffic (ADR-0007): the
+    /// star. A setting, shown whether or not the channel is green now.
+    pub primary: bool,
 }
 
 /// The whole of D19's table as one function.
@@ -77,6 +80,7 @@ pub fn channel_status(
     state: ChannelState,
     present: bool,
     problem: Option<ChannelProblem>,
+    primary: bool,
 ) -> ChannelStatus {
     let (color, problem) = match state {
         ChannelState::None => (ChannelColor::None, None),
@@ -92,6 +96,7 @@ pub fn channel_status(
         state,
         color,
         problem,
+        primary,
     }
 }
 
@@ -111,7 +116,7 @@ mod tests {
             (ChannelState::On, false, problem, ChannelColor::Orange, problem),
         ];
         for (state, present, reported, color, shown) in cases {
-            let row = channel_status(ChannelKind::Bluetooth, state, present, reported);
+            let row = channel_status(ChannelKind::Bluetooth, state, present, reported, false);
             assert_eq!(
                 (row.color, row.problem),
                 (color, shown),

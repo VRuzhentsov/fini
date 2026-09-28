@@ -54,14 +54,14 @@ fn hard_unlink_migration_drops_only_unlinked_channels() {
     conn.run_pending_migrations(MIGRATIONS)
         .expect("upgrade a database that had a tombstoned channel");
 
-    let rows: Vec<(String, bool)> = channels::table
-        .select((channels::channel_kind, channels::enabled))
+    let rows: Vec<(String, bool, bool)> = channels::table
+        .select((channels::channel_kind, channels::enabled, channels::is_primary))
         .load(&mut conn)
         .expect("load the upgraded channels");
     assert_eq!(
         rows,
-        vec![("network".to_string(), true)],
-        "the linked channel survives untouched; the unlinked one is gone"
+        vec![("network".to_string(), true, true)],
+        "the linked channel survives untouched, its primary choice included; the unlinked one is gone"
     );
 
     let _ = std::fs::remove_file(db_path);

@@ -66,6 +66,23 @@ person chose to carry the traffic, and it persists — so it still governs
 after a reconnect, and the page shows it whether or not that channel is
 connected at this moment.
 
+**The primary channel is a product feature and stays.** A person can choose,
+per pair, which channel carries the pair's traffic: the star on a channel
+row, stored as `channels.is_primary`, at most one per pair. Later decisions
+about how channels connect do not remove it. ADR-0008 replaced held sessions
+with short exchanges; under it the primary means:
+
+- The next exchange with the peer tries the primary channel first, then the
+  other one. With no primary, Network is tried first.
+- Only a channel that is on can be made primary; switching it off releases
+  the choice.
+- The star stays visible on the channel that holds it whatever that row's
+  colour, and can be moved only onto a channel that currently reaches the
+  peer (green).
+
+Removing or changing this feature needs its own decision, not a side effect
+of other work.
+
 ### Channel services
 
 **One object owns each channel.** `NetworkChannelService` and

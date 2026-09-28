@@ -15,6 +15,9 @@ pub struct Channel {
     /// strings seeded into `channel_kinds`.
     pub channel_kind: String,
     pub enabled: bool,
+    /// The person's choice of this channel to carry the pair's traffic
+    /// (ADR-0007). At most one per pair.
+    pub is_primary: bool,
     /// The link-layer address this channel last reached the peer at, kept
     /// for diagnostics only -- ADR-0006 dials nothing by address.
     pub address: Option<String>,
@@ -27,6 +30,7 @@ pub struct NewChannel {
     pub device_id: String,
     pub channel_kind: String,
     pub enabled: bool,
+    pub is_primary: bool,
     pub address: Option<String>,
     pub configured_at: String,
 }

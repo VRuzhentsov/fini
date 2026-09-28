@@ -187,6 +187,21 @@ async function toggleChannel(kind: ChannelKind, enabled: boolean) {
   }
 }
 
+// The star (ADR-0007): the channel the person chooses to carry this pair's
+// traffic.
+async function pinChannel(kind: ChannelKind) {
+  if (!deviceId.value || busyChannel.value) return;
+  busyChannel.value = kind;
+  channelError.value = null;
+  try {
+    await deviceStore.setPrimaryChannel(deviceId.value, kind);
+  } catch (error) {
+    channelError.value = String(error);
+  } finally {
+    busyChannel.value = null;
+  }
+}
+
 // "Add" on a channel that does not exist yet opens the setup dialog.
 function addChannel(kind: ChannelKind) {
   channelBeingAdded.value = kind;
@@ -256,6 +271,7 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
             @toggle="(next) => toggleChannel(status.kind, next)"
             @add="addChannel(status.kind)"
             @unlink="unlinkChannel(status.kind)"
+            @pin="pinChannel(status.kind)"
           />
         </ul>
         <p v-if="channelError" class="mt-2 text-xs text-error">{{ channelError }}</p>

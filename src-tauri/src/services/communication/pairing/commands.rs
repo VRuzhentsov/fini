@@ -1309,6 +1309,52 @@ pub fn device_connection_end_channel_setup(
     device_connection_channel_statuses_impl(&mut conn, state.inner(), peer_device_id)
 }
 
+/// Choose which channel carries this pair's traffic: the star on a channel
+/// row (ADR-0007). `primary: None` clears the choice, falling back to the
+/// automatic Network-first rule. The choice persists and decides which
+/// channel the next exchange with the peer tries first.
+///
+/// Refused for a channel that is not on: a channel that cannot carry
+/// anything cannot be the one chosen to carry the traffic.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn device_connection_set_primary_channel_impl(
+    conn: &mut SqliteConnection,
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+    primary: Option<ChannelKind>,
+) -> Result<Vec<ChannelStatus>, String> {
+    let paired = paired_devices::table
+        .find(&peer_device_id)
+        .select(paired_devices::peer_device_id)
+        .first::<String>(&mut *conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if paired.is_none() {
+        return Err("paired device not found".to_string());
+    }
+    if let Some(kind) = primary {
+        if !channels::is_enabled(&mut *conn, &peer_device_id, kind) {
+            return Err("Switch the channel on first".to_string());
+        }
+    }
+    channels::set_primary(&mut *conn, &peer_device_id, primary)?;
+    // Waiting work may now go over a different channel.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
+    device_connection_channel_statuses_impl(conn, state, peer_device_id)
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_set_primary_channel(
+    db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+    primary: Option<ChannelKind>,
+) -> Result<Vec<ChannelStatus>, String> {
+    let mut conn = db.0.lock().unwrap();
+    device_connection_set_primary_channel_impl(&mut conn, &state, peer_device_id, primary)
+}
+
 /// Every channel row for this pair (ADR-0008 D19): its stored state, and
 /// for an `On` channel whether the peer is present or the channel reports a
 /// problem on this device. Network first, so rows never reorder.
@@ -1330,15 +1376,17 @@ pub fn device_connection_channel_statuses_impl(
     Ok([ChannelKind::Network, ChannelKind::Bluetooth]
         .into_iter()
         .map(|kind| {
-            let stored = match channels::find(&mut *conn, &peer_device_id, kind) {
+            let channel = channels::find(&mut *conn, &peer_device_id, kind);
+            let stored = match &channel {
                 None => ChannelState::None,
                 Some(channel) if channel.enabled => ChannelState::On,
                 Some(_) => ChannelState::Off,
             };
+            let primary = channel.is_some_and(|channel| channel.is_primary);
             let service = crate::services::communication::channel::service::service_for(state, kind);
             // An exchange running right now is presence too.
             let present = service.is_present(&peer_device_id) || state.has_session_on(&peer_device_id, kind);
-            channel_status(kind, stored, present, service.problem())
+            channel_status(kind, stored, present, service.problem(), primary)
         })
         .collect())
 }

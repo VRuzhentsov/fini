@@ -36,7 +36,14 @@ async function flushUi() {
 // One row per channel, as the backend sends it (ADR-0008 D19): both on and
 // green is a pair whose peer was heard on both channels just now.
 function channelRow(kind: ChannelKind, overrides: Record<string, unknown> = {}) {
-  return { kind, state: ChannelState.On, color: ChannelColor.Green, problem: null, ...overrides };
+  return {
+    kind,
+    state: ChannelState.On,
+    color: ChannelColor.Green,
+    problem: null,
+    primary: false,
+    ...overrides,
+  };
 }
 
 const GREEN_ROWS = [channelRow(ChannelKind.Network), channelRow(ChannelKind.Bluetooth)];
@@ -72,6 +79,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     refreshSpaceSyncStatus: jest.fn().mockResolvedValue(undefined),
     refreshChannelStatuses: jest.fn().mockResolvedValue(undefined),
     setChannelEnabled: jest.fn().mockResolvedValue([]),
+    setPrimaryChannel: jest.fn().mockResolvedValue([]),
     unlinkChannel: jest.fn().mockResolvedValue([]),
     watchPresence: jest.fn().mockResolvedValue(undefined),
     beginChannelSetup: jest.fn().mockResolvedValue(undefined),
@@ -184,6 +192,35 @@ describe("DeviceView channels", () => {
 
     wrapper.unmount();
     expect(deviceStoreMock.watchPresence).toHaveBeenCalledWith(false);
+  });
+
+  it("makes a green channel the primary through its star (ADR-0007)", async () => {
+    const wrapper = mountView();
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
+    await rows[1].find('[data-testid="channel-star"]').trigger("click");
+    await flushUi();
+
+    expect(deviceStoreMock.setPrimaryChannel).toHaveBeenCalledWith(
+      "peer-device-123",
+      ChannelKind.Bluetooth,
+    );
+  });
+
+  it("keeps the star on the primary whatever its colour, and offers none on a grey row", async () => {
+    deviceStoreMock.getChannelStatuses.mockReturnValue([
+      channelRow(ChannelKind.Network, { color: ChannelColor.Grey, primary: true }),
+      channelRow(ChannelKind.Bluetooth, { color: ChannelColor.Grey }),
+    ]);
+    const wrapper = mountView();
+    await flushUi();
+
+    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
+    const star = rows[0].find('[data-testid="channel-star"]');
+    expect(star.attributes("data-starred")).toBe("true");
+    expect(star.attributes("disabled")).toBeDefined();
+    expect(rows[1].find('[data-testid="channel-star"]').exists()).toBe(false);
   });
 
   it("turns a channel off through its own switch", async () => {

@@ -23,6 +23,9 @@ export interface DeviceChannelStatus {
   color: ChannelColor;
   // Set only on an orange row.
   problem: ChannelProblem | null;
+  // The person's chosen channel for this pair's traffic (ADR-0007): the
+  // star. A setting, not a live state.
+  primary: boolean;
 }
 
 // Where a channel's init stands during a setup search (ADR-0008 D1).
@@ -565,6 +568,20 @@ export const useDeviceStore = defineStore("device", () => {
     const statuses = await invoke<DeviceChannelStatus[]>(
       "device_connection_set_channel_enabled",
       { peerDeviceId, kind, enabled },
+    );
+    channelStatusesByPeer.value[peerDeviceId] = statuses;
+    return statuses;
+  }
+
+  // The star on a channel row (ADR-0007): which channel carries this pair's
+  // traffic. `null` clears the choice, back to Network first.
+  async function setPrimaryChannel(
+    peerDeviceId: string,
+    kind: ChannelKind | null,
+  ): Promise<DeviceChannelStatus[]> {
+    const statuses = await invoke<DeviceChannelStatus[]>(
+      "device_connection_set_primary_channel",
+      { peerDeviceId, primary: kind },
     );
     channelStatusesByPeer.value[peerDeviceId] = statuses;
     return statuses;
@@ -1460,6 +1477,7 @@ export const useDeviceStore = defineStore("device", () => {
     getSyncQueue,
     refreshSyncQueue,
     setChannelEnabled,
+    setPrimaryChannel,
     unlinkChannel,
     beginChannelSetup,
     channelSetupStatus,

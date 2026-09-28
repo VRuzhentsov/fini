@@ -1704,12 +1704,25 @@ pub fn space_sync_tick_impl(
     })
 }
 
+/// Which channels to try, in order: the person's primary first
+/// (ADR-0007), otherwise Network first.
+fn channel_order(
+    primary: Option<crate::services::communication::pairing::ChannelKind>,
+) -> [crate::services::communication::pairing::ChannelKind; 2] {
+    use crate::services::communication::pairing::ChannelKind;
+    match primary {
+        Some(ChannelKind::Bluetooth) => [ChannelKind::Bluetooth, ChannelKind::Network],
+        _ => [ChannelKind::Network, ChannelKind::Bluetooth],
+    }
+}
+
 /// Starts an exchange with each peer that has work and none running
-/// (ADR-0008 D10): over Network when the peer is present there, otherwise
-/// over Bluetooth, whose delivery search finds it (D12). Bluetooth also
-/// carries the work while a Network exchange with a present peer keeps
-/// failing (a blocked port, say). A channel that is not `On` for the pair
-/// is never used.
+/// (ADR-0008 D10). The person's primary channel (ADR-0007) is tried first,
+/// then the other; without a primary, Network first. A channel is taken
+/// when the peer is present on it -- for Network, also not while its
+/// exchanges keep failing (a blocked port, say). If the peer is present on
+/// neither, Bluetooth's delivery search looks for it (D12). A channel that
+/// is not `On` for the pair is never used.
 fn request_exchanges(
     conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
@@ -1722,12 +1735,15 @@ fn request_exchanges(
         if device_connection.has_session(peer_device_id) {
             continue;
         }
-        let network = service_for(device_connection, ChannelKind::Network);
-        if channels::is_enabled(conn, peer_device_id, ChannelKind::Network)
-            && network.is_present(peer_device_id)
-            && !network.recently_failed(peer_device_id)
-        {
-            network.request_exchange(peer_device_id);
+        let order = channel_order(channels::primary_kind(conn, peer_device_id));
+        let reachable_now = order.into_iter().find(|&kind| {
+            let service = service_for(device_connection, kind);
+            channels::is_enabled(conn, peer_device_id, kind)
+                && service.is_present(peer_device_id)
+                && !service.recently_failed(peer_device_id)
+        });
+        if let Some(kind) = reachable_now {
+            service_for(device_connection, kind).request_exchange(peer_device_id);
         } else if channels::is_enabled(conn, peer_device_id, ChannelKind::Bluetooth) {
             service_for(device_connection, ChannelKind::Bluetooth).request_exchange(peer_device_id);
         }
@@ -1929,6 +1945,16 @@ pub fn space_sync_queue_summary(
 
 #[cfg(test)]
 mod tests {
+
+    /// ADR-0007: the person's primary channel is tried first; without one,
+    /// Network first.
+    #[test]
+    fn the_primary_channel_is_tried_first() {
+        use crate::services::communication::pairing::ChannelKind;
+        assert_eq!(channel_order(None), [ChannelKind::Network, ChannelKind::Bluetooth]);
+        assert_eq!(channel_order(Some(ChannelKind::Network)), [ChannelKind::Network, ChannelKind::Bluetooth]);
+        assert_eq!(channel_order(Some(ChannelKind::Bluetooth)), [ChannelKind::Bluetooth, ChannelKind::Network]);
+    }
     use super::*;
     use crate::schema::{quest_series, quests};
 

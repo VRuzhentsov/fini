@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
+import { StarIcon as StarSolid } from "@heroicons/vue/24/solid";
+import { StarIcon as StarOutline, InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./ChannelIcon.vue";
 import type { DeviceChannelStatus } from "../../../stores/device";
 import { ChannelColor, ChannelState } from "../../../utils/channel";
@@ -9,13 +10,18 @@ import { channelName, channelProblemText } from "../../../utils/channelStatusCod
 // One channel of a paired device (ADR-0008 D19). The backend decides the
 // colour; this row only draws it:
 //
-// | colour       | state | controls        |
-// |--------------|-------|-----------------|
-// | green        | on    | switch          |
-// | grey         | on    | switch          |
-// | orange       | on    | switch, ⓘ popup |
-// | empty circle | off   | switch, unlink  |
-// | (no dot)     | none  | Add             |
+// | colour       | state | controls              |
+// |--------------|-------|-----------------------|
+// | green        | on    | star, switch          |
+// | grey         | on    | switch                |
+// | orange       | on    | switch, ⓘ popup       |
+// | empty circle | off   | switch, unlink        |
+// | (no dot)     | none  | Add                   |
+//
+// The star is the person's primary channel (ADR-0007). It stays visible on
+// the channel that holds it whatever the colour -- a setting, not a live
+// state -- and can be moved only onto a green channel: choosing one that is
+// not reaching the peer would promise a switch that does nothing now.
 const props = defineProps<{
   status: DeviceChannelStatus;
   busy: boolean;
@@ -25,6 +31,7 @@ const emit = defineEmits<{
   toggle: [enabled: boolean];
   add: [];
   unlink: [];
+  pin: [];
 }>();
 
 const name = computed(() => channelName(props.status.kind));
@@ -48,10 +55,20 @@ const renderFlags = computed(() => ({
   addButton: props.status.state === ChannelState.None,
   unlinkButton: props.status.state === ChannelState.Off,
   channelSwitch: props.status.state !== ChannelState.None,
+  star: props.status.primary || canPin.value,
 }));
 
 function handleToggle() {
   emit("toggle", !switchedOn.value);
+}
+
+// Moving the star is an action on a channel that reaches the peer.
+const canPin = computed(
+  () => props.status.state === ChannelState.On && props.status.color === ChannelColor.Green,
+);
+
+function handlePin() {
+  if (canPin.value && !props.status.primary) emit("pin");
 }
 </script>
 
@@ -70,6 +87,21 @@ function handleToggle() {
     />
     <ChannelIcon :kind="status.kind" class="size-3.5 shrink-0 opacity-70" />
     <span class="min-w-0 flex-1 truncate text-sm font-semibold">{{ name }}</span>
+
+    <button
+      v-if="renderFlags.star"
+      type="button"
+      class="shrink-0 disabled:cursor-default"
+      :class="status.primary ? 'text-warning' : 'text-[var(--fg-5)] hover:text-warning'"
+      data-testid="channel-star"
+      :data-starred="status.primary"
+      :aria-pressed="status.primary"
+      :aria-label="`Make ${name} primary`"
+      :disabled="busy || !canPin"
+      @click="handlePin"
+    >
+      <component :is="status.primary ? StarSolid : StarOutline" class="size-3.5" />
+    </button>
 
     <!-- ⓘ opens a popup; nothing explanatory is ever rendered inline. -->
     <div v-if="renderFlags.problemInfo" class="dropdown dropdown-end shrink-0">

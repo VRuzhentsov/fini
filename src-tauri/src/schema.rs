@@ -109,6 +109,7 @@ diesel::table! {
         device_id     -> Text,
         channel_kind  -> Text,
         enabled       -> Bool,
+        is_primary    -> Bool,
         address       -> Nullable<Text>,
         configured_at -> Text,
     }
