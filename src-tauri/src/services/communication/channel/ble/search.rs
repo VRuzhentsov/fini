@@ -142,6 +142,13 @@ pub async fn find(peer: &str, purpose: Purpose, window: Duration) -> Option<Foun
 
     requests().lock().unwrap().searches.retain(|request| request.id != id);
     changed().notify_one();
+    if found.is_some() {
+        // The hand-off wakes this task before the coordinator has dropped
+        // its discovery stream; the lease comes free only once it has, so
+        // the caller's dial never overlaps the scan. `Found` holds a dial
+        // guard, so no new scan starts meanwhile.
+        drop(super::scan_lease().lock().await);
+    }
     found
 }
 
