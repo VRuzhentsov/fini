@@ -1161,9 +1161,12 @@ pub fn device_connection_unlink_channel_impl(
     kind: ChannelKind,
 ) -> Result<Vec<ChannelStatus>, String> {
     channels::unlink(&mut *conn, &peer_device_id, kind)?;
-    // An open exchange sends the notice now; otherwise the keeper opens one
-    // for it (ADR-0008 D14).
-    state.send_unlink_notices_to_peer(&peer_device_id);
+    // Tell the peer, delivered like any other push (ADR-0008 D14): an open
+    // exchange sends it now, otherwise the next exchange does.
+    state.queue_for_peer(
+        &peer_device_id,
+        crate::services::communication::sync::types::PeerFrame::ChannelUnlinked { kind },
+    );
     crate::services::communication::sync::commands::notify_sync_work_pending();
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }

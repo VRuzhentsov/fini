@@ -1672,13 +1672,7 @@ pub fn space_sync_tick_impl(
     peers.sort_by(|a, b| a.peer_device_id.cmp(&b.peer_device_id));
 
     for peer_device_id in &peer_ids {
-        if device_connection.has_queued_frames(peer_device_id)
-            || !crate::services::communication::pairing::channels::pending_unlink_notices(
-                &mut conn,
-                peer_device_id,
-            )
-            .is_empty()
-        {
+        if device_connection.has_queued_frames(peer_device_id) {
             peers_with_work.insert(peer_device_id.clone());
         }
     }

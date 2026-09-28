@@ -8,15 +8,8 @@
 DELETE FROM channels WHERE unlinked_at IS NOT NULL;
 ALTER TABLE channels DROP COLUMN unlinked_at;
 
--- Unlinking also tells the peer, which then removes its own row. The notice
--- waits here until the peer acknowledges it, so it survives restarts and a
--- peer that is out of reach for a while.
-CREATE TABLE channel_unlink_notices (
-    device_id    TEXT NOT NULL REFERENCES paired_devices(peer_device_id) ON DELETE CASCADE,
-    channel_kind TEXT NOT NULL REFERENCES channel_kinds(code),
-    created_at   TEXT NOT NULL,
-    PRIMARY KEY (device_id, channel_kind)
-);
+-- Unlinking also tells the peer, as a pushed frame (ADR-0008 D14); nothing
+-- about it is stored.
 
 -- `is_primary` stays: the person's choice of which channel carries the
 -- pair's traffic (ADR-0007) outlives held sessions.

@@ -1443,9 +1443,9 @@ async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
 }
 
 /// ADR-0008 D14: a peer that unlinked a channel says so, and this side
-/// removes its own row for it and acknowledges -- whatever its switch said.
+/// removes its own row for it -- whatever its switch said.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_channel_the_peer_unlinked_is_removed_here_and_acknowledged() {
+async fn a_channel_the_peer_unlinked_is_removed_here() {
     let (server, server_db) = server_state("adr-0008-peer-unlinked");
     seed_paired_device(&server_db, "peer-client");
     {
@@ -1467,36 +1467,42 @@ async fn a_channel_the_peer_unlinked_is_removed_here_and_acknowledged() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
-            Ok(Some(Ok(PeerFrame::ChannelUnlinkedAck { kind }))) => {
-                assert_eq!(kind, ChannelKind::Bluetooth);
-                break;
-            }
-            Ok(Some(Ok(_))) => continue,
-            other => panic!("expected ChannelUnlinkedAck, got {other:?}"),
+        let gone = {
+            let mut conn = open_db_at_path(&server_db);
+            channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none()
+        };
+        if gone {
+            break;
         }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the pair is broken for this channel, so this side's row goes too"
+        );
+        sleep(Duration::from_millis(20)).await;
     }
-
-    let mut conn = open_db_at_path(&server_db);
-    assert!(
-        channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
-        "the pair is broken for this channel, so this side's row goes too"
-    );
 }
 
-/// ADR-0008 D14: an exchange starts by restating the unlink notices still
-/// owed, and the peer's acknowledgement clears each one.
+/// ADR-0008 D14: unlinking pushes `ChannelUnlinked` to the peer like any
+/// other frame; the next exchange with it delivers it.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_exchange_delivers_owed_unlink_notices_until_acknowledged() {
-    let (server, server_db) = server_state("adr-0008-unlink-notice");
+async fn unlinking_pushes_the_notice_to_the_next_exchange() {
+    let (server, server_db) = server_state("adr-0008-unlink-push");
     seed_paired_device(&server_db, "peer-client");
     {
         let mut conn = open_db_at_path(&server_db);
+        channels::configure(&mut conn, "peer-client", ChannelKind::Network, true, None)
+            .expect("Network set up and on");
         channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None)
             .expect("Bluetooth set up, off");
-        channels::unlink(&mut conn, "peer-client", ChannelKind::Bluetooth).expect("unlink it");
+        crate::services::communication::pairing::device_connection_unlink_channel_impl(
+            &mut conn,
+            &server,
+            "peer-client".to_string(),
+            ChannelKind::Bluetooth,
+        )
+        .expect("unlink Bluetooth");
     }
+    assert!(server.has_queued_frames("peer-client"), "the notice waits for an exchange");
 
     let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
@@ -1515,25 +1521,10 @@ async fn an_exchange_delivers_owed_unlink_notices_until_acknowledged() {
                 break;
             }
             Ok(Some(Ok(_))) => continue,
-            other => panic!("expected the owed ChannelUnlinked notice, got {other:?}"),
+            other => panic!("expected the pushed ChannelUnlinked, got {other:?}"),
         }
     }
-    send_frame(link.as_mut(), &PeerFrame::ChannelUnlinkedAck { kind: ChannelKind::Bluetooth })
-        .await
-        .expect("acknowledge it");
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        let owed = {
-            let mut conn = open_db_at_path(&server_db);
-            channels::pending_unlink_notices(&mut conn, "peer-client")
-        };
-        if owed.is_empty() {
-            break;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "the ack must clear the notice");
-        sleep(Duration::from_millis(20)).await;
-    }
+    assert!(!server.has_queued_frames("peer-client"));
 }
 
 // ADR-0008 reproductions. Adapted from the handoff's hardware-driven repros

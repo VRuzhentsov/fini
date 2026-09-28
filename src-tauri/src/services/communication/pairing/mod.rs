@@ -72,7 +72,7 @@ pub use commands::{
 #[cfg(test)]
 pub use commands::{
     device_connection_channel_statuses_impl, device_connection_set_channel_enabled_impl,
-    device_connection_set_primary_channel_impl,
+    device_connection_set_primary_channel_impl, device_connection_unlink_channel_impl,
 };
 use runtime::{spawn_discovery_worker, try_load_or_create_identity};
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
@@ -507,19 +507,6 @@ impl DeviceConnectionState {
             .lock()
             .map(|guard| guard.pending_frames.get(peer_device_id).is_some_and(|q| !q.is_empty()))
             .unwrap_or(false)
-    }
-
-    /// Ask every live session with this peer to send the unlink notices it
-    /// is still owed now (ADR-0008 D14). Best-effort: with no live session
-    /// the notices simply go out at the start of the next exchange.
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn send_unlink_notices_to_peer(&self, peer_device_id: &str) {
-        let Ok(guard) = self.runtime.lock() else { return };
-        for ((peer, _kind), sender) in guard.peer_sessions.iter() {
-            if peer == peer_device_id {
-                let _ = sender.try_send(SessionCommand::SendUnlinkNotices);
-            }
-        }
     }
 
     /// Whether an exchange is running with this peer on any channel.

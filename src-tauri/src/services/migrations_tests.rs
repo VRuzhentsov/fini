@@ -27,11 +27,11 @@ fn hard_unlink_migration_drops_only_unlinked_channels() {
     let db_path = temp_db_path("hard-unlink-drops-only-unlinked");
     let mut conn = open_db_at_path(&db_path);
 
-    // Wind back until the notices table is gone -- asked of the schema, so
-    // this keeps meaning "before migration 25" however many land after it.
-    while diesel::sql_query("SELECT 1 FROM channel_unlink_notices LIMIT 1")
+    // Wind back until the tombstone column is back -- asked of the schema,
+    // so this keeps meaning "before migration 25" however many land after it.
+    while diesel::sql_query("SELECT unlinked_at FROM channels LIMIT 1")
         .execute(&mut conn)
-        .is_ok()
+        .is_err()
     {
         conn.revert_last_migration(MIGRATIONS)
             .expect("wind back past the hard-unlink migration");

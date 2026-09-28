@@ -116,14 +116,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    channel_unlink_notices (device_id, channel_kind) {
-        device_id    -> Text,
-        channel_kind -> Text,
-        created_at   -> Text,
-    }
-}
-
-diesel::table! {
     pair_space_mappings (peer_device_id, space_id) {
         peer_device_id -> Text,
         space_id       -> Text,
@@ -199,7 +191,6 @@ diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
 diesel::joinable!(pair_space_mappings -> spaces (space_id));
 diesel::joinable!(channels -> paired_devices (device_id));
 diesel::joinable!(channels -> channel_kinds (channel_kind));
-diesel::joinable!(channel_unlink_notices -> paired_devices (device_id));
 diesel::joinable!(focus_history -> quests (quest_id));
 diesel::joinable!(checklist_activity -> quests (quest_id));
 
@@ -214,7 +205,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     pair_space_mappings,
     channel_kinds,
     channels,
-    channel_unlink_notices,
     focus_history,
     sync_outbox,
     sync_acks,

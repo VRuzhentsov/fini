@@ -30,10 +30,6 @@ pub enum SessionCommand {
     /// (ADR-0008 D15).
     #[cfg(any(feature = "ui-plane", test))]
     Close,
-    /// Send any unlink notices still owed to this peer now, rather than at
-    /// the start of the next exchange (ADR-0008 D14).
-    #[cfg(any(feature = "ui-plane", test))]
-    SendUnlinkNotices,
 }
 
 pub type SessionSender = mpsc::Sender<SessionCommand>;
@@ -137,17 +133,10 @@ pub enum PeerFrame {
     /// Reply to `Hello`; carries the replier's own device id.
     #[serde(rename = "hello_ack")]
     HelloAck { device_id: String },
-    /// "I unlinked this channel on my side" (ADR-0008 D14). The receiver
-    /// removes its own row for it and answers `ChannelUnlinkedAck`; the
-    /// sender keeps saying it on every exchange until then.
+    /// "I unlinked this channel on my side" (ADR-0008 D14), pushed like
+    /// any other frame. The receiver removes its own row for it.
     #[serde(rename = "channel_unlinked")]
     ChannelUnlinked {
-        kind: crate::services::communication::channel::ChannelKind,
-    },
-    /// "I removed that channel too." Only a failure to write the table goes
-    /// unacknowledged, so the sender says it again.
-    #[serde(rename = "channel_unlinked_ack")]
-    ChannelUnlinkedAck {
         kind: crate::services::communication::channel::ChannelKind,
     },
     /// Catches any `type` tag this build doesn't recognize, instead of
