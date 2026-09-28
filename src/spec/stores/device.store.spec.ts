@@ -276,3 +276,26 @@ describe("device store channel rows (ADR-0008)", () => {
     );
   });
 });
+
+describe("device store presence watching (ADR-0008 D12)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (invoke as unknown as jest.Mock).mockReset();
+    (invoke as unknown as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it("keeps the search running while any surface still watches", async () => {
+    const store = useDeviceStore();
+    await store.watchPresence(true); // overview
+    await store.watchPresence(true); // Device page
+    await store.watchPresence(false); // overview goes away
+
+    const calls = (invoke as unknown as jest.Mock).mock.calls.filter(
+      ([command]) => command === "device_connection_watch_presence",
+    );
+    expect(calls).toEqual([["device_connection_watch_presence", { active: true }]]);
+
+    await store.watchPresence(false);
+    expect(invoke).toHaveBeenLastCalledWith("device_connection_watch_presence", { active: false });
+  });
+});

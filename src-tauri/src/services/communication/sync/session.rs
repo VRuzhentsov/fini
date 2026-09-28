@@ -152,26 +152,30 @@ pub async fn run_session(
 
     state.release_session(&peer_device_id, kind);
 
-    // A notice still owed is work for another exchange: at once if this
-    // one never got to send it (it closed first, or its mailbox was full),
-    // after a pause if it was sent but not acknowledged, so a peer that
-    // keeps dropping off does not turn into back-to-back exchanges.
+    // An unlink notice owed since this exchange started that it never got
+    // to send (it closed first, or its mailbox was full) is work for the
+    // next exchange at once.
     let owed = tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(&db_path);
         channels::pending_unlink_notices(&mut conn, &peer_device_id)
     });
     if owed.iter().any(|kind| !notices_sent.contains(kind)) {
         crate::services::communication::sync::commands::notify_sync_work_pending();
-    } else if !owed.is_empty() {
-        crate::services::communication::sync::commands::notify_sync_work_pending_after(
-            UNACKED_UNLINK_NOTICE_RETRY,
-        );
     }
+    // Anything else this exchange left unfinished -- an event sent but not
+    // acknowledged, a bootstrap not ended, a notice not acknowledged -- is
+    // still durable work; a tick after a pause looks again, so a dropped
+    // exchange does not stall sync, and a peer that keeps dropping off does
+    // not turn into back-to-back exchanges. A tick with nothing left to do
+    // starts nothing.
+    crate::services::communication::sync::commands::notify_sync_work_pending_after(
+        EXCHANGE_END_RECHECK,
+    );
 }
 
-/// How long after an exchange that sent an unlink notice the peer never
-/// acknowledged the next one is asked for.
-const UNACKED_UNLINK_NOTICE_RETRY: Duration = Duration::from_secs(60);
+/// How long after an exchange ends the keeper looks again for work it left
+/// unfinished.
+const EXCHANGE_END_RECHECK: Duration = Duration::from_secs(60);
 
 /// Sends every unlink notice still owed to this peer. A notice stays owed
 /// until the peer's `ChannelUnlinkedAck` clears it, so a failed send simply
