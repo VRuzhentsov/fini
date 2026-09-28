@@ -211,10 +211,10 @@ test('the devices list dot agrees with the channel rows', async ({ actorA, actor
   // And the row says nothing on its own. A channel switched off is the
   // person's own choice, not a problem on this device, so there is no ⓘ
   // either: it explains problems only (ADR-0008 D19).
-  const row = actorA.page.getByTestId('paired-device-row').first();
+  const row = `[data-testid="paired-device-row"][data-peer-device-id="${peerId}"]`;
   const detail = {
-    shown: (await row.getByTestId('paired-device-detail').count()) > 0,
-    hasInfo: (await row.getByTestId('paired-device-info').count()) > 0,
+    shown: (await actorA.page.locator(`${row} [data-testid="paired-device-detail"]`).count()) > 0,
+    hasInfo: (await actorA.page.locator(`${row} [data-testid="paired-device-info"]`).count()) > 0,
   };
   expect(detail.shown, 'the list must not explain each device unasked').toBe(false);
   expect(detail.hasInfo, 'a channel switched off is not a problem to explain').toBe(false);
