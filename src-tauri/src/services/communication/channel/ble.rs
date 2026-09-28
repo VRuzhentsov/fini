@@ -1022,6 +1022,12 @@ const DELIVERY_RETRY: [Duration; 3] = [
     Duration::from_secs(15 * 60),
 ];
 
+/// Whether this device is dialing the peer for an exchange right now.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn dialing(peer_id: &str) -> bool {
+    in_flight_exchanges().lock().unwrap().contains(peer_id)
+}
+
 /// Peers with an exchange attempt in flight -- one at a time per peer.
 fn in_flight_exchanges() -> &'static StdMutex<HashSet<String>> {
     static IN_FLIGHT: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
@@ -1160,6 +1166,9 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
                 drop(guard);
                 return run_exchange(state, peer_id, link, version, &address).await;
             }
+            // An exchange with the peer already runs (its own dial, or the
+            // one that won a crossing): the work goes through that.
+            Err(err) if session::refused_for_running_exchange(&err) => return,
             Err(err) => last_error = Some(err),
         }
     }
@@ -1185,6 +1194,7 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
                 drop(found);
                 return run_exchange(state, peer_id, link, version, &address).await;
             }
+            Err(err) if session::refused_for_running_exchange(&err) => return,
             Err(err) => last_error = Some(err),
         }
     }

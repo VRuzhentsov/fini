@@ -1127,13 +1127,22 @@ pub fn device_connection_set_channel_enabled_impl(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_set_channel_enabled(
-    db: State<AppDbConnection>,
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_set_channel_enabled(
+    db: State<'_, AppDbConnection>,
+    state: State<'_, DeviceConnectionState>,
     peer_device_id: String,
     kind: ChannelKind,
     enabled: bool,
 ) -> Result<Vec<ChannelStatus>, String> {
+    // A radio remembered as unavailable may have been switched back on in
+    // the OS since; a person switching the channel on is the moment to ask
+    // it again, before `usable` decides.
+    if enabled {
+        let service = crate::services::communication::channel::service::service_for(state.inner(), kind);
+        if !service.usable() {
+            service.probe().await;
+        }
+    }
     let mut conn = db.0.lock().unwrap();
     device_connection_set_channel_enabled_impl(&mut conn, &state, peer_device_id, kind, enabled)
 }

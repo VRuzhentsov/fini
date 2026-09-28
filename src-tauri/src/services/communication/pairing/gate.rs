@@ -31,6 +31,17 @@ use crate::services::communication::sync::session::{
 };
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
 
+/// Whether this device is dialing the peer on this channel right now.
+fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
+    match kind {
+        ChannelKind::Network => crate::services::communication::channel::tcp_ws::dialing(peer_device_id),
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        ChannelKind::Bluetooth => crate::services::communication::channel::ble::dialing(peer_device_id),
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        ChannelKind::Bluetooth => false,
+    }
+}
+
 /// Whether this device refuses a peer's inbound exchange because its own
 /// dial to that peer is under way and takes precedence: the dial from the
 /// smaller device id wins a crossing.
@@ -247,14 +258,8 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     // Both devices dialed each other at once. Were both links kept and
     // then each dropped for the other, neither exchange would survive; the
     // dial from the smaller device id wins on both sides.
-    if kind == ChannelKind::Network
-        && yields_to_own_dial(
-            &state.identity.device_id,
-            &device_id,
-            crate::services::communication::channel::tcp_ws::dialing(&device_id),
-        )
-    {
-        log::info!("[space_sync][gate] network auth from {device_id} refused: this device's dial wins");
+    if yields_to_own_dial(&state.identity.device_id, &device_id, dialing(&device_id, kind)) {
+        log::info!("[space_sync][gate] {kind:?} auth from {device_id} refused: this device's dial wins");
         let _ = send_frame(
             link.as_mut(),
             &PeerFrame::AuthFail {
