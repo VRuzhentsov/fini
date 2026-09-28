@@ -70,6 +70,19 @@ Rules:
 
 One `@click`/`@submit`/etc. binding calls exactly one named function (`handleRowClick(status)`), with every branch inside that function — not a `?:`/`&&` chain inline in the template. The same applies to a dynamic prop computed from more than one condition (`:button`, `:disabled` beyond a simple two-term boolean, `:class` picking between named states): give it a named function too. A plain two-term `:disabled="a || b"` is fine inline. Inside `<script setup>`, remember refs need `.value` explicitly in these handler functions — the template's auto-unwrap doesn't apply there.
 
+## No direct DOM queries
+
+Never reach into the DOM by hand: no `document.querySelector`, `querySelectorAll`, `getElementById`, `getElementsBy*`, `element.closest(...)` lookups, or reading another component's markup through its classes or ids. This holds in components, stores and composables alike, with no exceptions.
+
+Use the Vue way instead:
+
+- An element this component renders: a template ref (`ref="menu"` + `useTemplateRef("menu")` or `const menu = ref<HTMLElement | null>(null)`).
+- An element another component renders: that component exposes what is needed (`defineExpose`, an emitted size, a prop), or the shared value lives in a store / `provide`–`inject`.
+- Size or position of something: measure it through its template ref (a `ResizeObserver` on the ref, or `@vueuse/core` helpers if already a dependency), and pass the number where it is needed.
+- Focus, scroll, selection: call the method on the template ref.
+
+Tests follow the same rule for app code; component specs use `wrapper.find(...)` from `@vue/test-utils`, and e2e uses Playwright locators — never `document.querySelector` inside the app.
+
 ## Component Extraction
 
 When adding a new template block that exceeds roughly ten lines of HTML, first extract reusable semantic controls (for example, the Energy and Priority selectors shared by create and edit views) into focused child components instead of expanding the parent view. Do not split one coherent form section into a generic `*Details` wrapper merely to meet the line threshold; keep its local layout with the owning form when that is clearer.
@@ -91,6 +104,7 @@ Before handing off frontend template changes, check:
 - Template conditionals use `renderFlags` for product/platform rendering decisions.
 - Non-trivial list rendering uses a named computed list source.
 - Event bindings call exactly one named function; branching logic lives in that function, not the template.
+- No `document.querySelector` or other direct DOM lookups; template refs, exposed APIs, props or stores instead.
 - No value from a closed set (state, kind, colour, problem code) is written as a string literal — in components, stores, specs or e2e helpers it goes through its named const (`fini-code-style`).
 - Tests cover important visible and hidden render states.
 - `npm run build` or the relevant frontend test target passes.
