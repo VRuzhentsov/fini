@@ -660,6 +660,9 @@ pub struct AddModeCandidate {
 /// caller is responsible for bounding how long this is allowed to run.
 #[cfg(any(feature = "ui-plane", test))]
 async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
+    // The add-mode scan has closed by now, but a search for a paired peer
+    // may start one; registering the dial keeps it paused until we finish.
+    let _dial = search::DialGuard::acquire().await;
     let mut link = dial(address).await.ok()?;
     send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.ok()?;
     recv_frame(link.as_mut()).await?.ok()
