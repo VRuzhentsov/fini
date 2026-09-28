@@ -74,6 +74,21 @@ impl Drop for DialGuard {
     }
 }
 
+/// The scan lease, taken only while no dial is running. For scans outside
+/// the coordinator (the add-mode candidate scan): the lease alone does not
+/// see a dial already under way, and scanning during it breaks the dial.
+#[cfg(any(feature = "ui-plane", test))]
+pub async fn scan_lease_between_dials() -> tokio::sync::MutexGuard<'static, ()> {
+    let mut dials = dials().subscribe();
+    loop {
+        let _ = dials.wait_for(|count| *count == 0).await;
+        let lease = super::scan_lease().lock().await;
+        if *dials.borrow() == 0 {
+            return lease;
+        }
+    }
+}
+
 fn dials() -> &'static watch::Sender<usize> {
     static DIALS: OnceLock<watch::Sender<usize>> = OnceLock::new();
     DIALS.get_or_init(|| watch::channel(0).0)

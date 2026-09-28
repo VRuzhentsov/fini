@@ -699,7 +699,7 @@ pub async fn scan_add_mode_candidates(
     // is mechanical and mirrors `connect_by_advertisement`, but the symptom
     // it is meant to cure has only been observed in that sibling.
     let flagged_addresses = {
-        let _scan = scan_lease().lock().await;
+        let _scan = search::scan_lease_between_dials().await;
         let mut discovered = backend
             .scan(datagram_config().service)
             .await
