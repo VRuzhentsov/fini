@@ -30,10 +30,8 @@ export async function waitForChannelColor(
   await pollUntil(`${actor.slug} ${kind} row is ${expected}`, async () => {
     await openDeviceDetailsFromSettings(actor, peerDeviceId);
     await actor.invoke('space_sync_tick');
-    const color = await actor.page.evaluate<string>(`(() => {
-      const row = document.querySelector(${JSON.stringify(selector)});
-      return row ? (row.getAttribute('data-channel-color') ?? '') : '';
-    })()`);
+    const row = actor.page.locator(selector);
+    const color = (await row.count()) > 0 ? await row.getAttribute('data-channel-color') : null;
     return color === expected ? color : false;
   }, timeoutMs, 1_000);
 }
@@ -44,10 +42,8 @@ export async function waitForChannelColor(
  */
 export async function channelProblem(actor: E2EActor, kind: ChannelKind): Promise<string> {
   const popupSelector = `${channelRowSelector(kind)} [data-testid="channel-problem-popup"]`;
-  return actor.page.evaluate<string>(`(() => {
-    const el = document.querySelector(${JSON.stringify(popupSelector)});
-    return el ? (el.textContent ?? '').trim() : '';
-  })()`);
+  const popup = actor.page.locator(popupSelector);
+  return (await popup.count()) > 0 ? ((await popup.textContent()) ?? '').trim() : '';
 }
 
 export async function toggleChannel(actor: E2EActor, kind: ChannelKind): Promise<void> {
@@ -56,10 +52,9 @@ export async function toggleChannel(actor: E2EActor, kind: ChannelKind): Promise
 
 /** Text of the sync-queue section, whichever state it is in. */
 export async function syncQueueText(actor: E2EActor): Promise<string> {
-  return actor.page.evaluate<string>(`(() => {
-    const el = document.querySelector('[data-testid="sync-queue-section"]');
-    return el ? (el.textContent ?? '').replace(/\\s+/g, ' ').trim() : '';
-  })()`);
+  const section = actor.page.getByTestId('sync-queue-section');
+  if ((await section.count()) === 0) return '';
+  return ((await section.textContent()) ?? '').replace(/\s+/g, ' ').trim();
 }
 
 export async function waitForSyncQueue(
@@ -94,10 +89,8 @@ export async function deviceDotConnected(
   const selector =
     `[data-testid="paired-device-row"][data-peer-device-id="${peerDeviceId}"] ` +
     `[data-testid="paired-device-dot"]`;
-  return actor.page.evaluate<boolean>(`(() => {
-    const dot = document.querySelector(${JSON.stringify(selector)});
-    return dot ? dot.getAttribute('data-connected') === 'true' : false;
-  })()`);
+  const dot = actor.page.locator(selector);
+  return (await dot.count()) > 0 && (await dot.getAttribute('data-connected')) === 'true';
 }
 
 /** Whether any channel row on the device page is green. */
@@ -106,10 +99,7 @@ export async function anyChannelConnected(
   peerDeviceId: string,
 ): Promise<boolean> {
   await openDeviceDetailsFromSettings(actor, peerDeviceId);
-  return actor.page.evaluate<boolean>(`(() => {
-    const rows = [...document.querySelectorAll('[data-testid="channel-status-row"]')];
-    return rows.some((row) => row.getAttribute('data-channel-color') === ${JSON.stringify(ChannelColor.Green)});
-  })()`);
+  return (await actor.page.locator(`[data-testid="channel-status-row"][data-channel-color="${ChannelColor.Green}"]`).count()) > 0;
 }
 
 /**
@@ -125,14 +115,15 @@ export async function addChannelViaDialog(
   await actor.page.click(`${channelRowSelector(kind)} [data-testid="add-channel"]`);
   await actor.page.waitForSelector('[data-testid="pair-device-dialog"]', timeoutMs);
   return pollUntil(`${actor.slug} ${kind} setup settles`, async () => {
-    const outcome = await actor.page.evaluate<{ ready: boolean; failure: string } | null>(`(() => {
-      const ok = document.querySelector('[data-testid="setup-ok"]');
-      const failed = document.querySelector('[data-testid="setup-failed"]');
-      if (failed) return { ready: false, failure: (failed.textContent ?? '').trim() };
-      if (ok && !ok.hasAttribute('disabled')) return { ready: true, failure: '' };
-      return null;
-    })()`);
-    return outcome ?? false;
+    const failed = actor.page.getByTestId('setup-failed');
+    if ((await failed.count()) > 0) {
+      return { ready: false, failure: ((await failed.textContent()) ?? '').trim() };
+    }
+    const ok = actor.page.getByTestId('setup-ok');
+    if ((await ok.count()) > 0 && (await ok.isEnabled())) {
+      return { ready: true, failure: '' };
+    }
+    return false;
   }, timeoutMs, 500);
 }
 

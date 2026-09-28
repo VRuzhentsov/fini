@@ -172,10 +172,9 @@ test('unlinking names the spaces that stop syncing and promises nothing is delet
   await actorA.page.waitForSelector('[data-testid="unlink-device"]', 30_000);
   await actorA.page.click('[data-testid="unlink-device"]');
 
-  const confirmation = await actorA.page.evaluate<string>(`(() => {
-    const el = document.querySelector('[data-testid="unlink-dialog"]');
-    return el ? (el.textContent ?? '').replace(/\\s+/g, ' ').trim() : '';
-  })()`);
+  const confirmation = ((await actorA.page.getByTestId('unlink-dialog').textContent()) ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   expect(confirmation).toContain('Personal');
   expect(confirmation).toContain('Nothing is deleted');
@@ -212,13 +211,11 @@ test('the devices list dot agrees with the channel rows', async ({ actorA, actor
   // And the row says nothing on its own. A channel switched off is the
   // person's own choice, not a problem on this device, so there is no ⓘ
   // either: it explains problems only (ADR-0008 D19).
-  const detail = await actorA.page.evaluate<{ shown: boolean; hasInfo: boolean }>(`(() => {
-    const row = document.querySelector('[data-testid="paired-device-row"]');
-    return {
-      shown: !!row?.querySelector('[data-testid="paired-device-detail"]'),
-      hasInfo: !!row?.querySelector('[data-testid="paired-device-info"]'),
-    };
-  })()`);
+  const row = actorA.page.getByTestId('paired-device-row').first();
+  const detail = {
+    shown: (await row.getByTestId('paired-device-detail').count()) > 0,
+    hasInfo: (await row.getByTestId('paired-device-info').count()) > 0,
+  };
   expect(detail.shown, 'the list must not explain each device unasked').toBe(false);
   expect(detail.hasInfo, 'a channel switched off is not a problem to explain').toBe(false);
 

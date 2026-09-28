@@ -243,10 +243,8 @@ export async function waitForBluetoothRowConnectedInUi(
   await pollUntil(`${actor.slug} bluetooth row is green in the UI`, async () => {
     await actor.invoke('space_sync_tick');
 
-    const color = await actor.page.evaluate<string>(`(() => {
-      const row = document.querySelector(${JSON.stringify(selector)});
-      return row ? (row.getAttribute('data-channel-color') ?? '') : '';
-    })()`);
+    const row = actor.page.locator(selector);
+    const color = (await row.count()) > 0 ? ((await row.getAttribute('data-channel-color')) ?? '') : '';
     if (color === '') {
       await openDeviceDetailsFromSettings(actor, peerDeviceId);
       return false;

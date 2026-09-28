@@ -54,9 +54,7 @@ export async function ensurePersonalSpaceSync(
 }
 
 export async function expectNoIncomingSpaceSyncDialog(actor: E2EActor): Promise<void> {
-  const count = await actor.page.evaluate<number>(`(() => {
-    return document.querySelectorAll('[data-testid="incoming-space-sync-dialog"]').length;
-  })()`);
+  const count = await actor.page.getByTestId('incoming-space-sync-dialog').count();
   expect(count, `${actor.slug} should not show incoming space sync dialog`).toBe(0);
 }
 
@@ -108,19 +106,11 @@ async function tickActors(actors: E2EActor[]): Promise<void> {
 
 export async function waitForMappingControlsReady(actor: E2EActor, spaceId: string): Promise<void> {
   await pollUntil(`${actor.slug} mapping controls ready`, async () => {
-    const state = await actor.page.evaluate<{ disabled: boolean; checked: boolean }>(`(() => {
-      const checkbox = document.querySelector(${JSON.stringify(spaceCheckboxSelector(spaceId))});
-      if (!(checkbox instanceof HTMLInputElement)) {
-        return { disabled: true, checked: false };
-      }
-      return { disabled: checkbox.disabled, checked: checkbox.checked };
-    })()`);
-
-    if (state.disabled) {
+    const checkbox = actor.page.locator(spaceCheckboxSelector(spaceId));
+    if ((await checkbox.count()) === 0) {
       return false;
     }
-
-    return true;
+    return !(await checkbox.isDisabled());
   }, TIMEOUT_MS);
 }
 
@@ -149,17 +139,16 @@ export async function waitForChannelGreen(
 
 async function waitForApproveDialogToClose(actor: E2EActor): Promise<void> {
   await pollUntil(`${actor.slug} approve dialog closes`, async () => {
-    const state = await actor.page.evaluate<{ visible: boolean; error: string }>(`(() => {
-      const dialog = document.querySelector('[data-testid="incoming-space-sync-dialog"]');
-      const error = document.querySelector('[data-testid="incoming-space-sync-dialog"] .text-error')?.textContent?.trim() ?? '';
-      return { visible: Boolean(dialog), error };
-    })()`);
-
-    if (state.error) {
-      throw new Error(state.error);
+    const dialog = actor.page.getByTestId('incoming-space-sync-dialog');
+    if ((await dialog.count()) === 0) {
+      return true;
     }
-
-    return !state.visible || false;
+    const errorText = dialog.locator('.text-error');
+    const error = (await errorText.count()) > 0 ? ((await errorText.textContent())?.trim() ?? '') : '';
+    if (error) {
+      throw new Error(error);
+    }
+    return false;
   }, TIMEOUT_MS, 1_000);
 }
 

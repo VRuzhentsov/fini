@@ -110,17 +110,7 @@ async function openFocus(actor: E2EActor): Promise<void> {
 /** Creates a quest through the real chat-input UI, then confirms it landed locally via `get_quests`. */
 async function createQuestViaChat(actor: E2EActor, title: string): Promise<Quest> {
   await openFocus(actor);
-  await actor.page.evaluate(`(() => {
-    const input = document.querySelector('[data-testid="chat-input"]');
-    if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
-      throw new Error('chat input text control not found');
-    }
-    const prototype = input instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    if (!setter) throw new Error('chat input setter is unavailable');
-    setter.call(input, ${JSON.stringify(title)});
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
+  await actor.page.fill('[data-testid="chat-input"]', title);
   await actor.page.click('[data-testid="chat-submit"]');
 
   return findQuestByTitle(actor, title);
