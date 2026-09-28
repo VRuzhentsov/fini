@@ -120,11 +120,10 @@ const SETUP_POLL_MS = 1_000;
 let setupFinished = false;
 
 const step = computed(() => {
-  // Known device, automatic path (ADR-0008 D20 step 4): the hello exchange.
-  if (knownDevice.value) {
-    if (setupError.value) return "setupFailed";
-    if (setupStatus.value?.initialized) return "setupReady";
-  }
+  // A code ceremony under way -- the known peer's fallback, or another
+  // device picked from the list -- keeps the screen until it ends, even if
+  // the automatic path completes meanwhile: OK would otherwise set up the
+  // original peer and abandon the ceremony the person is in.
   if (deviceStore.pairCompletedAt) return "paired";
   if (incoming.value) {
     return acceptedRequestId.value === incoming.value.request_id ? "entercode" : "incoming";
@@ -149,7 +148,10 @@ const step = computed(() => {
     if (request.status === "pending" || request.status === "awaiting_code") return "sent";
   }
 
+  // Known device, automatic path (ADR-0008 D20 step 4): the hello exchange.
   if (knownDevice.value) {
+    if (setupError.value) return "setupFailed";
+    if (setupStatus.value?.initialized) return "setupReady";
     if (setupStatus.value?.helloAckedByPeer || setupStatus.value?.ackedPeerHello) return "setupFound";
     return "setupSearching";
   }

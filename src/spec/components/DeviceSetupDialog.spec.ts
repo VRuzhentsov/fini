@@ -349,6 +349,33 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
     expect(store.enterAddMode).toHaveBeenCalledWith({ bluetooth: true });
   });
 
+  it("keeps a code ceremony on screen when the automatic setup completes meanwhile", async () => {
+    const store = storeMock({
+      outgoingRequest: {
+        request_id: "r1",
+        to_device_id: "peer-2",
+        to_hostname: "Other laptop",
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        status: "awaiting_code",
+        sender_code: "482915",
+      },
+      channelSetupStatus: jest.fn().mockResolvedValue({
+        helloAckedByPeer: true,
+        ackedPeerHello: true,
+        initialized: true,
+      }),
+    });
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+    jest.advanceTimersByTime(1_000);
+    await flushUi();
+
+    expect(wrapper.findAll('[data-testid="pair-code"]')).toHaveLength(6);
+    expect(wrapper.find('[data-testid="setup-ok"]').exists()).toBe(false);
+  });
+
   it("ends the setup without switching on when closed", async () => {
     const store = storeMock();
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
