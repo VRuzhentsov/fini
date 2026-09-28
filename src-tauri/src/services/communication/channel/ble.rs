@@ -1109,8 +1109,7 @@ fn note_delivery_missed(peer_id: &str) {
 }
 
 /// See `ChannelService::forget_failures`: the next delivery search is due
-/// at once.
-#[cfg(any(feature = "ui-plane", test))]
+/// at once. Also used when a pair is removed.
 pub fn forget_delivery_misses(peer_id: &str) {
     note_delivery_reached(peer_id);
 }

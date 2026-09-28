@@ -1406,6 +1406,10 @@ pub fn device_connection_unpair_impl(
     diesel::delete(paired_devices::table.find(&peer_device_id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
+    // Failed attempts with the old pair must not delay a new one.
+    crate::services::communication::channel::tcp_ws::forget_failures(&peer_device_id);
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    crate::services::communication::channel::ble::forget_delivery_misses(&peer_device_id);
     // Its channels went with it, which can leave nobody to advertise for.
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())

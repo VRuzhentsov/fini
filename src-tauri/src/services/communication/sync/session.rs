@@ -32,6 +32,19 @@ use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 // peer" -- is answered one layer up by the `Auth` frame, which
 // `specs/device-connect/README.md` already names as the trust boundary.
 
+/// Why an auth is refused while an exchange with that peer already runs on
+/// the channel.
+pub(crate) const SESSION_ACTIVE_REASON: &str = "session already active on this channel";
+/// Why an auth is refused when both devices dialed each other and this
+/// device's dial wins.
+pub(crate) const CROSSED_DIAL_REASON: &str = "crossed dials: the other device's dial wins";
+
+/// Whether a refused auth only means an exchange with the peer is (or is
+/// about to be) running already.
+pub(crate) fn refused_for_running_exchange(error: &str) -> bool {
+    error.contains(SESSION_ACTIVE_REASON) || error.contains(CROSSED_DIAL_REASON)
+}
+
 /// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.
 /// Shared by every adapter's dial path. Returns the peer's reported
 /// `PROTOCOL_VERSION` (`0` for a peer running a build from before that

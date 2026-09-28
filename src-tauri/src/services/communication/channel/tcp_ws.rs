@@ -277,6 +277,12 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
     });
 }
 
+/// Whether this device is dialing the peer for an exchange right now.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn dialing(peer_id: &str) -> bool {
+    in_flight_exchanges().lock().unwrap().contains(peer_id)
+}
+
 /// Peers with an exchange attempt in flight -- one at a time per peer.
 fn in_flight_exchanges() -> &'static std::sync::Mutex<HashSet<String>> {
     static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
@@ -299,8 +305,7 @@ pub fn recently_failed(peer_id: &str) -> bool {
     is_cooling_down(&failure_cooldown().lock().unwrap(), peer_id, Instant::now())
 }
 
-/// See `ChannelService::forget_failures`.
-#[cfg(any(feature = "ui-plane", test))]
+/// See `ChannelService::forget_failures`; also used when a pair is removed.
 pub fn forget_failures(peer_id: &str) {
     failure_cooldown().lock().unwrap().remove(peer_id);
 }
@@ -346,6 +351,13 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) -> bool {
     let peer_protocol_version =
         match session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id).await {
             Ok(version) => version,
+            // An exchange with the peer is already running (its own dial,
+            // or the one that won a crossing): the work goes through that,
+            // and this was no failure.
+            Err(err) if session::refused_for_running_exchange(&err) => {
+                log::info!("[transport][tcp_ws] {peer_id}: an exchange is already running ({err})");
+                return true;
+            }
             Err(err) => {
                 log::warn!("[transport][tcp_ws] {peer_id} refused the exchange: {err}");
                 return false;
