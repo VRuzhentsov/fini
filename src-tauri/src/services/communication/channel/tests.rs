@@ -639,6 +639,19 @@ async fn both_adapters_satisfy_the_transport_port() {
     }
 }
 
+/// What a one-shot pairing frame produced on the receiving side, once it has
+/// been handled: waits (bounded) instead of guessing how long that takes.
+async fn arrived<T>(read: impl Fn() -> Vec<T>) -> Vec<T> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let items = read();
+        if !items.is_empty() || tokio::time::Instant::now() >= deadline {
+            return items;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// `pairing::commands::send_pair_ws` is a one-shot sender
 /// independent of `TcpWsDataLink` (connect, send one frame, close) — it does
 /// not go through `DataLink::send`, so nothing structurally forces it to stay
@@ -683,9 +696,7 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
     .await
     .expect("join send-pair-request task");
 
-    sleep(Duration::from_millis(200)).await;
-    let incoming =
-        device_connection_pair_incoming_requests_impl(&receiver).expect("list incoming requests");
+    let incoming = arrived(|| device_connection_pair_incoming_requests_impl(&receiver).expect("list incoming requests")).await;
     assert_eq!(incoming.len(), 1, "receiver should see the incoming pair request");
     assert_eq!(incoming[0].from_device_id, sender_device_id);
 }
@@ -750,9 +761,7 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     .await
     .expect("join send-pair-request task");
 
-    sleep(Duration::from_millis(200)).await;
-    let incoming =
-        device_connection_pair_incoming_requests_impl(&accepter).expect("list incoming requests");
+    let incoming = arrived(|| device_connection_pair_incoming_requests_impl(&accepter).expect("list incoming requests")).await;
     assert_eq!(incoming.len(), 1, "accepter should see the incoming pair request");
     // The regression this guards: without a real peer address, accepting
     // would fail before ever sending PairAccept.
@@ -769,9 +778,7 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     .await
     .expect("join accept-pair-request task");
 
-    sleep(Duration::from_millis(200)).await;
-    let outgoing =
-        device_connection_pair_outgoing_updates_impl(&requester).expect("list outgoing updates");
+    let outgoing = arrived(|| device_connection_pair_outgoing_updates_impl(&requester).expect("list outgoing updates")).await;
     assert_eq!(
         outgoing.len(),
         1,
@@ -1009,9 +1016,7 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
     .await
     .expect("send pair request over bluetooth-kind link");
 
-    sleep(Duration::from_millis(200)).await;
-    let incoming =
-        device_connection_pair_incoming_requests_impl(&receiver).expect("list incoming requests");
+    let incoming = arrived(|| device_connection_pair_incoming_requests_impl(&receiver).expect("list incoming requests")).await;
     assert_eq!(incoming.len(), 1);
     assert!(
         incoming[0].via_bluetooth,
@@ -1068,9 +1073,7 @@ async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
     .await
     .expect("send pair complete over bluetooth-kind link");
 
-    sleep(Duration::from_millis(200)).await;
-    let completions = device_connection_pair_outgoing_completions_impl(&receiver)
-        .expect("list outgoing completions");
+    let completions = arrived(|| device_connection_pair_outgoing_completions_impl(&receiver).expect("list outgoing completions")).await;
     assert_eq!(completions.len(), 1);
     assert!(completions[0].via_bluetooth);
     assert_eq!(
@@ -1116,9 +1119,7 @@ async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
     .await
     .expect("send pair complete over network");
 
-    sleep(Duration::from_millis(200)).await;
-    let completions = device_connection_pair_outgoing_completions_impl(&receiver)
-        .expect("list outgoing completions");
+    let completions = arrived(|| device_connection_pair_outgoing_completions_impl(&receiver).expect("list outgoing completions")).await;
     assert_eq!(completions.len(), 1);
     assert!(!completions[0].via_bluetooth);
     assert_eq!(

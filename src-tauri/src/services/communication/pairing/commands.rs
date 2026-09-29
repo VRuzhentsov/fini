@@ -1829,6 +1829,7 @@ mod tests {
         // ADR-0008 D15: the channel exists (set up by an init), switched off.
         channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
             .expect("a channel that went through init");
+        crate::services::communication::channel::ble::pin_adapter_reachable_on_this_thread();
         let statuses = device_connection_set_channel_enabled_impl(
             &mut conn,
             &state,

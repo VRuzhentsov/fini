@@ -1399,7 +1399,24 @@ fn note_adapter_unreachable() {
 /// nothing has been tried yet. See `ADAPTER_HEALTH`.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn is_bluetooth_adapter_unavailable() -> bool {
+    #[cfg(test)]
+    if ADAPTER_PINNED_REACHABLE.with(|pinned| pinned.get()) {
+        return false;
+    }
     ADAPTER_HEALTH.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
+}
+
+#[cfg(test)]
+thread_local! {
+    static ADAPTER_PINNED_REACHABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// For a test on this thread that is not about the adapter: the process-wide
+/// health is written by concurrent tests (and by any scan they start), so a
+/// check that reads it would pass or fail with their timing.
+#[cfg(test)]
+pub fn pin_adapter_reachable_on_this_thread() {
+    ADAPTER_PINNED_REACHABLE.with(|pinned| pinned.set(true));
 }
 
 /// Asks the radio, right now, whether it can be used -- and records the
