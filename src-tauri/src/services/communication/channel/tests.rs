@@ -1715,6 +1715,35 @@ fn a_frame_the_running_exchange_cannot_take_goes_to_the_next_one() {
     assert!(!state.has_queued_frames("peer-client"));
 }
 
+/// Switching a channel off while its exchange's mailbox is full still ends
+/// the exchange: the close waits for the next slot, ahead of anything
+/// forwarded after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_off_a_busy_exchange_still_closes_it() {
+    use crate::services::communication::sync::types::SessionCommand;
+    let (state, _db) = server_state("adr-0008-close-busy");
+    let frame = |space: &str| PeerFrame::BootstrapStart { space_id: space.to_string() };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    assert!(state.try_claim_session("peer-client", ChannelKind::Bluetooth, tx));
+    assert!(state.push_to_peer("peer-client", frame("filling")));
+    assert!(state.close_session_on("peer-client", ChannelKind::Bluetooth));
+    let later = state.clone();
+    let late = tokio::spawn(async move {
+        sleep(Duration::from_millis(50)).await;
+        later.push_to_peer("peer-client", frame("late"))
+    });
+
+    assert!(matches!(rx.recv().await, Some(SessionCommand::Forward(_))));
+    sleep(Duration::from_millis(100)).await;
+    assert!(
+        matches!(rx.recv().await, Some(SessionCommand::Close)),
+        "the close is delivered before a frame forwarded after it"
+    );
+    drop(rx);
+    let _ = late.await;
+}
+
 /// A frame raised while no exchange runs waits for the next one, and the
 /// keeper starts that exchange over Network once the peer is present --
 /// without any held session.

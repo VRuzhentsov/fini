@@ -520,10 +520,10 @@ impl DeviceConnectionState {
             .any(|(id, _)| id == peer_device_id)
     }
 
-    /// Ends a running exchange on this channel now -- the switch was turned
-    /// off, or the channel unlinked. `false` if none was running or the
-    /// close could not be delivered; the exchange then ends on its own idle
-    /// timeout.
+    /// Ends a running exchange on this channel -- the switch was turned off,
+    /// or the channel unlinked. `false` if none was running. A full mailbox
+    /// does not lose the close: it waits for the next free slot, which a
+    /// waiting send gets before any later frame.
     #[cfg(any(feature = "ui-plane", test))]
     pub fn close_session_on(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
         let sender = {
@@ -536,15 +536,17 @@ impl DeviceConnectionState {
                 None => return false,
             }
         };
-        for attempt in 0..5 {
-            if sender.try_send(SessionCommand::Close).is_ok() {
-                return true;
+        match sender.try_send(SessionCommand::Close) {
+            Ok(()) => true,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(close)) => {
+                tauri::async_runtime::spawn(async move {
+                    let _ = sender.send(close).await;
+                });
+                true
             }
-            if attempt < 4 {
-                std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1) as u64));
-            }
+            // The exchange has already ended.
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
         }
-        false
     }
 
     #[cfg(any(feature = "ui-plane", test))]
