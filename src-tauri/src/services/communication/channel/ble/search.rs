@@ -27,7 +27,7 @@ use tokio::sync::{oneshot, watch, Notify};
 
 use super::{
     advertised_fingerprint, backend, datagram_config, fingerprint_of, note_adapter_unreachable,
-    note_peer_advertising, open_db_at_path, scan_lease, RunningScan, FINGERPRINT_LEN,
+    note_peer_advertising, note_scan_refused, open_db_at_path, scan_lease, RunningScan, FINGERPRINT_LEN,
     FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
 };
 use crate::services::communication::pairing::ChannelKind;
@@ -245,11 +245,15 @@ async fn run() {
             continue;
         };
         let scan = scan_lease().lock().await;
-        let Ok(mut discovered) = backend.scan(datagram_config().service).await else {
-            note_adapter_unreachable();
-            drop(scan);
-            let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, changed().notified()).await;
-            continue;
+        let mut discovered = match backend.scan(datagram_config().service).await {
+            Ok(discovered) => discovered,
+            Err(err) => {
+                log::warn!("[transport][ble] search scan refused: {err}");
+                note_scan_refused(&err);
+                drop(scan);
+                let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, changed().notified()).await;
+                continue;
+            }
         };
         let running = RunningScan::start();
 

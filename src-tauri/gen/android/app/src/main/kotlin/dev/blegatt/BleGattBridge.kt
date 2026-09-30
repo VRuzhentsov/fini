@@ -664,6 +664,35 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
         connectedGatts[address]?.disconnect()
     }
 
+    /// A caller's explicit connection-priority request for the live GATT
+    /// `session` owns (`GattConnection::request_connection_priority` on the
+    /// Rust side). `priority`: 0 = LOW_POWER, 1 = BALANCED, 2 = HIGH.
+    /// Returns 0 when the platform accepted the request, 1 when `session`
+    /// no longer owns a live GATT for `address` (superseded or gone), 2 when
+    /// `BluetoothGatt.requestConnectionPriority` refused it.
+    ///
+    /// Ends the automatic bootstrap-priority treatment for this connection
+    /// (see `priorityLowered`): the caller now owns the priority, so a
+    /// pending fallback must not later overwrite their choice with BALANCED,
+    /// and later writes must not re-arm it. Marking `priorityLowered` and
+    /// removing the map entry under `gattLock` is enough even for a fallback
+    /// already dispatched and waiting on the lock: it re-checks that it is
+    /// still the map's entry first (see `rearmPriorityFallback`).
+    fun requestConnectionPriority(address: String, session: Long, priority: Int): Int {
+        synchronized(gattLock) {
+            if (gattSessions[address] != session) return 1
+            val gatt = connectedGatts[address] ?: return 1
+            priorityLowered.add(address)
+            priorityFallbacks.remove(address)?.let { retryHandler.removeCallbacks(it) }
+            val platform = when (priority) {
+                0 -> BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
+                2 -> BluetoothGatt.CONNECTION_PRIORITY_HIGH
+                else -> BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+            }
+            return if (gatt.requestConnectionPriority(platform)) 0 else 2
+        }
+    }
+
     private fun findCharacteristic(address: String, characteristicUuid: String): BluetoothGattCharacteristic? =
         pendingCharacteristics[address]?.get(characteristicUuid)
 
@@ -1506,8 +1535,9 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
     /// callback this file must implement. `android.rs` logs a loud error on
     /// a mismatch, which is the only signal a consumer vendoring an
     /// out-of-date copy of this file will get. v2: added `onRadioState` /
-    /// `isRadioEnabled` / this method (ADR-0005).
-    fun bridgeAbiVersion(): Int = 2
+    /// `isRadioEnabled` / this method (ADR-0005). v3: added
+    /// `requestConnectionPriority`.
+    fun bridgeAbiVersion(): Int = 3
 
     /// Whether the adapter is present and switched on. Rust's
     /// `Backend::radio_status()` calls this once at startup, so a `PeerLink`

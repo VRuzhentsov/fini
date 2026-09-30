@@ -706,7 +706,9 @@ pub async fn scan_add_mode_candidates(
         let mut discovered = backend
             .scan(datagram_config().service)
             .await
-            .inspect_err(|_| note_adapter_unreachable())
+            .inspect_err(|err| {
+                note_scan_refused(err);
+            })
             .map_err(|err| format!("ble scan failed: {err}"))?;
         let _running = RunningScan::start();
 
@@ -1395,6 +1397,19 @@ fn note_adapter_unreachable() {
     ADAPTER_HEALTH.store(ADAPTER_UNREACHABLE, Ordering::Relaxed);
 }
 
+/// Records what a refused scan says about the adapter. A busy adapter (a
+/// discovery already running, which ble-gatt has tried to recover) is
+/// there and working -- only something else refuses it as missing.
+fn note_scan_refused(err: &ble_gatt::BleError) -> bool {
+    if matches!(err, ble_gatt::BleError::AdapterBusy(_)) {
+        note_adapter_reachable();
+        true
+    } else {
+        note_adapter_unreachable();
+        false
+    }
+}
+
 /// `true` only once a genuine attempt has failed -- never merely because
 /// nothing has been tried yet. See `ADAPTER_HEALTH`.
 #[cfg(any(feature = "ui-plane", test))]
@@ -1461,8 +1476,7 @@ pub async fn probe_adapter_available() -> bool {
                 }
                 Err(err) => {
                     log::warn!("[transport][ble] adapter probe failed: {err}");
-                    note_adapter_unreachable();
-                    false
+                    note_scan_refused(&err)
                 }
             };
         }
@@ -1657,6 +1671,14 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("FINI_LOCAL_BLUETOOTH_ADDRESS"));
+    }
+
+    /// ble-gatt reports a discovery it could not take over as busy, not
+    /// missing: that adapter works, so Bluetooth must not read as unavailable.
+    #[test]
+    fn a_busy_adapter_is_not_an_unavailable_one() {
+        assert!(note_scan_refused(&ble_gatt::BleError::AdapterBusy("in progress".into())));
+        assert!(!note_scan_refused(&ble_gatt::BleError::AdapterUnavailable("no adapter".into())));
     }
 
     /// A scan already running is proof the adapter works, so the check a
