@@ -269,6 +269,24 @@ That flow stays local and requires release-signing inputs in the environment:
 
 Output APK path for the local release-signing flow: `bin/fini-release.apk`
 
+#### Production Android signing identity
+
+Fini's production Android package is `com.fini.app`. The release workflow
+publishes its signed AAB to Google Play Internal and its signed APK to GitHub
+Releases. Both artifacts use the production certificate with this SHA-256
+fingerprint:
+
+```text
+F5:0A:23:BD:8C:E8:FD:C4:19:A8:A9:C3:83:06:34:3D:86:74:7C:E8:3D:B1:31:4F:1D:22:4F:AC:28:9C:A0:7B
+```
+
+The tag release workflow fails before publishing Android artifacts if the APK
+is signed by a different certificate. Keep this production certificate
+registered for `com.fini.app` in Play Console's Android developer verification
+page because the APK is also distributed outside Google Play. Local debug
+keystores and the separate `com.fini.app.debug` package are not distribution
+signing identities and must not be registered as production keys.
+
 ### Build (Flatpak)
 
 ```bash
