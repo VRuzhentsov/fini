@@ -80,6 +80,25 @@ pub async fn perform_client_auth(
 /// no connection is ever held for its own sake.
 pub const EXCHANGE_IDLE: Duration = Duration::from_secs(20);
 
+/// Writes every frame kept for the peer to the link, dropping each once
+/// written. `false` if the link failed; what was not written stays kept.
+async fn send_kept_frames(link: &mut dyn DataLink, db_path: &PathBuf, peer_device_id: &str) -> bool {
+    let waiting = tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        super::control_outbox::waiting(&mut conn, peer_device_id)
+    });
+    for (id, frame) in waiting {
+        if send_frame(link, &frame).await.is_err() {
+            return false;
+        }
+        tokio::task::block_in_place(|| {
+            let mut conn = open_db_at_path(db_path);
+            super::control_outbox::sent(&mut conn, id);
+        });
+    }
+    true
+}
+
 /// One exchange with a peer (ADR-0008 D10): after authentication, both sides
 /// push what they have, each message is acknowledged, and the connection
 /// closes once nothing has moved for `idle_after` (`EXCHANGE_IDLE` in the
@@ -105,11 +124,22 @@ pub async fn run_session(
         }
     }
 
+    // Frames kept for this peer (ADR-0008 D14) go first, and again whenever
+    // more are kept while the exchange runs.
+    let mut kept = super::control_outbox::changed().subscribe();
+    kept.mark_changed();
+
     let idle = tokio::time::sleep(idle_after);
     tokio::pin!(idle);
 
     loop {
         tokio::select! {
+            Ok(()) = kept.changed() => {
+                idle.as_mut().reset(tokio::time::Instant::now() + idle_after);
+                if !send_kept_frames(link.as_mut(), &db_path, &peer_device_id).await {
+                    break;
+                }
+            }
             inbound = recv_frame(link.as_mut()) => {
                 let frame = match inbound {
                     Some(Ok(frame)) => frame,

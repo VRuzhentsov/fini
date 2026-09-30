@@ -145,12 +145,23 @@ deletes its row; there is no tombstone (`unlinked_at`, migration 24, goes
 away). The tombstone existed so a peer could not recreate a removed channel;
 under D1–D4 a channel can only be created by a mutual init, which needs both
 people searching, so a peer cannot recreate it on its own. Unlinking also
-queues an "unlinked" message for the peer, delivered like any other push. On
-receipt the peer deletes its own row for that channel and stops delivery
-search for it. If the message never arrives, the only cost is the peer
-searching on its 15-minute schedule; it can never deliver, because the
-unlinked side has no channel row for that peer and its listener refuses the
-exchange.
+tells the peer with an "unlinked" message. On receipt the peer deletes its
+own row for that channel and stops delivery search for it.
+
+The message is kept in the database (`peer_control_outbox`) until an
+exchange has written it to the link, so neither a restart nor a dropped link
+loses it. The same goes for "space sync ended": ending a sync, like
+unlinking, is one-sided, and the peer must hear of it however long it is
+away. A later act on the same thing replaces a message not yet sent: setting
+the channel up again drops its unlink, and syncing the space again drops its
+end. Delivered late, either would undo the newer act. Kept messages go with
+the pairing when it is removed.
+
+Sync events are not kept this way: what to send is worked out again from the
+two devices' state on every exchange. A space sync request is not kept
+either. The other person answers it at their device, so it goes while the
+peer is reachable (an exchange running, or the peer present on an enabled
+channel) and fails otherwise.
 
 **D15 — The stored channel state is `None`, `Off` or `On`.** Per (pair,
 channel). `None` is the absence of a row. Transitions, each guarded in the

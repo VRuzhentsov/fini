@@ -350,6 +350,12 @@ fn apply_mappings_in_db(
     let to_add: Vec<String> = desired_set.difference(&existing_set).cloned().collect();
     let to_remove: Vec<String> = existing_set.difference(&desired_set).cloned().collect();
 
+    // Synced again before the peer heard it had ended: the end no longer
+    // holds, and arriving late it would undo this.
+    for space_id in &to_add {
+        super::control_outbox::drop_space_sync_end(conn, peer_device_id, space_id)?;
+    }
+
     if !to_remove.is_empty() {
         let ended_at = utc_now();
         diesel::update(
@@ -412,13 +418,19 @@ fn apply_mappings_in_db(
     list_mappings_for_peer(conn, peer_device_id)
 }
 
-/// Delivered with the next exchange if none is running (ADR-0008 D10).
+/// A request the other person answers at their device, so it goes while
+/// the peer is reachable -- an exchange running, or the peer present on an
+/// enabled channel, which opens one -- and is not kept for later.
 fn send_mapping_update_to_peer(
+    conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
     peer_device_id: &str,
     mapped_space_ids: &[String],
     custom_spaces: &[CustomSpaceDescriptor],
 ) -> Result<(), String> {
+    if !device_connection.has_session(peer_device_id) && !peer_reachable_now(conn, device_connection, peer_device_id) {
+        return Err(format!("{peer_device_id} is not reachable now"));
+    }
     device_connection.queue_for_peer(
         peer_device_id,
         PeerFrame::SpaceMappingUpdate {
@@ -430,21 +442,36 @@ fn send_mapping_update_to_peer(
     Ok(())
 }
 
-/// Delivered with the next exchange if none is running (ADR-0008 D10).
-fn send_space_sync_end_to_peer(
+/// Whether an enabled channel hears the peer right now.
+fn peer_reachable_now(
+    conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
+    peer_device_id: &str,
+) -> bool {
+    use crate::services::communication::channel::service::service_for;
+    use crate::services::communication::pairing::{channels, ChannelKind};
+    [ChannelKind::Network, ChannelKind::Bluetooth].into_iter().any(|kind| {
+        channels::is_enabled(conn, peer_device_id, kind)
+            && service_for(device_connection, kind).is_present(peer_device_id)
+    })
+}
+
+/// Ending a sync is one-sided, so the peer must hear of it however long it
+/// is away: kept until an exchange carries it (ADR-0008 D14).
+fn send_space_sync_end_to_peer(
+    conn: &mut SqliteConnection,
     peer_device_id: &str,
     space_id: &str,
     ended_at: &str,
 ) -> Result<(), String> {
-    device_connection.queue_for_peer(
+    super::control_outbox::keep(
+        conn,
         peer_device_id,
-        PeerFrame::SpaceSyncEnd {
+        &PeerFrame::SpaceSyncEnd {
             space_id: space_id.to_string(),
             ended_at: ended_at.to_string(),
         },
-    );
-    Ok(())
+    )
 }
 
 fn send_sync_event_to_peer(
@@ -982,7 +1009,7 @@ pub fn space_sync_update_mappings_impl(
             .cloned()
             .collect::<Vec<_>>();
         if let Err(err) =
-            send_mapping_update_to_peer(&device_connection, &peer_device_id, &[space_id], &custom)
+            send_mapping_update_to_peer(conn, &device_connection, &peer_device_id, &[space_id], &custom)
         {
             eprintln!("[space-sync] failed to notify peer mapping request: {err}");
         }
@@ -990,7 +1017,7 @@ pub fn space_sync_update_mappings_impl(
 
     for space_id in ended {
         if let Err(err) =
-            send_space_sync_end_to_peer(&device_connection, &peer_device_id, &space_id, &ended_at)
+            send_space_sync_end_to_peer(conn, &peer_device_id, &space_id, &ended_at)
         {
             eprintln!("[space-sync] failed to notify peer mapping end: {err}");
         }
@@ -1104,6 +1131,7 @@ pub fn space_sync_resolve_custom_space_mapping_impl(
 
     let custom_spaces = load_custom_space_descriptors(conn, &mapped_space_ids)?;
     if let Err(err) = send_mapping_update_to_peer(
+        conn,
         &device_connection,
         &peer_device_id,
         &mapped_space_ids,
@@ -1676,6 +1704,8 @@ pub fn space_sync_tick_impl(
             peers_with_work.insert(peer_device_id.clone());
         }
     }
+    // Frames kept across restarts (ADR-0008 D14) need an exchange too.
+    peers_with_work.extend(super::control_outbox::peers_waiting(&mut conn));
     request_exchanges(&mut conn, device_connection, &peers_with_work);
 
     let _ = cleanup_old_tombstones(&mut conn);
@@ -3149,6 +3179,64 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1);
         }
+
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(app_dir);
+    }
+
+    fn paired_peer_with_space(label: &str) -> (SqliteConnection, PathBuf, PathBuf, DeviceConnectionState) {
+        let db_path = temp_db_path(label);
+        let app_dir = temp_app_dir(label);
+        let mut conn = open_db_at_path(&db_path);
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+        let device_connection = DeviceConnectionState::from_app_data_dir(&app_dir);
+        (conn, db_path, app_dir, device_connection)
+    }
+
+    /// ADR-0008 D14: ending a space's sync is one-sided, so the peer hears of
+    /// it however long it is away -- kept in the database, not in memory. A
+    /// sync request is not: it needs the other person there, so while the
+    /// peer is unreachable nothing waits for it.
+    #[test]
+    fn ending_a_sync_is_kept_and_a_request_to_an_absent_peer_is_not() {
+        let (mut conn, db_path, app_dir, device_connection) = paired_peer_with_space("sync-end-kept");
+        space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec!["1".into()])
+            .unwrap();
+        assert!(!device_connection.has_queued_frames("peer-a"), "the request is not kept for later");
+
+        space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec![]).unwrap();
+        let kept = super::super::control_outbox::waiting(&mut conn, "peer-a");
+        assert!(
+            matches!(kept.as_slice(), [(_, PeerFrame::SpaceSyncEnd { space_id, .. })] if space_id == "1"),
+            "the end is kept: {kept:?}"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(app_dir);
+    }
+
+    /// Synced again before the peer heard it had ended: the end no longer
+    /// holds, and arriving late it would undo the new sync.
+    #[test]
+    fn syncing_a_space_again_drops_its_undelivered_end() {
+        let (mut conn, db_path, app_dir, device_connection) = paired_peer_with_space("sync-end-superseded");
+        space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec!["1".into()])
+            .unwrap();
+        space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec![]).unwrap();
+        assert_eq!(super::super::control_outbox::waiting(&mut conn, "peer-a").len(), 1);
+
+        space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec!["1".into()])
+            .unwrap();
+        assert!(super::super::control_outbox::waiting(&mut conn, "peer-a").is_empty());
 
         let _ = std::fs::remove_file(db_path);
         let _ = std::fs::remove_dir_all(app_dir);

@@ -1499,10 +1499,11 @@ async fn a_channel_the_peer_unlinked_is_removed_here() {
     }
 }
 
-/// ADR-0008 D14: unlinking pushes `ChannelUnlinked` to the peer like any
-/// other frame; the next exchange with it delivers it.
+/// ADR-0008 D14: unlinking tells the peer. The notice is kept in the
+/// database, not in memory, so a restart before the next exchange does not
+/// lose it; that exchange delivers it and it is gone.
 #[tokio::test(flavor = "multi_thread")]
-async fn unlinking_pushes_the_notice_to_the_next_exchange() {
+async fn unlinking_keeps_the_notice_until_an_exchange_delivers_it() {
     let (server, server_db) = server_state("adr-0008-unlink-push");
     seed_paired_device(&server_db, "peer-client");
     {
@@ -1519,7 +1520,8 @@ async fn unlinking_pushes_the_notice_to_the_next_exchange() {
         )
         .expect("unlink Bluetooth");
     }
-    assert!(server.has_queued_frames("peer-client"), "the notice waits for an exchange");
+    assert!(!server.has_queued_frames("peer-client"), "nothing is held only in memory");
+    assert_eq!(kept_frames(&server_db, "peer-client").len(), 1, "the notice waits in the database");
 
     let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
@@ -1538,10 +1540,83 @@ async fn unlinking_pushes_the_notice_to_the_next_exchange() {
                 break;
             }
             Ok(Some(Ok(_))) => continue,
-            other => panic!("expected the pushed ChannelUnlinked, got {other:?}"),
+            other => panic!("expected the kept ChannelUnlinked, got {other:?}"),
         }
     }
-    assert!(!server.has_queued_frames("peer-client"));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !kept_frames(&server_db, "peer-client").is_empty() && tokio::time::Instant::now() < deadline {
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(kept_frames(&server_db, "peer-client").is_empty(), "delivered, so no longer kept");
+}
+
+fn kept_frames(db_path: &PathBuf, peer: &str) -> Vec<PeerFrame> {
+    let mut conn = open_db_at_path(db_path);
+    crate::services::communication::sync::control_outbox::waiting(&mut conn, peer)
+        .into_iter()
+        .map(|(_, frame)| frame)
+        .collect()
+}
+
+/// A channel set up again before the peer heard of its unlink: the old
+/// notice no longer holds, and delivered late it would delete the new one.
+#[test]
+fn setting_a_channel_up_again_drops_its_undelivered_unlink() {
+    let (server, server_db) = server_state("adr-0008-unlink-superseded");
+    seed_paired_device(&server_db, "peer-client");
+    let mut conn = open_db_at_path(&server_db);
+    channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None).expect("set up");
+    crate::services::communication::pairing::device_connection_unlink_channel_impl(
+        &mut conn,
+        &server,
+        "peer-client".to_string(),
+        ChannelKind::Bluetooth,
+    )
+    .expect("unlink");
+    assert_eq!(kept_frames(&server_db, "peer-client").len(), 1);
+
+    channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, false, None).expect("set up again");
+    assert!(kept_frames(&server_db, "peer-client").is_empty());
+}
+
+/// A frame kept while an exchange is already running goes over that
+/// exchange, not the next one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_kept_during_an_exchange_goes_over_it() {
+    let (server, server_db) = server_state("adr-0008-kept-live");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        channels::configure(&mut conn, "peer-client", ChannelKind::Network, true, None).expect("Network on");
+    }
+    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    sleep(Duration::from_millis(100)).await;
+    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect("auth");
+
+    {
+        let mut conn = open_db_at_path(&server_db);
+        crate::services::communication::sync::control_outbox::keep(
+            &mut conn,
+            "peer-client",
+            &PeerFrame::SpaceSyncEnd { space_id: "space-1".into(), ended_at: "2026-01-01T00:00:00Z".into() },
+        )
+        .expect("keep");
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, recv_frame(link.as_mut())).await {
+            Ok(Some(Ok(PeerFrame::SpaceSyncEnd { space_id, .. }))) => {
+                assert_eq!(space_id, "space-1");
+                break;
+            }
+            Ok(Some(Ok(_))) => continue,
+            other => panic!("expected the kept SpaceSyncEnd over the running exchange, got {other:?}"),
+        }
+    }
 }
 
 // ADR-0008 reproductions. Adapted from the handoff's hardware-driven repros

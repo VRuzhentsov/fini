@@ -66,3 +66,47 @@ fn hard_unlink_migration_drops_only_unlinked_channels() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+/// Migration 26 (ADR-0008 D14): frames kept for a peer go with the pairing.
+/// Without the cascade, a pair unpaired and paired again would receive the
+/// old pairing's unlinks and sync ends.
+#[test]
+fn kept_peer_frames_go_with_the_pairing() {
+    let db_path = temp_db_path("control-outbox-cascade");
+    let mut conn = open_db_at_path(&db_path);
+
+    // Wind back until the table is gone, so the upgrade itself creates it.
+    while diesel::sql_query("SELECT id FROM peer_control_outbox LIMIT 1")
+        .execute(&mut conn)
+        .is_ok()
+    {
+        conn.revert_last_migration(MIGRATIONS)
+            .expect("wind back past the control-outbox migration");
+    }
+    diesel::sql_query(
+        "INSERT INTO paired_devices (peer_device_id, display_name, paired_at, pair_state)
+         VALUES ('upgraded-pair', 'Phone', '2026-01-01T00:00:00Z', 'paired')",
+    )
+    .execute(&mut conn)
+    .expect("seed a pair");
+    conn.run_pending_migrations(MIGRATIONS)
+        .expect("upgrade to the control outbox");
+
+    diesel::sql_query(
+        "INSERT INTO peer_control_outbox (peer_device_id, frame_type, subject, frame, created_at)
+         VALUES ('upgraded-pair', 'channel_unlinked', 'bluetooth', '{}', '2026-01-01T00:00:00Z')",
+    )
+    .execute(&mut conn)
+    .expect("keep a frame for the pair");
+    diesel::sql_query("DELETE FROM paired_devices WHERE peer_device_id = 'upgraded-pair'")
+        .execute(&mut conn)
+        .expect("unpair");
+
+    let left: i64 = crate::schema::peer_control_outbox::table
+        .count()
+        .get_result(&mut conn)
+        .expect("count kept frames");
+    assert_eq!(left, 0, "unpairing drops what was kept for the pair");
+
+    let _ = std::fs::remove_file(db_path);
+}

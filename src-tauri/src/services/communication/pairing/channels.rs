@@ -59,6 +59,9 @@ pub fn configure(
         return Ok(());
     }
 
+    // Set up again: an unlink of the old channel that has not reached the
+    // peer yet would delete this one when it arrives.
+    crate::services::communication::sync::control_outbox::drop_channel_unlinked(conn, device_id, kind)?;
     diesel::insert_into(channels::table)
         .values(&NewChannel {
             device_id: device_id.to_string(),
