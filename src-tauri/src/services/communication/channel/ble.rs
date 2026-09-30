@@ -1338,6 +1338,38 @@ fn advertising_wanted_sender() -> &'static tokio::sync::watch::Sender<bool> {
     SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
 }
 
+/// How long this device stays reachable after a Bluetooth init completes
+/// here. Its ack to the peer's hello can be lost when the link drops, so the
+/// peer may still be searching; the gate still answers it (ADR-0008 D2), but
+/// only if the peer can find this device.
+#[cfg(any(feature = "ui-plane", test))]
+const ANSWER_AFTER_SETUP: Duration = Duration::from_secs(120);
+
+fn answer_after_setup_until() -> &'static std::sync::Mutex<Option<std::time::Instant>> {
+    static UNTIL: OnceLock<std::sync::Mutex<Option<std::time::Instant>>> = OnceLock::new();
+    UNTIL.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn answering_after_setup() -> bool {
+    answer_after_setup_until()
+        .lock()
+        .ok()
+        .and_then(|until| *until)
+        .is_some_and(|until| std::time::Instant::now() < until)
+}
+
+/// A Bluetooth init completed here: keep advertising for a while, then look
+/// again whether anything still wants it.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn keep_answering_after_setup() {
+    if let Ok(mut until) = answer_after_setup_until().lock() {
+        *until = Some(std::time::Instant::now() + ANSWER_AFTER_SETUP);
+    }
+    crate::services::communication::sync::commands::notify_sync_work_pending_after(
+        ANSWER_AFTER_SETUP + Duration::from_secs(1),
+    );
+}
+
 /// Recompute whether to advertise, from the stored channels and the setups
 /// running now. Cheap; called whenever one of its inputs may have changed.
 pub fn refresh_advertising(db_path: &std::path::Path, state: &DeviceConnectionState) {
@@ -1351,6 +1383,7 @@ pub fn refresh_advertising(db_path: &std::path::Path, state: &DeviceConnectionSt
     });
     let wanted = any_channel_on
         || state.any_channel_setup(ChannelKind::Bluetooth)
+        || answering_after_setup()
         || *add_mode_sender().borrow();
     advertising_wanted_sender().send_if_modified(|current| {
         let changed = *current != wanted;
@@ -1671,6 +1704,14 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("FINI_LOCAL_BLUETOOTH_ADDRESS"));
+    }
+
+    /// After a Bluetooth init completes here the device stays reachable a
+    /// while, so a peer that missed its ack can still find it and ask again.
+    #[test]
+    fn a_finished_bluetooth_setup_keeps_advertising_a_while() {
+        keep_answering_after_setup();
+        assert!(answering_after_setup());
     }
 
     /// ble-gatt reports a discovery it could not take over as busy, not

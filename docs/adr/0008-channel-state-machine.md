@@ -95,6 +95,10 @@ this device has at least one Bluetooth channel on. It watches for paired
 peers' advertisements. When one appears (the peer turns on Bluetooth or the
 channel, or comes into range), it pushes the waiting queue. This works in
 both directions and does not need the UI to be open.
+It also keeps advertising for two minutes after a Bluetooth init completes
+here, even if the channel was left off. The peer may have missed this
+device's ack and still be searching (D2), and can only ask again if it can
+find this device.
 
 **D9 — Green means presence.** A peer is green on a channel when its
 advertising was seen within that channel's timeout. Advertising means the

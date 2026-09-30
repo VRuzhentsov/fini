@@ -2,7 +2,8 @@
 //!
 //! Both people open the setup dialog, and each device runs a setup search:
 //! it says hello to the peer on that channel and answers the peer's hello
-//! (the gate does that, and only while this search runs). The channel's
+//! (the gate does that, while this search runs and afterwards while the
+//! channel exists -- ADR-0008 D2). The channel's
 //! init is complete on a device once both halves happened there -- its own
 //! hello was acknowledged, and it acknowledged the peer's. Only then can
 //! the person press OK, which switches the channel on for this device
@@ -66,6 +67,9 @@ pub fn finish(
         channels::configure(conn, peer_device_id, kind, switch_on, None)?;
     }
     state.end_channel_setup(peer_device_id, kind);
+    if kind == ChannelKind::Bluetooth && setup.is_some_and(|setup| setup.initialized()) {
+        crate::services::communication::channel::ble::keep_answering_after_setup();
+    }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(setup)
 }
