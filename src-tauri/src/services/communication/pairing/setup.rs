@@ -67,6 +67,7 @@ pub fn finish(
         channels::configure(conn, peer_device_id, kind, switch_on, None)?;
     }
     state.end_channel_setup(peer_device_id, kind);
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     if kind == ChannelKind::Bluetooth && setup.is_some_and(|setup| setup.initialized()) {
         crate::services::communication::channel::ble::keep_answering_after_setup();
     }
