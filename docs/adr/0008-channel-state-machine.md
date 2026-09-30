@@ -55,6 +55,11 @@ needed.
 only while it is itself searching for that peer. Init is
 therefore mutual by construction. It also closes the leak where an unlinked
 channel still answers probes (inventory 4.3).
+Once init has completed, a device also acks that peer's hellos while the
+channel exists (`Off` or `On`). Its own ack can be lost when the link drops,
+leaving the peer still searching after this side has finished; the peer's
+retry must still get an answer. An unlinked channel has no row and stays
+silent.
 
 **D3 — `initialized` is cleared only by unlink or unpair.** Under D15,
 `initialized` is simply "a row exists" (`Off` or `On`). It survives

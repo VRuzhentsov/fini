@@ -1180,22 +1180,38 @@ async fn a_hello_is_acknowledged_while_this_device_searches_for_the_peer() {
     assert!(!setup.initialized(), "the other half is the peer acknowledging our hello");
 }
 
-/// ADR-0008 D2: a device that is not running a setup search says nothing,
-/// whatever its channel's state -- never set up, `Off` or `On`.
+/// ADR-0008 D2: a device that is not searching and never set this channel
+/// up says nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hello_goes_unanswered_when_this_device_is_not_searching() {
-    for enabled in [None, Some(false), Some(true)] {
-        let (receiver, receiver_db) = server_state("adr-0008-hello-not-searching");
+    let (receiver, receiver_db) = server_state("adr-0008-hello-not-searching");
+    seed_paired_device(&receiver_db, "peer-client");
+    assert!(
+        say_hello(receiver, receiver_db, "peer-client").await.is_none(),
+        "a device that is not searching must stay silent"
+    );
+}
+
+/// ADR-0008 D2: once init has made the channel, its hellos are still acked,
+/// `Off` or `On`. This side's ack can be lost when the link drops, so the
+/// peer is still searching after this side has finished; without an answer
+/// it could never complete the same setup.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hello_is_acknowledged_for_a_channel_that_already_exists() {
+    for enabled in [false, true] {
+        let (receiver, receiver_db) = server_state("adr-0008-hello-existing-channel");
         seed_paired_device(&receiver_db, "peer-client");
-        if let Some(enabled) = enabled {
+        {
             let mut conn = open_db_at_path(&receiver_db);
             channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, enabled, None)
                 .expect("set the channel up");
         }
-        assert!(
-            say_hello(receiver, receiver_db, "peer-client").await.is_none(),
-            "channel {enabled:?}: a device that is not searching must stay silent"
-        );
+        match say_hello(receiver.clone(), receiver_db, "peer-client").await {
+            Some(PeerFrame::HelloAck { device_id }) => {
+                assert_eq!(device_id, receiver.identity.device_id, "channel on={enabled}")
+            }
+            other => panic!("channel on={enabled}: expected a HelloAck, got {other:?}"),
+        }
     }
 }
 

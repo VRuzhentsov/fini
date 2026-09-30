@@ -61,6 +61,16 @@ fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
     })
 }
 
+/// Whether this pair's channel of `kind` exists at all (`Off` or `On`):
+/// its init completed here, and it has not been unlinked since.
+#[cfg(any(feature = "ui-plane", test))]
+fn check_channel_initialized(db_path: &PathBuf, device_id: &str, kind: ChannelKind) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        super::channels::find(&mut conn, device_id, kind).is_some()
+    })
+}
+
 /// Whether this pair's channel of `kind` is set up and switched on.
 ///
 /// Checked on every accept, in addition to `check_paired`. The dial loops
@@ -121,12 +131,17 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 state.receive_ws_pair_complete(payload, from_addr, kind == ChannelKind::Bluetooth);
             return;
         }
-        // ADR-0008 D1/D2: half of a channel's init. Answered only while
-        // this device is itself running a setup search for that peer on
-        // this channel -- an init needs both people at it. Anything else
-        // (not paired, not searching, switched off, unlinked) gets silence.
+        // ADR-0008 D1/D2: half of a channel's init. Answered while this
+        // device is itself running a setup search for that peer on this
+        // channel -- an init needs both people at it -- and afterwards while
+        // the channel it made still exists: an ack lost on the way means the
+        // peer is still asking after this side has finished. Anything else
+        // (not paired, not searching and never set up, unlinked) gets silence.
         PeerFrame::Hello { device_id } => {
-            if check_paired(&db_path, &device_id) && state.channel_setup(&device_id, kind).is_some() {
+            let searching = state.channel_setup(&device_id, kind).is_some();
+            if check_paired(&db_path, &device_id)
+                && (searching || check_channel_initialized(&db_path, &device_id, kind))
+            {
                 if send_frame(
                     link.as_mut(),
                     &PeerFrame::HelloAck {
