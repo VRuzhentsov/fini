@@ -414,10 +414,12 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=e6d795c#e6d795c1e15415de554c229fbb942bf3153f0024"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=de16437#de16437f8c4d03e1d515b4f492ad2945d70cfd44"
 dependencies = [
  "async-trait",
  "bluer",
+ "dbus",
+ "dbus-tokio",
  "futures",
  "jni",
  "log",

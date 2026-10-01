@@ -1441,7 +1441,7 @@ fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
         DeviceCommand::AddMode { command } => {
             match command {
                 DeviceAddModeCommand::Enter => {
-                    device_connection_enter_add_mode_impl(&ctx.device_state)
+                    device_connection_enter_add_mode_impl(&ctx.device_state, true)
                 }
                 DeviceAddModeCommand::Leave => {
                     device_connection_leave_add_mode_impl(&ctx.device_state)

@@ -112,7 +112,6 @@ diesel::table! {
         is_primary    -> Bool,
         address       -> Nullable<Text>,
         configured_at -> Text,
-        unlinked_at   -> Nullable<Text>,
     }
 }
 
@@ -183,12 +182,24 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    peer_control_outbox (id) {
+        id -> Integer,
+        peer_device_id -> Text,
+        frame_type -> Text,
+        subject -> Text,
+        frame -> Text,
+        created_at -> Text,
+    }
+}
+
 diesel::joinable!(quests -> spaces (space_id));
 diesel::joinable!(quests -> quest_series (series_id));
 diesel::joinable!(quest_series -> spaces (space_id));
 diesel::joinable!(reminders -> quests (quest_id));
 diesel::joinable!(series_reminder_templates -> quest_series (series_id));
 diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
+diesel::joinable!(peer_control_outbox -> paired_devices (peer_device_id));
 diesel::joinable!(pair_space_mappings -> spaces (space_id));
 diesel::joinable!(channels -> paired_devices (device_id));
 diesel::joinable!(channels -> channel_kinds (channel_kind));
@@ -204,6 +215,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     series_reminder_templates,
     paired_devices,
     pair_space_mappings,
+    peer_control_outbox,
     channel_kinds,
     channels,
     focus_history,

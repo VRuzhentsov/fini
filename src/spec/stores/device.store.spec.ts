@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPinia, setActivePinia } from "pinia";
 import { useDeviceStore } from "../../stores/device";
+import { ChannelColor, ChannelKind, ChannelProblem, ChannelState } from "../../utils/channel";
 
 jest.mock("@tauri-apps/api/core", () => ({
   invoke: jest.fn(),
@@ -206,106 +207,119 @@ describe("device store sync status", () => {
   });
 });
 
-describe("device store channel liveness", () => {
+describe("device store channel rows (ADR-0008)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     (invoke as unknown as jest.Mock).mockReset();
   });
 
-  // Regression test for a P1 review finding: the lightweight live-poll
-  // (`refreshLiveConnectedState`, backed by
-  // `device_connection_channel_liveness`) used to leave `state`/`code`
-  // frozen at whatever the last full `refreshChannelStatuses` poll saw --
-  // wrong once green/amber became a continuously-reproven ping/ack proof
-  // that can lapse or complete on its own.
-  //
-  // The poll deliberately carries no `primary`: the star is the person's
-  // stored choice, and letting a liveness signal rewrite it is how a
-  // setting appears to move by itself.
-  it("refreshes the ping/ack code on the lightweight poll, and never the star", async () => {
-    (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      {
-        kind: "network",
-        configured: true,
-        enabled: true,
-        primary: true,
-        address: null,
-        status: "connecting",
-        reason: "awaiting_first_ack",
-      },
-      {
-        kind: "bluetooth",
-        configured: true,
-        enabled: false,
-        primary: false,
-        address: null,
-        status: "off",
-        reason: "disabled",
-      },
-    ]);
+  it("stores the backend's rows as they are, colour and problem included", async () => {
+    const rows = [
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.On, color: ChannelColor.Orange, problem: ChannelProblem.BluetoothUnavailable, primary: false },
+    ];
+    (invoke as unknown as jest.Mock).mockResolvedValueOnce(rows);
 
     const store = useDeviceStore();
     await store.refreshChannelStatuses("peer-1");
-    expect(store.getChannelStatuses("peer-1")[0].status).toBe("connecting");
-    expect(store.getChannelStatuses("peer-1")[0].reason).toBe("awaiting_first_ack");
 
-    (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: true, reason: null },
-      { kind: "bluetooth", connected: false, reason: null },
-    ]);
-    await store.refreshLiveConnectedState("peer-1");
-
-    const [network, bluetooth] = store.getChannelStatuses("peer-1");
-    expect(network.status).toBe("connected");
-    expect(network.reason).toBeNull();
-    expect(network.primary).toBe(true);
-    // Switched off: there is no live state to patch, because the row says
-    // what the person chose rather than what a radio is doing.
-    expect(bluetooth.status).toBe("off");
-    expect(bluetooth.reason).toBe("disabled");
+    expect(invoke).toHaveBeenCalledWith("device_connection_channel_statuses", {
+      peerDeviceId: "peer-1",
+    });
+    expect(store.getChannelStatuses("peer-1")).toEqual(rows);
   });
 
-  // Regression test for a P2 review finding: a configured-but-not-yet-
-  // connected channel (dial in flight, no session claimed) must report
-  // "connecting", not "awaiting_first_ack" -- that code specifically means
-  // a session *is* claimed and the ping/ack proof just hasn't completed
-  // its first round, which the UI renders as "Connected -- waiting for the
-  // first ping/ack exchange." Reporting that for an entirely unconnected
-  // row (e.g. presenced but the WebSocket port is unreachable) would be
-  // misleading.
-  it("reports connecting, not awaiting_first_ack, for a configured row with no session yet", async () => {
+  it("counts a device online only while one of its channels is green", async () => {
+    const store = useDeviceStore();
+    const device = { peer_device_id: "peer-1", last_seen_at: null } as never;
+
     (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      {
-        kind: "network",
-        configured: true,
-        enabled: true,
-        primary: false,
-        address: null,
-        status: "connected",
-        reason: null,
-      },
-      {
-        kind: "bluetooth",
-        configured: true,
-        enabled: false,
-        primary: false,
-        address: null,
-        status: "off",
-        reason: "disabled",
-      },
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Grey, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.Off, color: ChannelColor.Off, problem: null, primary: false },
     ]);
+    await store.refreshChannelStatuses("peer-1");
+    expect(store.isDeviceOnline(device)).toBe(false);
+
+    (invoke as unknown as jest.Mock).mockResolvedValueOnce([
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.Off, color: ChannelColor.Off, problem: null, primary: false },
+    ]);
+    await store.refreshChannelStatuses("peer-1");
+    expect(store.isDeviceOnline(device)).toBe(true);
+  });
+
+  it("drives the channel setup through its three commands", async () => {
+    (invoke as unknown as jest.Mock).mockResolvedValue(undefined);
+    const store = useDeviceStore();
+
+    await store.beginChannelSetup("peer-1", ChannelKind.Bluetooth);
+    (invoke as unknown as jest.Mock).mockResolvedValueOnce({
+      helloAckedByPeer: true,
+      ackedPeerHello: true,
+      initialized: true,
+    });
+    const status = await store.channelSetupStatus("peer-1", ChannelKind.Bluetooth);
+    await store.endChannelSetup("peer-1", ChannelKind.Bluetooth, true);
+
+    expect(status?.initialized).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("device_connection_begin_channel_setup", {
+      peerDeviceId: "peer-1",
+      kind: ChannelKind.Bluetooth,
+    });
+    expect(invoke).toHaveBeenCalledWith("device_connection_channel_setup_status", {
+      peerDeviceId: "peer-1",
+      kind: ChannelKind.Bluetooth,
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      "device_connection_end_channel_setup",
+      expect.objectContaining({ peerDeviceId: "peer-1", kind: ChannelKind.Bluetooth, switchOn: true }),
+    );
+  });
+});
+
+describe("device store presence watching (ADR-0008 D12)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (invoke as unknown as jest.Mock).mockReset();
+    (invoke as unknown as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  it("keeps the search running while any surface still watches", async () => {
+    const store = useDeviceStore();
+    await store.watchPresence(true); // overview
+    await store.watchPresence(true); // Device page
+    await store.watchPresence(false); // overview goes away
+
+    const calls = (invoke as unknown as jest.Mock).mock.calls.filter(
+      ([command]) => command === "device_connection_watch_presence",
+    );
+    expect(calls).toEqual([["device_connection_watch_presence", { active: true }]]);
+
+    await store.watchPresence(false);
+    expect(invoke).toHaveBeenLastCalledWith("device_connection_watch_presence", { active: false });
+  });
+});
+
+describe("device store primary channel (ADR-0007)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (invoke as unknown as jest.Mock).mockReset();
+  });
+
+  it("asks the backend to pin the channel and keeps the rows it returns", async () => {
+    const rows = [
+      { kind: ChannelKind.Network, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: false },
+      { kind: ChannelKind.Bluetooth, state: ChannelState.On, color: ChannelColor.Green, problem: null, primary: true },
+    ];
+    (invoke as unknown as jest.Mock).mockResolvedValueOnce(rows);
 
     const store = useDeviceStore();
-    await store.refreshChannelStatuses("peer-1");
+    await store.setPrimaryChannel("peer-1", ChannelKind.Bluetooth);
 
-    (invoke as unknown as jest.Mock).mockResolvedValueOnce([
-      { kind: "network", connected: false, reason: null },
-      { kind: "bluetooth", connected: false, reason: null },
-    ]);
-    await store.refreshLiveConnectedState("peer-1");
-
-    const [network] = store.getChannelStatuses("peer-1");
-    expect(network.status).toBe("connecting");
-    expect(network.reason).toBe("connecting");
+    expect(invoke).toHaveBeenCalledWith("device_connection_set_primary_channel", {
+      peerDeviceId: "peer-1",
+      primary: ChannelKind.Bluetooth,
+    });
+    expect(store.getChannelStatuses("peer-1")).toEqual(rows);
   });
 });

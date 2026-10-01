@@ -3,7 +3,6 @@ import type { E2EActor } from '../fixtures.ts';
 import {
   ensureBlePairedActors,
   expectNetworkChannelUnavailable,
-  waitForBleSession,
   waitForBluetoothRowConnectedInUi,
   waitForGreenChannel,
 } from '../helpers/ble-sync.ts';
@@ -13,6 +12,7 @@ import {
   waitForPersonalLastSyncedLabel,
 } from '../helpers/personal-sync.ts';
 import { pollUntil } from '../helpers/dom.ts';
+import { ChannelKind } from '../../../../src/utils/channel.ts';
 
 const TIMEOUT_MS = 60_000;
 
@@ -25,14 +25,14 @@ interface Quest {
  * Happy-path-only Phase 1 of the BLE e2e lane: two real `fini-app`
  * processes, network transport made genuinely unavailable
  * (`FINI_E2E_TRANSPORT=ble` -> `FINI_DISCOVERY_DISABLED=1`), dial the real
- * `ble.rs` code path (dial loop, peripheral accept, session claim) against
+ * `ble.rs` code path (search coordinator, peripheral accept, exchange) against
  * a cross-process mock radio instead of hardware -- the same acceptance
  * shape the network lane proves for its own channel, one layer
  * more real. See `helpers/ble-sync.ts`, `specs/e2e/transports.md`, and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  *
  * Deliberately stronger than a bare transport-selection check: proves both
- * sides reach a genuinely healthy (ping/ack-proven) state, and that a
+ * sides see each other (green, ADR-0008 D9), and that a
  * *single* quest converges correctly when edited from both ends, not just
  * that traffic flows one direction.
  *
@@ -45,7 +45,7 @@ interface Quest {
  * strictly more precise anyway (exact id, not scraped text) for verifying
  * "the same entity converged."
  */
-test('happy-path-BLE: session is carried by BLE alone, both sides go green, and a single quest converges both ways', async ({
+test('happy-path-BLE: both sides go green over BLE alone, and a single quest converges both ways', async ({
   actorA,
   actorB,
 }) => {
@@ -56,30 +56,24 @@ test('happy-path-BLE: session is carried by BLE alone, both sides go green, and 
   await expectNetworkChannelUnavailable(actorA, syncedB.identity.device_id);
   await expectNetworkChannelUnavailable(actorB, syncedA.identity.device_id);
 
-  await waitForBleSession(actorA);
-  await waitForBleSession(actorB);
-
-  const kindOnA = await actorA.invoke<string>('device_connection_session_channel', {
-    peerDeviceId: syncedB.identity.device_id,
-  });
-  const kindOnB = await actorB.invoke<string>('device_connection_session_channel', {
-    peerDeviceId: syncedA.identity.device_id,
-  });
-  expect(kindOnA).toBe('bluetooth');
-  expect(kindOnB).toBe('bluetooth');
-
-  // Green on both -- the backend's ping/ack-proven signal, and the UI row
-  // that actually renders it (and never regresses through "Still
-  // connecting..." on the way there). See `waitForGreenChannel`'s doc
-  // comment for why `code === null`, not just "a session exists", is the
-  // bar here. This is the real regression guard this e2e lane exists for,
-  // so it stays UI-asserted, unlike the quest-convergence checks below.
-  await waitForGreenChannel(actorA, syncedB.identity.device_id);
-  await waitForGreenChannel(actorB, syncedA.identity.device_id);
+  // Green on both, first as the Device page draws it -- opening the page is
+  // what runs the status search that hears the peer (ADR-0008 D12) -- then
+  // as the backend reports it. An idle pair holds no session, so presence,
+  // not a session, is what green means (D9).
   await waitForBluetoothRowConnectedInUi(actorA, syncedB.identity.device_id);
   await waitForBluetoothRowConnectedInUi(actorB, syncedA.identity.device_id);
+  await waitForGreenChannel(actorA, syncedB.identity.device_id);
+  await waitForGreenChannel(actorB, syncedA.identity.device_id);
 
-  await ensurePersonalSpaceSync(actorA, syncedB.identity.device_id, actorB, syncedA.identity.device_id);
+  // Saving the mapping is the first work, and it opens the first exchange --
+  // over Bluetooth, the only channel these two can use.
+  await ensurePersonalSpaceSync(
+    actorA,
+    syncedB.identity.device_id,
+    actorB,
+    syncedA.identity.device_id,
+    ChannelKind.Bluetooth,
+  );
   await expectNoIncomingSpaceSyncDialog(actorA);
   await expectNoIncomingSpaceSyncDialog(actorB);
 
@@ -116,17 +110,7 @@ async function openFocus(actor: E2EActor): Promise<void> {
 /** Creates a quest through the real chat-input UI, then confirms it landed locally via `get_quests`. */
 async function createQuestViaChat(actor: E2EActor, title: string): Promise<Quest> {
   await openFocus(actor);
-  await actor.page.evaluate(`(() => {
-    const input = document.querySelector('[data-testid="chat-input"]');
-    if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) {
-      throw new Error('chat input text control not found');
-    }
-    const prototype = input instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    if (!setter) throw new Error('chat input setter is unavailable');
-    setter.call(input, ${JSON.stringify(title)});
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
+  await actor.page.fill('[data-testid="chat-input"]', title);
   await actor.page.click('[data-testid="chat-submit"]');
 
   return findQuestByTitle(actor, title);

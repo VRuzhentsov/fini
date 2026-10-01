@@ -1,6 +1,7 @@
 import type { E2EActor } from '../fixtures.ts';
 import { expect } from '../fixtures.ts';
 import { pollUntil } from './dom.ts';
+import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
 
 const PERSONAL_SPACE_ID = '1';
 const TIMEOUT_MS = 60_000;
@@ -10,9 +11,12 @@ export async function ensurePersonalSpaceSync(
   requesterPeerDeviceId: string,
   approver: E2EActor,
   approverPeerDeviceId: string,
+  kind: ChannelKind = ChannelKind.Network,
 ): Promise<void> {
-  await waitForPeerSession(requester);
-  await waitForPeerSession(approver);
+  // Presence, not a session: an idle pair has no session (ADR-0008 D10).
+  // Saving the mapping below is the work that opens the exchange.
+  await waitForChannelGreen(requester, requesterPeerDeviceId, kind);
+  await waitForChannelGreen(approver, approverPeerDeviceId, kind);
 
   const mapped = await requester.invoke<string[]>('space_sync_list_mappings', {
     peerDeviceId: requesterPeerDeviceId,
@@ -50,9 +54,7 @@ export async function ensurePersonalSpaceSync(
 }
 
 export async function expectNoIncomingSpaceSyncDialog(actor: E2EActor): Promise<void> {
-  const count = await actor.page.evaluate<number>(`(() => {
-    return document.querySelectorAll('[data-testid="incoming-space-sync-dialog"]').length;
-  })()`);
+  const count = await actor.page.getByTestId('incoming-space-sync-dialog').count();
   expect(count, `${actor.slug} should not show incoming space sync dialog`).toBe(0);
 }
 
@@ -104,43 +106,49 @@ async function tickActors(actors: E2EActor[]): Promise<void> {
 
 export async function waitForMappingControlsReady(actor: E2EActor, spaceId: string): Promise<void> {
   await pollUntil(`${actor.slug} mapping controls ready`, async () => {
-    const state = await actor.page.evaluate<{ disabled: boolean; checked: boolean }>(`(() => {
-      const checkbox = document.querySelector(${JSON.stringify(spaceCheckboxSelector(spaceId))});
-      if (!(checkbox instanceof HTMLInputElement)) {
-        return { disabled: true, checked: false };
-      }
-      return { disabled: checkbox.disabled, checked: checkbox.checked };
-    })()`);
-
-    if (state.disabled) {
+    const checkbox = actor.page.locator(spaceCheckboxSelector(spaceId));
+    if ((await checkbox.count()) === 0) {
       return false;
     }
-
-    return true;
+    return !(await checkbox.isDisabled());
   }, TIMEOUT_MS);
 }
 
-async function waitForPeerSession(actor: E2EActor): Promise<void> {
-  await pollUntil(`${actor.slug} peer session`, async () => {
+interface ChannelStatusRow {
+  kind: ChannelKind;
+  color: ChannelColor;
+}
+
+/**
+ * Waits until the backend reports `kind` green for this peer: the peer was
+ * heard on that channel within its timeout (ADR-0008 D9).
+ */
+export async function waitForChannelGreen(
+  actor: E2EActor,
+  peerDeviceId: string,
+  kind: ChannelKind,
+): Promise<void> {
+  await pollUntil(`${actor.slug} ${kind} channel green`, async () => {
     await actor.invoke('space_sync_tick');
-    const debug = await actor.invoke<{ peer_session_count: number }>('device_connection_debug_status');
-    return debug.peer_session_count > 0 || false;
+    const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', {
+      peerDeviceId,
+    });
+    return statuses.some((status) => status.kind === kind && status.color === ChannelColor.Green) || false;
   }, TIMEOUT_MS, 1_000);
 }
 
 async function waitForApproveDialogToClose(actor: E2EActor): Promise<void> {
   await pollUntil(`${actor.slug} approve dialog closes`, async () => {
-    const state = await actor.page.evaluate<{ visible: boolean; error: string }>(`(() => {
-      const dialog = document.querySelector('[data-testid="incoming-space-sync-dialog"]');
-      const error = document.querySelector('[data-testid="incoming-space-sync-dialog"] .text-error')?.textContent?.trim() ?? '';
-      return { visible: Boolean(dialog), error };
-    })()`);
-
-    if (state.error) {
-      throw new Error(state.error);
+    const dialog = actor.page.getByTestId('incoming-space-sync-dialog');
+    if ((await dialog.count()) === 0) {
+      return true;
     }
-
-    return !state.visible || false;
+    const errorText = dialog.locator('.text-error');
+    const error = (await errorText.count()) > 0 ? ((await errorText.textContent())?.trim() ?? '') : '';
+    if (error) {
+      throw new Error(error);
+    }
+    return false;
   }, TIMEOUT_MS, 1_000);
 }
 

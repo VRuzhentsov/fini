@@ -15,21 +15,13 @@ pub struct Channel {
     /// strings seeded into `channel_kinds`.
     pub channel_kind: String,
     pub enabled: bool,
-    /// The person's choice of which channel carries the traffic. A setting,
-    /// not a live state: it persists across reconnects and is shown whether
-    /// or not that channel is connected right now (ADR-0007).
+    /// The person's choice of this channel to carry the pair's traffic
+    /// (ADR-0007). At most one per pair.
     pub is_primary: bool,
     /// The link-layer address this channel last reached the peer at, kept
     /// for diagnostics only -- ADR-0006 dials nothing by address.
     pub address: Option<String>,
     pub configured_at: String,
-    /// When "unlink channel" removed it, if it did. A row carrying this is
-    /// absent as far as every reader is concerned -- `channels::find` and
-    /// `channels::configured` filter it out, so "configured" keeps meaning
-    /// what it meant. It exists so the decision outlives the row: a peer
-    /// asking for this channel (`PeerFrame::ChannelEnabled`) must not be
-    /// able to recreate something this person deliberately removed.
-    pub unlinked_at: Option<String>,
 }
 
 #[derive(Debug, Insertable)]

@@ -2,7 +2,7 @@
 export
 
 CONTAINER ?= auto
-CONTAINER_ENGINE = $(shell if [ "$(CONTAINER)" = "auto" ]; then if command -v docker >/dev/null 2>&1; then printf docker; elif command -v podman >/dev/null 2>&1; then printf podman; else printf missing; fi; else printf '%s' "$(CONTAINER)"; fi)
+CONTAINER_ENGINE := $(shell if [ "$(CONTAINER)" = "auto" ]; then if command -v docker >/dev/null 2>&1; then printf docker; elif command -v podman >/dev/null 2>&1; then printf podman; else printf missing; fi; else printf '%s' "$(CONTAINER)"; fi)
 FINI_BE_COMPILE_IMAGE ?= fini-be-compile-ci
 FINI_BE_UNIT_IMAGE ?= fini-be-unit-test
 FINI_BE_CACHE_IMAGE_PREFIX ?=
@@ -632,14 +632,21 @@ release:
 
 # ── Android ───────────────────────────────────────────────────────────────────
 
+# The bare `export` at the top exports every variable, and since GNU Make 4.4
+# each $(shell) gets the exported variables in its environment: a recursive
+# variable that itself runs $(shell) then expands again for every other
+# $(shell), and `make` never reaches the recipe. The device lookups stay lazy
+# (so plain targets do not call adb) but are not exported; the rest are
+# expanded once.
 DEVICE_ADDRESS = $(shell adb mdns services 2>/dev/null | grep '_adb-tls-connect' | head -1 | awk '{print $$NF}')
 DEVICE_IP      = $(firstword $(subst :, ,$(DEVICE_ADDRESS)))
 HOST_IP        = $(shell ip route get $(DEVICE_IP) 2>/dev/null | grep -oP 'src \K\S+' | head -1)
+unexport DEVICE_ADDRESS DEVICE_IP HOST_IP
 ANDROID_TARGET ?= aarch64
-LATEST_TAG = $(shell git describe --tags --abbrev=0 2>/dev/null || printf 'v0.0.0')
-GIT_SHA = $(shell git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
-ANDROID_DEBUG_VERSION_NAME = $(patsubst v%,%,$(LATEST_TAG))+dev.$(GIT_SHA)
-ANDROID_DEBUG_VERSION_CODE = $(shell date +%s)
+LATEST_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || printf 'v0.0.0')
+GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
+ANDROID_DEBUG_VERSION_NAME := $(patsubst v%,%,$(LATEST_TAG))+dev.$(GIT_SHA)
+ANDROID_DEBUG_VERSION_CODE := $(shell date +%s)
 ANDROID_UNSIGNED_APK = src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
 ANDROID_SIGNED_APK = bin/fini.apk
 ANDROID_RELEASE_SIGNED_APK = bin/fini-release.apk

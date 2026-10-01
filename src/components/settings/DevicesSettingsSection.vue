@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { PlusIcon, InformationCircleIcon } from "@heroicons/vue/24/outline";
 import SettingsListGroup from "./SettingsListGroup.vue";
 import SettingsListItem from "./SettingsListItem.vue";
-import PairDeviceDialog from "./PairDeviceDialog.vue";
+import DeviceSetupDialog from "./DeviceSetupDialog.vue";
 import { useDeviceStore, type PairedDevice } from "../../stores/device";
-import { channelStatusText } from "../../utils/channelStatusCodes";
+import { channelName, channelProblemText } from "../../utils/channelStatusCodes";
+import { ChannelColor, type ChannelKind } from "../../utils/channel";
 
 const props = defineProps<{
   // Bumped by the Settings search when someone picks "Add device". A counter
@@ -46,22 +47,43 @@ function openIncomingRequest(requestId: string) {
   pairDialogOpen.value = true;
 }
 
+// While the overview is visible the backend searches for peers so green is
+// current (ADR-0008 D12), and the rows are re-read from it.
+const LIVE_POLL_INTERVAL_MS = 5_000;
+let livePollTimer: ReturnType<typeof setInterval> | null = null;
+
+function refreshAllChannelStatuses() {
+  for (const device of deviceStore.pairedDevices) {
+    void deviceStore.refreshChannelStatuses(device.peer_device_id);
+  }
+}
+
+onMounted(() => {
+  void deviceStore.watchPresence(true);
+  refreshAllChannelStatuses();
+  livePollTimer = setInterval(refreshAllChannelStatuses, LIVE_POLL_INTERVAL_MS);
+});
+
+onUnmounted(() => {
+  if (livePollTimer) {
+    clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+  void deviceStore.watchPresence(false);
+});
+
 // Someone asking to pair surfaces here, on the devices page, rather than
 // only inside the add-device flow: a request that expires unseen because
 // the user happened not to be on the right screen is the worst outcome of
 // the whole ceremony.
 const incoming = computed(() => deviceStore.incomingRequests);
 
-// Which channel, if any, actually has a live session with this device.
-//
-// Not `isDeviceOnline`: that is presence -- a beacon heard on the LAN --
-// which says a machine exists, not that we are talking to it. A desktop
-// sitting discoverable with no session was showing a green dot here while
-// nothing was connected.
-function connectedChannel(device: PairedDevice): "network" | "bluetooth" | null {
+// Which channel, if any, is green for this device: the peer was heard on
+// it within the channel timeout (ADR-0008 D9).
+function connectedChannel(device: PairedDevice): ChannelKind | null {
   const live = deviceStore
     .getChannelStatuses(device.peer_device_id)
-    .find((status) => status.status === "connected");
+    .find((status) => status.color === ChannelColor.Green);
   return live?.kind ?? null;
 }
 
@@ -70,21 +92,15 @@ function connectedChannel(device: PairedDevice): "network" | "bluetooth" | null 
 // what the button reveals. A list of devices is not the place to explain
 // each one's silence to someone who did not ask.
 function deviceDetail(device: PairedDevice): string | null {
-  const statuses = deviceStore.getChannelStatuses(device.peer_device_id);
   const kind = connectedChannel(device);
-  if (kind) return `${kind === "network" ? "Network" : "Bluetooth"} · connected`;
+  if (kind) return `${channelName(kind)} · connected`;
 
-  // Nothing is connected, so say why -- preferring whichever channel is
-  // actually switched on, since a channel the user turned off explains
-  // nothing about why the device is unreachable.
-  const candidate = statuses.find((status) => status.enabled && status.reason) ?? statuses[0];
-  return candidate?.reason
-    ? channelStatusText(
-        candidate.reason,
-        device.display_name,
-        candidate.kind === "network" ? "Network" : "Bluetooth",
-      )
-    : null;
+  // Nothing is green; only a problem on this device is worth saying (a peer
+  // that is simply away is grey, not a problem -- ADR-0008 D19).
+  const problem = deviceStore
+    .getChannelStatuses(device.peer_device_id)
+    .find((status) => status.problem !== null)?.problem;
+  return problem ? channelProblemText(problem) : null;
 }
 
 // Which row has its detail open. One at a time: these are one-line answers
@@ -205,6 +221,6 @@ const renderFlags = computed(() => ({
       </SettingsListItem>
     </SettingsListGroup>
 
-    <PairDeviceDialog :open="pairDialogOpen" :request-id="pairDialogRequestId" @close="closePairDialog()" />
+    <DeviceSetupDialog :open="pairDialogOpen" :request-id="pairDialogRequestId" @close="closePairDialog()" />
   </section>
 </template>

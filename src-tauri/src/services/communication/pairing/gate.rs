@@ -26,8 +26,28 @@ use crate::schema::paired_devices;
 use crate::services::db::open_db_at_path;
 use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
-use crate::services::communication::sync::session::run_session;
+use crate::services::communication::sync::session::{
+    run_session, CROSSED_DIAL_REASON, SESSION_ACTIVE_REASON,
+};
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
+
+/// Whether this device is dialing the peer on this channel right now.
+fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
+    match kind {
+        ChannelKind::Network => crate::services::communication::channel::tcp_ws::dialing(peer_device_id),
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        ChannelKind::Bluetooth => crate::services::communication::channel::ble::dialing(peer_device_id),
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        ChannelKind::Bluetooth => false,
+    }
+}
+
+/// Whether this device refuses a peer's inbound exchange because its own
+/// dial to that peer is under way and takes precedence: the dial from the
+/// smaller device id wins a crossing.
+fn yields_to_own_dial(own_device_id: &str, peer_device_id: &str, dialing_peer: bool) -> bool {
+    dialing_peer && own_device_id < peer_device_id
+}
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
     tokio::task::block_in_place(|| {
@@ -38,6 +58,16 @@ fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
             .get_result::<i64>(&mut conn)
             .unwrap_or(0)
             > 0
+    })
+}
+
+/// Whether this pair's channel of `kind` exists at all (`Off` or `On`):
+/// its init completed here, and it has not been unlinked since.
+#[cfg(any(feature = "ui-plane", test))]
+fn check_channel_initialized(db_path: &PathBuf, device_id: &str, kind: ChannelKind) -> bool {
+    tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        super::channels::find(&mut conn, device_id, kind).is_some()
     })
 }
 
@@ -61,26 +91,6 @@ fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) 
     tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
         channels::is_enabled(&mut conn, device_id, kind)
-    })
-}
-
-/// Whether this device set this pair's Bluetooth channel up and then
-/// switched it off -- checked by `BluetoothProbe`'s pre-auth handler so an
-/// explicit switch-off isn't bypassed by "Find via Bluetooth". That flow's
-/// whole point is discovering an address for a pair that has *never* had
-/// Bluetooth set up (see its own doc comment), but a pair the person
-/// actively turned off is a different case entirely. Replying would let the
-/// other side believe discovery succeeded and record the address on its own
-/// end, only for every real session attempt to then be rejected by
-/// `check_channel_enabled` here.
-///
-/// Fails open, the opposite of `check_channel_enabled`: a pair with no
-/// Bluetooth row has nothing to have been switched off, which is exactly
-/// the never-set-up case this flow is for.
-fn check_bluetooth_switched_off(db_path: &PathBuf, device_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = open_db_at_path(db_path);
-        channels::is_switched_off(&mut conn, device_id, ChannelKind::Bluetooth)
     })
 }
 
@@ -121,23 +131,31 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 state.receive_ws_pair_complete(payload, from_addr, kind == ChannelKind::Bluetooth);
             return;
         }
-        PeerFrame::BluetoothProbe { device_id } => {
-            // Deliberately `check_paired`, not `check_channel_enabled`:
-            // this exists precisely so "Find via Bluetooth" can confirm an
-            // address for a pair that doesn't have Bluetooth enabled yet.
-            // But an *explicit* disable is a different case from
-            // never-enabled -- see `check_bluetooth_switched_off`'s
-            // doc comment for why that one must still gate the reply.
+        // ADR-0008 D1/D2: half of a channel's init. Answered while this
+        // device is itself running a setup search for that peer on this
+        // channel -- an init needs both people at it -- and afterwards while
+        // the channel it made still exists: an ack lost on the way means the
+        // peer is still asking after this side has finished. Anything else
+        // (not paired, not searching and never set up, unlinked) gets silence.
+        PeerFrame::Hello { device_id } => {
+            let searching = state.channel_setup(&device_id, kind).is_some();
             if check_paired(&db_path, &device_id)
-                && !check_bluetooth_switched_off(&db_path, &device_id)
+                && (searching || check_channel_initialized(&db_path, &device_id, kind))
             {
-                let _ = send_frame(
+                if send_frame(
                     link.as_mut(),
-                    &PeerFrame::BluetoothProbeReply {
+                    &PeerFrame::HelloAck {
                         device_id: state.identity.device_id.clone(),
                     },
                 )
-                .await;
+                .await
+                .is_ok()
+                {
+                    state.note_channel_setup(&device_id, kind, |setup| setup.acked_peer_hello = true);
+                }
+                // Keep the link open briefly so the ack is read before the
+                // stream closes, as the `DiscoveryHello` arm below does.
+                let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
             }
             return;
         }
@@ -168,8 +186,11 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             peer_device_id,
             protocol_version,
         } => (device_id, peer_device_id, protocol_version),
-        _ => {
-            log::warn!("[space_sync][gate] {kind:?} link from {from_addr}: expected auth first, got a different frame");
+        other => {
+            log::warn!(
+                "[space_sync][gate] {kind:?} link from {from_addr}: expected auth first, got `{}`",
+                other.wire_type()
+            );
             let _ = send_frame(
                 link.as_mut(),
                 &PeerFrame::AuthFail {
@@ -249,8 +270,23 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         // advertises under a rotating address never matches a stored one.
     }
 
+    // Both devices dialed each other at once. Were both links kept and
+    // then each dropped for the other, neither exchange would survive; the
+    // dial from the smaller device id wins on both sides.
+    if yields_to_own_dial(&state.identity.device_id, &device_id, dialing(&device_id, kind)) {
+        log::info!("[space_sync][gate] {kind:?} auth from {device_id} refused: this device's dial wins");
+        let _ = send_frame(
+            link.as_mut(),
+            &PeerFrame::AuthFail {
+                reason: CROSSED_DIAL_REASON.into(),
+            },
+        )
+        .await;
+        return;
+    }
+
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);
-    if !state.try_claim_session(&device_id, kind, tx, &db_path) {
+    if !state.try_claim_session(&device_id, kind, tx) {
         // If this fires repeatedly for a peer that has no other live session
         // on this channel (check `device_connection_debug_status` / the
         // sibling session logs), the claim is stale -- a slot never released
@@ -264,7 +300,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         let _ = send_frame(
             link.as_mut(),
             &PeerFrame::AuthFail {
-                reason: "session already active on this channel".into(),
+                reason: SESSION_ACTIVE_REASON.into(),
             },
         )
         .await;
@@ -281,10 +317,40 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     .is_err()
     {
         log::warn!("[space_sync][gate] {kind:?} auth OK for {device_id} but AuthOk send failed; releasing claim");
-        state.release_session(&device_id, kind, &db_path);
+        state.release_session(&device_id, kind);
         return;
     }
 
-    log::info!("[space_sync][gate] {kind:?} auth OK for {device_id}; starting session");
-    run_session(link, rx, state, db_path, device_id, peer_protocol_version).await;
+    log::info!("[space_sync][gate] {kind:?} auth OK for {device_id}; starting exchange");
+    run_session(
+        link,
+        rx,
+        state,
+        db_path,
+        device_id,
+        peer_protocol_version,
+        crate::services::communication::sync::session::EXCHANGE_IDLE,
+    )
+    .await;
+}
+
+#[cfg(test)]
+mod crossed_dial_tests {
+    use super::*;
+    use crate::services::communication::sync::session::refused_for_running_exchange;
+
+    /// Both sides apply the same rule, so exactly one of two crossed dials
+    /// survives: the one from the smaller device id.
+    #[test]
+    fn exactly_one_of_two_crossed_dials_survives() {
+        // "a" dials "b" and "b" dials "a", both at once.
+        let a_refuses_b = yields_to_own_dial("a", "b", true);
+        let b_refuses_a = yields_to_own_dial("b", "a", true);
+        assert!(a_refuses_b, "a's own dial wins, so it refuses b's");
+        assert!(!b_refuses_a, "b accepts a's dial");
+        assert!(!yields_to_own_dial("a", "b", false), "no crossing, nothing refused");
+        assert!(refused_for_running_exchange(&format!("auth rejected: {CROSSED_DIAL_REASON}")));
+        assert!(refused_for_running_exchange(&format!("auth rejected: {SESSION_ACTIVE_REASON}")));
+        assert!(!refused_for_running_exchange("auth rejected: unknown device"));
+    }
 }

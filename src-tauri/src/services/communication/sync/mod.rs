@@ -1,4 +1,5 @@
 pub(crate) mod commands;
+pub(crate) mod control_outbox;
 mod merge;
 pub(crate) mod outbox;
 mod replay;

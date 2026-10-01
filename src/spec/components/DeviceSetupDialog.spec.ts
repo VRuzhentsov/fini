@@ -1,7 +1,8 @@
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
-import PairDeviceDialog from "../../components/settings/PairDeviceDialog.vue";
+import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
 import { useDeviceStore } from "../../stores/device";
+import { ChannelKind } from "../../utils/channel";
 
 jest.mock("../../stores/device", () => ({
   useDeviceStore: jest.fn(),
@@ -13,7 +14,8 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     outgoingRequest: null,
     incomingRequests: [],
     discoveredDevices: [],
-    discoveredByChannel: { network: [], bluetooth: [] },
+    discoveredByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
+    discoveredWithPairedByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
     pairCompletedAt: null,
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
@@ -22,13 +24,16 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     rejectIncomingRequest: jest.fn().mockResolvedValue(undefined),
     submitPairCode: jest.fn().mockResolvedValue(true),
     cancelOutgoingRequest: jest.fn(),
+    beginChannelSetup: jest.fn().mockResolvedValue(undefined),
+    channelSetupStatus: jest.fn().mockResolvedValue(null),
+    endChannelSetup: jest.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
 
-function mountDialog() {
-  return mount(PairDeviceDialog, {
-    props: { open: true },
+function mountDialog(props: Record<string, unknown> = {}) {
+  return mount(DeviceSetupDialog, {
+    props: { open: true, ...props },
     global: { stubs: { Teleport: true } },
   });
 }
@@ -40,7 +45,7 @@ async function flushUi() {
   }
 }
 
-describe("PairDeviceDialog", () => {
+describe("DeviceSetupDialog, new device", () => {
   it("asks which channel before discovering anything", async () => {
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(storeMock());
     const wrapper = mountDialog();
@@ -69,13 +74,13 @@ describe("PairDeviceDialog", () => {
       discovery_port: 0,
       ws_port: null,
       last_seen_at: new Date().toISOString(),
-      channel_kind: "bluetooth" as const,
+      channel_kind: ChannelKind.Bluetooth,
     };
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(
       storeMock({
         // Deduplicated list keeps only the Network entry, as the store does.
-        discoveredDevices: [{ ...peer, channel_kind: "network" as const }],
-        discoveredByChannel: { network: [{ ...peer, channel_kind: "network" as const }], bluetooth: [peer] },
+        discoveredDevices: [{ ...peer, channel_kind: ChannelKind.Network }],
+        discoveredByChannel: { [ChannelKind.Network]: [{ ...peer, channel_kind: ChannelKind.Network }], [ChannelKind.Bluetooth]: [peer] },
       }),
     );
 
@@ -86,7 +91,7 @@ describe("PairDeviceDialog", () => {
 
     const rows = wrapper.findAll('[data-testid="nearby-device-row"]');
     expect(rows).toHaveLength(1);
-    expect(rows[0].attributes("data-channel-kind")).toBe("bluetooth");
+    expect(rows[0].attributes("data-channel-kind")).toBe(ChannelKind.Bluetooth);
   });
 
   it("enters add mode on open, because that is what makes this device discoverable", async () => {
@@ -255,5 +260,192 @@ describe("PairDeviceDialog", () => {
 
     expect(wrapper.text()).toContain("Thinkpad wants to pair");
     expect(wrapper.find('[data-testid="accept-incoming-request"]').exists()).toBe(true);
+  });
+});
+
+describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
+  const known = { peerDeviceId: "peer-1", peerName: "Pixel 8", kind: ChannelKind.Bluetooth };
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it("skips the channel step and starts the setup search for the row's channel", async () => {
+    const store = storeMock();
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+
+    expect(wrapper.find('[data-testid="pair-channel-network"]').exists()).toBe(false);
+    expect(store.beginChannelSetup).toHaveBeenCalledWith("peer-1", ChannelKind.Bluetooth);
+    expect(wrapper.find('[data-testid="setup-peer-row"]').text()).toContain("Pixel 8");
+  });
+
+  it("keeps OK disabled until the channel is initialized on both devices", async () => {
+    const store = storeMock();
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+    expect(wrapper.find('[data-testid="setup-ok"]').attributes("disabled")).toBeDefined();
+
+    store.channelSetupStatus.mockResolvedValue({
+      helloAckedByPeer: true,
+      ackedPeerHello: true,
+      initialized: true,
+    });
+    jest.advanceTimersByTime(1_000);
+    await flushUi();
+
+    expect(wrapper.find('[data-testid="setup-ok"]').attributes("disabled")).toBeUndefined();
+    await wrapper.find('[data-testid="setup-ok"]').trigger("click");
+    await flushUi();
+
+    expect(store.endChannelSetup).toHaveBeenCalledWith("peer-1", ChannelKind.Bluetooth, true);
+    expect(wrapper.emitted("close")).toBeTruthy();
+  });
+
+  it("lets OK be pressed again when writing the channel failed", async () => {
+    const store = storeMock({
+      channelSetupStatus: jest.fn().mockResolvedValue({
+        helloAckedByPeer: true,
+        ackedPeerHello: true,
+        initialized: true,
+      }),
+      endChannelSetup: jest
+        .fn()
+        .mockRejectedValueOnce(new Error("database is locked"))
+        .mockResolvedValue([]),
+    });
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const wrapper = mountDialog(known);
+    await flushUi();
+    jest.advanceTimersByTime(1_000);
+    await flushUi();
+
+    await wrapper.find('[data-testid="setup-ok"]').trigger("click");
+    await flushUi();
+    expect(wrapper.emitted("close")).toBeFalsy();
+
+    await wrapper.find('[data-testid="setup-ok"]').trigger("click");
+    await flushUi();
+    expect(store.endChannelSetup).toHaveBeenCalledTimes(2);
+    expect(wrapper.emitted("close")).toBeTruthy();
+    warn.mockRestore();
+  });
+
+  it("leaves the Bluetooth half of add mode off when adding a Network channel", async () => {
+    const store = storeMock();
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    mountDialog({ ...known, kind: ChannelKind.Network });
+    await flushUi();
+    expect(store.enterAddMode).toHaveBeenCalledWith({ bluetooth: false });
+  });
+
+  it("uses the Bluetooth half of add mode when adding a Bluetooth channel", async () => {
+    const store = storeMock();
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    mountDialog(known);
+    await flushUi();
+    expect(store.enterAddMode).toHaveBeenCalledWith({ bluetooth: true });
+  });
+
+  it("keeps a code ceremony on screen when the automatic setup completes meanwhile", async () => {
+    const store = storeMock({
+      outgoingRequest: {
+        request_id: "r1",
+        to_device_id: "peer-2",
+        to_hostname: "Other laptop",
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        status: "awaiting_code",
+        sender_code: "482915",
+      },
+      channelSetupStatus: jest.fn().mockResolvedValue({
+        helloAckedByPeer: true,
+        ackedPeerHello: true,
+        initialized: true,
+      }),
+    });
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+    jest.advanceTimersByTime(1_000);
+    await flushUi();
+
+    expect(wrapper.findAll('[data-testid="pair-code"]')).toHaveLength(6);
+    expect(wrapper.find('[data-testid="setup-ok"]').exists()).toBe(false);
+  });
+
+  it("ends the setup without switching on when closed", async () => {
+    const store = storeMock();
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+
+    await wrapper.find('[data-testid="setup-close"]').trigger("click");
+    wrapper.unmount();
+    await flushUi();
+
+    expect(store.endChannelSetup).toHaveBeenCalledTimes(1);
+    expect(store.endChannelSetup).toHaveBeenCalledWith("peer-1", ChannelKind.Bluetooth, false);
+  });
+
+  it("lists other devices in range, and offers the code when the peer asks for one", async () => {
+    const nearby = (device_id: string, hostname: string) => ({
+      device_id,
+      hostname,
+      addr: "AA:BB:CC:DD:EE:FF",
+      discovery_port: 0,
+      ws_port: null,
+      last_seen_at: new Date().toISOString(),
+      channel_kind: ChannelKind.Bluetooth,
+    });
+    // As the store has it: the known peer is paired, so only the list that
+    // keeps paired devices contains it.
+    const store = storeMock({
+      discoveredByChannel: {
+        [ChannelKind.Network]: [],
+        [ChannelKind.Bluetooth]: [nearby("other", "Thinkpad")],
+      },
+      discoveredWithPairedByChannel: {
+        [ChannelKind.Network]: [],
+        [ChannelKind.Bluetooth]: [nearby("peer-1", "Pixel 8"), nearby("other", "Thinkpad")],
+      },
+    });
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+
+    const others = wrapper.findAll('[data-testid="nearby-device-row"]');
+    expect(others).toHaveLength(1);
+    expect(others[0].text()).toContain("Thinkpad");
+
+    await wrapper.find('[data-testid="setup-pair-with-code"]').trigger("click");
+    expect(store.requestPair).toHaveBeenCalledWith(expect.objectContaining({ device_id: "peer-1" }));
+  });
+
+  // Closing while the begin still waits on the radio or a permission prompt
+  // ran the end before the backend search existed; the search that started
+  // afterwards must be ended too, not left running with no dialog.
+  it("ends a setup search that finishes starting after the dialog closed", async () => {
+    let resolveBegin: () => void = () => {};
+    const store = storeMock({
+      beginChannelSetup: jest.fn(
+        () => new Promise<void>((resolve) => { resolveBegin = resolve; }),
+      ),
+    });
+    (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
+    const wrapper = mountDialog(known);
+    await flushUi();
+
+    wrapper.unmount();
+    await flushUi();
+    resolveBegin();
+    await flushUi();
+
+    expect(store.endChannelSetup).toHaveBeenCalledTimes(2);
+    expect(store.endChannelSetup).toHaveBeenLastCalledWith("peer-1", ChannelKind.Bluetooth, false);
+    jest.advanceTimersByTime(5_000);
+    expect(store.channelSetupStatus).not.toHaveBeenCalled();
   });
 });

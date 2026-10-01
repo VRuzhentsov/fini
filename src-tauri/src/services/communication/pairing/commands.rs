@@ -10,6 +10,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 
 use super::channels;
+#[cfg(any(feature = "ui-plane", test))]
+use super::ChannelSetup;
+#[cfg(any(feature = "ui-plane", test))]
+use super::setup;
 use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;
@@ -18,16 +22,17 @@ use crate::services::db::AppDbConnection;
 use crate::services::communication::pairing::runtime::{
     generate_passcode, prune_expired_incoming_requests, utc_now,
 };
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::communication::pairing::types::DevicePairRequestBluetoothInput;
 use crate::services::communication::pairing::types::{
     DeviceConnectionDebugStatus, DeviceIdentity,
-    DevicePairRequestAckInput, DevicePairRequestBluetoothInput, DevicePairRequestInput,
+    DevicePairRequestAckInput, DevicePairRequestInput,
     DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairAcceptPayload,
     PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
 };
 use crate::services::communication::pairing::DeviceConnectionState;
-use crate::services::communication::pairing::{
-    build_channel_statuses, ChannelLiveness, ChannelReason, ChannelStatus, ChannelStatusInputs,
-};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::communication::pairing::{channel_status, ChannelState, ChannelStatus};
 use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::ChannelKind;
 
@@ -224,7 +229,13 @@ pub fn device_connection_get_identity(
     device_connection_get_identity_impl(&state)
 }
 
-pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> Result<(), String> {
+/// `bluetooth` is false when only the Network channel is being added: then
+/// the Bluetooth half (advertising the add flag, the Android permission
+/// prompt) stays off.
+pub fn device_connection_enter_add_mode_impl(
+    state: &DeviceConnectionState,
+    bluetooth: bool,
+) -> Result<(), String> {
     let mut guard = state
         .runtime
         .lock()
@@ -239,7 +250,10 @@ pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> R
     // makes this device discoverable over Bluetooth too, not just the
     // existing mDNS beacon.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::set_add_mode(true);
+    if bluetooth {
+        crate::services::communication::channel::ble::set_add_mode(true);
+    }
+    crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
     // prompt -- see `BluetoothPairing.requestPermissionsIfNeeded`'s doc
     // comment. Requested exactly once per add-mode entry, here, not from
@@ -249,17 +263,24 @@ pub fn device_connection_enter_add_mode_impl(state: &DeviceConnectionState) -> R
     // again on every retry after the user has already explicitly denied
     // it once would violate that same contract.
     #[cfg(target_os = "android")]
-    crate::services::android_context::call_static_context_void(
-        "com.fini.app.BluetoothPairing",
-        "requestPermissionsIfNeeded",
-    );
+    if bluetooth {
+        crate::services::android_context::call_static_context_void(
+            "com.fini.app.BluetoothPairing",
+            "requestPermissionsIfNeeded",
+        );
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let _ = bluetooth;
     Ok(())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_enter_add_mode(state: State<DeviceConnectionState>) -> Result<(), String> {
-    device_connection_enter_add_mode_impl(&state)
+pub fn device_connection_enter_add_mode(
+    state: State<DeviceConnectionState>,
+    bluetooth: bool,
+) -> Result<(), String> {
+    device_connection_enter_add_mode_impl(&state, bluetooth)
 }
 
 pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> Result<(), String> {
@@ -278,6 +299,7 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
     );
     #[cfg(any(target_os = "linux", target_os = "android"))]
     crate::services::communication::channel::ble::set_add_mode(false);
+    crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
 
@@ -350,6 +372,7 @@ pub fn device_connection_send_pair_request(
 /// needs to know the difference. `to_device_id` here comes from a prior
 /// `scan_add_mode_candidates`/`DiscoveryHelloReply`, not typed in by the
 /// user.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_send_pair_request_bluetooth_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestBluetoothInput,
@@ -901,18 +924,6 @@ pub fn device_connection_save_paired_device_impl(
     // job -- the BLE pairing work (#169) will settle it either way.
     _db_path: std::path::PathBuf,
 ) -> Result<PairedDevice, String> {
-    // A P2 review finding: `ble::dial_exhausted`/`dial_backoff_until`/
-    // `accepting_side_unconnected_since` are process-global, keyed only by
-    // `peer_device_id` -- a peer that exhausted, got unpaired, and was
-    // paired again under the same id (without an app restart) used to come
-    // back already exhausted, with `spawn_dial_loop` skipping it and its row
-    // reporting exhausted immediately instead of getting a fresh
-    // `AUTO_RETRY_WINDOW`. A no-op the vast majority of the time (a peer
-    // that was never exhausted has nothing to clear); see
-    // `device_connection_unpair_impl` for the unpair-side half of this fix.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::clear_dial_exhaustion(&peer_device_id);
-
     let now = utc_now();
 
     let existing: Option<PairedDevice> = paired_devices::table
@@ -993,6 +1004,12 @@ pub fn device_connection_save_paired_device_impl(
         channels::note_address(&mut *conn, &peer_device_id, ChannelKind::Bluetooth, address);
     }
 
+    // The pairing set a channel up, so whether to advertise may have changed
+    // (ADR-0008 D8), and there may be work for the new pair. The keeper's
+    // tick is what applies both; without this a device paired over Bluetooth
+    // stayed silent until something unrelated woke it.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
+
     paired_devices::table
         .find(&peer_device_id)
         .select(PairedDevice::as_select())
@@ -1035,9 +1052,10 @@ pub fn device_connection_save_paired_device(
 /// a person who just switched a channel on is asking for an attempt now,
 /// not at the end of whatever window a previous failure opened.
 ///
-/// Enabling never fails on a precondition. If the condition the channel
-/// needs is absent -- no radio, peer away -- the channel stays on and the
-/// row says so (ADR-0007).
+/// Switching on needs a channel that exists (ADR-0008 D15: `On` is reached
+/// only through init, so a `None` channel is set up, not switched on) and,
+/// for Bluetooth, an adapter that works on this device (D6).
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_set_channel_enabled_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
@@ -1080,96 +1098,51 @@ pub fn device_connection_set_channel_enabled_impl(
         }
     }
 
-    // `configure`, not `set_enabled`: flipping the switch on a channel that
-    // has no row is how a channel gets set up in the first place, and the
-    // page offers exactly that for a channel a pair has never used.
-    // `set_enabled` on its own would update nothing and report success.
-    if channels::find(&mut *conn, &peer_device_id, kind).is_some() {
-        channels::set_enabled(&mut *conn, &peer_device_id, kind, enabled)?;
-    } else {
-        channels::configure(&mut *conn, &peer_device_id, kind, enabled, None)?;
+    if channels::find(&mut *conn, &peer_device_id, kind).is_none() {
+        return Err("Set the channel up first".to_string());
     }
+    if enabled
+        && !crate::services::communication::channel::service::service_for(state, kind).usable()
+    {
+        return Err(format!("{kind:?} is unavailable on this device"));
+    }
+    channels::set_enabled(&mut *conn, &peer_device_id, kind, enabled)?;
 
     if enabled {
-        // #179. ADR-0007 promises the other person does not have to do
-        // anything, and this is what carries that across: the peer writes
-        // the same row, so its own gate stops rejecting the channel we are
-        // about to dial it on. Best-effort by design -- it needs a live
-        // session on some *other* channel to travel over, and a pair with
-        // no live session at all has nothing to announce over. Such a pair
-        // falls back to the behaviour it already had (each side flips its
-        // own switch), rather than failing the switch the person just
-        // flipped.
-        state.announce_channel_to_peer(&peer_device_id, kind);
-        match kind {
-            // Switching a channel on is one of the five moments work becomes
-            // sendable (ADR-0007): the peer was filtered out of the dial loop
-            // a moment ago and is eligible again. Without this the pair waits
-            // for the hourly backstop to notice -- measured at 17s on
-            // hardware for a reconnect the person just asked for and is
-            // watching.
-            ChannelKind::Network => {
-                crate::services::communication::sync::commands::notify_sync_work_pending();
-            }
-            // Bluetooth's equivalent, plus a backoff reset: after a peer
-            // exhausted its automatic retries, switching off and on again
-            // used to return straight to `BluetoothDialExhausted` with
-            // `spawn_dial_loop` still skipping it, ignoring the fresh
-            // request entirely.
-            ChannelKind::Bluetooth => {
-                #[cfg(any(target_os = "linux", target_os = "android"))]
-                crate::services::communication::channel::ble::retry_bluetooth_dial(
-                    state,
-                    &peer_device_id,
-                );
-                // The same wake Network does above, and on Android it is
-                // what starts the foreground service: `start_sync_service_once`
-                // only runs from inside a tick, so a first tick that happened
-                // before Nearby Devices was granted left the service stopped.
-                // Nothing else would start it -- the dial above supplies a
-                // wake only if it reaches the peer, and "Turn on anyway"
-                // exists precisely for when it cannot. The app would then be
-                // frozen on backgrounding with Bluetooth sync switched on.
-                crate::services::communication::sync::commands::notify_sync_work_pending();
-            }
-        }
+        // An explicit switch-on is tried now, not after an earlier retry
+        // delay runs out.
+        crate::services::communication::channel::service::service_for(state, kind)
+            .forget_failures(&peer_device_id);
     } else {
-        // Closing the session is what makes the switch a switch. Without it
-        // an already-connected session does not merely linger cosmetically:
-        // it can still win primary-channel selection and have `push_to_peer`
-        // resume real traffic over a channel the person just switched off.
-        match kind {
-            ChannelKind::Network => {
-                state.close_session_on(&peer_device_id, ChannelKind::Network);
-            }
-            ChannelKind::Bluetooth => {
-                state.close_session_on(&peer_device_id, ChannelKind::Bluetooth);
-            }
-        }
-        // `channels::set_enabled` already released the primary in the DB;
-        // this is the in-memory half. Without it a peer that happened to
-        // have this channel primary keeps it primary until some unrelated
-        // claim/release event triggers a recompute, rather than the instant
-        // the switch takes effect.
-        let pinned_to_bluetooth =
-            channels::primary_kind(&mut *conn, &peer_device_id) == Some(ChannelKind::Bluetooth);
-        let bluetooth_enabled =
-            channels::is_enabled(&mut *conn, &peer_device_id, ChannelKind::Bluetooth);
-        state.refresh_primary(&peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
+        // An exchange running on the channel ends now: off means off.
+        state.close_session_on(&peer_device_id, kind);
     }
+    // Switching on makes waiting work deliverable, and either way whether
+    // this device should advertise may have changed (ADR-0008 D8); the
+    // keeper's next pass handles both.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
 
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_set_channel_enabled(
-    db: State<AppDbConnection>,
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_set_channel_enabled(
+    db: State<'_, AppDbConnection>,
+    state: State<'_, DeviceConnectionState>,
     peer_device_id: String,
     kind: ChannelKind,
     enabled: bool,
 ) -> Result<Vec<ChannelStatus>, String> {
+    // A radio remembered as unavailable may have been switched back on in
+    // the OS since; a person switching the channel on is the moment to ask
+    // it again, before `usable` decides.
+    if enabled {
+        let service = crate::services::communication::channel::service::service_for(state.inner(), kind);
+        if !service.usable() {
+            service.probe().await;
+        }
+    }
     let mut conn = db.0.lock().unwrap();
     device_connection_set_channel_enabled_impl(&mut conn, &state, peer_device_id, kind, enabled)
 }
@@ -1180,13 +1153,31 @@ pub fn device_connection_set_channel_enabled(
 /// one stops existing, and the page offers to set it up again from scratch.
 /// Refused while the channel is on, so it is always a deliberate second act
 /// rather than something one click can do to a working connection.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_unlink_channel_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
     peer_device_id: String,
     kind: ChannelKind,
 ) -> Result<Vec<ChannelStatus>, String> {
-    channels::unlink(&mut *conn, &peer_device_id, kind)?;
+    use crate::services::communication::sync::control_outbox;
+    // Tell the peer (ADR-0008 D14). Kept until an exchange carries it, and
+    // written with the unlink itself: the channel is never gone here while
+    // the peer is left without word of it.
+    let mut refused = None;
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        if let Err(reason) = channels::unlink(conn, &peer_device_id, kind) {
+            refused = Some(reason);
+            return Err(diesel::result::Error::RollbackTransaction);
+        }
+        control_outbox::keep_in(
+            conn,
+            &peer_device_id,
+            &crate::services::communication::sync::types::PeerFrame::ChannelUnlinked { kind },
+        )
+    })
+    .map_err(|err| refused.take().unwrap_or_else(|| err.to_string()))?;
+    control_outbox::kept();
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
@@ -1200,63 +1191,6 @@ pub fn device_connection_unlink_channel(
 ) -> Result<Vec<ChannelStatus>, String> {
     let mut conn = db.0.lock().unwrap();
     device_connection_unlink_channel_impl(&mut conn, &state, peer_device_id, kind)
-}
-
-/// Choose which channel carries this pair's traffic: the star on a channel
-/// row. `primary: None` clears the choice, falling back to the automatic
-/// network-first rule.
-///
-/// The choice persists, so it governs future reconnects too, and the row
-/// shows it whether or not that channel is connected right now (ADR-0007).
-/// Selection is re-run immediately (`refresh_primary`) so the page reflects
-/// it without waiting for a reconnect -- both channels stay connected
-/// regardless of the choice, so there is nothing to switch or force-close,
-/// only which already-connected one is primary.
-///
-/// Refused for a channel that is off: a channel that cannot connect cannot
-/// carry the traffic, so honouring the choice would mean suppressing the
-/// other one in favour of nothing.
-pub fn device_connection_set_primary_channel_impl(
-    conn: &mut SqliteConnection,
-    state: &DeviceConnectionState,
-    peer_device_id: String,
-    primary: Option<ChannelKind>,
-) -> Result<Vec<ChannelStatus>, String> {
-    let paired: Option<PairedDevice> = paired_devices::table
-        .find(&peer_device_id)
-        .select(PairedDevice::as_select())
-        .first(&mut *conn)
-        .optional()
-        .map_err(|e| e.to_string())?;
-    if paired.is_none() {
-        return Err("paired device not found".to_string());
-    }
-    if let Some(kind) = primary {
-        if !channels::is_enabled(&mut *conn, &peer_device_id, kind) {
-            return Err("Switch the channel on first".to_string());
-        }
-    }
-
-    channels::set_primary(&mut *conn, &peer_device_id, primary)?;
-
-    let pinned_to_bluetooth = primary == Some(ChannelKind::Bluetooth);
-    let bluetooth_enabled =
-        channels::is_enabled(&mut *conn, &peer_device_id, ChannelKind::Bluetooth);
-    state.refresh_primary(&peer_device_id, pinned_to_bluetooth, bluetooth_enabled);
-
-    device_connection_channel_statuses_impl(conn, state, peer_device_id)
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn device_connection_set_primary_channel(
-    db: State<AppDbConnection>,
-    state: State<DeviceConnectionState>,
-    peer_device_id: String,
-    primary: Option<ChannelKind>,
-) -> Result<Vec<ChannelStatus>, String> {
-    let mut conn = db.0.lock().unwrap();
-    device_connection_set_primary_channel_impl(&mut conn, &state, peer_device_id, primary)
 }
 
 /// Whether this machine's Bluetooth radio can be used right now, asked
@@ -1289,183 +1223,185 @@ pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String>
     }
 }
 
-/// The "Find via Bluetooth" button on `DeviceView.vue` — Phase 1's discovery
-/// mechanism (ADR 0002) for a peer that hasn't self-reported an address
-/// (Android peers can't; see `local_bluetooth_address`'s doc comment) or
-/// simply hasn't connected over network since this feature existed. Scans
-/// for up to 60 seconds; `Ok(None)` means nothing matched in that window,
-/// not an error -- the frontend shows "not found" rather than an error
-/// state for that case. A genuine `Err` means Bluetooth itself couldn't be
-/// used at all (no adapter, permission denied, etc).
+/// Where a channel's init stands on this device (ADR-0008 D1): `None` when
+/// no setup search is running for it.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg(any(feature = "ui-plane", test))]
+pub struct ChannelSetupStatus {
+    pub hello_acked_by_peer: bool,
+    pub acked_peer_hello: bool,
+    /// Both halves done: OK can be pressed (D4).
+    pub initialized: bool,
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+impl From<ChannelSetup> for ChannelSetupStatus {
+    fn from(setup: ChannelSetup) -> Self {
+        Self {
+            hello_acked_by_peer: setup.hello_acked_by_peer,
+            acked_peer_hello: setup.acked_peer_hello,
+            initialized: setup.initialized(),
+        }
+    }
+}
+
+/// How long starting a Bluetooth setup waits for the person to answer the
+/// Android permission dialog it opened, and how often it looks.
+#[cfg(target_os = "android")]
+const PERMISSION_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(target_os = "android")]
+const PERMISSION_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Start the setup search for a paired device's channel (ADR-0008 D2).
+/// Refused for a Bluetooth channel while Bluetooth does not work on this
+/// device (D6).
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub async fn device_connection_find_bluetooth_address(
+pub async fn device_connection_begin_channel_setup(
     state: State<'_, DeviceConnectionState>,
     peer_device_id: String,
-) -> Result<Option<String>, String> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        // Same click-triggered permission request as the "Enable Bluetooth"
-        // toggle above -- this button is exactly the same class of genuine
-        // user action, not a background/startup path. See
-        // BluetoothPairing.requestPermissionsIfNeeded's doc comment.
+    kind: ChannelKind,
+) -> Result<(), String> {
+    if kind == ChannelKind::Bluetooth {
+        // An explicit click -- the one kind of moment Android lets us ask
+        // for the Nearby Devices permission.
         #[cfg(target_os = "android")]
         {
             crate::services::android_context::call_static_context_void(
                 "com.fini.app.BluetoothPairing",
                 "requestPermissionsIfNeeded",
             );
-            if !crate::services::android_context::call_static_context_to_bool(
+            // The request only opens the system dialog; the answer comes
+            // later. Wait for the person to answer instead of failing
+            // before they could.
+            let deadline = tokio::time::Instant::now() + PERMISSION_ANSWER_WAIT;
+            while !crate::services::android_context::call_static_context_to_bool(
                 "com.fini.app.BluetoothPairing",
                 "hasPermissions",
             ) {
-                return Err(
-                    "Bluetooth permission required -- grant it in the dialog, then try again"
-                        .to_string(),
-                );
+                if tokio::time::Instant::now() >= deadline {
+                    return Err("Bluetooth permission was not granted".to_string());
+                }
+                tokio::time::sleep(PERMISSION_POLL_INTERVAL).await;
             }
         }
-
-        let device_connection = state.inner().clone();
-        let db_path = device_connection.db_path.clone();
-        crate::services::communication::channel::ble::find_peer_address(
-            device_connection,
-            db_path,
-            peer_device_id,
-            Duration::from_secs(60),
-        )
-        .await
+        let service =
+            crate::services::communication::channel::service::service_for(state.inner(), kind);
+        if !service.available() || !service.probe().await {
+            return Err("Bluetooth is unavailable on this device".to_string());
+        }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        let _ = peer_device_id;
-        Err("Bluetooth is not available on this platform".to_string())
-    }
+    setup::start(state.inner(), &peer_device_id, kind);
+    Ok(())
 }
 
-/// The pure in-memory half of `ChannelStatusInputs` -- everything
-/// `has_session_on`/`primary_transport`/`channel_liveness_code` can
-/// answer without a DB read or an OS-level check. Shared by
-/// `device_connection_channel_statuses_impl` (which adds the DB-backed
-/// preconditions on top) and `device_connection_channel_liveness_impl`
-/// (which is *only* this -- the lightweight live-poll surface). Keeping
-/// this in one place is what makes the two commands' Sim/Bluetooth kind
-/// resolution impossible to drift apart.
-struct ChannelLivenessSnapshot {
-    network_connected: bool,
-    network_primary: bool,
-    network_code: Option<ChannelReason>,
-    bluetooth_connected: bool,
-    bluetooth_primary: bool,
-    bluetooth_code: Option<ChannelReason>,
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_channel_setup_status(
+    state: State<'_, DeviceConnectionState>,
+    peer_device_id: String,
+    kind: ChannelKind,
+) -> Option<ChannelSetupStatus> {
+    state.channel_setup(&peer_device_id, kind).map(ChannelSetupStatus::from)
 }
 
-fn channel_liveness_snapshot(state: &DeviceConnectionState, peer_device_id: &str) -> ChannelLivenessSnapshot {
-    // ADR-0003 revision: both channels can have a claimed session at
-    // once now, so "the live channel" no longer exists as a single
-    // value -- each row checks its own `has_session_on`.
-    // One session slot per channel: the loopback radio reports Bluetooth like
-    // any other way of connecting that channel, so there is no second
-    // Bluetooth-ish kind to check for any more.
-    let network_connected = state.has_session_on(peer_device_id, ChannelKind::Network);
-    let bluetooth_connected = state.has_session_on(peer_device_id, ChannelKind::Bluetooth);
+/// End the setup search: OK (`switch_on`) or closing the dialog. Writes the
+/// channel only if its init completed (ADR-0008 D15).
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_end_channel_setup(
+    db: State<'_, AppDbConnection>,
+    state: State<'_, DeviceConnectionState>,
+    peer_device_id: String,
+    kind: ChannelKind,
+    switch_on: bool,
+) -> Result<Vec<ChannelStatus>, String> {
+    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    setup::finish(&mut conn, state.inner(), &peer_device_id, kind, switch_on)?;
+    device_connection_channel_statuses_impl(&mut conn, state.inner(), peer_device_id)
+}
 
-    let primary = state.primary_transport(peer_device_id);
-    let network_primary = primary == Some(ChannelKind::Network);
-    let bluetooth_primary = primary == Some(ChannelKind::Bluetooth);
-
-    let network_code = network_connected
-        .then(|| state.channel_liveness_code(peer_device_id, ChannelKind::Network))
-        .flatten();
-    let bluetooth_code = bluetooth_connected
-        .then(|| state.channel_liveness_code(peer_device_id, ChannelKind::Bluetooth))
-        .flatten();
-
-    ChannelLivenessSnapshot {
-        network_connected,
-        network_primary,
-        network_code,
-        bluetooth_connected,
-        bluetooth_primary,
-        bluetooth_code,
+/// Choose which channel carries this pair's traffic: the star on a channel
+/// row (ADR-0007). `primary: None` clears the choice, falling back to the
+/// automatic Network-first rule. The choice persists and decides which
+/// channel the next exchange with the peer tries first.
+///
+/// Refused for a channel that is not on: a channel that cannot carry
+/// anything cannot be the one chosen to carry the traffic.
+#[cfg(any(feature = "ui-plane", test))]
+pub fn device_connection_set_primary_channel_impl(
+    conn: &mut SqliteConnection,
+    state: &DeviceConnectionState,
+    peer_device_id: String,
+    primary: Option<ChannelKind>,
+) -> Result<Vec<ChannelStatus>, String> {
+    let paired = paired_devices::table
+        .find(&peer_device_id)
+        .select(paired_devices::peer_device_id)
+        .first::<String>(&mut *conn)
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if paired.is_none() {
+        return Err("paired device not found".to_string());
     }
+    if let Some(kind) = primary {
+        if !channels::is_enabled(&mut *conn, &peer_device_id, kind) {
+            return Err("Switch the channel on first".to_string());
+        }
+    }
+    channels::set_primary(&mut *conn, &peer_device_id, primary)?;
+    // Waiting work may now go over a different channel.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
+    device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn device_connection_set_primary_channel(
+    db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
+    peer_device_id: String,
+    primary: Option<ChannelKind>,
+) -> Result<Vec<ChannelStatus>, String> {
+    let mut conn = db.0.lock().unwrap();
+    device_connection_set_primary_channel_impl(&mut conn, &state, peer_device_id, primary)
+}
+
+/// Every channel row for this pair (ADR-0008 D19): its stored state, and
+/// for an `On` channel whether the peer is present or the channel reports a
+/// problem on this device. Network first, so rows never reorder.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_channel_statuses_impl(
     conn: &mut SqliteConnection,
     state: &DeviceConnectionState,
     peer_device_id: String,
 ) -> Result<Vec<ChannelStatus>, String> {
-    // Asked for its error, not its columns: a peer that is not paired has no
-    // channels to report, and saying so beats returning two empty rows.
-    paired_devices::table
+    let paired = paired_devices::table
         .find(&peer_device_id)
-        .select(PairedDevice::as_select())
-        .first::<PairedDevice>(&mut *conn)
+        .select(paired_devices::peer_device_id)
+        .first::<String>(&mut *conn)
+        .optional()
         .map_err(|e| e.to_string())?;
-    // ADR-0006: no OS-bond lookup here any more. Dropping the bond check
-    // also drops a `bluetoothctl` subprocess that used to run once per peer
-    // on every status poll.
-    let snapshot = channel_liveness_snapshot(state, &peer_device_id);
-    let network = channels::find(&mut *conn, &peer_device_id, ChannelKind::Network);
-    let bluetooth = channels::find(&mut *conn, &peer_device_id, ChannelKind::Bluetooth);
-
-    let network_enabled = network.as_ref().is_some_and(|channel| channel.enabled);
-    let bluetooth_enabled = bluetooth.as_ref().is_some_and(|channel| channel.enabled);
-
-    // Each channel says why it cannot reach this peer. Nothing here knows
-    // what a radio or a beacon is any more -- which is the point, because
-    // the answers are about different machines and only the channel that
-    // owns the mechanism can tell them apart honestly.
-    let services = crate::services::communication::channel::service::services(state);
-    let why_not = |kind: ChannelKind, enabled: bool| {
-        services
-            .iter()
-            .find(|service| service.kind() == kind)
-            .and_then(|service| service.why_not(&peer_device_id, enabled))
-    };
-
-    Ok(build_channel_statuses(ChannelStatusInputs {
-        network_configured: network.is_some(),
-        bluetooth_configured: bluetooth.is_some(),
-        network_enabled,
-        bluetooth_enabled,
-        network_address: network.as_ref().and_then(|channel| channel.address.clone()),
-        bluetooth_address: bluetooth.as_ref().and_then(|channel| channel.address.clone()),
-        network_unconfigured_code: why_not(ChannelKind::Network, network_enabled),
-        bluetooth_unconfigured_code: why_not(ChannelKind::Bluetooth, bluetooth_enabled),
-        network_connected: snapshot.network_connected,
-        bluetooth_connected: snapshot.bluetooth_connected,
-        // The person's stored choice, not `snapshot`'s live primary: the
-        // star is a setting (ADR-0007), and reading it off the live value
-        // would make it move on its own whenever a link dropped.
-        network_primary: network.as_ref().is_some_and(|channel| channel.is_primary),
-        bluetooth_primary: bluetooth.as_ref().is_some_and(|channel| channel.is_primary),
-        network_code: snapshot.network_code,
-        bluetooth_code: snapshot.bluetooth_code,
-    }))
-}
-
-/// The Device page's "click the Bluetooth row to try again" affordance
-/// (see `BluetoothStatusCode::DialExhausted`'s doc comment): a
-/// no-op everywhere the dial loop wasn't exhausted, so the frontend doesn't
-/// need to guard the call. Takes only `state`, not `db` -- `ble::
-/// retry_bluetooth_dial` looks up the peer's dial address itself, off its
-/// own DB connection, on the task it spawns; see its own doc comment for why
-/// this command doesn't (and, per a P2 review finding on an earlier revision
-/// of this command, must not) touch the shared `AppDbConnection` at all.
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn device_connection_retry_bluetooth_dial(state: State<DeviceConnectionState>, peer_device_id: String) -> Result<(), String> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        crate::services::communication::channel::ble::retry_bluetooth_dial(&state, &peer_device_id);
+    if paired.is_none() {
+        return Err("paired device not found".to_string());
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        let _ = (state, peer_device_id);
-    }
-    Ok(())
+    Ok([ChannelKind::Network, ChannelKind::Bluetooth]
+        .into_iter()
+        .map(|kind| {
+            let channel = channels::find(&mut *conn, &peer_device_id, kind);
+            let stored = match &channel {
+                None => ChannelState::None,
+                Some(channel) if channel.enabled => ChannelState::On,
+                Some(_) => ChannelState::Off,
+            };
+            let primary = channel.is_some_and(|channel| channel.is_primary);
+            let service = crate::services::communication::channel::service::service_for(state, kind);
+            // An exchange running right now is presence too.
+            let present = service.is_present(&peer_device_id) || state.has_session_on(&peer_device_id, kind);
+            channel_status(kind, stored, present, service.problem(), primary)
+        })
+        .collect())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1479,44 +1415,14 @@ pub fn device_connection_channel_statuses(
     device_connection_channel_statuses_impl(&mut conn, &state, peer_device_id)
 }
 
-/// Lightweight sibling of `device_connection_channel_statuses`: no DB
-/// read, no OS-level bond check, just `has_session_on`/`primary_transport`/
-/// `channel_liveness_code` for each row. Meant to be polled far more
-/// often than the heavy version -- see `ChannelLiveness`'s own doc
-/// comment for the P1 review finding this exists to fix (the live poll
-/// previously only refreshed `primary`, leaving green/amber frozen).
-pub fn device_connection_channel_liveness_impl(
-    state: &DeviceConnectionState,
-    peer_device_id: String,
-) -> Vec<ChannelLiveness> {
-    let snapshot = channel_liveness_snapshot(state, &peer_device_id);
-    vec![
-        ChannelLiveness {
-            kind: ChannelKind::Network,
-            connected: snapshot.network_connected,
-            reason: snapshot.network_code.map(|r| r.code().to_string()),
-            dial_exhausted: false,
-        },
-        ChannelLiveness {
-            kind: ChannelKind::Bluetooth,
-            connected: snapshot.bluetooth_connected,
-            reason: snapshot.bluetooth_code.map(|r| r.code().to_string()),
-            dial_exhausted: crate::services::communication::channel::service::service_for(
-                state,
-                ChannelKind::Bluetooth,
-            )
-            .dial_exhausted(&peer_device_id),
-        },
-    ]
-}
-
+/// The Device page is open (or closed): run the status search while it is,
+/// so green is current; never in the background (ADR-0008 D12).
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_channel_liveness(
-    state: State<DeviceConnectionState>,
-    peer_device_id: String,
-) -> Vec<ChannelLiveness> {
-    device_connection_channel_liveness_impl(&state, peer_device_id)
+pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, active: bool) {
+    for service in crate::services::communication::channel::service::services(state.inner()) {
+        service.watch_presence(active);
+    }
 }
 
 /// Every paired peer eligible for a Bluetooth dial attempt right now: the
@@ -1543,34 +1449,16 @@ pub fn note_observed_bluetooth_address(conn: &mut SqliteConnection, peer_id: &st
     channels::note_address(conn, peer_id, ChannelKind::Bluetooth, address);
 }
 
-/// The channel this pair's traffic was pinned to, or `None` for automatic
-/// (network-first) selection. Both channels dial and connect regardless of
-/// it (ADR-0003 revision) -- it decides only which already-connected one
-/// counts as primary. A missing/unpaired row reads as no choice, matching
-/// every other `unwrap_or_default`-style read in this module.
-pub fn peer_primary_channel(conn: &mut SqliteConnection, peer_id: &str) -> Option<ChannelKind> {
-    channels::primary_kind(conn, peer_id)
-}
-
-/// The Bluetooth switch for this pair. Used by
-/// `DeviceConnectionState::bluetooth_primary_eligibility` to exclude a
-/// switched-off pair's Bluetooth session from primary-channel candidacy
-/// (see `recompute_primary_locked`'s own doc comment for the P1 review
-/// finding this closes). A pair with no Bluetooth channel configured reads
-/// as off, failing closed the same direction the session gate does.
-pub fn peer_bluetooth_enabled(conn: &mut SqliteConnection, peer_id: &str) -> bool {
-    channels::is_enabled(conn, peer_id, ChannelKind::Bluetooth)
-}
-
+#[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_session_channel_impl(
     state: &DeviceConnectionState,
     peer_device_id: String,
 ) -> Option<ChannelKind> {
-    state.primary_transport(&peer_device_id)
+    state.active_exchange_channel(&peer_device_id)
 }
 
-/// Which channel (if any) is currently primary for a peer. Debug/test
-/// surface proving per-channel claiming end-to-end through the real app
+/// Which channel an exchange with this peer is running on right now, if
+/// any. Debug/test surface proving exchanges end-to-end through the real app
 /// binary — see `specs/e2e/actors/tests/peer-sync-over-sim.spec.ts`.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
@@ -1588,10 +1476,12 @@ pub fn device_connection_unpair_impl(
     diesel::delete(paired_devices::table.find(&peer_device_id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
-    // See `device_connection_save_paired_device_impl`'s matching comment --
-    // this is the unpair-side half of the same P2 review finding.
+    // Failed attempts with the old pair must not delay a new one.
+    crate::services::communication::channel::tcp_ws::forget_failures(&peer_device_id);
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::clear_dial_exhaustion(&peer_device_id);
+    crate::services::communication::channel::ble::forget_delivery_misses(&peer_device_id);
+    // Its channels went with it, which can leave nobody to advertise for.
+    crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
 
@@ -1946,6 +1836,10 @@ mod tests {
         std::env::set_var("FINI_BLUETOOTH_PAIRED_ADDRESSES", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ");
 
         let (mut conn, state) = test_state();
+        // ADR-0008 D15: the channel exists (set up by an init), switched off.
+        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
+            .expect("a channel that went through init");
+        crate::services::communication::channel::ble::pin_adapter_reachable_on_this_thread();
         let statuses = device_connection_set_channel_enabled_impl(
             &mut conn,
             &state,
@@ -1959,8 +1853,7 @@ mod tests {
             .iter()
             .find(|status| status.kind == ChannelKind::Bluetooth)
             .expect("a Bluetooth row");
-        assert!(row.configured, "the switch is what sets a channel up");
-        assert!(row.enabled);
+        assert_eq!(row.state, ChannelState::On);
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
     }
@@ -2001,62 +1894,6 @@ mod tests {
         );
 
         std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
-    }
-
-    /// Regression test for a P1 review finding on ADR-0003: a primary choice
-    /// must not survive that channel being switched off -- the other one
-    /// would stand down for a choice that can no longer be honoured,
-    /// stranding the pair on no channel at all.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn switching_a_channel_off_releases_its_primary() {
-        let (mut conn, state) = test_state();
-        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, true, None)
-            .expect("set bluetooth up");
-        channels::set_primary(&mut conn, "peer-a", Some(ChannelKind::Bluetooth))
-            .expect("choose it as primary");
-
-        device_connection_set_channel_enabled_impl(
-            &mut conn,
-            &state,
-            "peer-a".to_string(),
-            ChannelKind::Bluetooth,
-            false,
-        )
-        .expect("switch bluetooth off");
-
-        assert_eq!(
-            channels::primary_kind(&mut conn, "peer-a"),
-            None,
-            "a primary choice must not survive its own channel being switched off"
-        );
-    }
-
-    /// Sibling of the test above: switching one channel off must leave a
-    /// primary choice made on the *other* one alone. Only the choice that
-    /// can no longer be honoured is a stranding hazard.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn switching_a_channel_off_leaves_the_other_ones_primary_alone() {
-        let (mut conn, state) = test_state();
-        channels::configure(&mut conn, "peer-a", ChannelKind::Network, true, None)
-            .expect("set network up");
-        channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, true, None)
-            .expect("set bluetooth up");
-        channels::set_primary(&mut conn, "peer-a", Some(ChannelKind::Network))
-            .expect("choose network as primary");
-
-        device_connection_set_channel_enabled_impl(
-            &mut conn,
-            &state,
-            "peer-a".to_string(),
-            ChannelKind::Bluetooth,
-            false,
-        )
-        .expect("switch bluetooth off");
-
-        assert_eq!(
-            channels::primary_kind(&mut conn, "peer-a"),
-            Some(ChannelKind::Network)
-        );
     }
 
     /// Unlink is the deliberate second act: a channel that is still on
@@ -2106,8 +1943,7 @@ mod tests {
             .iter()
             .find(|status| status.kind == ChannelKind::Bluetooth)
             .expect("a Bluetooth row is still reported, as an offer to set it up");
-        assert!(!row.configured);
-        assert!(!row.enabled);
+        assert_eq!(row.state, ChannelState::None);
     }
 
     #[test]
