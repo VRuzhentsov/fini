@@ -442,6 +442,9 @@ fn send_mapping_update_to_peer(
     Ok(())
 }
 
+/// Why a sync request was refused: shown to the person as is.
+pub const PEER_NOT_REACHABLE: &str = "The other device is not reachable right now";
+
 /// Whether an enabled channel hears the peer right now.
 fn peer_reachable_now(
     conn: &mut SqliteConnection,
@@ -454,24 +457,6 @@ fn peer_reachable_now(
         channels::is_enabled(conn, peer_device_id, kind)
             && service_for(device_connection, kind).is_present(peer_device_id)
     })
-}
-
-/// Ending a sync is one-sided, so the peer must hear of it however long it
-/// is away: kept until an exchange carries it (ADR-0008 D14).
-fn send_space_sync_end_to_peer(
-    conn: &mut SqliteConnection,
-    peer_device_id: &str,
-    space_id: &str,
-    ended_at: &str,
-) -> Result<(), String> {
-    super::control_outbox::keep(
-        conn,
-        peer_device_id,
-        &PeerFrame::SpaceSyncEnd {
-            space_id: space_id.to_string(),
-            ended_at: ended_at.to_string(),
-        },
-    )
 }
 
 fn send_sync_event_to_peer(
@@ -998,7 +983,44 @@ pub fn space_sync_update_mappings_impl(
     let ended: Vec<String> = before_set.difference(&desired_set).cloned().collect();
     let ended_at = utc_now();
 
-    let mapped = apply_mappings_in_db(conn, &peer_device_id, desired)?;
+    // A sync request needs the other person at their device: with the peer
+    // out of reach nothing is changed, rather than a space marked synced
+    // that the peer never hears of.
+    if !requested.is_empty()
+        && !device_connection.has_session(&peer_device_id)
+        && !peer_reachable_now(conn, device_connection, &peer_device_id)
+    {
+        return Err(PEER_NOT_REACHABLE.to_string());
+    }
+
+    // The ends are written with the mapping change, so a space never stops
+    // syncing here while the peer is left without word of it (ADR-0008 D14).
+    let mut failed = None;
+    let mapped = conn
+        .transaction::<_, diesel::result::Error, _>(|conn| {
+            let mapped = match apply_mappings_in_db(conn, &peer_device_id, desired) {
+                Ok(mapped) => mapped,
+                Err(reason) => {
+                    failed = Some(reason);
+                    return Err(diesel::result::Error::RollbackTransaction);
+                }
+            };
+            for space_id in &ended {
+                super::control_outbox::keep_in(
+                    conn,
+                    &peer_device_id,
+                    &PeerFrame::SpaceSyncEnd {
+                        space_id: space_id.clone(),
+                        ended_at: ended_at.clone(),
+                    },
+                )?;
+            }
+            Ok(mapped)
+        })
+        .map_err(|err| failed.take().unwrap_or_else(|| err.to_string()))?;
+    if !ended.is_empty() {
+        super::control_outbox::kept();
+    }
 
     let custom_spaces = load_custom_space_descriptors(conn, &requested)?;
 
@@ -1012,14 +1034,6 @@ pub fn space_sync_update_mappings_impl(
             send_mapping_update_to_peer(conn, &device_connection, &peer_device_id, &[space_id], &custom)
         {
             eprintln!("[space-sync] failed to notify peer mapping request: {err}");
-        }
-    }
-
-    for space_id in ended {
-        if let Err(err) =
-            send_space_sync_end_to_peer(conn, &peer_device_id, &space_id, &ended_at)
-        {
-            eprintln!("[space-sync] failed to notify peer mapping end: {err}");
         }
     }
 
@@ -3202,16 +3216,40 @@ mod tests {
         (conn, db_path, app_dir, device_connection)
     }
 
-    /// ADR-0008 D14: ending a space's sync is one-sided, so the peer hears of
-    /// it however long it is away -- kept in the database, not in memory. A
-    /// sync request is not: it needs the other person there, so while the
-    /// peer is unreachable nothing waits for it.
+    /// The peer is reachable for as long as the returned receiver lives.
+    fn reachable(device_connection: &DeviceConnectionState) -> mpsc::Receiver<crate::services::communication::sync::types::SessionCommand> {
+        let (tx, rx) = mpsc::channel(16);
+        assert!(device_connection.try_claim_session("peer-a", ChannelKind::Network, tx));
+        rx
+    }
+
+    /// A sync request needs the other person at their device: with the peer
+    /// out of reach it is refused and nothing is changed, rather than a space
+    /// marked synced here that the peer never hears of.
     #[test]
-    fn ending_a_sync_is_kept_and_a_request_to_an_absent_peer_is_not() {
+    fn a_sync_request_to_an_unreachable_peer_changes_nothing() {
+        let (mut conn, db_path, app_dir, device_connection) = paired_peer_with_space("sync-request-unreachable");
+        let err = space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec!["1".into()])
+            .expect_err("refused while the peer is out of reach");
+        assert_eq!(err, PEER_NOT_REACHABLE);
+        assert!(list_mappings_for_peer(&mut conn, "peer-a").unwrap().is_empty());
+        assert!(!device_connection.has_queued_frames("peer-a"));
+
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_dir_all(app_dir);
+    }
+
+    /// ADR-0008 D14: ending a space's sync is one-sided, so the peer hears of
+    /// it however long it is away -- kept in the database, not in memory --
+    /// and needs no peer in reach to do.
+    #[test]
+    fn ending_a_sync_is_kept_until_the_peer_hears_of_it() {
         let (mut conn, db_path, app_dir, device_connection) = paired_peer_with_space("sync-end-kept");
+        let exchange = reachable(&device_connection);
         space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec!["1".into()])
             .unwrap();
-        assert!(!device_connection.has_queued_frames("peer-a"), "the request is not kept for later");
+        drop(exchange);
+        device_connection.release_session("peer-a", ChannelKind::Network);
 
         space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec![]).unwrap();
         let kept = super::super::control_outbox::waiting(&mut conn, "peer-a");
@@ -3229,6 +3267,7 @@ mod tests {
     #[test]
     fn syncing_a_space_again_drops_its_undelivered_end() {
         let (mut conn, db_path, app_dir, device_connection) = paired_peer_with_space("sync-end-superseded");
+        let _exchange = reachable(&device_connection);
         space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec!["1".into()])
             .unwrap();
         space_sync_update_mappings_impl(&mut conn, &device_connection, "peer-a".into(), vec![]).unwrap();

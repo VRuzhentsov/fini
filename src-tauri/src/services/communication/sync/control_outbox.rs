@@ -40,27 +40,44 @@ fn kept_as(frame: &PeerFrame) -> Option<(&'static str, String)> {
 
 /// Keeps `frame` for `peer_device_id` until an exchange carries it, and asks
 /// for one. A frame about the same thing that has not gone yet is replaced.
+#[cfg(test)]
 pub fn keep(conn: &mut SqliteConnection, peer_device_id: &str, frame: &PeerFrame) -> Result<(), String> {
-    let (frame_type, subject) =
-        kept_as(frame).ok_or_else(|| "this frame is not kept in the outbox".to_string())?;
-    let encoded = serde_json::to_string(frame).map_err(|e| e.to_string())?;
-    conn.transaction::<_, diesel::result::Error, _>(|conn| {
-        drop_about(conn, peer_device_id, frame_type, &subject)?;
-        diesel::insert_into(peer_control_outbox::table)
-            .values((
-                peer_control_outbox::peer_device_id.eq(peer_device_id),
-                peer_control_outbox::frame_type.eq(frame_type),
-                peer_control_outbox::subject.eq(&subject),
-                peer_control_outbox::frame.eq(encoded),
-                peer_control_outbox::created_at.eq(utc_now()),
-            ))
-            .execute(conn)?;
-        Ok(())
-    })
-    .map_err(|e| e.to_string())?;
+    conn.transaction(|conn| keep_in(conn, peer_device_id, frame))
+        .map_err(|e: diesel::result::Error| e.to_string())?;
+    kept();
+    Ok(())
+}
+
+/// `keep` inside a transaction the caller owns, so the frame is written
+/// together with the change it reports. Call `kept` once that commits.
+pub fn keep_in(
+    conn: &mut SqliteConnection,
+    peer_device_id: &str,
+    frame: &PeerFrame,
+) -> Result<(), diesel::result::Error> {
+    let (frame_type, subject) = kept_as(frame).ok_or_else(|| {
+        diesel::result::Error::QueryBuilderError("this frame is not kept in the outbox".into())
+    })?;
+    let encoded = serde_json::to_string(frame)
+        .map_err(|e| diesel::result::Error::SerializationError(Box::new(e)))?;
+    drop_about(conn, peer_device_id, frame_type, &subject)?;
+    diesel::insert_into(peer_control_outbox::table)
+        .values((
+            peer_control_outbox::peer_device_id.eq(peer_device_id),
+            peer_control_outbox::frame_type.eq(frame_type),
+            peer_control_outbox::subject.eq(&subject),
+            peer_control_outbox::frame.eq(encoded),
+            peer_control_outbox::created_at.eq(utc_now()),
+        ))
+        .execute(conn)?;
+    Ok(())
+}
+
+/// A frame was kept: a running exchange sends it now, otherwise one is
+/// asked for.
+pub fn kept() {
     changed().send_modify(|count| *count = count.wrapping_add(1));
     super::commands::notify_sync_work_pending();
-    Ok(())
 }
 
 fn drop_about(

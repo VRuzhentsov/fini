@@ -1558,6 +1558,26 @@ fn kept_frames(db_path: &PathBuf, peer: &str) -> Vec<PeerFrame> {
         .collect()
 }
 
+/// An unlink that is refused leaves nothing for the peer either: the row and
+/// its notice are written together or not at all.
+#[test]
+fn a_refused_unlink_tells_the_peer_nothing() {
+    let (server, server_db) = server_state("adr-0008-unlink-refused");
+    seed_paired_device(&server_db, "peer-client");
+    let mut conn = open_db_at_path(&server_db);
+    channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, true, None).expect("set up, on");
+    let err = crate::services::communication::pairing::device_connection_unlink_channel_impl(
+        &mut conn,
+        &server,
+        "peer-client".to_string(),
+        ChannelKind::Bluetooth,
+    )
+    .expect_err("an On channel cannot be unlinked");
+    assert_eq!(err, "Turn the channel off first");
+    assert!(channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_some());
+    assert!(kept_frames(&server_db, "peer-client").is_empty());
+}
+
 /// A channel set up again before the peer heard of its unlink: the old
 /// notice no longer holds, and delivered late it would delete the new one.
 #[test]

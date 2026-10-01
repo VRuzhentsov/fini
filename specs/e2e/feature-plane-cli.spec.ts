@@ -37,16 +37,19 @@ test('device paired CRUD and sync mappings are available from CLI', async () => 
   expect(devices).toHaveLength(1);
   expect(devices[0].last_seen_at).toBe('2026-05-28T12:00:00Z');
 
-  const mapped = cli.run<string[]>([
-    'sync', 'mappings', 'update',
-    '--peer-device-id', 'peer-a',
-    '--mapped-space-id', '1',
-  ]);
-  expect(mapped).toEqual(['1']);
+  // A sync request needs the other device at hand (ADR-0008 D14); this peer
+  // is only a row, so the request is refused and nothing is mapped.
+  expect(() =>
+    cli.run<string[]>([
+      'sync', 'mappings', 'update',
+      '--peer-device-id', 'peer-a',
+      '--mapped-space-id', '1',
+    ]),
+  ).toThrow('The other device is not reachable right now');
 
   const status = cli.run<SpaceSyncStatus>(['sync', 'status', '--peer-device-id', 'peer-a']);
   expect(status.peer_device_id).toBe('peer-a');
-  expect(status.mapped_space_ids).toEqual(['1']);
+  expect(status.mapped_space_ids).toEqual([]);
 
   cli.run(['device', 'paired', 'unpair', '--peer-device-id', 'peer-a']);
   expect(cli.run<PairedDevice[]>(['device', 'paired', 'list'])).toHaveLength(0);

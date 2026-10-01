@@ -1160,14 +1160,24 @@ pub fn device_connection_unlink_channel_impl(
     peer_device_id: String,
     kind: ChannelKind,
 ) -> Result<Vec<ChannelStatus>, String> {
-    channels::unlink(&mut *conn, &peer_device_id, kind)?;
-    // Tell the peer (ADR-0008 D14). Kept until an exchange carries it, so
-    // neither a restart nor a dropped link loses it.
-    crate::services::communication::sync::control_outbox::keep(
-        conn,
-        &peer_device_id,
-        &crate::services::communication::sync::types::PeerFrame::ChannelUnlinked { kind },
-    )?;
+    use crate::services::communication::sync::control_outbox;
+    // Tell the peer (ADR-0008 D14). Kept until an exchange carries it, and
+    // written with the unlink itself: the channel is never gone here while
+    // the peer is left without word of it.
+    let mut refused = None;
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        if let Err(reason) = channels::unlink(conn, &peer_device_id, kind) {
+            refused = Some(reason);
+            return Err(diesel::result::Error::RollbackTransaction);
+        }
+        control_outbox::keep_in(
+            conn,
+            &peer_device_id,
+            &crate::services::communication::sync::types::PeerFrame::ChannelUnlinked { kind },
+        )
+    })
+    .map_err(|err| refused.take().unwrap_or_else(|| err.to_string()))?;
+    control_outbox::kept();
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
