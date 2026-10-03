@@ -439,9 +439,18 @@ async function confirmChannelSetup() {
             data-testid="setup-peer-row"
             :data-setup-step="step"
           >
+            <!-- Searching pulses; found (one direction done) turns amber; ready
+                 is green. The search takes tens of seconds on a real radio, and
+                 a still grey dot reads as a frozen screen. -->
             <span
               class="size-2.5 shrink-0 rounded-full"
-              :class="renderFlags.setupReady ? 'bg-success' : 'bg-[var(--fg-5)]'"
+              :class="
+                renderFlags.setupReady
+                  ? 'bg-success'
+                  : step === 'setupFound'
+                    ? 'animate-pulse bg-warning'
+                    : 'animate-pulse bg-[var(--fg-5)]'
+              "
             />
             <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ peerName }}</span>
             <span v-if="renderFlags.setupSearch" class="loading loading-dots loading-xs opacity-60" />

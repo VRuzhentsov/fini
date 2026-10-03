@@ -728,6 +728,9 @@ pub async fn setup_hello_round(
     .ok()
     .flatten()
     .is_some();
+    if !acknowledged {
+        search::note_dial_failed(&found.address);
+    }
     Ok(acknowledged)
 }
 
@@ -1370,10 +1373,14 @@ async fn connect_and_auth(
         Ok(Ok(connected)) => Ok(connected),
         Ok(Err(err)) => {
             log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
+            if !session::refused_for_running_exchange(&err) {
+                search::note_dial_failed(address);
+            }
             Err(err)
         }
         Err(_elapsed) => {
             log::info!("[transport][ble] candidate {address} did not finish connect+auth in time");
+            search::note_dial_failed(address);
             Err("connect+auth timed out".to_string())
         }
     }

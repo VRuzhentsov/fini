@@ -216,6 +216,35 @@ fn hand_off(peer: &str, address: &str) -> bool {
     handed
 }
 
+/// How long an address whose dial just failed is not handed off again.
+///
+/// BlueZ keeps a device object for every address it has seen and reports it
+/// again at the start of each discovery (`rssi=None`), including the phone's
+/// previous private address. Without a cooldown the search heard that stale
+/// address, dialled it, was refused after 2s, restarted discovery, heard the
+/// same cached entry at once and dialled again -- a start/stop/dial loop every
+/// 2s that ended with BlueZ answering every later `StartDiscovery` with
+/// "Operation already in progress" and `StopDiscovery` with "No discovery
+/// started", after which nothing could be found until bluetoothd restarted.
+const FAILED_DIAL_COOLDOWN: Duration = Duration::from_secs(10);
+
+fn failed_dials() -> &'static StdMutex<HashMap<String, std::time::Instant>> {
+    static FAILED: OnceLock<StdMutex<HashMap<String, std::time::Instant>>> = OnceLock::new();
+    FAILED.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// A dial to `address` after a hand-off failed: the search skips that address
+/// for `FAILED_DIAL_COOLDOWN` and keeps listening for the peer's current one.
+pub fn note_dial_failed(address: &str) {
+    failed_dials().lock().unwrap().insert(address.to_string(), std::time::Instant::now());
+}
+
+fn dial_recently_failed(address: &str) -> bool {
+    let mut failed = failed_dials().lock().unwrap();
+    failed.retain(|_, at| at.elapsed() < FAILED_DIAL_COOLDOWN);
+    failed.contains_key(address)
+}
+
 /// Pause after the radio refused a scan, so a broken adapter is not hammered.
 const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
 
@@ -274,6 +303,9 @@ async fn run() {
                             continue;
                         };
                         note_peer_advertising(peer, &candidate.address.0);
+                        if dial_recently_failed(&candidate.address.0) {
+                            continue;
+                        }
                         if hand_off(peer, &candidate.address.0) {
                             break;
                         }
