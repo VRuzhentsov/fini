@@ -24,8 +24,16 @@
         android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
 
-    <!-- API 31+: the runtime-requestable Bluetooth permission triad. -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- API 31+: the runtime-requestable Bluetooth permission triad.
+         BLUETOOTH_SCAN asserts neverForLocation: without it (and without a
+         location permission, which is only requested up to API 30 above)
+         Android delivers no scan results at all, silently. Measured on a
+         Pixel 6 Pro: not one onScanResult, even for unrelated nearby devices,
+         so this phone could never hear the desktop. Fini only looks for its
+         own service and derives no location from scans. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
 

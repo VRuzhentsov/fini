@@ -334,13 +334,14 @@ fn pairing_legs() -> &'static tokio::sync::watch::Sender<usize> {
     LEGS.get_or_init(|| tokio::sync::watch::channel(0).0)
 }
 
-/// Held for one pairing leg's dial and send; see `pairing_legs`.
+/// Held while a pairing leg or a Bluetooth channel setup runs; see
+/// `pairing_legs`.
 #[cfg(any(feature = "ui-plane", test))]
-struct PairingLeg(());
+pub struct PairingLeg(());
 
 #[cfg(any(feature = "ui-plane", test))]
 impl PairingLeg {
-    fn begin() -> Self {
+    pub fn begin() -> Self {
         pairing_legs().send_modify(|count| *count += 1);
         Self(())
     }
@@ -716,6 +717,9 @@ pub async fn setup_hello_round(
     };
     // Bounded: a candidate that accepts the connection and never answers
     // must not hold the round open.
+    // A candidate probe already dialling is let finish, not cancelled; this
+    // dial must not overlap one to the same peer.
+    let _probe = candidate_probe_lock().lock().await;
     let acknowledged = tokio::time::timeout(
         FIND_PEER_CANDIDATE_TIMEOUT,
         hello_candidate(&state, &found.address, &peer_id),
@@ -1052,8 +1056,26 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         delay = Duration::from_secs(2);
 
         let mut restarting_for_add_mode_change = false;
+        // BlueZ stops transmitting the advertisement once a central that
+        // connected to it has gone, while still reporting the instance as
+        // active (`ActiveInstances: 1`). Measured: the phone heard the
+        // desktop's advertisement three times right after it was
+        // registered, a phone-initiated hello then connected and left, and
+        // the phone heard nothing for 4.5 minutes -- until the advertisement
+        // was registered again. So the advertisement is re-registered when
+        // the last accepted central is gone; doing it earlier would tear down
+        // the live link.
+        let live_centrals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (central_gone_tx, mut central_gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
         loop {
             tokio::select! {
+                Some(()) = central_gone_rx.recv() => {
+                    if live_centrals.load(Ordering::SeqCst) == 0 {
+                        log::info!("[transport][ble] last central gone; re-advertising");
+                        restarting_for_add_mode_change = true;
+                        break;
+                    }
+                }
                 channel = incoming.next() => {
                     let Some(channel) = channel else { break; };
                     let link: Box<dyn DataLink> = Box::new(BleDataLink::new(channel));
@@ -1070,7 +1092,14 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                     );
                     let state = state.clone();
                     let db_path = db_path.clone();
-                    tokio::spawn(crate::services::communication::pairing::run_peer_gate(link, state, db_path));
+                    live_centrals.fetch_add(1, Ordering::SeqCst);
+                    let live_centrals = live_centrals.clone();
+                    let central_gone_tx = central_gone_tx.clone();
+                    tokio::spawn(async move {
+                        crate::services::communication::pairing::run_peer_gate(link, state, db_path).await;
+                        live_centrals.fetch_sub(1, Ordering::SeqCst);
+                        let _ = central_gone_tx.send(());
+                    });
                 }
                 _ = add_mode_rx.changed() => {
                     log::info!("[transport][ble] add-mode changed; re-advertising");
