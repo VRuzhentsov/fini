@@ -647,7 +647,11 @@ class BleGattBridge(private val context: Context, private val nativeHandle: Long
                 }
             }
         }
-        val gatt = device.connectGatt(context, false, callback)
+        // LE explicitly. With no transport the stack picks one itself, and for
+        // a dual-mode peer (a laptop with BR/EDR enabled) it can try classic
+        // Bluetooth first. Measured against a Linux laptop: dials took 9-10 s
+        // and every second one failed with "peer refused notifications".
+        val gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         synchronized(gattLock) {
             connectedGatts[address] = gatt
             gattSessions[address] = session

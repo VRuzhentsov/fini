@@ -201,13 +201,21 @@ fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
 /// command -- leaving pairing controls stuck disabled, and letting a retry
 /// after the request TTL expires collide with the still-open earlier
 /// attempt.
-const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Sized to include the wait `dial_for_pairing` may spend letting a
+/// candidate probe already in flight finish (up to 12s) before its own dial
+/// of ~4s: at 10s the wait alone consumed half the budget and the dial was
+/// abandoned mid-connect.
+const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn send_pair_ble(address: &str, msg: PeerFrame) -> Result<(), String> {
     tauri::async_runtime::block_on(async move {
         tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
-            let mut link = crate::services::communication::channel::ble::dial(address).await?;
+            // Keeps the add-mode candidate scan off the adapter and out of
+            // this peer's dial until the frame is sent.
+            let (mut link, _clear_of_scan) =
+                crate::services::communication::channel::ble::dial_for_pairing(address).await?;
             crate::services::communication::channel::send_frame(link.as_mut(), &msg).await
         })
         .await
@@ -419,11 +427,18 @@ pub fn device_connection_send_pair_request_bluetooth_impl(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_send_pair_request_bluetooth(
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_send_pair_request_bluetooth(
+    state: State<'_, DeviceConnectionState>,
     input: DevicePairRequestBluetoothInput,
 ) -> Result<(), String> {
-    device_connection_send_pair_request_bluetooth_impl(&state, input)
+    // Off the main thread: the impl blocks on a BLE dial for seconds, and a
+    // synchronous command freezes the whole webview while it does.
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        device_connection_send_pair_request_bluetooth_impl(&state, input)
+    })
+    .await
+    .map_err(|err| format!("pair request task failed: {err}"))?
 }
 
 /// Phase 3's discovery scan, exposed to `AddDeviceView.vue`: scans for
@@ -637,11 +652,16 @@ pub fn device_connection_pair_accept_request_impl(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_pair_accept_request(
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_pair_accept_request(
+    state: State<'_, DeviceConnectionState>,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
-    device_connection_pair_accept_request_impl(&state, input)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        device_connection_pair_accept_request_impl(&state, input)
+    })
+    .await
+    .map_err(|err| format!("pair accept task failed: {err}"))?
 }
 
 pub fn device_connection_pair_complete_request_impl(
@@ -715,11 +735,16 @@ pub fn device_connection_pair_complete_request_impl(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_pair_complete_request(
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_pair_complete_request(
+    state: State<'_, DeviceConnectionState>,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    device_connection_pair_complete_request_impl(&state, input)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        device_connection_pair_complete_request_impl(&state, input)
+    })
+    .await
+    .map_err(|err| format!("pair complete task failed: {err}"))?
 }
 
 pub fn device_connection_pair_acknowledge_request_impl(
