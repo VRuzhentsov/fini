@@ -995,12 +995,21 @@ export const useDeviceStore = defineStore("device", () => {
   async function bluetoothScanTick(generation: number) {
     if (generation !== bluetoothScanGeneration) return;
 
+    // While a pairing is under way (a request we sent is waiting on the
+    // peer, or one we received is not finished) the pair's own dials own the
+    // adapter. A pass here would probe the peer while the peer is dialling us
+    // back, and two crossing connections make each side's GATT setup fail
+    // ("peer refused notifications"). The picker list is kept as it is.
+    const pairingInProgress = outgoingRequest.value !== null || incomingRequests.value.length > 0;
+
     try {
-      const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
-        durationMs: BLUETOOTH_SCAN_DURATION_MS,
-      });
-      if (generation !== bluetoothScanGeneration) return;
-      setBluetoothDiscovered(items);
+      if (!pairingInProgress) {
+        const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
+          durationMs: BLUETOOTH_SCAN_DURATION_MS,
+        });
+        if (generation !== bluetoothScanGeneration) return;
+        setBluetoothDiscovered(items);
+      }
     } catch (error) {
       // Keep retrying rather than giving up for the rest of the session:
       // the most common failure on a fresh install is the Android

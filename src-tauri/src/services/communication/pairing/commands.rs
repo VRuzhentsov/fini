@@ -427,11 +427,18 @@ pub fn device_connection_send_pair_request_bluetooth_impl(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_send_pair_request_bluetooth(
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_send_pair_request_bluetooth(
+    state: State<'_, DeviceConnectionState>,
     input: DevicePairRequestBluetoothInput,
 ) -> Result<(), String> {
-    device_connection_send_pair_request_bluetooth_impl(&state, input)
+    // Off the main thread: the impl blocks on a BLE dial for seconds, and a
+    // synchronous command freezes the whole webview while it does.
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        device_connection_send_pair_request_bluetooth_impl(&state, input)
+    })
+    .await
+    .map_err(|err| format!("pair request task failed: {err}"))?
 }
 
 /// Phase 3's discovery scan, exposed to `AddDeviceView.vue`: scans for
@@ -645,11 +652,16 @@ pub fn device_connection_pair_accept_request_impl(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_pair_accept_request(
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_pair_accept_request(
+    state: State<'_, DeviceConnectionState>,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
-    device_connection_pair_accept_request_impl(&state, input)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        device_connection_pair_accept_request_impl(&state, input)
+    })
+    .await
+    .map_err(|err| format!("pair accept task failed: {err}"))?
 }
 
 pub fn device_connection_pair_complete_request_impl(
@@ -723,11 +735,16 @@ pub fn device_connection_pair_complete_request_impl(
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn device_connection_pair_complete_request(
-    state: State<DeviceConnectionState>,
+pub async fn device_connection_pair_complete_request(
+    state: State<'_, DeviceConnectionState>,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    device_connection_pair_complete_request_impl(&state, input)
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        device_connection_pair_complete_request_impl(&state, input)
+    })
+    .await
+    .map_err(|err| format!("pair complete task failed: {err}"))?
 }
 
 pub fn device_connection_pair_acknowledge_request_impl(
