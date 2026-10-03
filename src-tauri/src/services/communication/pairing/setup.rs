@@ -19,7 +19,10 @@ use crate::services::communication::sync::types::PeerFrame;
 
 /// How long one Bluetooth setup round listens before the next one starts
 /// (ADR-0008 D12: a search lasts up to 60s and ends early on success).
+#[cfg(not(test))]
 const SETUP_ROUND: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const SETUP_ROUND: Duration = Duration::from_millis(200);
 
 /// Pause between Network hello attempts while the peer is not answering.
 /// The Network channel's own presence beacon, not this, is what finds the
@@ -28,7 +31,10 @@ const NETWORK_HELLO_RETRY: Duration = Duration::from_secs(2);
 
 /// Pause after a Bluetooth round fails outright (scan refused, adapter
 /// gone), so a broken radio is not hammered.
+#[cfg(not(test))]
 const BLUETOOTH_ROUND_FAILURE_PAUSE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const BLUETOOTH_ROUND_FAILURE_PAUSE: Duration = Duration::from_millis(200);
 
 /// Start (or keep) the setup search for this peer's channel. The search
 /// runs until `finish` ends it.

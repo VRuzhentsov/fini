@@ -1953,3 +1953,83 @@ fn exchanges_and_setups_start_from_outside_a_tokio_runtime() {
     assert!(state.channel_setup("peer-sync-command", ChannelKind::Network).is_some());
     state.end_channel_setup("peer-sync-command", ChannelKind::Network);
 }
+
+/// Polls `done` until it holds, for up to `within`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+async fn holds_within(within: Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + within;
+    while !done() {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    true
+}
+
+/// In a Bluetooth setup both devices hear each other and would dial at once,
+/// and crossing dials fail each other. The device with the lower id dials at
+/// once; the one with the higher id waits until the other's hello has
+/// reached it, and dials anyway once its patience runs out.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
+    use crate::services::communication::channel::ble::wait_for_turn_to_dial;
+
+    let (state, _db) = server_state("setup-dial-order");
+    // Device ids are UUIDs: "~" sorts after any of them, "!" before.
+    let (above_me, below_me) = ("~", "!");
+
+    tokio::time::timeout(Duration::from_millis(100), wait_for_turn_to_dial(&state, above_me))
+        .await
+        .expect("the lower id dials at once");
+
+    state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
+    let turn = {
+        let state = state.clone();
+        tokio::spawn(async move { wait_for_turn_to_dial(&state, below_me).await })
+    };
+    sleep(Duration::from_millis(300)).await;
+    assert!(!turn.is_finished(), "the higher id waits for the peer's hello");
+    state.note_channel_setup(below_me, ChannelKind::Bluetooth, |setup| setup.acked_peer_hello = true);
+    tokio::time::timeout(Duration::from_millis(500), turn)
+        .await
+        .expect("the higher id dials once the peer's hello reached it")
+        .unwrap();
+
+    state.end_channel_setup(below_me, ChannelKind::Bluetooth);
+    state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
+    tokio::time::timeout(Duration::from_secs(3), wait_for_turn_to_dial(&state, below_me))
+        .await
+        .expect("without the peer's hello the higher id still dials, once its patience runs out");
+    state.end_channel_setup(below_me, ChannelKind::Bluetooth);
+}
+
+/// The candidate scan stands aside for a Bluetooth setup from start to end,
+/// not only until this device's hello is acknowledged: the peer's hello
+/// still has to reach this device, and the scan dialling the peer meanwhile
+/// keeps that from happening.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bluetooth_setup_keeps_the_candidate_scan_aside_until_it_ends() {
+    use crate::services::communication::channel::ble::{pairing_legs_held, PAIRING_LEGS_TEST_LOCK};
+    use crate::services::communication::pairing::setup;
+
+    let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;
+    let (state, db_path) = server_state("setup-holds-pairing-leg");
+    seed_paired_device(&db_path, "peer-leg");
+
+    setup::start(&state, "peer-leg", ChannelKind::Bluetooth);
+    assert!(holds_within(Duration::from_secs(2), || pairing_legs_held() == 1).await, "the setup holds a leg");
+
+    // This device's hello was acknowledged: its own hello round is over.
+    state.note_channel_setup("peer-leg", ChannelKind::Bluetooth, |setup| setup.hello_acked_by_peer = true);
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(pairing_legs_held(), 1, "the leg outlasts this device's own hello");
+
+    state.end_channel_setup("peer-leg", ChannelKind::Bluetooth);
+    assert!(
+        holds_within(Duration::from_secs(2), || pairing_legs_held() == 0).await,
+        "the leg is released when the setup ends"
+    );
+}

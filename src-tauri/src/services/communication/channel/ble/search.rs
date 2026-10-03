@@ -404,6 +404,26 @@ mod tests {
         assert!(!searching("coord-both"), "a finished search withdraws itself");
     }
 
+    /// A dial that just failed keeps that address out of hand-offs, and only
+    /// until the cooldown has passed: the peer's next private address, or the
+    /// same one once it answers again, is dialled as usual.
+    #[test]
+    fn a_failed_address_is_skipped_until_its_cooldown_expires() {
+        note_dial_failed("AA:00:00:00:00:10");
+        assert!(dial_recently_failed("AA:00:00:00:00:10"));
+        assert!(!dial_recently_failed("AA:00:00:00:00:11"), "only the failed address is skipped");
+
+        let expired = std::time::Instant::now()
+            .checked_sub(FAILED_DIAL_COOLDOWN)
+            .expect("the clock is past one cooldown");
+        failed_dials().lock().unwrap().insert("AA:00:00:00:00:10".to_string(), expired);
+        assert!(!dial_recently_failed("AA:00:00:00:00:10"), "the cooldown has passed");
+        assert!(
+            !failed_dials().lock().unwrap().contains_key("AA:00:00:00:00:10"),
+            "an expired entry is dropped"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_search_that_hears_nothing_ends_with_its_window_and_withdraws() {
         let found = find("coord-silent", Purpose::Delivery, Duration::from_millis(50)).await;
