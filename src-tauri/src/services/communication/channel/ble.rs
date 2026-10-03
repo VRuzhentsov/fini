@@ -292,7 +292,7 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// budget, starving out every other candidate that might otherwise have
 /// matched sooner -- including the actual peer being searched for.
 /// Still shorter than `AddDeviceView.vue`'s own per-pass scan duration
-/// (`BLUETOOTH_SCAN_DURATION_MS`, currently 4s), so a slow candidate cannot
+/// (`BLUETOOTH_SCAN_DURATION_MS`, currently 60s), so a slow candidate cannot
 /// quietly consume a whole pass -- but no longer *much* shorter, because the
 /// round trip it caps now has a third stage. `BleDataLink::send` retries a
 /// `GattBusy` rejection for up to ~1.4s (see its comment), on top of a dial
@@ -305,8 +305,90 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// The trade this accepts: with several candidates, one silent peer can now
 /// take most of a pass. That is the lesser evil -- a probe too short to ever
 /// complete fails *every* candidate, not just the ones behind a slow one.
+///
+/// Raised from 3s to 12s after instrumenting it on hardware: dial + hello +
+/// reply took 2.4-3.9s against a Pixel, so 3s cut off the reply every time,
+/// and the 4s scan window left the probe phase only ~2s of budget besides.
 #[cfg(any(feature = "ui-plane", test))]
-const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(3_000);
+const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(12_000);
+
+/// Once the listening phase of a candidate scan has heard its first
+/// advertiser, it keeps listening this much longer (for a second device,
+/// say) and then moves on to probing. The scan window is long (a minute,
+/// `BLUETOOTH_SCAN_DURATION_MS`) so a slow adapter gets time, but a
+/// candidate is only reported when the whole call returns: without this the
+/// picker would sit empty for the full listening half after the peer was
+/// already heard.
+#[cfg(any(feature = "ui-plane", test))]
+const ADVERTISER_SETTLE: Duration = Duration::from_secs(3);
+
+/// Pairing legs (request / accept / complete) in progress. The add-mode
+/// candidate scan yields to them: it holds a discovery session and
+/// re-dials the same phone every pass, and an adapter doing either while a
+/// pairing dial runs refuses or stalls it -- ble-gatt answered the pair dial
+/// with "a dial to this peer is already in flight" and one dial hung until
+/// abandoned, so the Pair button reported "Couldn't reach".
+#[cfg(any(feature = "ui-plane", test))]
+fn pairing_legs() -> &'static tokio::sync::watch::Sender<usize> {
+    static LEGS: OnceLock<tokio::sync::watch::Sender<usize>> = OnceLock::new();
+    LEGS.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+
+/// Held for one pairing leg's dial and send; see `pairing_legs`.
+#[cfg(any(feature = "ui-plane", test))]
+struct PairingLeg(());
+
+#[cfg(any(feature = "ui-plane", test))]
+impl PairingLeg {
+    fn begin() -> Self {
+        pairing_legs().send_modify(|count| *count += 1);
+        Self(())
+    }
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+impl Drop for PairingLeg {
+    fn drop(&mut self) {
+        pairing_legs().send_modify(|count| *count = count.saturating_sub(1));
+    }
+}
+
+/// How long a pairing dial keeps retrying a refusal caused by the candidate
+/// scan's cancelled probe still tearing down its connection.
+#[cfg(any(feature = "ui-plane", test))]
+const PAIRING_DIAL_RETRY_WINDOW: Duration = Duration::from_secs(5);
+
+/// Dials `address` for a pairing leg and hands back the link plus the
+/// registrations that keep it clear of the candidate scan: a pass stops at
+/// its next step, and no scan runs until the caller drops the returned guards.
+#[cfg(any(feature = "ui-plane", test))]
+pub async fn dial_for_pairing(
+    address: &str,
+) -> Result<(Box<dyn DataLink>, impl Sized), String> {
+    let leg = PairingLeg::begin();
+    // A candidate probe already dialling is let finish, not cancelled; wait
+    // for it so this dial never overlaps one to the same peer.
+    drop(candidate_probe_lock().lock().await);
+    let dial_guard = search::DialGuard::acquire().await;
+    let started = tokio::time::Instant::now();
+    loop {
+        match dial(address).await {
+            Ok(link) => return Ok((link, (leg, dial_guard))),
+            // The probe's connection may still be closing.
+            Err(_) if started.elapsed() < PAIRING_DIAL_RETRY_WINDOW => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Held for the length of one candidate probe; see `dial_for_pairing`.
+#[cfg(any(feature = "ui-plane", test))]
+fn candidate_probe_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 /// `setup_hello_round`'s per-candidate cap for one dial + hello + ack.
 ///
@@ -662,6 +744,7 @@ pub struct AddModeCandidate {
 async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
     // The add-mode scan has closed by now, but a search for a paired peer
     // may start one; registering the dial keeps it paused until we finish.
+    let _probe = candidate_probe_lock().lock().await;
     let _dial = search::DialGuard::acquire().await;
     let mut link = dial(address).await.ok()?;
     send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.ok()?;
@@ -683,6 +766,22 @@ async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn scan_add_mode_candidates(
     my_device_id: &str, timeout: Duration,
+) -> Result<Vec<AddModeCandidate>, String> {
+    let mut legs = pairing_legs().subscribe();
+    // Wait out a pairing leg already running, then run the pass and give it
+    // up when one starts. An `Err` keeps the picker's previous list (the
+    // caller treats it as "retry later"), where an empty `Ok` would wipe the
+    // very candidate being paired.
+    let _ = legs.wait_for(|count| *count == 0).await;
+    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs).await
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+const PAIRING_PAUSED: &str = "candidate scan paused: a pairing step is running";
+
+#[cfg(any(feature = "ui-plane", test))]
+async fn scan_add_mode_candidates_pass(
+    my_device_id: &str, timeout: Duration, legs: &mut tokio::sync::watch::Receiver<usize>,
 ) -> Result<Vec<AddModeCandidate>, String> {
     use futures_util::StreamExt;
 
@@ -718,7 +817,7 @@ pub async fn scan_add_mode_candidates(
         // the full deadline leaves zero budget for the dials it just queued
         // up, and the pass returns nothing having done nothing -- looking
         // exactly like "no candidates" while actually meaning "no time".
-        let listen_deadline = deadline - timeout / 2;
+        let mut listen_deadline = deadline - timeout / 2;
 
         let mut flagged: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -728,7 +827,15 @@ pub async fn scan_add_mode_candidates(
             if remaining.is_zero() {
                 break;
             }
-            let peer = match tokio::time::timeout(remaining, discovered.next()).await {
+            // Listening is safe to drop mid-way (it is only a discovery
+            // session), so a pairing step takes the adapter at once.
+            let next = tokio::select! {
+                next = tokio::time::timeout(remaining, discovered.next()) => next,
+                _ = legs.wait_for(|count| *count > 0) => {
+                    return Err(PAIRING_PAUSED.to_string());
+                }
+            };
+            let peer = match next {
                 Ok(Some(Ok(peer))) => peer,
                 // A backend-level scan failure (e.g. Android's async
                 // `onScanFailed`) means Bluetooth itself is unusable, not
@@ -743,6 +850,10 @@ pub async fn scan_add_mode_candidates(
             let address = peer.address.0.clone();
             if !seen.insert(address.clone()) {
                 continue;
+            }
+            if seen.len() == 1 {
+                listen_deadline =
+                    listen_deadline.min(tokio::time::Instant::now() + ADVERTISER_SETTLE);
             }
             // Deliberately probes *every* Fini advertiser, not only those
             // carrying the add-mode flag.
@@ -798,6 +909,14 @@ pub async fn scan_add_mode_candidates(
         // without that, one silent candidate could eat the *entire*
         // remaining budget by itself, starving out every other candidate
         // still to be tried, including the one actually being searched for.
+        // A probe in flight is never cancelled for pairing: abandoning a
+        // dial makes ble-gatt quarantine the address and disconnect it in
+        // the background, which removes the device from BlueZ and fails the
+        // pairing dial that follows. It finishes (bounded by
+        // `CANDIDATE_PROBE_TIMEOUT`) and the pass stops before the next one.
+        if *legs.borrow() > 0 {
+            return Err(PAIRING_PAUSED.to_string());
+        }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             break;

@@ -218,7 +218,7 @@ const PRESENCE_POLL_INTERVAL_MS = 15_000;
 // to `BLUETOOTH_SCAN_DURATION_MS` to resolve -- unlike the other polls,
 // this loop is self-rescheduling (not `setInterval`) so passes never
 // overlap.
-const BLUETOOTH_SCAN_DURATION_MS = 4_000;
+const BLUETOOTH_SCAN_DURATION_MS = 60_000;
 const BLUETOOTH_SCAN_IDLE_GAP_MS = 2_000;
 const NORMAL_HEARTBEAT_MS = 60_000;
 const OFFLINE_AFTER_MISSED_HEARTBEATS_MS = NORMAL_HEARTBEAT_MS * 2;
