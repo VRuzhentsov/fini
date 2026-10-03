@@ -328,7 +328,6 @@ const ADVERTISER_SETTLE: Duration = Duration::from_secs(3);
 /// pairing dial runs refuses or stalls it -- ble-gatt answered the pair dial
 /// with "a dial to this peer is already in flight" and one dial hung until
 /// abandoned, so the Pair button reported "Couldn't reach".
-#[cfg(any(feature = "ui-plane", test))]
 fn pairing_legs() -> &'static tokio::sync::watch::Sender<usize> {
     static LEGS: OnceLock<tokio::sync::watch::Sender<usize>> = OnceLock::new();
     LEGS.get_or_init(|| tokio::sync::watch::channel(0).0)
@@ -336,10 +335,8 @@ fn pairing_legs() -> &'static tokio::sync::watch::Sender<usize> {
 
 /// Held while a pairing leg or a Bluetooth channel setup runs; see
 /// `pairing_legs`.
-#[cfg(any(feature = "ui-plane", test))]
 pub struct PairingLeg(());
 
-#[cfg(any(feature = "ui-plane", test))]
 impl PairingLeg {
     pub fn begin() -> Self {
         pairing_legs().send_modify(|count| *count += 1);
@@ -347,22 +344,25 @@ impl PairingLeg {
     }
 }
 
-#[cfg(any(feature = "ui-plane", test))]
 impl Drop for PairingLeg {
     fn drop(&mut self) {
         pairing_legs().send_modify(|count| *count = count.saturating_sub(1));
     }
 }
 
+/// How long the device with the higher id waits, in a Bluetooth setup, for the
+/// other device's hello to reach it before dialling anyway. See
+/// `setup_hello_round`.
+#[cfg(any(feature = "ui-plane", test))]
+const HIGHER_ID_PATIENCE: Duration = Duration::from_secs(15);
+
 /// How long a pairing dial keeps retrying a refusal caused by the candidate
 /// scan's cancelled probe still tearing down its connection.
-#[cfg(any(feature = "ui-plane", test))]
 const PAIRING_DIAL_RETRY_WINDOW: Duration = Duration::from_secs(5);
 
 /// Dials `address` for a pairing leg and hands back the link plus the
 /// registrations that keep it clear of the candidate scan: a pass stops at
 /// its next step, and no scan runs until the caller drops the returned guards.
-#[cfg(any(feature = "ui-plane", test))]
 pub async fn dial_for_pairing(
     address: &str,
 ) -> Result<(Box<dyn DataLink>, impl Sized), String> {
@@ -385,7 +385,6 @@ pub async fn dial_for_pairing(
 }
 
 /// Held for the length of one candidate probe; see `dial_for_pairing`.
-#[cfg(any(feature = "ui-plane", test))]
 fn candidate_probe_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -717,6 +716,23 @@ pub async fn setup_hello_round(
     };
     // Bounded: a candidate that accepts the connection and never answers
     // must not hold the round open.
+    // Both devices search for each other, and each dials the other the moment
+    // it hears it. Two dials crossing fail each other: a device that is
+    // itself mid-connect is not connectable, so the other's dial hangs until
+    // BlueZ aborts it ("le-connection-abort-by-local" after 8-12 s), and the
+    // retry crosses again. Measured on a laptop and a Pixel, this was most of
+    // the 40-120 s a setup took. So the device with the higher id lets the
+    // other dial first, and dials back once the other's hello has reached it.
+    if state.identity.device_id.as_str() > peer_id.as_str() {
+        let patience = tokio::time::Instant::now() + HIGHER_ID_PATIENCE;
+        while tokio::time::Instant::now() < patience
+            && !state
+                .channel_setup(&peer_id, ChannelKind::Bluetooth)
+                .is_some_and(|setup| setup.acked_peer_hello)
+        {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
     // A candidate probe already dialling is let finish, not cancelled; this
     // dial must not overlap one to the same peer.
     let _probe = candidate_probe_lock().lock().await;
@@ -1073,7 +1089,12 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         loop {
             tokio::select! {
                 Some(()) = central_gone_rx.recv() => {
-                    if live_centrals.load(Ordering::SeqCst) == 0 {
+                    // Linux only. Android keeps advertising, and registering
+                    // the advertisement again gives the phone a new private
+                    // address: the address the other device had just heard
+                    // goes stale, and its dial hangs for 15 s before the
+                    // search hears the new one.
+                    if cfg!(target_os = "linux") && live_centrals.load(Ordering::SeqCst) == 0 {
                         log::info!("[transport][ble] last central gone; re-advertising");
                         restarting_for_add_mode_change = true;
                         break;

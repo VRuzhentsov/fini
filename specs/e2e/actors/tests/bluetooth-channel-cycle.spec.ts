@@ -97,10 +97,14 @@ async function addBluetoothChannel(
     openDeviceDetailsFromSettings(actorA, peerOfA),
     openDeviceDetailsFromSettings(actorB, peerOfB),
   ]);
+  const startedAt = Date.now();
   const [outcomeA, outcomeB] = await Promise.all([
     addChannelViaDialog(actorA, ChannelKind.Bluetooth, SETUP_TIMEOUT_MS),
     addChannelViaDialog(actorB, ChannelKind.Bluetooth, SETUP_TIMEOUT_MS),
   ]);
+  // Printed so a run shows how long the person would have stared at the
+  // dialog, not only whether it finished.
+  console.log(`bluetooth setup ready on both devices after ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
   expect(outcomeA, `${actorA.slug} setup: ${outcomeA.failure}`).toMatchObject({ ready: true });
   expect(outcomeB, `${actorB.slug} setup: ${outcomeB.failure}`).toMatchObject({ ready: true });
 

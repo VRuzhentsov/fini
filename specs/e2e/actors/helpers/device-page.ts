@@ -180,6 +180,16 @@ export async function unlinkChannel(
     await toggleChannel(actor, kind);
     await waitForChannelState(actor, peerDeviceId, kind, ChannelState.Off);
   }
-  await actor.page.click(`${channelRowSelector(kind)} [data-testid="unlink-channel"]`);
-  await waitForChannelState(actor, peerDeviceId, kind, ChannelState.None);
+  // Pressed until it takes. The page ignores a press while the row's own
+  // switch is still settling (`busyChannel`), so a single click straight
+  // after switching off can be dropped without any error -- seen once in a
+  // 5-cycle run on real devices, where the channel stayed Off for 30s.
+  const unlink = actor.page.locator(`${channelRowSelector(kind)} [data-testid="unlink-channel"]`);
+  await pollUntil(`${actor.slug} ${kind} channel is unlinked`, async () => {
+    if ((await channelState(actor, peerDeviceId, kind)) === ChannelState.None) return true;
+    if ((await unlink.count()) > 0 && (await unlink.isEnabled())) {
+      await unlink.click();
+    }
+    return (await channelState(actor, peerDeviceId, kind)) === ChannelState.None;
+  }, DEFAULT_TIMEOUT_MS, 1_000);
 }
