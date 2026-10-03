@@ -260,6 +260,54 @@ Branches, for both columns:
 There is no "nobody found" step, no "Try again", and no inline explanatory
 text; hints are behind ⓘ.
 
+## Addendum — Bluetooth on real hardware
+
+Taking add-mode pairing and channel setup onto a Linux laptop and a Pixel
+showed four ways the radio work above gets in its own way. None of them
+changes a decision; they say how D12, D13 and D20 hold up on one adapter.
+
+**The add-mode candidate scan stands aside during pairing legs and for the
+whole Bluetooth setup.** The setup dialog runs add mode for a known device
+too (D20). Its candidate scan holds a discovery session and dials every Fini
+advertiser it hears, often the very phone that a pairing leg (request,
+accept, complete) or the setup search is dialling. Crossing connections fail
+each other's GATT setup. So each pairing leg and each Bluetooth setup holds
+a `PairingLeg` (`channel/ble.rs`):
+
+- A scan pass waits for every running leg to end before it starts.
+- A pass that is still listening gives up as soon as a leg begins.
+- A probe already dialling is let finish, not cancelled. Abandoning a dial
+  makes ble-gatt quarantine the address and remove the device from BlueZ,
+  which fails the dial that follows. The pass stops before its next probe.
+- A pass that gives up returns an error, not an empty list, so the picker
+  keeps the candidate being paired.
+
+The setup holds its leg from start to end, not only until its own hello is
+acknowledged: the peer's hello still has to reach this device afterwards.
+
+**Setup dials are ordered by device id.** Both devices search for each
+other and would dial the moment they hear each other. A device that is
+itself mid-connect is not connectable, so the two dials hang until BlueZ
+aborts them (8–12 s), and the retry crosses again. In a Bluetooth setup the
+device with the lower id dials first. The one with the higher id waits until
+the other's hello has reached it, or for at most 15 s, before it dials back.
+
+**An address whose dial just failed is skipped for 10 s.** At the start of
+each discovery BlueZ re-reports every device it has cached, including the
+phone's previous private address. Dialling that stale entry, being refused,
+and restarting discovery became a start/stop/dial loop every 2 s. That loop
+left BlueZ's discovery wedged until bluetoothd restarted. The search now
+skips a failed address for 10 s and keeps listening for the peer's current
+one.
+
+**On Linux the advertisement is registered again after the last central
+leaves.** BlueZ stops transmitting the advertisement once a central that
+connected to it has gone, while still reporting the instance as active, so
+the peer never heard this device again. The peripheral re-registers it once
+no accepted central is left. This is Linux only. On Android, registering
+again gives the phone a new private address, so the address the other device
+had just heard goes stale.
+
 ## Worth investigating later
 
 - Two app instances fighting over one Bluetooth adapter. ADR-0005 recorded the
