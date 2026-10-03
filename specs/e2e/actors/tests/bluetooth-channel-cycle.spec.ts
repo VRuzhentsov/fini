@@ -1,6 +1,5 @@
 import { test, expect } from '../fixtures.ts';
 import type { E2EActor } from '../fixtures.ts';
-import { ensureBlePairedActors } from '../helpers/ble-sync.ts';
 import { ensureSyncedActors, type SyncedActor } from '../helpers/device-sync.ts';
 import { openDeviceDetailsFromSettings } from '../helpers/personal-sync.ts';
 import {
@@ -17,10 +16,8 @@ import {
  * Adding a Bluetooth channel to a device that is already paired, taking it
  * away again, and adding it again -- over and over.
  *
- * Needs a radio. Spawned actors in the default lane have none (the container
- * runs no `bluetoothd`; `device-page.spec.ts` covers that refusal), so this
- * runs in the BLE lane (`FINI_E2E_TRANSPORT=ble`, a mock radio) or against
- * real devices as external actors:
+ * Needs a radio and a second channel, so it runs only against real devices
+ * as external actors (see `runsHere` for why neither container lane can):
  *
  *   FINI_E2E_ACTORS=desktop,phone \
  *   FINI_E2E_EXTERNAL_ACTORS=desktop=9224,phone=9223 \
@@ -51,16 +48,23 @@ const SETUP_TIMEOUT_MS = 180_000;
  */
 const UNLINK_PROPAGATION_TIMEOUT_MS = 120_000;
 
-function hasRadio(actor: E2EActor): boolean {
-  return actor.kind === 'external' || process.env.FINI_E2E_TRANSPORT === 'ble';
+/**
+ * Spawned actors in the default lane have no radio (the container runs no
+ * `bluetoothd`; `device-page.spec.ts` covers that refusal).
+ *
+ * The BLE lane (`FINI_E2E_TRANSPORT=ble`, a mock radio) has one, but runs
+ * with Network discovery off and pairs over Bluetooth alone, so Bluetooth is
+ * the pair's only channel. An unlink notice rides the next exchange over a
+ * channel that is still `On` (ADR-0008 D14; `request_exchanges` never uses
+ * one that is not), so once Bluetooth is unlinked there is nothing left to
+ * carry it and the peer never follows. Tried there: the first unlink timed
+ * out waiting for the other side. Real devices keep Network alongside.
+ */
+function runsHere(actor: E2EActor): boolean {
+  return actor.kind === 'external';
 }
 
 async function pairForTest(actorA: E2EActor, actorB: E2EActor): Promise<SyncedActor[]> {
-  // The BLE lane runs with discovery off, so nothing can be paired over the
-  // network there; it starts from a pair that already has Bluetooth.
-  if (process.env.FINI_E2E_TRANSPORT === 'ble') {
-    return ensureBlePairedActors([actorA, actorB]);
-  }
   return ensureSyncedActors([actorA, actorB], { pairViaUi: true });
 }
 
@@ -115,8 +119,8 @@ async function addBluetoothChannel(
 
 test('Bluetooth channel: add, unlink, add again, repeatedly', async ({ actorA, actorB }) => {
   test.skip(
-    !hasRadio(actorA) || !hasRadio(actorB),
-    'needs a radio: run in the BLE lane or against real devices as external actors',
+    !runsHere(actorA) || !runsHere(actorB),
+    'needs a radio and a second channel: run against real devices as external actors',
   );
   test.setTimeout(CYCLES * (SETUP_TIMEOUT_MS + UNLINK_PROPAGATION_TIMEOUT_MS) + 120_000);
 
