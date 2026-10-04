@@ -13,85 +13,77 @@ channel init, exchanges with acks, a control outbox, presence, and a
 search coordinator (ADR-0008). Peer authentication is still open (D16,
 #184).
 
-`ble-gatt` exists because, when it was started, no permissively licensed
-Rust crate could act as a BLE peripheral on Android. The one crate that
-could, `blew`, is AGPL-3.0, which did not fit Fini's licensing at the time
-(`ble-gatt` ADR-0001).
-
 Three projects were studied for this ADR, from their repositories as of
 2026-10-04:
 
 | Project | License | State | Role |
 |---|---|---|---|
 | [iroh](https://github.com/n0-computer/iroh) | MIT OR Apache-2.0 | 1.3, since 2023, ~2600 commits, a company behind it | Dial by public key over QUIC: TLS 1.3 authentication and encryption, streams, path selection, relays and hole punching, custom transports |
-| [iroh-ble-transport](https://github.com/mcginty/iroh-ble-transport) | AGPL-3.0-or-later | 0.5.1-beta, since 2026-04, one author, "experimental" | BLE as an iroh custom transport. QUIC datagrams over L2CAP CoC, or over GATT with its own selective-repeat ARQ when L2CAP is not available |
-| [blew](https://github.com/mcginty/blew) | AGPL-3.0-or-later | 0.5.1-beta, since 2026-04, one author, "experimental" | BLE central and peripheral, L2CAP, on Linux, Android, macOS and iOS, plus a Tauri plugin for the Android glue |
+| [iroh-ble-transport](https://github.com/mcginty/iroh-ble-transport) | AGPL-3.0-or-later | 0.5.1-beta, since 2026-04, one author, "experimental" | BLE as an iroh custom transport, built on `blew` |
+| [blew](https://github.com/mcginty/blew) | AGPL-3.0-or-later | 0.5.1-beta, since 2026-04, one author, "experimental" | BLE central and peripheral, L2CAP, on Linux, Android, macOS and iOS |
+
+`ble-gatt` is also meant for closed-source projects, so it must stay MIT and
+must not take a dependency on, or code from, the two AGPL projects.
 
 ## Decisions
 
 **D1 — Fini is licensed AGPL-3.0-or-later, following Signal.** The source
 stays public, and anyone may fork it under the same license. The name and
-icon "Fini" are protected as a trademark, so forks must rebrand. This also
-makes the AGPL libraries above usable.
+icon "Fini" are protected as a trademark, so forks must rebrand.
 
 **D2 — iroh replaces the whole communication layer.** One iroh `Endpoint` per
 device carries both channels:
 
 - Network through iroh's IP transport, with local discovery through mDNS
   (`iroh-mdns-address-lookup`).
-- Bluetooth through `iroh-ble-transport` on `blew`.
+- Bluetooth through our own iroh custom transport (D3).
 
 What goes away: `tcp_ws`, our auth, our frame codec, and the code that picks
 a channel and keeps a link to it. Authentication and encryption come from
 iroh's TLS 1.3 with the device's Ed25519 key, which closes D16 / #184. Sync
 and pairing traffic move to QUIC streams under our own ALPN.
 
-**D3 — Fini, not the transport, decides when Bluetooth scans and
-advertises.** ADR-0008 D0, D8 and D12 stand: Bluetooth works only when
-there is a reason to. `iroh-ble-transport` takes the `blew` `Central` and
-`Peripheral` from the caller (`BleTransport::builder().central(..)
-.peripheral(..)`), and Fini keeps them and turns scanning and advertising
-on and off itself (`Central::start_scan`/`stop_scan`,
-`Peripheral::start_advertising`/`stop_advertising`).
+**D3 — Bluetooth is our own iroh transport on `ble-gatt`, not
+`iroh-ble-transport` or `blew`.** It is a new MIT crate in the `ble-gatt`
+workspace, next to `ble-gatt` and `tauri-plugin-ble-gatt`. It implements
+iroh's `CustomTransport` and carries QUIC datagrams over `ble-gatt`. The
+`ble-gatt` core crate stays free of any iroh dependency.
 
-**D4 — `ble-gatt` stays as a possible alternative backend.** A custom iroh
-transport on top of `ble-gatt` (MIT) is recorded as a follow-up ticket only,
-not planned work. It is the fallback if `blew` or `iroh-ble-transport` does
-not work out.
+**D4 — Fini decides when Bluetooth scans and advertises.** ADR-0008 D0, D8 and
+D12 stand: Bluetooth works only when there is a reason to. The transport
+crate exposes discovery and advertising control to its caller rather than
+scanning on its own.
+
+**D5 — No AGPL code in `ble-gatt`.** `iroh-ble-transport` and `blew` may be read
+for ideas, but no code is copied from them, and they are never added as
+dependencies.
 
 ## Observations
 
 Recorded so they are not rediscovered. None of these is a decision.
 
-- **Scan and advertising control in `iroh-ble-transport`.**
-  - It starts scanning and advertising as soon as it is built, with
-    `ScanFilter::default()`: `ScanMode::LowLatency` and no service filter.
-  - It has no API to pause discovery, and its registry does not know when
-    the application has stopped the scan.
-  - After the adapter is switched off and on, it restarts scanning (with the
-    default filter) and advertising by itself, so Fini has to watch
-    `adapter_state_changes()` and apply its own policy again.
-  - A first-class API for this (a scan filter in the builder, a discovery
-    mode switch) may be needed later. Nothing has been proposed upstream.
+- **Ideas from `iroh-ble-transport` worth evaluating.** These are design
+  notes, not code to take:
+  - addresses keyed by a public-key prefix from the advertisement, so a
+    peer whose MAC address rotates is followed without redialling a stale
+    one;
+  - a lifecycle id on every asynchronous step, so late results from an
+    abandoned connection are dropped;
+  - one queue per device for connect, disconnect and setup work;
+  - L2CAP CoC when available, falling back to GATT with an ARQ.
+- **L2CAP on Android needs API 29+.** Fini's `minSdk` is 24, so GATT has to
+  stay the baseline and L2CAP can only be an upgrade.
 - **Unstable iroh API.** Custom transports are behind iroh's
   `unstable-custom-transports` feature ("may change without notice"), and
   the API has had several breaking changes since March 2026.
-- **Bluetooth identity in the advertisement.** `iroh-ble-transport`
-  advertises a service UUID that carries 12 bytes of the device's public key.
-  That is a stable identifier anyone nearby can see. Our current
-  advertisement carries a 4-byte fingerprint of `device_id`, which is also
-  stable.
-- **Mock radio.** `blew`'s mock (`testing::MockLink`) runs within one
-  process. The `actors-ble` e2e lane runs two `fini-app` processes against a
-  shared broker, so it needs another approach.
-- **Toolchain.** `iroh-ble-transport` needs Rust 1.95 and iroh needs 1.91.
-  CI uses stable.
-- **Platforms.** `blew` does not support Windows, and neither does
-  `ble-gatt`; Bluetooth on Windows stays out of scope. `blew` adds macOS and
-  iOS.
-- **Linux and Apple peers.** `blew` warns when BlueZ's `battery`/`deviceinfo`
-  plugins or the GATT cache are on, because they can trigger pairing prompts
-  with Apple devices. This does not affect Linux to Android.
+- **Bluetooth identity in the advertisement.** Dialling by key means the
+  advertisement has to identify the key. A stable identifier is visible to
+  anyone nearby; our current 4-byte `device_id` fingerprint already is one.
+- **Mock radio.** `ble-gatt`'s mock broker already runs across processes, so
+  the `actors-ble` e2e lane can keep using it under the new transport.
+- **Toolchain.** iroh needs Rust 1.91; CI uses stable.
+- **Platforms.** `ble-gatt` does not support Windows or Apple platforms yet;
+  Bluetooth there stays out of scope.
 
 ## Plan
 
@@ -100,17 +92,15 @@ Recorded so they are not rediscovered. None of these is a decision.
    outside contributions.
 2. **Spike on hardware.** Laptop plus Pixel:
    - iroh on Android, and the APK size it adds;
-   - QUIC over `iroh-ble-transport`, on both the L2CAP and the GATT path:
-     handshake time and throughput;
-   - Fini switching `blew` scanning and advertising on and off underneath a
-     running transport;
-   - unlink, reconnect, and the phone's address rotation.
+   - a minimal custom transport carrying QUIC over `ble-gatt`'s datagram
+     channel: handshake time and throughput over GATT.
 3. **Network over iroh.** Device identity becomes the iroh key, pairing and
    sync move to QUIC streams, and `tcp_ws` and our auth are removed.
-4. **Bluetooth over iroh.** `iroh-ble-transport` replaces `channel/ble.rs`
-   and the `ble-gatt` dependency, with the D3 controller on top.
-5. **Rework ADR-0008** where its mechanics are replaced (see Open
-   questions), and replace the `actors-ble` mock lane.
+4. **The `ble-gatt` iroh transport crate** (D3, D4), tested on the mock broker
+   and on hardware.
+5. **Bluetooth over iroh in Fini.** The new crate replaces `channel/ble.rs`,
+   with Fini's scan and advertising policy on top.
+6. **Rework ADR-0008** where its mechanics are replaced (see Open questions).
 
 ## Open questions
 
@@ -122,4 +112,5 @@ Recorded so they are not rediscovered. None of these is a decision.
   - the primary channel;
   - per-channel presence.
 - Relays: off (local-first, `presets::N0DisableRelay`) or allowed?
+- The name of the new crate, and whether `ble-gatt` gains L2CAP.
 - A CLA for outside contributors.
