@@ -57,11 +57,26 @@ slow part today is discovery and dialling, not throughput.
 **D4 — Fini decides when Bluetooth scans and advertises.** ADR-0008 D0, D8 and
 D12 stand: Bluetooth works only when there is a reason to. The transport
 crate exposes discovery and advertising control to its caller rather than
-scanning on its own.
+scanning on its own. `ble-gatt` offers power profiles as advice
+(`ble-gatt` ADR-0007 D8); Fini applies them under its own rules.
 
 **D5 — No AGPL code in `ble-gatt`.** `iroh-ble-transport` and `blew` may be read
 for ideas, but no code is copied from them, and they are never added as
 dependencies.
+
+**D6 — Who owns which layer.** The layers are defined in `ble-gatt`'s
+`docs/architecture.md`:
+
+| Layer | Owner |
+|---|---|
+| L0–L3 and power policy: platform APIs, BLE roles, links, datagram channel, peer identity | `ble-gatt` core crate |
+| L4 iroh adapter | `ble-gatt-iroh`. All iroh coupling on the Bluetooth side is in this crate. |
+| L4 Tauri integration: Android bridge, permissions | `tauri-plugin-ble-gatt`, which Fini uses instead of a vendored copy of the Kotlin bridge |
+| L5: choosing iroh, sessions, sync, pairing, when the radio works | Fini |
+
+Fini decides that Fini uses iroh. `ble-gatt` takes no position on the network
+stack, so moving off iroh means a new adapter crate and changes in Fini, not
+in `ble-gatt`.
 
 ## Observations
 
