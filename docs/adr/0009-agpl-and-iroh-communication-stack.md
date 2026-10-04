@@ -44,10 +44,15 @@ iroh's TLS 1.3 with the device's Ed25519 key, which closes D16 / #184. Sync
 and pairing traffic move to QUIC streams under our own ALPN.
 
 **D3 — Bluetooth is our own iroh transport on `ble-gatt`, not
-`iroh-ble-transport` or `blew`.** It is a new MIT crate in the `ble-gatt`
-workspace, next to `ble-gatt` and `tauri-plugin-ble-gatt`. It implements
-iroh's `CustomTransport` and carries QUIC datagrams over `ble-gatt`. The
-`ble-gatt` core crate stays free of any iroh dependency.
+`iroh-ble-transport` or `blew`.** It is a new MIT crate, `ble-gatt-iroh`, in
+the `ble-gatt` workspace, next to `ble-gatt` and `tauri-plugin-ble-gatt`. It
+implements iroh's `CustomTransport` and carries QUIC datagrams over
+`ble-gatt`'s GATT datagram channel. The `ble-gatt` core crate stays free of
+any iroh dependency.
+
+GATT only, no L2CAP. L2CAP CoC on Android needs API 29+ while Fini's
+`minSdk` is 24, so GATT would have to stay as a second path anyway, and the
+slow part today is discovery and dialling, not throughput.
 
 **D4 — Fini decides when Bluetooth scans and advertises.** ADR-0008 D0, D8 and
 D12 stand: Bluetooth works only when there is a reason to. The transport
@@ -69,10 +74,7 @@ Recorded so they are not rediscovered. None of these is a decision.
     one;
   - a lifecycle id on every asynchronous step, so late results from an
     abandoned connection are dropped;
-  - one queue per device for connect, disconnect and setup work;
-  - L2CAP CoC when available, falling back to GATT with an ARQ.
-- **L2CAP on Android needs API 29+.** Fini's `minSdk` is 24, so GATT has to
-  stay the baseline and L2CAP can only be an upgrade.
+  - one queue per device for connect, disconnect and setup work.
 - **Unstable iroh API.** Custom transports are behind iroh's
   `unstable-custom-transports` feature ("may change without notice"), and
   the API has had several breaking changes since March 2026.
@@ -96,7 +98,7 @@ Recorded so they are not rediscovered. None of these is a decision.
      channel: handshake time and throughput over GATT.
 3. **Network over iroh.** Device identity becomes the iroh key, pairing and
    sync move to QUIC streams, and `tcp_ws` and our auth are removed.
-4. **The `ble-gatt` iroh transport crate** (D3, D4), tested on the mock broker
+4. **The `ble-gatt-iroh` crate** (D3, D4), tested on the mock broker
    and on hardware.
 5. **Bluetooth over iroh in Fini.** The new crate replaces `channel/ble.rs`,
    with Fini's scan and advertising policy on top.
@@ -112,5 +114,4 @@ Recorded so they are not rediscovered. None of these is a decision.
   - the primary channel;
   - per-channel presence.
 - Relays: off (local-first, `presets::N0DisableRelay`) or allowed?
-- The name of the new crate, and whether `ble-gatt` gains L2CAP.
 - A CLA for outside contributors.
