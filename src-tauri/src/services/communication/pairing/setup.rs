@@ -19,7 +19,10 @@ use crate::services::communication::sync::types::PeerFrame;
 
 /// How long one Bluetooth setup round listens before the next one starts
 /// (ADR-0008 D12: a search lasts up to 60s and ends early on success).
+#[cfg(not(test))]
 const SETUP_ROUND: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const SETUP_ROUND: Duration = Duration::from_millis(200);
 
 /// Pause between Network hello attempts while the peer is not answering.
 /// The Network channel's own presence beacon, not this, is what finds the
@@ -28,7 +31,10 @@ const NETWORK_HELLO_RETRY: Duration = Duration::from_secs(2);
 
 /// Pause after a Bluetooth round fails outright (scan refused, adapter
 /// gone), so a broken radio is not hammered.
+#[cfg(not(test))]
 const BLUETOOTH_ROUND_FAILURE_PAUSE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const BLUETOOTH_ROUND_FAILURE_PAUSE: Duration = Duration::from_millis(200);
 
 /// Start (or keep) the setup search for this peer's channel. The search
 /// runs until `finish` ends it.
@@ -77,6 +83,28 @@ pub fn finish(
 
 /// Says hello until the peer acknowledges it or this attempt ends.
 async fn run(state: DeviceConnectionState, peer_device_id: String, kind: ChannelKind, attempt: u64) {
+    // The dialog also runs add mode for a known device, and its candidate
+    // scan re-dials the very phone this search is saying hello to. Crossing
+    // dials fail each other's GATT setup, so the candidate scan stands aside
+    // for the whole setup -- not only until our own hello is acknowledged:
+    // the peer's hello still has to reach this device afterwards, and this
+    // device's scan dialling it in the meantime keeps that from happening.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let _clear_of_candidate_scan = (kind == ChannelKind::Bluetooth)
+        .then(crate::services::communication::channel::ble::PairingLeg::begin);
+    say_hello(&state, &peer_device_id, kind, attempt).await;
+    if kind == ChannelKind::Bluetooth {
+        while state
+            .channel_setup(&peer_device_id, kind)
+            .is_some_and(|setup| setup.attempt == attempt)
+        {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+}
+
+async fn say_hello(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind, attempt: u64) {
+    let (state, peer_device_id) = (state.clone(), peer_device_id.to_string());
     loop {
         match state.channel_setup(&peer_device_id, kind) {
             Some(setup) if setup.attempt == attempt && !setup.hello_acked_by_peer => {}

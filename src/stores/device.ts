@@ -218,7 +218,7 @@ const PRESENCE_POLL_INTERVAL_MS = 15_000;
 // to `BLUETOOTH_SCAN_DURATION_MS` to resolve -- unlike the other polls,
 // this loop is self-rescheduling (not `setInterval`) so passes never
 // overlap.
-const BLUETOOTH_SCAN_DURATION_MS = 4_000;
+const BLUETOOTH_SCAN_DURATION_MS = 60_000;
 const BLUETOOTH_SCAN_IDLE_GAP_MS = 2_000;
 const NORMAL_HEARTBEAT_MS = 60_000;
 const OFFLINE_AFTER_MISSED_HEARTBEATS_MS = NORMAL_HEARTBEAT_MS * 2;
@@ -995,12 +995,21 @@ export const useDeviceStore = defineStore("device", () => {
   async function bluetoothScanTick(generation: number) {
     if (generation !== bluetoothScanGeneration) return;
 
+    // While a pairing is under way (a request we sent is waiting on the
+    // peer, or one we received is not finished) the pair's own dials own the
+    // adapter. A pass here would probe the peer while the peer is dialling us
+    // back, and two crossing connections make each side's GATT setup fail
+    // ("peer refused notifications"). The picker list is kept as it is.
+    const pairingInProgress = outgoingRequest.value !== null || incomingRequests.value.length > 0;
+
     try {
-      const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
-        durationMs: BLUETOOTH_SCAN_DURATION_MS,
-      });
-      if (generation !== bluetoothScanGeneration) return;
-      setBluetoothDiscovered(items);
+      if (!pairingInProgress) {
+        const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
+          durationMs: BLUETOOTH_SCAN_DURATION_MS,
+        });
+        if (generation !== bluetoothScanGeneration) return;
+        setBluetoothDiscovered(items);
+      }
     } catch (error) {
       // Keep retrying rather than giving up for the rest of the session:
       // the most common failure on a fresh install is the Android

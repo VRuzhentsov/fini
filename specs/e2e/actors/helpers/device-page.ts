@@ -1,9 +1,9 @@
 import type { E2EActor } from '../fixtures.ts';
 import { pollUntil } from './dom.ts';
 import { openDeviceDetailsFromSettings } from './personal-sync.ts';
-import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
+import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/channel.ts';
 
-export { ChannelColor, ChannelKind };
+export { ChannelColor, ChannelKind, ChannelState };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -129,4 +129,67 @@ export async function addChannelViaDialog(
 
 export async function closeSetupDialog(actor: E2EActor): Promise<void> {
   await actor.page.click('[data-testid="setup-close"]');
+}
+
+/** OK in the setup dialog: switches the channel on for this device. */
+export async function confirmSetupDialog(actor: E2EActor): Promise<void> {
+  await actor.page.click('[data-testid="setup-ok"]');
+}
+
+interface ChannelStatusRow {
+  kind: ChannelKind;
+  state: ChannelState;
+}
+
+/** The stored state of a channel with a peer, read from the backend. */
+export async function channelState(
+  actor: E2EActor,
+  peerDeviceId: string,
+  kind: ChannelKind,
+): Promise<ChannelState> {
+  const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', {
+    peerDeviceId,
+  });
+  return statuses.find((status) => status.kind === kind)?.state ?? ChannelState.None;
+}
+
+export async function waitForChannelState(
+  actor: E2EActor,
+  peerDeviceId: string,
+  kind: ChannelKind,
+  expected: ChannelState,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<void> {
+  await pollUntil(`${actor.slug} ${kind} channel state is ${expected}`, async () => {
+    return (await channelState(actor, peerDeviceId, kind)) === expected ? expected : false;
+  }, timeoutMs, 1_000);
+}
+
+/**
+ * Unlink a channel the way a person does: switch it off, then press the
+ * trash button that the off row offers. A channel that is already On has no
+ * unlink button, so the switch comes first.
+ */
+export async function unlinkChannel(
+  actor: E2EActor,
+  peerDeviceId: string,
+  kind: ChannelKind,
+): Promise<void> {
+  await openDeviceDetailsFromSettings(actor, peerDeviceId);
+  if ((await channelState(actor, peerDeviceId, kind)) === ChannelState.On) {
+    await toggleChannel(actor, kind);
+    await waitForChannelState(actor, peerDeviceId, kind, ChannelState.Off);
+  }
+  // Pressed until it takes. The page ignores a press while the row's own
+  // switch is still settling (`busyChannel`), so a single click straight
+  // after switching off can be dropped without any error -- seen once in a
+  // 5-cycle run on real devices, where the channel stayed Off for 30s.
+  const unlink = actor.page.locator(`${channelRowSelector(kind)} [data-testid="unlink-channel"]`);
+  await pollUntil(`${actor.slug} ${kind} channel is unlinked`, async () => {
+    if ((await channelState(actor, peerDeviceId, kind)) === ChannelState.None) return true;
+    if ((await unlink.count()) > 0 && (await unlink.isEnabled())) {
+      await unlink.click();
+    }
+    return (await channelState(actor, peerDeviceId, kind)) === ChannelState.None;
+  }, DEFAULT_TIMEOUT_MS, 1_000);
 }
