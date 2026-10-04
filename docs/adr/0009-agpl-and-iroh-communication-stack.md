@@ -78,6 +78,23 @@ Fini decides that Fini uses iroh. `ble-gatt` takes no position on the network
 stack, so moving off iroh means a new adapter crate and changes in Fini, not
 in `ble-gatt`.
 
+**D7 — What happens to Fini's communication terms.** Fini's terms
+(`docs/glossary.md`, `src-tauri/src/services/communication/README.md`) map
+onto the new stack as below. This is the intended direction; each line is
+settled in the stage that changes it, and the glossary is updated then.
+
+| Fini term today | Under iroh |
+|---|---|
+| `Channel` (a row: pair + kind + on/off + primary) | Stays. It is the person's setting, not machinery. It decides which paths Fini lets iroh use for a pair. |
+| `DataLink` (one connection's byte pipe: `TcpWsDataLink`, `BleDataLink`) | Removed. iroh's QUIC connection carries the bytes; Bluetooth goes through `ble-gatt-iroh`, Network through iroh's IP transport. |
+| `PeerSession` (an authenticated conversation) | Becomes an iroh connection to the peer's key under Fini's ALPN; TLS proves the key, so Fini's own auth step goes. |
+| `PeerFrame` (one message) | Stays as the message format, sent over QUIC streams instead of `DataLink`. |
+
+**Layer numbers.** `DataLink` is named after OSI layer 2. `ble-gatt` numbers
+its own layers (L0–L5, `docs/architecture.md` in `ble-gatt`), where L2 is one
+BLE connection and OSI's layer 2 corresponds to its L3. When Fini documents
+refer to a layer number, they say which scheme they mean.
+
 ## Observations
 
 Recorded so they are not rediscovered. None of these is a decision.
@@ -114,7 +131,10 @@ Recorded so they are not rediscovered. None of these is a decision.
 3. **Network over iroh.** Device identity becomes the iroh key, pairing and
    sync move to QUIC streams, and `tcp_ws` and our auth are removed.
 4. **The `ble-gatt-iroh` crate** (D3, D4), tested on the mock broker
-   and on hardware.
+   and on hardware. First version: `ble-gatt` PR #26. Before Fini adopts it,
+   Fini moves onto `tauri-plugin-ble-gatt` instead of its vendored Kotlin
+   bridge (`ble-gatt` ADR-0007 D9). The step-by-step plan across both
+   repositories is `docs/plans/2026-10-04-ble-gatt-layers-and-iroh.md`.
 5. **Bluetooth over iroh in Fini.** The new crate replaces `channel/ble.rs`,
    with Fini's scan and advertising policy on top.
 6. **Rework ADR-0008** where its mechanics are replaced (see Open questions).
