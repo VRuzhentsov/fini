@@ -67,15 +67,14 @@ transport). Release v0.3.14 shipped.
 - Disk is limited (~4 GB free at the time of writing): build with
   `CARGO_INCREMENTAL=0`, clear `target/*/incremental` when it fills.
 
-## Open questions (need the user)
+## Decisions taken 2026-10-05 (were open questions)
 
-1. Does the iroh `EndpointId` replace Fini's `device_id`, and how do existing
-   pairings migrate (move the key, or pair again)? Blocks Fini phase F3.
-2. What remains of ADR-0008's channel model once iroh selects paths:
-   per-channel `None`/`Off`/`On`, init by mutual hello, the primary channel,
-   per-channel presence. Blocks F3–F5.
-3. iroh relays: off (`presets::N0DisableRelay`, local-first) or allowed?
-4. A CLA for outside contributors (needed before accepting PRs once AGPL).
+1. Identity: `device_id` stays a UUID; `paired_devices.endpoint_id` pins the
+   peer's iroh key (ADR-0009 D8). Old pairs re-pair.
+2. ADR-0008 stays whole; one iroh endpoint per channel kind, `DataLink`
+   implemented over a QUIC stream (ADR-0009 D9).
+3. Relays off (ADR-0009 D10).
+4. CLA: still open.
 
 ## Phases
 

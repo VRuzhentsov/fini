@@ -31,17 +31,19 @@ must not take a dependency on, or code from, the two AGPL projects.
 stays public, and anyone may fork it under the same license. The name and
 icon "Fini" are protected as a trademark, so forks must rebrand.
 
-**D2 — iroh replaces the whole communication layer.** One iroh `Endpoint` per
-device carries both channels:
+**D2 — iroh carries the bytes; ADR-0008 keeps deciding which channel.**
+Revised by D8–D10. Each channel kind gets its own iroh `Endpoint`, all with
+the device's one Ed25519 key, each restricted to one path:
 
-- Network through iroh's IP transport, with local discovery through mDNS
-  (`iroh-mdns-address-lookup`).
-- Bluetooth through our own iroh custom transport (D3).
+- Network: iroh's IP transport only. Addresses come from Fini's own presence
+  beacons (ADR-0008), handed to iroh through its `MemoryLookup`.
+- Bluetooth: our own iroh custom transport only (D3); IP transports cleared.
 
-What goes away: `tcp_ws`, our auth, our frame codec, and the code that picks
-a channel and keeps a link to it. Authentication and encryption come from
-iroh's TLS 1.3 with the device's Ed25519 key, which closes D16 / #184. Sync
-and pairing traffic move to QUIC streams under our own ALPN.
+What goes away: `tcp_ws` (the WebSocket server and client) and Fini's
+unauthenticated `Auth` check. Authentication and encryption come from iroh's
+TLS 1.3 with the device's key, which closes D16 / #184. `PeerFrame`s travel
+on a QUIC stream under Fini's ALPN; `DataLink` stays as the seam the
+application protocol talks to (D9).
 
 **D3 — Bluetooth is our own iroh transport on `ble-gatt`, not
 `iroh-ble-transport` or `blew`.** It is a new MIT crate, `ble-gatt-iroh`, in
@@ -87,9 +89,9 @@ settled in the stage that changes it, and the glossary is updated then.
 | Fini term today | Under iroh |
 |---|---|
 | `Channel` (a row: pair + kind + on/off + primary) | Stays. It is the person's setting, not machinery. It decides which paths Fini lets iroh use for a pair. |
-| `DataLink` (one connection's byte pipe: `TcpWsDataLink`, `BleDataLink`) | Removed. iroh's QUIC connection carries the bytes; Bluetooth goes through `ble-gatt-iroh`, Network through iroh's IP transport. |
-| `PeerSession` (an authenticated conversation) | Becomes an iroh connection to the peer's key under Fini's ALPN; TLS proves the key, so Fini's own auth step goes. |
-| `PeerFrame` (one message) | Stays as the message format, sent over QUIC streams instead of `DataLink`. |
+| `DataLink` (one connection's byte pipe: `TcpWsDataLink`, `BleDataLink`) | Stays as the seam (D9); one implementation, `IrohDataLink`, over a QUIC stream on that channel's endpoint. |
+| `PeerSession` (an authenticated conversation) | Stays (ADR-0008). Authenticated by TLS: the peer's key must equal the `endpoint_id` stored for the pair (D8). |
+| `PeerFrame` (one message) | Stays as the message format, sent over a QUIC stream. |
 
 **Layer numbers.** In Fini and `ble-gatt` documents, `L` with a number
 always means an OSI layer. `DataLink` is named after OSI L2; in `ble-gatt`
@@ -106,6 +108,23 @@ is in `ble-gatt` `docs/architecture.md`, "How the layers map onto OSI"):
 | L3 Network | iroh: addressing by public key, choosing Bluetooth or IP |
 | L4 Transport | QUIC inside iroh |
 | L5–L7 | Fini: its ALPN, `PeerFrame`, sync and pairing |
+
+**D8 — `device_id` stays a UUID; the iroh key is pinned next to it.**
+`paired_devices` gains `endpoint_id` (the peer's public key). Devices
+exchange keys while pairing and check them on every connection, as Signal
+keeps an identity key next to the account and SSH keeps `known_hosts`.
+`origin_device_id` in existing records stays valid. Pairs made before this
+have no key and are paired again (Fini's no-legacy rule during the alpha).
+
+**D9 — ADR-0008 stays whole.** Per-channel `None`/`Off`/`On` state, init by
+mutual hello, the primary channel and per-channel presence keep working as
+they do; only what is under `DataLink` changes. This is why D2 uses one
+endpoint per channel kind: each connection then has exactly one path, so a
+channel's state still describes one real link.
+
+**D10 — iroh relays are off.** `RelayMode::Disabled` on every endpoint: Fini
+syncs over the local network and Bluetooth only, as today, with no
+third-party server seeing connection metadata.
 
 ## Observations
 
@@ -149,16 +168,11 @@ Recorded so they are not rediscovered. None of these is a decision.
    repositories is `docs/plans/2026-10-04-ble-gatt-layers-and-iroh.md`.
 5. **Bluetooth over iroh in Fini.** The new crate replaces `channel/ble.rs`,
    with Fini's scan and advertising policy on top.
-6. **Rework ADR-0008** where its mechanics are replaced (see Open questions).
+6. **ADR-0008 stays** (D9); record in it that its links now run over iroh.
 
 ## Open questions
 
-- Does the iroh `EndpointId` replace `device_id`, and how do existing
-  pairings migrate?
-- What remains of ADR-0008's channel model once iroh selects paths:
-  - the per-channel `None`/`Off`/`On` state;
-  - init by mutual hello;
-  - the primary channel;
-  - per-channel presence.
-- Relays: off (local-first, `presets::N0DisableRelay`) or allowed?
 - A CLA for outside contributors.
+
+Settled on 2026-10-05: identity (D8), ADR-0008's channel model (D9), relays
+(D10).
