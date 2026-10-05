@@ -5,6 +5,8 @@ import SettingsListItem from "./SettingsListItem.vue";
 defineProps<{
   version: string;
   sourceUrl: string;
+  license: string;
+  licenseUrl: string;
 }>();
 </script>
 
@@ -26,6 +28,14 @@ defineProps<{
         </template>
         <template #end>
           <span class="opacity-60">↗</span>
+        </template>
+      </SettingsListItem>
+      <SettingsListItem :href="licenseUrl" class="text-primary" testid="about-license">
+        <template #start>
+          <span class="font-medium">License</span>
+        </template>
+        <template #end>
+          <span class="opacity-70">{{ license }} ↗</span>
         </template>
       </SettingsListItem>
     </SettingsListGroup>

@@ -129,7 +129,7 @@ function mountSettingsView() {
       stubs: {
         "router-link": { props: ["to"], template: "<a :data-to='to'><slot /></a>" },
         ThemeSelector: { template: "<section data-testid='theme-selector-stub' />" },
-        AboutCard: { template: "<section data-testid='about-card-stub' />", props: ["version", "sourceUrl"] },
+        AboutCard: { template: "<section data-testid='about-card-stub' />", props: ["version", "sourceUrl", "license", "licenseUrl"] },
         ExportSpacesDialog: true,
         ImportSpaceMappingDialog: true,
         MergeConflictDialog: true,
@@ -405,6 +405,18 @@ describe("SettingsView search", () => {
     expect(results.text()).toContain("Source code");
     expect(results.find('a[href="https://github.com/VRuzhentsov/fini"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="settings-search-empty"]').exists()).toBe(false);
+  });
+
+  it("includes the License link in about search results", async () => {
+    const wrapper = mountSettingsView();
+    await flushUi();
+
+    await wrapper.find('[data-testid="settings-search-input"]').setValue("license");
+    await flushUi();
+
+    const results = wrapper.find('[data-testid="settings-search-results"]');
+    expect(results.text()).toContain("AGPL-3.0-or-later");
+    expect(results.find('a[href="https://github.com/VRuzhentsov/fini/blob/main/LICENSE"]').exists()).toBe(true);
   });
 
   it("includes automatic updates in search only when startup updates are supported", async () => {
