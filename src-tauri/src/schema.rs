@@ -95,6 +95,7 @@ diesel::table! {
         paired_at      -> Text,
         last_seen_at   -> Nullable<Text>,
         pair_state     -> Text,
+        endpoint_id    -> Nullable<Text>,
     }
 }
 

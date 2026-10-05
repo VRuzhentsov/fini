@@ -13,6 +13,9 @@ use crate::services::communication::channel::ChannelKind;
 pub struct DeviceIdentity {
     pub device_id: String,
     pub hostname: String,
+    /// The public half of this device's iroh key, hex (ADR-0009 D8).
+    #[serde(default)]
+    pub endpoint_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +155,9 @@ pub(super) struct DiscoveryBeacon {
     pub discovery_port: Option<u16>,
     #[serde(default)]
     pub ws_port: Option<u16>,
+    /// The sender's iroh key, so a pair request can be dialled to it.
+    #[serde(default)]
+    pub endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +216,8 @@ pub(super) struct StoredIncomingPairRequest {
     pub request: IncomingPairRequest,
     pub from_addr: String,
     pub from_ws_port: Option<u16>,
+    /// The requester's key, as TLS proved it on the request's connection.
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +226,9 @@ pub(super) struct SeenPeer {
     pub addr: String,
     pub discovery_port: u16,
     pub ws_port: Option<u16>,
+    /// The key the peer announces. Unproven until a connection to it
+    /// succeeds, which is why it is only used to dial, never to trust.
+    pub endpoint_id: Option<String>,
     pub last_seen_at: String,
     pub last_seen_mono: Instant,
 }
@@ -251,6 +262,10 @@ pub(super) struct DiscoveryRuntime {
     /// ADR-0008 D1/D2: the channels this device is running a setup search
     /// for right now, and how far each one's init has got.
     pub channel_setups: HashMap<(String, ChannelKind), ChannelSetup>,
+    /// Keys peers proved over TLS on a connection to this device, by
+    /// device id (ADR-0009 D8). Pinned in `paired_devices` when a pairing
+    /// completes.
+    pub link_keys: HashMap<String, String>,
 }
 
 /// One channel's init in progress (ADR-0008 D1). Complete once both halves

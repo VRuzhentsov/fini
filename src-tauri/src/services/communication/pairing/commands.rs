@@ -1,12 +1,10 @@
 use chrono::Utc;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-use futures_util::SinkExt;
 use std::net::IpAddr;
 use std::time::Duration;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 
 use super::channels;
@@ -35,13 +33,6 @@ use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::pairing::{channel_status, ChannelState, ChannelStatus};
 use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::ChannelKind;
-
-fn ws_url(addr: IpAddr, port: u16) -> String {
-    match addr {
-        IpAddr::V4(_) => format!("ws://{addr}:{port}"),
-        IpAddr::V6(_) => format!("ws://[{addr}]:{port}"),
-    }
-}
 
 pub(crate) fn normalize_bluetooth_address(value: &str) -> Option<String> {
     let trimmed = value.trim();
@@ -163,32 +154,19 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     Ok(false)
 }
 
-/// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/`PairComplete`).
-/// Independent of `channel::tcp_ws::TcpWsDataLink` (connect, send one frame,
-/// close — no need for a full `DataLink`), but MUST encode via the same
-/// `channel::codec::encode_frame` (envelope-wrapped) and the same `Message::Text`
-/// framing `TcpWsDataLink` reads, or `run_peer_gate` silently fails to parse the
-/// first frame.
-fn send_pair_ws(addr: IpAddr, port: u16, msg: PeerFrame) -> Result<(), String> {
-    tauri::async_runtime::block_on(async move {
-        let url = ws_url(addr, port);
-        let (mut ws, _) = connect_async(&url)
-            .await
-            .map_err(|err| format!("connect pair websocket {url} failed: {err}"))?;
-        let bytes = crate::services::communication::channel::codec::encode_frame(&msg)
-            .map_err(|err| format!("encode pair websocket message failed: {err}"))?;
-        let text = String::from_utf8(bytes)
-            .map_err(|err| format!("non-utf8 pair websocket message: {err}"))?;
-        ws.send(Message::Text(text.into()))
-            .await
-            .map_err(|err| format!("send pair websocket message failed: {err}"))?;
-        let _ = ws.close(None).await;
-        Ok(())
-    })
+/// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/`PairComplete`)
+/// over the Network channel: one iroh connection to the device holding
+/// `peer_key`, one frame, closed once the peer has it.
+fn send_pair_network(
+    state: &DeviceConnectionState, peer_key: &str, addr: IpAddr, port: u16, msg: PeerFrame,
+) -> Result<(), String> {
+    tauri::async_runtime::block_on(
+        crate::services::communication::channel::network::send_one_frame(state, peer_key, addr, port, &msg),
+    )
 }
 
 /// One-shot pre-auth pairing sender over Bluetooth — the BLE-first pairing
-/// equivalent of `send_pair_ws` above (ADR 0002 Phase 3). No text-framing
+/// equivalent of `send_pair_network` above (ADR 0002 Phase 3). No text-framing
 /// dance needed here: `channel::send_frame` already handles encoding for
 /// any `DataLink`, unlike the WebSocket path, which has to hand-roll a
 /// `Message::Text` frame around the same codec.
@@ -342,7 +320,12 @@ pub fn device_connection_send_pair_request_impl(
     };
 
     let target_port = input.to_ws_port.unwrap_or(state.space_sync_ws_port);
-    send_pair_ws(
+    let peer_key = state
+        .presence_key(&payload.to_device_id)
+        .ok_or_else(|| "this device has not announced its key yet; try again in a moment".to_string())?;
+    send_pair_network(
+        state,
+        &peer_key,
         target_ip,
         target_port,
         PeerFrame::PairRequest(payload.clone()),
@@ -584,7 +567,7 @@ pub fn device_connection_pair_accept_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
-    let (to_device_id, to_addr, to_ws_port, via_bluetooth) = {
+    let (to_device_id, to_addr, to_ws_port, to_key, via_bluetooth) = {
         let mut guard = state
             .runtime
             .lock()
@@ -600,6 +583,7 @@ pub fn device_connection_pair_accept_request_impl(
             stored.request.from_device_id.clone(),
             stored.from_addr.clone(),
             stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
+            stored.from_endpoint_id.clone(),
             stored.request.via_bluetooth,
         )
     };
@@ -629,7 +613,8 @@ pub fn device_connection_pair_accept_request_impl(
         let target_ip: IpAddr = to_addr
             .parse()
             .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
-        send_pair_ws(target_ip, to_ws_port, PeerFrame::PairAccept(payload))?;
+        let peer_key = to_key.ok_or_else(|| "the requester's key is unknown".to_string())?;
+        send_pair_network(state, &peer_key, target_ip, to_ws_port, PeerFrame::PairAccept(payload))?;
     }
 
     if let Ok(mut guard) = state.runtime.lock() {
@@ -662,7 +647,7 @@ pub fn device_connection_pair_complete_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    let (to_device_id, to_addr, to_ws_port, via_bluetooth) = {
+    let (to_device_id, to_addr, to_ws_port, to_key, via_bluetooth) = {
         let mut guard = state
             .runtime
             .lock()
@@ -678,6 +663,7 @@ pub fn device_connection_pair_complete_request_impl(
             stored.request.from_device_id.clone(),
             stored.from_addr.clone(),
             stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
+            stored.from_endpoint_id.clone(),
             stored.request.via_bluetooth,
         )
     };
@@ -709,7 +695,8 @@ pub fn device_connection_pair_complete_request_impl(
         let target_ip: IpAddr = to_addr
             .parse()
             .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
-        send_pair_ws(target_ip, to_ws_port, PeerFrame::PairComplete(payload))?;
+        let peer_key = to_key.ok_or_else(|| "the requester's key is unknown".to_string())?;
+        send_pair_network(state, &peer_key, target_ip, to_ws_port, PeerFrame::PairComplete(payload))?;
     }
 
     let mut guard = state
@@ -935,6 +922,10 @@ pub fn device_connection_save_paired_device_impl(
     display_name: String,
     bluetooth_address: Option<String>,
     via_bluetooth: bool,
+    // The key the peer proved during pairing (ADR-0009 D8); pinned here.
+    // `None` when the pairing leg carried no key (Bluetooth, until it runs
+    // over iroh), which leaves any key already pinned in place.
+    endpoint_id: Option<String>,
     // Unused since ADR-0006 removed the `request_os_bond` call this fed: a
     // completed BLE pairing no longer needs the OS to bond anything, so
     // there is nothing here that wants a second DB handle. Kept in the
@@ -968,6 +959,14 @@ pub fn device_connection_save_paired_device_impl(
         };
         diesel::insert_into(paired_devices::table)
             .values(&input)
+            .execute(&mut *conn)
+            .map_err(|e| e.to_string())?;
+    }
+    // Pairing again pins the key proved this time: a reinstalled device
+    // has a new one.
+    if let Some(endpoint_id) = &endpoint_id {
+        diesel::update(paired_devices::table.find(&peer_device_id))
+            .set(paired_devices::endpoint_id.eq(endpoint_id))
             .execute(&mut *conn)
             .map_err(|e| e.to_string())?;
     }
@@ -1047,12 +1046,14 @@ pub fn device_connection_save_paired_device(
     via_bluetooth: bool,
 ) -> Result<PairedDevice, String> {
     let mut conn = db.0.lock().unwrap();
+    let endpoint_id = state.link_key(&peer_device_id);
     device_connection_save_paired_device_impl(
         &mut conn,
         peer_device_id,
         display_name,
         bluetooth_address,
         via_bluetooth,
+        endpoint_id,
         state.db_path.clone(),
     )
 }
@@ -1484,7 +1485,7 @@ pub fn device_connection_unpair_impl(
         .execute(conn)
         .map_err(|e| e.to_string())?;
     // Failed attempts with the old pair must not delay a new one.
-    crate::services::communication::channel::tcp_ws::forget_failures(&peer_device_id);
+    crate::services::communication::channel::network::forget_failures(&peer_device_id);
     #[cfg(any(target_os = "linux", target_os = "android"))]
     crate::services::communication::channel::ble::forget_delivery_misses(&peer_device_id);
     // Its channels went with it, which can leave nobody to advertise for.
@@ -1619,6 +1620,7 @@ mod tests {
             "Peer New".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
             true, // via_bluetooth
+            None, // endpoint_id
             db_path.clone(),
         )
         .expect("save paired device");
@@ -1663,6 +1665,7 @@ mod tests {
             "Peer Old".to_string(),
             None,
             false, // via_bluetooth
+            None, // endpoint_id
             db_path.clone(),
         )
         .expect("first pairing");
@@ -1679,6 +1682,7 @@ mod tests {
             "Peer Old".to_string(),
             None,
             false, // via_bluetooth
+            None, // endpoint_id
             db_path.clone(),
         )
         .expect("re-pairing");
@@ -1710,6 +1714,7 @@ mod tests {
             "Peer Network Paired".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
             false, // via_bluetooth
+            None, // endpoint_id
             db_path.clone(),
         )
         .expect("save paired device");
@@ -1746,6 +1751,7 @@ mod tests {
             "Peer A".to_string(),
             Some("aa:bb:cc:dd:ee:ff".to_string()),
             true, // via_bluetooth
+            None, // endpoint_id
             db_path,
         )
         .expect("save paired device");
@@ -2007,6 +2013,7 @@ mod tests {
             "Peer A".to_string(),
             Some("11:22:33:44:55:66".to_string()),
             true, // via_bluetooth
+            None, // endpoint_id
             std::path::PathBuf::from("/nonexistent"),
         )
         .expect("re-pair after unpair");

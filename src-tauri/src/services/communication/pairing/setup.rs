@@ -163,7 +163,16 @@ async fn network_hello(state: &DeviceConnectionState, peer_device_id: &str) -> b
     let Ok(ip) = addr.parse() else {
         return false;
     };
-    let Ok(mut link) = crate::services::communication::channel::tcp_ws::dial(ip, port).await else {
+    let pinned = tokio::task::block_in_place(|| {
+        super::pinned_key(&mut crate::services::db::open_db_at_path(&state.db_path), peer_device_id)
+    });
+    let Some(peer_key) = pinned else {
+        // ADR-0009 D8: a pair from before keys existed is paired again.
+        return false;
+    };
+    let Ok(mut link) =
+        crate::services::communication::channel::network::dial(state, &peer_key, ip, port).await
+    else {
         return false;
     };
     let hello = PeerFrame::Hello {

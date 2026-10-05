@@ -48,7 +48,10 @@ sherpa-onnx-sys = "0.1.9"
 cpal = "0.15"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = "0.3"
-tokio-tungstenite = "0.26"
+# The Network channel and the device's key (ADR-0009): QUIC with TLS 1.3,
+# authenticated by each device's Ed25519 key. Relays are never used (D10),
+# so only the TLS backend is enabled.
+iroh = { version = "1.3", default-features = false, features = ["tls-ring"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 async-trait = "0.1"
 dirs = "5"

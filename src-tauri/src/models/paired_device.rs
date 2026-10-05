@@ -16,6 +16,8 @@ pub struct PairedDevice {
     pub paired_at: String,
     pub last_seen_at: Option<String>,
     pub pair_state: String,
+    /// The peer's iroh key, pinned at pairing (ADR-0009 D8).
+    pub endpoint_id: Option<String>,
 }
 
 #[derive(Deserialize, Insertable)]

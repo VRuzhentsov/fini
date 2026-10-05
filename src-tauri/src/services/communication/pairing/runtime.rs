@@ -69,6 +69,7 @@ pub(super) fn try_load_or_create_identity(
     Ok(DeviceIdentity {
         device_id,
         hostname,
+        endpoint_id: String::new(),
     })
 }
 
@@ -114,6 +115,7 @@ pub(super) fn generate_passcode() -> String {
 pub(super) fn build_incoming_pair_request(
     payload: &PairRequestPayload,
     from_addr: String,
+    from_endpoint_id: Option<String>,
     via_bluetooth: bool,
 ) -> StoredIncomingPairRequest {
     let created_at = utc_now();
@@ -139,6 +141,7 @@ pub(super) fn build_incoming_pair_request(
         },
         from_addr,
         from_ws_port: payload.from_ws_port,
+        from_endpoint_id,
     }
 }
 
@@ -155,6 +158,7 @@ pub(super) fn upsert_seen_peer(
             addr: addr.to_string(),
             discovery_port: beacon.discovery_port.unwrap_or(fallback_discovery_port),
             ws_port: beacon.ws_port,
+            endpoint_id: beacon.endpoint_id.clone(),
             last_seen_at: utc_now(),
             last_seen_mono: Instant::now(),
         },
@@ -216,6 +220,7 @@ fn upsert_mdns_peer(
             addr,
             discovery_port: fallback_discovery_port,
             ws_port: Some(info.get_port()),
+            endpoint_id: service_txt(info, "key").map(str::to_string),
             last_seen_at: utc_now(),
             last_seen_mono: Instant::now(),
         },
@@ -240,6 +245,7 @@ fn register_mdns_service(
     let properties = [
         ("txtvers", "1"),
         ("devid", identity.device_id.as_str()),
+        ("key", identity.endpoint_id.as_str()),
         ("name", identity.hostname.as_str()),
         ("add", add_value),
         ("proto", "1"),
@@ -409,6 +415,7 @@ fn broadcast_beacon(
         sent_at: utc_now(),
         discovery_port: Some(discovery_port),
         ws_port: Some(space_sync_ws_port),
+        endpoint_id: Some(identity.endpoint_id.clone()),
     };
 
     let payload = serde_json::to_vec(&beacon);
@@ -626,9 +633,14 @@ pub(super) fn spawn_discovery_worker(
 
                                     guard.incoming_requests.insert(
                                         pair_request.request_id.clone(),
+                                        // A UDP datagram proves no key, so
+                                        // such a request cannot be accepted
+                                        // (ADR-0009 D8); requests come over
+                                        // the Network channel's links.
                                         build_incoming_pair_request(
                                             &pair_request,
                                             addr.ip().to_string(),
+                                            None,
                                             false,
                                         ),
                                     );
@@ -784,6 +796,7 @@ mod tests {
             },
             from_addr: "127.0.0.1".to_string(),
             from_ws_port: Some(SPACE_SYNC_WS_PORT),
+            from_endpoint_id: None,
         }
     }
 
@@ -796,6 +809,7 @@ mod tests {
             sent_at: utc_now(),
             discovery_port: Some(DISCOVERY_PORT),
             ws_port: Some(SPACE_SYNC_WS_PORT),
+            endpoint_id: None,
         }
     }
 
@@ -912,7 +926,7 @@ mod tests {
     fn incoming_pair_request_uses_receiver_local_ttl() {
         let payload = sample_pair_request_payload("1999-01-01T00:00:00Z");
         let before = Utc::now();
-        let stored = build_incoming_pair_request(&payload, "192.168.1.50".to_string(), false);
+        let stored = build_incoming_pair_request(&payload, "192.168.1.50".to_string(), None, false);
         let after = Utc::now();
 
         assert_eq!(stored.request.request_id, payload.request_id);
@@ -969,6 +983,7 @@ mod tests {
         let file_identity = DeviceIdentity {
             device_id: "existing-device-id".to_string(),
             hostname: "file-host".to_string(),
+            endpoint_id: String::new(),
         };
 
         let payload =
@@ -996,6 +1011,7 @@ mod tests {
         let file_identity = DeviceIdentity {
             device_id: "file-device-id".to_string(),
             hostname: "file-host".to_string(),
+            endpoint_id: String::new(),
         };
         let payload =
             serde_json::to_string_pretty(&file_identity).expect("serialize fixture identity");
@@ -1032,6 +1048,7 @@ mod presence_tests {
             addr: "127.0.0.1".to_string(),
             discovery_port: 0,
             ws_port: None,
+            endpoint_id: None,
             last_seen_at: crate::services::db::utc_now(),
             last_seen_mono: Instant::now() - ago,
         }

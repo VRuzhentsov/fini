@@ -435,6 +435,10 @@ struct DevicePairedSaveArgs {
     peer_device_id: String,
     #[arg(long)]
     display_name: String,
+    /// The peer's iroh key (hex) to pin for the pair (ADR-0009 D8). Without
+    /// it the pair cannot connect until it is paired through the app.
+    #[arg(long)]
+    endpoint_id: Option<String>,
 }
 
 #[derive(Args)]
@@ -1474,6 +1478,7 @@ fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
                     args.display_name,
                     None,
                     false,
+                    args.endpoint_id,
                     ctx.db_path.clone(),
                 )
                 .map_err(CliError::from_string)?,

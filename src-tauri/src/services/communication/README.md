@@ -30,7 +30,7 @@ graph TD
 
     subgraph LINKS["one open connection to one peer"]
         L["trait DataLink { send, recv }"]
-        T1["TcpWsDataLink → WebSocket"]
+        T1["IrohDataLink → QUIC stream (iroh)"]
         T2["BleDataLink → GATT characteristic"]
     end
 
@@ -83,11 +83,10 @@ one piece of it can serve several.
 state to point at. The two implementations store entirely different things:
 
 ```rust
-struct TcpWsDataLink {
-    sink, source,               // the two halves of the WebSocket
+struct IrohDataLink {
+    send, recv,                 // one QUIC stream on an iroh connection
     peer_addr: Option<String>,  // IP-level "who dialled in"
-    ping_interval: Interval,    // WebSocket-native keepalive
-    missed_pongs: u32,          // declare the pipe dead after N misses
+    peer_key: String,           // the key TLS proved (ADR-0009 D8)
 }
 
 struct BleDataLink {
@@ -103,8 +102,8 @@ Note what is absent from both: no `device_id`, no quests, no outbox, no
 pairing state. A `DataLink` holds only what it takes to move bytes and to notice
 that the pipe died.
 
-`TcpWsDataLink`'s `ping_interval`/`missed_pongs` are **WebSocket-level** pings —
-the transport noticing its own death. `PeerFrame::Ping` in the session is a
+`IrohDataLink` relies on **QUIC's** keep-alive and idle timeout — the
+transport noticing its own death. `PeerFrame::Ping` in the session is a
 different check at a different layer: it catches a peer whose pipe is fine
 but whose app has stopped answering (ADR-0007).
 
@@ -190,7 +189,7 @@ graph TD
     C -->|wrap| D["FrameEnvelope { v: 1, enc: None, payload }<br/><b>the sealed letter</b>"]
     D -->|serde_json| E["envelope bytes"]
     E -->|"DataLink::send(bytes)"| F["<b>DataLink</b> — the wire"]
-    F --> G["one WebSocket message<br/>· or N BLE fragments"]
+    F --> G["one length-prefixed frame on a QUIC stream<br/>· or N BLE fragments"]
 ```
 
 - **`PeerFrame`** — an application message. One quest edit. A value.

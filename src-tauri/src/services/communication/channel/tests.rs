@@ -1,5 +1,5 @@
 //! End-to-end proof that the transport abstraction works: two independent
-//! adapters (`tcp_ws`, `sim`) carry the exact same `crate::services::communication::pairing::run_peer_gate`/
+//! adapters (`network`, the Bluetooth stub) carry the exact same `crate::services::communication::pairing::run_peer_gate`/
 //! `run_session` engine, both transports can be simultaneously connected
 //! for the same peer (ADR-0003 revision), and both satisfy the `Transport`
 //! trait polymorphically. This is the protocol-level coverage referenced by
@@ -21,7 +21,7 @@ use crate::services::db::{open_db_at_path, temp_db_path};
 use crate::services::communication::pairing::{channels, DeviceConnectionState};
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
-use crate::services::communication::channel::{recv_frame, send_frame, tcp_ws, DataLink, Transport, ChannelKind};
+use crate::services::communication::channel::{network, recv_frame, send_frame, DataLink, Transport, ChannelKind};
 
 /// A Bluetooth-kind link for tests, carried over a plain TCP socket.
 ///
@@ -258,7 +258,29 @@ async fn free_port() -> u16 {
     port
 }
 
+/// The key every test client dials with. Fixed, so a seeded pair can pin it
+/// before the client exists (ADR-0009 D8).
+fn test_client_key() -> iroh::SecretKey {
+    iroh::SecretKey::from_bytes(&[7; 32])
+}
+
+/// Dials `server`'s Network endpoint on `port` as the test client. The
+/// client's state is leaked so its endpoint outlives the call, as a real
+/// device's does.
+async fn dial_to(server: &DeviceConnectionState, port: u16) -> Result<Box<dyn DataLink>, String> {
+    let (mut client, _) = server_state_on_port("test-client", 0);
+    client.secret_key = test_client_key();
+    let link = network::dial(&client, &server.identity.endpoint_id, "127.0.0.1".parse().unwrap(), port).await;
+    std::mem::forget(client);
+    link
+}
+
 fn seed_paired_device(db_path: &PathBuf, peer_device_id: &str) {
+    seed_paired_device_with_key(db_path, peer_device_id, &test_client_key().public().to_string());
+}
+
+/// Seeds a pair whose peer holds `endpoint_id` (ADR-0009 D8).
+fn seed_paired_device_with_key(db_path: &PathBuf, peer_device_id: &str, endpoint_id: &str) {
     let mut conn = open_db_at_path(db_path);
     diesel::insert_into(paired_devices::table)
         .values(&CreatePairedDeviceInput {
@@ -268,6 +290,10 @@ fn seed_paired_device(db_path: &PathBuf, peer_device_id: &str) {
         })
         .execute(&mut conn)
         .expect("seed paired device");
+    diesel::update(paired_devices::table.find(peer_device_id))
+        .set(paired_devices::endpoint_id.eq(endpoint_id))
+        .execute(&mut conn)
+        .expect("pin the peer's key");
     // A pair is only reachable over channels it has configured, and the
     // session gate fails closed on the rest. Every real network pairing
     // configures this, so a seeded pair that skipped it would be rejected at
@@ -332,13 +358,13 @@ fn server_state_on_port(label: &str, port: u16) -> (DeviceConnectionState, PathB
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn tcp_ws_gate_accepts_paired_device_and_claims_session_as_network() {
+async fn network_gate_accepts_paired_device_and_claims_session_as_network() {
     let (server, server_db) = server_state("transport-tcpws-accept");
     seed_paired_device(&server_db, "peer-client");
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
@@ -364,10 +390,10 @@ async fn bluetooth_self_report_is_sent_once_over_a_network_session() {
 
     let (server, server_db) = server_state("transport-tcpws-self-report");
     seed_paired_device(&server_db, "peer-client");
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
@@ -399,10 +425,10 @@ async fn bluetooth_self_report_is_withheld_from_a_peer_that_reports_no_protocol_
 
     let (server, server_db) = server_state("transport-tcpws-self-report-old-peer");
     seed_paired_device(&server_db, "peer-client");
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
 
@@ -464,10 +490,10 @@ async fn bluetooth_self_report_does_not_switch_a_channel_on_even_for_a_bonded_ad
         channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, true, None)
             .expect("set the Bluetooth channel up");
     }
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
@@ -482,10 +508,16 @@ async fn bluetooth_self_report_does_not_switch_a_channel_on_even_for_a_bonded_ad
     .await
     .expect("send self-report");
 
-    sleep(Duration::from_millis(100)).await;
-    let mut conn = open_db_at_path(&server_db);
-    let row = channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth)
-        .expect("the Bluetooth channel row");
+    // Bounded wait for the server to handle the frame, not a guess.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let row = loop {
+        let row = channels::find(&mut open_db_at_path(&server_db), "peer-client", ChannelKind::Bluetooth)
+            .expect("the Bluetooth channel row");
+        if row.address.is_some() || tokio::time::Instant::now() >= deadline {
+            break row;
+        }
+        sleep(Duration::from_millis(20)).await;
+    };
     assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
 
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
@@ -505,10 +537,10 @@ async fn bluetooth_self_report_does_not_set_up_a_channel_that_was_never_configur
 
     let (server, server_db) = server_state("channel-tcpws-self-report-no-channel");
     seed_paired_device(&server_db, "peer-client");
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
@@ -532,18 +564,59 @@ async fn bluetooth_self_report_does_not_set_up_a_channel_that_was_never_configur
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn tcp_ws_gate_rejects_unpaired_device() {
+async fn network_gate_rejects_unpaired_device() {
     let (server, _server_db) = server_state("transport-tcpws-reject");
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server.db_path.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server.db_path.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("unpaired device should be rejected");
     assert!(err.contains("auth rejected"), "unexpected error: {err}");
+}
+
+/// ADR-0009 D8: the key a connection proves must be the one pinned for the
+/// pair. A device that knows a paired device's id but holds another key is
+/// refused, which the UUID alone never did.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_gate_rejects_a_paired_device_id_presented_with_another_key() {
+    let (server, server_db) = server_state("network-key-mismatch");
+    seed_paired_device(&server_db, "peer-client");
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+
+    let (impostor, _) = server_state_on_port("network-key-mismatch-impostor", 0);
+    let mut link = network::dial(&impostor, &server.identity.endpoint_id, "127.0.0.1".parse().unwrap(), port)
+        .await
+        .expect("dial");
+    let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect_err("another key must be refused");
+    assert!(err.contains("key does not match"), "unexpected error: {err}");
+    assert!(!server.has_session_on("peer-client", ChannelKind::Network));
+}
+
+/// ADR-0009 D8: a pair made before keys existed has none pinned, and is
+/// refused until it is paired again.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_gate_rejects_a_pair_with_no_key_pinned() {
+    let (server, server_db) = server_state("network-no-key");
+    seed_paired_device(&server_db, "peer-client");
+    {
+        let mut conn = open_db_at_path(&server_db);
+        diesel::update(paired_devices::table.find("peer-client"))
+            .set(paired_devices::endpoint_id.eq(None::<String>))
+            .execute(&mut conn)
+            .expect("unpin");
+    }
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+
+    let mut link = dial_to(&server, port).await.expect("dial");
+    session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
+        .await
+        .expect_err("a pair with no key pinned must be refused");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -580,13 +653,13 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
     seed_paired_device(&server_db, "peer-client");
     seed_bluetooth_enabled_peer(&server_db, "peer-client", "AA:BB:CC:DD:EE:FF");
     let loopback_port = free_port().await;
-    let tcp_port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let tcp_port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut first_link = tcp_ws::dial("127.0.0.1".parse().unwrap(), tcp_port)
+    let mut first_link = dial_to(&server, tcp_port)
         .await
-        .expect("dial tcp_ws");
+        .expect("dial network");
     session::perform_client_auth(first_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("first session should authenticate");
@@ -613,19 +686,18 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
     drop(second_link);
 }
 
-/// Both adapters implement the same `Transport` port polymorphically — the
-/// abstraction is real, not just declared.
+/// The Bluetooth adapter implements the `Transport` port polymorphically.
+/// The Network channel no longer does: its dial needs this device's iroh
+/// endpoint and the peer's key, which a `Transport` cannot carry.
 #[tokio::test(flavor = "multi_thread")]
 async fn both_adapters_satisfy_the_transport_port() {
     let (server, server_db) = server_state("transport-polymorphic");
     seed_paired_device(&server_db, "peer-client");
     let loopback_port = free_port().await;
-    let tcp_port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
     let adapters: Vec<(Box<dyn Transport>, u16, ChannelKind)> = vec![
-        (Box::new(tcp_ws::TcpWsTransport), tcp_port, ChannelKind::Network),
         (Box::new(bluetooth_stub::StubTransport), loopback_port, ChannelKind::Bluetooth),
     ];
 
@@ -671,12 +743,18 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
     let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-send-pair-request-receiver");
     device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
-    let port = tcp_ws::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
+    let port = network::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let (sender, _sender_db) = server_state("transport-send-pair-request-sender");
+    let (sender, _sender_db) = server_state_on_port("transport-send-pair-request-sender", 0);
     let sender_device_id = sender.identity.device_id.clone();
     let receiver_device_id = receiver.identity.device_id.clone();
+    sender.note_presence_for_test(
+        &receiver_device_id,
+        "127.0.0.1",
+        port,
+        Some(receiver.identity.endpoint_id.clone()),
+    );
     // `..._impl` uses `tauri::async_runtime::block_on` internally (matching
     // how a real, synchronous Tauri command runs); calling it directly from
     // this already-async test would panic ("runtime from within a
@@ -732,12 +810,12 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     device_connection_enter_add_mode_impl(&requester, true).expect("enter add mode (requester)");
     device_connection_enter_add_mode_impl(&accepter, true).expect("enter add mode (accepter)");
 
-    tokio::spawn(tcp_ws::run_server_on_port(
+    tokio::spawn(network::run_server_on_port(
         requester.clone(),
         requester_db.clone(),
         requester_port,
     ));
-    tokio::spawn(tcp_ws::run_server_on_port(
+    tokio::spawn(network::run_server_on_port(
         accepter.clone(),
         accepter_db.clone(),
         accepter_port,
@@ -745,6 +823,12 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
     sleep(Duration::from_millis(100)).await;
 
     let accepter_device_id = accepter.identity.device_id.clone();
+    requester.note_presence_for_test(
+        &accepter_device_id,
+        "127.0.0.1",
+        accepter_port,
+        Some(accepter.identity.endpoint_id.clone()),
+    );
     let requester_for_send = requester.clone();
     tokio::task::spawn_blocking(move || {
         device_connection_send_pair_request_impl(
@@ -1096,10 +1180,10 @@ async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
     };
 
     let (receiver, receiver_db) = server_state("transport-pair-complete-network-btaddr");
-    let port = tcp_ws::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
+    let port = network::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&receiver, port)
         .await
         .expect("dial");
     send_frame(
@@ -1294,7 +1378,7 @@ fn a_late_result_from_a_closed_setup_does_not_count_for_the_next() {
 #[test]
 fn network_presence_expires_after_the_channel_timeout() {
     let (state, _db) = server_state("adr-0008-network-presence-expiry");
-    state.note_presence_for_test("peer-client", "127.0.0.1", 1);
+    state.note_presence_for_test("peer-client", "127.0.0.1", 1, None);
     assert!(state.network_peer_available("peer-client"));
     assert!(state.network_presence_address("peer-client").is_some());
 
@@ -1416,10 +1500,10 @@ fn switching_on_a_channel_that_was_never_set_up_is_refused() {
 async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
     let (server, server_db) = server_state("transport-discovery-hello-on");
     server.set_add_mode_for_test(true);
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
     send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
@@ -1438,10 +1522,10 @@ async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
 async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
     let (server, server_db) = server_state("transport-discovery-hello-off");
     // Add-mode is off by default -- no set_add_mode_for_test call.
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port)
+    let mut link = dial_to(&server, port)
         .await
         .expect("dial");
     send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
@@ -1471,10 +1555,10 @@ async fn a_channel_the_peer_unlinked_is_removed_here() {
             .expect("Bluetooth set up and on here");
     }
 
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    let mut link = dial_to(&server, port).await.expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth over the network channel");
@@ -1523,10 +1607,10 @@ async fn unlinking_keeps_the_notice_until_an_exchange_delivers_it() {
     assert!(!server.has_queued_frames("peer-client"), "nothing is held only in memory");
     assert_eq!(kept_frames(&server_db, "peer-client").len(), 1, "the notice waits in the database");
 
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    let mut link = dial_to(&server, port).await.expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth over the network channel");
@@ -1609,9 +1693,9 @@ async fn a_frame_kept_during_an_exchange_goes_over_it() {
         let mut conn = open_db_at_path(&server_db);
         channels::configure(&mut conn, "peer-client", ChannelKind::Network, true, None).expect("Network on");
     }
-    let port = tcp_ws::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
+    let port = network::spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
-    let mut link = tcp_ws::dial("127.0.0.1".parse().unwrap(), port).await.expect("dial");
+    let mut link = dial_to(&server, port).await.expect("dial");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth");
@@ -1863,12 +1947,17 @@ async fn switching_off_a_busy_exchange_still_closes_it() {
 async fn queued_work_opens_an_exchange_that_delivers_it() {
     let (receiver, receiver_db) = server_state("adr-0008-queued-receiver");
     let (sender, sender_db) = server_state("adr-0008-queued-sender");
-    seed_paired_device(&receiver_db, &sender.identity.device_id);
-    seed_paired_device(&sender_db, &receiver.identity.device_id);
+    seed_paired_device_with_key(&receiver_db, &sender.identity.device_id, &sender.identity.endpoint_id);
+    seed_paired_device_with_key(&sender_db, &receiver.identity.device_id, &receiver.identity.endpoint_id);
 
-    let port = tcp_ws::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
+    let port = network::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
-    sender.note_presence_for_test(&receiver.identity.device_id, "127.0.0.1", port);
+    sender.note_presence_for_test(
+        &receiver.identity.device_id,
+        "127.0.0.1",
+        port,
+        Some(receiver.identity.endpoint_id.clone()),
+    );
 
     sender.queue_for_peer(
         &receiver.identity.device_id,
@@ -1927,7 +2016,7 @@ async fn channel_rows_follow_state_presence_and_problem() {
     let network = row(&mut conn, ChannelKind::Network);
     assert_eq!((network.state, network.color), (ChannelState::On, ChannelColor::Grey));
 
-    state.note_presence_for_test("peer-client", "127.0.0.1", 1);
+    state.note_presence_for_test("peer-client", "127.0.0.1", 1, None);
     assert_eq!(row(&mut conn, ChannelKind::Network).color, ChannelColor::Green);
 
     channels::set_enabled(&mut conn, "peer-client", ChannelKind::Network, false).expect("off");
