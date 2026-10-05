@@ -1,6 +1,18 @@
 //! The Bluetooth transport: BLE GATT `DataLink`s over `ble-gatt`'s datagram tier
 //! (github.com/VRuzhentsov/ble-gatt).
 //!
+//! Two kinds of link share one GATT service (ADR-0009 D2, D3, D8):
+//!
+//! - **Sessions** (`Auth`, channel `Hello`) are iroh connections over
+//!   `ble-gatt-iroh`, to the key pinned for the pair, which TLS proves
+//!   (`dial_session`, `bluetooth_endpoint`).
+//! - **Pre-pairing frames** (discovery, pair request/accept/complete) go over
+//!   a plain `BleDataLink`: there is no pinned key to dial yet, so each frame
+//!   carries the sender's key itself.
+//!
+//! An accepted channel is routed by its first datagram (`route_inbound`): a
+//! QUIC Initial goes to the iroh transport, Fini's JSON to the gate.
+//!
 //! Linux (BlueZ via `ble_gatt::backend::linux`) and Android (the backend
 //! `tauri-plugin-ble-gatt` builds; Fini uses it from Rust, not through Tauri
 //! IPC). See `backend` below for why construction is deferred, and
@@ -13,7 +25,7 @@
 //! Network's own state -- both transports stay connected to a paired peer
 //! at once, with `preferred_transport` only deciding which one is primary
 //! (see `pairing::DeviceConnectionState::recompute_primary_locked`),
-//! not whether Bluetooth connects at all. Unlike `tcp_ws` (backed by the
+//! not whether Bluetooth connects at all. Unlike `network` (backed by the
 //! mDNS/UDP presence worker) and `sim` (statically configured ports), there
 //! is no discovery step here — candidates come from stored per-peer
 //! Bluetooth metadata (`paired_devices.bluetooth_address`, gated on
@@ -47,6 +59,7 @@ use crate::services::communication::sync::session;
 use crate::services::communication::sync::types::PeerFrame;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::channel::{recv_frame, send_frame};
+use crate::services::communication::channel::iroh_link::{IrohDataLink, ALPN};
 use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, ChannelKind};
 
 mod search;
@@ -447,12 +460,26 @@ fn claim_peripheral_role() -> bool {
 pub struct BleDataLink {
     channel: DatagramChannel,
     peer_addr: String,
+    /// A datagram already read off the channel (to route it, see
+    /// `route_inbound`), returned by the first `recv`.
+    pending: Option<Vec<u8>>,
 }
 
 impl BleDataLink {
     fn new(channel: DatagramChannel) -> Self {
         let peer_addr = channel.peer().0.clone();
-        Self { channel, peer_addr }
+        Self {
+            channel,
+            peer_addr,
+            pending: None,
+        }
+    }
+
+    fn after(channel: DatagramChannel, first: Vec<u8>) -> Self {
+        Self {
+            pending: Some(first),
+            ..Self::new(channel)
+        }
     }
 }
 
@@ -512,6 +539,9 @@ impl DataLink for BleDataLink {
     }
 
     async fn recv(&mut self) -> Option<Result<Vec<u8>, String>> {
+        if let Some(first) = self.pending.take() {
+            return Some(Ok(first));
+        }
         match self.channel.recv().await? {
             Ok(bytes) => Some(Ok(bytes)),
             Err(err) => Some(Err(err.to_string())),
@@ -519,7 +549,138 @@ impl DataLink for BleDataLink {
     }
 }
 
-/// Central role: dial a peer's Bluetooth address.
+/// How long a new inbound channel may take to send its first datagram,
+/// which decides what it carries (`route_inbound`).
+const FIRST_DATAGRAM_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long an iroh connection over Bluetooth may take to open. A GATT
+/// connect alone was measured at up to ~28 s on hardware.
+const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// This state's Bluetooth iroh endpoint (ADR-0009 D2, D3): the
+/// `ble-gatt-iroh` transport only, no IP, relays off. Built on first use,
+/// which on Android has to come after the Activity is up (`backend`). Its
+/// accept loop hands every connection to the gate.
+pub(crate) async fn bluetooth_endpoint(
+    state: &DeviceConnectionState,
+) -> Result<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport), String> {
+    state
+        .bluetooth_endpoint
+        .get_or_try_init(|| async {
+            let backend = backend().await?;
+            let transport = ble_gatt_iroh::BleGattTransport::builder()
+                .dialer(ble_gatt_iroh::dial_with(backend, datagram_config()))
+                .build();
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .secret_key(state.secret_key.clone())
+                .relay_mode(iroh::RelayMode::Disabled)
+                .alpns(vec![ALPN.to_vec()])
+                .clear_ip_transports()
+                .add_custom_transport(Arc::new(transport.clone()))
+                .address_lookup(transport.address_lookup())
+                .bind()
+                .await
+                .map_err(|err| format!("binding the bluetooth endpoint failed: {err}"))?;
+            #[cfg(any(feature = "ui-plane", test))]
+            tokio::spawn(serve_bluetooth_endpoint(state.clone(), endpoint.clone()));
+            Ok::<_, String>((endpoint, transport))
+        })
+        .await
+        .cloned()
+}
+
+/// Every iroh connection a peer opens over Bluetooth goes to the gate.
+#[cfg(any(feature = "ui-plane", test))]
+async fn serve_bluetooth_endpoint(state: DeviceConnectionState, endpoint: iroh::Endpoint) {
+    while let Some(incoming) = endpoint.accept().await {
+        let peer_addr = match incoming.remote_addr() {
+            iroh::endpoint::IncomingAddr::Custom(addr) => ble_gatt_iroh::peer_address(&addr).map(|peer| peer.0),
+            _ => None,
+        };
+        let state = state.clone();
+        tokio::spawn(async move {
+            let connection = match incoming.accept() {
+                Ok(accepting) => match accepting.await {
+                    Ok(connection) => connection,
+                    Err(err) => {
+                        log::warn!("[transport][ble] handshake failed: {err}");
+                        return;
+                    }
+                },
+                Err(err) => {
+                    log::warn!("[transport][ble] accept failed: {err}");
+                    return;
+                }
+            };
+            match IrohDataLink::accept(ChannelKind::Bluetooth, connection, peer_addr).await {
+                Ok(link) => {
+                    let db_path = state.db_path.clone();
+                    crate::services::communication::pairing::run_peer_gate(Box::new(link), state, db_path).await;
+                }
+                Err(err) => log::warn!("[transport][ble] {err}"),
+            }
+        });
+    }
+}
+
+/// Opens an authenticated link to paired `peer_id` at `address`: an iroh
+/// connection over Bluetooth to the key pinned for the pair, which TLS
+/// proves (ADR-0009 D8). A device at that address holding another key fails
+/// the handshake, so this also confirms the candidate is the peer.
+pub async fn dial_session(
+    state: &DeviceConnectionState, peer_id: &str, address: &str,
+) -> Result<Box<dyn DataLink>, String> {
+    let pinned = tokio::task::block_in_place(|| {
+        crate::services::communication::pairing::pinned_key(&mut open_db_at_path(&state.db_path), peer_id)
+    });
+    let peer_key: iroh::EndpointId = pinned
+        .ok_or_else(|| format!("{peer_id} has no key pinned; pair the devices again"))?
+        .parse()
+        .map_err(|err| format!("invalid key pinned for {peer_id}: {err}"))?;
+    let (endpoint, transport) = bluetooth_endpoint(state).await?;
+    let peer = PeerAddress(address.to_string());
+    transport.set_peer_address(peer_key, peer.clone());
+    let addr = iroh::EndpointAddr::from_parts(
+        peer_key,
+        [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(&peer))],
+    );
+    let connection = tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr, ALPN))
+        .await
+        .map_err(|_| format!("bluetooth connect to {address} timed out"))?
+        .map_err(|err| format!("bluetooth connect to {address} failed: {err}"))?;
+    let link = IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
+    Ok(Box::new(link))
+}
+
+/// Routes a channel a central opened by its first datagram: a QUIC Initial
+/// goes to the iroh transport (an authenticated session), anything else is
+/// one of Fini's own pre-pairing frames on a plain link.
+#[cfg(any(feature = "ui-plane", test))]
+async fn route_inbound(
+    state: &DeviceConnectionState, db_path: PathBuf, mut channel: DatagramChannel,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let first = match tokio::time::timeout(FIRST_DATAGRAM_TIMEOUT, channel.recv()).await {
+        Ok(Some(Ok(first))) => first,
+        _ => return None,
+    };
+    if ble_gatt_iroh::is_quic_initial(&first) {
+        match bluetooth_endpoint(state).await {
+            Ok((_, transport)) => Some(transport.attach_after(channel, first)),
+            Err(err) => {
+                log::warn!("[transport][ble] cannot take a session: {err}");
+                None
+            }
+        }
+    } else {
+        let link: Box<dyn DataLink> = Box::new(BleDataLink::after(channel, first));
+        let state = state.clone();
+        Some(tokio::spawn(crate::services::communication::pairing::run_peer_gate(link, state, db_path)))
+    }
+}
+
+/// Central role: dial a peer's Bluetooth address over a plain link, for
+/// Fini's own pre-pairing frames (discovery, pair request/accept/complete).
+/// Sessions use `dial_session`.
 pub async fn dial(address: &str) -> Result<Box<dyn DataLink>, String> {
     let backend = backend().await?;
     let peer = PeerAddress(address.to_string());
@@ -552,7 +713,7 @@ pub async fn dial(address: &str) -> Result<Box<dyn DataLink>, String> {
 /// only while it is running its own setup search for us (D2).
 #[cfg(any(feature = "ui-plane", test))]
 async fn hello_candidate(state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
-    let mut link = dial(address).await.ok()?;
+    let mut link = dial_session(state, peer_id, address).await.ok()?;
     send_frame(
         link.as_mut(),
         &PeerFrame::Hello {
@@ -990,25 +1151,22 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                 }
                 channel = incoming.next() => {
                     let Some(channel) = channel else { break; };
-                    let link: Box<dyn DataLink> = Box::new(BleDataLink::new(channel));
-                    // Mirrors tcp_ws's/sim's "connection from {addr}" accept
-                    // log -- without this, `run_peer_gate`'s own auth-outcome
-                    // logging (added alongside this) has no matching "an
-                    // attempt arrived at all" line to pair with, so a link
-                    // that dies before ever sending an Auth frame (e.g. lost
-                    // at the GATT layer before the first read) would leave no
-                    // trace here that anything was accepted.
-                    log::info!(
-                        "[transport][ble] central connected: {}",
-                        link.peer_addr().unwrap_or_default()
-                    );
+                    // Without this, a link that dies before it sends anything
+                    // (lost at the GATT layer before the first read) would
+                    // leave no trace that anything was accepted.
+                    log::info!("[transport][ble] central connected: {}", channel.peer().0);
                     let state = state.clone();
                     let db_path = db_path.clone();
                     live_centrals.fetch_add(1, Ordering::SeqCst);
                     let live_centrals = live_centrals.clone();
                     let central_gone_tx = central_gone_tx.clone();
+                    // The central counts as live until its channel closes:
+                    // the gate finishing on a plain link, or the iroh
+                    // transport closing the channel of a session.
                     tokio::spawn(async move {
-                        crate::services::communication::pairing::run_peer_gate(link, state, db_path).await;
+                        if let Some(handled) = route_inbound(&state, db_path, channel).await {
+                            let _ = handled.await;
+                        }
                         live_centrals.fetch_sub(1, Ordering::SeqCst);
                         let _ = central_gone_tx.send(());
                     });
@@ -1272,7 +1430,7 @@ async fn connect_and_auth(
     state: &DeviceConnectionState, peer_id: &str, address: &str,
 ) -> Result<(Box<dyn DataLink>, u32), String> {
     let attempt = tokio::time::timeout(DIAL_CANDIDATE_TIMEOUT, async {
-        let mut link = dial(address).await?;
+        let mut link = dial_session(state, peer_id, address).await?;
         let version =
             session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id).await?;
         Ok::<_, String>((link, version))

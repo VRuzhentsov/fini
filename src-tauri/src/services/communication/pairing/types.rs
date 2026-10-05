@@ -174,6 +174,11 @@ pub(crate) struct PairRequestPayload {
     pub to_device_id: String,
     pub created_at: String,
     pub expires_at: String,
+    /// The sender's iroh key. Self-reported, for pairing over a plain
+    /// Bluetooth link that proves none; over the Network channel the key
+    /// TLS proved wins (ADR-0009 D8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +190,11 @@ pub(crate) struct PairAcceptPayload {
     pub from_device_id: String,
     pub to_device_id: String,
     pub accepted_at: String,
+    /// The sender's iroh key. Self-reported, for pairing over a plain
+    /// Bluetooth link that proves none; over the Network channel the key
+    /// TLS proved wins (ADR-0009 D8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +219,11 @@ pub(crate) struct PairCompletePayload {
     /// not a breaking wire-format change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_material: Option<crate::services::communication::channel::encryption::KeyMaterial>,
+    /// The sender's iroh key. Self-reported, for pairing over a plain
+    /// Bluetooth link that proves none; over the Network channel the key
+    /// TLS proved wins (ADR-0009 D8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

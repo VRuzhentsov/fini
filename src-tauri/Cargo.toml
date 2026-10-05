@@ -51,7 +51,7 @@ futures-util = "0.3"
 # The Network channel and the device's key (ADR-0009): QUIC with TLS 1.3,
 # authenticated by each device's Ed25519 key. Relays are never used (D10),
 # so only the TLS backend is enabled.
-iroh = { version = "1.3", default-features = false, features = ["tls-ring"] }
+iroh = { version = "1.3", default-features = false, features = ["tls-ring", "unstable-custom-transports"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 async-trait = "0.1"
 dirs = "5"
@@ -79,7 +79,8 @@ log = "0.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4d3912c" }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "110650d" }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "110650d" }
 # Only used behind #[cfg(target_os = "linux")] (resume_watcher's sleep/wake
 # watcher, settings.rs's portal theme-change watcher, both over the
 # session/system D-Bus) -- kept target-gated rather than unconditional so
@@ -90,10 +91,11 @@ zbus = { version = "5.14.0", features = ["blocking-api"] }
 zvariant = "5.10.0"
 
 [target.'cfg(target_os = "android")'.dependencies]
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4d3912c" }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "110650d" }
+ble-gatt-iroh = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "110650d" }
 # Ships ble-gatt's Kotlin bridge, builds the Android backend after the
 # Activity is up, and asks for the Bluetooth runtime permissions.
-tauri-plugin-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4d3912c", optional = true }
+tauri-plugin-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "110650d", optional = true }
 ndk-context = "0.1"
 tokio-stream = "0.1"
 jni = "0.21"

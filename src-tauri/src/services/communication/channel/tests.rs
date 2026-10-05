@@ -207,6 +207,12 @@ mod bluetooth_stub {
         fn peer_addr(&self) -> Option<String> {
             self.stream.peer_addr().ok().map(|addr| addr.ip().to_string())
         }
+
+        /// Stands in for the key the real Bluetooth session's TLS proves:
+        /// the test client's (ADR-0009 D8).
+        fn peer_key(&self) -> Option<String> {
+            Some(super::test_client_key().public().to_string())
+        }
     }
 
     pub async fn dial(port: u16) -> Result<Box<dyn DataLink>, String> {
@@ -905,6 +911,10 @@ impl DataLink for AsBluetooth {
     fn peer_addr(&self) -> Option<String> {
         self.0.peer_addr()
     }
+
+    fn peer_key(&self) -> Option<String> {
+        self.0.peer_key()
+    }
 }
 
 /// Regression test for the gap Codex flagged on PR #140: `run_peer_gate`
@@ -1092,6 +1102,7 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
             from_hostname: "alpha".to_string(),
             from_discovery_port: None,
             from_ws_port: None,
+            from_endpoint_id: None,
             to_device_id: receiver.identity.device_id.clone(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             expires_at: "2099-01-01T00:00:00Z".to_string(),
@@ -1152,6 +1163,7 @@ async fn pair_complete_over_a_bluetooth_link_captures_the_observed_address() {
             paired_at: "2026-01-01T00:00:00Z".to_string(),
             bluetooth_address: Some("AA:BB:CC:DD:EE:FF".to_string()),
             key_material: None,
+            from_endpoint_id: None,
         }),
     )
     .await
@@ -1198,6 +1210,7 @@ async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
             paired_at: "2026-01-01T00:00:00Z".to_string(),
             bluetooth_address: Some("11:22:33:44:55:66".to_string()),
             key_material: None,
+            from_endpoint_id: None,
         }),
     )
     .await

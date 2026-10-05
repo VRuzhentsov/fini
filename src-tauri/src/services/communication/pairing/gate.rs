@@ -49,14 +49,14 @@ fn yields_to_own_dial(own_device_id: &str, peer_device_id: &str, dialing_peer: b
     dialing_peer && own_device_id < peer_device_id
 }
 
-/// ADR-0009 D8: on a link whose handshake proved a key, that key must be
-/// the one pinned for the pair. A pair with no key pinned (made before keys
-/// existed) is refused and paired again. Links that prove no key (Bluetooth,
-/// until it runs over iroh) are not checked here; the `Auth` frame alone
-/// stays their trust boundary, as before.
+/// ADR-0009 D8: a session or a channel hello comes only over a link whose
+/// handshake proved a key, and that key must be the one pinned for the
+/// pair. A link that proves none (a plain Bluetooth link, which carries only
+/// pre-pairing frames) and a pair with no key pinned (made before keys
+/// existed) are both refused.
 fn key_matches(db_path: &PathBuf, device_id: &str, link_key: Option<&str>) -> bool {
     let Some(link_key) = link_key else {
-        return true;
+        return false;
     };
     let pinned = tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
@@ -136,23 +136,26 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
 
     let (device_id, peer_device_id, peer_protocol_version) = match frame {
         PeerFrame::PairRequest(payload) => {
+            let key = link_key.or_else(|| payload.from_endpoint_id.clone());
             let _ = state.receive_ws_pair_request(
                 payload,
                 from_addr,
-                link_key,
+                key,
                 kind == ChannelKind::Bluetooth,
             );
             return;
         }
         PeerFrame::PairAccept(payload) => {
-            let _ = state.receive_ws_pair_accept(payload, link_key);
+            let key = link_key.or_else(|| payload.from_endpoint_id.clone());
+            let _ = state.receive_ws_pair_accept(payload, key);
             return;
         }
         PeerFrame::PairComplete(payload) => {
+            let key = link_key.or_else(|| payload.from_endpoint_id.clone());
             let _ = state.receive_ws_pair_complete(
                 payload,
                 from_addr,
-                link_key,
+                key,
                 kind == ChannelKind::Bluetooth,
             );
             return;

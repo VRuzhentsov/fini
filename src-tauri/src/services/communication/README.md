@@ -31,7 +31,7 @@ graph TD
     subgraph LINKS["one open connection to one peer"]
         L["trait DataLink { send, recv }"]
         T1["IrohDataLink → QUIC stream (iroh)"]
-        T2["BleDataLink → GATT characteristic"]
+        T2["IrohDataLink → QUIC over ble-gatt-iroh (sessions)<br/>BleDataLink → GATT characteristic (pre-pairing)"]
     end
 
     ENG --> PF

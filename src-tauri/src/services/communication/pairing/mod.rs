@@ -127,6 +127,11 @@ pub struct DeviceConnectionState {
     /// (`channel::network`). Per state, not per process: tests run two
     /// devices in one process.
     pub(crate) network_endpoint: Arc<tokio::sync::OnceCell<iroh::Endpoint>>,
+    /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
+    /// transport, built on first use (`channel::ble`).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) bluetooth_endpoint:
+        Arc<tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -215,6 +220,8 @@ impl DeviceConnectionState {
             space_sync_ws_port: env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT),
             secret_key,
             network_endpoint: Arc::new(tokio::sync::OnceCell::new()),
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })

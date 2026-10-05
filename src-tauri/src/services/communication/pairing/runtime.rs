@@ -778,6 +778,7 @@ mod tests {
             to_device_id: "device-b".to_string(),
             created_at: "2000-01-01T00:00:00Z".to_string(),
             expires_at: expires_at.to_string(),
+            from_endpoint_id: None,
         }
     }
 
