@@ -2,6 +2,7 @@
   "name": "fini",
   "private": true,
   "version": "0.3.14",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "vite",

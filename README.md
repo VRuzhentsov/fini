@@ -311,4 +311,13 @@ If you have ADHD and want to help shape this product — you're exactly who we'r
 
 ## License
 
-TBD
+Fini is free software under the [GNU Affero General Public License v3.0 or
+later](LICENSE) (AGPL-3.0-or-later): you may use, study, change and share
+it, and anyone who distributes a modified version, or lets people use one
+over a network, must offer its source under the same license.
+
+The name "Fini" and its icon are not covered by the license; see
+[TRADEMARKS.md](TRADEMARKS.md). A fork is welcome under its own name.
+
+The reasoning, modelled on Signal's, is in
+[ADR-0009](docs/adr/0009-agpl-and-iroh-communication-stack.md) (D1).
