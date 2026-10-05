@@ -12,7 +12,7 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     // Bluetooth runtime permissions are deliberately NOT requested here.
-    // See BluetoothPairing.requestPermissionsIfNeeded's doc comment: the
+    // See `services::ble_plugin::request_permission` on the Rust side: the
     // prompt is only triggered from a genuine user action (the Bluetooth
     // toggle in Device settings), not on every app launch.
   }

@@ -3,6 +3,8 @@ pub mod appimage_desktop;
 #[cfg(target_os = "android")]
 pub mod android_context;
 pub mod backup;
+#[cfg(all(target_os = "android", feature = "ui-plane"))]
+pub mod ble_plugin;
 pub mod checklist;
 #[cfg(feature = "cli-plane")]
 pub mod cli;
