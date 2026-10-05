@@ -24,6 +24,25 @@ repositories: `VRuzhentsov/fini` (this one) and `VRuzhentsov/ble-gatt`.
 | ble-gatt | `feat/ble-gatt-iroh` | #26 draft, CI green | `ble-gatt-iroh` crate, ADR-0006, mock-radio QUIC tests |
 | ble-gatt | `docs/architecture-layers` | #27 draft | ADR-0007, architecture.md, glossary.md, AGENTS.md |
 
+### Progress (2026-10-05)
+
+| Phase | PR | State |
+|---|---|---|
+| B1 plugin Rust API, permissions, JNI check | ble-gatt #28 | draft, CI green |
+| F1 Fini on the plugin | fini #189 (pinned to ble-gatt `4d3912c`) | draft, Android emulator E2E green |
+| B2 layer modules | ble-gatt #29 (on #28) | draft |
+| B3 Adapter, roles, Connection state, ServerHandle | ble-gatt #30 (on #29) | draft |
+| B4 power profiles | ble-gatt #31 (on #30) | draft |
+| F0 AGPL license | fini #190 | draft |
+| F2 Fini onto the role API | — | deferred: F4 replaces `channel/ble.rs` |
+| F-spike | — | needs hardware |
+| F3–F5 | — | need open questions 1–3 |
+| B5 Windows, Apple | — | not started |
+
+Merge order for ble-gatt: #28, #29, #30, #31 (stacked). #26 and #28 both
+edit `ci.yml`; the second to merge resolves that conflict. After #28
+merges, repin Fini #189 to the merge commit.
+
 Merged earlier: fini #185 (ADR-0008), fini #187 (Bluetooth pairing fixes,
 pinned to ble-gatt `0236b84`), ble-gatt #24 (late scan properties, LE
 transport). Release v0.3.14 shipped.
@@ -113,8 +132,9 @@ ADR-0007 D4–D7:
 - Each connection publishes `LinkState` on `tokio::sync::watch`, plus
   `cancelled()` → `tokio_util::sync::CancellationToken`.
 - Port `ble-gatt-iroh`, the mock and the mock broker.
-- Fini: move `channel/ble.rs` onto the new API (or defer to F5 if F5 replaces
-  it first — decide when planning B3).
+- Fini: move `channel/ble.rs` onto the new API. **Decided: deferred** — F4
+  replaces `channel/ble.rs` with `ble-gatt-iroh`, so migrating it first
+  would be thrown away.
 Verify: unit tests per role on the mock; mock-broker e2e lane
 (`npm run test:e2e:ci:ble`) in Fini.
 
