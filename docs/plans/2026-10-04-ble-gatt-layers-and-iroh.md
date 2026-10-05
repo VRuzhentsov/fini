@@ -11,8 +11,8 @@ repositories: `VRuzhentsov/fini` (this one) and `VRuzhentsov/ble-gatt`.
 |---|---|---|---|
 | ADR-0009 `docs/adr/0009-agpl-and-iroh-communication-stack.md` | fini | #188 (draft) | D1 AGPL + trademark, as Signal. D2 iroh replaces the whole communication layer. D3 Bluetooth is our own iroh transport on `ble-gatt`, no `blew` / `iroh-ble-transport`. D4 Fini decides when Bluetooth scans and advertises (ADR-0008 D0/D8/D12). D5 no AGPL code in `ble-gatt`. D6 who owns which layer. D7 what happens to Channel / DataLink / PeerSession / PeerFrame. |
 | ADR-0006 `docs/adr/0006-iroh-transport-crate.md` | ble-gatt | #26 (draft) | `ble-gatt-iroh` crate: iroh `CustomTransport` over the datagram channel; the caller owns the radio (`attach`, `set_peer_address`, `Dialer`); transport id `0x424C4547`; GATT only. |
-| ADR-0007 `docs/adr/0007-layered-architecture.md` | ble-gatt | #27 (draft) | D1 core up to L3 + power profiles. D2 crates: `ble-gatt` core, `ble-gatt-iroh`, `tauri-plugin-ble-gatt`. D3 `dyn` ports + dependency injection. D4 one object per role. D5 connection state published on a `watch` channel + `CancellationToken`. D6 handles that stop on drop (as `bluer`). D7 an `Adapter` object (as `bluest`). D8 advisory power profiles (as bitchat). D9 Kotlin ships with the Tauri plugin, never vendored. D10 the app picks its network stack. D11 tests. D12 Tokio only. |
-| `docs/architecture.md` | ble-gatt | #27 | Layer map L0–L5, owners, crates, target module layout, how to design a module across platforms. |
+| ADR-0007 `docs/adr/0007-layered-architecture.md` | ble-gatt | #27 (draft) | D1 core up to the datagram profile + power profiles. D2 crates: `ble-gatt` core, `ble-gatt-iroh`, `tauri-plugin-ble-gatt`. D3 `dyn` ports + dependency injection. D4 one object per role. D5 connection state published on a `watch` channel + `CancellationToken`. D6 handles that stop on drop (as `bluer`). D7 an `Adapter` object (as `bluest`). D8 advisory power profiles (as bitchat). D9 Kotlin ships with the Tauri plugin, never vendored. D10 the app picks its network stack. D11 tests. D12 Tokio only. D13 layers named after Clean Architecture (Entities, Use Cases, Interface Adapters, Frameworks & Drivers), modules after the Bluetooth spec and `embedded-hal`; `L<n>` means OSI only. |
+| `docs/architecture.md` | ble-gatt | #27 | Layer map (Clean Architecture names), OSI mapping, owners, crates, target module layout, how to design a module across platforms. |
 | `docs/glossary.md` | ble-gatt | #27 | One meaning per term, with synonyms. |
 | `AGENTS.md` | both | #188, #27 | How to ask the user for a decision (define terms, options with examples and full tradeoffs, name the existing project followed). |
 
@@ -41,6 +41,9 @@ transport). Release v0.3.14 shipped.
 - `ble-gatt` stays MIT: take ideas only from AGPL/GPL/BUSL projects; copy
   code only from MIT/Apache/BSD ones, with attribution.
 - Prefer existing designs over new ones; name the project followed.
+- `L` with a number means an OSI layer only, in both repositories.
+  `ble-gatt`'s layers are Entities, Use Cases, Interface Adapters,
+  Frameworks & Drivers (Clean Architecture).
 - Verify before asserting; report what was not verified.
 - Disk is limited (~4 GB free at the time of writing): build with
   `CARGO_INCREMENTAL=0`, clear `target/*/incremental` when it fills.
@@ -90,9 +93,10 @@ fini:
 
 ### B2 — Core modules follow the layer map (ble-gatt)
 
-Move code without changing behaviour: `backend/{linux,android,mock}` →
-`platform/`, `backend/link_state.rs` + `peer_link.rs` → `link/`,
-`datagram/` → `transport/`. Keep public re-exports so Fini and
+Move code without changing behaviour (ADR-0007 D13):
+`backend/{linux,android,mock}` → `drivers/`, the `Backend` trait → `hal/`,
+`backend/link_state.rs` + `peer_link.rs` → `connection/`, `datagram/` →
+`profile/`, `models.rs` + `error.rs` → `entities/`. Keep public re-exports so Fini and
 `ble-gatt-iroh` still build. Update `docs/architecture.md`.
 Verify: `cargo test -p ble-gatt -p ble-gatt-iroh`, Fini builds against the
 branch.

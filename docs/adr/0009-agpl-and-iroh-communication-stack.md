@@ -65,14 +65,15 @@ for ideas, but no code is copied from them, and they are never added as
 dependencies.
 
 **D6 — Who owns which layer.** The layers are defined in `ble-gatt`'s
-`docs/architecture.md`:
+`docs/architecture.md` and named after Clean Architecture (`ble-gatt`
+ADR-0007 D13):
 
 | Layer | Owner |
 |---|---|
-| L0–L3 and power policy: platform APIs, BLE roles, links, datagram channel, peer identity | `ble-gatt` core crate |
-| L4 iroh adapter | `ble-gatt-iroh`. All iroh coupling on the Bluetooth side is in this crate. |
-| L4 Tauri integration: Android bridge, permissions | `tauri-plugin-ble-gatt`, which Fini uses instead of a vendored copy of the Kotlin bridge |
-| L5: choosing iroh, sessions, sync, pairing, when the radio works | Fini |
+| Entities, Use Cases, Frameworks & Drivers: platform drivers, BLE roles, connections, the datagram profile, peer identity, power profiles | `ble-gatt` core crate |
+| Interface Adapter for iroh | `ble-gatt-iroh`. All iroh coupling on the Bluetooth side is in this crate. |
+| Interface Adapter for Tauri: Android bridge, permissions | `tauri-plugin-ble-gatt`, which Fini uses instead of a vendored copy of the Kotlin bridge |
+| Application: choosing iroh, sessions, sync, pairing, when the radio works | Fini |
 
 Fini decides that Fini uses iroh. `ble-gatt` takes no position on the network
 stack, so moving off iroh means a new adapter crate and changes in Fini, not
@@ -90,21 +91,21 @@ settled in the stage that changes it, and the glossary is updated then.
 | `PeerSession` (an authenticated conversation) | Becomes an iroh connection to the peer's key under Fini's ALPN; TLS proves the key, so Fini's own auth step goes. |
 | `PeerFrame` (one message) | Stays as the message format, sent over QUIC streams instead of `DataLink`. |
 
-**Layer numbers.** `DataLink` is named after OSI layer 2. `ble-gatt` numbers
-its own layers (L0–L5, `docs/architecture.md` in `ble-gatt`), where L2 is one
-BLE connection and OSI's layer 2 corresponds to its L3. When Fini documents
-refer to a layer number, they say which scheme they mean.
+**Layer numbers.** In Fini and `ble-gatt` documents, `L` with a number
+always means an OSI layer. `DataLink` is named after OSI L2; in `ble-gatt`
+that work is its datagram profile (`profile/`). `ble-gatt`'s own layers have
+Clean Architecture names, not numbers.
 
 On the OSI model, the stack after this ADR looks like this (the full table
 is in `ble-gatt` `docs/architecture.md`, "How the layers map onto OSI"):
 
 | OSI layer | Who does it |
 |---|---|
-| 1 Physical | Bluetooth chip; Wi-Fi or Ethernet |
-| 2 Data link | OS Bluetooth stack plus `ble-gatt` (L0–L3); OS network stack |
-| 3 Network | iroh: addressing by public key, choosing Bluetooth or IP |
-| 4 Transport | QUIC inside iroh |
-| 5–7 | Fini: its ALPN, `PeerFrame`, sync and pairing |
+| L1 Physical | Bluetooth chip; Wi-Fi or Ethernet |
+| L2 Data link | OS Bluetooth stack plus `ble-gatt`; OS network stack |
+| L3 Network | iroh: addressing by public key, choosing Bluetooth or IP |
+| L4 Transport | QUIC inside iroh |
+| L5–L7 | Fini: its ALPN, `PeerFrame`, sync and pairing |
 
 ## Observations
 
