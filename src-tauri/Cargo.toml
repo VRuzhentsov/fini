@@ -75,7 +75,7 @@ log = "0.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18.2", optional = true }
 notify-rust = { version = "4", optional = true }
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "0236b84" }
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4d3912c" }
 # Only used behind #[cfg(target_os = "linux")] (resume_watcher's sleep/wake
 # watcher, settings.rs's portal theme-change watcher, both over the
 # session/system D-Bus) -- kept target-gated rather than unconditional so
@@ -86,15 +86,17 @@ zbus = { version = "5.14.0", features = ["blocking-api"] }
 zvariant = "5.10.0"
 
 [target.'cfg(target_os = "android")'.dependencies]
-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "0236b84" }
-tao = "0.35"
+ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4d3912c" }
+# Ships ble-gatt's Kotlin bridge, builds the Android backend after the
+# Activity is up, and asks for the Bluetooth runtime permissions.
+tauri-plugin-ble-gatt = { git = "https://github.com/VRuzhentsov/ble-gatt", rev = "4d3912c", optional = true }
 ndk-context = "0.1"
 tokio-stream = "0.1"
 jni = "0.21"
 
 [features]
 default = []
-ui-plane = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-notification", "dep:tauri-plugin-autostart", "dep:tauri-plugin-dialog", "dep:tauri-plugin-fs", "dep:tauri-plugin-log", "dep:gtk", "dep:notify-rust"]
+ui-plane = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-notification", "dep:tauri-plugin-autostart", "dep:tauri-plugin-dialog", "dep:tauri-plugin-fs", "dep:tauri-plugin-log", "dep:gtk", "dep:notify-rust", "dep:tauri-plugin-ble-gatt"]
 desktop-updater = ["ui-plane", "dep:tauri-plugin-updater", "dep:url"]
 cli-plane = ["dep:clap", "dep:self_update", "dep:url", "dep:zipsign-api"]
 # Enable developer/test control-plane hooks. Off by default; production builds

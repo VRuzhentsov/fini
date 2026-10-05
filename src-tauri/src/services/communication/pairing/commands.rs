@@ -263,7 +263,7 @@ pub fn device_connection_enter_add_mode_impl(
     }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
-    // prompt -- see `BluetoothPairing.requestPermissionsIfNeeded`'s doc
+    // prompt -- see `ble_plugin::request_permission`'s doc
     // comment. Requested exactly once per add-mode entry, here, not from
     // `device_connection_discover_bluetooth_candidates`: that command is
     // invoked repeatedly by the frontend's self-rescheduling scan loop
@@ -272,10 +272,7 @@ pub fn device_connection_enter_add_mode_impl(
     // it once would violate that same contract.
     #[cfg(target_os = "android")]
     if bluetooth {
-        crate::services::android_context::call_static_context_void(
-            "com.fini.app.BluetoothPairing",
-            "requestPermissionsIfNeeded",
-        );
+        crate::services::ble_plugin::request_permission();
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let _ = bluetooth;
@@ -464,14 +461,11 @@ pub async fn device_connection_discover_bluetooth_candidates(
         // the frontend's self-rescheduling scan loop (every ~2s for as
         // long as Add Device stays open), and re-prompting on every retry
         // after an explicit denial would violate
-        // `BluetoothPairing.requestPermissionsIfNeeded`'s "tied to a
+        // `ble_plugin::request_permission`'s "tied to a
         // genuine user action" contract.
         #[cfg(target_os = "android")]
         {
-            if !crate::services::android_context::call_static_context_to_bool(
-                "com.fini.app.BluetoothPairing",
-                "hasPermissions",
-            ) {
+            if !crate::services::ble_plugin::permission_granted() {
                 return Err(
                     "Bluetooth permission required -- grant it in the dialog, then try again"
                         .to_string(),
@@ -1102,19 +1096,13 @@ pub fn device_connection_set_channel_enabled_impl(
         // The one point in the app where requesting the runtime permission
         // triad is appropriate: an explicit switch flip, never startup and
         // never a background path (the dial loop, the peripheral acceptor).
-        // See BluetoothPairing.requestPermissionsIfNeeded's doc comment.
+        // See `ble_plugin::request_permission`'s doc comment.
         // Fire-and-forget: if the dialog is still unanswered, `hasPermissions`
         // below (correctly) fails closed and the same click can be retried.
         #[cfg(target_os = "android")]
         {
-            crate::services::android_context::call_static_context_void(
-                "com.fini.app.BluetoothPairing",
-                "requestPermissionsIfNeeded",
-            );
-            if !crate::services::android_context::call_static_context_to_bool(
-                "com.fini.app.BluetoothPairing",
-                "hasPermissions",
-            ) {
+            crate::services::ble_plugin::request_permission();
+            if !crate::services::ble_plugin::permission_granted() {
                 return Err(
                     "Bluetooth permission required -- grant it in the dialog, then try again"
                         .to_string(),
@@ -1293,18 +1281,12 @@ pub async fn device_connection_begin_channel_setup(
         // for the Nearby Devices permission.
         #[cfg(target_os = "android")]
         {
-            crate::services::android_context::call_static_context_void(
-                "com.fini.app.BluetoothPairing",
-                "requestPermissionsIfNeeded",
-            );
+            crate::services::ble_plugin::request_permission();
             // The request only opens the system dialog; the answer comes
             // later. Wait for the person to answer instead of failing
             // before they could.
             let deadline = tokio::time::Instant::now() + PERMISSION_ANSWER_WAIT;
-            while !crate::services::android_context::call_static_context_to_bool(
-                "com.fini.app.BluetoothPairing",
-                "hasPermissions",
-            ) {
+            while !crate::services::ble_plugin::permission_granted() {
                 if tokio::time::Instant::now() >= deadline {
                     return Err("Bluetooth permission was not granted".to_string());
                 }
