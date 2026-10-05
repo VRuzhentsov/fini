@@ -95,6 +95,17 @@ its own layers (L0–L5, `docs/architecture.md` in `ble-gatt`), where L2 is one
 BLE connection and OSI's layer 2 corresponds to its L3. When Fini documents
 refer to a layer number, they say which scheme they mean.
 
+On the OSI model, the stack after this ADR looks like this (the full table
+is in `ble-gatt` `docs/architecture.md`, "How the layers map onto OSI"):
+
+| OSI layer | Who does it |
+|---|---|
+| 1 Physical | Bluetooth chip; Wi-Fi or Ethernet |
+| 2 Data link | OS Bluetooth stack plus `ble-gatt` (L0–L3); OS network stack |
+| 3 Network | iroh: addressing by public key, choosing Bluetooth or IP |
+| 4 Transport | QUIC inside iroh |
+| 5–7 | Fini: its ALPN, `PeerFrame`, sync and pairing |
+
 ## Observations
 
 Recorded so they are not rediscovered. None of these is a decision.
