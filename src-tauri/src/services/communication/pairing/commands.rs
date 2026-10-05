@@ -927,8 +927,8 @@ pub fn device_connection_save_paired_device_impl(
     bluetooth_address: Option<String>,
     via_bluetooth: bool,
     // The key the peer proved during pairing (ADR-0009 D8); pinned here.
-    // `None` when the pairing leg carried no key (Bluetooth, until it runs
-    // over iroh), which leaves any key already pinned in place.
+    // `None` when the pairing leg carried no key, which leaves any key
+    // already pinned in place.
     endpoint_id: Option<String>,
     // Unused since ADR-0006 removed the `request_os_bond` call this fed: a
     // completed BLE pairing no longer needs the OS to bond anything, so
@@ -1048,9 +1048,18 @@ pub fn device_connection_save_paired_device(
     display_name: String,
     bluetooth_address: Option<String>,
     via_bluetooth: bool,
+    endpoint_id: Option<String>,
 ) -> Result<PairedDevice, String> {
     let mut conn = db.0.lock().unwrap();
-    let endpoint_id = state.link_key(&peer_device_id);
+    // Only a devtools build takes a key from the caller, so an e2e run can
+    // seed a pair the way a completed pairing would leave it. A shipped
+    // build pins only the key the peer proved on the pairing link.
+    #[cfg(not(feature = "devtools"))]
+    let endpoint_id: Option<String> = {
+        drop(endpoint_id);
+        None
+    };
+    let endpoint_id = state.link_key(&peer_device_id).or(endpoint_id);
     device_connection_save_paired_device_impl(
         &mut conn,
         peer_device_id,

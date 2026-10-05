@@ -307,6 +307,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                .level_for("tracing::span", log::LevelFilter::Warn)
+                .level_for("iroh", log::LevelFilter::Warn)
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),

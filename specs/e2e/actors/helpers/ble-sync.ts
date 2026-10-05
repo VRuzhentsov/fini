@@ -59,12 +59,18 @@ export async function ensureBlePairedActors(
     displayName: b.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(1),
     viaBluetooth: true,
+    // The key a real pairing pins (ADR-0009 D8); without it every
+    // Bluetooth session is refused.
+    endpointId: b.identity.endpoint_id,
   });
   await b.actor.invoke('device_connection_save_paired_device', {
     peerDeviceId: a.identity.device_id,
     displayName: a.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(0),
     viaBluetooth: true,
+    // The key a real pairing pins (ADR-0009 D8); without it every
+    // Bluetooth session is refused.
+    endpointId: a.identity.endpoint_id,
   });
 
   return [a, b];
