@@ -308,6 +308,24 @@ no accepted central is left. This is Linux only. On Android, registering
 again gives the phone a new private address, so the address the other device
 had just heard goes stale.
 
+## Addendum (2026-10-05): links run over iroh
+
+Fini ADR-0009 (D9) keeps this model whole and changes only what is under
+`DataLink`:
+
+- **Network**: one iroh endpoint per device, IP only, relays off, on the
+  same port. Presence is still the mDNS/UDP beacon, which now also
+  announces the device's key.
+- **Bluetooth**: sessions (`Auth`, channel `Hello`) are iroh connections over
+  `ble-gatt-iroh`; pre-pairing frames stay on plain GATT links. One GATT
+  service carries both, routed by each channel's first datagram.
+- **Trust**: the gate now accepts `Auth` and `Hello` only over a link that
+  proved the key pinned for the pair (`paired_devices.endpoint_id`).
+  Crossing dials, one exchange per (peer, channel), presence, init by mutual
+  hello and the primary channel are unchanged.
+- **Liveness**: QUIC's keep-alive and idle timeout replace the WebSocket
+  ping; an idle Bluetooth channel closes after 20 s.
+
 ## Worth investigating later
 
 - Two app instances fighting over one Bluetooth adapter. ADR-0005 recorded the

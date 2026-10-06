@@ -5,6 +5,7 @@ import { allTextContents, pollUntil, waitForText } from './dom.ts';
 interface DeviceIdentity {
   device_id: string;
   hostname: string;
+  endpoint_id: string;
 }
 
 interface PairedDevice {

@@ -21,7 +21,7 @@ COPY src ./src
 
 RUN npm run test:unit
 
-FROM rust:1.88-bookworm AS rust-builder-base
+FROM rust:1.91-bookworm AS rust-builder-base
 
 WORKDIR /workspace
 

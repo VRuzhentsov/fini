@@ -127,7 +127,7 @@ function externalActorPorts(): Map<string, number> {
 
 /**
  * How actors reach each other in a lane. 'network' (default) is the real
- * WebSocket connection every other actor suite uses.
+ * Network channel (QUIC over iroh) every other actor suite uses.
  *
  * The other two both make the Network channel genuinely unavailable
  * (`FINI_DISCOVERY_DISABLED=1` — no mDNS, no UDP presence) so the Bluetooth

@@ -110,3 +110,37 @@ fn kept_peer_frames_go_with_the_pairing() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+/// Migration 27 (ADR-0009 D8): a pair made before keys existed keeps its
+/// row, with no key pinned, so it is recognised and paired again rather than
+/// trusted with whatever key connects first.
+#[test]
+fn a_pair_from_before_keys_upgrades_with_no_key_pinned() {
+    let db_path = temp_db_path("endpoint-id-upgrade");
+    let mut conn = open_db_at_path(&db_path);
+
+    while diesel::sql_query("SELECT endpoint_id FROM paired_devices LIMIT 1")
+        .execute(&mut conn)
+        .is_ok()
+    {
+        conn.revert_last_migration(MIGRATIONS)
+            .expect("wind back past the endpoint-id migration");
+    }
+    diesel::sql_query(
+        "INSERT INTO paired_devices (peer_device_id, display_name, paired_at, pair_state)
+         VALUES ('upgraded-pair', 'Phone', '2026-01-01T00:00:00Z', 'paired')",
+    )
+    .execute(&mut conn)
+    .expect("seed a pair");
+    conn.run_pending_migrations(MIGRATIONS)
+        .expect("upgrade to pinned keys");
+
+    let pinned: Option<String> = crate::schema::paired_devices::table
+        .find("upgraded-pair")
+        .select(crate::schema::paired_devices::endpoint_id)
+        .first(&mut conn)
+        .expect("the pair survives the upgrade");
+    assert_eq!(pinned, None);
+
+    let _ = std::fs::remove_file(db_path);
+}

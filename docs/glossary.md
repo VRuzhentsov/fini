@@ -43,9 +43,10 @@ rather than a migration.
 
 ### Protocol
 
-**What is spoken over a channel** — WebSocket today, potentially HTTP/3 or
-something else later, *without the channel changing*. A person chose
-"Network"; they did not choose "Network over WebSocket", and swapping the
+**What is spoken over a channel** — QUIC over iroh today (ADR-0009; it was
+WebSocket until then), something else later, *without the channel
+changing*. A person chose "Network"; they did not choose "Network over
+QUIC", and swapping the
 protocol must not look to them like losing a channel and gaining a different
 one.
 
@@ -66,8 +67,8 @@ the right one.
 
 `DataLink` is a trait, so it holds **no data of its own**. Each
 implementation stores whatever its own connection code requires, and they
-have nothing in common — `TcpWsDataLink` keeps WebSocket ping counters,
-`BleDataLink` keeps a GATT handle and a MAC. The commonality is the
+have nothing in common — `IrohDataLink` keeps a QUIC stream and the
+peer's proven key, `BleDataLink` keeps a GATT handle and a MAC. The commonality is the
 *capability*, not the state.
 
 Deliberately **not** called `Socket`: a BLE characteristic is not a socket,
@@ -92,7 +93,7 @@ a working pipe *before* anyone is authenticated.
 
 ```
 channel      A and B agreed to talk over the network        (a row, persisted)
-protocol     ...speaking WebSocket                          (which dialect)
+protocol     ...speaking QUIC                               (which dialect)
 DataLink     ...and one is open right now to 10.0.0.7       (live, anonymous)
 session      ...carrying an authenticated conversation      (live, identified)
 ```
@@ -138,7 +139,7 @@ Unrelated to everything above: the app-update track (stable/beta).
 | Not used | Why |
 |---|---|
 | **socket** | a BLE characteristic is not one, and one `DataLink` is exactly that |
-| **stream** | implies a byte stream; ADR-0001 chose datagrams, because WebSocket, BLE and LoRa are all message-shaped |
+| **stream** | implies a byte stream; ADR-0001 chose datagrams, because WebSocket, BLE and LoRa are all message-shaped (`IrohDataLink` frames its QUIC stream to keep that contract) |
 | **peering**, **route** | structurally accurate but router-engineer jargon, and a channel appears in a settings screen |
 | **transport**, as a separate layer | retired — it is simply the older word for *channel* |
 

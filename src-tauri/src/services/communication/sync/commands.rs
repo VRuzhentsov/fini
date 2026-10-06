@@ -1454,10 +1454,7 @@ fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
 /// three seconds, not about only ever trying once.
 #[cfg(target_os = "android")]
 fn start_sync_service_once() {
-    if !crate::services::android_context::call_static_context_to_bool(
-        "com.fini.app.BluetoothPairing",
-        "hasPermissions",
-    ) {
+    if !crate::services::ble_plugin::permission_granted() {
         return;
     }
     static STARTED: std::sync::Once = std::sync::Once::new();

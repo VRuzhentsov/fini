@@ -186,14 +186,19 @@ impl ChannelService for NetworkChannelService {
 
     #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self) {
-        tauri::async_runtime::spawn(super::tcp_ws::run_server(
+        // Before the spawn: a dial that runs first must already see that
+        // this state serves, or it could bind (and keep) a random port.
+        self.state
+            .serves_network
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        tauri::async_runtime::spawn(super::network::run_server(
             self.state.clone(),
             self.state.db_path.clone(),
         ));
     }
 
     fn request_exchange(&self, peer_device_id: &str) {
-        super::tcp_ws::start_exchange(&self.state, peer_device_id);
+        super::network::start_exchange(&self.state, peer_device_id);
     }
 
     fn is_present(&self, peer_device_id: &str) -> bool {
@@ -201,12 +206,12 @@ impl ChannelService for NetworkChannelService {
     }
 
     fn recently_failed(&self, peer_device_id: &str) -> bool {
-        super::tcp_ws::recently_failed(peer_device_id)
+        super::network::recently_failed(peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
     fn forget_failures(&self, peer_device_id: &str) {
-        super::tcp_ws::forget_failures(peer_device_id);
+        super::network::forget_failures(peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]

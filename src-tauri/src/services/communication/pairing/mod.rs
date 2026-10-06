@@ -1,4 +1,5 @@
 mod commands;
+mod device_key;
 mod runtime;
 pub(crate) mod channel_status;
 pub(crate) mod channels;
@@ -110,14 +111,31 @@ pub(super) const DISCOVERY_TTL_SECS: u64 = 15;
 pub(super) const PAIR_REQUEST_TTL_SECS: i64 = 60;
 pub(super) const MULTICAST_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 42, 99);
 pub(crate) const SPACE_SYNC_WS_PORT: u16 = 45_455;
-pub(crate) const MDNS_SERVICE_TYPE: &str = "_fini-sync._tcp.local.";
+pub(crate) const MDNS_SERVICE_TYPE: &str = "_fini-sync._udp.local.";
 
 #[derive(Clone)]
 pub struct DeviceConnectionState {
     pub identity: DeviceIdentity,
     pub db_path: PathBuf,
     pub discovery_port: u16,
+    /// The UDP port the Network channel's iroh endpoint binds (the name is
+    /// older than iroh; `FINI_SPACE_SYNC_WS_PORT` sets it).
     pub space_sync_ws_port: u16,
+    /// This device's iroh key (ADR-0009 D8).
+    pub(crate) secret_key: iroh::SecretKey,
+    /// The Network channel's iroh endpoint, bound on first use
+    /// (`channel::network`). Per state, not per process: tests run two
+    /// devices in one process.
+    pub(crate) network_endpoint: Arc<tokio::sync::OnceCell<iroh::Endpoint>>,
+    /// Set once this state serves the Network channel. A serving endpoint
+    /// must sit on `space_sync_ws_port`, the port presence announces; only
+    /// a state that just dials out may fall back to any free port.
+    pub(crate) serves_network: Arc<std::sync::atomic::AtomicBool>,
+    /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
+    /// transport, built on first use (`channel::ble`).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) bluetooth_endpoint:
+        Arc<tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -133,6 +151,17 @@ fn forward_to_running_exchange(
         .filter_map(|kind| runtime.peer_sessions.get(&(peer_device_id.to_string(), kind)))
         .next()
         .is_some_and(|sender| sender.try_send(SessionCommand::Forward(msg)).is_ok())
+}
+
+/// The iroh key pinned for this pair (ADR-0009 D8), if any.
+pub(crate) fn pinned_key(conn: &mut diesel::SqliteConnection, device_id: &str) -> Option<String> {
+    use diesel::prelude::*;
+    crate::schema::paired_devices::table
+        .find(device_id)
+        .select(crate::schema::paired_devices::endpoint_id)
+        .first::<Option<String>>(conn)
+        .ok()
+        .flatten()
 }
 
 fn env_port(name: &str, fallback: u16) -> u16 {
@@ -184,15 +213,43 @@ impl DeviceConnectionState {
     /// (`ChannelService::start_discovery`).
     pub fn try_from_db_path(app_data_dir: &Path, db_path: PathBuf) -> Result<Self, String> {
         let identity = try_load_or_create_identity(app_data_dir, &db_path)?;
+        let secret_key = device_key::try_load_or_create_secret_key(&db_path)?;
+        let mut identity = identity;
+        identity.endpoint_id = secret_key.public().to_string();
 
         Ok(Self {
             identity,
             db_path,
             discovery_port: env_port("FINI_DISCOVERY_PORT", DISCOVERY_PORT),
             space_sync_ws_port: env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT),
+            secret_key,
+            network_endpoint: Arc::new(tokio::sync::OnceCell::new()),
+            serves_network: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })
+    }
+
+    /// The key to pin for `peer_device_id` once pairing `request_id` is
+    /// saved: the one that came with that pairing, if it was for this peer.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) fn pairing_key(&self, request_id: &str, peer_device_id: &str) -> Option<String> {
+        let guard = self.runtime.lock().ok()?;
+        let (device_id, key) = guard.pairing_keys.get(request_id)?;
+        (device_id == peer_device_id).then(|| key.clone())
+    }
+
+    /// The key a peer announces in its presence beacon, if it is in range.
+    /// Unproven: only for dialling it, where TLS then proves it.
+    pub(crate) fn presence_key(&self, device_id: &str) -> Option<String> {
+        let guard = self.runtime.lock().ok()?;
+        guard
+            .presence
+            .get(device_id)
+            .or_else(|| guard.discovered.get(device_id))
+            .and_then(|peer| peer.endpoint_id.clone())
     }
 
     /// Start the mDNS/UDP presence worker, once per state.
@@ -423,11 +480,13 @@ impl DeviceConnectionState {
 
     /// Test-only: injects a presence entry directly, bypassing the real
     /// mDNS discovery worker entirely. Lets a test exercise
-    /// `channel::tcp_ws::dial_with_backoff`/`spawn_dial_loop` (both gate
-    /// on `list_presenced_peers`) without standing up real UDP broadcast
-    /// traffic.
+    /// `channel::network::start_exchange` (which gates on presence) without
+    /// standing up real UDP broadcast traffic. `endpoint_id` is the key the
+    /// peer would announce.
     #[cfg(test)]
-    pub fn note_presence_for_test(&self, peer_device_id: &str, addr: &str, ws_port: u16) {
+    pub fn note_presence_for_test(
+        &self, peer_device_id: &str, addr: &str, ws_port: u16, endpoint_id: Option<String>,
+    ) {
         if let Ok(mut guard) = self.runtime.lock() {
             guard.presence.insert(
                 peer_device_id.to_string(),
@@ -436,6 +495,7 @@ impl DeviceConnectionState {
                     addr: addr.to_string(),
                     discovery_port: 0,
                     ws_port: Some(ws_port),
+                    endpoint_id,
                     last_seen_at: crate::services::db::utc_now(),
                     last_seen_mono: std::time::Instant::now(),
                 },
@@ -554,6 +614,7 @@ impl DeviceConnectionState {
         &self,
         payload: PairRequestPayload,
         from_addr: String,
+        from_key: Option<String>,
         via_bluetooth: bool,
     ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
@@ -572,7 +633,7 @@ impl DeviceConnectionState {
                 .contains_key(payload.request_id.as_str());
             guard.incoming_requests.insert(
                 payload.request_id.clone(),
-                runtime::build_incoming_pair_request(&payload, from_addr, via_bluetooth),
+                runtime::build_incoming_pair_request(&payload, from_addr, from_key, via_bluetooth),
             );
 
             if is_new {
@@ -587,7 +648,10 @@ impl DeviceConnectionState {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn receive_ws_pair_accept(&self, payload: PairAcceptPayload) -> Result<(), String> {
+    pub fn receive_ws_pair_accept(
+        &self,
+        payload: PairAcceptPayload,
+    ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
         }
@@ -613,12 +677,12 @@ impl DeviceConnectionState {
         &self,
         payload: PairCompletePayload,
         from_addr: String,
+        from_key: Option<String>,
         via_bluetooth: bool,
     ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
         }
-
         // When `via_bluetooth`, trust the address actually observed on this
         // connection over the sender's self-reported `payload.bluetooth_address`
         // -- same reasoning as `IncomingPairRequest::from_bluetooth_address`.
@@ -633,6 +697,11 @@ impl DeviceConnectionState {
             .lock()
             .map_err(|_| "device sync runtime lock poisoned".to_string())?;
         guard.rx_count += 1;
+        if let Some(key) = from_key {
+            guard
+                .pairing_keys
+                .insert(payload.request_id.clone(), (payload.from_device_id.clone(), key));
+        }
         guard.outgoing_pair_completions.insert(
             payload.request_id.clone(),
             PairCompletionUpdate {
@@ -649,7 +718,7 @@ impl DeviceConnectionState {
 
     /// Raw discovery presence: is this peer's beacon reaching us right now?
     /// ADR-0003 revision: this is now the *only* network-availability
-    /// signal that matters for dialing -- `tcp_ws::spawn_dial_loop` dials
+    /// signal that matters for dialing -- `network::start_exchange` dials
     /// unconditionally whenever a peer is presenced and has no session on
     /// this channel yet, rather than withdrawing in favor of Bluetooth.
     /// Consulted by `ChannelStatusCode::NetworkUnavailable`'s gray-row

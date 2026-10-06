@@ -2,7 +2,7 @@
 //!
 //! A **channel (transport)** is what a pair configured — Network or
 //! Bluetooth, the two `ChannelKind`s. This module holds the connection code
-//! underneath one: `tcp_ws` is how the Network channel actually connects,
+//! underneath one: `network` is how the Network channel actually connects,
 //! `ble` is how the Bluetooth one does. Connection code is not itself a
 //! channel and can be shared by several — see `../README.md`.
 //!
@@ -11,8 +11,10 @@
 //! `DataLink` is currently selected for a peer. This module defines that
 //! boundary plus the connection code that implements it:
 //!
-//! - `tcp_ws` — how the Network channel connects (mDNS/UDP discovery +
-//!   WebSocket link).
+//! - `network` — how the Network channel connects (mDNS/UDP discovery + a
+//!   QUIC link on this device's iroh endpoint, ADR-0009).
+//! - `iroh_link` — the `DataLink` over an iroh connection that `network`
+//!   uses.
 //! - `ble` — how the Bluetooth channel connects (Linux BlueZ, Android GATT,
 //!   both via `ble-gatt`; see that module's doc comment).
 //!
@@ -26,10 +28,11 @@ pub mod ble;
 pub mod codec;
 pub mod encryption;
 pub mod envelope;
+pub mod iroh_link;
 pub mod radio;
 pub mod selection;
+pub mod network;
 pub mod service;
-pub mod tcp_ws;
 
 #[cfg(test)]
 mod tests;
@@ -57,7 +60,7 @@ use crate::services::communication::sync::types::PeerFrame;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
-    /// mDNS/UDP presence + a WebSocket link.
+    /// mDNS/UDP presence + a QUIC link over iroh.
     #[default]
     Network,
     /// GATT, via `ble-gatt`.
@@ -114,6 +117,13 @@ pub trait DataLink: Send {
     /// address its `PairAccept`/`PairComplete` reply). `None` for transports
     /// without a meaningful notion of address (or where it isn't known).
     fn peer_addr(&self) -> Option<String> {
+        None
+    }
+
+    /// The peer's iroh key (`EndpointId`, hex), when the link's handshake
+    /// proved one (ADR-0009 D8). The gate checks it against the key pinned
+    /// for the pair. `None` for links without one.
+    fn peer_key(&self) -> Option<String> {
         None
     }
 }

@@ -34,7 +34,7 @@ use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PRO
 /// Whether this device is dialing the peer on this channel right now.
 fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
     match kind {
-        ChannelKind::Network => crate::services::communication::channel::tcp_ws::dialing(peer_device_id),
+        ChannelKind::Network => crate::services::communication::channel::network::dialing(peer_device_id),
         #[cfg(any(target_os = "linux", target_os = "android"))]
         ChannelKind::Bluetooth => crate::services::communication::channel::ble::dialing(peer_device_id),
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -47,6 +47,22 @@ fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
 /// smaller device id wins a crossing.
 fn yields_to_own_dial(own_device_id: &str, peer_device_id: &str, dialing_peer: bool) -> bool {
     dialing_peer && own_device_id < peer_device_id
+}
+
+/// ADR-0009 D8: a session or a channel hello comes only over a link whose
+/// handshake proved a key, and that key must be the one pinned for the
+/// pair. A link that proves none (a plain Bluetooth link, which carries only
+/// pre-pairing frames) and a pair with no key pinned (made before keys
+/// existed) are both refused.
+fn key_matches(db_path: &PathBuf, device_id: &str, link_key: Option<&str>) -> bool {
+    let Some(link_key) = link_key else {
+        return false;
+    };
+    let pinned = tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(db_path);
+        super::pinned_key(&mut conn, device_id)
+    });
+    pinned.as_deref() == Some(link_key)
 }
 
 fn check_paired(db_path: &PathBuf, device_id: &str) -> bool {
@@ -81,7 +97,7 @@ fn check_channel_initialized(db_path: &PathBuf, device_id: &str, kind: ChannelKi
 /// session anyway.
 ///
 /// Observed on hardware before the Network half of this existed: turning
-/// Network off left `device_connection_session_channel` reporting `tcp_ws`
+/// Network off left `device_connection_session_channel` reporting the network
 /// seconds later, with the row showing "Off" over a live session -- precisely
 /// the lie the redesign exists to remove.
 ///
@@ -113,13 +129,20 @@ fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) 
 pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionState, db_path: PathBuf) {
     let kind = link.kind();
     let from_addr = link.peer_addr().unwrap_or_default();
+    let link_key = link.peer_key();
     let Some(Ok(frame)) = recv_frame(link.as_mut()).await else {
         return;
     };
 
     let (device_id, peer_device_id, peer_protocol_version) = match frame {
         PeerFrame::PairRequest(payload) => {
-            let _ = state.receive_ws_pair_request(payload, from_addr, kind == ChannelKind::Bluetooth);
+            let key = link_key.or_else(|| payload.from_endpoint_id.clone());
+            let _ = state.receive_ws_pair_request(
+                payload,
+                from_addr,
+                key,
+                kind == ChannelKind::Bluetooth,
+            );
             return;
         }
         PeerFrame::PairAccept(payload) => {
@@ -127,8 +150,13 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             return;
         }
         PeerFrame::PairComplete(payload) => {
-            let _ =
-                state.receive_ws_pair_complete(payload, from_addr, kind == ChannelKind::Bluetooth);
+            let key = link_key.or_else(|| payload.from_endpoint_id.clone());
+            let _ = state.receive_ws_pair_complete(
+                payload,
+                from_addr,
+                key,
+                kind == ChannelKind::Bluetooth,
+            );
             return;
         }
         // ADR-0008 D1/D2: half of a channel's init. Answered while this
@@ -140,6 +168,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         PeerFrame::Hello { device_id } => {
             let searching = state.channel_setup(&device_id, kind).is_some();
             if check_paired(&db_path, &device_id)
+                && key_matches(&db_path, &device_id, link_key.as_deref())
                 && (searching || check_channel_initialized(&db_path, &device_id, kind))
             {
                 if send_frame(
@@ -226,6 +255,20 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             link.as_mut(),
             &PeerFrame::AuthFail {
                 reason: "unknown device".into(),
+            },
+        )
+        .await;
+        return;
+    }
+
+    if !key_matches(&db_path, &device_id, link_key.as_deref()) {
+        log::warn!(
+            "[space_sync][gate] {kind:?} auth from {device_id} rejected: its key is not the one pinned for the pair"
+        );
+        let _ = send_frame(
+            link.as_mut(),
+            &PeerFrame::AuthFail {
+                reason: "key does not match the pair; pair the devices again".into(),
             },
         )
         .await;

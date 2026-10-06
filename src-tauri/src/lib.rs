@@ -307,6 +307,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                .level_for("tracing::span", log::LevelFilter::Warn)
+                .level_for("iroh", log::LevelFilter::Warn)
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
@@ -317,6 +319,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init());
+    // Ships ble-gatt's Kotlin bridge and Bluetooth permissions on Android;
+    // `services::ble_plugin` reaches it from the Bluetooth channel.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_ble_gatt::init());
     #[cfg(all(
         feature = "desktop-updater",
         any(target_os = "linux", target_os = "macos", target_os = "windows")
@@ -396,6 +402,8 @@ pub fn run() {
     ));
     builder
         .setup(|app| {
+            #[cfg(target_os = "android")]
+            services::ble_plugin::install(app.handle());
             let app_handle = app.handle();
 
             match try_open_db(&app_handle) {

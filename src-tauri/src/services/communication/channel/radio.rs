@@ -111,10 +111,7 @@ impl Radio for GattRadio {
         // a user action -- without it `startAdvertising` throws
         // SecurityException and the loop retries forever.
         #[cfg(target_os = "android")]
-        if crate::services::android_context::call_static_context_to_bool(
-            "com.fini.app.BluetoothPairing",
-            "hasPermissions",
-        ) {
+        if crate::services::ble_plugin::permission_granted() {
             super::ble::start_peripheral_once(state.clone(), state.db_path.clone());
         }
         #[cfg(any(target_os = "linux", target_os = "android"))]

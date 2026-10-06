@@ -22,6 +22,8 @@ const startupAutoUpdateSupported = ref(false);
 const pairRequests = ref(0);
 const appVersion = packageJson.version;
 const sourceUrl = "https://github.com/VRuzhentsov/fini";
+const license = "AGPL-3.0-or-later";
+const licenseUrl = `${sourceUrl}/blob/main/LICENSE`;
 
 type SettingsSearchAction = "overview" | "add-device";
 interface SettingsSearchResult { id: string; title: string; description?: string; action?: SettingsSearchAction; to?: string; href?: string; }
@@ -47,7 +49,7 @@ const renderLists = computed(() => ({
     { id: "appearance", component: ThemeSelector },
     ...(startupAutoUpdateSupported.value ? [{ id: "updates", component: AutomaticUpdatesSettingsSection, props: { initialSupported: true } }] : []),
     { id: "backup", component: BackupSettingsSection },
-    { id: "about", component: AboutCard, props: { version: appVersion, sourceUrl } },
+    { id: "about", component: AboutCard, props: { version: appVersion, sourceUrl, license, licenseUrl } },
   ],
   searchResultGroups: [
     { id: "spaces", title: "Spaces", results: visibleSearchResults("Spaces", [...spaceStore.spaces.map((space) => ({ id: `space-${space.id}`, title: space.name, description: "Manage named contexts", action: "overview" as const })), { id: "add-space", title: "Add space", description: "New space name", action: "overview" as const }]) },
@@ -55,7 +57,7 @@ const renderLists = computed(() => ({
     { id: "appearance", title: "Appearance", results: visibleSearchResults("Appearance", [{ id: "theme", title: "Theme", description: "System, Light, or Dark", action: "overview" }]) },
     ...(startupAutoUpdateSupported.value ? [{ id: "updates", title: "Updates", results: visibleSearchResults("Updates", [{ id: "automatic-updates", title: "Automatic updates", description: "Install updates automatically on restart", action: "overview" as const }]) }] : []),
     { id: "backup", title: "Backup", results: visibleSearchResults("Backup", [{ id: "export-backup", title: "Export backup", description: "Save spaces and quests to a portable file", action: "overview" }, { id: "import-backup", title: "Import backup", description: "Restore from a portable backup file", action: "overview" }]) },
-    { id: "about", title: "About", results: visibleSearchResults("About", [{ id: "version", title: "Version", description: appVersion, action: "overview" }, { id: "source-code", title: "Source code", description: "Project source repository", href: sourceUrl }]) },
+    { id: "about", title: "About", results: visibleSearchResults("About", [{ id: "version", title: "Version", description: appVersion, action: "overview" }, { id: "source-code", title: "Source code", description: "Project source repository", href: sourceUrl }, { id: "license", title: "License", description: license, href: licenseUrl }]) },
   ].filter((group): group is SettingsSearchGroup => group.results.length > 0),
 }));
 

@@ -13,6 +13,9 @@ use crate::services::communication::channel::ChannelKind;
 pub struct DeviceIdentity {
     pub device_id: String,
     pub hostname: String,
+    /// The public half of this device's iroh key, hex (ADR-0009 D8).
+    #[serde(default)]
+    pub endpoint_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +127,10 @@ pub struct DevicePairRequestInput {
     pub to_device_id: String,
     pub to_addr: String,
     pub to_ws_port: Option<u16>,
+    /// The peer's iroh key, for a caller that has not heard its presence
+    /// beacon (a one-shot CLI command). TLS proves it either way.
+    #[serde(default)]
+    pub to_endpoint_id: Option<String>,
 }
 
 /// The BLE-first pairing equivalent of `DevicePairRequestInput` (ADR 0002
@@ -152,6 +159,9 @@ pub(super) struct DiscoveryBeacon {
     pub discovery_port: Option<u16>,
     #[serde(default)]
     pub ws_port: Option<u16>,
+    /// The sender's iroh key, so a pair request can be dialled to it.
+    #[serde(default)]
+    pub endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +178,11 @@ pub(crate) struct PairRequestPayload {
     pub to_device_id: String,
     pub created_at: String,
     pub expires_at: String,
+    /// The sender's iroh key. Self-reported, for pairing over a plain
+    /// Bluetooth link that proves none; over the Network channel the key
+    /// TLS proved wins (ADR-0009 D8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +194,11 @@ pub(crate) struct PairAcceptPayload {
     pub from_device_id: String,
     pub to_device_id: String,
     pub accepted_at: String,
+    /// The sender's iroh key. Self-reported, for pairing over a plain
+    /// Bluetooth link that proves none; over the Network channel the key
+    /// TLS proved wins (ADR-0009 D8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +223,11 @@ pub(crate) struct PairCompletePayload {
     /// not a breaking wire-format change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_material: Option<crate::services::communication::channel::encryption::KeyMaterial>,
+    /// The sender's iroh key. Self-reported, for pairing over a plain
+    /// Bluetooth link that proves none; over the Network channel the key
+    /// TLS proved wins (ADR-0009 D8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +235,8 @@ pub(super) struct StoredIncomingPairRequest {
     pub request: IncomingPairRequest,
     pub from_addr: String,
     pub from_ws_port: Option<u16>,
+    /// The requester's key, as TLS proved it on the request's connection.
+    pub from_endpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +245,9 @@ pub(super) struct SeenPeer {
     pub addr: String,
     pub discovery_port: u16,
     pub ws_port: Option<u16>,
+    /// The key the peer announces. Unproven until a connection to it
+    /// succeeds, which is why it is only used to dial, never to trust.
+    pub endpoint_id: Option<String>,
     pub last_seen_at: String,
     pub last_seen_mono: Instant,
 }
@@ -251,6 +281,11 @@ pub(super) struct DiscoveryRuntime {
     /// ADR-0008 D1/D2: the channels this device is running a setup search
     /// for right now, and how far each one's init has got.
     pub channel_setups: HashMap<(String, ChannelKind), ChannelSetup>,
+    /// The peer's key for each pairing this device completed or saw
+    /// completed, by request id: `(peer device id, key)` (ADR-0009 D8).
+    /// Saving the pair pins this one, never a key from some other frame
+    /// that claimed the same device id.
+    pub pairing_keys: HashMap<String, (String, String)>,
 }
 
 /// One channel's init in progress (ADR-0008 D1). Complete once both halves

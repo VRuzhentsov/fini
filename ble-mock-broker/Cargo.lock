@@ -28,10 +28,12 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=4139db405738194e7bc18915c7c9b977ded12ccf#4139db405738194e7bc18915c7c9b977ded12ccf"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=03c9e8f#03c9e8f6573e84b9d6267620026343a931dabee8"
 dependencies = [
  "async-trait",
  "bluer",
+ "dbus",
+ "dbus-tokio",
  "futures",
  "jni",
  "log",
@@ -41,6 +43,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "uuid",
 ]
 

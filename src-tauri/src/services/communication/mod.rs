@@ -5,7 +5,7 @@
 //! - `pairing` — establishing trust between two devices, and the channels a
 //!   pair has configured since.
 //! - `channel` — carrying bytes over one of those channels. Holds the
-//!   adapters (`tcp_ws`, `ble`, `sim`), the framing, and the encryption seam.
+//!   adapters (`network`, `ble`, `sim`), the framing, and the encryption seam.
 //! - `sync` — the application protocol that runs over a channel, and the
 //!   outbox that survives a channel being down.
 //!

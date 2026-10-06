@@ -419,6 +419,10 @@ struct DevicePairSendArgs {
     to_addr: String,
     #[arg(long)]
     to_ws_port: Option<u16>,
+    /// The peer's iroh key, when its presence beacon has not been heard yet
+    /// (a fresh CLI process has not run discovery long enough).
+    #[arg(long)]
+    to_endpoint_id: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -435,6 +439,10 @@ struct DevicePairedSaveArgs {
     peer_device_id: String,
     #[arg(long)]
     display_name: String,
+    /// The peer's iroh key (hex) to pin for the pair (ADR-0009 D8). Without
+    /// it the pair cannot connect until it is paired through the app.
+    #[arg(long)]
+    endpoint_id: Option<String>,
 }
 
 #[derive(Args)]
@@ -1474,6 +1482,7 @@ fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
                     args.display_name,
                     None,
                     false,
+                    args.endpoint_id,
                     ctx.db_path.clone(),
                 )
                 .map_err(CliError::from_string)?,
@@ -1522,6 +1531,7 @@ fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult
                     to_device_id: args.to_device_id,
                     to_addr: args.to_addr,
                     to_ws_port: args.to_ws_port,
+                    to_endpoint_id: args.to_endpoint_id,
                 },
             )
             .map_err(CliError::from_string)?;
