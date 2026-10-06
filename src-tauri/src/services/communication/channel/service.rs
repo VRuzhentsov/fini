@@ -186,6 +186,11 @@ impl ChannelService for NetworkChannelService {
 
     #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self) {
+        // Before the spawn: a dial that runs first must already see that
+        // this state serves, or it could bind (and keep) a random port.
+        self.state
+            .serves_network
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         tauri::async_runtime::spawn(super::network::run_server(
             self.state.clone(),
             self.state.db_path.clone(),

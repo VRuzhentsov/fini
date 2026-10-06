@@ -419,6 +419,10 @@ struct DevicePairSendArgs {
     to_addr: String,
     #[arg(long)]
     to_ws_port: Option<u16>,
+    /// The peer's iroh key, when its presence beacon has not been heard yet
+    /// (a fresh CLI process has not run discovery long enough).
+    #[arg(long)]
+    to_endpoint_id: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1527,6 +1531,7 @@ fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult
                     to_device_id: args.to_device_id,
                     to_addr: args.to_addr,
                     to_ws_port: args.to_ws_port,
+                    to_endpoint_id: args.to_endpoint_id,
                 },
             )
             .map_err(CliError::from_string)?;

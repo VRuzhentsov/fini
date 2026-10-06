@@ -322,9 +322,12 @@ pub fn device_connection_send_pair_request_impl(
     };
 
     let target_port = input.to_ws_port.unwrap_or(state.space_sync_ws_port);
-    let peer_key = state
-        .presence_key(&payload.to_device_id)
-        .ok_or_else(|| "this device has not announced its key yet; try again in a moment".to_string())?;
+    let peer_key = input
+        .to_endpoint_id
+        .or_else(|| state.presence_key(&payload.to_device_id))
+        .ok_or_else(|| {
+            "this device has not announced its key yet; try again in a moment, or pass its key".to_string()
+        })?;
     send_pair_network(
         state,
         &peer_key,

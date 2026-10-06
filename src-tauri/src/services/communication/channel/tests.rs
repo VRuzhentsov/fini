@@ -776,12 +776,8 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
     let (sender, _sender_db) = server_state_on_port("transport-send-pair-request-sender", 0);
     let sender_device_id = sender.identity.device_id.clone();
     let receiver_device_id = receiver.identity.device_id.clone();
-    sender.note_presence_for_test(
-        &receiver_device_id,
-        "127.0.0.1",
-        port,
-        Some(receiver.identity.endpoint_id.clone()),
-    );
+    // No presence heard, as for a one-shot CLI command: the key is given.
+    let receiver_key = receiver.identity.endpoint_id.clone();
     // `..._impl` uses `tauri::async_runtime::block_on` internally (matching
     // how a real, synchronous Tauri command runs); calling it directly from
     // this already-async test would panic ("runtime from within a
@@ -794,6 +790,7 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
                 to_device_id: receiver_device_id,
                 to_addr: "127.0.0.1".to_string(),
                 to_ws_port: Some(port),
+                to_endpoint_id: Some(receiver_key),
             },
         )
         .expect("send pair request");
@@ -865,6 +862,7 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
                 to_device_id: accepter_device_id,
                 to_addr: "127.0.0.1".to_string(),
                 to_ws_port: Some(accepter_port),
+                to_endpoint_id: None,
             },
         )
         .expect("send pair request");

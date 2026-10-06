@@ -127,6 +127,10 @@ pub struct DevicePairRequestInput {
     pub to_device_id: String,
     pub to_addr: String,
     pub to_ws_port: Option<u16>,
+    /// The peer's iroh key, for a caller that has not heard its presence
+    /// beacon (a one-shot CLI command). TLS proves it either way.
+    #[serde(default)]
+    pub to_endpoint_id: Option<String>,
 }
 
 /// The BLE-first pairing equivalent of `DevicePairRequestInput` (ADR 0002
