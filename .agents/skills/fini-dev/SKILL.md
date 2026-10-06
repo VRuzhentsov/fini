@@ -189,6 +189,32 @@ When setting up data for manual testing, QA, or feature exercise:
 
 ## Command Selection
 
+### Development runs on HMR; the user builds artefacts
+
+For any development or iteration run, start the **HMR processes** and leave
+them running:
+
+| Side | Use | Not |
+|---|---|---|
+| Desktop | `make desktop-debug-dev` | `make desktop-debug` (builds a binary first) |
+| Phone | `make android-dev` | `make android-debug-deploy` (builds and installs an APK) |
+
+A frontend edit then reaches both apps immediately. Building an artefact for
+an iteration costs minutes per change and is the user's call, not a default:
+reach for one only when the artefact itself is the thing under test — a
+release check, or something that must run against an installed package.
+
+Two limits to state rather than work around silently:
+
+- **HMR covers the frontend only.** A Rust change needs a rebuild, and
+  `tauri dev` does not always pick one up on its own. After editing Rust,
+  confirm the running app actually has the change (query the behaviour, do
+  not assume) and restart the dev process when it does not.
+- **`make android-dev` serves the frontend from the host over the network**,
+  so it cannot run while the phone's Wi-Fi is off for a Bluetooth-only test
+  (`make e2e-devices-ble`). When a task needs both, say so and let the user
+  choose which half to give up.
+
 Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 
 | Need | Command |
