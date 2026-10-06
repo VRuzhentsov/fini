@@ -146,8 +146,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             return;
         }
         PeerFrame::PairAccept(payload) => {
-            let key = link_key.or_else(|| payload.from_endpoint_id.clone());
-            let _ = state.receive_ws_pair_accept(payload, key);
+            let _ = state.receive_ws_pair_accept(payload);
             return;
         }
         PeerFrame::PairComplete(payload) => {

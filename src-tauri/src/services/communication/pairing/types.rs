@@ -277,10 +277,11 @@ pub(super) struct DiscoveryRuntime {
     /// ADR-0008 D1/D2: the channels this device is running a setup search
     /// for right now, and how far each one's init has got.
     pub channel_setups: HashMap<(String, ChannelKind), ChannelSetup>,
-    /// Keys peers proved over TLS on a connection to this device, by
-    /// device id (ADR-0009 D8). Pinned in `paired_devices` when a pairing
-    /// completes.
-    pub link_keys: HashMap<String, String>,
+    /// The peer's key for each pairing this device completed or saw
+    /// completed, by request id: `(peer device id, key)` (ADR-0009 D8).
+    /// Saving the pair pins this one, never a key from some other frame
+    /// that claimed the same device id.
+    pub pairing_keys: HashMap<String, (String, String)>,
 }
 
 /// One channel's init in progress (ADR-0008 D1). Complete once both halves

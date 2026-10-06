@@ -741,6 +741,7 @@ pub(super) fn spawn_discovery_worker(
                     guard.incoming_requests.clear();
                     guard.outgoing_code_updates.clear();
                     guard.outgoing_pair_completions.clear();
+                    guard.pairing_keys.clear();
                 }
             }
         }

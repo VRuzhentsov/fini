@@ -328,9 +328,12 @@ export const useDeviceStore = defineStore("device", () => {
   // the two devices asymmetric -- the peer believes pairing succeeded. Each
   // caller needs to know the write actually failed, not have it silently
   // swallowed here, so it doesn't also report success on this side.
+  // `requestId` names the pairing being saved; the backend pins the key
+  // that came with that pairing, not one from any other frame.
   async function savePairedDevice(
     deviceId: string,
     displayName: string,
+    requestId: string,
     bluetoothAddress: string | null = null,
     viaBluetooth = false,
   ) {
@@ -339,6 +342,7 @@ export const useDeviceStore = defineStore("device", () => {
       displayName,
       bluetoothAddress,
       viaBluetooth,
+      requestId,
     });
     await loadPairedDevices();
   }
@@ -963,6 +967,7 @@ export const useDeviceStore = defineStore("device", () => {
           await savePairedDevice(
             outgoingRequest.value.to_device_id,
             outgoingRequest.value.to_hostname,
+            completion.request_id,
             completion.bluetooth_address,
             completion.via_bluetooth,
           );
@@ -1372,6 +1377,7 @@ export const useDeviceStore = defineStore("device", () => {
         await savePairedDevice(
           request.from_device_id,
           request.from_hostname,
+          requestId,
           request.from_bluetooth_address,
           request.via_bluetooth,
         );

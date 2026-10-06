@@ -276,6 +276,7 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
     guard.incoming_requests.clear();
     guard.outgoing_code_updates.clear();
     guard.outgoing_pair_completions.clear();
+    guard.pairing_keys.clear();
     eprintln!(
         "[device-sync] add mode disabled for {} ({})",
         state.identity.hostname, state.identity.device_id
@@ -699,7 +700,7 @@ pub fn device_connection_pair_complete_request_impl(
         let target_ip: IpAddr = to_addr
             .parse()
             .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
-        let peer_key = to_key.ok_or_else(|| "the requester's key is unknown".to_string())?;
+        let peer_key = to_key.clone().ok_or_else(|| "the requester's key is unknown".to_string())?;
         send_pair_network(state, &peer_key, target_ip, to_ws_port, PeerFrame::PairComplete(payload))?;
     }
 
@@ -709,6 +710,11 @@ pub fn device_connection_pair_complete_request_impl(
         .map_err(|_| "device sync runtime lock poisoned".to_string())?;
     guard.tx_count += 1;
     guard.incoming_requests.remove(&input.request_id);
+    if let Some(key) = to_key {
+        guard
+            .pairing_keys
+            .insert(input.request_id.clone(), (to_device_id.clone(), key));
+    }
 
     eprintln!(
         "[device-sync] completed request {} for {}",
@@ -1048,6 +1054,7 @@ pub fn device_connection_save_paired_device(
     display_name: String,
     bluetooth_address: Option<String>,
     via_bluetooth: bool,
+    request_id: Option<String>,
     endpoint_id: Option<String>,
 ) -> Result<PairedDevice, String> {
     let mut conn = db.0.lock().unwrap();
@@ -1059,7 +1066,9 @@ pub fn device_connection_save_paired_device(
         drop(endpoint_id);
         None
     };
-    let endpoint_id = state.link_key(&peer_device_id).or(endpoint_id);
+    let endpoint_id = request_id
+        .and_then(|request_id| state.pairing_key(&request_id, &peer_device_id))
+        .or(endpoint_id);
     device_connection_save_paired_device_impl(
         &mut conn,
         peer_device_id,
@@ -1607,6 +1616,61 @@ mod tests {
         std::env::set_var("FINI_MDNS_DISABLED", "1");
         let state = DeviceConnectionState::from_db_path(&data_dir, db_path);
         (conn, state)
+    }
+
+    /// The key a pair is saved with is the one that came with that
+    /// pairing. Another frame that claims the same device id -- here a
+    /// `PairRequest` raced in after the legitimate `PairComplete` -- must
+    /// not replace it, or whoever sent that frame could pass the session
+    /// gate as the peer.
+    #[test]
+    fn saving_a_pair_pins_the_key_from_its_own_pairing() {
+        let (_conn, state) = test_state();
+        let me = state.identity.device_id.clone();
+        state
+            .receive_ws_pair_complete(
+                PairCompletePayload {
+                    protocol: DISCOVERY_PROTOCOL.to_string(),
+                    kind: "pair_complete".to_string(),
+                    request_id: "req-1".to_string(),
+                    from_device_id: "peer-b".to_string(),
+                    from_hostname: "beta".to_string(),
+                    to_device_id: me.clone(),
+                    paired_at: "2026-01-01T00:00:00Z".to_string(),
+                    bluetooth_address: None,
+                    key_material: None,
+                    from_endpoint_id: None,
+                },
+                "10.0.0.2".to_string(),
+                Some("legitimate-key".to_string()),
+                false,
+            )
+            .unwrap();
+        state
+            .receive_ws_pair_request(
+                PairRequestPayload {
+                    protocol: DISCOVERY_PROTOCOL.to_string(),
+                    kind: "pair_request".to_string(),
+                    request_id: "req-attacker".to_string(),
+                    from_device_id: "peer-b".to_string(),
+                    from_hostname: "beta".to_string(),
+                    from_discovery_port: None,
+                    from_ws_port: None,
+                    to_device_id: me,
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                    expires_at: "2026-01-01T00:01:00Z".to_string(),
+                    from_endpoint_id: None,
+                },
+                "10.0.0.66".to_string(),
+                Some("attacker-key".to_string()),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(state.pairing_key("req-1", "peer-b").as_deref(), Some("legitimate-key"));
+        // A key is only ever handed out for the device its pairing was with.
+        assert_eq!(state.pairing_key("req-1", "peer-c"), None);
+        assert_eq!(state.pairing_key("req-attacker", "peer-b"), None);
     }
 
     fn bluetooth_row(conn: &mut SqliteConnection) -> Option<crate::models::Channel> {

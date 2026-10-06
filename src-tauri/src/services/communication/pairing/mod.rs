@@ -227,21 +227,12 @@ impl DeviceConnectionState {
         })
     }
 
-    /// Remembers the key a peer proved over TLS on a connection to this
-    /// device, so a pairing that completes can pin it. Links without a key
-    /// (none today on the Network channel) are ignored.
-    pub(crate) fn note_link_key(&self, device_id: &str, key: Option<String>) {
-        let Some(key) = key else {
-            return;
-        };
-        if let Ok(mut guard) = self.runtime.lock() {
-            guard.link_keys.insert(device_id.to_string(), key);
-        }
-    }
-
-    /// The key `device_id` proved on its latest connection to this device.
-    pub(crate) fn link_key(&self, device_id: &str) -> Option<String> {
-        self.runtime.lock().ok()?.link_keys.get(device_id).cloned()
+    /// The key to pin for `peer_device_id` once pairing `request_id` is
+    /// saved: the one that came with that pairing, if it was for this peer.
+    pub(crate) fn pairing_key(&self, request_id: &str, peer_device_id: &str) -> Option<String> {
+        let guard = self.runtime.lock().ok()?;
+        let (device_id, key) = guard.pairing_keys.get(request_id)?;
+        (device_id == peer_device_id).then(|| key.clone())
     }
 
     /// The key a peer announces in its presence beacon, if it is in range.
@@ -623,7 +614,6 @@ impl DeviceConnectionState {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
         }
-        self.note_link_key(&payload.from_device_id, from_key.clone());
 
         let mut guard = self
             .runtime
@@ -655,12 +645,10 @@ impl DeviceConnectionState {
     pub fn receive_ws_pair_accept(
         &self,
         payload: PairAcceptPayload,
-        from_key: Option<String>,
     ) -> Result<(), String> {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
         }
-        self.note_link_key(&payload.from_device_id, from_key);
 
         let mut guard = self
             .runtime
@@ -689,8 +677,6 @@ impl DeviceConnectionState {
         if payload.to_device_id != self.identity.device_id {
             return Ok(());
         }
-        self.note_link_key(&payload.from_device_id, from_key);
-
         // When `via_bluetooth`, trust the address actually observed on this
         // connection over the sender's self-reported `payload.bluetooth_address`
         // -- same reasoning as `IncomingPairRequest::from_bluetooth_address`.
@@ -705,6 +691,11 @@ impl DeviceConnectionState {
             .lock()
             .map_err(|_| "device sync runtime lock poisoned".to_string())?;
         guard.rx_count += 1;
+        if let Some(key) = from_key {
+            guard
+                .pairing_keys
+                .insert(payload.request_id.clone(), (payload.from_device_id.clone(), key));
+        }
         guard.outgoing_pair_completions.insert(
             payload.request_id.clone(),
             PairCompletionUpdate {
