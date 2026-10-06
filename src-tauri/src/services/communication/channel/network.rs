@@ -29,21 +29,27 @@ use crate::services::communication::sync::types::PeerFrame;
 /// network answers in milliseconds; one that went away never does.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the Network server waits before trying its port again.
+#[cfg(any(feature = "ui-plane", test))]
+const REBIND_INTERVAL: Duration = Duration::from_secs(5);
+
 /// This state's Network endpoint, bound on first use to
 /// `space_sync_ws_port`. A second process for the same device (the CLI next
 /// to a running app) finds the port taken and binds any free one: it only
-/// dials out.
+/// dials out. A state that serves never does: presence announces
+/// `space_sync_ws_port`, so it fails instead and is tried again.
 pub(crate) async fn endpoint(state: &DeviceConnectionState) -> Result<Endpoint, String> {
     bind(state, state.space_sync_ws_port).await
 }
 
 async fn bind(state: &DeviceConnectionState, port: u16) -> Result<Endpoint, String> {
+    let serves = state.serves_network.load(std::sync::atomic::Ordering::SeqCst);
     state
         .network_endpoint
         .get_or_try_init(|| async {
             match bind_on(state, port).await {
                 Ok(endpoint) => Ok(endpoint),
-                Err(err) if port != 0 => {
+                Err(err) if port != 0 && !serves => {
                     log::warn!("[transport][network] port {port} unavailable ({err}); binding any free port");
                     bind_on(state, 0).await
                 }
@@ -116,13 +122,18 @@ pub async fn send_one_frame(
 /// `test` only -- see `run_peer_gate`'s doc comment.
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
-    match endpoint(&state).await {
-        Ok(endpoint) => {
-            log::info!("[transport][network] listening on {:?}", endpoint.bound_sockets());
-            serve(state, db_path, endpoint).await;
+    state.serves_network.store(true, std::sync::atomic::Ordering::SeqCst);
+    let endpoint = loop {
+        match endpoint(&state).await {
+            Ok(endpoint) => break endpoint,
+            Err(err) => {
+                log::warn!("[transport][network] {err}; trying again in {REBIND_INTERVAL:?}");
+                tokio::time::sleep(REBIND_INTERVAL).await;
+            }
         }
-        Err(err) => log::error!("[transport][network] {err}"),
-    }
+    };
+    log::info!("[transport][network] listening on {:?}", endpoint.bound_sockets());
+    serve(state, db_path, endpoint).await;
 }
 
 /// Serves this state's endpoint bound on `port`.

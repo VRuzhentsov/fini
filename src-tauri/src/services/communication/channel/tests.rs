@@ -363,6 +363,27 @@ fn server_state_on_port(label: &str, port: u16) -> (DeviceConnectionState, PathB
     result
 }
 
+/// A state that only dials falls back to any free port when its own is
+/// taken (the CLI next to a running app). A serving state does not: peers
+/// dial the port presence announces, so it must sit there or nowhere.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_a_dialing_state_falls_back_to_a_free_port() {
+    let taken = std::net::UdpSocket::bind(("0.0.0.0", 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
+
+    let (dialer, _) = server_state_on_port("network-port-dialer", port);
+    let endpoint = network::endpoint(&dialer).await.expect("a dialer binds some port");
+    assert_ne!(network::bound_port(&endpoint), port);
+
+    let (server, _) = server_state_on_port("network-port-server", port);
+    server.serves_network.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(network::endpoint(&server).await.is_err(), "a server must not move off its port");
+
+    drop(taken);
+    let endpoint = network::endpoint(&server).await.expect("the port is free again");
+    assert_eq!(network::bound_port(&endpoint), port);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn network_gate_accepts_paired_device_and_claims_session_as_network() {
     let (server, server_db) = server_state("transport-tcpws-accept");

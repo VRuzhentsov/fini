@@ -127,6 +127,10 @@ pub struct DeviceConnectionState {
     /// (`channel::network`). Per state, not per process: tests run two
     /// devices in one process.
     pub(crate) network_endpoint: Arc<tokio::sync::OnceCell<iroh::Endpoint>>,
+    /// Set once this state serves the Network channel. A serving endpoint
+    /// must sit on `space_sync_ws_port`, the port presence announces; only
+    /// a state that just dials out may fall back to any free port.
+    pub(crate) serves_network: Arc<std::sync::atomic::AtomicBool>,
     /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
     /// transport, built on first use (`channel::ble`).
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -220,6 +224,7 @@ impl DeviceConnectionState {
             space_sync_ws_port: env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT),
             secret_key,
             network_endpoint: Arc::new(tokio::sync::OnceCell::new()),
+            serves_network: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
@@ -229,6 +234,7 @@ impl DeviceConnectionState {
 
     /// The key to pin for `peer_device_id` once pairing `request_id` is
     /// saved: the one that came with that pairing, if it was for this peer.
+    #[cfg(any(feature = "ui-plane", test))]
     pub(crate) fn pairing_key(&self, request_id: &str, peer_device_id: &str) -> Option<String> {
         let guard = self.runtime.lock().ok()?;
         let (device_id, key) = guard.pairing_keys.get(request_id)?;
