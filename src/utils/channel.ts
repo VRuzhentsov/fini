@@ -33,5 +33,6 @@ export const ChannelProblem = {
   BluetoothNotSupported: "bluetooth_not_supported",
   BluetoothUnavailable: "bluetooth_unavailable",
   NetworkUnavailable: "network_unavailable",
+  PairKeyMissing: "pair_key_missing",
 } as const;
 export type ChannelProblem = (typeof ChannelProblem)[keyof typeof ChannelProblem];

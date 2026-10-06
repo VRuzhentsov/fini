@@ -16,6 +16,11 @@ export function channelProblemText(problem: ChannelProblem): string {
       return "Bluetooth is unavailable on this device — the channel resumes by itself once it works again";
     case ChannelProblem.NetworkUnavailable:
       return "This device can't reach the local network";
+    // The one problem that is about the pair rather than this device, so it
+    // names the pair instead of a machine: nothing is wrong with either one,
+    // and no channel of this pair can connect until it is made again.
+    case ChannelProblem.PairKeyMissing:
+      return "This pair was made before connections were secured — pair these devices again to resume syncing";
   }
 }
 
