@@ -1,6 +1,6 @@
 [package]
 name = "fini"
-version = "0.3.14"
+version = "0.3.15"
 description = "Fini"
 license = "AGPL-3.0-or-later"
 authors = []
