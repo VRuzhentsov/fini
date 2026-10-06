@@ -116,6 +116,19 @@ keeps an identity key next to the account and SSH keeps `known_hosts`.
 `origin_device_id` in existing records stays valid. Pairs made before this
 have no key and are paired again (Fini's no-legacy rule during the alpha).
 
+Known limitation: the key pinned is the one the peer proved on the pairing
+link, and the six-digit code does not cover it. B sends the code to A over
+the network, A shows it, and the user types it on B, so the code proves a
+person holds both devices but not that the key is theirs. An active
+man-in-the-middle on the LAN or a Bluetooth relay present while pairing can
+forward the frames, code included, and have both devices pin its keys.
+Before this ADR any device that knew a `device_id` could connect at any
+time; now an attacker has to be in the middle at the moment of pairing.
+Closing the gap is iroh's own answer to "whose key is this": exchange an
+`EndpointTicket` (QR code or copied string) that carries the key out of
+band, as `dumbpipe`, `sendme` and Delta Chat's QR pairing do. Planned as a
+follow-up.
+
 **D9 — ADR-0008 stays whole.** Per-channel `None`/`Off`/`On` state, init by
 mutual hello, the primary channel and per-channel presence keep working as
 they do; only what is under `DataLink` changes. This is why D2 uses one
@@ -173,6 +186,8 @@ Recorded so they are not rediscovered. None of these is a decision.
 ## Open questions
 
 - A CLA for outside contributors.
+- Pairing by iroh ticket instead of the six-digit code (D8's known
+  limitation).
 
 Settled on 2026-10-05: identity (D8), ADR-0008's channel model (D9), relays
 (D10).
