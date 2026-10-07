@@ -183,8 +183,26 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// Raised from 3s to 12s after instrumenting it on hardware: dial + hello +
 /// reply took 2.4-3.9s against a Pixel, so 3s cut off the reply every time,
 /// and the 4s scan window left the probe phase only ~2s of budget besides.
+///
+/// Then from 12s to 30s, because 12s was still under the *backend's* own
+/// bound and so could never express anything but "give up early". ble-gatt
+/// gives a connect `CONNECT_TIMEOUT` (20s) to finish; a probe capped below
+/// that is guaranteed to abandon a dial the backend had not yet given up on.
+/// Measured here, Add Device found the peer every pass and never once
+/// probed it successfully:
+///
+///   connect: dialling 6E:1C:BD:59:00:20            12:25:35
+///   connect: abandoned before completing           12:25:47   <- 12.0s
+///     (connect guard dropped); quarantining and cleaning up in the background
+///
+/// and the quarantine then also broke the *next* pass, so the picker stayed
+/// empty for as long as anyone cared to watch. A GATT connect is simply this
+/// slow: 10.0-10.5s phone-to-desktop on every one of four passes, and
+/// `SESSION_CONNECT_TIMEOUT` below records ~28s seen elsewhere. So the cap
+/// has to sit above the backend's own, and its job is only to stop a silent
+/// peer from eating the pass -- never to pre-empt a dial still in progress.
 #[cfg(any(feature = "ui-plane", test))]
-const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_millis(12_000);
+const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Once the listening phase of a candidate scan has heard its first
 /// advertiser, it keeps listening this much longer (for a second device,
@@ -970,22 +988,23 @@ where
 
     let mut candidates = Vec::new();
     for address in flagged_addresses {
-        // Bounded by the *remaining* scan deadline, not a fixed window: one
+        // The scan deadline decides which candidates are *started*, and
+        // `CANDIDATE_PROBE_TIMEOUT` bounds each one that is: one
         // unresponsive candidate (in range, advertising, but slow or gone
-        // by the time this connects) must not eat the whole scan past the
-        // caller's requested `duration_ms` -- the frontend runs this as a
-        // single self-rescheduling chain, so one stuck candidate here would
-        // otherwise delay every subsequent Add Device discovery pass. Dial
-        // and send are covered too, not just the reply: neither has a bound
-        // of its own. Also capped per-candidate (`CANDIDATE_PROBE_TIMEOUT`):
-        // without that, one silent candidate could eat the *entire*
-        // remaining budget by itself, starving out every other candidate
-        // still to be tried, including the one actually being searched for.
-        // A probe in flight is never cancelled for pairing: abandoning a
-        // dial makes ble-gatt quarantine the address and disconnect it in
-        // the background, which removes the device from BlueZ and fails the
-        // pairing dial that follows. It finishes (bounded by
-        // `CANDIDATE_PROBE_TIMEOUT`) and the pass stops before the next one.
+        // by the time this connects) must not eat the whole scan -- the
+        // frontend runs this as a single self-rescheduling chain, so one
+        // stuck candidate here would otherwise delay every subsequent Add
+        // Device discovery pass. Dial and send are covered too, not just
+        // the reply: neither has a bound of its own.
+        //
+        // The deadline deliberately does *not* also clip a probe already
+        // running. A probe in flight is never cancelled -- not for pairing,
+        // and not for the caller's window either: abandoning a dial makes
+        // ble-gatt quarantine the address and disconnect it in the
+        // background, which removes the device from BlueZ and fails both
+        // the pairing dial that follows and the next pass's probe. So the
+        // pass may overrun `duration_ms` by its last candidate, and stops
+        // before starting another.
         if *legs.borrow() > 0 {
             return Err(PAIRING_PAUSED.to_string());
         }
@@ -993,11 +1012,15 @@ where
         if remaining.is_zero() {
             break;
         }
-        let reply = tokio::time::timeout(
-            remaining.min(CANDIDATE_PROBE_TIMEOUT),
-            probe(address.clone()),
-        )
-        .await;
+        // `CANDIDATE_PROBE_TIMEOUT` outright, not clipped to `remaining`:
+        // the deadline decides whether another probe *starts* (the check
+        // just above), and once one has, cutting it short is the one
+        // outcome this loop must not produce. A dial abandoned part-way is
+        // not a probe that merely failed -- ble-gatt quarantines the
+        // address and disconnects it in the background, so the pass after
+        // this one cannot reach the peer either. Overrunning the caller's
+        // window by one slow candidate is the cheaper of the two.
+        let reply = tokio::time::timeout(CANDIDATE_PROBE_TIMEOUT, probe(address.clone())).await;
         if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname })) = reply {
             // A stale/self-seen advertisement (e.g. two adapters on the
             // same machine, or a previous scan's own peripheral still

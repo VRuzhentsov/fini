@@ -291,6 +291,35 @@ pub fn run_cli() -> i32 {
     services::cli::run(std::env::args().collect())
 }
 
+/// The log level everything below `run`'s explicit per-target overrides is
+/// filtered at: `Info`, unless `FINI_LOG_LEVEL` names another one.
+///
+/// Pinned to `Info` outright before. That is the right default -- `debug` and
+/// `trace` on the Bluetooth path are per-fragment -- but it was also the only
+/// level obtainable, and the whole datagram transport logs its *successful*
+/// steps below it. So a channel that connected and then moved no bytes
+/// produced exactly the same log as one that never tried: hours of hardware
+/// runs went into inferring, from silence, something one `debug` line states.
+/// `RUST_LOG` does not reach here, because `tauri-plugin-log` is what routes
+/// records on Android and it takes a level, not a filter string.
+///
+/// An Android app process inherits no environment, so the variable can only
+/// ever be set on desktop. The `debug` buildType is installed for no reason
+/// other than being diagnosed -- it carries its own `.debug` application id
+/// and never replaces the Play Store install (see `fini-android-testing`) --
+/// so there it logs at `debug` outright. Both halves of a Bluetooth failure
+/// then say what they did, instead of only the half running on this machine.
+#[cfg(feature = "ui-plane")]
+fn base_log_level() -> log::LevelFilter {
+    if let Ok(requested) = std::env::var("FINI_LOG_LEVEL") {
+        return requested.parse().unwrap_or(log::LevelFilter::Info);
+    }
+    if cfg!(all(target_os = "android", debug_assertions)) {
+        return log::LevelFilter::Debug;
+    }
+    log::LevelFilter::Info
+}
+
 #[cfg(feature = "ui-plane")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -306,7 +335,7 @@ pub fn run() {
         // docs/logging.md, which already assumes this is wired up here.
         .plugin(
             tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Info)
+                .level(base_log_level())
                 .level_for("tracing::span", log::LevelFilter::Warn)
                 .level_for("iroh", log::LevelFilter::Warn)
                 .targets([
