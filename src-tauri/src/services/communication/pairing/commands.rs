@@ -181,10 +181,23 @@ fn send_pair_network(
 /// attempt.
 ///
 /// Sized to include the wait `dial_for_pairing` may spend letting a
-/// candidate probe already in flight finish (up to 12s) before its own dial
-/// of ~4s: at 10s the wait alone consumed half the budget and the dial was
-/// abandoned mid-connect.
-const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// candidate probe already in flight finish before its own dial: at 10s the
+/// wait alone consumed half the budget and the dial was abandoned
+/// mid-connect.
+///
+/// The sum it has to hold, worst case, when Pair is pressed just as a probe
+/// starts dialling a slow advertiser:
+///
+///   `CANDIDATE_PROBE_TIMEOUT`   25s   waiting for that probe's lock
+///   `PAIRING_DIAL_RETRY_WINDOW`  5s   then retrying its own dial, the last
+///   ble-gatt `CONNECT_TIMEOUT`  20s   attempt of which may run to the bound
+///
+/// so ~50s before a frame is even written. Capped under
+/// `PAIR_REQUEST_TTL_SECS` (60s) deliberately: past the TTL the request is
+/// dead anyway, and a retry would collide with this still-open attempt --
+/// the collision the paragraph above exists to prevent. Any of those three
+/// growing has to come with a look at this one.
+const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(55);
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn send_pair_ble(address: &str, msg: PeerFrame) -> Result<(), String> {

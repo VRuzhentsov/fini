@@ -184,7 +184,7 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// reply took 2.4-3.9s against a Pixel, so 3s cut off the reply every time,
 /// and the 4s scan window left the probe phase only ~2s of budget besides.
 ///
-/// Then from 12s to 30s, because 12s was still under the *backend's* own
+/// Then from 12s to 25s, because 12s was still under the *backend's* own
 /// bound and so could never express anything but "give up early". ble-gatt
 /// gives a connect `CONNECT_TIMEOUT` (20s) to finish; a probe capped below
 /// that is guaranteed to abandon a dial the backend had not yet given up on.
@@ -201,8 +201,16 @@ const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 /// `SESSION_CONNECT_TIMEOUT` below records ~28s seen elsewhere. So the cap
 /// has to sit above the backend's own, and its job is only to stop a silent
 /// peer from eating the pass -- never to pre-empt a dial still in progress.
+///
+/// *Just* above `CONNECT_TIMEOUT` rather than comfortably above it, because
+/// `dial_for_pairing` waits out a probe already in flight, and
+/// `SEND_PAIR_BLE_TIMEOUT` has to cover that wait *plus* its own dial within
+/// `PAIR_REQUEST_TTL_SECS`. A probe still running past the backend's own
+/// bound is one the backend has already given up on, so further margin buys
+/// nothing here and comes straight out of the pairing budget. Keep the two
+/// in step: raising this lengthens the worst case Pair has to sit through.
 #[cfg(any(feature = "ui-plane", test))]
-const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Once the listening phase of a candidate scan has heard its first
 /// advertiser, it keeps listening this much longer (for a second device,
