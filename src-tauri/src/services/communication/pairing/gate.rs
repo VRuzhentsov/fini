@@ -163,10 +163,12 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             if via_bluetooth {
                 log::info!("[pairing][ble] parked the link request {request_id} arrived on");
                 park_pair_link(request_id.clone(), link);
-                // Hold here until the request is answered or has expired, so
-                // the parked link is released exactly once, and keep the
-                // add-mode scan off the adapter meanwhile: its probes dial
-                // the very device whose link is parked here.
+                // Hold here until the request is answered or has expired.
+                // The channel service counts this central as live until the
+                // gate returns, and on Linux re-registers the advertisement
+                // -- tearing the parked link down -- once none is. Keep the
+                // add-mode scan off the adapter meanwhile too: its probes
+                // dial the very device whose link is parked here.
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 let _leg = crate::services::communication::channel::ble::PairingLeg::begin();
                 let hold_until = tokio::time::Instant::now()
