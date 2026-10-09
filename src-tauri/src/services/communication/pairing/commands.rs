@@ -30,7 +30,9 @@ use crate::services::communication::pairing::types::{
 };
 use crate::services::communication::pairing::DeviceConnectionState;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::communication::pairing::{channel_status, ChannelState, ChannelStatus};
+use crate::services::communication::pairing::{
+    channel_status, ChannelProblem, ChannelState, ChannelStatus,
+};
 use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::ChannelKind;
 
@@ -1550,6 +1552,10 @@ pub fn device_connection_channel_statuses_impl(
     if paired.is_none() {
         return Err("paired device not found".to_string());
     }
+    // A pair-level problem, so it is read once and reported on every row:
+    // until the pair is made again no channel of it can authenticate, and
+    // which channel the person tries makes no difference.
+    let pair_key_missing = super::pinned_key(&mut *conn, &peer_device_id).is_none();
     Ok([ChannelKind::Network, ChannelKind::Bluetooth]
         .into_iter()
         .map(|kind| {
@@ -1563,7 +1569,15 @@ pub fn device_connection_channel_statuses_impl(
             let service = crate::services::communication::channel::service::service_for(state, kind);
             // An exchange running right now is presence too.
             let present = service.is_present(&peer_device_id) || state.has_session_on(&peer_device_id, kind);
-            channel_status(kind, stored, present, service.problem(), primary)
+            // Outranks whatever the channel itself reports: a radio that is
+            // off is worth saying only while there is a pair that could use
+            // it once it comes back.
+            let problem = if pair_key_missing {
+                Some(ChannelProblem::PairKeyMissing)
+            } else {
+                service.problem()
+            };
+            channel_status(kind, stored, present, problem, primary)
         })
         .collect())
 }
