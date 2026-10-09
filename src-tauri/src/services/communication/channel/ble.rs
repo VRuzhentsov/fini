@@ -100,6 +100,39 @@ fn local_fingerprint() -> &'static OnceLock<[u8; FINGERPRINT_LEN]> {
     &FINGERPRINT
 }
 
+/// This device's `DiscoveryHello`, carrying its identity; set with the
+/// fingerprint, for the same reason.
+fn local_hello() -> &'static OnceLock<PeerFrame> {
+    static HELLO: OnceLock<PeerFrame> = OnceLock::new();
+    &HELLO
+}
+
+/// A device that probed this one in add-mode: its hello, and when.
+struct InboundHello {
+    hostname: String,
+    endpoint_id: String,
+    heard_at: Instant,
+}
+
+/// Hellos from devices that dialled this one, by device id. Of two devices
+/// in add-mode only the lower fingerprint dials (`scan_add_mode_candidates_pass`),
+/// so the other learns of it only from this.
+fn inbound_hellos() -> &'static StdMutex<HashMap<String, InboundHello>> {
+    static HELLOS: OnceLock<StdMutex<HashMap<String, InboundHello>>> = OnceLock::new();
+    HELLOS.get_or_init(Default::default)
+}
+
+/// How long an inbound hello stands for a device in the candidate list.
+/// The prober repeats its pass every few seconds while it is in add-mode.
+const INBOUND_HELLO_FRESH: Duration = Duration::from_secs(45);
+
+/// Records the identity a prober sent; see `inbound_hellos`.
+pub fn note_inbound_hello(device_id: String, hostname: String, endpoint_id: String) {
+    if let Ok(mut hellos) = inbound_hellos().lock() {
+        hellos.insert(device_id, InboundHello { hostname, endpoint_id, heard_at: Instant::now() });
+    }
+}
+
 /// Four bytes of FNV-1a over the `device_id`.
 ///
 /// FNV-1a specifically, and **not** `std::collections::hash_map::DefaultHasher`:
@@ -273,28 +306,61 @@ const HIGHER_ID_PATIENCE: Duration = Duration::from_millis(1_500);
 /// scan's cancelled probe still tearing down its connection.
 const PAIRING_DIAL_RETRY_WINDOW: Duration = Duration::from_secs(5);
 
-/// Dials `address` for a pairing leg and hands back the link plus the
-/// registrations that keep it clear of the candidate scan: a pass stops at
-/// its next step, and no scan runs until the caller drops the returned guards.
+/// Opens an iroh connection to `peer_key` for a pairing leg -- `address` is
+/// only where to reach it first (ADR-0009 D2/D7: Bluetooth carries iroh, and
+/// iroh dials by key) -- and hands back the link plus the registrations that
+/// keep it clear of the candidate scan: a pass stops at its next step, and no
+/// scan runs until the caller drops the returned guards.
+///
+/// The peer's key is not pinned yet, so TLS proves only that whoever answers
+/// holds `peer_key`; pairing pins it (D8).
 pub async fn dial_for_pairing(
-    address: &str,
+    state: &DeviceConnectionState, peer_key: &str, address: &str,
 ) -> Result<(Box<dyn DataLink>, impl Sized), String> {
+    let peer_key: iroh::EndpointId = peer_key
+        .parse()
+        .map_err(|err| format!("invalid key for the pairing peer: {err}"))?;
     let leg = PairingLeg::begin();
     // A candidate probe already dialling is let finish, not cancelled; wait
     // for it so this dial never overlaps one to the same peer.
     drop(candidate_probe_lock().lock().await);
     let dial_guard = search::DialGuard::acquire().await;
+    let (endpoint, transport) = bluetooth_endpoint(state).await?;
+    let peer = PeerAddress(address.to_string());
+    transport.set_peer_address(peer_key, peer.clone());
+    let addr = iroh::EndpointAddr::from_parts(
+        peer_key,
+        [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(&peer))],
+    );
     let started = tokio::time::Instant::now();
     loop {
-        match dial(address).await {
-            Ok(link) => return Ok((link, (leg, dial_guard))),
+        let attempt = tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr.clone(), ALPN)).await;
+        match attempt {
+            Ok(Ok(connection)) => {
+                let link = IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
+                return Ok((Box::new(link) as Box<dyn DataLink>, (leg, dial_guard)));
+            }
             // The probe's connection may still be closing.
-            Err(_) if started.elapsed() < PAIRING_DIAL_RETRY_WINDOW => {
+            Ok(Err(_)) if started.elapsed() < PAIRING_DIAL_RETRY_WINDOW => {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            Err(err) => return Err(err),
+            Ok(Err(err)) => return Err(format!("bluetooth connect to {address} failed: {err}")),
+            Err(_) => return Err(format!("bluetooth connect to {address} timed out")),
         }
     }
+}
+
+/// The iroh key each add-mode candidate's hello reported, by device id --
+/// what a pairing leg to that candidate dials (`dial_for_pairing`).
+fn candidate_keys() -> &'static StdMutex<HashMap<String, String>> {
+    static KEYS: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
+    KEYS.get_or_init(Default::default)
+}
+
+/// The iroh key `device_id` reported the last time the add-mode scan
+/// probed it, if it has been probed.
+pub fn candidate_key(device_id: &str) -> Option<String> {
+    candidate_keys().lock().ok()?.get(device_id).cloned()
 }
 
 /// Held for the length of one candidate probe; see `dial_for_pairing`.
@@ -834,7 +900,7 @@ async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
     let _probe = candidate_probe_lock().lock().await;
     let _dial = search::DialGuard::acquire().await;
     let mut link = dial(address).await.ok()?;
-    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello).await.ok()?;
+    send_frame(link.as_mut(), local_hello().get()?).await.ok()?;
     recv_frame(link.as_mut()).await?.ok()
 }
 
@@ -898,6 +964,9 @@ where
     // in-app BLE pairing has never worked. Unverified on hardware: the fix
     // is mechanical and mirrors `connect_by_advertisement`, but the symptom
     // it is meant to cure has only been observed in that sibling.
+    // Advertisers that dial this device rather than being dialled by it,
+    // with their fingerprints; see below.
+    let mut answered_by: Vec<(String, [u8; FINGERPRINT_LEN])> = Vec::new();
     let flagged_addresses = {
         let _scan = search::scan_lease_between_dials().await;
         let mut discovered = backend
@@ -919,6 +988,7 @@ where
 
         let mut flagged: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        let mine = fingerprint_of(my_device_id);
         loop {
             let remaining =
                 listen_deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -975,7 +1045,19 @@ where
             // Cost to be honest about: a room with several Fini devices
             // makes every Add Device scan dial all of them and wait out
             // `CANDIDATE_PROBE_TIMEOUT` on the ones that are not pairing.
-            flagged.push(address);
+            //
+            // Only one of two devices dials the other: the lower
+            // fingerprint. Both dialling each other crossed connections to
+            // the same device, and BlueZ tore both down. The higher side
+            // lists the lower one from the hello it receives instead
+            // (`inbound_hellos`), at the address it advertises from.
+            let theirs = advertised_fingerprint(
+                peer.manufacturer_data.get(&FINI_MANUFACTURER_ID).map(Vec::as_slice),
+            );
+            match theirs {
+                Some(theirs) if theirs <= mine => answered_by.push((address, theirs)),
+                _ => flagged.push(address),
+            }
         }
         // Logged unconditionally, at info. Three separate hypotheses about
         // why add-mode discovery finds nothing have now been wrong, each
@@ -985,9 +1067,10 @@ where
         // *this* call saw and what it will probe, which is the fact every
         // one of those attempts was missing.
         log::info!(
-            "[transport][ble] add-mode scan saw {} advertiser(s), probing {}",
+            "[transport][ble] add-mode scan saw {} advertiser(s), probing {}, leaving {} to dial us",
             seen.len(),
-            flagged.len()
+            flagged.len(),
+            answered_by.len()
         );
         flagged
         // `discovered` is dropped here, stopping discovery, before any
@@ -1029,12 +1112,37 @@ where
         // this one cannot reach the peer either. Overrunning the caller's
         // window by one slow candidate is the cheaper of the two.
         let reply = tokio::time::timeout(CANDIDATE_PROBE_TIMEOUT, probe(address.clone())).await;
-        if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname })) = reply {
+        if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id })) = reply {
             // A stale/self-seen advertisement (e.g. two adapters on the
             // same machine, or a previous scan's own peripheral still
             // winding down) must not show up as a candidate to pair with.
             if device_id != my_device_id {
+                if let Ok(mut keys) = candidate_keys().lock() {
+                    keys.insert(device_id.clone(), endpoint_id);
+                }
                 candidates.push(AddModeCandidate { address, device_id, hostname });
+            }
+        }
+    }
+    // The advertisers left to dial this device: listed from the hello they
+    // sent, at the address they advertise from -- the one a pairing leg
+    // from this side can reach.
+    if let Ok(hellos) = inbound_hellos().lock() {
+        for (address, fingerprint) in answered_by {
+            let heard = hellos.iter().find(|(device_id, hello)| {
+                fingerprint_of(device_id) == fingerprint && hello.heard_at.elapsed() < INBOUND_HELLO_FRESH
+            });
+            if let Some((device_id, hello)) = heard {
+                if device_id != my_device_id && !candidates.iter().any(|c| &c.device_id == device_id) {
+                    if let Ok(mut keys) = candidate_keys().lock() {
+                        keys.insert(device_id.clone(), hello.endpoint_id.clone());
+                    }
+                    candidates.push(AddModeCandidate {
+                        address,
+                        device_id: device_id.clone(),
+                        hostname: hello.hostname.clone(),
+                    });
+                }
             }
         }
     }
@@ -1079,6 +1187,11 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     // the fingerprint is what lets a scanning peer tell this device apart
     // from any other Fini install without connecting to it first.
     let _ = local_fingerprint().set(fingerprint_of(&state.identity.device_id));
+    let _ = local_hello().set(PeerFrame::DiscoveryHello {
+        device_id: state.identity.device_id.clone(),
+        hostname: state.identity.hostname.clone(),
+        endpoint_id: state.identity.endpoint_id.clone(),
+    });
 
     // Retried with backoff, not returned-from-once: `lib.rs` spawns this
     // exactly once at startup, so an early failure here (adapter off,
@@ -1195,6 +1308,11 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                     // the gate finishing on a plain link, or the iroh
                     // transport closing the channel of a session.
                     tokio::spawn(async move {
+                        // The device connected to us is the one dialling: the
+                        // add-mode scan must not dial back while it is here.
+                        // A second, crossing connection to the same device is
+                        // what kept dropping both (initiator = central).
+                        let _leg = PairingLeg::begin();
                         if let Some(handled) = route_inbound(&state, db_path, channel).await {
                             let _ = handled.await;
                         }
@@ -1992,6 +2110,7 @@ mod tests {
         PeerFrame::DiscoveryHelloReply {
             device_id: format!("device-{address}"),
             hostname: format!("host-{address}"),
+            endpoint_id: format!("key-{address}"),
         }
     }
 

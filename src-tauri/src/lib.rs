@@ -323,6 +323,11 @@ fn base_log_level() -> log::LevelFilter {
 #[cfg(feature = "ui-plane")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // iroh builds rustls with ring only, and that leaves rustls without a
+    // process-wide provider: reqwest 0.13 (pulled in by iroh, and used by
+    // tauri's mobile dev-server proxy) panics "No provider set" the first
+    // time it makes a client -- on Android, at launch.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let builder = tauri::Builder::default()
         // Registered first, and unconditionally (not gated on
         // `debug_assertions`) -- on Android that guard is exactly what

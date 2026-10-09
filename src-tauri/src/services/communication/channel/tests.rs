@@ -1521,6 +1521,15 @@ fn switching_on_a_channel_that_was_never_set_up_is_refused() {
     assert!(channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none());
 }
 
+/// A `DiscoveryHello` from a prober that is not the server under test.
+fn test_hello() -> PeerFrame {
+    PeerFrame::DiscoveryHello {
+        device_id: "prober-device".to_string(),
+        hostname: "prober".to_string(),
+        endpoint_id: "prober-key".to_string(),
+    }
+}
+
 /// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
 /// reply when the receiver is actually in add-mode -- the BLE-scan
 /// equivalent of network discovery simply not broadcasting outside
@@ -1538,13 +1547,14 @@ async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
     let mut link = dial_to(&server, port)
         .await
         .expect("dial");
-    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+    send_frame(link.as_mut(), &test_hello())
         .await
         .expect("send discovery hello");
     match recv_frame(link.as_mut()).await {
-        Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname })) => {
+        Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id })) => {
             assert_eq!(device_id, server.identity.device_id);
             assert_eq!(hostname, server.identity.hostname);
+            assert_eq!(endpoint_id, server.identity.endpoint_id);
         }
         other => panic!("expected a DiscoveryHelloReply while in add-mode, got {other:?}"),
     }
@@ -1560,7 +1570,7 @@ async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
     let mut link = dial_to(&server, port)
         .await
         .expect("dial");
-    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+    send_frame(link.as_mut(), &test_hello())
         .await
         .expect("send discovery hello");
     // The server task returns without replying, dropping its side of the

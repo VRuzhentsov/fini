@@ -511,7 +511,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8a91e20#8a91e20aba67c12e9fbbecb721b412e4ed4afc7d"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=0e3cd8e#0e3cd8e0a1910789cbe8518ece3979cfa8775abc"
 dependencies = [
  "async-trait",
  "bluer",
@@ -533,7 +533,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt-iroh"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8a91e20#8a91e20aba67c12e9fbbecb721b412e4ed4afc7d"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=0e3cd8e#0e3cd8e0a1910789cbe8518ece3979cfa8775abc"
 dependencies = [
  "ble-gatt",
  "iroh",
@@ -2070,6 +2070,7 @@ dependencies = [
  "ndk-context",
  "notify-rust",
  "reqwest 0.12.28",
+ "rustls",
  "self_update",
  "serde",
  "serde_json",
@@ -6892,7 +6893,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8a91e20#8a91e20aba67c12e9fbbecb721b412e4ed4afc7d"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=0e3cd8e#0e3cd8e0a1910789cbe8518ece3979cfa8775abc"
 dependencies = [
  "async-trait",
  "ble-gatt",

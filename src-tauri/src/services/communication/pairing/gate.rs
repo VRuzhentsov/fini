@@ -231,18 +231,30 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             }
             return;
         }
-        PeerFrame::DiscoveryHello => {
+        PeerFrame::DiscoveryHello { device_id, hostname, endpoint_id } => {
             // No reply at all when not in add-mode -- matching the
             // network-discovery equivalent (a mDNS beacon simply isn't
             // broadcast outside add-mode), rather than an explicit
             // rejection frame that would let a scanner distinguish "not in
             // add-mode" from "connection failed."
             if state.is_add_mode_enabled() {
+                // The prober will not be probed back (only the lower
+                // fingerprint dials), so its hello is how it reaches this
+                // device's own candidate list.
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                if kind == ChannelKind::Bluetooth && device_id != state.identity.device_id {
+                    crate::services::communication::channel::ble::note_inbound_hello(
+                        device_id, hostname, endpoint_id,
+                    );
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                let _ = (device_id, hostname, endpoint_id);
                 let _ = send_frame(
                     link.as_mut(),
                     &PeerFrame::DiscoveryHelloReply {
                         device_id: state.identity.device_id.clone(),
                         hostname: state.identity.hostname.clone(),
+                        endpoint_id: state.identity.endpoint_id.clone(),
                     },
                 )
                 .await;
