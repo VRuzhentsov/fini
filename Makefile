@@ -643,10 +643,12 @@ DEVICE_IP      = $(firstword $(subst :, ,$(DEVICE_ADDRESS)))
 HOST_IP        = $(shell ip route get $(DEVICE_IP) 2>/dev/null | grep -oP 'src \K\S+' | head -1)
 unexport DEVICE_ADDRESS DEVICE_IP HOST_IP
 ANDROID_TARGET ?= aarch64
+# `make android-dev ANDROID_DEV_FEATURES=ui-plane,devtools` adds the devtools
+# bridge for driving the running app.
+ANDROID_DEV_FEATURES ?= ui-plane
 LATEST_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || printf 'v0.0.0')
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || printf 'unknown')
 ANDROID_DEBUG_VERSION_NAME := $(patsubst v%,%,$(LATEST_TAG))+dev.$(GIT_SHA)
-ANDROID_DEBUG_VERSION_CODE := $(shell date +%s)
 ANDROID_UNSIGNED_APK = src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
 ANDROID_SIGNED_APK = bin/fini.apk
 ANDROID_RELEASE_SIGNED_APK = bin/fini-release.apk
@@ -703,7 +705,7 @@ ANDROID_BUILD_RUN = podman run --rm -t \
 	-e PATH="$(ANDROID_BUILD_HOME)/.cargo/bin:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
 	-e ANDROID_HOME="$(shell readlink -f "$(ANDROID_HOME)")" \
 	-e NDK_HOME="$(shell readlink -f "$(NDK_HOME)")" \
-	-e FINI_ANDROID_VERSION_NAME -e FINI_ANDROID_VERSION_CODE \
+	-e FINI_ANDROID_VERSION_NAME \
 	-v "$(CURDIR)":"$(CURDIR)":Z \
 	-v "$(ANDROID_BUILD_HOME)/Android":"$(ANDROID_BUILD_HOME)/Android" \
 	-v "$(ANDROID_BUILD_HOME)/.cargo":"$(ANDROID_BUILD_HOME)/.cargo" \
@@ -727,7 +729,7 @@ android-connect:
 	@timeout "$(ADB_CONNECT_TIMEOUT)s" adb connect $(DEVICE_ADDRESS) || (echo "ADB connect timed out for $(DEVICE_ADDRESS). Re-authorize wireless debugging, reconnect USB, or start an emulator." && exit 1)
 
 android-dev: android-connect
-	npm run tauri android dev -- --features ui-plane --host $(HOST_IP)
+	npm run tauri android dev -- --features $(ANDROID_DEV_FEATURES) --host $(HOST_IP)
 
 android-build: android-require-build-image
 	$(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
@@ -816,8 +818,8 @@ android-launch-debug:
 # Prefer that target instead when a Play Store install already exists on
 # the device.
 android-release-deploy-debugsigned:
-	@printf 'Android debug-signed release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
+	@printf 'Android debug-signed release version: %s\n' "$(ANDROID_DEBUG_VERSION_NAME)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-debug
 	$(MAKE) android-install-debug
 	$(MAKE) android-launch
@@ -839,20 +841,20 @@ android-release-deploy-debugsigned:
 # replaces the Play Store install.
 android-debug-deploy: android-require-build-image
 	@set -eu; \
-	printf 'Android debug (debug profile) version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"; \
+	printf 'Android debug (debug profile) version: %s\n' "$(ANDROID_DEBUG_VERSION_NAME)"; \
 	mkdir -p "$(FINI_SCRATCH_DIR)"; \
 	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
 	cp src-tauri/capabilities/default.json "$$capability_backup"; \
 	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
 	trap restore_capability EXIT INT TERM; \
 	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane,devtools --debug --target "$(ANDROID_TARGET)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane,devtools --debug --target "$(ANDROID_TARGET)"
 	adb install -r "src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
 	$(MAKE) android-launch-debug
 
 android-release-deploy-local: android-require-build-image
-	@printf 'Android local release version: %s (%s)\n' "$(ANDROID_DEBUG_VERSION_NAME)" "$(ANDROID_DEBUG_VERSION_CODE)"
-	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" FINI_ANDROID_VERSION_CODE="$(ANDROID_DEBUG_VERSION_CODE)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
+	@printf 'Android local release version: %s\n' "$(ANDROID_DEBUG_VERSION_NAME)"
+	FINI_ANDROID_VERSION_NAME="$(ANDROID_DEBUG_VERSION_NAME)" $(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 	$(MAKE) android-sign-release-local
 	$(MAKE) android-install-release-local
 	$(MAKE) android-launch
