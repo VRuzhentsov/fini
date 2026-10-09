@@ -233,6 +233,10 @@ fn send_pair_request_ble_held(
     use crate::services::communication::channel::{recv_frame, send_frame};
     let peer_key = crate::services::communication::channel::ble::candidate_key(to_device_id)
         .ok_or_else(|| "that device has not been found over Bluetooth yet -- try again".to_string())?;
+    // The picker's address can be stale: Android re-advertises from a new
+    // private address on every add-mode change.
+    let latest = crate::services::communication::channel::ble::latest_address(to_device_id);
+    let address = latest.as_deref().unwrap_or(address);
     let mut link = tauri::async_runtime::block_on(async {
         tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
             let (mut link, _clear_of_scan) =

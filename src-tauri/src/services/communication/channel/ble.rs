@@ -124,7 +124,7 @@ fn inbound_hellos() -> &'static StdMutex<HashMap<String, InboundHello>> {
 
 /// How long an inbound hello stands for a device in the candidate list.
 /// The prober repeats its pass every few seconds while it is in add-mode.
-const INBOUND_HELLO_FRESH: Duration = Duration::from_secs(45);
+const INBOUND_HELLO_FRESH: Duration = Duration::from_secs(60);
 
 /// Records the identity a prober sent; see `inbound_hellos`.
 pub fn note_inbound_hello(device_id: String, hostname: String, endpoint_id: String) {
@@ -356,6 +356,51 @@ fn candidate_keys() -> &'static StdMutex<HashMap<String, String>> {
     static KEYS: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
     KEYS.get_or_init(Default::default)
 }
+
+/// The newest address each known device was heard advertising from, by
+/// device id. Android restarts its advertisement with a fresh private
+/// address on every add-mode change, so the address a picker row was built
+/// from can be gone by the time the person presses Pair.
+fn latest_addresses() -> &'static StdMutex<HashMap<String, String>> {
+    static ADDRESSES: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
+    ADDRESSES.get_or_init(Default::default)
+}
+
+/// Where `device_id` was last heard advertising, if anywhere.
+pub fn latest_address(device_id: &str) -> Option<String> {
+    latest_addresses().lock().ok()?.get(device_id).cloned()
+}
+
+/// Records `address` for whichever known device advertises `fingerprint`.
+fn note_advertiser(address: &str, fingerprint: [u8; FINGERPRINT_LEN]) {
+    let known: Vec<String> = candidate_keys().lock().map(|keys| keys.keys().cloned().collect()).unwrap_or_default();
+    if let Some(device_id) = known.into_iter().find(|id| fingerprint_of(id) == fingerprint) {
+        if let Ok(mut addresses) = latest_addresses().lock() {
+            addresses.insert(device_id, address.to_string());
+        }
+    }
+}
+
+/// Probe results by address, so an advertiser already probed is not dialled
+/// again on every pass: each probe is a connection that can cross the other
+/// device's own dial to this one.
+#[cfg(any(feature = "ui-plane", test))]
+struct ProbedAt {
+    candidate: AddModeCandidate,
+    at: Instant,
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+fn probed() -> &'static StdMutex<HashMap<String, ProbedAt>> {
+    static PROBED: OnceLock<StdMutex<HashMap<String, ProbedAt>>> = OnceLock::new();
+    PROBED.get_or_init(Default::default)
+}
+
+/// How long one probe's answer stands for its address. Shorter than
+/// `INBOUND_HELLO_FRESH`: the device this one does not dial lists it only
+/// from the hellos these probes deliver.
+#[cfg(any(feature = "ui-plane", test))]
+const PROBE_FRESH: Duration = Duration::from_secs(20);
 
 /// The iroh key `device_id` reported the last time the add-mode scan
 /// probed it, if it has been probed.
@@ -884,6 +929,7 @@ pub(crate) async fn wait_for_turn_to_dial(state: &DeviceConnectionState, peer_id
 /// in add-mode — the Bluetooth-side entry `AddDeviceView.vue`'s unified
 /// candidate list merges alongside mDNS-discovered ones (ADR 0002 Phase 3).
 #[cfg(any(feature = "ui-plane", test))]
+#[derive(Clone)]
 pub struct AddModeCandidate {
     pub address: String,
     pub device_id: String,
@@ -1054,6 +1100,9 @@ where
             let theirs = advertised_fingerprint(
                 peer.manufacturer_data.get(&FINI_MANUFACTURER_ID).map(Vec::as_slice),
             );
+            if let Some(theirs) = theirs {
+                note_advertiser(&address, theirs);
+            }
             match theirs {
                 Some(theirs) if theirs <= mine => answered_by.push((address, theirs)),
                 _ => flagged.push(address),
@@ -1111,6 +1160,13 @@ where
         // address and disconnects it in the background, so the pass after
         // this one cannot reach the peer either. Overrunning the caller's
         // window by one slow candidate is the cheaper of the two.
+        let cached = probed().lock().ok().and_then(|probed| {
+            probed.get(&address).filter(|entry| entry.at.elapsed() < PROBE_FRESH).map(|entry| entry.candidate.clone())
+        });
+        if let Some(candidate) = cached {
+            candidates.push(candidate);
+            continue;
+        }
         let reply = tokio::time::timeout(CANDIDATE_PROBE_TIMEOUT, probe(address.clone())).await;
         if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id })) = reply {
             // A stale/self-seen advertisement (e.g. two adapters on the
@@ -1120,7 +1176,14 @@ where
                 if let Ok(mut keys) = candidate_keys().lock() {
                     keys.insert(device_id.clone(), endpoint_id);
                 }
-                candidates.push(AddModeCandidate { address, device_id, hostname });
+                if let Ok(mut addresses) = latest_addresses().lock() {
+                    addresses.insert(device_id.clone(), address.clone());
+                }
+                let candidate = AddModeCandidate { address: address.clone(), device_id, hostname };
+                if let Ok(mut probed) = probed().lock() {
+                    probed.insert(address, ProbedAt { candidate: candidate.clone(), at: Instant::now() });
+                }
+                candidates.push(candidate);
             }
         }
     }
