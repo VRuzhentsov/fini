@@ -31,6 +31,26 @@ use crate::services::communication::sync::session::{
 };
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
 
+/// The link a Bluetooth `PairRequest` arrived on, kept open by request id so
+/// the accept and the complete answer on it rather than dialling the
+/// requester back -- see `commands::send_pair_request_ble_held` for why.
+type ParkedLinks = std::sync::Mutex<std::collections::HashMap<String, Box<dyn DataLink>>>;
+
+fn parked_pair_links() -> &'static ParkedLinks {
+    static LINKS: std::sync::OnceLock<ParkedLinks> = std::sync::OnceLock::new();
+    LINKS.get_or_init(Default::default)
+}
+
+pub(crate) fn park_pair_link(request_id: String, link: Box<dyn DataLink>) {
+    if let Ok(mut links) = parked_pair_links().lock() {
+        links.insert(request_id, link);
+    }
+}
+
+pub(crate) fn take_pair_link(request_id: &str) -> Option<Box<dyn DataLink>> {
+    parked_pair_links().lock().ok()?.remove(request_id)
+}
+
 /// Whether this device is dialing the peer on this channel right now.
 fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
     match kind {
@@ -137,12 +157,33 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     let (device_id, peer_device_id, peer_protocol_version) = match frame {
         PeerFrame::PairRequest(payload) => {
             let key = link_key.or_else(|| payload.from_endpoint_id.clone());
-            let _ = state.receive_ws_pair_request(
-                payload,
-                from_addr,
-                key,
-                kind == ChannelKind::Bluetooth,
-            );
+            let request_id = payload.request_id.clone();
+            let via_bluetooth = kind == ChannelKind::Bluetooth;
+            let _ = state.receive_ws_pair_request(payload, from_addr, key, via_bluetooth);
+            if via_bluetooth {
+                log::info!("[pairing][ble] parked the link request {request_id} arrived on");
+                park_pair_link(request_id.clone(), link);
+                // Hold here until the request is answered or has expired, so
+                // the parked link is released exactly once, and keep the
+                // add-mode scan off the adapter meanwhile: its probes dial
+                // the very device whose link is parked here.
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                let _leg = crate::services::communication::channel::ble::PairingLeg::begin();
+                let hold_until = tokio::time::Instant::now()
+                    + Duration::from_secs(super::PAIR_REQUEST_TTL_SECS as u64 + 5);
+                while tokio::time::Instant::now() < hold_until {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let pending = state.runtime.lock().map_or(false, |mut runtime| {
+                        super::runtime::prune_expired_incoming_requests(&mut runtime);
+                        runtime.incoming_requests.contains_key(&request_id)
+                    });
+                    if !pending {
+                        break;
+                    }
+                }
+                log::info!("[pairing][ble] request {request_id} settled; releasing its link");
+                drop(take_pair_link(&request_id));
+            }
             return;
         }
         PeerFrame::PairAccept(payload) => {

@@ -1155,31 +1155,17 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         delay = Duration::from_secs(2);
 
         let mut restarting_for_add_mode_change = false;
-        // BlueZ stops transmitting the advertisement once a central that
-        // connected to it has gone, while still reporting the instance as
-        // active (`ActiveInstances: 1`). Measured: the phone heard the
-        // desktop's advertisement three times right after it was
-        // registered, a phone-initiated hello then connected and left, and
-        // the phone heard nothing for 4.5 minutes -- until the advertisement
-        // was registered again. So the advertisement is re-registered when
-        // the last accepted central is gone; doing it earlier would tear down
-        // the live link.
-        let live_centrals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (central_gone_tx, mut central_gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // The advertisement is not re-registered when a central leaves. That
+        // used to happen on Linux, after BlueZ was once seen to stop
+        // transmitting it, but ble-gatt registers the GATT server together
+        // with the advertisement: every re-registration replaced the
+        // server's handles, and a peer connecting in the next seconds -- the
+        // pair request right after a probe -- had its subscribe refused or
+        // its writes dropped. Measured on BlueZ 5.87: twelve centrals
+        // connected and left over three minutes, the advertisement stayed
+        // up, and the phone heard it on every scan.
         loop {
             tokio::select! {
-                Some(()) = central_gone_rx.recv() => {
-                    // Linux only. Android keeps advertising, and registering
-                    // the advertisement again gives the phone a new private
-                    // address: the address the other device had just heard
-                    // goes stale, and its dial hangs for 15 s before the
-                    // search hears the new one.
-                    if cfg!(target_os = "linux") && live_centrals.load(Ordering::SeqCst) == 0 {
-                        log::info!("[transport][ble] last central gone; re-advertising");
-                        restarting_for_add_mode_change = true;
-                        break;
-                    }
-                }
                 channel = incoming.next() => {
                     let Some(channel) = channel else { break; };
                     // Without this, a link that dies before it sends anything
@@ -1188,18 +1174,10 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                     log::info!("[transport][ble] central connected: {}", channel.peer().0);
                     let state = state.clone();
                     let db_path = db_path.clone();
-                    live_centrals.fetch_add(1, Ordering::SeqCst);
-                    let live_centrals = live_centrals.clone();
-                    let central_gone_tx = central_gone_tx.clone();
-                    // The central counts as live until its channel closes:
-                    // the gate finishing on a plain link, or the iroh
-                    // transport closing the channel of a session.
                     tokio::spawn(async move {
                         if let Some(handled) = route_inbound(&state, db_path, channel).await {
                             let _ = handled.await;
                         }
-                        live_centrals.fetch_sub(1, Ordering::SeqCst);
-                        let _ = central_gone_tx.send(());
                     });
                 }
                 _ = add_mode_rx.changed() => {

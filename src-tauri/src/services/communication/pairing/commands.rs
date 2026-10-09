@@ -214,6 +214,91 @@ fn send_pair_ble(address: &str, msg: PeerFrame) -> Result<(), String> {
     })
 }
 
+/// Sends a Bluetooth `PairRequest` and keeps its link open, reading the
+/// accept and the complete that come back on it until the request has
+/// expired. The answer cannot be dialled back to this device: Android
+/// connects out from a private address it never advertises on, so the
+/// address the other side observed reaches no one. Answering on the open
+/// link is how Nearby Connections and SMP pairing do it too -- one
+/// connection stays up while the people confirm.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn send_pair_request_ble_held(
+    state: &DeviceConnectionState, address: &str, msg: PeerFrame,
+) -> Result<(), String> {
+    use crate::services::communication::channel::{recv_frame, send_frame};
+    let mut link = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
+            let (mut link, _clear_of_scan) =
+                crate::services::communication::channel::ble::dial_for_pairing(address).await?;
+            send_frame(link.as_mut(), &msg).await?;
+            Ok::<_, String>(link)
+        })
+        .await
+        .map_err(|_| "bluetooth pairing send timed out".to_string())?
+    })?;
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        let listen_for = Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 30);
+        let _ = tokio::time::timeout(listen_for, async {
+            while let Some(Ok(frame)) = recv_frame(link.as_mut()).await {
+                match frame {
+                    PeerFrame::PairAccept(payload) => {
+                        log::info!("[pairing][ble] accept arrived on the request's link");
+                        let _ = state.receive_ws_pair_accept(payload);
+                    }
+                    PeerFrame::PairComplete(payload) => {
+                        log::info!("[pairing][ble] complete arrived on the request's link");
+                        let from_addr = link.peer_addr().unwrap_or_default();
+                        let key = link.peer_key().or_else(|| payload.from_endpoint_id.clone());
+                        let _ = state.receive_ws_pair_complete(payload, from_addr, key, true);
+                        break;
+                    }
+                    _ => log::warn!("[pairing][ble] unexpected frame on the request's link"),
+                }
+            }
+        })
+        .await;
+        log::info!("[pairing][ble] request link closed");
+    });
+    Ok(())
+}
+
+/// Answers a Bluetooth `PairRequest` on the link it arrived on, which the
+/// gate parked (see `send_pair_request_ble_held`). `keep` parks it again for
+/// the next answer. With no parked link, or a dead one, it falls back to
+/// dialling `observed`, which reaches peers with a stable address.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn send_pair_reply_ble(request_id: &str, observed: &str, msg: PeerFrame, keep: bool) -> Result<(), String> {
+    use crate::services::communication::channel::send_frame;
+    match super::gate::take_pair_link(request_id) {
+        Some(mut link) => {
+            let sent = tauri::async_runtime::block_on(tokio::time::timeout(
+                Duration::from_secs(10),
+                send_frame(link.as_mut(), &msg),
+            ));
+            match sent {
+                Ok(Ok(())) => {
+                    log::info!("[pairing][ble] answered {request_id} on the request's link");
+                    if keep {
+                        super::gate::park_pair_link(request_id.to_string(), link);
+                    } else {
+                        // `send` returning only means queued: hold the link
+                        // until the requester closes it after reading.
+                        tauri::async_runtime::block_on(async {
+                            let _ = tokio::time::timeout(Duration::from_secs(15), link.recv()).await;
+                        });
+                    }
+                    return Ok(());
+                }
+                Ok(Err(err)) => log::warn!("[pairing][ble] request link failed: {err}; dialling instead"),
+                Err(_) => log::warn!("[pairing][ble] request link timed out; dialling instead"),
+            }
+        }
+        None => log::warn!("[pairing][ble] no parked link for {request_id}; dialling instead"),
+    }
+    send_pair_ble(observed, msg)
+}
+
 pub fn device_connection_get_identity_impl(
     state: &DeviceConnectionState,
 ) -> Result<DeviceIdentity, String> {
@@ -409,7 +494,7 @@ pub fn device_connection_send_pair_request_bluetooth_impl(
             expires_at,
         };
 
-        send_pair_ble(&input.to_bluetooth_address, PeerFrame::PairRequest(payload.clone()))?;
+        send_pair_request_ble_held(state, &input.to_bluetooth_address, PeerFrame::PairRequest(payload.clone()))?;
 
         if let Ok(mut guard) = state.runtime.lock() {
             guard.tx_count += 1;
@@ -628,7 +713,7 @@ pub fn device_connection_pair_accept_request_impl(
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         return Err("Bluetooth is not available on this platform".to_string());
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        send_pair_ble(&to_addr, PeerFrame::PairAccept(payload))?;
+        send_pair_reply_ble(&update.request_id, &to_addr, PeerFrame::PairAccept(payload), true)?;
     } else {
         let target_ip: IpAddr = to_addr
             .parse()
@@ -711,7 +796,7 @@ pub fn device_connection_pair_complete_request_impl(
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         return Err("Bluetooth is not available on this platform".to_string());
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        send_pair_ble(&to_addr, PeerFrame::PairComplete(payload))?;
+        send_pair_reply_ble(&input.request_id, &to_addr, PeerFrame::PairComplete(payload), false)?;
     } else {
         let target_ip: IpAddr = to_addr
             .parse()

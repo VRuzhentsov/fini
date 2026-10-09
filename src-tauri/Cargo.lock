@@ -511,7 +511,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=a101f33#a101f33896c639260b517d032d9693921fac7da4"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8a91e20#8a91e20aba67c12e9fbbecb721b412e4ed4afc7d"
 dependencies = [
  "async-trait",
  "bluer",
@@ -533,7 +533,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt-iroh"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=a101f33#a101f33896c639260b517d032d9693921fac7da4"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8a91e20#8a91e20aba67c12e9fbbecb721b412e4ed4afc7d"
 dependencies = [
  "ble-gatt",
  "iroh",
@@ -2872,7 +2872,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -4186,7 +4186,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -4229,7 +4229,7 @@ checksum = "4dc50afea61aff926e150a36c31f06094608848e114a3fe667d76ec233163b1c"
 dependencies = [
  "cfg_aliases",
  "libc",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -5251,7 +5251,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5289,7 +5289,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -6892,7 +6892,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=a101f33#a101f33896c639260b517d032d9693921fac7da4"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8a91e20#8a91e20aba67c12e9fbbecb721b412e4ed4afc7d"
 dependencies = [
  "async-trait",
  "ble-gatt",
@@ -8239,7 +8239,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
