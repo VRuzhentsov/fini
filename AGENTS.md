@@ -7,20 +7,6 @@
 - Domain and feature specs: `specs/`
 - Repo automation: `Makefile` + `npm run` + `xtask/` — see `fini-scripting` skill
 
-## Knowledge base
-
-Business and product knowledge lives in the `fini-wiki` wiki at `~/projects/fini-wiki/`. When a task needs business or product context (team info, priorities, metrics, strategic decisions, domain semantics, terminology, or historical intent behind Fini concepts), follow this retrieval protocol:
-
-**Wiki path:** `~/projects/fini-wiki/`
-
-1. **Hot cache first.** Read `_hot.md` first. It contains active threads, current architecture facts, recently changed semantics, and other high-signal context.
-2. **Index second.** Read `_index.md` if the hot cache is not enough. `_index.md` is the canonical wiki navigation file.
-3. **Targeted page reads.** Open only 1-2 relevant files under `pages/` based on `_hot.md`, `_index.md`, or a targeted search.
-4. **Search fallback.** Search `pages/**/*.md` by keyword if the right page is not obvious from `_hot.md` or `_index.md`.
-5. **Page limit.** Never read more than 5 wiki pages for one query unless the user explicitly asks for deeper research.
-
-When working inside that directory, load its `AGENTS.md` as the authoritative schema; it extends and overrides the global instructions on conflict.
-
 ## Workflow
 
 - Always load the `fini-dev` skill at the start of development work in this repo.

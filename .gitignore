@@ -35,8 +35,6 @@ flatpak-build/
 tmp/
 *.zip
 
-# Local agent bootstrap marker
-.fini-dev-install.done
 issue-topic-sync.json
 fini-issue-topics.json
 
