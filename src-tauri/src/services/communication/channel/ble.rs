@@ -102,12 +102,14 @@ fn local_fingerprint() -> &'static OnceLock<[u8; FINGERPRINT_LEN]> {
 
 /// This device's `DiscoveryHello`, carrying its identity; set with the
 /// fingerprint, for the same reason.
+#[cfg(any(feature = "ui-plane", test))]
 fn local_hello() -> &'static OnceLock<PeerFrame> {
     static HELLO: OnceLock<PeerFrame> = OnceLock::new();
     &HELLO
 }
 
 /// A device that probed this one in add-mode: its hello, and when.
+#[cfg(any(feature = "ui-plane", test))]
 struct InboundHello {
     hostname: String,
     endpoint_id: String,
@@ -117,6 +119,7 @@ struct InboundHello {
 /// Hellos from devices that dialled this one, by device id. Of two devices
 /// in add-mode only the lower fingerprint dials (`scan_add_mode_candidates_pass`),
 /// so the other learns of it only from this.
+#[cfg(any(feature = "ui-plane", test))]
 fn inbound_hellos() -> &'static StdMutex<HashMap<String, InboundHello>> {
     static HELLOS: OnceLock<StdMutex<HashMap<String, InboundHello>>> = OnceLock::new();
     HELLOS.get_or_init(Default::default)
@@ -124,9 +127,11 @@ fn inbound_hellos() -> &'static StdMutex<HashMap<String, InboundHello>> {
 
 /// How long an inbound hello stands for a device in the candidate list.
 /// The prober repeats its pass every few seconds while it is in add-mode.
+#[cfg(any(feature = "ui-plane", test))]
 const INBOUND_HELLO_FRESH: Duration = Duration::from_secs(60);
 
 /// Records the identity a prober sent; see `inbound_hellos`.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn note_inbound_hello(device_id: String, hostname: String, endpoint_id: String) {
     if let Ok(mut hellos) = inbound_hellos().lock() {
         hellos.insert(device_id, InboundHello { hostname, endpoint_id, heard_at: Instant::now() });
@@ -352,6 +357,7 @@ pub async fn dial_for_pairing(
 
 /// The iroh key each add-mode candidate's hello reported, by device id --
 /// what a pairing leg to that candidate dials (`dial_for_pairing`).
+#[cfg(any(feature = "ui-plane", test))]
 fn candidate_keys() -> &'static StdMutex<HashMap<String, String>> {
     static KEYS: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
     KEYS.get_or_init(Default::default)
@@ -361,17 +367,20 @@ fn candidate_keys() -> &'static StdMutex<HashMap<String, String>> {
 /// device id. Android restarts its advertisement with a fresh private
 /// address on every add-mode change, so the address a picker row was built
 /// from can be gone by the time the person presses Pair.
+#[cfg(any(feature = "ui-plane", test))]
 fn latest_addresses() -> &'static StdMutex<HashMap<String, String>> {
     static ADDRESSES: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
     ADDRESSES.get_or_init(Default::default)
 }
 
 /// Where `device_id` was last heard advertising, if anywhere.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn latest_address(device_id: &str) -> Option<String> {
     latest_addresses().lock().ok()?.get(device_id).cloned()
 }
 
 /// Records `address` for whichever known device advertises `fingerprint`.
+#[cfg(any(feature = "ui-plane", test))]
 fn note_advertiser(address: &str, fingerprint: [u8; FINGERPRINT_LEN]) {
     let known: Vec<String> = candidate_keys().lock().map(|keys| keys.keys().cloned().collect()).unwrap_or_default();
     if let Some(device_id) = known.into_iter().find(|id| fingerprint_of(id) == fingerprint) {
@@ -404,6 +413,7 @@ const PROBE_FRESH: Duration = Duration::from_secs(20);
 
 /// The iroh key `device_id` reported the last time the add-mode scan
 /// probed it, if it has been probed.
+#[cfg(any(feature = "ui-plane", test))]
 pub fn candidate_key(device_id: &str) -> Option<String> {
     candidate_keys().lock().ok()?.get(device_id).cloned()
 }

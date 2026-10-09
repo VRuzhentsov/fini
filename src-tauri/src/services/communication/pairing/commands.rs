@@ -226,18 +226,18 @@ fn send_pair_ble(
 /// private address it never advertises on. The initiator holds the
 /// connection, iroh carries the whole exchange on it -- retransmitting and
 /// re-dialling the link underneath -- as sessions already do (ADR-0009).
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
 fn send_pair_request_ble_held(
     state: &DeviceConnectionState, to_device_id: &str, address: &str, msg: PeerFrame,
 ) -> Result<(), String> {
-    use crate::services::communication::channel::{recv_frame, send_frame};
+    use crate::services::communication::channel::send_frame;
     let peer_key = crate::services::communication::channel::ble::candidate_key(to_device_id)
         .ok_or_else(|| "that device has not been found over Bluetooth yet -- try again".to_string())?;
     // The picker's address can be stale: Android re-advertises from a new
     // private address on every add-mode change.
     let latest = crate::services::communication::channel::ble::latest_address(to_device_id);
     let address = latest.as_deref().unwrap_or(address);
-    let mut link = tauri::async_runtime::block_on(async {
+    let link = tauri::async_runtime::block_on(async {
         tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
             let (mut link, _clear_of_scan) =
                 crate::services::communication::channel::ble::dial_for_pairing(state, &peer_key, address)
@@ -248,7 +248,16 @@ fn send_pair_request_ble_held(
         .await
         .map_err(|_| "bluetooth pairing send timed out".to_string())?
     })?;
-    let state = state.clone();
+    listen_for_pair_answers(state.clone(), link);
+    Ok(())
+}
+
+/// Reads the accept and the complete that come back on a request's link.
+#[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+fn listen_for_pair_answers(
+    state: DeviceConnectionState, mut link: Box<dyn crate::services::communication::channel::DataLink>,
+) {
+    use crate::services::communication::channel::recv_frame;
     tauri::async_runtime::spawn(async move {
         // The whole exchange runs on this one link, so keep the add-mode
         // scan from probing the peer -- a second connection to the same
@@ -276,7 +285,6 @@ fn send_pair_request_ble_held(
         .await;
         log::info!("[pairing][ble] request link closed");
     });
-    Ok(())
 }
 
 /// Answers a Bluetooth `PairRequest` on the iroh connection it arrived on,
@@ -288,12 +296,15 @@ fn send_pair_reply_ble(
     state: &DeviceConnectionState, request_id: &str, peer_key: Option<&str>, observed: &str,
     msg: PeerFrame, keep: bool,
 ) -> Result<(), String> {
-    use crate::services::communication::channel::send_frame;
+    // The CLI has no gate, so nothing is ever parked there.
+    #[cfg(not(any(feature = "ui-plane", test)))]
+    let _ = (request_id, keep);
+    #[cfg(any(feature = "ui-plane", test))]
     match super::gate::take_pair_link(request_id) {
         Some(mut link) => {
             let sent = tauri::async_runtime::block_on(tokio::time::timeout(
                 Duration::from_secs(10),
-                send_frame(link.as_mut(), &msg),
+                crate::services::communication::channel::send_frame(link.as_mut(), &msg),
             ));
             match sent {
                 Ok(Ok(())) => {
