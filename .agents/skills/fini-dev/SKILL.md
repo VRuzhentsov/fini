@@ -212,6 +212,16 @@ If an equivalent already exists, import and reuse it. Do not duplicate logic in 
 
 When writing tests that mock an entire module (`jest.mock`), re-export all named constants and functions the component under test imports from that module — omitting them silently produces `undefined` at runtime.
 
+## PR Lifecycle
+
+A pull request moves through three stages. Use each stage's checks and no others:
+
+1. **Draft: build it.** Keep the PR a draft while the work is in progress. Iterate on the running HMR apps (desktop and phone), and prove behaviour by exercising it there. CI skips drafts (`.github/workflows/ci.yml`), and unit tests and e2e lanes wait for stage 3: tests on code that does not work yet are wasted runs.
+2. **Gate to leave draft: the happy flow works.** Prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
+3. **Wrap-up: make it mergeable.** Run the unit tests and the relevant e2e lanes (see `fini-test`), fix whatever fails, get CI green, and bring the PR title and description up to date with everything the branch now contains.
+
+The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
+
 ## Development Loop
 
 Use this loop for implementation and fixes:
