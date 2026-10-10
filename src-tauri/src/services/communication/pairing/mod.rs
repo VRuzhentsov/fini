@@ -132,7 +132,7 @@ pub struct DeviceConnectionState {
     /// a state that just dials out may fall back to any free port.
     pub(crate) serves_network: Arc<std::sync::atomic::AtomicBool>,
     /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
-    /// transport, built on first use (`channel::ble`).
+    /// transport, built on first use (`channel::bluetooth`).
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_endpoint:
         Arc<tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>>,
@@ -465,7 +465,7 @@ impl DeviceConnectionState {
     }
 
     /// Test-only, instance-scoped toggle for `is_add_mode_enabled` --
-    /// deliberately does *not* also flip `channel::ble::set_add_mode`
+    /// deliberately does *not* also flip `channel::bluetooth::set_add_mode`
     /// (unlike the real `device_connection_enter_add_mode_impl`/
     /// `leave_add_mode_impl`), since that is a *process-global* singleton
     /// shared by every test in the binary. Exercising `run_peer_gate`'s

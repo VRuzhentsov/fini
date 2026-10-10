@@ -767,7 +767,7 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
         device_connection_send_pair_request_impl,
     };
 
-    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
+    let _add_mode_guard = super::bluetooth::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-send-pair-request-receiver");
     device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
     let port = network::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
@@ -819,7 +819,7 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
         device_connection_send_pair_request_impl,
     };
 
-    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
+    let _add_mode_guard = super::bluetooth::ADD_MODE_TEST_LOCK.lock().unwrap();
     let requester_port = free_port().await;
     let accepter_port = free_port().await;
     // The requester's own port must match where its listener actually
@@ -1093,7 +1093,7 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
         DISCOVERY_PROTOCOL,
     };
 
-    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
+    let _add_mode_guard = super::bluetooth::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-pair-request-bluetooth");
     device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
 
@@ -1535,7 +1535,7 @@ fn test_hello() -> PeerFrame {
 /// equivalent of network discovery simply not broadcasting outside
 /// add-mode. Uses `set_add_mode_for_test` (instance-scoped) rather than the
 /// real `enter_add_mode_impl`, which would also flip the process-global
-/// `channel::ble` advertising flag `ble::tests` already covers
+/// `channel::bluetooth` advertising flag `ble::tests` already covers
 /// separately.
 #[tokio::test(flavor = "multi_thread")]
 async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
@@ -2078,7 +2078,7 @@ fn exchanges_and_setups_start_from_outside_a_tokio_runtime() {
     seed_paired_device(&db_path, "peer-sync-command");
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::start_exchange(&state, "peer-sync-command");
+    crate::services::communication::channel::bluetooth::start_exchange(&state, "peer-sync-command");
     crate::services::communication::pairing::setup::start(&state, "peer-sync-command", ChannelKind::Network);
 
     assert!(state.channel_setup("peer-sync-command", ChannelKind::Network).is_some());
@@ -2105,7 +2105,7 @@ async fn holds_within(within: Duration, done: impl Fn() -> bool) -> bool {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
-    use crate::services::communication::channel::ble::wait_for_turn_to_dial;
+    use crate::services::communication::channel::bluetooth::wait_for_turn_to_dial;
 
     let (state, _db) = server_state("setup-dial-order");
     // Device ids are UUIDs: "~" sorts after any of them, "!" before.
@@ -2143,7 +2143,7 @@ async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bluetooth_setup_keeps_the_candidate_scan_aside_until_it_ends() {
-    use crate::services::communication::channel::ble::{pairing_legs_held, PAIRING_LEGS_TEST_LOCK};
+    use crate::services::communication::channel::bluetooth::{pairing_legs_held, PAIRING_LEGS_TEST_LOCK};
     use crate::services::communication::pairing::setup;
 
     let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;

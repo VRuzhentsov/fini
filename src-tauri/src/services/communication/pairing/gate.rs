@@ -56,7 +56,7 @@ fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
     match kind {
         ChannelKind::Network => crate::services::communication::channel::network::dialing(peer_device_id),
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        ChannelKind::Bluetooth => crate::services::communication::channel::ble::dialing(peer_device_id),
+        ChannelKind::Bluetooth => crate::services::communication::channel::bluetooth::dialing(peer_device_id),
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         ChannelKind::Bluetooth => false,
     }
@@ -170,7 +170,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 // add-mode scan off the adapter meanwhile too: its probes
                 // dial the very device whose link is parked here.
                 #[cfg(any(target_os = "linux", target_os = "android"))]
-                let _leg = crate::services::communication::channel::ble::PairingLeg::begin();
+                let _leg = crate::services::communication::channel::bluetooth::PairingLeg::begin();
                 let hold_until = tokio::time::Instant::now()
                     + Duration::from_secs(super::PAIR_REQUEST_TTL_SECS as u64 + 5);
                 while tokio::time::Instant::now() < hold_until {
@@ -243,7 +243,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 // device's own candidate list.
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 if kind == ChannelKind::Bluetooth && device_id != state.identity.device_id {
-                    crate::services::communication::channel::ble::note_inbound_hello(
+                    crate::services::communication::channel::bluetooth::note_inbound_hello(
                         device_id, hostname, endpoint_id,
                     );
                 }

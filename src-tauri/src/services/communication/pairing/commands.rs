@@ -75,7 +75,7 @@ async fn run_command_with_timeout(mut command: tokio::process::Command, timeout:
 /// returned a dummy value since Android 6.0 for every normal app (a
 /// permanent platform privacy protection, not a bug to work around) — so
 /// Android has nothing real to self-report over `PeerFrame::BluetoothAddressUpdate`
-/// and instead is discovered by a peer's BLE scan (`channel::ble`'s
+/// and instead is discovered by a peer's BLE scan (`channel::bluetooth`'s
 /// discovery path). Linux has no such restriction.
 pub(crate) async fn local_bluetooth_address() -> Option<String> {
     // Test/CI escape hatch, mirroring `FINI_BLUETOOTH_PAIRED_ADDRESSES` above:
@@ -120,7 +120,7 @@ pub(crate) async fn local_bluetooth_address() -> Option<String> {
 ///
 /// Shared by both Phase 1 mechanisms of ADR 0002: `session::run_session`'s
 /// inbound `BluetoothAddressUpdate` handler (self-report) and
-/// `channel::ble`'s scan-and-auth discovery. Both already have remote
+/// `channel::bluetooth`'s scan-and-auth discovery. Both already have remote
 /// confirmation before calling this -- an authenticated `PeerFrame`
 /// channel, or a live `AuthOk` from the discovered address -- so recording
 /// what they learned is safe.
@@ -210,7 +210,7 @@ fn send_pair_ble(
             // Keeps the add-mode candidate scan off the adapter and out of
             // this peer's dial until the frame is sent.
             let (mut link, _clear_of_scan) =
-                crate::services::communication::channel::ble::dial_for_pairing(state, peer_key, address)
+                crate::services::communication::channel::bluetooth::dial_for_pairing(state, peer_key, address)
                     .await?;
             crate::services::communication::channel::send_frame(link.as_mut(), &msg).await
         })
@@ -231,16 +231,16 @@ fn send_pair_request_ble_held(
     state: &DeviceConnectionState, to_device_id: &str, address: &str, msg: PeerFrame,
 ) -> Result<(), String> {
     use crate::services::communication::channel::send_frame;
-    let peer_key = crate::services::communication::channel::ble::candidate_key(to_device_id)
+    let peer_key = crate::services::communication::channel::bluetooth::candidate_key(to_device_id)
         .ok_or_else(|| "that device has not been found over Bluetooth yet -- try again".to_string())?;
     // The picker's address can be stale: Android re-advertises from a new
     // private address on every add-mode change.
-    let latest = crate::services::communication::channel::ble::latest_address(to_device_id);
+    let latest = crate::services::communication::channel::bluetooth::latest_address(to_device_id);
     let address = latest.as_deref().unwrap_or(address);
     let link = tauri::async_runtime::block_on(async {
         tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
             let (mut link, _clear_of_scan) =
-                crate::services::communication::channel::ble::dial_for_pairing(state, &peer_key, address)
+                crate::services::communication::channel::bluetooth::dial_for_pairing(state, &peer_key, address)
                     .await?;
             send_frame(link.as_mut(), &msg).await?;
             Ok::<_, String>(link)
@@ -262,7 +262,7 @@ fn listen_for_pair_answers(
         // The whole exchange runs on this one link, so keep the add-mode
         // scan from probing the peer -- a second connection to the same
         // device -- until it is over.
-        let _leg = crate::services::communication::channel::ble::PairingLeg::begin();
+        let _leg = crate::services::communication::channel::bluetooth::PairingLeg::begin();
         let listen_for = Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 30);
         let _ = tokio::time::timeout(listen_for, async {
             while let Some(Ok(frame)) = recv_frame(link.as_mut()).await {
@@ -366,7 +366,7 @@ pub fn device_connection_enter_add_mode_impl(
     // existing mDNS beacon.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if bluetooth {
-        crate::services::communication::channel::ble::set_add_mode(true);
+        crate::services::communication::channel::bluetooth::set_add_mode(true);
     }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
@@ -411,7 +411,7 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
         state.identity.hostname, state.identity.device_id
     );
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::set_add_mode(false);
+    crate::services::communication::channel::bluetooth::set_add_mode(false);
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
@@ -597,7 +597,7 @@ pub async fn device_connection_discover_bluetooth_candidates(
         }
 
         let my_device_id = state.identity.device_id.clone();
-        let candidates = crate::services::communication::channel::ble::scan_add_mode_candidates(
+        let candidates = crate::services::communication::channel::bluetooth::scan_add_mode_candidates(
             &my_device_id,
             std::time::Duration::from_millis(duration_ms),
         )
@@ -1398,7 +1398,7 @@ pub fn device_connection_unlink_channel(
 pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        Ok(crate::services::communication::channel::ble::probe_adapter_available().await)
+        Ok(crate::services::communication::channel::bluetooth::probe_adapter_available().await)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
@@ -1620,7 +1620,7 @@ pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, act
 
 /// Every paired peer eligible for a Bluetooth dial attempt right now: the
 /// ones whose Bluetooth channel is set up and on. Used by
-/// `channel::ble::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
+/// `channel::bluetooth::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
 /// presence worker or static port list to draw candidates from.
 ///
 /// ADR-0006: this used to also require a stored address and a live OS bond,
@@ -1672,7 +1672,7 @@ pub fn device_connection_unpair_impl(
     // Failed attempts with the old pair must not delay a new one.
     crate::services::communication::channel::network::forget_failures(&peer_device_id);
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::forget_delivery_misses(&peer_device_id);
+    crate::services::communication::channel::bluetooth::forget_delivery_misses(&peer_device_id);
     // Its channels went with it, which can leave nobody to advertise for.
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
@@ -2092,7 +2092,7 @@ mod tests {
         // ADR-0008 D15: the channel exists (set up by an init), switched off.
         channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
             .expect("a channel that went through init");
-        crate::services::communication::channel::ble::pin_adapter_reachable_on_this_thread();
+        crate::services::communication::channel::bluetooth::pin_adapter_reachable_on_this_thread();
         let statuses = device_connection_set_channel_enabled_impl(
             &mut conn,
             &state,

@@ -104,7 +104,7 @@ pub enum PeerFrame {
     BluetoothAddressUpdate { address: String },
     /// Pre-auth, sent by a scanner over a fresh BLE connection to a
     /// candidate whose advertisement already carried the add-mode flag
-    /// (`channel::ble`'s own scan-side filtering, so a stranger not in
+    /// (`channel::bluetooth`'s own scan-side filtering, so a stranger not in
     /// add-mode is never even connected to). BLE advertisements can't carry
     /// a device_id/hostname the way mDNS's `DiscoveryBeacon` does (payload
     /// too small alongside the service UUID), and `PairRequestPayload`
