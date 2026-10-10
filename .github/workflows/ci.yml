@@ -4,6 +4,8 @@ on:
   pull_request:
     branches:
       - main
+    # ready_for_review starts CI the moment a draft is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +19,9 @@ concurrency:
 jobs:
   changes:
     name: Detect App Changes
+    # A draft PR is work in progress: CI starts when it is marked ready.
+    # Every other job needs this one, so skipping it skips them all.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     outputs:
       app: ${{ steps.filter.outputs.app }}

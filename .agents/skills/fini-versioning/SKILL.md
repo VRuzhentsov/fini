@@ -55,7 +55,7 @@ Follow `fini-scripting` for details on balancing Makefile, `npm run`, and `cargo
 
 ## Android Versioning
 
-Android local deploys may use git-derived dev version metadata, such as latest reachable tag plus short SHA for `versionName` and epoch seconds for `versionCode`, so repeated local installs upgrade cleanly.
+Android local deploys may use git-derived dev metadata for `versionName` (latest reachable tag plus short SHA), but `versionCode` always comes from the project's own metadata (`tauri.properties`). Do not override it, with epoch seconds or anything else: an inflated code makes every other build of the same version, including `make android-dev`, fail to install with `INSTALL_FAILED_VERSION_DOWNGRADE`.
 
 Release Android artifacts should align with the tagged release metadata unless a platform-specific store requirement explicitly requires a separate monotonic code.
 

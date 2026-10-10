@@ -22,7 +22,8 @@ pub trait Radio: Send + Sync {
 
     /// Ask the hardware directly, right now, whether it works.
     #[cfg(any(feature = "ui-plane", test))]
-    async fn probe(&self) -> bool {
+    async fn probe(&self, state: &DeviceConnectionState) -> bool {
+        let _ = state;
         self.available()
     }
 
@@ -44,10 +45,10 @@ pub trait Radio: Send + Sync {
 
     /// See `ChannelService::forget_failures`.
     #[cfg(any(feature = "ui-plane", test))]
-    fn forget_failures(&self, _peer_device_id: &str) {}
+    fn forget_failures(&self, _state: &DeviceConnectionState, _peer_device_id: &str) {}
 
     /// Whether the peer advertised within the channel timeout.
-    fn is_reachable(&self, peer_device_id: &str) -> bool;
+    fn is_reachable(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
 
     /// Run (or stop) the status search, for presence (ADR-0008 D12).
     #[cfg(any(feature = "ui-plane", test))]
@@ -71,13 +72,14 @@ impl Radio for GattRadio {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    async fn probe(&self) -> bool {
+    async fn probe(&self, state: &DeviceConnectionState) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            super::ble::probe_adapter_available().await
+            super::bluetooth::probe_adapter_available(&state.bluetooth_radio).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
+            let _ = state;
             // No adapter on this platform at all, so there is no radio to be
             // off. Answering `false` would blame the person's hardware for a
             // platform decision.
@@ -91,7 +93,7 @@ impl Radio for GattRadio {
         // `keep_serving`, once its Activity context exists -- starting it
         // here as well gave Android two accept loops racing each other.
         #[cfg(target_os = "linux")]
-        tauri::async_runtime::spawn(super::ble::run_server(
+        tauri::async_runtime::spawn(super::bluetooth::run_server(
             state.clone(),
             state.db_path.clone(),
         ));
@@ -112,54 +114,43 @@ impl Radio for GattRadio {
         // SecurityException and the loop retries forever.
         #[cfg(target_os = "android")]
         if crate::services::ble_plugin::permission_granted() {
-            super::ble::start_peripheral_once(state.clone(), state.db_path.clone());
+            super::bluetooth::start_peripheral_once(state.clone(), state.db_path.clone());
         }
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        super::ble::refresh_advertising(&state.db_path, state);
+        super::bluetooth::refresh_advertising(&state.db_path, state);
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = state;
     }
 
     fn request_exchange(&self, state: &DeviceConnectionState, peer_device_id: &str) {
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        super::ble::start_exchange(state, peer_device_id);
+        super::bluetooth::start_exchange(state, peer_device_id);
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = (state, peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    fn forget_failures(&self, peer_device_id: &str) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        super::ble::forget_delivery_misses(peer_device_id);
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let _ = peer_device_id;
+    fn forget_failures(&self, state: &DeviceConnectionState, peer_device_id: &str) {
+        state.bluetooth_presence.forget_delivery_misses(peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
     fn watch_presence(&self, state: &DeviceConnectionState, active: bool) {
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        super::ble::set_status_search(state, active);
+        super::bluetooth::set_status_search(state, active);
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = (state, active);
     }
 
-    fn is_reachable(&self, peer_device_id: &str) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        {
-            super::ble::peer_seen_advertising_recently(peer_device_id)
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        {
-            let _ = peer_device_id;
-            false
-        }
+    fn is_reachable(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+        state.bluetooth_presence.seen_recently(peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
     fn adapter_available(&self) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            !super::ble::is_bluetooth_adapter_unavailable()
+            !super::bluetooth::is_bluetooth_adapter_unavailable()
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {

@@ -1,7 +1,5 @@
-use chrono::Utc;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-use std::net::IpAddr;
 use std::time::Duration;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
@@ -12,26 +10,28 @@ use super::channels;
 use super::ChannelSetup;
 #[cfg(any(feature = "ui-plane", test))]
 use super::setup;
-use super::{DISCOVERY_PROTOCOL, DISCOVERY_TTL_SECS, PAIR_REQUEST_TTL_SECS};
+use super::DISCOVERY_TTL_SECS;
+#[cfg(test)]
+use super::DISCOVERY_PROTOCOL;
 use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
-use crate::services::communication::pairing::runtime::{
-    generate_passcode, prune_expired_incoming_requests, utc_now,
-};
+use crate::services::communication::pairing::runtime::{prune_expired_incoming_requests, utc_now};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::pairing::types::DevicePairRequestBluetoothInput;
 use crate::services::communication::pairing::types::{
     DeviceConnectionDebugStatus, DeviceIdentity,
     DevicePairRequestAckInput, DevicePairRequestInput,
-    DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairAcceptPayload,
-    PairCodeUpdate, PairCompletePayload, PairCompletionUpdate, PairRequestPayload,
+    DiscoveredDevice, IncomingPairRequest, IncomingSpaceMappingUpdate, PairCodeUpdate, PairCompletionUpdate,
 };
+#[cfg(test)]
+use crate::services::communication::pairing::types::{PairCompletePayload, PairRequestPayload};
 use crate::services::communication::pairing::DeviceConnectionState;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::communication::pairing::{channel_status, ChannelState, ChannelStatus};
-use crate::services::communication::sync::types::PeerFrame;
+use crate::services::communication::pairing::{
+    channel_status, ChannelProblem, ChannelState, ChannelStatus,
+};
 use crate::services::communication::channel::ChannelKind;
 
 pub(crate) fn normalize_bluetooth_address(value: &str) -> Option<String> {
@@ -73,7 +73,7 @@ async fn run_command_with_timeout(mut command: tokio::process::Command, timeout:
 /// returned a dummy value since Android 6.0 for every normal app (a
 /// permanent platform privacy protection, not a bug to work around) — so
 /// Android has nothing real to self-report over `PeerFrame::BluetoothAddressUpdate`
-/// and instead is discovered by a peer's BLE scan (`channel::ble`'s
+/// and instead is discovered by a peer's BLE scan (`channel::bluetooth`'s
 /// discovery path). Linux has no such restriction.
 pub(crate) async fn local_bluetooth_address() -> Option<String> {
     // Test/CI escape hatch, mirroring `FINI_BLUETOOTH_PAIRED_ADDRESSES` above:
@@ -118,7 +118,7 @@ pub(crate) async fn local_bluetooth_address() -> Option<String> {
 ///
 /// Shared by both Phase 1 mechanisms of ADR 0002: `session::run_session`'s
 /// inbound `BluetoothAddressUpdate` handler (self-report) and
-/// `channel::ble`'s scan-and-auth discovery. Both already have remote
+/// `channel::bluetooth`'s scan-and-auth discovery. Both already have remote
 /// confirmation before calling this -- an authenticated `PeerFrame`
 /// channel, or a live `AuthOk` from the discovered address -- so recording
 /// what they learned is safe.
@@ -152,53 +152,6 @@ pub(crate) fn persist_bluetooth_address_and_maybe_enable(
     // deliberately as its own distinct act.
     channels::note_address(conn, peer_id, ChannelKind::Bluetooth, address);
     Ok(false)
-}
-
-/// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/`PairComplete`)
-/// over the Network channel: one iroh connection to the device holding
-/// `peer_key`, one frame, closed once the peer has it.
-fn send_pair_network(
-    state: &DeviceConnectionState, peer_key: &str, addr: IpAddr, port: u16, msg: PeerFrame,
-) -> Result<(), String> {
-    tauri::async_runtime::block_on(
-        crate::services::communication::channel::network::send_one_frame(state, peer_key, addr, port, &msg),
-    )
-}
-
-/// One-shot pre-auth pairing sender over Bluetooth — the BLE-first pairing
-/// equivalent of `send_pair_network` above (ADR 0002 Phase 3). No text-framing
-/// dance needed here: `channel::send_frame` already handles encoding for
-/// any `DataLink`, unlike the WebSocket path, which has to hand-roll a
-/// `Message::Text` frame around the same codec.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-/// A stale/unresponsive BLE candidate has no bound of its own here: `dial`
-/// can hang trying to connect to a device that's since gone out of range,
-/// and `send_frame` can hang on a stalled write. All three BLE pairing legs
-/// (request/accept/complete) are synchronous Tauri commands that block on
-/// this via `block_on`, so an unbounded hang here freezes the whole
-/// command -- leaving pairing controls stuck disabled, and letting a retry
-/// after the request TTL expires collide with the still-open earlier
-/// attempt.
-///
-/// Sized to include the wait `dial_for_pairing` may spend letting a
-/// candidate probe already in flight finish (up to 12s) before its own dial
-/// of ~4s: at 10s the wait alone consumed half the budget and the dial was
-/// abandoned mid-connect.
-const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn send_pair_ble(address: &str, msg: PeerFrame) -> Result<(), String> {
-    tauri::async_runtime::block_on(async move {
-        tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
-            // Keeps the add-mode candidate scan off the adapter and out of
-            // this peer's dial until the frame is sent.
-            let (mut link, _clear_of_scan) =
-                crate::services::communication::channel::ble::dial_for_pairing(address).await?;
-            crate::services::communication::channel::send_frame(link.as_mut(), &msg).await
-        })
-        .await
-        .map_err(|_| "bluetooth pairing send timed out".to_string())?
-    })
 }
 
 pub fn device_connection_get_identity_impl(
@@ -237,7 +190,7 @@ pub fn device_connection_enter_add_mode_impl(
     // existing mDNS beacon.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if bluetooth {
-        crate::services::communication::channel::ble::set_add_mode(true);
+        state.bluetooth_advertiser.set_add_mode(true);
     }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
@@ -282,7 +235,7 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
         state.identity.hostname, state.identity.device_id
     );
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::set_add_mode(false);
+    state.bluetooth_advertiser.set_add_mode(false);
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
@@ -297,55 +250,7 @@ pub fn device_connection_send_pair_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestInput,
 ) -> Result<(), String> {
-    let target_ip: IpAddr = input
-        .to_addr
-        .parse()
-        .map_err(|err| format!("invalid peer addr '{}': {err}", input.to_addr))?;
-
-    let created_at = utc_now();
-    let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-
-    let payload = PairRequestPayload {
-        protocol: DISCOVERY_PROTOCOL.to_string(),
-        kind: "pair_request".to_string(),
-        request_id: input.request_id,
-        from_device_id: state.identity.device_id.clone(),
-        from_endpoint_id: Some(state.identity.endpoint_id.clone()),
-        from_hostname: state.identity.hostname.clone(),
-        from_discovery_port: Some(state.discovery_port),
-        from_ws_port: Some(state.space_sync_ws_port),
-        to_device_id: input.to_device_id,
-        created_at,
-        expires_at,
-    };
-
-    let target_port = input.to_ws_port.unwrap_or(state.space_sync_ws_port);
-    let peer_key = input
-        .to_endpoint_id
-        .or_else(|| state.presence_key(&payload.to_device_id))
-        .ok_or_else(|| {
-            "this device has not announced its key yet; try again in a moment, or pass its key".to_string()
-        })?;
-    send_pair_network(
-        state,
-        &peer_key,
-        target_ip,
-        target_port,
-        PeerFrame::PairRequest(payload.clone()),
-    )?;
-
-    if let Ok(mut guard) = state.runtime.lock() {
-        guard.tx_count += 1;
-    }
-
-    eprintln!(
-        "[device-sync] pair request {} sent to {} ({}:{})",
-        payload.request_id, payload.to_device_id, target_ip, target_port
-    );
-
-    Ok(())
+    super::flow::send_request(state, input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -357,58 +262,13 @@ pub fn device_connection_send_pair_request(
     device_connection_send_pair_request_impl(&state, input)
 }
 
-/// BLE-first pairing (ADR 0002 Phase 3): sends the same `PairRequestPayload`
-/// shape `device_connection_send_pair_request_impl` does, just over a fresh
-/// Bluetooth connection instead of a WebSocket one -- `run_peer_gate`
-/// handles the resulting `PeerFrame::PairRequest` identically regardless of
-/// which channel carried it, so nothing downstream of `send_pair_ble`
-/// needs to know the difference. `to_device_id` here comes from a prior
-/// `scan_add_mode_candidates`/`DiscoveryHelloReply`, not typed in by the
-/// user.
+/// BLE-first pairing (ADR 0002 Phase 3); see `flow::send_request_bluetooth`.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_send_pair_request_bluetooth_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestBluetoothInput,
 ) -> Result<(), String> {
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    {
-        let _ = (state, input);
-        return Err("Bluetooth is not available on this platform".to_string());
-    }
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        let created_at = utc_now();
-        let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
-
-        let payload = PairRequestPayload {
-            protocol: DISCOVERY_PROTOCOL.to_string(),
-            kind: "pair_request".to_string(),
-            request_id: input.request_id,
-            from_device_id: state.identity.device_id.clone(),
-            from_endpoint_id: Some(state.identity.endpoint_id.clone()),
-            from_hostname: state.identity.hostname.clone(),
-            from_discovery_port: Some(state.discovery_port),
-            from_ws_port: Some(state.space_sync_ws_port),
-            to_device_id: input.to_device_id,
-            created_at,
-            expires_at,
-        };
-
-        send_pair_ble(&input.to_bluetooth_address, PeerFrame::PairRequest(payload.clone()))?;
-
-        if let Ok(mut guard) = state.runtime.lock() {
-            guard.tx_count += 1;
-        }
-
-        eprintln!(
-            "[device-sync] pair request {} sent to {} (bluetooth {})",
-            payload.request_id, payload.to_device_id, input.to_bluetooth_address
-        );
-
-        Ok(())
-    }
+    super::flow::send_request_bluetooth(state, input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -463,9 +323,12 @@ pub async fn device_connection_discover_bluetooth_candidates(
         }
 
         let my_device_id = state.identity.device_id.clone();
-        let candidates = crate::services::communication::channel::ble::scan_add_mode_candidates(
+        let candidates = crate::services::communication::channel::bluetooth::scan_add_mode_candidates(
             &my_device_id,
             std::time::Duration::from_millis(duration_ms),
+            &state.bluetooth_peers,
+            &state.bluetooth_radio,
+            state.bluetooth_advertiser.hello(),
         )
         .await?;
         let now = utc_now();
@@ -573,67 +436,7 @@ pub fn device_connection_pair_accept_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
-    let (to_device_id, to_addr, to_ws_port, to_key, via_bluetooth) = {
-        let mut guard = state
-            .runtime
-            .lock()
-            .map_err(|_| "device sync runtime lock poisoned".to_string())?;
-
-        prune_expired_incoming_requests(&mut guard);
-
-        let Some(stored) = guard.incoming_requests.get(&input.request_id) else {
-            return Err("incoming request not found".to_string());
-        };
-
-        (
-            stored.request.from_device_id.clone(),
-            stored.from_addr.clone(),
-            stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
-            stored.from_endpoint_id.clone(),
-            stored.request.via_bluetooth,
-        )
-    };
-
-    let update = PairCodeUpdate {
-        request_id: input.request_id,
-        code: generate_passcode(),
-        accepted_at: utc_now(),
-    };
-
-    let payload = PairAcceptPayload {
-        protocol: DISCOVERY_PROTOCOL.to_string(),
-        kind: "pair_accept".to_string(),
-        request_id: update.request_id.clone(),
-        code: update.code.clone(),
-        from_device_id: state.identity.device_id.clone(),
-        from_endpoint_id: Some(state.identity.endpoint_id.clone()),
-        to_device_id: to_device_id.clone(),
-        accepted_at: update.accepted_at.clone(),
-    };
-
-    if via_bluetooth {
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        return Err("Bluetooth is not available on this platform".to_string());
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        send_pair_ble(&to_addr, PeerFrame::PairAccept(payload))?;
-    } else {
-        let target_ip: IpAddr = to_addr
-            .parse()
-            .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
-        let peer_key = to_key.ok_or_else(|| "the requester's key is unknown".to_string())?;
-        send_pair_network(state, &peer_key, target_ip, to_ws_port, PeerFrame::PairAccept(payload))?;
-    }
-
-    if let Ok(mut guard) = state.runtime.lock() {
-        guard.tx_count += 1;
-    }
-
-    eprintln!(
-        "[device-sync] accepted request {} for {} with code {}",
-        update.request_id, to_device_id, update.code
-    );
-
-    Ok(update)
+    super::flow::accept_request(state, input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -654,77 +457,7 @@ pub fn device_connection_pair_complete_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    let (to_device_id, to_addr, to_ws_port, to_key, via_bluetooth) = {
-        let mut guard = state
-            .runtime
-            .lock()
-            .map_err(|_| "device sync runtime lock poisoned".to_string())?;
-
-        prune_expired_incoming_requests(&mut guard);
-
-        let Some(stored) = guard.incoming_requests.get(&input.request_id) else {
-            return Err("incoming request not found".to_string());
-        };
-
-        (
-            stored.request.from_device_id.clone(),
-            stored.from_addr.clone(),
-            stored.from_ws_port.unwrap_or(state.space_sync_ws_port),
-            stored.from_endpoint_id.clone(),
-            stored.request.via_bluetooth,
-        )
-    };
-
-    let payload = PairCompletePayload {
-        protocol: DISCOVERY_PROTOCOL.to_string(),
-        kind: "pair_complete".to_string(),
-        request_id: input.request_id.clone(),
-        from_device_id: state.identity.device_id.clone(),
-        from_endpoint_id: Some(state.identity.endpoint_id.clone()),
-        from_hostname: state.identity.hostname.clone(),
-        to_device_id: to_device_id.clone(),
-        paired_at: utc_now(),
-        // Best-effort: shared regardless of which channel carries this
-        // frame, so a network-carried completion can still hand the
-        // requester a Bluetooth address to store (ADR 0002 Phase 3).
-        // `local_bluetooth_address` is genuinely bounded internally now
-        // (kills its subprocess on timeout), so blocking this synchronous
-        // command on it can't hang the way it could before.
-        bluetooth_address: tauri::async_runtime::block_on(local_bluetooth_address()),
-        key_material: None,
-    };
-
-    if via_bluetooth {
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        return Err("Bluetooth is not available on this platform".to_string());
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        send_pair_ble(&to_addr, PeerFrame::PairComplete(payload))?;
-    } else {
-        let target_ip: IpAddr = to_addr
-            .parse()
-            .map_err(|err| format!("invalid sender addr '{}': {err}", to_addr))?;
-        let peer_key = to_key.clone().ok_or_else(|| "the requester's key is unknown".to_string())?;
-        send_pair_network(state, &peer_key, target_ip, to_ws_port, PeerFrame::PairComplete(payload))?;
-    }
-
-    let mut guard = state
-        .runtime
-        .lock()
-        .map_err(|_| "device sync runtime lock poisoned".to_string())?;
-    guard.tx_count += 1;
-    guard.incoming_requests.remove(&input.request_id);
-    if let Some(key) = to_key {
-        guard
-            .pairing_keys
-            .insert(input.request_id.clone(), (to_device_id.clone(), key));
-    }
-
-    eprintln!(
-        "[device-sync] completed request {} for {}",
-        input.request_id, to_device_id
-    );
-
-    Ok(())
+    super::flow::complete_request(state, input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -745,13 +478,7 @@ pub fn device_connection_pair_acknowledge_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    let mut guard = state
-        .runtime
-        .lock()
-        .map_err(|_| "device sync runtime lock poisoned".to_string())?;
-
-    guard.incoming_requests.remove(&input.request_id);
-    Ok(())
+    super::flow::acknowledge_request(state, input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1247,13 +974,16 @@ pub fn device_connection_unlink_channel(
 /// seconds, which is exactly why the passive signal exists alongside it.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String> {
+pub async fn device_connection_probe_bluetooth_adapter(
+    state: State<'_, DeviceConnectionState>,
+) -> Result<bool, String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        Ok(crate::services::communication::channel::ble::probe_adapter_available().await)
+        Ok(crate::services::communication::channel::bluetooth::probe_adapter_available(&state.bluetooth_radio).await)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
+        let _ = state;
         // No BLE channel here at all, so there is no radio to be off.
         // The row reports `BluetoothNotSupported` on its own; answering
         // `false` would produce a toast blaming the user's hardware for a
@@ -1419,6 +1149,10 @@ pub fn device_connection_channel_statuses_impl(
     if paired.is_none() {
         return Err("paired device not found".to_string());
     }
+    // A pair-level problem, so it is read once and reported on every row:
+    // until the pair is made again no channel of it can authenticate, and
+    // which channel the person tries makes no difference.
+    let pair_key_missing = super::pinned_key(&mut *conn, &peer_device_id).is_none();
     Ok([ChannelKind::Network, ChannelKind::Bluetooth]
         .into_iter()
         .map(|kind| {
@@ -1432,7 +1166,15 @@ pub fn device_connection_channel_statuses_impl(
             let service = crate::services::communication::channel::service::service_for(state, kind);
             // An exchange running right now is presence too.
             let present = service.is_present(&peer_device_id) || state.has_session_on(&peer_device_id, kind);
-            channel_status(kind, stored, present, service.problem(), primary)
+            // Outranks whatever the channel itself reports: a radio that is
+            // off is worth saying only while there is a pair that could use
+            // it once it comes back.
+            let problem = if pair_key_missing {
+                Some(ChannelProblem::PairKeyMissing)
+            } else {
+                service.problem()
+            };
+            channel_status(kind, stored, present, problem, primary)
         })
         .collect())
 }
@@ -1460,7 +1202,7 @@ pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, act
 
 /// Every paired peer eligible for a Bluetooth dial attempt right now: the
 /// ones whose Bluetooth channel is set up and on. Used by
-/// `channel::ble::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
+/// `channel::bluetooth::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
 /// presence worker or static port list to draw candidates from.
 ///
 /// ADR-0006: this used to also require a stored address and a live OS bond,
@@ -1509,10 +1251,6 @@ pub fn device_connection_unpair_impl(
     diesel::delete(paired_devices::table.find(&peer_device_id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
-    // Failed attempts with the old pair must not delay a new one.
-    crate::services::communication::channel::network::forget_failures(&peer_device_id);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::forget_delivery_misses(&peer_device_id);
     // Its channels went with it, which can leave nobody to advertise for.
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
@@ -1522,10 +1260,16 @@ pub fn device_connection_unpair_impl(
 #[tauri::command]
 pub fn device_connection_unpair(
     db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
     peer_device_id: String,
 ) -> Result<(), String> {
     let mut conn = db.0.lock().unwrap();
-    device_connection_unpair_impl(&mut conn, peer_device_id)
+    device_connection_unpair_impl(&mut conn, peer_device_id.clone())?;
+    // Failed attempts with the old pair must not delay a new one. Held by
+    // this process's state, so only the app has any to forget.
+    state.network_attempts.forget_failures(&peer_device_id);
+    state.bluetooth_presence.forget_delivery_misses(&peer_device_id);
+    Ok(())
 }
 
 pub fn device_connection_update_last_seen_impl(
@@ -1932,7 +1676,7 @@ mod tests {
         // ADR-0008 D15: the channel exists (set up by an init), switched off.
         channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
             .expect("a channel that went through init");
-        crate::services::communication::channel::ble::pin_adapter_reachable_on_this_thread();
+        crate::services::communication::channel::bluetooth::pin_adapter_reachable_on_this_thread();
         let statuses = device_connection_set_channel_enabled_impl(
             &mut conn,
             &state,

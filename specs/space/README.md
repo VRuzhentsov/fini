@@ -25,7 +25,3 @@ Local space model, built-in spaces, and Settings-based space management.
 ## Related Feature
 
 - `specs/space-sync/README.md`
-
-## Wiki Links
-
-- `~/projects/fini-wiki/pages/concepts/Space.md` when present

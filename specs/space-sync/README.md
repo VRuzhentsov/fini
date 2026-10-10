@@ -42,8 +42,3 @@ Per-pair space mapping lifecycle, sync session establishment, bootstrap transfer
 - `specs/device-connect/README.md`
 - `specs/space/README.md`
 - `specs/e2e/transports.md` for the E2E topology-to-verification matrix
-
-## Wiki Links
-
-- `~/projects/fini-wiki/pages/concepts/SpaceSync.md` when present
-- `~/projects/fini-wiki/pages/concepts/e2e-testing.md` for cross-device QA context

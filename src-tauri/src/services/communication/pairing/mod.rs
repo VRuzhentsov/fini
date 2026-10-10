@@ -1,5 +1,7 @@
+mod carrier;
 mod commands;
 mod device_key;
+mod flow;
 mod runtime;
 pub(crate) mod channel_status;
 pub(crate) mod channels;
@@ -131,11 +133,28 @@ pub struct DeviceConnectionState {
     /// must sit on `space_sync_ws_port`, the port presence announces; only
     /// a state that just dials out may fall back to any free port.
     pub(crate) serves_network: Arc<std::sync::atomic::AtomicBool>,
+    /// Network exchanges being attempted, and peers that failed recently.
+    pub(crate) network_attempts: Arc<crate::services::communication::channel::network::ExchangeAttempts>,
     /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
-    /// transport, built on first use (`channel::ble`).
+    /// transport, built on first use (`channel::bluetooth`).
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_endpoint:
         Arc<tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>>,
+    /// The Bluetooth devices around this one in add-mode: their keys, where
+    /// they were last heard, and who probed us.
+    #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+    pub(crate) bluetooth_peers: Arc<crate::services::communication::channel::bluetooth::PeerDirectory>,
+    /// Which paired peers were heard over Bluetooth, and when to search for
+    /// one again.
+    pub(crate) bluetooth_presence: Arc<crate::services::communication::channel::bluetooth::Presence>,
+    /// Takes turns on the Bluetooth radio: scans, dials, probes and pairing
+    /// legs.
+    pub(crate) bluetooth_radio: Arc<crate::services::communication::channel::bluetooth::RadioArbiter>,
+    /// What this device advertises over Bluetooth, and whether it does.
+    pub(crate) bluetooth_advertiser: Arc<crate::services::communication::channel::bluetooth::Advertiser>,
+    /// Carries pairing frames over Bluetooth, and holds the links requests
+    /// arrived on.
+    pub(crate) bluetooth_carrier: Arc<carrier::BluetoothCarrier>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -192,6 +211,15 @@ fn env_port_list(name: &str, fallback: u16) -> Vec<u16> {
 }
 
 impl DeviceConnectionState {
+    /// The carrier for a pairing exchange over Bluetooth or over Network.
+    pub(crate) fn pairing_carrier(&self, via_bluetooth: bool) -> &dyn carrier::PairingCarrier {
+        if via_bluetooth {
+            &*self.bluetooth_carrier
+        } else {
+            &carrier::NetworkCarrier
+        }
+    }
+
     #[cfg(any(feature = "ui-plane", test))]
     pub fn from_app_data_dir(app_data_dir: &Path) -> Self {
         Self::from_db_path(app_data_dir, app_data_dir.join("fini.db"))
@@ -216,6 +244,12 @@ impl DeviceConnectionState {
         let secret_key = device_key::try_load_or_create_secret_key(&db_path)?;
         let mut identity = identity;
         identity.endpoint_id = secret_key.public().to_string();
+        let bluetooth_advertiser =
+            Arc::new(crate::services::communication::channel::bluetooth::Advertiser::new(&identity));
+        let bluetooth_presence = Arc::new(crate::services::communication::channel::bluetooth::Presence::default());
+        let bluetooth_radio = Arc::new(crate::services::communication::channel::bluetooth::RadioArbiter::new(
+            bluetooth_presence.clone(),
+        ));
 
         Ok(Self {
             identity,
@@ -225,8 +259,15 @@ impl DeviceConnectionState {
             secret_key,
             network_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             serves_network: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            network_attempts: Arc::default(),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
+            #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+            bluetooth_peers: Arc::default(),
+            bluetooth_presence,
+            bluetooth_radio,
+            bluetooth_advertiser,
+            bluetooth_carrier: Arc::default(),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })
@@ -465,7 +506,7 @@ impl DeviceConnectionState {
     }
 
     /// Test-only, instance-scoped toggle for `is_add_mode_enabled` --
-    /// deliberately does *not* also flip `channel::ble::set_add_mode`
+    /// deliberately does *not* also flip `channel::bluetooth::set_add_mode`
     /// (unlike the real `device_connection_enter_add_mode_impl`/
     /// `leave_add_mode_impl`), since that is a *process-global* singleton
     /// shared by every test in the binary. Exercising `run_peer_gate`'s
