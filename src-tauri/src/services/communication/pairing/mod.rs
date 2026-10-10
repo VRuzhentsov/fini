@@ -140,6 +140,9 @@ pub struct DeviceConnectionState {
     /// they were last heard, and who probed us.
     #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
     pub(crate) bluetooth_peers: Arc<crate::services::communication::channel::bluetooth::PeerDirectory>,
+    /// Takes turns on the Bluetooth radio: scans, dials, probes and pairing
+    /// legs.
+    pub(crate) bluetooth_radio: Arc<crate::services::communication::channel::bluetooth::RadioArbiter>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -233,6 +236,7 @@ impl DeviceConnectionState {
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
             bluetooth_peers: Arc::default(),
+            bluetooth_radio: Arc::default(),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })

@@ -2143,24 +2143,26 @@ async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bluetooth_setup_keeps_the_candidate_scan_aside_until_it_ends() {
-    use crate::services::communication::channel::bluetooth::{pairing_legs_held, PAIRING_LEGS_TEST_LOCK};
     use crate::services::communication::pairing::setup;
 
-    let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;
     let (state, db_path) = server_state("setup-holds-pairing-leg");
     seed_paired_device(&db_path, "peer-leg");
+    let radio = state.bluetooth_radio.clone();
 
     setup::start(&state, "peer-leg", ChannelKind::Bluetooth);
-    assert!(holds_within(Duration::from_secs(2), || pairing_legs_held() == 1).await, "the setup holds a leg");
+    assert!(
+        holds_within(Duration::from_secs(2), || radio.pairing_legs_held() == 1).await,
+        "the setup holds a leg"
+    );
 
     // This device's hello was acknowledged: its own hello round is over.
     state.note_channel_setup("peer-leg", ChannelKind::Bluetooth, |setup| setup.hello_acked_by_peer = true);
     sleep(Duration::from_secs(1)).await;
-    assert_eq!(pairing_legs_held(), 1, "the leg outlasts this device's own hello");
+    assert_eq!(radio.pairing_legs_held(), 1, "the leg outlasts this device's own hello");
 
     state.end_channel_setup("peer-leg", ChannelKind::Bluetooth);
     assert!(
-        holds_within(Duration::from_secs(2), || pairing_legs_held() == 0).await,
+        holds_within(Duration::from_secs(2), || radio.pairing_legs_held() == 0).await,
         "the leg is released when the setup ends"
     );
 }

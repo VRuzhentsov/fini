@@ -264,7 +264,7 @@ fn listen_for_pair_answers(
         // The whole exchange runs on this one link, so keep the add-mode
         // scan from probing the peer -- a second connection to the same
         // device -- until it is over.
-        let _leg = crate::services::communication::channel::bluetooth::PairingLeg::begin();
+        let _leg = state.bluetooth_radio.begin_pairing_leg();
         let listen_for = Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 30);
         let _ = tokio::time::timeout(listen_for, async {
             while let Some(Ok(frame)) = recv_frame(link.as_mut()).await {
@@ -603,6 +603,7 @@ pub async fn device_connection_discover_bluetooth_candidates(
             &my_device_id,
             std::time::Duration::from_millis(duration_ms),
             &state.bluetooth_peers,
+            &state.bluetooth_radio,
         )
         .await?;
         let now = utc_now();
@@ -1398,13 +1399,16 @@ pub fn device_connection_unlink_channel(
 /// seconds, which is exactly why the passive signal exists alongside it.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub async fn device_connection_probe_bluetooth_adapter() -> Result<bool, String> {
+pub async fn device_connection_probe_bluetooth_adapter(
+    state: State<'_, DeviceConnectionState>,
+) -> Result<bool, String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        Ok(crate::services::communication::channel::bluetooth::probe_adapter_available().await)
+        Ok(crate::services::communication::channel::bluetooth::probe_adapter_available(&state.bluetooth_radio).await)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
+        let _ = state;
         // No BLE channel here at all, so there is no radio to be off.
         // The row reports `BluetoothNotSupported` on its own; answering
         // `false` would produce a toast blaming the user's hardware for a

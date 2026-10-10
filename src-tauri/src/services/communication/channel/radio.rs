@@ -22,7 +22,8 @@ pub trait Radio: Send + Sync {
 
     /// Ask the hardware directly, right now, whether it works.
     #[cfg(any(feature = "ui-plane", test))]
-    async fn probe(&self) -> bool {
+    async fn probe(&self, state: &DeviceConnectionState) -> bool {
+        let _ = state;
         self.available()
     }
 
@@ -71,13 +72,14 @@ impl Radio for GattRadio {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    async fn probe(&self) -> bool {
+    async fn probe(&self, state: &DeviceConnectionState) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            super::bluetooth::probe_adapter_available().await
+            super::bluetooth::probe_adapter_available(&state.bluetooth_radio).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
+            let _ = state;
             // No adapter on this platform at all, so there is no radio to be
             // off. Answering `false` would blame the person's hardware for a
             // platform decision.

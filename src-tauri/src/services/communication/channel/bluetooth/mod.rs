@@ -33,10 +33,14 @@
 //! `pairing::commands::bluetooth_address_is_os_paired` already
 //! checks for the enable command.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(any(feature = "ui-plane", test))]
+use std::collections::HashSet;
 #[cfg(any(feature = "ui-plane", test))]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+#[cfg(any(feature = "ui-plane", test))]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -64,10 +68,12 @@ use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport
 
 #[cfg(any(feature = "ui-plane", test))]
 mod peer_directory;
-mod search;
+mod radio_arbiter;
 
 #[cfg(any(feature = "ui-plane", test))]
 pub use peer_directory::PeerDirectory;
+pub use radio_arbiter::RadioArbiter;
+use radio_arbiter::Purpose;
 
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
@@ -236,45 +242,6 @@ const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
 #[cfg(any(feature = "ui-plane", test))]
 const ADVERTISER_SETTLE: Duration = Duration::from_secs(3);
 
-/// Pairing legs (request / accept / complete) in progress. The add-mode
-/// candidate scan yields to them: it holds a discovery session and
-/// re-dials the same phone every pass, and an adapter doing either while a
-/// pairing dial runs refuses or stalls it -- ble-gatt answered the pair dial
-/// with "a dial to this peer is already in flight" and one dial hung until
-/// abandoned, so the Pair button reported "Couldn't reach".
-fn pairing_legs() -> &'static tokio::sync::watch::Sender<usize> {
-    static LEGS: OnceLock<tokio::sync::watch::Sender<usize>> = OnceLock::new();
-    LEGS.get_or_init(|| tokio::sync::watch::channel(0).0)
-}
-
-/// Pairing legs held right now.
-#[cfg(test)]
-pub(crate) fn pairing_legs_held() -> usize {
-    *pairing_legs().borrow()
-}
-
-/// Serializes tests that hold a `PairingLeg` or assert on how many are held:
-/// the count is process-global.
-#[cfg(test)]
-pub(crate) static PAIRING_LEGS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Held while a pairing leg or a Bluetooth channel setup runs; see
-/// `pairing_legs`.
-pub struct PairingLeg(());
-
-impl PairingLeg {
-    pub fn begin() -> Self {
-        pairing_legs().send_modify(|count| *count += 1);
-        Self(())
-    }
-}
-
-impl Drop for PairingLeg {
-    fn drop(&mut self) {
-        pairing_legs().send_modify(|count| *count = count.saturating_sub(1));
-    }
-}
-
 /// How long the device with the higher id waits, in a Bluetooth setup, for the
 /// other device's hello to reach it before dialling anyway. See
 /// `setup_hello_round`.
@@ -301,11 +268,12 @@ pub async fn dial_for_pairing(
     let peer_key: iroh::EndpointId = peer_key
         .parse()
         .map_err(|err| format!("invalid key for the pairing peer: {err}"))?;
-    let leg = PairingLeg::begin();
+    let radio = &state.bluetooth_radio;
+    let leg = radio.begin_pairing_leg();
     // A candidate probe already dialling is let finish, not cancelled; wait
     // for it so this dial never overlaps one to the same peer.
-    drop(candidate_probe_lock().lock().await);
-    let dial_guard = search::DialGuard::acquire().await;
+    drop(radio.candidate_probe().await);
+    let dial_guard = radio.acquire_dial().await;
     let (endpoint, transport) = bluetooth_endpoint(state).await?;
     let peer = PeerAddress(address.to_string());
     transport.set_peer_address(peer_key, peer.clone());
@@ -329,12 +297,6 @@ pub async fn dial_for_pairing(
             Err(_) => return Err(format!("bluetooth connect to {address} timed out")),
         }
     }
-}
-
-/// Held for the length of one candidate probe; see `dial_for_pairing`.
-fn candidate_probe_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 /// `setup_hello_round`'s per-candidate cap for one dial + hello + ack.
@@ -796,7 +758,8 @@ async fn hello_candidate(state: &DeviceConnectionState, address: &str, peer_id: 
 pub async fn setup_hello_round(
     state: DeviceConnectionState, peer_id: String, timeout: Duration,
 ) -> Result<bool, String> {
-    let Some(found) = search::find(&peer_id, search::Purpose::Setup, timeout).await else {
+    let radio = state.bluetooth_radio.clone();
+    let Some(found) = radio.find(&peer_id, Purpose::Setup, timeout).await else {
         if is_bluetooth_adapter_unavailable() {
             return Err("bluetooth adapter unavailable".to_string());
         }
@@ -814,7 +777,7 @@ pub async fn setup_hello_round(
     wait_for_turn_to_dial(&state, &peer_id).await;
     // A candidate probe already dialling is let finish, not cancelled; this
     // dial must not overlap one to the same peer.
-    let _probe = candidate_probe_lock().lock().await;
+    let _probe = radio.candidate_probe().await;
     let acknowledged = tokio::time::timeout(
         FIND_PEER_CANDIDATE_TIMEOUT,
         hello_candidate(&state, &found.address, &peer_id),
@@ -824,7 +787,7 @@ pub async fn setup_hello_round(
     .flatten()
     .is_some();
     if !acknowledged {
-        search::note_dial_failed(&found.address);
+        radio.note_dial_failed(&found.address);
     }
     Ok(acknowledged)
 }
@@ -863,11 +826,11 @@ pub struct AddModeCandidate {
 /// `None` on any failure along the way (dial, send, no/wrong reply); the
 /// caller is responsible for bounding how long this is allowed to run.
 #[cfg(any(feature = "ui-plane", test))]
-async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
+async fn probe_discovery_hello(radio: &RadioArbiter, address: &str) -> Option<PeerFrame> {
     // The add-mode scan has closed by now, but a search for a paired peer
     // may start one; registering the dial keeps it paused until we finish.
-    let _probe = candidate_probe_lock().lock().await;
-    let _dial = search::DialGuard::acquire().await;
+    let _probe = radio.candidate_probe().await;
+    let _dial = radio.acquire_dial().await;
     let mut link = dial(address).await.ok()?;
     send_frame(link.as_mut(), local_hello().get()?).await.ok()?;
     recv_frame(link.as_mut()).await?.ok()
@@ -887,17 +850,17 @@ async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
 /// repeatedly rather than once for a long window.
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn scan_add_mode_candidates(
-    my_device_id: &str, timeout: Duration, peers: &PeerDirectory,
+    my_device_id: &str, timeout: Duration, peers: &PeerDirectory, radio: &RadioArbiter,
 ) -> Result<Vec<AddModeCandidate>, String> {
-    let mut legs = pairing_legs().subscribe();
+    let mut legs = radio.watch_pairing_legs();
     // Wait out a pairing leg already running, then run the pass and give it
     // up when one starts. An `Err` keeps the picker's previous list (the
     // caller treats it as "retry later"), where an empty `Ok` would wipe the
     // very candidate being paired.
     let _ = legs.wait_for(|count| *count == 0).await;
     let backend = backend().await.inspect_err(|_| note_adapter_unreachable())?;
-    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, backend, peers, |address| async move {
-        probe_discovery_hello(&address).await
+    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, backend, peers, radio, |address| async move {
+        probe_discovery_hello(radio, &address).await
     })
     .await
 }
@@ -912,6 +875,7 @@ async fn scan_add_mode_candidates_pass<Probe, Reply>(
     legs: &mut tokio::sync::watch::Receiver<usize>,
     backend: Arc<dyn Backend>,
     peers: &PeerDirectory,
+    radio: &RadioArbiter,
     probe: Probe,
 ) -> Result<Vec<AddModeCandidate>, String>
 where
@@ -938,7 +902,7 @@ where
     // with their fingerprints; see below.
     let mut answered_by: Vec<(String, [u8; FINGERPRINT_LEN])> = Vec::new();
     let flagged_addresses = {
-        let _scan = search::scan_lease_between_dials().await;
+        let _scan = radio.scan_lease_between_dials().await;
         let mut discovered = backend
             .scan(datagram_config().service)
             .await
@@ -946,7 +910,7 @@ where
                 note_scan_refused(err);
             })
             .map_err(|err| format!("ble scan failed: {err}"))?;
-        let _running = RunningScan::start();
+        let _running = radio.start_running_scan();
 
         // Listening gets at most half the caller's window, so the probe
         // phase always has something left. Splitting scan from probe fixed
@@ -1276,7 +1240,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                         // add-mode scan must not dial back while it is here.
                         // A second, crossing connection to the same device is
                         // what kept dropping both (initiator = central).
-                        let _leg = PairingLeg::begin();
+                        let _leg = state.bluetooth_radio.begin_pairing_leg();
                         if let Some(handled) = route_inbound(&state, db_path, channel).await {
                             let _ = handled.await;
                         }
@@ -1358,56 +1322,6 @@ const DELIVERY_RETRY: [Duration; 3] = [
     Duration::from_secs(15 * 60),
 ];
 
-/// Whether this device is dialing the peer for an exchange right now.
-#[cfg(any(feature = "ui-plane", test))]
-pub fn dialing(peer_id: &str) -> bool {
-    in_flight_exchanges().lock().unwrap().contains(peer_id)
-}
-
-/// Peers with an exchange attempt in flight -- one at a time per peer.
-fn in_flight_exchanges() -> &'static StdMutex<HashSet<String>> {
-    static IN_FLIGHT: OnceLock<StdMutex<HashSet<String>>> = OnceLock::new();
-    IN_FLIGHT.get_or_init(|| StdMutex::new(HashSet::new()))
-}
-
-/// Set while a discovery session is actually running: `scan()` returned
-/// Ok and the stream is alive. Holding `scan_lease` is not enough -- the
-/// holder may still be waiting on an adapter that will refuse it.
-static SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// Marks a started discovery session; clears the mark when dropped.
-struct RunningScan;
-
-impl RunningScan {
-    fn start() -> Self {
-        SCAN_RUNNING.store(true, Ordering::SeqCst);
-        note_adapter_reachable();
-        Self
-    }
-}
-
-impl Drop for RunningScan {
-    fn drop(&mut self) {
-        SCAN_RUNNING.store(false, Ordering::SeqCst);
-    }
-}
-
-/// One Bluetooth scan at a time, process-wide. Every `backend.scan` call
-/// holds this for as long as its discovery stream lives.
-///
-/// Android's backend refuses a second scan while one is running ("a scan is
-/// already active"), and each caller read that refusal as "the adapter is
-/// unavailable" -- so the adapter check a person triggers by switching a
-/// channel on, landing inside the dial loop's scan window, reported their
-/// working Bluetooth as off, and the dial loop did the same in reverse.
-/// Linux has no such refusal, but an adapter driving two discovery sessions
-/// competes with itself (see `connect_by_advertisement`), so the lease
-/// applies on every platform.
-fn scan_lease() -> &'static tokio::sync::Mutex<()> {
-    static LEASE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LEASE.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
 /// Per peer: how many delivery searches in a row found nothing, and when
 /// the next one is due.
 fn delivery_schedule() -> &'static StdMutex<HashMap<String, (usize, Instant)>> {
@@ -1472,14 +1386,14 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
     if *add_mode_sender().borrow() {
         return;
     }
-    if !in_flight_exchanges().lock().unwrap().insert(peer_id.to_string()) {
+    if !state.bluetooth_radio.begin_exchange(peer_id) {
         return;
     }
     let state = state.clone();
     let peer_id = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
         exchange_with(&state, &peer_id).await;
-        in_flight_exchanges().lock().unwrap().remove(&peer_id);
+        state.bluetooth_radio.end_exchange(&peer_id);
     });
 }
 
@@ -1496,7 +1410,7 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
     let mut last_error = None;
 
     if let Some(address) = last_seen_address(peer_id) {
-        let guard = search::DialGuard::acquire().await;
+        let guard = state.bluetooth_radio.acquire_dial().await;
         match connect_and_auth(state, peer_id, &address).await {
             Ok((link, version)) => {
                 drop(guard);
@@ -1514,7 +1428,7 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
         let found = if remaining.is_zero() {
             None
         } else {
-            search::find(peer_id, search::Purpose::Delivery, remaining).await
+            state.bluetooth_radio.find(peer_id, Purpose::Delivery, remaining).await
         };
         let Some(found) = found else {
             match last_error {
@@ -1554,13 +1468,13 @@ async fn connect_and_auth(
         Ok(Err(err)) => {
             log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
             if !session::refused_for_running_exchange(&err) {
-                search::note_dial_failed(address);
+                state.bluetooth_radio.note_dial_failed(address);
             }
             Err(err)
         }
         Err(_elapsed) => {
             log::info!("[transport][ble] candidate {address} did not finish connect+auth in time");
-            search::note_dial_failed(address);
+            state.bluetooth_radio.note_dial_failed(address);
             Err("connect+auth timed out".to_string())
         }
     }
@@ -1662,7 +1576,7 @@ pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
 /// search coordinator merges it with any delivery or setup search running.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn set_status_search(state: &DeviceConnectionState, active: bool) {
-    search::set_status(active.then(|| state.db_path.clone()));
+    state.bluetooth_radio.set_status(active.then(|| state.db_path.clone()));
 }
 
 /// Whether this device should advertise (ADR-0008 D8): while it has a
@@ -1824,14 +1738,14 @@ pub fn pin_adapter_reachable_on_this_thread() {
 /// merely holds the lease proves nothing yet -- its scan may still be
 /// refused -- so the probe waits for it to start or finish.
 #[cfg(any(feature = "ui-plane", test))]
-pub async fn probe_adapter_available() -> bool {
+pub async fn probe_adapter_available(radio: &RadioArbiter) -> bool {
     let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
     loop {
-        if SCAN_RUNNING.load(Ordering::SeqCst) {
+        if radio.scan_is_running() {
             note_adapter_reachable();
             return true;
         }
-        if let Ok(_scan) = scan_lease().try_lock() {
+        if let Some(_scan) = radio.try_scan_lease() {
             let Ok(backend) = backend().await else {
                 note_adapter_unreachable();
                 return false;
@@ -2082,15 +1996,15 @@ mod tests {
     /// paused error -- which keeps the picker's list -- and dials nobody.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_candidate_scan_stands_aside_while_a_pairing_step_runs() {
-        let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;
+        let radio = RadioArbiter::default();
         let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:01:01"]);
         advertise_all(&advertisers).await;
         let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        let leg = PairingLeg::begin();
-        let mut legs = pairing_legs().subscribe();
+        let leg = radio.begin_pairing_leg();
+        let mut legs = radio.watch_pairing_legs();
         let peers = PeerDirectory::default();
-        let result = scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, |address| {
+        let result = scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, &radio, |address| {
             let probes = probes.clone();
             async move {
                 probes.fetch_add(1, Ordering::SeqCst);
@@ -2107,10 +2021,13 @@ mod tests {
     /// A new pass does not start while a pairing step runs: it waits for it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_candidate_scan_waits_for_a_running_pairing_step() {
-        let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;
-        let leg = PairingLeg::begin();
-        let scan = tokio::spawn(async {
-            scan_add_mode_candidates("me", Duration::from_millis(50), &PeerDirectory::default()).await
+        let radio = Arc::new(RadioArbiter::default());
+        let leg = radio.begin_pairing_leg();
+        let scan = tokio::spawn({
+            let radio = radio.clone();
+            async move {
+                scan_add_mode_candidates("me", Duration::from_millis(50), &PeerDirectory::default(), &radio).await
+            }
         });
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!scan.is_finished(), "the pass waits while the pairing step runs");
@@ -2125,7 +2042,7 @@ mod tests {
     /// pairing dial that follows. The pass then stops before the next probe.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_probe_in_flight_finishes_when_a_pairing_step_starts() {
-        let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;
+        let radio = Arc::new(RadioArbiter::default());
         let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:02:01", "AA:00:00:00:02:02"]);
         advertise_all(&advertisers).await;
         let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2134,10 +2051,11 @@ mod tests {
 
         let pass = {
             let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
+            let radio = radio.clone();
             tokio::spawn(async move {
-                let mut legs = pairing_legs().subscribe();
+                let mut legs = radio.watch_pairing_legs();
                 let peers = PeerDirectory::default();
-                scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, move |address| {
+                scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, &radio, move |address| {
                     let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
                     async move {
                         started.fetch_add(1, Ordering::SeqCst);
@@ -2153,7 +2071,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        let leg = PairingLeg::begin();
+        let leg = radio.begin_pairing_leg();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!pass.is_finished(), "the probe in flight is not cancelled");
         release.notify_one();
@@ -2187,12 +2105,13 @@ mod tests {
     /// which used to be recorded as "Bluetooth is unavailable on this device".
     #[tokio::test]
     async fn adapter_probe_during_another_scan_reports_the_adapter_reachable() {
-        let _other_scan = scan_lease().lock().await;
-        let _running = RunningScan::start();
+        let radio = RadioArbiter::default();
+        let _other_scan = radio.scan_lease().await;
+        let _running = radio.start_running_scan();
         note_adapter_unreachable();
 
         assert!(
-            probe_adapter_available().await,
+            probe_adapter_available(&radio).await,
             "a scan in flight means the adapter accepted a discovery session"
         );
         assert!(!is_bluetooth_adapter_unavailable());
@@ -2203,10 +2122,14 @@ mod tests {
     /// report a missing radio as working, so adding Bluetooth never failed.
     #[tokio::test(start_paused = true)]
     async fn adapter_probe_does_not_trust_a_scan_that_has_not_started() {
-        let other_scan = scan_lease().lock().await;
+        let radio = Arc::new(RadioArbiter::default());
+        let other_scan = radio.scan_lease().await;
         note_adapter_unreachable();
 
-        let probe = tokio::spawn(probe_adapter_available());
+        let probe = tokio::spawn({
+            let radio = radio.clone();
+            async move { probe_adapter_available(&radio).await }
+        });
         tokio::time::sleep(PROBE_WAIT_FOR_OTHER_SCAN + Duration::from_secs(1)).await;
         drop(other_scan);
 

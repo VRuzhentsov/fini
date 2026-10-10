@@ -52,13 +52,16 @@ pub(crate) fn take_pair_link(request_id: &str) -> Option<Box<dyn DataLink>> {
 }
 
 /// Whether this device is dialing the peer on this channel right now.
-fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
+fn dialing(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind) -> bool {
     match kind {
         ChannelKind::Network => crate::services::communication::channel::network::dialing(peer_device_id),
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        ChannelKind::Bluetooth => crate::services::communication::channel::bluetooth::dialing(peer_device_id),
+        ChannelKind::Bluetooth => state.bluetooth_radio.dialing(peer_device_id),
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        ChannelKind::Bluetooth => false,
+        ChannelKind::Bluetooth => {
+            let _ = state;
+            false
+        }
     }
 }
 
@@ -170,7 +173,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 // add-mode scan off the adapter meanwhile too: its probes
                 // dial the very device whose link is parked here.
                 #[cfg(any(target_os = "linux", target_os = "android"))]
-                let _leg = crate::services::communication::channel::bluetooth::PairingLeg::begin();
+                let _leg = state.bluetooth_radio.begin_pairing_leg();
                 let hold_until = tokio::time::Instant::now()
                     + Duration::from_secs(super::PAIR_REQUEST_TTL_SECS as u64 + 5);
                 while tokio::time::Instant::now() < hold_until {
@@ -369,7 +372,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     // Both devices dialed each other at once. Were both links kept and
     // then each dropped for the other, neither exchange would survive; the
     // dial from the smaller device id wins on both sides.
-    if yields_to_own_dial(&state.identity.device_id, &device_id, dialing(&device_id, kind)) {
+    if yields_to_own_dial(&state.identity.device_id, &device_id, dialing(&state, &device_id, kind)) {
         log::info!("[space_sync][gate] {kind:?} auth from {device_id} refused: this device's dial wins");
         let _ = send_frame(
             link.as_mut(),

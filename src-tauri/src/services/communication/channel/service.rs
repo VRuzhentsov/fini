@@ -253,7 +253,7 @@ impl ChannelService for BluetoothChannelService {
 
     #[cfg(any(feature = "ui-plane", test))]
     async fn probe(&self) -> bool {
-        self.radio.probe().await
+        self.radio.probe(&self.state).await
     }
 
     #[cfg(any(feature = "ui-plane", test))]
