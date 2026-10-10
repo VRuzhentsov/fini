@@ -136,6 +136,10 @@ pub struct DeviceConnectionState {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_endpoint:
         Arc<tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>>,
+    /// The Bluetooth devices around this one in add-mode: their keys, where
+    /// they were last heard, and who probed us.
+    #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+    pub(crate) bluetooth_peers: Arc<crate::services::communication::channel::bluetooth::PeerDirectory>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -227,6 +231,8 @@ impl DeviceConnectionState {
             serves_network: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
+            #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+            bluetooth_peers: Arc::default(),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })

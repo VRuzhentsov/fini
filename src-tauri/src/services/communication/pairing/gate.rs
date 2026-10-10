@@ -243,9 +243,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 // device's own candidate list.
                 #[cfg(any(target_os = "linux", target_os = "android"))]
                 if kind == ChannelKind::Bluetooth && device_id != state.identity.device_id {
-                    crate::services::communication::channel::bluetooth::note_inbound_hello(
-                        device_id, hostname, endpoint_id,
-                    );
+                    state.bluetooth_peers.note_inbound_hello(device_id, hostname, endpoint_id);
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "android")))]
                 let _ = (device_id, hostname, endpoint_id);

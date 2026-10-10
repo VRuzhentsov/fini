@@ -62,7 +62,12 @@ use crate::services::communication::channel::{recv_frame, send_frame};
 use crate::services::communication::channel::iroh_link::{IrohDataLink, ALPN};
 use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, ChannelKind};
 
+#[cfg(any(feature = "ui-plane", test))]
+mod peer_directory;
 mod search;
+
+#[cfg(any(feature = "ui-plane", test))]
+pub use peer_directory::PeerDirectory;
 
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
@@ -108,35 +113,6 @@ fn local_hello() -> &'static OnceLock<PeerFrame> {
     &HELLO
 }
 
-/// A device that probed this one in add-mode: its hello, and when.
-#[cfg(any(feature = "ui-plane", test))]
-struct InboundHello {
-    hostname: String,
-    endpoint_id: String,
-    heard_at: Instant,
-}
-
-/// Hellos from devices that dialled this one, by device id. Of two devices
-/// in add-mode only the lower fingerprint dials (`scan_add_mode_candidates_pass`),
-/// so the other learns of it only from this.
-#[cfg(any(feature = "ui-plane", test))]
-fn inbound_hellos() -> &'static StdMutex<HashMap<String, InboundHello>> {
-    static HELLOS: OnceLock<StdMutex<HashMap<String, InboundHello>>> = OnceLock::new();
-    HELLOS.get_or_init(Default::default)
-}
-
-/// How long an inbound hello stands for a device in the candidate list.
-/// The prober repeats its pass every few seconds while it is in add-mode.
-#[cfg(any(feature = "ui-plane", test))]
-const INBOUND_HELLO_FRESH: Duration = Duration::from_secs(60);
-
-/// Records the identity a prober sent; see `inbound_hellos`.
-#[cfg(any(feature = "ui-plane", test))]
-pub fn note_inbound_hello(device_id: String, hostname: String, endpoint_id: String) {
-    if let Ok(mut hellos) = inbound_hellos().lock() {
-        hellos.insert(device_id, InboundHello { hostname, endpoint_id, heard_at: Instant::now() });
-    }
-}
 
 /// Four bytes of FNV-1a over the `device_id`.
 ///
@@ -353,69 +329,6 @@ pub async fn dial_for_pairing(
             Err(_) => return Err(format!("bluetooth connect to {address} timed out")),
         }
     }
-}
-
-/// The iroh key each add-mode candidate's hello reported, by device id --
-/// what a pairing leg to that candidate dials (`dial_for_pairing`).
-#[cfg(any(feature = "ui-plane", test))]
-fn candidate_keys() -> &'static StdMutex<HashMap<String, String>> {
-    static KEYS: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
-    KEYS.get_or_init(Default::default)
-}
-
-/// The newest address each known device was heard advertising from, by
-/// device id. Android restarts its advertisement with a fresh private
-/// address on every add-mode change, so the address a picker row was built
-/// from can be gone by the time the person presses Pair.
-#[cfg(any(feature = "ui-plane", test))]
-fn latest_addresses() -> &'static StdMutex<HashMap<String, String>> {
-    static ADDRESSES: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
-    ADDRESSES.get_or_init(Default::default)
-}
-
-/// Where `device_id` was last heard advertising, if anywhere.
-#[cfg(any(feature = "ui-plane", test))]
-pub fn latest_address(device_id: &str) -> Option<String> {
-    latest_addresses().lock().ok()?.get(device_id).cloned()
-}
-
-/// Records `address` for whichever known device advertises `fingerprint`.
-#[cfg(any(feature = "ui-plane", test))]
-fn note_advertiser(address: &str, fingerprint: [u8; FINGERPRINT_LEN]) {
-    let known: Vec<String> = candidate_keys().lock().map(|keys| keys.keys().cloned().collect()).unwrap_or_default();
-    if let Some(device_id) = known.into_iter().find(|id| fingerprint_of(id) == fingerprint) {
-        if let Ok(mut addresses) = latest_addresses().lock() {
-            addresses.insert(device_id, address.to_string());
-        }
-    }
-}
-
-/// Probe results by address, so an advertiser already probed is not dialled
-/// again on every pass: each probe is a connection that can cross the other
-/// device's own dial to this one.
-#[cfg(any(feature = "ui-plane", test))]
-struct ProbedAt {
-    candidate: AddModeCandidate,
-    at: Instant,
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-fn probed() -> &'static StdMutex<HashMap<String, ProbedAt>> {
-    static PROBED: OnceLock<StdMutex<HashMap<String, ProbedAt>>> = OnceLock::new();
-    PROBED.get_or_init(Default::default)
-}
-
-/// How long one probe's answer stands for its address. Shorter than
-/// `INBOUND_HELLO_FRESH`: the device this one does not dial lists it only
-/// from the hellos these probes deliver.
-#[cfg(any(feature = "ui-plane", test))]
-const PROBE_FRESH: Duration = Duration::from_secs(20);
-
-/// The iroh key `device_id` reported the last time the add-mode scan
-/// probed it, if it has been probed.
-#[cfg(any(feature = "ui-plane", test))]
-pub fn candidate_key(device_id: &str) -> Option<String> {
-    candidate_keys().lock().ok()?.get(device_id).cloned()
 }
 
 /// Held for the length of one candidate probe; see `dial_for_pairing`.
@@ -974,7 +887,7 @@ async fn probe_discovery_hello(address: &str) -> Option<PeerFrame> {
 /// repeatedly rather than once for a long window.
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn scan_add_mode_candidates(
-    my_device_id: &str, timeout: Duration,
+    my_device_id: &str, timeout: Duration, peers: &PeerDirectory,
 ) -> Result<Vec<AddModeCandidate>, String> {
     let mut legs = pairing_legs().subscribe();
     // Wait out a pairing leg already running, then run the pass and give it
@@ -983,7 +896,7 @@ pub async fn scan_add_mode_candidates(
     // very candidate being paired.
     let _ = legs.wait_for(|count| *count == 0).await;
     let backend = backend().await.inspect_err(|_| note_adapter_unreachable())?;
-    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, backend, |address| async move {
+    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, backend, peers, |address| async move {
         probe_discovery_hello(&address).await
     })
     .await
@@ -998,6 +911,7 @@ async fn scan_add_mode_candidates_pass<Probe, Reply>(
     timeout: Duration,
     legs: &mut tokio::sync::watch::Receiver<usize>,
     backend: Arc<dyn Backend>,
+    peers: &PeerDirectory,
     probe: Probe,
 ) -> Result<Vec<AddModeCandidate>, String>
 where
@@ -1111,7 +1025,7 @@ where
                 peer.manufacturer_data.get(&FINI_MANUFACTURER_ID).map(Vec::as_slice),
             );
             if let Some(theirs) = theirs {
-                note_advertiser(&address, theirs);
+                peers.note_advertiser(&address, theirs);
             }
             match theirs {
                 Some(theirs) if theirs <= mine => answered_by.push((address, theirs)),
@@ -1170,10 +1084,7 @@ where
         // address and disconnects it in the background, so the pass after
         // this one cannot reach the peer either. Overrunning the caller's
         // window by one slow candidate is the cheaper of the two.
-        let cached = probed().lock().ok().and_then(|probed| {
-            probed.get(&address).filter(|entry| entry.at.elapsed() < PROBE_FRESH).map(|entry| entry.candidate.clone())
-        });
-        if let Some(candidate) = cached {
+        if let Some(candidate) = peers.recent_probe(&address) {
             candidates.push(candidate);
             continue;
         }
@@ -1183,16 +1094,8 @@ where
             // same machine, or a previous scan's own peripheral still
             // winding down) must not show up as a candidate to pair with.
             if device_id != my_device_id {
-                if let Ok(mut keys) = candidate_keys().lock() {
-                    keys.insert(device_id.clone(), endpoint_id);
-                }
-                if let Ok(mut addresses) = latest_addresses().lock() {
-                    addresses.insert(device_id.clone(), address.clone());
-                }
-                let candidate = AddModeCandidate { address: address.clone(), device_id, hostname };
-                if let Ok(mut probed) = probed().lock() {
-                    probed.insert(address, ProbedAt { candidate: candidate.clone(), at: Instant::now() });
-                }
+                let candidate = AddModeCandidate { address, device_id, hostname };
+                peers.note_probe(&candidate, endpoint_id);
                 candidates.push(candidate);
             }
         }
@@ -1200,22 +1103,10 @@ where
     // The advertisers left to dial this device: listed from the hello they
     // sent, at the address they advertise from -- the one a pairing leg
     // from this side can reach.
-    if let Ok(hellos) = inbound_hellos().lock() {
-        for (address, fingerprint) in answered_by {
-            let heard = hellos.iter().find(|(device_id, hello)| {
-                fingerprint_of(device_id) == fingerprint && hello.heard_at.elapsed() < INBOUND_HELLO_FRESH
-            });
-            if let Some((device_id, hello)) = heard {
-                if device_id != my_device_id && !candidates.iter().any(|c| &c.device_id == device_id) {
-                    if let Ok(mut keys) = candidate_keys().lock() {
-                        keys.insert(device_id.clone(), hello.endpoint_id.clone());
-                    }
-                    candidates.push(AddModeCandidate {
-                        address,
-                        device_id: device_id.clone(),
-                        hostname: hello.hostname.clone(),
-                    });
-                }
+    for (address, fingerprint) in answered_by {
+        if let Some(candidate) = peers.prober_at(&address, fingerprint, my_device_id) {
+            if !candidates.iter().any(|c| c.device_id == candidate.device_id) {
+                candidates.push(candidate);
             }
         }
     }
@@ -2198,7 +2089,8 @@ mod tests {
 
         let leg = PairingLeg::begin();
         let mut legs = pairing_legs().subscribe();
-        let result = scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, |address| {
+        let peers = PeerDirectory::default();
+        let result = scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, |address| {
             let probes = probes.clone();
             async move {
                 probes.fetch_add(1, Ordering::SeqCst);
@@ -2217,7 +2109,9 @@ mod tests {
     async fn a_candidate_scan_waits_for_a_running_pairing_step() {
         let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;
         let leg = PairingLeg::begin();
-        let scan = tokio::spawn(scan_add_mode_candidates("me", Duration::from_millis(50)));
+        let scan = tokio::spawn(async {
+            scan_add_mode_candidates("me", Duration::from_millis(50), &PeerDirectory::default()).await
+        });
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(!scan.is_finished(), "the pass waits while the pairing step runs");
         drop(leg);
@@ -2242,7 +2136,8 @@ mod tests {
             let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
             tokio::spawn(async move {
                 let mut legs = pairing_legs().subscribe();
-                scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, move |address| {
+                let peers = PeerDirectory::default();
+                scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, move |address| {
                     let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
                     async move {
                         started.fetch_add(1, Ordering::SeqCst);

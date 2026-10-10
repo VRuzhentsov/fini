@@ -231,11 +231,13 @@ fn send_pair_request_ble_held(
     state: &DeviceConnectionState, to_device_id: &str, address: &str, msg: PeerFrame,
 ) -> Result<(), String> {
     use crate::services::communication::channel::send_frame;
-    let peer_key = crate::services::communication::channel::bluetooth::candidate_key(to_device_id)
+    let peer_key = state
+        .bluetooth_peers
+        .key(to_device_id)
         .ok_or_else(|| "that device has not been found over Bluetooth yet -- try again".to_string())?;
     // The picker's address can be stale: Android re-advertises from a new
     // private address on every add-mode change.
-    let latest = crate::services::communication::channel::bluetooth::latest_address(to_device_id);
+    let latest = state.bluetooth_peers.latest_address(to_device_id);
     let address = latest.as_deref().unwrap_or(address);
     let link = tauri::async_runtime::block_on(async {
         tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
@@ -600,6 +602,7 @@ pub async fn device_connection_discover_bluetooth_candidates(
         let candidates = crate::services::communication::channel::bluetooth::scan_add_mode_candidates(
             &my_device_id,
             std::time::Duration::from_millis(duration_ms),
+            &state.bluetooth_peers,
         )
         .await?;
         let now = utc_now();
