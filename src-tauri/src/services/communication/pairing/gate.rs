@@ -31,26 +31,6 @@ use crate::services::communication::sync::session::{
 };
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
 
-/// The link a Bluetooth `PairRequest` arrived on, kept open by request id so
-/// the accept and the complete answer on it rather than dialling the
-/// requester back -- see `commands::send_pair_request_ble_held` for why.
-type ParkedLinks = std::sync::Mutex<std::collections::HashMap<String, Box<dyn DataLink>>>;
-
-fn parked_pair_links() -> &'static ParkedLinks {
-    static LINKS: std::sync::OnceLock<ParkedLinks> = std::sync::OnceLock::new();
-    LINKS.get_or_init(Default::default)
-}
-
-pub(crate) fn park_pair_link(request_id: String, link: Box<dyn DataLink>) {
-    if let Ok(mut links) = parked_pair_links().lock() {
-        links.insert(request_id, link);
-    }
-}
-
-pub(crate) fn take_pair_link(request_id: &str) -> Option<Box<dyn DataLink>> {
-    parked_pair_links().lock().ok()?.remove(request_id)
-}
-
 /// Whether this device is dialing the peer on this channel right now.
 fn dialing(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind) -> bool {
     match kind {
@@ -165,7 +145,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             let _ = state.receive_ws_pair_request(payload, from_addr, key, via_bluetooth);
             if via_bluetooth {
                 log::info!("[pairing][ble] parked the link request {request_id} arrived on");
-                park_pair_link(request_id.clone(), link);
+                state.bluetooth_carrier.park_link(request_id.clone(), link);
                 // Hold here until the request is answered or has expired.
                 // The channel service counts this central as live until the
                 // gate returns, and on Linux re-registers the advertisement
@@ -187,7 +167,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                     }
                 }
                 log::info!("[pairing][ble] request {request_id} settled; releasing its link");
-                drop(take_pair_link(&request_id));
+                drop(state.bluetooth_carrier.take_link(&request_id));
             }
             return;
         }

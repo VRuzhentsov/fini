@@ -1,5 +1,7 @@
+mod carrier;
 mod commands;
 mod device_key;
+mod flow;
 mod runtime;
 pub(crate) mod channel_status;
 pub(crate) mod channels;
@@ -150,6 +152,9 @@ pub struct DeviceConnectionState {
     pub(crate) bluetooth_radio: Arc<crate::services::communication::channel::bluetooth::RadioArbiter>,
     /// What this device advertises over Bluetooth, and whether it does.
     pub(crate) bluetooth_advertiser: Arc<crate::services::communication::channel::bluetooth::Advertiser>,
+    /// Carries pairing frames over Bluetooth, and holds the links requests
+    /// arrived on.
+    pub(crate) bluetooth_carrier: Arc<carrier::BluetoothCarrier>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -206,6 +211,15 @@ fn env_port_list(name: &str, fallback: u16) -> Vec<u16> {
 }
 
 impl DeviceConnectionState {
+    /// The carrier for a pairing exchange over Bluetooth or over Network.
+    pub(crate) fn pairing_carrier(&self, via_bluetooth: bool) -> &dyn carrier::PairingCarrier {
+        if via_bluetooth {
+            &*self.bluetooth_carrier
+        } else {
+            &carrier::NetworkCarrier
+        }
+    }
+
     #[cfg(any(feature = "ui-plane", test))]
     pub fn from_app_data_dir(app_data_dir: &Path) -> Self {
         Self::from_db_path(app_data_dir, app_data_dir.join("fini.db"))
@@ -253,6 +267,7 @@ impl DeviceConnectionState {
             bluetooth_presence,
             bluetooth_radio,
             bluetooth_advertiser,
+            bluetooth_carrier: Arc::default(),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })
