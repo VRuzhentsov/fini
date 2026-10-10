@@ -140,6 +140,9 @@ pub struct DeviceConnectionState {
     /// they were last heard, and who probed us.
     #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
     pub(crate) bluetooth_peers: Arc<crate::services::communication::channel::bluetooth::PeerDirectory>,
+    /// Which paired peers were heard over Bluetooth, and when to search for
+    /// one again.
+    pub(crate) bluetooth_presence: Arc<crate::services::communication::channel::bluetooth::Presence>,
     /// Takes turns on the Bluetooth radio: scans, dials, probes and pairing
     /// legs.
     pub(crate) bluetooth_radio: Arc<crate::services::communication::channel::bluetooth::RadioArbiter>,
@@ -227,6 +230,10 @@ impl DeviceConnectionState {
         identity.endpoint_id = secret_key.public().to_string();
         let bluetooth_advertiser =
             Arc::new(crate::services::communication::channel::bluetooth::Advertiser::new(&identity));
+        let bluetooth_presence = Arc::new(crate::services::communication::channel::bluetooth::Presence::default());
+        let bluetooth_radio = Arc::new(crate::services::communication::channel::bluetooth::RadioArbiter::new(
+            bluetooth_presence.clone(),
+        ));
 
         Ok(Self {
             identity,
@@ -240,7 +247,8 @@ impl DeviceConnectionState {
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
             bluetooth_peers: Arc::default(),
-            bluetooth_radio: Arc::default(),
+            bluetooth_presence,
+            bluetooth_radio,
             bluetooth_advertiser,
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),

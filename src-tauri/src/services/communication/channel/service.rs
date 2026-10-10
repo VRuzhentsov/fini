@@ -276,7 +276,7 @@ impl ChannelService for BluetoothChannelService {
 
     #[cfg(any(feature = "ui-plane", test))]
     fn forget_failures(&self, peer_device_id: &str) {
-        self.radio.forget_failures(peer_device_id);
+        self.radio.forget_failures(&self.state, peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -285,7 +285,7 @@ impl ChannelService for BluetoothChannelService {
     }
 
     fn is_present(&self, peer_device_id: &str) -> bool {
-        self.radio.is_reachable(peer_device_id)
+        self.radio.is_reachable(&self.state, peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]

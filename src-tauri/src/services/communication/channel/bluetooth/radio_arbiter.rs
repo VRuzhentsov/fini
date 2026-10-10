@@ -33,7 +33,7 @@ use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
 use super::{
     advertised_fingerprint, backend, datagram_config, fingerprint_of, note_adapter_reachable,
-    note_adapter_unreachable, note_peer_advertising, note_scan_refused, open_db_at_path, FINGERPRINT_LEN,
+    note_adapter_unreachable, note_scan_refused, open_db_at_path, Presence, FINGERPRINT_LEN,
     FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
 };
 use crate::services::communication::pairing::ChannelKind;
@@ -149,10 +149,18 @@ pub struct RadioArbiter {
     changed: Notify,
     started: Once,
     failed_dials: StdMutex<HashMap<String, Instant>>,
+    /// Where the scan records every wanted peer it hears.
+    presence: Arc<Presence>,
 }
 
 impl Default for RadioArbiter {
     fn default() -> Self {
+        Self::new(Arc::default())
+    }
+}
+
+impl RadioArbiter {
+    pub fn new(presence: Arc<Presence>) -> Self {
         Self {
             pairing_legs: Arc::new(watch::channel(0).0),
             candidate_probe: Mutex::new(()),
@@ -164,11 +172,10 @@ impl Default for RadioArbiter {
             changed: Notify::new(),
             started: Once::new(),
             failed_dials: StdMutex::new(HashMap::new()),
+            presence,
         }
     }
-}
 
-impl RadioArbiter {
     pub fn begin_pairing_leg(&self) -> PairingLeg {
         self.pairing_legs.send_modify(|count| *count += 1);
         PairingLeg(self.pairing_legs.clone())
@@ -420,7 +427,7 @@ impl RadioArbiter {
                             let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) else {
                                 continue;
                             };
-                            note_peer_advertising(peer, &candidate.address.0);
+                            self.presence.note_advertising(peer, &candidate.address.0);
                             if self.dial_recently_failed(&candidate.address.0) {
                                 continue;
                             }

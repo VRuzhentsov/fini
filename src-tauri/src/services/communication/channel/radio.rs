@@ -45,10 +45,10 @@ pub trait Radio: Send + Sync {
 
     /// See `ChannelService::forget_failures`.
     #[cfg(any(feature = "ui-plane", test))]
-    fn forget_failures(&self, _peer_device_id: &str) {}
+    fn forget_failures(&self, _state: &DeviceConnectionState, _peer_device_id: &str) {}
 
     /// Whether the peer advertised within the channel timeout.
-    fn is_reachable(&self, peer_device_id: &str) -> bool;
+    fn is_reachable(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
 
     /// Run (or stop) the status search, for presence (ADR-0008 D12).
     #[cfg(any(feature = "ui-plane", test))]
@@ -130,11 +130,8 @@ impl Radio for GattRadio {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    fn forget_failures(&self, peer_device_id: &str) {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        super::bluetooth::forget_delivery_misses(peer_device_id);
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        let _ = peer_device_id;
+    fn forget_failures(&self, state: &DeviceConnectionState, peer_device_id: &str) {
+        state.bluetooth_presence.forget_delivery_misses(peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -145,16 +142,8 @@ impl Radio for GattRadio {
         let _ = (state, active);
     }
 
-    fn is_reachable(&self, peer_device_id: &str) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        {
-            super::bluetooth::peer_seen_advertising_recently(peer_device_id)
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        {
-            let _ = peer_device_id;
-            false
-        }
+    fn is_reachable(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+        state.bluetooth_presence.seen_recently(peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]

@@ -1679,8 +1679,6 @@ pub fn device_connection_unpair_impl(
         .map_err(|e| e.to_string())?;
     // Failed attempts with the old pair must not delay a new one.
     crate::services::communication::channel::network::forget_failures(&peer_device_id);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::bluetooth::forget_delivery_misses(&peer_device_id);
     // Its channels went with it, which can leave nobody to advertise for.
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
@@ -1690,10 +1688,15 @@ pub fn device_connection_unpair_impl(
 #[tauri::command]
 pub fn device_connection_unpair(
     db: State<AppDbConnection>,
+    state: State<DeviceConnectionState>,
     peer_device_id: String,
 ) -> Result<(), String> {
     let mut conn = db.0.lock().unwrap();
-    device_connection_unpair_impl(&mut conn, peer_device_id)
+    device_connection_unpair_impl(&mut conn, peer_device_id.clone())?;
+    // Failed Bluetooth searches for the old pair must not delay a new one.
+    // Held by this process's state, so only the app has any to forget.
+    state.bluetooth_presence.forget_delivery_misses(&peer_device_id);
+    Ok(())
 }
 
 pub fn device_connection_update_last_seen_impl(

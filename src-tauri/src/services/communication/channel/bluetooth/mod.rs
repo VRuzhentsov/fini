@@ -33,14 +33,13 @@
 //! `pairing::commands::bluetooth_address_is_os_paired` already
 //! checks for the enable command.
 
-use std::collections::HashMap;
 #[cfg(any(feature = "ui-plane", test))]
 use std::collections::HashSet;
 #[cfg(any(feature = "ui-plane", test))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 #[cfg(target_os = "linux")]
@@ -67,11 +66,13 @@ use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport
 mod advertiser;
 #[cfg(any(feature = "ui-plane", test))]
 mod peer_directory;
+mod presence;
 mod radio_arbiter;
 
 pub use advertiser::Advertiser;
 #[cfg(any(feature = "ui-plane", test))]
 pub use peer_directory::PeerDirectory;
+pub use presence::Presence;
 pub use radio_arbiter::RadioArbiter;
 use radio_arbiter::Purpose;
 
@@ -1214,78 +1215,10 @@ const DIAL_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long one status-search window listens while the Device page is open.
 const STATUS_SEARCH_WINDOW: Duration = Duration::from_secs(20);
 
-/// How long a heard advertisement keeps a peer present: three status-search
-/// windows, so one missed window does not flicker the row (ADR-0008 D12).
-const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// When a delivery search does not find the peer, the next one waits this
-/// long, one step further each time and then the last step forever: 1, 5
-/// and 15 minutes, then every 15 (ADR-0008 D12). A first thoughtful guess
-/// for battery, to be revised from measurements on hardware.
-const DELIVERY_RETRY: [Duration; 3] = [
-    Duration::from_secs(60),
-    Duration::from_secs(5 * 60),
-    Duration::from_secs(15 * 60),
-];
-
-/// Per peer: how many delivery searches in a row found nothing, and when
-/// the next one is due.
-fn delivery_schedule() -> &'static StdMutex<HashMap<String, (usize, Instant)>> {
-    static SCHEDULE: OnceLock<StdMutex<HashMap<String, (usize, Instant)>>> = OnceLock::new();
-    SCHEDULE.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-/// When the next delivery search is due after `misses` searches in a row
-/// found nothing.
-fn next_delivery_search(misses: usize, now: Instant) -> Instant {
-    now + DELIVERY_RETRY[misses.saturating_sub(1).min(DELIVERY_RETRY.len() - 1)]
-}
-
-/// Whether a delivery search for this peer is due. A present peer is always
-/// due: connecting to it is one dial, not a search.
-fn delivery_due(peer_id: &str) -> bool {
-    if peer_seen_advertising_recently(peer_id) {
-        return true;
-    }
-    match delivery_schedule().lock() {
-        Ok(schedule) => schedule.get(peer_id).is_none_or(|(_, next)| Instant::now() >= *next),
-        Err(_) => true,
-    }
-}
-
-fn note_delivery_missed(peer_id: &str) {
-    let now = Instant::now();
-    let next = match delivery_schedule().lock() {
-        Ok(mut schedule) => {
-            let misses = schedule.get(peer_id).map_or(0, |(misses, _)| *misses) + 1;
-            let next = next_delivery_search(misses, now);
-            schedule.insert(peer_id.to_string(), (misses, next));
-            next
-        }
-        Err(_) => return,
-    };
-    // The next search is due then; wake the keeper for it (ADR-0008 D12).
-    crate::services::communication::sync::commands::notify_sync_work_pending_after(
-        next.saturating_duration_since(now),
-    );
-}
-
-/// See `ChannelService::forget_failures`: the next delivery search is due
-/// at once. Also used when a pair is removed.
-pub fn forget_delivery_misses(peer_id: &str) {
-    note_delivery_reached(peer_id);
-}
-
-fn note_delivery_reached(peer_id: &str) {
-    if let Ok(mut schedule) = delivery_schedule().lock() {
-        schedule.remove(peer_id);
-    }
-}
-
 /// Start an exchange with this peer over Bluetooth unless one is running or
 /// being attempted (ADR-0008 D10). Called when there is work for the peer.
 pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
-    if state.has_session_on(peer_id, ChannelKind::Bluetooth) || !delivery_due(peer_id) {
+    if state.has_session_on(peer_id, ChannelKind::Bluetooth) || !state.bluetooth_presence.delivery_due(peer_id) {
         return;
     }
     // While a device is being added, the adapter belongs to that search.
@@ -1315,7 +1248,7 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
     let deadline = tokio::time::Instant::now() + SEARCH_WINDOW;
     let mut last_error = None;
 
-    if let Some(address) = last_seen_address(peer_id) {
+    if let Some(address) = state.bluetooth_presence.last_seen_address(peer_id) {
         let guard = state.bluetooth_radio.acquire_dial().await;
         match connect_and_auth(state, peer_id, &address).await {
             Ok((link, version)) => {
@@ -1341,7 +1274,7 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
                 Some(err) => log::info!("[transport][ble] {peer_id} refused the exchange: {err}"),
                 None => log::info!("[transport][ble] {peer_id} not heard within the search window"),
             }
-            note_delivery_missed(peer_id);
+            state.bluetooth_presence.note_delivery_missed(peer_id);
             return;
         };
         match connect_and_auth(state, peer_id, &found.address).await {
@@ -1389,7 +1322,7 @@ async fn connect_and_auth(
 async fn run_exchange(
     state: &DeviceConnectionState, peer_id: &str, link: Box<dyn DataLink>, version: u32, address: &str,
 ) {
-    note_delivery_reached(peer_id);
+    state.bluetooth_presence.forget_delivery_misses(peer_id);
     log::info!("[transport][ble] exchange with {peer_id} via {address}");
     let db_path = state.db_path.clone();
     // The switch could have been turned off during the search.
@@ -1430,51 +1363,6 @@ fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, add
         let mut conn = open_db_at_path(db_path);
         store_observed_bluetooth_address(&mut conn, peer_id, address);
     })
-}
-
-/// When each peer was last heard advertising a matching fingerprint, and at
-/// which address. Only ever written from a fingerprint match, so "heard"
-/// means "heard advertising *as this peer*".
-fn last_seen_advertising() -> &'static StdMutex<HashMap<String, (Instant, String)>> {
-    static LAST_SEEN: OnceLock<StdMutex<HashMap<String, (Instant, String)>>> = OnceLock::new();
-    LAST_SEEN.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-fn note_peer_advertising(peer_id: &str, address: &str) {
-    let newly_present = match last_seen_advertising().lock() {
-        Ok(mut seen) => seen
-            .insert(peer_id.to_string(), (Instant::now(), address.to_string()))
-            .is_none_or(|(previous, _)| previous.elapsed() >= BLUETOOTH_CHANNEL_TIMEOUT),
-        Err(_) => false,
-    };
-    // A peer appearing is the moment waiting work becomes deliverable
-    // (ADR-0008 D8). Only on the transition: a peer heard on every window
-    // must not turn the keeper into a poll.
-    if newly_present {
-        crate::services::communication::sync::commands::notify_sync_work_pending();
-    }
-}
-
-/// Where `peer_id` was last heard advertising, if within the channel
-/// timeout: a present peer is reached by one dial, not a search.
-fn last_seen_address(peer_id: &str) -> Option<String> {
-    match last_seen_advertising().lock() {
-        Ok(seen) => seen
-            .get(peer_id)
-            .filter(|(at, _)| at.elapsed() < BLUETOOTH_CHANNEL_TIMEOUT)
-            .map(|(_, address)| address.clone()),
-        Err(_) => None,
-    }
-}
-
-/// Whether `peer_id` advertised within the channel timeout (ADR-0008 D9).
-pub fn peer_seen_advertising_recently(peer_id: &str) -> bool {
-    match last_seen_advertising().lock() {
-        Ok(seen) => seen
-            .get(peer_id)
-            .is_some_and(|(at, _)| at.elapsed() < BLUETOOTH_CHANNEL_TIMEOUT),
-        Err(_) => false,
-    }
 }
 
 /// Turn the status search on while the Device page is open, off when it
@@ -1642,28 +1530,6 @@ const PROBE_WAIT_FOR_OTHER_SCAN: Duration = Duration::from_secs(10);
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// ADR-0008 D12: a peer not found is searched for again after 1, 5 and
-    /// 15 minutes, then every 15 minutes.
-    #[test]
-    fn delivery_searches_back_off_one_five_fifteen_then_every_fifteen() {
-        let now = Instant::now();
-        let waits: Vec<u64> = (1..=5)
-            .map(|misses| next_delivery_search(misses, now).duration_since(now).as_secs())
-            .collect();
-        assert_eq!(waits, vec![60, 300, 900, 900, 900]);
-    }
-
-    /// Switching Bluetooth on tries again at once, whatever retry delay
-    /// earlier misses left behind.
-    #[test]
-    fn forgetting_delivery_misses_makes_the_next_search_due_now() {
-        let peer = "peer-forget-delivery-misses";
-        note_delivery_missed(peer);
-        assert!(!delivery_due(peer), "a miss delays the next search");
-        forget_delivery_misses(peer);
-        assert!(delivery_due(peer));
-    }
 
     /// The fingerprint must be exactly FNV-1a, because both peers compute it
     /// independently from the same `device_id` and any divergence means they
