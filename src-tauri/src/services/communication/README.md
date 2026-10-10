@@ -47,6 +47,29 @@ exists: before it, the pairing and auth code lived *inside* the WebSocket
 accept loop, so a second channel would have meant a second copy of the
 handshake — and two copies drift.
 
+## Where the state lives
+
+Runtime state belongs to one `DeviceConnectionState`, not to the process: two
+devices in one test process each get their own. Each piece is an object the
+state owns:
+
+| Field | Type (file) | Holds |
+|---|---|---|
+| `network_attempts` | `ExchangeAttempts` (`channel/network.rs`) | Network exchanges in flight, peers that failed recently |
+| `bluetooth_radio` | `RadioArbiter` (`channel/bluetooth/radio_arbiter.rs`) | turns on the radio: scan lease, dials, candidate probes, pairing legs; the search coordinator |
+| `bluetooth_presence` | `Presence` (`channel/bluetooth/presence.rs`) | when each peer was last heard, when to search for it again |
+| `bluetooth_advertiser` | `Advertiser` (`channel/bluetooth/advertiser.rs`) | what this device advertises, add-mode, whether to advertise at all |
+| `bluetooth_peers` | `PeerDirectory` (`channel/bluetooth/peer_directory.rs`) | add-mode candidates: their keys, addresses, who probed us |
+| `bluetooth_carrier` | `BluetoothCarrier` (`pairing/carrier.rs`) | the links Bluetooth pair requests arrived on |
+
+The exception is the Bluetooth adapter itself (`channel/bluetooth/adapter.rs`):
+one backend and one health flag per process, because a process drives one
+physical adapter.
+
+Pairing follows the same split: `pairing/flow.rs` is the handshake, and a
+`PairingCarrier` (`pairing/carrier.rs`) takes each frame over the channel its
+request came on.
+
 ## Four words, four different things (see `docs/glossary.md`)
 
 | Name | What it is | How many | Lives from → to |
