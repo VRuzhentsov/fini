@@ -1268,6 +1268,7 @@ pub fn device_connection_unpair(
     // Failed attempts with the old pair must not delay a new one. Held by
     // this process's state, so only the app has any to forget.
     state.network_attempts.forget_failures(&peer_device_id);
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     state.bluetooth_presence.forget_delivery_misses(&peer_device_id);
     Ok(())
 }

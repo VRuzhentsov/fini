@@ -146,11 +146,14 @@ pub struct DeviceConnectionState {
     pub(crate) bluetooth_peers: Arc<crate::services::communication::channel::bluetooth::PeerDirectory>,
     /// Which paired peers were heard over Bluetooth, and when to search for
     /// one again.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_presence: Arc<crate::services::communication::channel::bluetooth::Presence>,
     /// Takes turns on the Bluetooth radio: scans, dials, probes and pairing
     /// legs.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_radio: Arc<crate::services::communication::channel::bluetooth::RadioArbiter>,
     /// What this device advertises over Bluetooth, and whether it does.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_advertiser: Arc<crate::services::communication::channel::bluetooth::Advertiser>,
     /// Carries pairing frames over Bluetooth, and holds the links requests
     /// arrived on.
@@ -244,9 +247,12 @@ impl DeviceConnectionState {
         let secret_key = device_key::try_load_or_create_secret_key(&db_path)?;
         let mut identity = identity;
         identity.endpoint_id = secret_key.public().to_string();
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let bluetooth_advertiser =
             Arc::new(crate::services::communication::channel::bluetooth::Advertiser::new(&identity));
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let bluetooth_presence = Arc::new(crate::services::communication::channel::bluetooth::Presence::default());
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let bluetooth_radio = Arc::new(crate::services::communication::channel::bluetooth::RadioArbiter::new(
             bluetooth_presence.clone(),
         ));
@@ -264,8 +270,11 @@ impl DeviceConnectionState {
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
             bluetooth_peers: Arc::default(),
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_presence,
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_radio,
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_advertiser,
             bluetooth_carrier: Arc::default(),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),

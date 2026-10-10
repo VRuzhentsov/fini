@@ -131,7 +131,10 @@ impl Radio for GattRadio {
 
     #[cfg(any(feature = "ui-plane", test))]
     fn forget_failures(&self, state: &DeviceConnectionState, peer_device_id: &str) {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         state.bluetooth_presence.forget_delivery_misses(peer_device_id);
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let _ = (state, peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -143,7 +146,13 @@ impl Radio for GattRadio {
     }
 
     fn is_reachable(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        state.bluetooth_presence.seen_recently(peer_device_id)
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        return state.bluetooth_presence.seen_recently(peer_device_id);
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            let _ = (state, peer_device_id);
+            false
+        }
     }
 
     #[cfg(any(feature = "ui-plane", test))]
