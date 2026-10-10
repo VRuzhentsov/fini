@@ -38,8 +38,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(any(feature = "ui-plane", test))]
 use std::path::PathBuf;
-#[cfg(any(feature = "ui-plane", test))]
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -66,10 +64,12 @@ use crate::services::communication::channel::{recv_frame, send_frame};
 use crate::services::communication::channel::iroh_link::{IrohDataLink, ALPN};
 use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, ChannelKind};
 
+mod advertiser;
 #[cfg(any(feature = "ui-plane", test))]
 mod peer_directory;
 mod radio_arbiter;
 
+pub use advertiser::Advertiser;
 #[cfg(any(feature = "ui-plane", test))]
 pub use peer_directory::PeerDirectory;
 pub use radio_arbiter::RadioArbiter;
@@ -83,42 +83,14 @@ use radio_arbiter::Purpose;
 const FINI_BLE_SERVICE_UUID: &str = "b1e6a000-f101-4000-8000-00805f9b34fb";
 const FINI_BLE_CHARACTERISTIC_UUID: &str = "b1e6a001-f101-4000-8000-00805f9b34fb";
 
+/// Fini's service and characteristic, for dialling and scanning. What this
+/// device advertises adds its identity: `Advertiser::advertised_config`.
 fn datagram_config() -> DatagramConfig {
-    let mut config = DatagramConfig::new(
+    DatagramConfig::new(
         ServiceUuid(Uuid::parse_str(FINI_BLE_SERVICE_UUID).expect("valid UUID literal")),
         CharacteristicUuid(Uuid::parse_str(FINI_BLE_CHARACTERISTIC_UUID).expect("valid UUID literal")),
-    );
-    if let Some(fingerprint) = local_fingerprint().get() {
-        let mut payload = Vec::with_capacity(1 + FINGERPRINT_LEN);
-        payload.push(if *add_mode_sender().borrow() {
-            ADD_MODE_FLAG_BYTE
-        } else {
-            0
-        });
-        payload.extend_from_slice(fingerprint);
-        config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, payload);
-    }
-    config
+    )
 }
-
-/// This device's advertised identity fingerprint, set once by `run_server`
-/// before it first advertises. A `OnceLock` rather than a parameter on
-/// `datagram_config` because the advertisement is rebuilt from several
-/// places (serve, and each add-mode toggle) that have no reason to know
-/// about identity -- the same reason `add_mode_sender` is a global.
-fn local_fingerprint() -> &'static OnceLock<[u8; FINGERPRINT_LEN]> {
-    static FINGERPRINT: OnceLock<[u8; FINGERPRINT_LEN]> = OnceLock::new();
-    &FINGERPRINT
-}
-
-/// This device's `DiscoveryHello`, carrying its identity; set with the
-/// fingerprint, for the same reason.
-#[cfg(any(feature = "ui-plane", test))]
-fn local_hello() -> &'static OnceLock<PeerFrame> {
-    static HELLO: OnceLock<PeerFrame> = OnceLock::new();
-    &HELLO
-}
-
 
 /// Four bytes of FNV-1a over the `device_id`.
 ///
@@ -177,6 +149,7 @@ const FINI_MANUFACTURER_ID: u16 = 0xFFFF;
 /// still fits: legacy advertisements cap at 31 total and the 128-bit
 /// service UUID plus this record spend about 26. See
 /// `GattServiceSpec::manufacturer_data`'s own doc comment in ble-gatt.
+#[cfg(any(feature = "ui-plane", test))]
 const ADD_MODE_FLAG_BYTE: u8 = 0x01;
 
 /// Per-candidate cap for a dial+probe+reply confirmation round trip
@@ -315,45 +288,6 @@ pub async fn dial_for_pairing(
 #[cfg(any(feature = "ui-plane", test))]
 const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Shared add-mode state, watched by `run_server`'s peripheral loop so a
-/// toggle can trigger a fresh advertisement carrying (or dropping) the
-/// add-mode flag without restarting the whole peripheral task -- Android's
-/// `start_peripheral_once` is deliberately a one-time start (ADR-0002 in
-/// ble-gatt: constructing `AndroidBackend` outside a genuine post-startup
-/// call panics), so the *outer* task can never be torn down and re-spawned
-/// to pick up a config change; only the inner advertise/accept loop can be.
-///
-/// `watch::Sender` alone is enough: it has its own `borrow()` for a
-/// snapshot read (`datagram_config()`, above), and `subscribe()` hands out
-/// a fresh `Receiver` for whichever caller needs to *wait* on a change
-/// (`run_server`, in a `tokio::select!` against the incoming-connections
-/// stream) — no need to also keep a shared `Receiver` around.
-fn add_mode_sender() -> &'static tokio::sync::watch::Sender<bool> {
-    static SENDER: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
-    SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
-}
-
-/// Called from `device_connection_enter_add_mode`/`leave_add_mode` — see
-/// `add_mode_sender`'s doc comment for why this signals a running
-/// `run_server` rather than restarting it.
-pub fn set_add_mode(enabled: bool) {
-    add_mode_sender().send_if_modified(|current| {
-        if *current == enabled {
-            return false;
-        }
-        *current = enabled;
-        true
-    });
-}
-
-/// Serializes test access to the `add_mode_sender` process-global: held by
-/// this module's own test and by any `device_connection`/`transport` test
-/// that goes through `enter_add_mode_impl`/`leave_add_mode_impl` (which also
-/// call `set_add_mode`), so a concurrent flip from one can't land mid-assertion
-/// in another.
-#[cfg(test)]
-pub(crate) static ADD_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// One `LinuxBackend` for the process's lifetime. `ble_gatt::backend::linux::LinuxBackend::new()`
 /// opens a BlueZ D-Bus session and requires a powered adapter; constructing
 /// it lazily (on first dial/serve attempt) rather than at startup means a
@@ -448,35 +382,16 @@ async fn backend() -> Result<Arc<dyn Backend>, String> {
 /// `#[tauri::command]`, whose first real invocation can only happen once
 /// the WebView/Activity has actually dispatched an IPC call, a strictly
 /// later and safer point than anything obtainable from `.setup()` itself.
-/// The `Once` stays as a cheap filter -- this runs from every tick, and
-/// without it each one would spawn a task only for `claim_peripheral_role`
-/// to turn it away. The guard below is the actual invariant; this just
-/// keeps the common path quiet.
+/// The running check is a cheap filter -- this runs from every tick, and
+/// without it each one would spawn a task only for
+/// `Advertiser::claim_peripheral_role` to turn it away. The claim in
+/// `run_server` is the actual invariant; this just keeps the common path
+/// quiet.
 #[cfg(target_os = "android")]
 pub fn start_peripheral_once(state: DeviceConnectionState, db_path: PathBuf) {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
+    if !state.bluetooth_advertiser.peripheral_running() {
         tauri::async_runtime::spawn(run_server(state, db_path));
-    });
-}
-
-/// One peripheral acceptor per process, enforced where the loop actually
-/// runs rather than at each call site.
-///
-/// This used to be a `Once` inside `start_peripheral_once`, which guarded
-/// only that one caller. `GattRadio::serve` spawned `run_server` directly
-/// as well, so on Android both ran: two accept loops, both handed the same
-/// inbound central, both running the gate on it. One claimed the session,
-/// the other was rejected as a duplicate, and dropping the rejected link
-/// released the session the winner was using.
-///
-/// Guarding the loop itself makes a second one impossible whatever calls
-/// it, on any platform -- which is also what makes the invariant testable
-/// without an Android device (see `peripheral_role_tests`).
-#[cfg(any(feature = "ui-plane", test))]
-fn claim_peripheral_role() -> bool {
-    static RUNNING: AtomicBool = AtomicBool::new(false);
-    !RUNNING.swap(true, Ordering::SeqCst)
+    }
 }
 
 pub struct BleDataLink {
@@ -826,13 +741,13 @@ pub struct AddModeCandidate {
 /// `None` on any failure along the way (dial, send, no/wrong reply); the
 /// caller is responsible for bounding how long this is allowed to run.
 #[cfg(any(feature = "ui-plane", test))]
-async fn probe_discovery_hello(radio: &RadioArbiter, address: &str) -> Option<PeerFrame> {
+async fn probe_discovery_hello(radio: &RadioArbiter, hello: &PeerFrame, address: &str) -> Option<PeerFrame> {
     // The add-mode scan has closed by now, but a search for a paired peer
     // may start one; registering the dial keeps it paused until we finish.
     let _probe = radio.candidate_probe().await;
     let _dial = radio.acquire_dial().await;
     let mut link = dial(address).await.ok()?;
-    send_frame(link.as_mut(), local_hello().get()?).await.ok()?;
+    send_frame(link.as_mut(), hello).await.ok()?;
     recv_frame(link.as_mut()).await?.ok()
 }
 
@@ -850,7 +765,7 @@ async fn probe_discovery_hello(radio: &RadioArbiter, address: &str) -> Option<Pe
 /// repeatedly rather than once for a long window.
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn scan_add_mode_candidates(
-    my_device_id: &str, timeout: Duration, peers: &PeerDirectory, radio: &RadioArbiter,
+    my_device_id: &str, timeout: Duration, peers: &PeerDirectory, radio: &RadioArbiter, hello: &PeerFrame,
 ) -> Result<Vec<AddModeCandidate>, String> {
     let mut legs = radio.watch_pairing_legs();
     // Wait out a pairing leg already running, then run the pass and give it
@@ -860,7 +775,7 @@ pub async fn scan_add_mode_candidates(
     let _ = legs.wait_for(|count| *count == 0).await;
     let backend = backend().await.inspect_err(|_| note_adapter_unreachable())?;
     scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, backend, peers, radio, |address| async move {
-        probe_discovery_hello(radio, &address).await
+        probe_discovery_hello(radio, hello, &address).await
     })
     .await
 }
@@ -1106,20 +1021,11 @@ impl Transport for BleTransport {
 pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     use futures_util::StreamExt;
 
-    if !claim_peripheral_role() {
+    let advertiser = state.bluetooth_advertiser.clone();
+    if !advertiser.claim_peripheral_role() {
         log::warn!("[transport][ble] peripheral acceptor already running; ignoring a second start");
         return;
     }
-
-    // Before the first `datagram_config()` below builds an advertisement:
-    // the fingerprint is what lets a scanning peer tell this device apart
-    // from any other Fini install without connecting to it first.
-    let _ = local_fingerprint().set(fingerprint_of(&state.identity.device_id));
-    let _ = local_hello().set(PeerFrame::DiscoveryHello {
-        device_id: state.identity.device_id.clone(),
-        hostname: state.identity.hostname.clone(),
-        endpoint_id: state.identity.endpoint_id.clone(),
-    });
 
     // Retried with backoff, not returned-from-once: `lib.rs` spawns this
     // exactly once at startup, so an early failure here (adapter off,
@@ -1133,7 +1039,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(60);
 
-    let mut advertising_wanted = advertising_wanted_sender().subscribe();
+    let mut advertising_wanted = advertiser.watch_wanted();
     loop {
         // ADR-0008 D8: advertise only while there is someone this device
         // should be reachable by.
@@ -1174,10 +1080,10 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         // (not merely read) so a toggle mid-serve interrupts the accept
         // loop below immediately, rather than only taking effect on
         // whatever later triggers a natural re-advertise -- see
-        // `add_mode_sender`'s doc comment for why this is a signal to the
-        // running loop rather than a full task restart.
-        let mut add_mode_rx = add_mode_sender().subscribe();
-        let mut incoming = match datagram::serve(backend, &datagram_config()).await {
+        // `Advertiser::add_mode`'s doc comment for why this is a signal to
+        // the running loop rather than a full task restart.
+        let mut add_mode_rx = advertiser.watch_add_mode();
+        let mut incoming = match datagram::serve(backend, &advertiser.advertised_config()).await {
             Ok(stream) => {
                 // Advertising is a real use of the radio, so it clears a
                 // previously-recorded failure just as a scan does.
@@ -1383,7 +1289,7 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
         return;
     }
     // While a device is being added, the adapter belongs to that search.
-    if *add_mode_sender().borrow() {
+    if state.bluetooth_advertiser.in_add_mode() {
         return;
     }
     if !state.bluetooth_radio.begin_exchange(peer_id) {
@@ -1579,46 +1485,6 @@ pub fn set_status_search(state: &DeviceConnectionState, active: bool) {
     state.bluetooth_radio.set_status(active.then(|| state.db_path.clone()));
 }
 
-/// Whether this device should advertise (ADR-0008 D8): while it has a
-/// Bluetooth channel on, is setting one up, or is being paired. Otherwise
-/// the radio stays quiet -- there is nobody it should be reachable by.
-fn advertising_wanted_sender() -> &'static tokio::sync::watch::Sender<bool> {
-    static SENDER: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
-    SENDER.get_or_init(|| tokio::sync::watch::channel(false).0)
-}
-
-/// How long this device stays reachable after a Bluetooth init completes
-/// here. Its ack to the peer's hello can be lost when the link drops, so the
-/// peer may still be searching; the gate still answers it (ADR-0008 D2), but
-/// only if the peer can find this device.
-#[cfg(any(feature = "ui-plane", test))]
-const ANSWER_AFTER_SETUP: Duration = Duration::from_secs(120);
-
-fn answer_after_setup_until() -> &'static std::sync::Mutex<Option<std::time::Instant>> {
-    static UNTIL: OnceLock<std::sync::Mutex<Option<std::time::Instant>>> = OnceLock::new();
-    UNTIL.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-fn answering_after_setup() -> bool {
-    answer_after_setup_until()
-        .lock()
-        .ok()
-        .and_then(|until| *until)
-        .is_some_and(|until| std::time::Instant::now() < until)
-}
-
-/// A Bluetooth init completed here: keep advertising for a while, then look
-/// again whether anything still wants it.
-#[cfg(any(feature = "ui-plane", test))]
-pub fn keep_answering_after_setup() {
-    if let Ok(mut until) = answer_after_setup_until().lock() {
-        *until = Some(std::time::Instant::now() + ANSWER_AFTER_SETUP);
-    }
-    crate::services::communication::sync::commands::notify_sync_work_pending_after(
-        ANSWER_AFTER_SETUP + Duration::from_secs(1),
-    );
-}
-
 /// Recompute whether to advertise, from the stored channels and the setups
 /// running now. Cheap; called whenever one of its inputs may have changed.
 pub fn refresh_advertising(db_path: &std::path::Path, state: &DeviceConnectionState) {
@@ -1630,15 +1496,12 @@ pub fn refresh_advertising(db_path: &std::path::Path, state: &DeviceConnectionSt
         )
         .is_empty()
     });
+    let advertiser = &state.bluetooth_advertiser;
     let wanted = any_channel_on
         || state.any_channel_setup(ChannelKind::Bluetooth)
-        || answering_after_setup()
-        || *add_mode_sender().borrow();
-    advertising_wanted_sender().send_if_modified(|current| {
-        let changed = *current != wanted;
-        *current = wanted;
-        changed
-    });
+        || advertiser.answering_after_setup()
+        || advertiser.in_add_mode();
+    advertiser.set_wanted(wanted);
 }
 
 /// Whether the *local* Bluetooth radio could actually be used the last time
@@ -1780,29 +1643,6 @@ const PROBE_WAIT_FOR_OTHER_SCAN: Duration = Duration::from_secs(10);
 mod tests {
     use super::*;
 
-    /// The peripheral acceptor must be a singleton, whatever starts it.
-    ///
-    /// It was not: `GattRadio::serve` spawned `run_server` on Linux *and*
-    /// Android, while Android also started it from `dial` via
-    /// `start_peripheral_once`. Two accept loops then received the same
-    /// inbound central and both ran the gate on it -- one claimed the
-    /// session, the other was rejected as a duplicate, and dropping the
-    /// rejected link released the session the winner was using. Observed on
-    /// hardware as an inbound link dying ~170ms after authenticating, with
-    /// `no live notify session` as the only trace.
-    ///
-    /// The `cfg` fix alone is not testable off Android, since the wrong
-    /// branch never compiles here. Guarding the loop itself is: the
-    /// invariant stops being platform-conditional, and this asserts it.
-    #[test]
-    fn only_one_peripheral_acceptor_can_run_at_a_time() {
-        assert!(claim_peripheral_role(), "the first start takes the role");
-        assert!(
-            !claim_peripheral_role(),
-            "a second start must be refused -- two acceptors race each other's session"
-        );
-    }
-
     /// ADR-0008 D12: a peer not found is searched for again after 1, 5 and
     /// 15 minutes, then every 15 minutes.
     #[test]
@@ -1823,56 +1663,6 @@ mod tests {
         assert!(!delivery_due(peer), "a miss delays the next search");
         forget_delivery_misses(peer);
         assert!(delivery_due(peer));
-    }
-
-    /// `add_mode_sender` is a process-global singleton (mirrors the real
-    /// adapter's own single peripheral instance). `device_connection`'s
-    /// `enter_add_mode_impl`/`leave_add_mode_impl` also flip it, so any test
-    /// exercising those (see `channel::tests`) must hold
-    /// `ADD_MODE_TEST_LOCK` too, the same way other process-global test
-    /// state in this crate is serialized.
-    #[test]
-    fn datagram_config_advertises_the_add_mode_flag_only_while_enabled() {
-        let _guard = ADD_MODE_TEST_LOCK.lock().unwrap();
-        // ADR-0006 slice 2 changed the shape this asserts. The payload is no
-        // longer present only in add-mode and no longer equals a single
-        // flag byte: it is a flags byte followed by the identity
-        // fingerprint, advertised whenever a fingerprint is known, because
-        // being identifiable is what lets a scanner skip peers it does not
-        // want. The add-mode signal became bit 0 of that first byte.
-        let _ = local_fingerprint().set(fingerprint_of("test-device"));
-        let expected = *local_fingerprint().get().expect("fingerprint set above");
-
-        set_add_mode(false);
-        let disabled = datagram_config();
-        let payload = disabled
-            .advertised_manufacturer_data
-            .get(&FINI_MANUFACTURER_ID)
-            .expect("the fingerprint is advertised regardless of add-mode");
-        assert_eq!(payload[0] & ADD_MODE_FLAG_BYTE, 0, "add-mode bit must be clear");
-        assert_eq!(&payload[1..], &expected, "fingerprint must be advertised");
-
-        set_add_mode(true);
-        let enabled = datagram_config();
-        let payload = enabled
-            .advertised_manufacturer_data
-            .get(&FINI_MANUFACTURER_ID)
-            .expect("payload present in add-mode too");
-        assert_eq!(
-            payload[0] & ADD_MODE_FLAG_BYTE,
-            ADD_MODE_FLAG_BYTE,
-            "add-mode bit must be set while add-mode is on"
-        );
-        assert_eq!(&payload[1..], &expected, "fingerprint is unchanged by add-mode");
-
-        set_add_mode(false);
-        let disabled_again = datagram_config();
-        assert_eq!(
-            disabled_again.advertised_manufacturer_data.get(&FINI_MANUFACTURER_ID).map(|p| p[0]
-                & ADD_MODE_FLAG_BYTE),
-            Some(0),
-            "must stop signalling add-mode once it is left again"
-        );
     }
 
     /// The fingerprint must be exactly FNV-1a, because both peers compute it
@@ -2026,7 +1816,9 @@ mod tests {
         let scan = tokio::spawn({
             let radio = radio.clone();
             async move {
-                scan_add_mode_candidates("me", Duration::from_millis(50), &PeerDirectory::default(), &radio).await
+                let hello = PeerFrame::Hello { device_id: "me".to_string() };
+                scan_add_mode_candidates("me", Duration::from_millis(50), &PeerDirectory::default(), &radio, &hello)
+                    .await
             }
         });
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2081,14 +1873,6 @@ mod tests {
         assert_eq!(finished.load(Ordering::SeqCst), 1, "the probe in flight ran to its end");
         assert_eq!(started.load(Ordering::SeqCst), 1, "no probe starts after the pairing step began");
         assert_eq!(result.err().as_deref(), Some(PAIRING_PAUSED));
-    }
-
-    /// After a Bluetooth init completes here the device stays reachable a
-    /// while, so a peer that missed its ack can still find it and ask again.
-    #[test]
-    fn a_finished_bluetooth_setup_keeps_advertising_a_while() {
-        keep_answering_after_setup();
-        assert!(answering_after_setup());
     }
 
     /// ble-gatt reports a discovery it could not take over as busy, not

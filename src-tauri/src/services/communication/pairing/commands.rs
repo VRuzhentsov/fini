@@ -368,7 +368,7 @@ pub fn device_connection_enter_add_mode_impl(
     // existing mDNS beacon.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if bluetooth {
-        crate::services::communication::channel::bluetooth::set_add_mode(true);
+        state.bluetooth_advertiser.set_add_mode(true);
     }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
@@ -413,7 +413,7 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
         state.identity.hostname, state.identity.device_id
     );
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::bluetooth::set_add_mode(false);
+    state.bluetooth_advertiser.set_add_mode(false);
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
@@ -604,6 +604,7 @@ pub async fn device_connection_discover_bluetooth_candidates(
             std::time::Duration::from_millis(duration_ms),
             &state.bluetooth_peers,
             &state.bluetooth_radio,
+            state.bluetooth_advertiser.hello(),
         )
         .await?;
         let now = utc_now();

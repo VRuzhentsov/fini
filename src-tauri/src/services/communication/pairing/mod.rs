@@ -143,6 +143,8 @@ pub struct DeviceConnectionState {
     /// Takes turns on the Bluetooth radio: scans, dials, probes and pairing
     /// legs.
     pub(crate) bluetooth_radio: Arc<crate::services::communication::channel::bluetooth::RadioArbiter>,
+    /// What this device advertises over Bluetooth, and whether it does.
+    pub(crate) bluetooth_advertiser: Arc<crate::services::communication::channel::bluetooth::Advertiser>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -223,6 +225,8 @@ impl DeviceConnectionState {
         let secret_key = device_key::try_load_or_create_secret_key(&db_path)?;
         let mut identity = identity;
         identity.endpoint_id = secret_key.public().to_string();
+        let bluetooth_advertiser =
+            Arc::new(crate::services::communication::channel::bluetooth::Advertiser::new(&identity));
 
         Ok(Self {
             identity,
@@ -237,6 +241,7 @@ impl DeviceConnectionState {
             #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
             bluetooth_peers: Arc::default(),
             bluetooth_radio: Arc::default(),
+            bluetooth_advertiser,
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })

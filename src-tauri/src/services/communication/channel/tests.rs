@@ -767,7 +767,6 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
         device_connection_send_pair_request_impl,
     };
 
-    let _add_mode_guard = super::bluetooth::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-send-pair-request-receiver");
     device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
     let port = network::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
@@ -819,7 +818,6 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
         device_connection_send_pair_request_impl,
     };
 
-    let _add_mode_guard = super::bluetooth::ADD_MODE_TEST_LOCK.lock().unwrap();
     let requester_port = free_port().await;
     let accepter_port = free_port().await;
     // The requester's own port must match where its listener actually
@@ -1093,7 +1091,6 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
         DISCOVERY_PROTOCOL,
     };
 
-    let _add_mode_guard = super::bluetooth::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-pair-request-bluetooth");
     device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
 
