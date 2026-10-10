@@ -206,12 +206,12 @@ impl ChannelService for NetworkChannelService {
     }
 
     fn recently_failed(&self, peer_device_id: &str) -> bool {
-        super::network::recently_failed(peer_device_id)
+        self.state.network_attempts.recently_failed(peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
     fn forget_failures(&self, peer_device_id: &str) {
-        super::network::forget_failures(peer_device_id);
+        self.state.network_attempts.forget_failures(peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]

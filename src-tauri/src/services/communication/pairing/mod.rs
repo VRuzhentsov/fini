@@ -131,6 +131,8 @@ pub struct DeviceConnectionState {
     /// must sit on `space_sync_ws_port`, the port presence announces; only
     /// a state that just dials out may fall back to any free port.
     pub(crate) serves_network: Arc<std::sync::atomic::AtomicBool>,
+    /// Network exchanges being attempted, and peers that failed recently.
+    pub(crate) network_attempts: Arc<crate::services::communication::channel::network::ExchangeAttempts>,
     /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
     /// transport, built on first use (`channel::bluetooth`).
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -243,6 +245,7 @@ impl DeviceConnectionState {
             secret_key,
             network_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             serves_network: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            network_attempts: Arc::default(),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]

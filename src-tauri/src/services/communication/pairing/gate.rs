@@ -54,7 +54,7 @@ pub(crate) fn take_pair_link(request_id: &str) -> Option<Box<dyn DataLink>> {
 /// Whether this device is dialing the peer on this channel right now.
 fn dialing(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind) -> bool {
     match kind {
-        ChannelKind::Network => crate::services::communication::channel::network::dialing(peer_device_id),
+        ChannelKind::Network => state.network_attempts.dialing(peer_device_id),
         #[cfg(any(target_os = "linux", target_os = "android"))]
         ChannelKind::Bluetooth => state.bluetooth_radio.dialing(peer_device_id),
         #[cfg(not(any(target_os = "linux", target_os = "android")))]

@@ -15,7 +15,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use iroh::endpoint::{presets, IncomingAddr};
+use iroh::endpoint::presets;
+#[cfg(any(feature = "ui-plane", test))]
+use iroh::endpoint::IncomingAddr;
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, TransportAddr};
 
 use crate::services::db::open_db_at_path;
@@ -194,17 +196,20 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
     if state.has_session_on(peer_id, ChannelKind::Network) || !state.network_peer_available(peer_id) {
         return;
     }
-    if recently_failed(peer_id) {
+    let attempts = &state.network_attempts;
+    if attempts.recently_failed(peer_id) {
         return;
     }
-    if !in_flight_exchanges().lock().unwrap().insert(peer_id.to_string()) {
+    if !attempts.in_flight.lock().unwrap().insert(peer_id.to_string()) {
         return;
     }
     let state = state.clone();
     let peer_id = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
+        let attempts = &state.network_attempts;
         if !exchange_with(&state, &peer_id).await {
-            failure_cooldown()
+            attempts
+                .cooldown
                 .lock()
                 .unwrap()
                 .insert(peer_id.clone(), Instant::now() + FAILURE_COOLDOWN);
@@ -216,20 +221,8 @@ pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
                 FAILURE_COOLDOWN,
             );
         }
-        in_flight_exchanges().lock().unwrap().remove(&peer_id);
+        attempts.in_flight.lock().unwrap().remove(&peer_id);
     });
-}
-
-/// Whether this device is dialing the peer for an exchange right now.
-#[cfg(any(feature = "ui-plane", test))]
-pub fn dialing(peer_id: &str) -> bool {
-    in_flight_exchanges().lock().unwrap().contains(peer_id)
-}
-
-/// Peers with an exchange attempt in flight -- one at a time per peer.
-fn in_flight_exchanges() -> &'static std::sync::Mutex<HashSet<String>> {
-    static IN_FLIGHT: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> = std::sync::OnceLock::new();
-    IN_FLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
 }
 
 /// After a failed attempt at a present peer (refused, unreachable port),
@@ -237,20 +230,35 @@ fn in_flight_exchanges() -> &'static std::sync::Mutex<HashSet<String>> {
 /// does not turn every wake into another connection.
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 
-fn failure_cooldown() -> &'static std::sync::Mutex<HashMap<String, Instant>> {
-    static COOLDOWN: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Instant>>> = std::sync::OnceLock::new();
-    COOLDOWN.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+/// This state's Network exchange attempts: which run now, and which peers
+/// failed recently. One per `DeviceConnectionState`.
+#[derive(Default)]
+pub struct ExchangeAttempts {
+    /// Peers with an exchange attempt in flight -- one at a time per peer.
+    in_flight: std::sync::Mutex<HashSet<String>>,
+    /// Until when each peer whose last attempt failed is left alone.
+    cooldown: std::sync::Mutex<HashMap<String, Instant>>,
 }
 
-/// Whether the last exchange attempt with this peer failed within
-/// `FAILURE_COOLDOWN`.
-pub fn recently_failed(peer_id: &str) -> bool {
-    is_cooling_down(&failure_cooldown().lock().unwrap(), peer_id, Instant::now())
-}
+impl ExchangeAttempts {
+    /// Whether this device is dialing the peer for an exchange right now.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn dialing(&self, peer_id: &str) -> bool {
+        self.in_flight.lock().unwrap().contains(peer_id)
+    }
 
-/// See `ChannelService::forget_failures`; also used when a pair is removed.
-pub fn forget_failures(peer_id: &str) {
-    failure_cooldown().lock().unwrap().remove(peer_id);
+    /// Whether the last exchange attempt with this peer failed within
+    /// `FAILURE_COOLDOWN`.
+    pub fn recently_failed(&self, peer_id: &str) -> bool {
+        is_cooling_down(&self.cooldown.lock().unwrap(), peer_id, Instant::now())
+    }
+
+    /// See `ChannelService::forget_failures`; also used when a pair is
+    /// removed.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn forget_failures(&self, peer_id: &str) {
+        self.cooldown.lock().unwrap().remove(peer_id);
+    }
 }
 
 fn is_cooling_down(cooldown: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
