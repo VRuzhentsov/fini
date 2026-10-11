@@ -48,12 +48,10 @@ use super::*;
 /// peer from eating the pass -- never to pre-empt a dial still in progress.
 ///
 /// *Just* above `CONNECT_TIMEOUT` rather than comfortably above it, because
-/// `dial_for_pairing` waits out a probe already in flight, and
-/// `SEND_PAIR_BLE_TIMEOUT` has to cover that wait *plus* its own dial within
-/// `PAIR_REQUEST_TTL_SECS`. A probe still running past the backend's own
-/// bound is one the backend has already given up on, so further margin buys
-/// nothing here and comes straight out of the pairing budget. Keep the two
-/// in step: raising this lengthens the worst case Pair has to sit through.
+/// `dial_for_pairing` waits out a probe already in flight before its own
+/// dial. A probe still running past the backend's own bound is one the
+/// backend has already given up on, so further margin buys nothing here and
+/// only lengthens the worst case Pair has to sit through.
 #[cfg(any(feature = "ui-plane", test))]
 const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
 

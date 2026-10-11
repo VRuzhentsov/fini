@@ -13,7 +13,7 @@ use std::time::Duration;
 use super::DeviceConnectionState;
 #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
 use super::PAIR_REQUEST_TTL_SECS;
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", test, target_os = "linux", target_os = "android"))]
 use crate::services::communication::channel::DataLink;
 use crate::services::communication::sync::types::PeerFrame;
 
@@ -62,33 +62,18 @@ impl PairingCarrier for NetworkCarrier {
     }
 }
 
-/// A stale/unresponsive BLE candidate has no bound of its own here: `dial`
-/// can hang trying to connect to a device that's since gone out of range,
-/// and `send_frame` can hang on a stalled write. All three BLE pairing legs
-/// (request/accept/complete) block on this via `block_on`, so an unbounded
-/// hang here freezes the whole command -- leaving pairing controls stuck
-/// disabled, and letting a retry after the request TTL expires collide with
-/// the still-open earlier attempt.
+/// How long writing one pairing frame on an open Bluetooth link may take.
+/// `send_frame` can hang on a stalled write, and all three BLE pairing legs
+/// (request/accept/complete) block on it via `block_on`, so an unbounded
+/// hang freezes the whole command and leaves the pairing controls stuck
+/// disabled.
 ///
-/// Sized to include the wait `dial_for_pairing` may spend letting a
-/// candidate probe already in flight finish before its own dial: at 10s the
-/// wait alone consumed half the budget and the dial was abandoned
-/// mid-connect.
-///
-/// The sum it has to hold, worst case, when Pair is pressed just as a probe
-/// starts dialling a slow advertiser:
-///
-///   `CANDIDATE_PROBE_TIMEOUT`   25s   waiting for that probe's lock
-///   `PAIRING_DIAL_RETRY_WINDOW`  5s   then retrying its own dial, the last
-///   ble-gatt `CONNECT_TIMEOUT`  20s   attempt of which may run to the bound
-///
-/// so ~50s before a frame is even written. Capped under
-/// `PAIR_REQUEST_TTL_SECS` (60s) deliberately: past the TTL the request is
-/// dead anyway, and a retry would collide with this still-open attempt --
-/// the collision the paragraph above exists to prevent. Any of those three
-/// growing has to come with a look at this one.
+/// The dial before it bounds itself (`dial_for_pairing`): first the wait for
+/// a candidate probe already in flight, then its own budget. One shared
+/// deadline over both once let the wait eat the dial's time, so a dial that
+/// would have connected was abandoned mid-connect.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-const SEND_PAIR_BLE_TIMEOUT: Duration = Duration::from_secs(55);
+const PAIR_FRAME_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The link a Bluetooth `PairRequest` arrived on, kept open by request id so
 /// the accept and the complete answer on it rather than dialling the
@@ -122,16 +107,11 @@ impl BluetoothCarrier {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn send(&self, state: &DeviceConnectionState, peer_key: &str, address: &str, msg: PeerFrame) -> Result<(), String> {
         tauri::async_runtime::block_on(async move {
-            tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
-                // Keeps the add-mode candidate scan off the adapter and out
-                // of this peer's dial until the frame is sent.
-                let (mut link, _clear_of_scan) =
-                    crate::services::communication::channel::bluetooth::dial_for_pairing(state, peer_key, address)
-                        .await?;
-                crate::services::communication::channel::send_frame(link.as_mut(), &msg).await
-            })
-            .await
-            .map_err(|_| "bluetooth pairing send timed out".to_string())?
+            // Keeps the add-mode candidate scan off the adapter and out of
+            // this peer's dial until the frame is sent.
+            let (mut link, _clear_of_scan) =
+                crate::services::communication::channel::bluetooth::dial_for_pairing(state, peer_key, address).await?;
+            send_pair_frame(link.as_mut(), &msg).await
         })
     }
 
@@ -147,7 +127,6 @@ impl BluetoothCarrier {
     pub(crate) fn send_request(
         &self, state: &DeviceConnectionState, to_device_id: &str, address: &str, msg: PeerFrame,
     ) -> Result<(), String> {
-        use crate::services::communication::channel::send_frame;
         let peer_key = state
             .bluetooth_peers
             .key(to_device_id)
@@ -157,19 +136,22 @@ impl BluetoothCarrier {
         let latest = state.bluetooth_peers.latest_address(to_device_id);
         let address = latest.as_deref().unwrap_or(address);
         let link = tauri::async_runtime::block_on(async {
-            tokio::time::timeout(SEND_PAIR_BLE_TIMEOUT, async {
-                let (mut link, _clear_of_scan) =
-                    crate::services::communication::channel::bluetooth::dial_for_pairing(state, &peer_key, address)
-                        .await?;
-                send_frame(link.as_mut(), &msg).await?;
-                Ok::<_, String>(link)
-            })
-            .await
-            .map_err(|_| "bluetooth pairing send timed out".to_string())?
+            let (mut link, _clear_of_scan) =
+                crate::services::communication::channel::bluetooth::dial_for_pairing(state, &peer_key, address).await?;
+            send_pair_frame(link.as_mut(), &msg).await?;
+            Ok::<_, String>(link)
         })?;
         listen_for_answers(state.clone(), link);
         Ok(())
     }
+}
+
+/// Writes one pairing frame within `PAIR_FRAME_SEND_TIMEOUT`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+async fn send_pair_frame(link: &mut dyn DataLink, msg: &PeerFrame) -> Result<(), String> {
+    tokio::time::timeout(PAIR_FRAME_SEND_TIMEOUT, crate::services::communication::channel::send_frame(link, msg))
+        .await
+        .map_err(|_| "bluetooth pairing send timed out".to_string())?
 }
 
 /// Reads the accept and the complete that come back on a request's link.

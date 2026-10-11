@@ -7,11 +7,21 @@ use super::*;
 /// scan's cancelled probe still tearing down its connection.
 const PAIRING_DIAL_RETRY_WINDOW: Duration = Duration::from_secs(5);
 
+/// How long a pairing dial may take once it has the radio: its retries, one
+/// connect that runs to `SESSION_CONNECT_TIMEOUT`, and opening the stream.
+/// Counted from after any candidate probe it waited out, so a probe that
+/// held the radio does not eat the dial's own time.
+const PAIRING_DIAL_BUDGET: Duration =
+    Duration::from_secs(PAIRING_DIAL_RETRY_WINDOW.as_secs() + SESSION_CONNECT_TIMEOUT.as_secs() + 5);
+
 /// Opens an iroh connection to `peer_key` for a pairing leg -- `address` is
 /// only where to reach it first (ADR-0009 D2/D7: Bluetooth carries iroh, and
 /// iroh dials by key) -- and hands back the link plus the registrations that
 /// keep it clear of the candidate scan: a pass stops at its next step, and no
 /// scan runs until the caller drops the returned guards.
+///
+/// Waits out a candidate probe already dialling (bounded by
+/// `CANDIDATE_PROBE_TIMEOUT`), then dials within `PAIRING_DIAL_BUDGET`.
 ///
 /// The peer's key is not pinned yet, so TLS proves only that whoever answers
 /// holds `peer_key`; pairing pins it (D8).
@@ -26,30 +36,35 @@ pub async fn dial_for_pairing(
     // A candidate probe already dialling is let finish, not cancelled; wait
     // for it so this dial never overlaps one to the same peer.
     drop(radio.candidate_probe().await);
-    let dial_guard = radio.acquire_dial().await;
-    let (endpoint, transport) = bluetooth_endpoint(state).await?;
-    let peer = PeerAddress(address.to_string());
-    transport.set_peer_address(peer_key, peer.clone());
-    let addr = iroh::EndpointAddr::from_parts(
-        peer_key,
-        [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(&peer))],
-    );
-    let started = tokio::time::Instant::now();
-    loop {
-        let attempt = tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr.clone(), ALPN)).await;
-        match attempt {
-            Ok(Ok(connection)) => {
-                let link = IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
-                return Ok((Box::new(link) as Box<dyn DataLink>, (leg, dial_guard)));
+    tokio::time::timeout(PAIRING_DIAL_BUDGET, async {
+        let dial_guard = radio.acquire_dial().await;
+        let (endpoint, transport) = bluetooth_endpoint(state).await?;
+        let peer = PeerAddress(address.to_string());
+        transport.set_peer_address(peer_key, peer.clone());
+        let addr = iroh::EndpointAddr::from_parts(
+            peer_key,
+            [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(&peer))],
+        );
+        let started = tokio::time::Instant::now();
+        loop {
+            let attempt = tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr.clone(), ALPN)).await;
+            match attempt {
+                Ok(Ok(connection)) => {
+                    let link = IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
+                    return Ok((Box::new(link) as Box<dyn DataLink>, dial_guard));
+                }
+                // The probe's connection may still be closing.
+                Ok(Err(_)) if started.elapsed() < PAIRING_DIAL_RETRY_WINDOW => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Ok(Err(err)) => return Err(format!("bluetooth connect to {address} failed: {err}")),
+                Err(_) => return Err(format!("bluetooth connect to {address} timed out")),
             }
-            // The probe's connection may still be closing.
-            Ok(Err(_)) if started.elapsed() < PAIRING_DIAL_RETRY_WINDOW => {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-            Ok(Err(err)) => return Err(format!("bluetooth connect to {address} failed: {err}")),
-            Err(_) => return Err(format!("bluetooth connect to {address} timed out")),
         }
-    }
+    })
+    .await
+    .map_err(|_| format!("bluetooth pairing dial to {address} timed out"))?
+    .map(|(link, dial_guard)| (link, (leg, dial_guard)))
 }
 
 /// How long a new inbound channel may take to send its first datagram,
