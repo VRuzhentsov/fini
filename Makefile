@@ -498,16 +498,17 @@ e2e-devices:
 #
 # Deliberately no FINI_E2E_TRANSPORT=ble here. That flag exists to launch
 # *spawned* actors with FINI_DISCOVERY_DISABLED=1 and a mock broker; neither
-# applies to apps that are already running. On hardware the network is made
-# unavailable the honest way: switch the phone's Wi-Fi off, so Bluetooth is the
-# only path left and the spec's peer-scoped presence assertion proves it.
+# applies to apps that are already running. On hardware the pair itself rules
+# the network out: it must have no Network channel on, which the spec asserts,
+# so Bluetooth is the only path its sessions can take even with Wi-Fi on. That
+# also lets the phone run under `make android-dev`, whose frontend comes over
+# Wi-Fi.
 #
-# The control plane survives that: it reaches the phone over `adb forward`
-# on USB, not over the network being taken away.
+# The control plane reaches the phone over `adb forward` on USB.
 #
-#   1. make android-debug-deploy      # phone app running
-#   2. make desktop-debug             # desktop app running
-#   3. turn the phone's Wi-Fi off
+#   1. make android-dev               # phone app running
+#   2. make desktop-debug-dev         # desktop app running
+#   3. pair them over Bluetooth only
 #   4. make e2e-devices-ble
 e2e-devices-ble:
 	@set -eu; \

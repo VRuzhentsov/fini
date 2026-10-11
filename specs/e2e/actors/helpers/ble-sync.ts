@@ -152,61 +152,35 @@ async function ensureBluetoothEnabledForPeer(
  * Proves the network transport genuinely cannot carry this session, so a
  * Bluetooth result is not one the network quietly produced.
  *
- * Two shapes, because the two lanes make the network unavailable in different
- * ways. Spawned actors are launched with `FINI_DISCOVERY_DISABLED=1`, so they
- * see no presence at all and the global assertion is the strongest one
- * available. External actors are real apps that cannot be relaunched with that
- * flag: there, the network is made unavailable by switching the phone's Wi-Fi
- * off, and what must hold is that *this peer* is absent -- another device on
- * the desktop's network is irrelevant and must not fail the run.
+ * Two shapes, because the two lanes rule the network out in different ways.
+ * Spawned actors are launched with `FINI_DISCOVERY_DISABLED=1`, so they see no
+ * presence at all and the global assertion is the strongest one available.
+ * External actors are real apps that cannot be relaunched with that flag, and
+ * may well hear each other over Wi-Fi: there, what must hold is that this pair
+ * has no Network channel switched on, so no session can run over it whatever
+ * the network can reach.
  */
 export async function expectNetworkChannelUnavailable(
   actor: E2EActor,
   peerDeviceId?: string,
 ): Promise<void> {
-  const presence = await actor.invoke<{ device_id?: string; last_seen_at?: string }[]>(
-    'device_connection_presence_snapshot',
-  );
-
   // A spawned actor was launched with FINI_DISCOVERY_DISABLED=1 and can see
   // nothing at all, so assert exactly that -- it is the stronger claim, and
-  // weakening it to "not this peer" for both lanes would quietly stop proving
-  // the flag works.
+  // weakening it for both lanes would quietly stop proving the flag works.
   if (actor.kind === 'spawned' || peerDeviceId === undefined) {
+    const presence = await actor.invoke<unknown[]>('device_connection_presence_snapshot');
     expect(presence, `${actor.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
     return;
   }
 
-  // Freshness, not mere membership. The snapshot is not TTL-filtered -- it
-  // keeps every peer it has ever heard from, so a device that dropped off the
-  // network still appears in it indefinitely. Observed on this pair: entries
-  // fifteen hours stale sitting alongside live ones. Asking "is this peer in
-  // the list" would therefore never pass on hardware, however unreachable the
-  // peer actually is; asking "has it been heard from recently" is the question
-  // that matches what the assertion means.
-  const cutoff = Date.now() - PRESENCE_FRESHNESS_MS;
-  const freshPeerPresence = presence.filter((entry) => {
-    if (entry.device_id !== peerDeviceId) {
-      return false;
-    }
-    const seenAt = entry.last_seen_at ? Date.parse(entry.last_seen_at) : Number.NaN;
-    return Number.isNaN(seenAt) ? true : seenAt >= cutoff;
-  });
-
+  const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', { peerDeviceId });
+  const network = statuses.find((status) => status.kind === ChannelKind.Network);
   expect(
-    freshPeerPresence,
-    `${actor.slug} still sees live network presence for ${peerDeviceId} -- ` +
-      "turn the phone's Wi-Fi off so Bluetooth is the only path left",
-  ).toHaveLength(0);
+    network?.state,
+    `${actor.slug} has the Network channel on with ${peerDeviceId} -- ` +
+      'this lane needs a pair whose only channel is Bluetooth',
+  ).not.toBe(ChannelState.On);
 }
-
-/**
- * How recent a presence beacon has to be to count as "the network can still
- * reach this peer". Four times `DISCOVERY_TTL_SECS` (15s, see
- * `device_connection`), so a peer that is genuinely live is never mistaken for
- * a stale record on a slow beacon cycle.
- */
-const PRESENCE_FRESHNESS_MS = 60_000;
 
 /**
  * Green is the backend's own verdict (ADR-0008 D9): the peer was heard on
