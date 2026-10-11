@@ -148,15 +148,16 @@ pub(super) fn note_scan_refused(err: &ble_gatt::BleError) -> bool {
 #[cfg(any(feature = "ui-plane", test))]
 pub fn is_bluetooth_adapter_unavailable() -> bool {
     #[cfg(test)]
-    if ADAPTER_PINNED_REACHABLE.with(|pinned| pinned.get()) {
-        return false;
+    if let Some(reachable) = ADAPTER_PINNED.with(|pinned| pinned.get()) {
+        return !reachable;
     }
     ADAPTER_HEALTH.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
 }
 
 #[cfg(test)]
 thread_local! {
-    static ADAPTER_PINNED_REACHABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // The adapter health a test pinned on its thread, if any.
+    static ADAPTER_PINNED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 /// For a test on this thread that is not about the adapter: the process-wide
@@ -164,7 +165,13 @@ thread_local! {
 /// check that reads it would pass or fail with their timing.
 #[cfg(test)]
 pub fn pin_adapter_reachable_on_this_thread() {
-    ADAPTER_PINNED_REACHABLE.with(|pinned| pinned.set(true));
+    ADAPTER_PINNED.with(|pinned| pinned.set(Some(true)));
+}
+
+/// For a test about what an unreachable adapter does, for the same reason.
+#[cfg(test)]
+fn pin_adapter_unreachable_on_this_thread() {
+    ADAPTER_PINNED.with(|pinned| pinned.set(Some(false)));
 }
 
 /// Asks the radio, right now, whether it can be used -- and records the
@@ -318,7 +325,9 @@ mod tests {
     async fn adapter_probe_does_not_trust_a_scan_that_has_not_started() {
         let radio = Arc::new(RadioArbiter::default());
         let other_scan = radio.scan_lease().await;
-        note_adapter_unreachable();
+        // Pinned, not recorded: other tests' scans write the process-wide
+        // health while this one waits out the probe.
+        pin_adapter_unreachable_on_this_thread();
 
         let probe = tokio::spawn({
             let radio = radio.clone();
