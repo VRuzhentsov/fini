@@ -7,6 +7,17 @@ For *how* names are formed — plurals, casing, command prefixes — see
 [`naming.md`](naming.md). This file is about meaning, that one is about
 spelling.
 
+**STE company glossary.** Fini writes in STE (see [`ste.md`](ste.md)). This
+file is the company glossary that STE rules 1.5 to 1.13 refer to: the list
+of Fini's technical nouns and technical verbs. A technical term that is not
+in this file is not approved. Add a term only after you get the approval
+of the project owner.
+
+### Project owner
+
+The person who makes the decisions for Fini. New terms and new files need
+the approval of the project owner.
+
 **Parentheses convention.** Where Fini's word for something has a more
 familiar synonym elsewhere in the industry, documentation writes it as
 `Term (Synonym)` on first mention — `channel (transport)`,
@@ -85,7 +96,7 @@ GATT subscription has completed. What is unknown is *who* is on the far end.
 An IP address is not an identity; anything on the LAN can dial that port.
 
 The proof they are different things: a `DataLink` can exist with no session
-at all, and routinely does. A stranger dials in, sends `PairRequest`, gets an
+at all, and routinely does. A stranger dials in, sends `PairStart`, gets an
 answer, and the pipe closes. That is the ordinary pairing path, and it needs
 a working pipe *before* anyone is authenticated.
 
@@ -102,9 +113,77 @@ session      ...carrying an authenticated conversation      (live, identified)
 
 ### PeerFrame
 
-**One message two devices send each other:** `PairRequest`, `Auth`,
+**One message two devices send each other:** `PairStart`, `Auth`,
 `SyncEvent`, `Ack`, `Ping`. The application protocol, identical over every
 channel — one copy of it, which is the whole reason `DataLink` exists.
+
+### Messages that find and pair devices
+
+Each message name is a technical noun of the Fini protocol.
+
+| Message | Sent by | Tells the other device |
+|---|---|---|
+| `IdentifyDevice` | A device in Add Device mode | "This is my identity. Tell me yours." |
+| `DeviceIdentified` | The device that received `IdentifyDevice` | "This is my identity." |
+| `AddChannel` | A device that adds a channel to a pair | "I add this channel to our pair." |
+| `AddChannelAccept` | The other device of the pair | "I add this channel too." |
+| `PairStart` | The device on which the person pushes Pair | "Pair with me." |
+| `PairAccept` | The other device | "I accept the pair." |
+| `PairComplete` | The first device | "The code agrees. The pair is complete." |
+
+## Finding and connecting to a device
+
+### Adapter
+
+The Bluetooth radio of this device, as the `ble-gatt` library gives it
+(`ble_gatt::Adapter`). Fini gets the adapter from `adapter()`. The word
+"backend" stays only inside `ble-gatt`, where a platform driver connects.
+
+### Scanner
+
+The part of Fini that receives Bluetooth advertisements. One scanner runs
+for the whole app. It also keeps what it heard: the devices that are
+available now, and when and where each paired device was last heard.
+
+### Advertiser
+
+The part of Fini that sends this device's Bluetooth advertisement, so that
+other devices can find it.
+
+### Add Device mode
+
+The time when the Add Device screen is open. In this mode the device
+advertises a flag that tells other devices it is in Add Device mode. In
+code: `add_device_mode`.
+
+### Available device
+
+A device that you can pair with now: it is near, it is in Add Device mode,
+and it has sent its identity. The Add Device screen shows available
+devices. In code: `AvailableDevice`.
+
+### Identify
+
+To connect to a device in Add Device mode and get its identity
+(`IdentifyDevice` and `DeviceIdentified`). In code: `identify_device`.
+
+### Connect
+
+To open a connection to a device. Fini does not use "dial".
+
+### Pairing step
+
+One part of a pairing: the start, the accept, or the complete. While a
+pairing step runs, the scanner does not scan. In code: `PairingStep`.
+
+### Connect guard
+
+A value that holds the radio while a connection opens. When the program
+releases the guard, the scanner can scan again. In code: `ConnectGuard`.
+
+### Scan lock
+
+The lock that lets only one scan run at a time. In code: `scan_lock`.
 
 ### Frame envelope
 
@@ -142,6 +221,16 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **stream** | implies a byte stream; ADR-0001 chose datagrams, because WebSocket, BLE and LoRa are all message-shaped (`IrohDataLink` frames its QUIC stream to keep that contract) |
 | **peering**, **route** | structurally accurate but router-engineer jargon, and a channel appears in a settings screen |
 | **transport**, as a separate layer | retired — it is simply the older word for *channel* |
+| **arbiter** (`RadioArbiter`) | jargon (STE rule 1.10); the object is the *scanner* |
+| **directory** (`PeerDirectory`) | means a file folder; the data belongs to the *scanner* |
+| **backend** | does not say what it is; Fini uses *adapter* |
+| **probe** | not an approved word; Fini uses *identify* |
+| **candidate** (`AddModeCandidate`) | not an approved word; Fini uses *available device* |
+| **dial** | not an approved word; Fini uses *connect* |
+| **leg** (`PairingLeg`) | jargon; Fini uses *pairing step* |
+| **lease** (scan lease) | jargon; Fini uses *scan lock* |
+| **hello** (`Hello`, `DiscoveryHello`) | not an approved word; the messages are `AddChannel` and `IdentifyDevice` |
+| **request** (`PairRequest`) | not an approved noun; the message is `PairStart` |
 
 ### Radio
 

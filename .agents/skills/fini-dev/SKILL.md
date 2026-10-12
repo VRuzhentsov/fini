@@ -199,6 +199,26 @@ Do not invent generic targets such as `make test`, `make lint`, or `make check` 
 
 Two files, and they answer different questions. `docs/glossary.md` is what the words **mean** — channel, DataLink, session, primary — and is where you go to choose *which* word. `docs/naming.md` is how names are **formed** — plurals, casing per language, `data-*` hooks, command prefixes — and is where you go to write it down. Read the relevant one before naming a new table, module, type, command or DOM hook, and before renaming one. Either file wins over what the code currently says. Load `fini-code-style` alongside them for the repo-wide rules that are not about names.
 
+## Use STE
+
+Fini writes in ASD-STE100 Simplified Technical English (STE). Read `docs/ste.md` before you write any of these:
+
+- A name in code: file, module, type, function, command, or field.
+- A document, a specification, or an instruction for an agent.
+- A comment in code.
+- A text on a screen of the app.
+- A pull request title or description, or a commit message.
+
+Do these steps:
+
+1. Look up each word in `~/.cache/agents/ste/ste.txt` (the local copy of the standard; `docs/ste.md` tells how to get it) and in `docs/glossary.md`.
+2. Use an approved word, or a technical noun or verb from `docs/glossary.md`.
+3. When no approved word gives the meaning, tell the user the new term. Give the term, its one meaning, and why no approved word fits. Add it to the glossary only after you get the approval of the user.
+4. Before you make a new file, tell the user its name and its job. Make it only after you get approval.
+5. Talk to the user in STE too. Tell the meaning of each term before you use it.
+
+During the change to STE, change the names, comments, and text of each file that you change. Leave other files as they are.
+
 ## Code Reuse
 
 Before adding a new constant, function, type, or utility, search for an existing one:
