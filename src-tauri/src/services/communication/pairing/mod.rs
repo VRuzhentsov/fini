@@ -44,6 +44,9 @@ pub use commands::{
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
 };
 
+#[cfg(all(feature = "ui-plane", feature = "devtools"))]
+pub use commands::e2e_set_radio;
+
 #[cfg(any(feature = "ui-plane", test))]
 pub use gate::run_peer_gate;
 
@@ -656,6 +659,31 @@ impl DeviceConnectionState {
             }
             // The exchange has already ended.
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+        }
+    }
+
+    /// For the test switch (debug builds): ends every exchange on this
+    /// channel. For Network it also forgets the devices heard on the
+    /// network, as a lost network does.
+    #[cfg(all(feature = "ui-plane", feature = "devtools"))]
+    pub fn end_channel_for_test(&self, kind: ChannelKind) {
+        let peers: Vec<String> = {
+            let Ok(mut guard) = self.runtime.lock() else {
+                return;
+            };
+            if kind == ChannelKind::Network {
+                guard.presence.clear();
+                guard.discovered.clear();
+            }
+            guard
+                .peer_sessions
+                .keys()
+                .filter(|(_, session_kind)| *session_kind == kind)
+                .map(|(peer, _)| peer.clone())
+                .collect()
+        };
+        for peer in peers {
+            self.close_session_on(&peer, kind);
         }
     }
 

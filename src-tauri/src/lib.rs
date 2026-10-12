@@ -35,6 +35,8 @@ use services::communication::pairing::{
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
     DeviceConnectionState,
 };
+#[cfg(all(feature = "ui-plane", feature = "devtools"))]
+use services::communication::pairing::e2e_set_radio;
 #[cfg(feature = "ui-plane")]
 use services::notification::{
     dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
@@ -600,6 +602,8 @@ pub fn run() {
             e2e_clear_notification_events,
             #[cfg(feature = "devtools")]
             e2e_dispatch_notification_action,
+            #[cfg(feature = "devtools")]
+            e2e_set_radio,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

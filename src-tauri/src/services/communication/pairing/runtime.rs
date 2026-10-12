@@ -280,19 +280,48 @@ fn spawn_mdns_worker(
     let builder = thread::Builder::new().name("fini-mdns-discovery".to_string());
     let runtime_worker = runtime.clone();
     let spawn_result = builder.spawn(move || {
+        use crate::services::communication::channel::network::network_switched_off;
+        // One run of the mDNS service per pass of this loop. The test switch
+        // (debug builds) stops the service while the network is off, as a
+        // lost network does, and starts a new one when it is on again, so
+        // that the new service asks the network again at once.
+        loop {
+            while network_switched_off() {
+                thread::sleep(Duration::from_millis(500));
+            }
+            if !run_mdns_service(&identity, &runtime_worker, discovery_port, space_sync_ws_port) {
+                return;
+            }
+        }
+    });
+
+    if let Err(err) = spawn_result {
+        set_last_error(&runtime, format!("spawn mdns worker failed: {err}"));
+    }
+}
+
+/// Runs one mDNS service: announces this device and records the devices it
+/// hears. Returns true when the test switch stopped it, false on a failure.
+fn run_mdns_service(
+    identity: &DeviceIdentity,
+    runtime_worker: &Arc<Mutex<DiscoveryRuntime>>,
+    discovery_port: u16,
+    space_sync_ws_port: u16,
+) -> bool {
+    {
         let daemon = match ServiceDaemon::new() {
             Ok(daemon) => daemon,
             Err(err) => {
-                set_last_error(&runtime_worker, format!("start mdns daemon failed: {err}"));
-                return;
+                set_last_error(runtime_worker, format!("start mdns daemon failed: {err}"));
+                return false;
             }
         };
 
         let browser = match daemon.browse(MDNS_SERVICE_TYPE) {
             Ok(browser) => browser,
             Err(err) => {
-                set_last_error(&runtime_worker, format!("start mdns browse failed: {err}"));
-                return;
+                set_last_error(runtime_worker, format!("start mdns browse failed: {err}"));
+                return false;
             }
         };
 
@@ -301,10 +330,10 @@ fn spawn_mdns_worker(
             .map(|guard| guard.add_mode_enabled)
             .unwrap_or(false);
         let mut registered_fullname =
-            match register_mdns_service(&daemon, &identity, space_sync_ws_port, last_add_mode) {
+            match register_mdns_service(&daemon, identity, space_sync_ws_port, last_add_mode) {
                 Ok(fullname) => Some(fullname),
                 Err(err) => {
-                    set_last_error(&runtime_worker, err);
+                    set_last_error(runtime_worker, err);
                     None
                 }
             };
@@ -318,15 +347,22 @@ fn spawn_mdns_worker(
                 .lock()
                 .map(|guard| guard.add_mode_enabled)
                 .unwrap_or(false);
+            if crate::services::communication::channel::network::network_switched_off() {
+                if let Some(fullname) = registered_fullname.take() {
+                    let _ = daemon.unregister(&fullname);
+                }
+                let _ = daemon.shutdown();
+                return true;
+            }
             if add_mode != last_add_mode {
                 if let Some(fullname) = registered_fullname.take() {
                     let _ = daemon.unregister(&fullname);
                 }
                 registered_fullname =
-                    match register_mdns_service(&daemon, &identity, space_sync_ws_port, add_mode) {
+                    match register_mdns_service(&daemon, identity, space_sync_ws_port, add_mode) {
                         Ok(fullname) => Some(fullname),
                         Err(err) => {
-                            set_last_error(&runtime_worker, err);
+                            set_last_error(runtime_worker, err);
                             None
                         }
                     };
@@ -386,15 +422,11 @@ fn spawn_mdns_worker(
                     if err.to_string().contains("timed out") {
                         continue;
                     }
-                    set_last_error(&runtime_worker, format!("mdns browse recv failed: {err}"));
-                    break;
+                    set_last_error(runtime_worker, format!("mdns browse recv failed: {err}"));
+                    return false;
                 }
             }
         }
-    });
-
-    if let Err(err) = spawn_result {
-        set_last_error(&runtime, format!("spawn mdns worker failed: {err}"));
     }
 }
 
@@ -524,6 +556,13 @@ pub(super) fn spawn_discovery_worker(
                 .map(|guard| guard.add_mode_enabled)
                 .unwrap_or(false);
             let now = Instant::now();
+            // The test switch (debug builds): while the network is off, no
+            // beacon goes out and the beacons that come in are ignored.
+            let switched_off = crate::services::communication::channel::network::network_switched_off();
+            if switched_off {
+                let _ = socket.recv_from(&mut buffer);
+                continue;
+            }
 
             if now >= next_heartbeat_at {
                 broadcast_beacon(

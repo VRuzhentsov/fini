@@ -1192,6 +1192,40 @@ pub fn device_connection_channel_statuses(
 
 /// The Device page is open (or closed): run the status search while it is,
 /// so green is current; never in the background (ADR-0008 D12).
+/// The test switches of the radios (debug builds only). `bluetooth` and
+/// `network` each set one channel to on or off; a missing value leaves that
+/// channel as it is. Off makes the channel look gone to Fini and ends its
+/// exchanges. The real radios stay on.
+#[cfg(all(feature = "ui-plane", feature = "devtools"))]
+#[tauri::command]
+pub async fn e2e_set_radio(
+    state: State<'_, DeviceConnectionState>, bluetooth: Option<bool>, network: Option<bool>,
+) -> Result<(), String> {
+    if let Some(on) = network {
+        crate::services::communication::channel::network::set_network_switch(on);
+        if !on {
+            state.end_channel_for_test(ChannelKind::Network);
+        }
+    }
+    if let Some(on) = bluetooth {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            if !crate::services::communication::channel::bluetooth::set_bluetooth_switch(on).await {
+                return Err("this device has no usable Bluetooth adapter".to_string());
+            }
+            if !on {
+                state.end_channel_for_test(ChannelKind::Bluetooth);
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            let _ = on;
+            return Err("Bluetooth is not available on this platform".to_string());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, active: bool) {

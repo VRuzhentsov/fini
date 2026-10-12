@@ -38,10 +38,10 @@ pub(super) async fn adapter() -> Result<Adapter, String> {
         .get_or_try_init(|| async {
             #[cfg(feature = "devtools")]
             if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
-                return Ok(Adapter::new(mock_driver(&endpoint).await?).await);
+                return Ok(Adapter::new(switched(mock_driver(&endpoint).await?)).await);
             }
             match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, LinuxBackend::new()).await {
-                Ok(Ok(driver)) => Ok(Adapter::new(Arc::new(driver)).await),
+                Ok(Ok(driver)) => Ok(Adapter::new(switched(Arc::new(driver))).await),
                 Ok(Err(err)) => Err(err.to_string()),
                 Err(_) => Err(format!(
                     "timed out after {ADAPTER_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
@@ -91,9 +91,281 @@ async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Backend>, Strin
 pub(super) async fn adapter() -> Result<Adapter, String> {
     static ADAPTER: tokio::sync::OnceCell<Adapter> = tokio::sync::OnceCell::const_new();
     ADAPTER
-        .get_or_try_init(|| async { Ok(Adapter::new(crate::services::ble_plugin::driver()?).await) })
+        .get_or_try_init(|| async { Ok(Adapter::new(switched(crate::services::ble_plugin::driver()?)).await) })
         .await
         .cloned()
+}
+
+/// The driver as the adapter gets it. In a build without `devtools` this
+/// is the platform driver itself.
+#[cfg(not(feature = "devtools"))]
+fn switched(driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
+    driver
+}
+
+/// The driver as the adapter gets it. In a `devtools` build the driver is
+/// behind the test switch (`set_bluetooth_switch`).
+#[cfg(feature = "devtools")]
+fn switched(driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
+    let switch = test_switch::RadioSwitch::new(driver);
+    let _ = test_switch::BLUETOOTH_SWITCH.set(switch.clone());
+    Arc::new(test_switch::SwitchedDriver(switch))
+}
+
+/// Sets the test switch of the Bluetooth radio. Off makes the radio look
+/// switched off to Fini: scans and connections fail, links close, and
+/// `RadioChanged` tells ble-gatt. On makes everything pass through again.
+/// The real radio stays on. False if this device has no usable adapter.
+#[cfg(feature = "devtools")]
+pub async fn set_bluetooth_switch(on: bool) -> bool {
+    if adapter().await.is_err() {
+        return false;
+    }
+    match test_switch::BLUETOOTH_SWITCH.get() {
+        Some(switch) => {
+            switch.set(on).await;
+            true
+        }
+        None => false,
+    }
+}
+
+/// A test switch over the Bluetooth driver, for debug builds only. It
+/// makes the radio look off without a change to the real radio, so that
+/// no test must switch off the Bluetooth of a person's device.
+#[cfg(feature = "devtools")]
+mod test_switch {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use async_trait::async_trait;
+    use ble_gatt::{
+        Backend, BleError, BoxStream, CapabilityReport, CharacteristicUuid, ConnectionPriority,
+        DiscoveredPeer, GattConnection, GattEvent, GattServiceSpec, PeerAddress, RadioStatus, Role,
+        ServiceUuid, WriteType,
+    };
+    use futures_util::StreamExt;
+    use tokio::sync::broadcast;
+
+    pub(super) static BLUETOOTH_SWITCH: OnceLock<Arc<RadioSwitch>> = OnceLock::new();
+
+    fn switched_off() -> BleError {
+        BleError::AdapterUnavailable("the test switch set the radio to off".into())
+    }
+
+    pub(super) struct RadioSwitch {
+        driver: Arc<dyn Backend>,
+        off: AtomicBool,
+        /// The events the switch adds: `RadioChanged`, and `Disconnected`
+        /// for each link that it closes.
+        events: broadcast::Sender<GattEvent>,
+        /// The open links, from the driver's own events.
+        links: Mutex<Vec<(PeerAddress, Role, Option<u64>)>>,
+    }
+
+    impl RadioSwitch {
+        pub(super) fn new(driver: Arc<dyn Backend>) -> Arc<Self> {
+            let switch = Arc::new(Self {
+                driver: driver.clone(),
+                off: AtomicBool::new(false),
+                events: broadcast::channel(64).0,
+                links: Mutex::new(Vec::new()),
+            });
+            let weak = Arc::downgrade(&switch);
+            let mut events = driver.events();
+            tokio::spawn(async move {
+                while let Some(event) = events.next().await {
+                    let Some(switch) = weak.upgrade() else { return };
+                    switch.record(&event);
+                }
+            });
+            switch
+        }
+
+        fn is_off(&self) -> bool {
+            self.off.load(Ordering::SeqCst)
+        }
+
+        fn record(&self, event: &GattEvent) {
+            let mut links = self.links.lock().unwrap();
+            match event {
+                GattEvent::Connected { peer, local_role, session } => {
+                    links.push((peer.clone(), *local_role, *session));
+                }
+                GattEvent::Disconnected { peer, local_role, session } => {
+                    links.retain(|(p, r, s)| !(p.0 == peer.0 && r == local_role && s == session));
+                }
+                _ => {}
+            }
+        }
+
+        pub(super) async fn set(&self, on: bool) {
+            if on {
+                if self.off.swap(false, Ordering::SeqCst) {
+                    log::info!("[transport][ble] test switch: radio on");
+                    let _ = self.events.send(GattEvent::RadioChanged { status: RadioStatus::On });
+                }
+                return;
+            }
+            if self.off.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            log::info!("[transport][ble] test switch: radio off");
+            let _ = self.driver.stop_advertising().await;
+            let links: Vec<_> = std::mem::take(&mut *self.links.lock().unwrap());
+            for (peer, local_role, session) in links {
+                if local_role == Role::Peripheral {
+                    let _ = self.driver.disconnect_peer(&peer, session).await;
+                }
+                let _ = self.events.send(GattEvent::Disconnected { peer, local_role, session });
+            }
+            let _ = self.events.send(GattEvent::RadioChanged { status: RadioStatus::Off });
+        }
+    }
+
+    pub(super) struct SwitchedDriver(pub(super) Arc<RadioSwitch>);
+
+    #[async_trait]
+    impl Backend for SwitchedDriver {
+        async fn capabilities(&self) -> CapabilityReport {
+            self.0.driver.capabilities().await
+        }
+
+        async fn scan(&self, service: ServiceUuid) -> ble_gatt::Result<BoxStream<ble_gatt::Result<DiscoveredPeer>>> {
+            if self.0.is_off() {
+                return Err(switched_off());
+            }
+            let switch = self.0.clone();
+            let stream = self.0.driver.scan(service).await?;
+            Ok(Box::pin(stream.map(move |item| if switch.is_off() { Err(switched_off()) } else { item })))
+        }
+
+        async fn connect(&self, peer: &PeerAddress) -> ble_gatt::Result<Box<dyn GattConnection>> {
+            if self.0.is_off() {
+                return Err(switched_off());
+            }
+            let inner = self.0.driver.connect(peer).await?;
+            Ok(Box::new(SwitchedConnection { inner, switch: self.0.clone() }))
+        }
+
+        async fn advertise(&self, service: GattServiceSpec) -> ble_gatt::Result<()> {
+            if self.0.is_off() {
+                return Err(switched_off());
+            }
+            self.0.driver.advertise(service).await
+        }
+
+        async fn stop_advertising(&self) -> ble_gatt::Result<()> {
+            self.0.driver.stop_advertising().await
+        }
+
+        async fn notify(&self, characteristic: CharacteristicUuid, value: Vec<u8>) -> ble_gatt::Result<()> {
+            if self.0.is_off() {
+                return Err(switched_off());
+            }
+            self.0.driver.notify(characteristic, value).await
+        }
+
+        async fn notify_peer(
+            &self, peer: &PeerAddress, session: Option<u64>, characteristic: CharacteristicUuid, value: Vec<u8>,
+        ) -> ble_gatt::Result<()> {
+            if self.0.is_off() {
+                return Err(switched_off());
+            }
+            self.0.driver.notify_peer(peer, session, characteristic, value).await
+        }
+
+        async fn disconnect_peer(&self, peer: &PeerAddress, session: Option<u64>) -> ble_gatt::Result<()> {
+            self.0.driver.disconnect_peer(peer, session).await
+        }
+
+        async fn notify_max_len(&self, peer: &PeerAddress, session: Option<u64>) -> Option<usize> {
+            self.0.driver.notify_max_len(peer, session).await
+        }
+
+        fn events(&self) -> BoxStream<GattEvent> {
+            // While the switch is off, writes from centrals do not arrive,
+            // as with a radio that is off.
+            let switch = self.0.clone();
+            let from_driver = self.0.driver.events().filter(move |event| {
+                let drop_it = switch.is_off() && matches!(event, GattEvent::CharacteristicWritten { .. });
+                std::future::ready(!drop_it)
+            });
+            let from_switch = futures_util::stream::unfold(self.0.events.subscribe(), |mut rx| async move {
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => return Some((event, rx)),
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
+            });
+            Box::pin(futures_util::stream::select(from_driver, from_switch))
+        }
+
+        async fn radio_status(&self) -> RadioStatus {
+            if self.0.is_off() {
+                return RadioStatus::Off;
+            }
+            self.0.driver.radio_status().await
+        }
+    }
+
+    /// A central-role connection that fails while the switch is off.
+    struct SwitchedConnection {
+        inner: Box<dyn GattConnection>,
+        switch: Arc<RadioSwitch>,
+    }
+
+    #[async_trait]
+    impl GattConnection for SwitchedConnection {
+        fn peer(&self) -> PeerAddress {
+            self.inner.peer()
+        }
+
+        fn session(&self) -> Option<u64> {
+            self.inner.session()
+        }
+
+        fn att_mtu(&self) -> u16 {
+            self.inner.att_mtu()
+        }
+
+        async fn read(&mut self, characteristic: CharacteristicUuid) -> ble_gatt::Result<Vec<u8>> {
+            if self.switch.is_off() {
+                return Err(switched_off());
+            }
+            self.inner.read(characteristic).await
+        }
+
+        async fn write_with_type(
+            &mut self, characteristic: CharacteristicUuid, value: Vec<u8>, write_type: WriteType,
+        ) -> ble_gatt::Result<()> {
+            if self.switch.is_off() {
+                return Err(switched_off());
+            }
+            self.inner.write_with_type(characteristic, value, write_type).await
+        }
+
+        async fn subscribe(
+            &mut self, characteristic: CharacteristicUuid,
+        ) -> ble_gatt::Result<BoxStream<ble_gatt::Result<Vec<u8>>>> {
+            if self.switch.is_off() {
+                return Err(switched_off());
+            }
+            let switch = self.switch.clone();
+            let stream = self.inner.subscribe(characteristic).await?;
+            Ok(Box::pin(stream.take_while(move |_| std::future::ready(!switch.is_off()))))
+        }
+
+        async fn disconnect(&mut self) -> ble_gatt::Result<()> {
+            self.inner.disconnect().await
+        }
+
+        async fn request_connection_priority(&mut self, priority: ConnectionPriority) -> ble_gatt::Result<()> {
+            self.inner.request_connection_priority(priority).await
+        }
+    }
 }
 
 /// Whether the *local* Bluetooth radio could actually be used the last time

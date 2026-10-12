@@ -79,6 +79,8 @@ use adapter::*;
 pub use adapter::{is_bluetooth_adapter_unavailable, probe_adapter_available};
 #[cfg(test)]
 pub use adapter::pin_adapter_reachable_on_this_thread;
+#[cfg(feature = "devtools")]
+pub use adapter::set_bluetooth_switch;
 pub use data_link::*;
 #[cfg(any(feature = "ui-plane", test))]
 pub use discovery::*;

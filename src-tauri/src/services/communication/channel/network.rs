@@ -31,6 +31,33 @@ use crate::services::communication::sync::types::PeerFrame;
 /// network answers in milliseconds; one that went away never does.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The test switch of the Network channel, for debug builds only. Off makes
+/// the network look absent to Fini: no announcements go out, none come in,
+/// and connections fail. The real network stays on, so that no test must
+/// switch off the Wi-Fi of a person's device.
+#[cfg(feature = "devtools")]
+static NETWORK_SWITCH_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the test switch set the network to off. Always false in a build
+/// without `devtools`.
+pub(crate) fn network_switched_off() -> bool {
+    #[cfg(feature = "devtools")]
+    return NETWORK_SWITCH_OFF.load(std::sync::atomic::Ordering::SeqCst);
+    #[cfg(not(feature = "devtools"))]
+    false
+}
+
+/// Sets the test switch of the Network channel; see `NETWORK_SWITCH_OFF`.
+#[cfg(feature = "devtools")]
+pub fn set_network_switch(on: bool) {
+    log::info!("[transport][network] test switch: network {}", if on { "on" } else { "off" });
+    NETWORK_SWITCH_OFF.store(!on, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn switched_off_error() -> String {
+    "the test switch set the network to off".to_string()
+}
+
 /// How long the Network server waits before trying its port again.
 #[cfg(any(feature = "ui-plane", test))]
 const REBIND_INTERVAL: Duration = Duration::from_secs(5);
@@ -95,6 +122,9 @@ pub async fn dial(
 async fn dial_link(
     state: &DeviceConnectionState, peer_key: &str, ip: IpAddr, port: u16,
 ) -> Result<IrohDataLink, String> {
+    if network_switched_off() {
+        return Err(switched_off_error());
+    }
     let endpoint = endpoint(state).await?;
     let id: EndpointId = peer_key
         .parse()
@@ -158,6 +188,10 @@ pub(crate) async fn spawn_server_on_free_port(state: DeviceConnectionState, db_p
 #[cfg(any(feature = "ui-plane", test))]
 async fn serve(state: DeviceConnectionState, db_path: PathBuf, endpoint: Endpoint) {
     while let Some(incoming) = endpoint.accept().await {
+        if network_switched_off() {
+            drop(incoming);
+            continue;
+        }
         let peer_addr = match incoming.remote_addr() {
             IncomingAddr::Ip(addr) => Some(addr.ip().to_string()),
             _ => None,
