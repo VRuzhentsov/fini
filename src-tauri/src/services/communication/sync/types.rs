@@ -104,7 +104,7 @@ pub enum PeerFrame {
     BluetoothAddressUpdate { address: String },
     /// Pre-auth, sent by a scanner over a fresh BLE connection to a
     /// candidate whose advertisement already carried the add-mode flag
-    /// (`channel::ble`'s own scan-side filtering, so a stranger not in
+    /// (`channel::bluetooth`'s own scan-side filtering, so a stranger not in
     /// add-mode is never even connected to). BLE advertisements can't carry
     /// a device_id/hostname the way mDNS's `DiscoveryBeacon` does (payload
     /// too small alongside the service UUID), and `PairRequestPayload`
@@ -113,13 +113,18 @@ pub enum PeerFrame {
     /// same as `PairRequest`/`PairAccept`/`PairComplete`: discovery
     /// metadata is never the trust boundary, Fini's own pairing handshake
     /// is (`specs/device-connect/README.md`).
+    ///
+    /// Carries the prober's own identity: of two devices in add-mode only
+    /// one dials the other (the lower advertised fingerprint), so this one
+    /// connection is how the probed device learns of the prober too.
     #[serde(rename = "discovery_hello")]
-    DiscoveryHello,
+    DiscoveryHello { device_id: String, hostname: String, endpoint_id: String },
     /// Reply to `DiscoveryHello`, sent only if the receiver is currently in
     /// add-mode itself -- `specs/device-connect/README.md`: "Only devices
-    /// in add-mode are pairing candidates."
+    /// in add-mode are pairing candidates." `endpoint_id` is the replier's
+    /// iroh key: a pairing leg to it dials iroh by that key (ADR-0009).
     #[serde(rename = "discovery_hello_reply")]
-    DiscoveryHelloReply { device_id: String, hostname: String },
+    DiscoveryHelloReply { device_id: String, hostname: String, endpoint_id: String },
     /// ADR-0008 D1/D2: one half of a channel's init. Pre-auth, sent over a
     /// fresh link by a device running a setup search for a paired peer.
     /// Answered with `HelloAck` only if the receiver has this device paired
@@ -179,6 +184,11 @@ mod tests {
             reason: "private detail".to_string(),
         };
         assert_eq!(frame.wire_type(), "auth_fail");
-        assert_eq!(PeerFrame::DiscoveryHello.wire_type(), "discovery_hello");
+        let hello = PeerFrame::DiscoveryHello {
+            device_id: "d".to_string(),
+            hostname: "h".to_string(),
+            endpoint_id: "k".to_string(),
+        };
+        assert_eq!(hello.wire_type(), "discovery_hello");
     }
 }

@@ -10,8 +10,7 @@ description: |
        Device view, Reminder, Focus view, Active quest panel, Spaces, Energy, Voice model, History, or any
        prototype filename under `../fini-design/project/preview/`.
     4. User says "design a new surface", "refine [surface]", "audit visuals", or "clarify design intent" for Fini.
-    5. User asks to update/close a Fini GitHub issue whose body cites a `../fini-design/` prototype or wiki
-       grilling note (e.g. `fini-wiki/raw/*-grilling.md`).
+    5. User asks to update/close a Fini GitHub issue whose body cites a `../fini-design/` prototype.
   The bundle's own README enforces "read chats first, then primary file under `project/`, follow imports,
   do not screenshot, pixel-recreate not structurally copy" — this skill enforces the same protocol and chains
   to `sync-design-bundle` (in the bundle repo) when a fresh URL is supplied. Direct Figma editing via
@@ -25,7 +24,7 @@ Design source for Fini lives in the sibling `../fini-design/` repo as an HTML/CS
 
 ## Sibling Design Repo
 
-Resolve the path the same way `fini-wiki` does:
+Resolve it as a sibling of the current repo:
 
 ```text
 current repo: <repo-name>      (e.g. fini)

@@ -32,13 +32,16 @@ use crate::services::communication::sync::session::{
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
 
 /// Whether this device is dialing the peer on this channel right now.
-fn dialing(peer_device_id: &str, kind: ChannelKind) -> bool {
+fn dialing(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind) -> bool {
     match kind {
-        ChannelKind::Network => crate::services::communication::channel::network::dialing(peer_device_id),
+        ChannelKind::Network => state.network_attempts.dialing(peer_device_id),
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        ChannelKind::Bluetooth => crate::services::communication::channel::ble::dialing(peer_device_id),
+        ChannelKind::Bluetooth => state.bluetooth_radio.dialing(peer_device_id),
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
-        ChannelKind::Bluetooth => false,
+        ChannelKind::Bluetooth => {
+            let _ = state;
+            false
+        }
     }
 }
 
@@ -137,12 +140,35 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     let (device_id, peer_device_id, peer_protocol_version) = match frame {
         PeerFrame::PairRequest(payload) => {
             let key = link_key.or_else(|| payload.from_endpoint_id.clone());
-            let _ = state.receive_ws_pair_request(
-                payload,
-                from_addr,
-                key,
-                kind == ChannelKind::Bluetooth,
-            );
+            let request_id = payload.request_id.clone();
+            let via_bluetooth = kind == ChannelKind::Bluetooth;
+            let _ = state.receive_ws_pair_request(payload, from_addr, key, via_bluetooth);
+            if via_bluetooth {
+                log::info!("[pairing][ble] parked the link request {request_id} arrived on");
+                state.bluetooth_carrier.park_link(request_id.clone(), link);
+                // Hold here until the request is answered or has expired.
+                // The channel service counts this central as live until the
+                // gate returns, and on Linux re-registers the advertisement
+                // -- tearing the parked link down -- once none is. Keep the
+                // add-mode scan off the adapter meanwhile too: its probes
+                // dial the very device whose link is parked here.
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                let _leg = state.bluetooth_radio.begin_pairing_leg();
+                let hold_until = tokio::time::Instant::now()
+                    + Duration::from_secs(super::PAIR_REQUEST_TTL_SECS as u64 + 5);
+                while tokio::time::Instant::now() < hold_until {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    let pending = state.runtime.lock().map_or(false, |mut runtime| {
+                        super::runtime::prune_expired_incoming_requests(&mut runtime);
+                        runtime.incoming_requests.contains_key(&request_id)
+                    });
+                    if !pending {
+                        break;
+                    }
+                }
+                log::info!("[pairing][ble] request {request_id} settled; releasing its link");
+                drop(state.bluetooth_carrier.take_link(&request_id));
+            }
             return;
         }
         PeerFrame::PairAccept(payload) => {
@@ -188,18 +214,28 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             }
             return;
         }
-        PeerFrame::DiscoveryHello => {
+        PeerFrame::DiscoveryHello { device_id, hostname, endpoint_id } => {
             // No reply at all when not in add-mode -- matching the
             // network-discovery equivalent (a mDNS beacon simply isn't
             // broadcast outside add-mode), rather than an explicit
             // rejection frame that would let a scanner distinguish "not in
             // add-mode" from "connection failed."
             if state.is_add_mode_enabled() {
+                // The prober will not be probed back (only the lower
+                // fingerprint dials), so its hello is how it reaches this
+                // device's own candidate list.
+                #[cfg(any(target_os = "linux", target_os = "android"))]
+                if kind == ChannelKind::Bluetooth && device_id != state.identity.device_id {
+                    state.bluetooth_peers.note_inbound_hello(device_id, hostname, endpoint_id);
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                let _ = (device_id, hostname, endpoint_id);
                 let _ = send_frame(
                     link.as_mut(),
                     &PeerFrame::DiscoveryHelloReply {
                         device_id: state.identity.device_id.clone(),
                         hostname: state.identity.hostname.clone(),
+                        endpoint_id: state.identity.endpoint_id.clone(),
                     },
                 )
                 .await;
@@ -316,7 +352,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     // Both devices dialed each other at once. Were both links kept and
     // then each dropped for the other, neither exchange would survive; the
     // dial from the smaller device id wins on both sides.
-    if yields_to_own_dial(&state.identity.device_id, &device_id, dialing(&device_id, kind)) {
+    if yields_to_own_dial(&state.identity.device_id, &device_id, dialing(&state, &device_id, kind)) {
         log::info!("[space_sync][gate] {kind:?} auth from {device_id} refused: this device's dial wins");
         let _ = send_frame(
             link.as_mut(),

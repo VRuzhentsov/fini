@@ -75,7 +75,7 @@ pub fn finish(
     state.end_channel_setup(peer_device_id, kind);
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if kind == ChannelKind::Bluetooth && setup.is_some_and(|setup| setup.initialized()) {
-        crate::services::communication::channel::ble::keep_answering_after_setup();
+        state.bluetooth_advertiser.keep_answering_after_setup();
     }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(setup)
@@ -90,8 +90,8 @@ async fn run(state: DeviceConnectionState, peer_device_id: String, kind: Channel
     // the peer's hello still has to reach this device afterwards, and this
     // device's scan dialling it in the meantime keeps that from happening.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    let _clear_of_candidate_scan = (kind == ChannelKind::Bluetooth)
-        .then(crate::services::communication::channel::ble::PairingLeg::begin);
+    let _clear_of_candidate_scan =
+        (kind == ChannelKind::Bluetooth).then(|| state.bluetooth_radio.begin_pairing_leg());
     say_hello(&state, &peer_device_id, kind, attempt).await;
     if kind == ChannelKind::Bluetooth {
         while state
@@ -131,7 +131,7 @@ async fn say_hello(state: &DeviceConnectionState, peer_device_id: &str, kind: Ch
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 async fn bluetooth_round(state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-    match crate::services::communication::channel::ble::setup_hello_round(
+    match crate::services::communication::channel::bluetooth::setup_hello_round(
         state.clone(),
         peer_device_id.to_string(),
         SETUP_ROUND,

@@ -370,7 +370,7 @@ async fn handle_inbound(
         | PeerFrame::PairRequest(_)
         | PeerFrame::PairAccept(_)
         | PeerFrame::PairComplete(_)
-        | PeerFrame::DiscoveryHello
+        | PeerFrame::DiscoveryHello { .. }
         | PeerFrame::DiscoveryHelloReply { .. }
         | PeerFrame::Hello { .. }
         | PeerFrame::HelloAck { .. }

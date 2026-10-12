@@ -17,27 +17,14 @@ These specs are the implementation contract for the main `fini` repo.
 - Keep view/component companion docs next to the frontend files in `src/**.md`
 - In companion docs, link to the feature spec when the behavior belongs to a broader domain concept
 
-## Repo vs Wiki
+## What Belongs Here
 
-Keep docs in the main `fini` repo when they are load-bearing for implementation and should change with code reviews.
-
-Put these in `fini/specs`:
+Keep docs in the `fini` repo when they are load-bearing for implementation and should change with code reviews:
 
 - current feature behavior and invariants
 - API/runtime contracts
 - acceptance criteria that can be tested
 - ownership boundaries between views, stores, and backend services
-
-Keep docs in `fini-wiki` when they are broader, historical, strategic, or synthesized across multiple implementation phases.
-
-Put these in `fini-wiki`:
-
-- product rationale and historical intent
-- architecture evolution and superseded approaches
-- roadmap, planning captures, and decision context
-- cross-feature analysis and long-form notes
-
-If both are needed, keep the enforceable contract in `fini/specs` and link to the wiki for rationale/history.
 
 ## Current Map
 

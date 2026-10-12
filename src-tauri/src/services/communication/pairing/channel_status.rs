@@ -52,6 +52,15 @@ pub enum ChannelProblem {
     BluetoothUnavailable,
     /// This device cannot announce itself on the local network.
     NetworkUnavailable,
+    /// This pair has no pinned key, so no channel of it can authenticate.
+    ///
+    /// Pairs made before ADR-0009 have nothing in `paired_devices.
+    /// endpoint_id`, and `gate::key_matches` refuses them by design: a key
+    /// is pinned only by pairing, and nothing backfills one. Without this
+    /// the row sits `on` and grey for ever, because the refusal happens at
+    /// the gate where no row can see it -- the person is shown a channel
+    /// that is switched on, never arrives, and explains nothing.
+    PairKeyMissing,
 }
 
 /// One row on the Device page.

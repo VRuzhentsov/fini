@@ -49,8 +49,3 @@ Device discovery, add-device mode, pairing handshake, paired-device persistence,
 
 - `specs/space-sync/README.md`
 - `specs/e2e/transports.md` for the E2E topology-to-verification matrix
-
-## Wiki Links
-
-- `~/projects/fini-wiki/pages/concepts/DeviceConnection.md` when present
-- `~/projects/fini-wiki/pages/concepts/device-sync-architecture.md` for architecture history

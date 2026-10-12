@@ -24,28 +24,15 @@ Fini is in open alpha and has not been publicly released. Treat the current sour
 
 When a contract changes during alpha, implement the new contract directly. Remove obsolete adapters and mappings rather than carrying a compatibility layer for an unreleased predecessor.
 
-## First-Run Install
-
-Before implementation, debugging, QA, Android, design-to-code, release, documentation changes, or planning that depends on repo context:
-
-1. Check whether `.fini-dev-install.done` exists at the Fini repo root.
-2. If the marker is missing, load `fini-dev-install` and run its workflow before continuing.
-3. Continue with normal `fini-dev` routing only after `fini-dev-install` verifies `../fini-wiki/` and creates the marker.
-4. If install verification fails, stop and report the blocker instead of continuing with repo work that may rely on wiki context.
-
-The marker is local to the checkout. Do not commit it.
-
 ## Start Of Work
 
 Before implementation, debugging, QA, Android, design-to-code, release, or documentation changes:
 
-1. Run the first-run install check above.
-2. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`.
-3. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
-4. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, and targeted source files.
-5. If the task needs product, business, terminology, strategic, architecture background, or historical context, load `fini-wiki` and follow the wiki query protocol.
-6. Choose any specialized skill from the routing table below before doing the domain-specific work.
-7. Pick the smallest useful verification command before editing so the success standard is clear.
+1. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`.
+2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
+3. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, `docs/adr/`, and targeted source files.
+4. Choose any specialized skill from the routing table below before doing the domain-specific work.
+5. Pick the smallest useful verification command before editing so the success standard is clear.
 
 For GitHub issue work, keep the branch rule lightweight: reuse an existing branch if it already contains the issue number, and pause before switching branches if the worktree has conflicting uncommitted changes.
 
@@ -55,32 +42,7 @@ If the user explicitly asks to think, plan, brainstorm, or review without implem
 
 For any planning stage, load `grill-me` before finalizing the plan. Treat planning broadly: explicit think/plan/brainstorm requests, ticket scoping, architecture plans, design plans, release plans, QA strategy, and any pre-implementation decision work.
 
-Use `grill-me` as an overlay, not a replacement for domain skills. First gather evidence from the repo, wiki, specs, or source files when evidence can answer the question; ask the user only for decisions evidence cannot resolve. Ask one question at a time, include the recommended answer, and stop when remaining questions are non-blocking or explicitly deferred.
-
-## Planning Capture
-
-At the end of any major planning session, load `fini-wiki` and write the result to the project wiki raw folder for future ingestion.
-
-Treat a planning session as major when it produces durable context, such as:
-
-- architecture or implementation plans spanning multiple files or systems
-- roadmap, scope, or product decisions
-- design, UX, or workflow plans
-- release, deploy, or QA strategy
-- debugging or investigation conclusions that explain root cause and next steps
-
-Do not save trivial one-step plans, routine command plans, or temporary scratch reasoning.
-
-When saving, include:
-
-- original user goal
-- final plan
-- decisions made
-- evidence reviewed, including key files, commands, logs, or docs
-- open questions
-- explicitly deferred work
-
-Use `fini-wiki` as raw durable capture only. Do not update `_hot.md`, `_index.md`, `log.md`, or `pages/**` unless the user explicitly asks for ingestion.
+Use `grill-me` as an overlay, not a replacement for domain skills. First gather evidence from the repo, specs, ADRs, or source files when evidence can answer the question; ask the user only for decisions evidence cannot resolve. Ask one question at a time, include the recommended answer, and stop when remaining questions are non-blocking or explicitly deferred.
 
 ## Skill Routing
 
@@ -99,12 +61,10 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
 | Any code change (Rust, TypeScript, Vue, tests or e2e helpers) — always, not only when style seems to matter | `fini-code-style`, alongside whichever domain skill governs the surface being touched |
 | Change SQLite schema, Diesel schema, data migrations, migration rollback, or database migration tests | `fini-dev-db`; also load `fini-test` for migration coverage |
-| First-run setup, bootstrap, install, or verification of required sibling project context such as `../fini-wiki/` | `fini-dev-install` |
 | Add or change Makefile targets, npm scripts, `xtask`, CI command orchestration, build tooling, packaging tooling, or repo-local automation architecture | `fini-scripting` |
 | Make a release, bump a release version for shipping, push a release tag, inspect release readiness, fix release automation, or verify release CI | `fini-release`; also load `fini-versioning` for metadata semantics and `fini-scripting` when automation changes are needed |
 | Change package metadata, app version display, CLI version output, Android versioning, or CI release version sync outside an operational release | `fini-versioning`; also follow `fini-scripting` when automation changes are needed |
 | Prepare a major release, Play Store listing assets, Android marketplace screenshots, or release screenshot packages | `fini-release-prep`; also follow `fini-scripting` when automation changes are needed |
-| Query product/domain/history/architecture context from the wiki, or save plans, decisions, research, or conversation context to wiki raw material | `fini-wiki` |
 | Debug errors, regressions, stack traces, crashes, or unexpected behavior | `investigate` |
 | QA a web/app flow and fix bugs found | `qa` |
 | QA report only, without fixes | `qa-only` |
@@ -168,14 +128,7 @@ For Vue templates and CSS/class work, prefer the existing UI framework before wr
 
 Before changing a significant source file, read its companion `.md` spec when present. Write code to match the spec, or update docs/specs deliberately when the behavior changes.
 
-For product semantics, read wiki context using this order:
-
-1. `~/projects/fini-wiki/_hot.md`
-2. `~/projects/fini-wiki/_index.md` if needed
-3. One or two targeted wiki pages
-4. Targeted search only if the right page is not obvious
-
-Stay within the five-page wiki limit unless the user asks for deeper research.
+For product semantics and decision history, read `specs/` and `docs/adr/`.
 
 ## Dev Data Population And Feature Exercise
 
@@ -188,6 +141,32 @@ When setting up data for manual testing, QA, or feature exercise:
 - `fini` (user-facing skill) is appropriate when the dev task maps directly to an end-user action (e.g. "create a quest titled X due Friday in Family"). For dev-only data patterns, route directly to `fini-cli`.
 
 ## Command Selection
+
+### Development runs on HMR; the user builds artefacts
+
+For any development or iteration run, start the **HMR processes** and leave
+them running:
+
+| Side | Use | Not |
+|---|---|---|
+| Desktop | `make desktop-debug-dev` | `make desktop-debug` (builds a binary first) |
+| Phone | `make android-dev` | `make android-debug-deploy` (builds and installs an APK) |
+
+A frontend edit then reaches both apps immediately. Building an artefact for
+an iteration costs minutes per change and is the user's call, not a default:
+reach for one only when the artefact itself is the thing under test — a
+release check, or something that must run against an installed package.
+
+Two limits to state rather than work around silently:
+
+- **HMR covers the frontend only.** A Rust change needs a rebuild, and
+  `tauri dev` does not always pick one up on its own. After editing Rust,
+  confirm the running app actually has the change (query the behaviour, do
+  not assume) and restart the dev process when it does not.
+- **`make android-dev` serves the frontend from the host over the network**,
+  so it cannot run while the phone's Wi-Fi is off for a Bluetooth-only test
+  (`make e2e-devices-ble`). When a task needs both, say so and let the user
+  choose which half to give up.
 
 Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 
@@ -232,6 +211,16 @@ Before adding a new constant, function, type, or utility, search for an existing
 If an equivalent already exists, import and reuse it. Do not duplicate logic in a view, component, or test that belongs in a store or utility. If the existing name is slightly different but semantically identical, prefer renaming the call site over adding a wrapper.
 
 When writing tests that mock an entire module (`jest.mock`), re-export all named constants and functions the component under test imports from that module — omitting them silently produces `undefined` at runtime.
+
+## PR Lifecycle
+
+A pull request moves through three stages. Use each stage's checks and no others:
+
+1. **Draft: build it.** Keep the PR a draft while the work is in progress. Iterate on the running HMR apps (desktop and phone), and prove behaviour by exercising it there. CI skips drafts (`.github/workflows/ci.yml`), and unit tests and e2e lanes wait for stage 3: tests on code that does not work yet are wasted runs.
+2. **Gate to leave draft: the happy flow works.** Prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
+3. **Wrap-up: make it mergeable.** Run the unit tests and the relevant e2e lanes (see `fini-test`), fix whatever fails, get CI green, and bring the PR title and description up to date with everything the branch now contains.
+
+The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
 
 ## Development Loop
 

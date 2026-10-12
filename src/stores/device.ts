@@ -1252,6 +1252,16 @@ export const useDeviceStore = defineStore("device", () => {
         };
         await invoke("device_connection_send_pair_request", { input: payload });
       }
+      // The peer's request lives from when it arrived, and a Bluetooth send
+      // can take most of a minute when a candidate probe holds the radio.
+      // Counting from the click would show this request expired while the
+      // peer still holds a fresh one.
+      if (outgoingRequest.value?.request_id === requestId) {
+        outgoingRequest.value = {
+          ...outgoingRequest.value,
+          expires_at: new Date(Date.now() + REQUEST_TTL_MS).toISOString(),
+        };
+      }
       void refreshDiscovery();
     } catch (error) {
       console.warn("[device-connection] pair request send failed", error);

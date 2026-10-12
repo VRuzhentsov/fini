@@ -41,6 +41,10 @@ Decide before writing the test:
 
 If a behavior fits more than one surface, pick the cheapest to run and the most isolated. Multi-actor is the most expensive — reserve it for behaviors that genuinely require two instances.
 
+## When to run tests
+
+Run unit tests and e2e lanes in a PR's wrap-up stage, after its happy flow has been proven and the PR has left draft (`fini-dev`, "PR Lifecycle"). While a PR is a draft, prove behaviour on the running HMR apps instead.
+
 ## Running tests
 
 ### Frontend unit

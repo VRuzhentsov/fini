@@ -52,7 +52,7 @@ test('happy-path-BLE: both sides go green over BLE alone, and a single quest con
   const [syncedA, syncedB] = await ensureBlePairedActors([actorA, actorB]);
 
   // Peer-scoped, so the same spec covers both lanes: spawned actors see no
-  // presence at all, while on hardware only this peer must be absent.
+  // presence at all, while on hardware this pair has no Network channel on.
   await expectNetworkChannelUnavailable(actorA, syncedB.identity.device_id);
   await expectNetworkChannelUnavailable(actorB, syncedA.identity.device_id);
 

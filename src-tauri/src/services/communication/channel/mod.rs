@@ -24,7 +24,7 @@
 //! (currently pass-through; the seam for future end-to-end encryption).
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub mod ble;
+pub mod bluetooth;
 pub mod codec;
 pub mod encryption;
 pub mod envelope;

@@ -767,7 +767,6 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
         device_connection_send_pair_request_impl,
     };
 
-    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-send-pair-request-receiver");
     device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
     let port = network::spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
@@ -819,7 +818,6 @@ async fn pair_request_accept_round_trip_delivers_a_code_back_to_the_requester() 
         device_connection_send_pair_request_impl,
     };
 
-    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let requester_port = free_port().await;
     let accepter_port = free_port().await;
     // The requester's own port must match where its listener actually
@@ -1093,7 +1091,6 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
         DISCOVERY_PROTOCOL,
     };
 
-    let _add_mode_guard = super::ble::ADD_MODE_TEST_LOCK.lock().unwrap();
     let (receiver, receiver_db) = server_state("transport-pair-request-bluetooth");
     device_connection_enter_add_mode_impl(&receiver, true).expect("enter add mode");
 
@@ -1521,12 +1518,21 @@ fn switching_on_a_channel_that_was_never_set_up_is_refused() {
     assert!(channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none());
 }
 
+/// A `DiscoveryHello` from a prober that is not the server under test.
+fn test_hello() -> PeerFrame {
+    PeerFrame::DiscoveryHello {
+        device_id: "prober-device".to_string(),
+        hostname: "prober".to_string(),
+        endpoint_id: "prober-key".to_string(),
+    }
+}
+
 /// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
 /// reply when the receiver is actually in add-mode -- the BLE-scan
 /// equivalent of network discovery simply not broadcasting outside
 /// add-mode. Uses `set_add_mode_for_test` (instance-scoped) rather than the
 /// real `enter_add_mode_impl`, which would also flip the process-global
-/// `channel::ble` advertising flag `ble::tests` already covers
+/// `channel::bluetooth` advertising flag `ble::tests` already covers
 /// separately.
 #[tokio::test(flavor = "multi_thread")]
 async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
@@ -1538,13 +1544,14 @@ async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
     let mut link = dial_to(&server, port)
         .await
         .expect("dial");
-    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+    send_frame(link.as_mut(), &test_hello())
         .await
         .expect("send discovery hello");
     match recv_frame(link.as_mut()).await {
-        Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname })) => {
+        Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id })) => {
             assert_eq!(device_id, server.identity.device_id);
             assert_eq!(hostname, server.identity.hostname);
+            assert_eq!(endpoint_id, server.identity.endpoint_id);
         }
         other => panic!("expected a DiscoveryHelloReply while in add-mode, got {other:?}"),
     }
@@ -1560,7 +1567,7 @@ async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
     let mut link = dial_to(&server, port)
         .await
         .expect("dial");
-    send_frame(link.as_mut(), &PeerFrame::DiscoveryHello)
+    send_frame(link.as_mut(), &test_hello())
         .await
         .expect("send discovery hello");
     // The server task returns without replying, dropping its side of the
@@ -2068,7 +2075,7 @@ fn exchanges_and_setups_start_from_outside_a_tokio_runtime() {
     seed_paired_device(&db_path, "peer-sync-command");
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::ble::start_exchange(&state, "peer-sync-command");
+    crate::services::communication::channel::bluetooth::start_exchange(&state, "peer-sync-command");
     crate::services::communication::pairing::setup::start(&state, "peer-sync-command", ChannelKind::Network);
 
     assert!(state.channel_setup("peer-sync-command", ChannelKind::Network).is_some());
@@ -2095,7 +2102,7 @@ async fn holds_within(within: Duration, done: impl Fn() -> bool) -> bool {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
-    use crate::services::communication::channel::ble::wait_for_turn_to_dial;
+    use crate::services::communication::channel::bluetooth::wait_for_turn_to_dial;
 
     let (state, _db) = server_state("setup-dial-order");
     // Device ids are UUIDs: "~" sorts after any of them, "!" before.
@@ -2133,24 +2140,26 @@ async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bluetooth_setup_keeps_the_candidate_scan_aside_until_it_ends() {
-    use crate::services::communication::channel::ble::{pairing_legs_held, PAIRING_LEGS_TEST_LOCK};
     use crate::services::communication::pairing::setup;
 
-    let _legs = PAIRING_LEGS_TEST_LOCK.lock().await;
     let (state, db_path) = server_state("setup-holds-pairing-leg");
     seed_paired_device(&db_path, "peer-leg");
+    let radio = state.bluetooth_radio.clone();
 
     setup::start(&state, "peer-leg", ChannelKind::Bluetooth);
-    assert!(holds_within(Duration::from_secs(2), || pairing_legs_held() == 1).await, "the setup holds a leg");
+    assert!(
+        holds_within(Duration::from_secs(2), || radio.pairing_legs_held() == 1).await,
+        "the setup holds a leg"
+    );
 
     // This device's hello was acknowledged: its own hello round is over.
     state.note_channel_setup("peer-leg", ChannelKind::Bluetooth, |setup| setup.hello_acked_by_peer = true);
     sleep(Duration::from_secs(1)).await;
-    assert_eq!(pairing_legs_held(), 1, "the leg outlasts this device's own hello");
+    assert_eq!(radio.pairing_legs_held(), 1, "the leg outlasts this device's own hello");
 
     state.end_channel_setup("peer-leg", ChannelKind::Bluetooth);
     assert!(
-        holds_within(Duration::from_secs(2), || pairing_legs_held() == 0).await,
+        holds_within(Duration::from_secs(2), || radio.pairing_legs_held() == 0).await,
         "the leg is released when the setup ends"
     );
 }

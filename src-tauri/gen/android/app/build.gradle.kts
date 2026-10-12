@@ -13,7 +13,6 @@ val tauriProperties = Properties().apply {
     }
 }
 
-val envVersionCode = System.getenv("FINI_ANDROID_VERSION_CODE")
 val envVersionName = System.getenv("FINI_ANDROID_VERSION_NAME")
 
 android {
@@ -24,7 +23,9 @@ android {
         applicationId = "com.fini.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = (envVersionCode ?: tauriProperties.getProperty("tauri.android.versionCode", "1")).toInt()
+        // Always the project's own code: a local build must never outrank
+        // (or be outranked by) another build of the same version.
+        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = envVersionName ?: tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
     buildTypes {
