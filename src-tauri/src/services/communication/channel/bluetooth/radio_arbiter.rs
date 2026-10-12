@@ -295,11 +295,18 @@ impl RadioArbiter {
         };
         self.start_once();
         self.changed.notify_one();
+        log::info!("[transport][ble] {purpose:?} search for {peer} started (up to {window:?})");
+        let started = Instant::now();
 
         let found = tokio::time::timeout(window, heard).await.ok().and_then(Result::ok);
 
         self.requests.lock().unwrap().searches.retain(|request| request.id != id);
         self.changed.notify_one();
+        log::info!(
+            "[transport][ble] {purpose:?} search for {peer} ended after {:?}: {}",
+            started.elapsed(),
+            if found.is_some() { "heard" } else { "not heard" }
+        );
         if found.is_some() {
             // The hand-off wakes this task before the coordinator has dropped
             // its discovery stream; the lease comes free only once it has, so
@@ -410,6 +417,11 @@ impl RadioArbiter {
                 }
             };
             let running = self.start_running_scan();
+            log::info!(
+                "[transport][ble] shared scan window started for {} device(s), status search {}",
+                wanted.len(),
+                if self.requests.lock().unwrap().status.is_some() { "on" } else { "off" }
+            );
 
             // One window at a time: the wanted set is re-read between
             // windows, and at once whenever a search starts or ends.

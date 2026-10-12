@@ -331,6 +331,10 @@ pub async fn device_connection_discover_bluetooth_candidates(
             state.bluetooth_advertiser.hello(),
         )
         .await?;
+        log::info!(
+            "[transport][ble] add-device list: [{}]",
+            candidates.iter().map(|c| format!("{} at {}", c.hostname, c.address)).collect::<Vec<_>>().join(", ")
+        );
         let now = utc_now();
         Ok(candidates
             .into_iter()

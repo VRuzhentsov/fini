@@ -234,7 +234,15 @@ pub async fn scan_add_mode_candidates(
     // up when one starts. An `Err` keeps the picker's previous list (the
     // caller treats it as "retry later"), where an empty `Ok` would wipe the
     // very candidate being paired.
+    let held = *legs.borrow();
+    let waited = std::time::Instant::now();
     let _ = legs.wait_for(|count| *count == 0).await;
+    if held > 0 {
+        log::info!(
+            "[transport][ble] add-device scan waited {:?} for {held} pairing step(s) to end",
+            waited.elapsed()
+        );
+    }
     let adapter = adapter().await.inspect_err(|_| note_adapter_unreachable())?;
     scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, adapter, peers, radio, |address| async move {
         probe_discovery_hello(radio, hello, &address).await
@@ -279,7 +287,14 @@ where
     // with their fingerprints; see below.
     let mut answered_by: Vec<(String, [u8; FINGERPRINT_LEN])> = Vec::new();
     let flagged_addresses = {
+        let waited = std::time::Instant::now();
         let _scan = radio.scan_lease_between_dials().await;
+        if waited.elapsed() > Duration::from_millis(500) {
+            log::info!(
+                "[transport][ble] add-device scan waited {:?} for the scan lock",
+                waited.elapsed()
+            );
+        }
         let mut discovered = adapter
             .central()
             .scan(datagram_config().service)
@@ -369,6 +384,18 @@ where
             if let Some(theirs) = theirs {
                 peers.note_advertiser(&address, theirs);
             }
+            let add_device_flag = peer
+                .manufacturer_data
+                .get(&FINI_MANUFACTURER_ID)
+                .and_then(|payload| payload.first())
+                .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
+            let they_connect = matches!(theirs, Some(theirs) if theirs <= mine);
+            log::info!(
+                "[transport][ble] add-device scan heard {address} fingerprint={:02x?} add_device_flag={add_device_flag} rssi={:?} -> {}",
+                theirs.unwrap_or_default(),
+                peer.rssi,
+                if they_connect { "it connects to us" } else { "we identify it" }
+            );
             match theirs {
                 Some(theirs) if theirs <= mine => answered_by.push((address, theirs)),
                 _ => flagged.push(address),
@@ -430,7 +457,18 @@ where
             candidates.push(candidate);
             continue;
         }
+        let started = std::time::Instant::now();
         let reply = tokio::time::timeout(CANDIDATE_PROBE_TIMEOUT, probe(address.clone())).await;
+        log::info!(
+            "[transport][ble] add-device identify {address} took {:?}: {}",
+            started.elapsed(),
+            match &reply {
+                Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, .. })) => format!("answered by {device_id}"),
+                Ok(Some(other)) => format!("unexpected {}", other.wire_type()),
+                Ok(None) => "no answer".to_string(),
+                Err(_) => "timed out".to_string(),
+            }
+        );
         if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id })) = reply {
             // A stale/self-seen advertisement (e.g. two adapters on the
             // same machine, or a previous scan's own peripheral still
