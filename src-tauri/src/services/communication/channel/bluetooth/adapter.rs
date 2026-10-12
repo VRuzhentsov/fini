@@ -82,23 +82,30 @@ async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Backend>, Strin
     )) as Arc<dyn ble_gatt::Backend>)
 }
 
-/// The Bluetooth adapter on Android, over the driver that
-/// `tauri-plugin-ble-gatt` makes. Made at the first use, not at `.setup()`:
-/// the driver needs the Activity, and the Activity does not exist at
-/// `.setup()` (see the plugin's `lazy` module). The first use comes from a
-/// command or a tick after startup (`start_peripheral_once`, `start_exchange`).
+/// The Bluetooth adapter on Android, which `tauri-plugin-ble-gatt` makes.
+/// Made at the first use, not at `.setup()`: the driver needs the Activity,
+/// and the Activity does not exist at `.setup()` (see the plugin's `lazy`
+/// module). The first use comes from a command or a tick after startup
+/// (`start_peripheral_once`, `start_exchange`). A `devtools` build puts the
+/// adapter's driver behind the test switch.
 #[cfg(target_os = "android")]
 pub(super) async fn adapter() -> Result<Adapter, String> {
     static ADAPTER: tokio::sync::OnceCell<Adapter> = tokio::sync::OnceCell::const_new();
     ADAPTER
-        .get_or_try_init(|| async { Ok(Adapter::new(switched(crate::services::ble_plugin::driver()?)).await) })
+        .get_or_try_init(|| async {
+            let adapter = crate::services::ble_plugin::adapter().await?;
+            #[cfg(feature = "devtools")]
+            return Ok(Adapter::new(switched(adapter.backend())).await);
+            #[cfg(not(feature = "devtools"))]
+            Ok(adapter)
+        })
         .await
         .cloned()
 }
 
 /// The driver as the adapter gets it. In a build without `devtools` this
 /// is the platform driver itself.
-#[cfg(not(feature = "devtools"))]
+#[cfg(all(target_os = "linux", not(feature = "devtools")))]
 fn switched(driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
     driver
 }

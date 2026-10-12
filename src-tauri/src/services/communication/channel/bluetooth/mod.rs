@@ -282,7 +282,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         // `Advertiser::add_mode`'s doc comment for why this is a signal to
         // the running loop rather than a full task restart.
         let mut add_mode_rx = advertiser.watch_add_mode();
-        let mut incoming = match datagram::serve(adapter.backend(), &advertiser.advertised_config()).await {
+        let mut incoming = match datagram::serve(&adapter, &advertiser.advertised_config()).await {
             Ok(stream) => {
                 // Advertising is a real use of the radio, so it clears a
                 // previously-recorded failure just as a scan does.

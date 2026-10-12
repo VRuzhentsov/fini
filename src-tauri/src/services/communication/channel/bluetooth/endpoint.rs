@@ -88,7 +88,7 @@ pub(crate) async fn bluetooth_endpoint(
         .get_or_try_init(|| async {
             let adapter = adapter().await?;
             let transport = ble_gatt_iroh::BleGattTransport::builder()
-                .dialer(ble_gatt_iroh::dial_with(adapter.backend(), datagram_config()))
+                .dialer(ble_gatt_iroh::dial_with(adapter, datagram_config()))
                 .build();
             let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
                 .secret_key(state.secret_key.clone())
