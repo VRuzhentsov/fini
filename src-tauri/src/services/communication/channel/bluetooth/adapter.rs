@@ -1,19 +1,19 @@
-//! The Bluetooth adapter: one backend per process, and whether it worked
-//! the last time anything used it.
+//! The Bluetooth adapter: one per process, and whether it worked the last
+//! time anything used it.
 //!
 //! Process-wide on purpose, unlike the per-state objects beside it: a
-//! process drives one physical adapter, and `ble-gatt`'s backends own a
-//! single D-Bus session (Linux) or Activity-bound plugin (Android) each.
+//! process drives one physical adapter, and each `ble-gatt` platform driver
+//! owns one D-Bus session (Linux) or one Activity-bound plugin (Android).
 
 use super::*;
 
-/// One `LinuxBackend` for the process's lifetime. `ble_gatt::backend::linux::LinuxBackend::new()`
-/// opens a BlueZ D-Bus session and requires a powered adapter; constructing
-/// it lazily (on first dial/serve attempt) rather than at startup means a
-/// machine with no/unpowered Bluetooth adapter never fails app startup over
-/// a transport most sessions won't use.
+/// The Bluetooth adapter of this device, made one time for the process.
+///
+/// The Linux driver opens a BlueZ D-Bus session and needs a powered adapter.
+/// Fini makes it at the first use, not at startup, so a computer without a
+/// usable adapter still starts the app.
 #[cfg(target_os = "linux")]
-pub(super) async fn backend() -> Result<Arc<dyn Backend>, String> {
+pub(super) async fn adapter() -> Result<Adapter, String> {
     // `get_or_try_init`, not `get_or_init` over a cached `Result`: the
     // latter permanently bakes in whatever the *first* call returned,
     // success or failure. If Fini starts while Bluetooth is off, BlueZ is
@@ -31,25 +31,25 @@ pub(super) async fn backend() -> Result<Arc<dyn Backend>, String> {
     // `tauri::async_runtime::spawn`, so an unbounded wait here would tie up
     // an async worker thread for however long that takes. A timeout turns
     // "no adapter reachable" into a fast, retryable failure instead.
-    const BACKEND_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+    const ADAPTER_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-    static BACKEND: OnceCell<Arc<dyn Backend>> = OnceCell::const_new();
-    BACKEND
+    static ADAPTER: OnceCell<Adapter> = OnceCell::const_new();
+    ADAPTER
         .get_or_try_init(|| async {
             #[cfg(feature = "devtools")]
             if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
-                return mock_backend(&endpoint).await;
+                return Ok(Adapter::new(mock_driver(&endpoint).await?).await);
             }
-            match tokio::time::timeout(BACKEND_INIT_TIMEOUT, LinuxBackend::new()).await {
-                Ok(Ok(backend)) => Ok(Arc::new(backend) as Arc<dyn Backend>),
+            match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, LinuxBackend::new()).await {
+                Ok(Ok(driver)) => Ok(Adapter::new(Arc::new(driver)).await),
                 Ok(Err(err)) => Err(err.to_string()),
                 Err(_) => Err(format!(
-                    "timed out after {BACKEND_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
+                    "timed out after {ADAPTER_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
                 )),
             }
         })
         .await
-        .map(Arc::clone)
+        .cloned()
 }
 
 /// The `actors-ble` e2e lane's radio: a `MockBackend` talking to a
@@ -62,8 +62,8 @@ pub(super) async fn backend() -> Result<Arc<dyn Backend>, String> {
 /// env var must be true for a process to ever reach this branch -- an env
 /// var alone can never redirect a shipped binary onto a socket.
 #[cfg(all(target_os = "linux", feature = "devtools"))]
-async fn mock_backend(endpoint: &str) -> Result<Arc<dyn Backend>, String> {
-    use ble_gatt::backend::mock::{MockBackend, MockNetwork};
+async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Backend>, String> {
+    use ble_gatt::drivers::mock::{MockBackend, MockNetwork};
     use ble_gatt::CapabilityReport;
 
     // Reuses the existing "fake local adapter address" escape hatch
@@ -79,17 +79,21 @@ async fn mock_backend(endpoint: &str) -> Result<Arc<dyn Backend>, String> {
         PeerAddress(address),
         network,
         CapabilityReport { central: true, peripheral: true },
-    )) as Arc<dyn Backend>)
+    )) as Arc<dyn ble_gatt::Backend>)
 }
 
-/// The backend `tauri-plugin-ble-gatt` builds on Android: one for the
-/// process, constructed on first use rather than at `.setup()`, where the
-/// Activity context it needs does not exist yet (see the plugin's `lazy`
-/// module). First use comes from a post-startup command or tick
-/// (`start_peripheral_once`, `start_exchange`).
+/// The Bluetooth adapter on Android, over the driver that
+/// `tauri-plugin-ble-gatt` makes. Made at the first use, not at `.setup()`:
+/// the driver needs the Activity, and the Activity does not exist at
+/// `.setup()` (see the plugin's `lazy` module). The first use comes from a
+/// command or a tick after startup (`start_peripheral_once`, `start_exchange`).
 #[cfg(target_os = "android")]
-pub(super) async fn backend() -> Result<Arc<dyn Backend>, String> {
-    crate::services::ble_plugin::backend()
+pub(super) async fn adapter() -> Result<Adapter, String> {
+    static ADAPTER: tokio::sync::OnceCell<Adapter> = tokio::sync::OnceCell::const_new();
+    ADAPTER
+        .get_or_try_init(|| async { Ok(Adapter::new(crate::services::ble_plugin::driver()?).await) })
+        .await
+        .cloned()
 }
 
 /// Whether the *local* Bluetooth radio could actually be used the last time
@@ -110,8 +114,8 @@ pub(super) async fn backend() -> Result<Arc<dyn Backend>, String> {
 /// about, and it catches an adapter that reports itself powered while
 /// refusing to scan.
 ///
-/// Only a real *use* records health. Recording success from `backend()`
-/// alone would be wrong: it caches its `Arc` in a `OnceCell`, so once the
+/// Only a real *use* records health. Recording success from `adapter()`
+/// alone would be wrong: it caches the adapter in a `OnceCell`, so once the
 /// adapter has worked once, every later call returns that cached handle
 /// without touching hardware -- an adapter switched off afterwards would
 /// still look reachable, and the row would flap between the cached success
@@ -204,11 +208,11 @@ pub async fn probe_adapter_available(radio: &RadioArbiter) -> bool {
             return true;
         }
         if let Some(_scan) = radio.try_scan_lease() {
-            let Ok(backend) = backend().await else {
+            let Ok(adapter) = adapter().await else {
                 note_adapter_unreachable();
                 return false;
             };
-            return match backend.scan(datagram_config().service).await {
+            return match adapter.central().scan(datagram_config().service).await {
                 Ok(stream) => {
                     drop(stream);
                     note_adapter_reachable();
@@ -244,9 +248,9 @@ mod tests {
     /// from parallel test threads. Mirrors `BLUETOOTH_PAIRED_ADDRESSES_ENV_LOCK`
     /// in `pairing::commands`.
     #[cfg(all(target_os = "linux", feature = "devtools"))]
-    static MOCK_BACKEND_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static MOCK_DRIVER_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Proves `mock_backend` actually round-trips through a real socket to a
+    /// Proves `mock_driver` actually round-trips through a real socket to a
     /// real `MockNetwork::serve` broker, not just that it compiles -- the
     /// same connect+advertise+scan shape `ble-gatt`'s own
     /// `tests/mock_broker.rs` exercises, but through fini's injection point
@@ -255,37 +259,37 @@ mod tests {
     /// e2e lane's two real `fini-app` processes will each do at startup.
     #[cfg(all(target_os = "linux", feature = "devtools"))]
     #[tokio::test]
-    async fn mock_backend_connects_to_a_broker_and_reports_full_capabilities() {
-        let _guard = MOCK_BACKEND_ENV_LOCK.lock().unwrap();
+    async fn mock_driver_connects_to_a_broker_and_reports_full_capabilities() {
+        let _guard = MOCK_DRIVER_ENV_LOCK.lock().unwrap();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind loopback broker port");
         let broker_addr = listener.local_addr().expect("local_addr");
         tokio::spawn(async move {
-            let _ = ble_gatt::backend::mock::MockNetwork::serve(listener).await;
+            let _ = ble_gatt::drivers::mock::MockNetwork::serve(listener).await;
         });
 
         std::env::set_var("FINI_LOCAL_BLUETOOTH_ADDRESS", "AA:BB:CC:00:00:01");
-        let result = mock_backend(&broker_addr.to_string()).await;
+        let result = mock_driver(&broker_addr.to_string()).await;
         std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
 
-        let backend = result.expect("mock_backend should connect to the broker");
-        let capabilities = backend.capabilities().await;
+        let driver = result.expect("mock_driver should connect to the broker");
+        let capabilities = driver.capabilities().await;
         assert!(capabilities.central && capabilities.peripheral);
     }
 
-    /// The one precondition `mock_backend` itself enforces: without a local
+    /// The one precondition `mock_driver` itself enforces: without a local
     /// address there is nothing to identify this peer as on the mock radio,
     /// and the error must name which env var is missing rather than panic
     /// or silently pick something.
     #[cfg(all(target_os = "linux", feature = "devtools"))]
     #[tokio::test]
-    async fn mock_backend_requires_a_local_bluetooth_address() {
-        let _guard = MOCK_BACKEND_ENV_LOCK.lock().unwrap();
+    async fn mock_driver_requires_a_local_bluetooth_address() {
+        let _guard = MOCK_DRIVER_ENV_LOCK.lock().unwrap();
         std::env::remove_var("FINI_LOCAL_BLUETOOTH_ADDRESS");
 
-        let err = match mock_backend("127.0.0.1:1").await {
+        let err = match mock_driver("127.0.0.1:1").await {
             Ok(_) => panic!("must fail without a local address"),
             Err(err) => err,
         };

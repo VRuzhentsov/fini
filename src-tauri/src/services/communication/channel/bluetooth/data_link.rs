@@ -100,9 +100,9 @@ impl DataLink for BleDataLink {
 /// Fini's own pre-pairing frames (discovery, pair request/accept/complete).
 /// Sessions use `dial_session`.
 pub async fn dial(address: &str) -> Result<Box<dyn DataLink>, String> {
-    let backend = backend().await?;
+    let adapter = adapter().await?;
     let peer = PeerAddress(address.to_string());
-    let channel = datagram::connect(backend, &peer, &datagram_config())
+    let channel = datagram::connect(adapter.backend(), &peer, &datagram_config())
         .await
         .map_err(|err| format!("ble connect to {address} failed: {err}"))?;
     Ok(Box::new(BleDataLink::new(channel)))

@@ -29,10 +29,10 @@ use super::*;
 /// reply took 2.4-3.9s against a Pixel, so 3s cut off the reply every time,
 /// and the 4s scan window left the probe phase only ~2s of budget besides.
 ///
-/// Then from 12s to 25s, because 12s was still under the *backend's* own
+/// Then from 12s to 25s, because 12s was still under the *driver's* own
 /// bound and so could never express anything but "give up early". ble-gatt
 /// gives a connect `CONNECT_TIMEOUT` (20s) to finish; a probe capped below
-/// that is guaranteed to abandon a dial the backend had not yet given up on.
+/// that is guaranteed to abandon a dial the driver had not yet given up on.
 /// Measured here, Add Device found the peer every pass and never once
 /// probed it successfully:
 ///
@@ -44,13 +44,13 @@ use super::*;
 /// empty for as long as anyone cared to watch. A GATT connect is simply this
 /// slow: 10.0-10.5s phone-to-desktop on every one of four passes, and
 /// `SESSION_CONNECT_TIMEOUT` below records ~28s seen elsewhere. So the cap
-/// has to sit above the backend's own, and its job is only to stop a silent
+/// has to sit above the driver's own, and its job is only to stop a silent
 /// peer from eating the pass -- never to pre-empt a dial still in progress.
 ///
 /// *Just* above `CONNECT_TIMEOUT` rather than comfortably above it, because
 /// `dial_for_pairing` waits out a probe already in flight before its own
-/// dial. A probe still running past the backend's own bound is one the
-/// backend has already given up on, so further margin buys nothing here and
+/// dial. A probe still running past the driver's own bound is one the
+/// driver has already given up on, so further margin buys nothing here and
 /// only lengthens the worst case Pair has to sit through.
 #[cfg(any(feature = "ui-plane", test))]
 const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
@@ -96,8 +96,8 @@ const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
 /// used when this side cannot self-report its own address (Android) or a
 /// peer just hasn't sent one yet. A real `AuthOk` from a candidate is what
 /// proves it belongs to the expected peer, not merely some other nearby
-/// Fini install; `backend.scan()` itself already filters to Fini's service
-/// UUID (each backend does this at the native scan-callback level, before
+/// Fini install; the scan itself already filters to Fini's service
+/// UUID (each platform driver does this at the native scan-callback level, before
 /// candidates ever reach this Rust code).
 ///
 /// On success the address is persisted — and Bluetooth enabled for the
@@ -235,8 +235,8 @@ pub async fn scan_add_mode_candidates(
     // caller treats it as "retry later"), where an empty `Ok` would wipe the
     // very candidate being paired.
     let _ = legs.wait_for(|count| *count == 0).await;
-    let backend = backend().await.inspect_err(|_| note_adapter_unreachable())?;
-    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, backend, peers, radio, |address| async move {
+    let adapter = adapter().await.inspect_err(|_| note_adapter_unreachable())?;
+    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, adapter, peers, radio, |address| async move {
         probe_discovery_hello(radio, hello, &address).await
     })
     .await
@@ -250,7 +250,7 @@ async fn scan_add_mode_candidates_pass<Probe, Reply>(
     my_device_id: &str,
     timeout: Duration,
     legs: &mut tokio::sync::watch::Receiver<usize>,
-    backend: Arc<dyn Backend>,
+    adapter: Adapter,
     peers: &PeerDirectory,
     radio: &RadioArbiter,
     probe: Probe,
@@ -280,7 +280,8 @@ where
     let mut answered_by: Vec<(String, [u8; FINGERPRINT_LEN])> = Vec::new();
     let flagged_addresses = {
         let _scan = radio.scan_lease_between_dials().await;
-        let mut discovered = backend
+        let mut discovered = adapter
+            .central()
             .scan(datagram_config().service)
             .await
             .inspect_err(|err| {
@@ -316,7 +317,7 @@ where
             };
             let peer = match next {
                 Ok(Some(Ok(peer))) => peer,
-                // A backend-level scan failure (e.g. Android's async
+                // A driver-level scan failure (e.g. Android's async
                 // `onScanFailed`) means Bluetooth itself is unusable, not
                 // merely "no more candidates" -- propagate it like
                 // `setup_hello_round` does, rather than reporting an
@@ -458,10 +459,11 @@ where
 mod tests {
     use super::*;
 
-    /// A mock radio with Fini advertisers at `addresses`, and a backend that
+    /// A mock radio with Fini advertisers at `addresses`, and an adapter that
     /// scans it from its own address.
-    fn mock_radio_with_advertisers(addresses: &[&str]) -> (Arc<dyn Backend>, Vec<Arc<dyn Backend>>) {
-        use ble_gatt::backend::mock::{MockBackend, MockNetwork};
+    async fn mock_radio_with_advertisers(addresses: &[&str]) -> (Adapter, Vec<Arc<dyn ble_gatt::Backend>>) {
+        use ble_gatt::drivers::mock::{MockBackend, MockNetwork};
+        use ble_gatt::Backend;
         use ble_gatt::CapabilityReport;
 
         let network = MockNetwork::new();
@@ -478,10 +480,10 @@ mod tests {
                     as Arc<dyn Backend>
             })
             .collect();
-        (scanner, advertisers)
+        (Adapter::new(scanner).await, advertisers)
     }
 
-    async fn advertise_all(advertisers: &[Arc<dyn Backend>]) {
+    async fn advertise_all(advertisers: &[Arc<dyn ble_gatt::Backend>]) {
         for advertiser in advertisers {
             advertiser.advertise(datagram_config().service_spec()).await.expect("advertise on the mock radio");
         }
@@ -500,7 +502,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_candidate_scan_stands_aside_while_a_pairing_step_runs() {
         let radio = RadioArbiter::default();
-        let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:01:01"]);
+        let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:01:01"]).await;
         advertise_all(&advertisers).await;
         let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -548,7 +550,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_probe_in_flight_finishes_when_a_pairing_step_starts() {
         let radio = Arc::new(RadioArbiter::default());
-        let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:02:01", "AA:00:00:00:02:02"]);
+        let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:02:01", "AA:00:00:00:02:02"]).await;
         advertise_all(&advertisers).await;
         let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let finished = Arc::new(std::sync::atomic::AtomicUsize::new(0));

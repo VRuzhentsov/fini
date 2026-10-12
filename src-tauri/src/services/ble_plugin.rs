@@ -1,6 +1,6 @@
 //! Fini's handle on `tauri-plugin-ble-gatt` on Android.
 //!
-//! The plugin ships ble-gatt's Kotlin bridge, builds the Android backend
+//! The plugin ships ble-gatt's Kotlin bridge, builds the Android driver
 //! after the Activity is up, and asks for the Bluetooth runtime permissions
 //! (ble-gatt ADR-0007 D9). Its API hangs off the `AppHandle`, which the
 //! Bluetooth channel and the permission checks deep in the communication
@@ -26,8 +26,9 @@ fn app() -> Result<&'static AppHandle, String> {
         .ok_or_else(|| "tauri-plugin-ble-gatt is not installed yet".to_string())
 }
 
-/// The plugin's backend: one for the process, built on first use.
-pub fn backend() -> Result<Arc<dyn Backend>, String> {
+/// The Android Bluetooth driver that the plugin makes: one for the process,
+/// made at the first use. `channel::bluetooth::adapter` puts it in an adapter.
+pub fn driver() -> Result<Arc<dyn Backend>, String> {
     Ok(app()?.ble_gatt().backend())
 }
 

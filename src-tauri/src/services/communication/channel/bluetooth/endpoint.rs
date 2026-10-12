@@ -78,7 +78,7 @@ const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// This state's Bluetooth iroh endpoint (ADR-0009 D2, D3): the
 /// `ble-gatt-iroh` transport only, no IP, relays off. Built on first use,
-/// which on Android has to come after the Activity is up (`backend`). Its
+/// which on Android has to come after the Activity is up (`adapter`). Its
 /// accept loop hands every connection to the gate.
 pub(crate) async fn bluetooth_endpoint(
     state: &DeviceConnectionState,
@@ -86,9 +86,9 @@ pub(crate) async fn bluetooth_endpoint(
     state
         .bluetooth_endpoint
         .get_or_try_init(|| async {
-            let backend = backend().await?;
+            let adapter = adapter().await?;
             let transport = ble_gatt_iroh::BleGattTransport::builder()
-                .dialer(ble_gatt_iroh::dial_with(backend, datagram_config()))
+                .dialer(ble_gatt_iroh::dial_with(adapter.backend(), datagram_config()))
                 .build();
             let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
                 .secret_key(state.secret_key.clone())

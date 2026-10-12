@@ -13,9 +13,9 @@
 //! An accepted channel is routed by its first datagram (`route_inbound`): a
 //! QUIC Initial goes to the iroh transport, Fini's JSON to the gate.
 //!
-//! Linux (BlueZ via `ble_gatt::backend::linux`) and Android (the backend
+//! Linux (BlueZ via `ble_gatt::drivers::linux`) and Android (the driver
 //! `tauri-plugin-ble-gatt` builds; Fini uses it from Rust, not through Tauri
-//! IPC). See `backend` below for why construction is deferred, and
+//! IPC). See `adapter` below for why construction is deferred, and
 //! `start_peripheral_once`/its caller in `sync::commands` for why the
 //! peripheral role isn't spawned from `.setup()` on Android the way it is on
 //! Linux.
@@ -43,9 +43,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 #[cfg(target_os = "linux")]
-use ble_gatt::backend::linux::LinuxBackend;
+use ble_gatt::drivers::linux::LinuxBackend;
 use ble_gatt::datagram::{self, DatagramChannel, DatagramConfig};
-use ble_gatt::{Backend, CharacteristicUuid, PeerAddress, ServiceUuid};
+use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, ServiceUuid};
 #[cfg(target_os = "linux")]
 use tokio::sync::OnceCell;
 use uuid::Uuid;
@@ -227,7 +227,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
     // Retried with backoff, not returned-from-once: `lib.rs` spawns this
     // exactly once at startup, so an early failure here (adapter off,
     // BlueZ restarting, briefly unavailable) used to end the peripheral
-    // role for the rest of the process's life even after `backend()`
+    // role for the rest of the process's life even after `adapter()`
     // itself became able to retry. If this device also has the higher
     // device id, the deterministic dial rule means it never dials out
     // either — Bluetooth would be unusable until restart. Looping means
@@ -245,8 +245,8 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                 return;
             }
         }
-        let backend = match backend().await {
-            Ok(backend) => backend,
+        let adapter = match adapter().await {
+            Ok(adapter) => adapter,
             Err(err) => {
                 note_adapter_unreachable();
                 log::warn!("[transport][ble] adapter unavailable, retrying in {delay:?}: {err}");
@@ -255,7 +255,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                 continue;
             }
         };
-        if !backend.capabilities().await.peripheral {
+        if !adapter.capabilities().await.peripheral {
             log::warn!(
                 "[transport][ble] adapter has no peripheral support; retrying in {delay:?} \
                  in case a different adapter becomes available"
@@ -280,7 +280,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         // `Advertiser::add_mode`'s doc comment for why this is a signal to
         // the running loop rather than a full task restart.
         let mut add_mode_rx = advertiser.watch_add_mode();
-        let mut incoming = match datagram::serve(backend, &advertiser.advertised_config()).await {
+        let mut incoming = match datagram::serve(adapter.backend(), &advertiser.advertised_config()).await {
             Ok(stream) => {
                 // Advertising is a real use of the radio, so it clears a
                 // previously-recorded failure just as a scan does.
@@ -368,7 +368,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
         if restarting_for_add_mode_change {
             // Ending `incoming` here (by falling through to the outer
             // loop's next `datagram::serve` call) is what actually stops
-            // the old advertisement -- ble-gatt's backends tear down the
+            // the old advertisement -- ble-gatt's drivers tear down the
             // previous generation's GATT server/advertisement as part of
             // starting a new one (see BleGattBridge.startAdvertising's own
             // doc comment: "tear down any predecessor first").

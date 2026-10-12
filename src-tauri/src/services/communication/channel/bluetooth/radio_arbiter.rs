@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
 use super::{
-    advertised_fingerprint, backend, datagram_config, fingerprint_of, note_adapter_reachable,
+    adapter, advertised_fingerprint, datagram_config, fingerprint_of, note_adapter_reachable,
     note_adapter_unreachable, note_scan_refused, open_db_at_path, Presence, FINGERPRINT_LEN,
     FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
 };
@@ -124,7 +124,7 @@ pub struct RadioArbiter {
     pairing_legs: Arc<watch::Sender<usize>>,
     /// Held for the length of one candidate probe; see `dial_for_pairing`.
     candidate_probe: Mutex<()>,
-    /// One Bluetooth scan at a time. Every `backend.scan` call holds this for
+    /// One Bluetooth scan at a time. Every scan holds this for
     /// as long as its discovery stream lives.
     ///
     /// Android's backend refuses a second scan while one is running ("a scan
@@ -393,13 +393,13 @@ impl RadioArbiter {
                 continue;
             }
 
-            let Ok(backend) = backend().await else {
+            let Ok(adapter) = adapter().await else {
                 note_adapter_unreachable();
                 let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
                 continue;
             };
             let scan = self.scan_lease().await;
-            let mut discovered = match backend.scan(datagram_config().service).await {
+            let mut discovered = match adapter.central().scan(datagram_config().service).await {
                 Ok(discovered) => discovered,
                 Err(err) => {
                     log::warn!("[transport][ble] search scan refused: {err}");
