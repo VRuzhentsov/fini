@@ -1,5 +1,4 @@
 use chrono::Utc;
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
@@ -11,7 +10,9 @@ use super::DISCOVERY_PROTOCOL;
 use super::{DISCOVERY_TTL_SECS, NETWORK_CHANNEL_TIMEOUT};
 #[cfg(any(feature = "ui-plane", test))]
 use super::PAIR_REQUEST_TTL_SECS;
-use crate::services::communication::pairing::types::{DeviceIdentity, DiscoveryRuntime, SeenPeer};
+use crate::services::communication::pairing::types::{DeviceIdentity, DiscoveryRuntime};
+#[cfg(test)]
+use crate::services::communication::pairing::types::SeenPeer;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::pairing::types::{
     IncomingPairRequest, PairRequestPayload, StoredIncomingPairRequest,
@@ -25,50 +26,45 @@ pub(super) fn utc_now() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-#[cfg(test)]
-pub(super) fn load_or_create_identity(app_data_dir: &Path) -> DeviceIdentity {
-    let db_path = app_data_dir.join("fini.db");
-    try_load_or_create_identity(app_data_dir, &db_path)
-        .expect("failed to load or create device identity")
-}
+impl DeviceIdentity {
+    /// This device's identity from the settings table, made the first time.
+    /// An id from the old `device_identity.json` file is moved into the
+    /// settings and the file is deleted.
+    pub(super) fn load_or_create(app_data_dir: &Path, db_path: &Path) -> Result<Self, String> {
+        let file_identity_path = app_data_dir.join("device_identity.json");
+        let mut conn = db::try_open_db_at_path(db_path)?;
 
-pub(super) fn try_load_or_create_identity(
-    app_data_dir: &Path,
-    db_path: &Path,
-) -> Result<DeviceIdentity, String> {
-    let file_identity_path = app_data_dir.join("device_identity.json");
-    let mut conn = db::try_open_db_at_path(db_path)?;
-
-    let settings_device_id = settings::load_setting(&mut conn, DEVICE_ID_KEY)
-        .ok()
-        .flatten()
-        .filter(|value| !value.trim().is_empty());
-    let file_device_id = || {
-        std::fs::read_to_string(&file_identity_path)
+        let settings_device_id = settings::load_setting(&mut conn, DEVICE_ID_KEY)
             .ok()
-            .and_then(|raw| serde_json::from_str::<DeviceIdentity>(&raw).ok())
-            .map(|identity| identity.device_id)
-            .filter(|value| !value.trim().is_empty())
-    };
+            .flatten()
+            .filter(|value| !value.trim().is_empty());
+        let file_device_id = || {
+            std::fs::read_to_string(&file_identity_path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<DeviceIdentity>(&raw).ok())
+                .map(|identity| identity.device_id)
+                .filter(|value| !value.trim().is_empty())
+        };
 
-    let device_id = settings_device_id
-        .or_else(file_device_id)
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let existing_name = settings::load_setting(&mut conn, DEVICE_NAME_KEY)
-        .ok()
-        .flatten()
-        .filter(|value| !value.trim().is_empty());
-    let hostname = current_device_name(&device_id, existing_name.as_deref());
+        let device_id = settings_device_id
+            .or_else(file_device_id)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let existing_name = settings::load_setting(&mut conn, DEVICE_NAME_KEY)
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty());
+        let hostname = current_device_name(&device_id, existing_name.as_deref());
 
-    let _ = settings::upsert_setting(&mut conn, DEVICE_ID_KEY, &device_id);
-    let _ = settings::upsert_setting(&mut conn, DEVICE_NAME_KEY, &hostname);
-    let _ = std::fs::remove_file(file_identity_path);
+        let _ = settings::upsert_setting(&mut conn, DEVICE_ID_KEY, &device_id);
+        let _ = settings::upsert_setting(&mut conn, DEVICE_NAME_KEY, &hostname);
+        let _ = std::fs::remove_file(file_identity_path);
 
-    Ok(DeviceIdentity {
-        device_id,
-        hostname,
-        endpoint_id: String::new(),
-    })
+        Ok(Self {
+            device_id,
+            hostname,
+            endpoint_id: String::new(),
+        })
+    }
 }
 
 fn current_device_name(device_id: &str, existing_name: Option<&str>) -> String {
@@ -93,31 +89,42 @@ pub(super) fn request_is_expired(expires_at: &str) -> bool {
     Utc::now() >= expires_at
 }
 
-/// Keeps only the recent part of what the network discovery heard. A device
-/// not heard within the channel timeout is no longer present. The Add Device
-/// list keeps only devices heard in the last `DISCOVERY_TTL_SECS`, and only
-/// while this device is in Add Device mode.
-pub(super) fn keep_recent_network_records(guard: &mut DiscoveryRuntime) {
-    let discovery_ttl = Duration::from_secs(DISCOVERY_TTL_SECS);
-    guard.discovered.retain(|_, peer| peer.last_seen_mono.elapsed() <= discovery_ttl);
-    // A device that stopped announcing is no longer present, and its next
-    // announcement counts as arriving anew.
-    guard.presence.retain(|_, peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT);
-    prune_expired_incoming_requests(guard);
+impl DiscoveryRuntime {
+    /// Keeps only the recent part of what the network discovery heard. A
+    /// device not heard within the channel timeout is no longer present.
+    /// The Add Device list keeps only devices heard in the last
+    /// `DISCOVERY_TTL_SECS`, and only while this device is in Add Device
+    /// mode.
+    pub(super) fn keep_recent_network_records(&mut self) {
+        let discovery_ttl = Duration::from_secs(DISCOVERY_TTL_SECS);
+        self.discovered.retain(|_, peer| peer.last_seen_mono.elapsed() <= discovery_ttl);
+        // A device that stopped announcing is no longer present, and its
+        // next announcement counts as arriving anew.
+        self.presence.retain(|_, peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT);
+        self.prune_expired_incoming_requests();
 
-    if !guard.add_mode_enabled {
-        guard.discovered.clear();
-        guard.incoming_requests.clear();
-        guard.outgoing_code_updates.clear();
-        guard.outgoing_pair_completions.clear();
-        guard.pairing_keys.clear();
+        if !self.add_mode_enabled {
+            self.discovered.clear();
+            self.incoming_requests.clear();
+            self.outgoing_code_updates.clear();
+            self.outgoing_pair_completions.clear();
+            self.pairing_keys.clear();
+        }
     }
-}
 
-pub(super) fn prune_expired_incoming_requests(runtime: &mut DiscoveryRuntime) {
-    runtime
-        .incoming_requests
-        .retain(|_, request| !request_is_expired(&request.request.expires_at));
+    pub(super) fn prune_expired_incoming_requests(&mut self) {
+        self.incoming_requests
+            .retain(|_, request| !request_is_expired(&request.request.expires_at));
+    }
+
+    /// Whether a device's last network record is recent enough to count: an
+    /// entry past the channel timeout is a device that went away, and its
+    /// next record is an arrival, even before the entry is removed.
+    pub(super) fn is_present(&self, device_id: &str) -> bool {
+        self.presence
+            .get(device_id)
+            .is_some_and(|peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT)
+    }
 }
 
 pub(super) fn generate_passcode() -> String {
@@ -126,36 +133,40 @@ pub(super) fn generate_passcode() -> String {
 }
 
 #[cfg(any(feature = "ui-plane", test))]
-pub(super) fn build_incoming_pair_request(
-    payload: &PairRequestPayload,
-    from_addr: String,
-    from_endpoint_id: Option<String>,
-    via_bluetooth: bool,
-) -> StoredIncomingPairRequest {
-    let created_at = utc_now();
-    let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-    // When `via_bluetooth`, `from_addr` is the sender's Bluetooth address as
-    // observed on this connection (`DataLink::peer_addr()`), not an IP -- see
-    // `IncomingPairRequest::from_bluetooth_address`.
-    let from_bluetooth_address = via_bluetooth.then(|| from_addr.clone());
+impl StoredIncomingPairRequest {
+    /// A pair request as this device stores it when it arrives. Its expiry
+    /// is counted from this device's clock, not the sender's.
+    pub(super) fn from_payload(
+        payload: &PairRequestPayload,
+        from_addr: String,
+        from_endpoint_id: Option<String>,
+        via_bluetooth: bool,
+    ) -> Self {
+        let created_at = utc_now();
+        let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        // When `via_bluetooth`, `from_addr` is the sender's Bluetooth address
+        // as observed on this connection (`DataLink::peer_addr()`), not an IP
+        // -- see `IncomingPairRequest::from_bluetooth_address`.
+        let from_bluetooth_address = via_bluetooth.then(|| from_addr.clone());
 
-    StoredIncomingPairRequest {
-        request: IncomingPairRequest {
-            request_id: payload.request_id.clone(),
-            from_device_id: payload.from_device_id.clone(),
-            from_hostname: payload.from_hostname.clone(),
-            created_at,
-            expires_at,
-            attempts: 0,
-            cooldown_until: None,
-            via_bluetooth,
-            from_bluetooth_address,
-        },
-        from_addr,
-        from_ws_port: payload.from_ws_port,
-        from_endpoint_id,
+        Self {
+            request: IncomingPairRequest {
+                request_id: payload.request_id.clone(),
+                from_device_id: payload.from_device_id.clone(),
+                from_hostname: payload.from_hostname.clone(),
+                created_at,
+                expires_at,
+                attempts: 0,
+                cooldown_until: None,
+                via_bluetooth,
+                from_bluetooth_address,
+            },
+            from_addr,
+            from_ws_port: payload.from_ws_port,
+            from_endpoint_id,
+        }
     }
 }
 
@@ -166,6 +177,11 @@ mod tests {
     use crate::services::communication::pairing::{DISCOVERY_PORT, SPACE_SYNC_WS_PORT};
     use chrono::Duration as ChronoDuration;
     use std::path::PathBuf;
+
+    fn load_or_create_identity(app_data_dir: &Path) -> DeviceIdentity {
+        DeviceIdentity::load_or_create(app_data_dir, &app_data_dir.join("fini.db"))
+            .expect("failed to load or create device identity")
+    }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("fini-{label}-{}", Uuid::new_v4()));
@@ -261,7 +277,7 @@ mod tests {
             .incoming_requests
             .insert("invalid".to_string(), stored_request("invalid", "bad-ts"));
 
-        prune_expired_incoming_requests(&mut runtime);
+        runtime.prune_expired_incoming_requests();
 
         assert!(runtime.incoming_requests.contains_key("active"));
         assert!(!runtime.incoming_requests.contains_key("expired"));
@@ -272,7 +288,7 @@ mod tests {
     fn incoming_pair_request_uses_receiver_local_ttl() {
         let payload = sample_pair_request_payload("1999-01-01T00:00:00Z");
         let before = Utc::now();
-        let stored = build_incoming_pair_request(&payload, "192.168.1.50".to_string(), None, false);
+        let stored = StoredIncomingPairRequest::from_payload(&payload, "192.168.1.50".to_string(), None, false);
         let after = Utc::now();
 
         assert_eq!(stored.request.request_id, payload.request_id);
@@ -375,15 +391,6 @@ mod tests {
     }
 }
 
-/// Whether a peer's last Network beacon is recent enough to count: an entry
-/// past the channel timeout is a peer that went away, and its next beacon
-/// is an arrival, even before the worker prunes the entry.
-pub(super) fn is_present(presence: &HashMap<String, SeenPeer>, device_id: &str) -> bool {
-    presence
-        .get(device_id)
-        .is_some_and(|peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT)
-}
-
 #[cfg(test)]
 mod presence_tests {
     use super::*;
@@ -404,11 +411,11 @@ mod presence_tests {
     /// arrival, pruned or not.
     #[test]
     fn a_stale_entry_does_not_count_as_present() {
-        let mut presence = HashMap::new();
-        presence.insert("fresh".to_string(), seen(Duration::ZERO));
-        presence.insert("stale".to_string(), seen(NETWORK_CHANNEL_TIMEOUT));
-        assert!(is_present(&presence, "fresh"));
-        assert!(!is_present(&presence, "stale"));
-        assert!(!is_present(&presence, "unknown"));
+        let mut runtime = DiscoveryRuntime::default();
+        runtime.presence.insert("fresh".to_string(), seen(Duration::ZERO));
+        runtime.presence.insert("stale".to_string(), seen(NETWORK_CHANNEL_TIMEOUT));
+        assert!(runtime.is_present("fresh"));
+        assert!(!runtime.is_present("stale"));
+        assert!(!runtime.is_present("unknown"));
     }
 }

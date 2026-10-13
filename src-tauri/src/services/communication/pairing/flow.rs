@@ -8,7 +8,7 @@ use chrono::Utc;
 
 use super::carrier::{NetworkCarrier, ReplyTo};
 use super::commands::local_bluetooth_address;
-use super::runtime::{generate_passcode, prune_expired_incoming_requests, utc_now};
+use super::runtime::{generate_passcode, utc_now};
 #[cfg(any(feature = "ui-plane", test))]
 use super::types::DevicePairRequestBluetoothInput;
 use super::types::{
@@ -119,7 +119,7 @@ impl Incoming {
             .runtime
             .lock()
             .map_err(|_| "device sync runtime lock poisoned".to_string())?;
-        prune_expired_incoming_requests(&mut guard);
+        guard.prune_expired_incoming_requests();
         let stored = guard
             .incoming_requests
             .get(request_id)

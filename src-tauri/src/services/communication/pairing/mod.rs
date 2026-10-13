@@ -80,7 +80,6 @@ pub use commands::{
     device_connection_channel_statuses_impl, device_connection_set_channel_enabled_impl,
     device_connection_set_primary_channel_impl, device_connection_unlink_channel_impl,
 };
-use runtime::try_load_or_create_identity;
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
 // and is what the `channels` table stores. Re-exported from `channel`,
 // where it is defined; there is no second enum saying the same thing any
@@ -199,7 +198,7 @@ impl DeviceConnectionState {
     /// belongs to the channel that knows how, so each service starts its own
     /// (`ChannelService::start_discovery`).
     pub fn try_from_db_path(app_data_dir: &Path, db_path: PathBuf) -> Result<Self, String> {
-        let identity = try_load_or_create_identity(app_data_dir, &db_path)?;
+        let identity = DeviceIdentity::load_or_create(app_data_dir, &db_path)?;
         let secret_key = device_key::try_load_or_create_secret_key(&db_path)?;
         let mut identity = identity;
         identity.endpoint_id = secret_key.public().to_string();
@@ -255,7 +254,7 @@ impl DeviceConnectionState {
             let Ok(mut guard) = self.runtime.lock() else {
                 return;
             };
-            let newly_present = !runtime::is_present(&guard.presence, device_id);
+            let newly_present = !guard.is_present(device_id);
             let seen = types::SeenPeer {
                 hostname: hostname.to_string(),
                 addr: addr.ip().to_string(),
@@ -291,7 +290,7 @@ impl DeviceConnectionState {
     /// Keeps only recent network records; see `runtime::keep_recent_network_records`.
     pub(crate) fn keep_recent_network_records(&self) {
         if let Ok(mut guard) = self.runtime.lock() {
-            runtime::keep_recent_network_records(&mut guard);
+            guard.keep_recent_network_records();
         }
     }
 
@@ -671,7 +670,7 @@ impl DeviceConnectionState {
                 .contains_key(payload.request_id.as_str());
             guard.incoming_requests.insert(
                 payload.request_id.clone(),
-                runtime::build_incoming_pair_request(&payload, from_addr, from_key, via_bluetooth),
+                types::StoredIncomingPairRequest::from_payload(&payload, from_addr, from_key, via_bluetooth),
             );
 
             if is_new {

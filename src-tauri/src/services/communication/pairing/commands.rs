@@ -17,7 +17,7 @@ use crate::models::{CreatePairedDeviceInput, PairedDevice};
 use crate::schema::paired_devices;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
-use crate::services::communication::pairing::runtime::{prune_expired_incoming_requests, utc_now};
+use crate::services::communication::pairing::runtime::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::pairing::types::DevicePairRequestBluetoothInput;
 use crate::services::communication::pairing::types::{
@@ -414,7 +414,7 @@ pub fn device_connection_pair_incoming_requests_impl(
         .lock()
         .map_err(|_| "device sync runtime lock poisoned".to_string())?;
 
-    prune_expired_incoming_requests(&mut guard);
+    guard.prune_expired_incoming_requests();
 
     let mut requests: Vec<IncomingPairRequest> = guard
         .incoming_requests

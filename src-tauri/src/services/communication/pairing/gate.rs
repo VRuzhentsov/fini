@@ -159,7 +159,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 while tokio::time::Instant::now() < hold_until {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     let pending = state.runtime.lock().map_or(false, |mut runtime| {
-                        super::runtime::prune_expired_incoming_requests(&mut runtime);
+                        runtime.prune_expired_incoming_requests();
                         runtime.incoming_requests.contains_key(&request_id)
                     });
                     if !pending {
