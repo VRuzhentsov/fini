@@ -1346,10 +1346,9 @@ fn finishing_a_setup_writes_the_channel_only_after_a_complete_init() {
 
     state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
     state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| s.acked_peer_hello = true);
-    crate::services::communication::pairing::setup::finish(
-        &mut conn, &state, "peer-client", ChannelKind::Bluetooth, true,
-    )
-    .expect("finish a half-done init");
+    state
+        .finish_channel_setup(&mut conn, "peer-client", ChannelKind::Bluetooth, true)
+        .expect("finish a half-done init");
     assert!(
         channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none(),
         "half an init is no init: nothing is written"
@@ -1363,10 +1362,9 @@ fn finishing_a_setup_writes_the_channel_only_after_a_complete_init() {
             s.acked_peer_hello = true;
             s.hello_acked_by_peer = true;
         });
-        crate::services::communication::pairing::setup::finish(
-            &mut conn, &state, "peer-client", ChannelKind::Bluetooth, switch_on,
-        )
-        .expect("finish a complete init");
+        state
+            .finish_channel_setup(&mut conn, "peer-client", ChannelKind::Bluetooth, switch_on)
+            .expect("finish a complete init");
         assert_eq!(
             channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).map(|c| c.enabled),
             Some(expected),
@@ -1427,19 +1425,17 @@ fn a_completed_setup_survives_a_failed_channel_write() {
         s.hello_acked_by_peer = true;
     });
 
-    crate::services::communication::pairing::setup::finish(
-        &mut conn, &state, "peer-client", ChannelKind::Bluetooth, true,
-    )
-    .expect_err("the write fails");
+    state
+        .finish_channel_setup(&mut conn, "peer-client", ChannelKind::Bluetooth, true)
+        .expect_err("the write fails");
     assert!(state
         .channel_setup("peer-client", ChannelKind::Bluetooth)
         .is_some_and(|s| s.initialized()));
 
     seed_paired_device(&db_path, "peer-client");
-    crate::services::communication::pairing::setup::finish(
-        &mut conn, &state, "peer-client", ChannelKind::Bluetooth, true,
-    )
-    .expect("the retry writes it");
+    state
+        .finish_channel_setup(&mut conn, "peer-client", ChannelKind::Bluetooth, true)
+        .expect("the retry writes it");
     assert_eq!(
         channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).map(|c| c.enabled),
         Some(true)
@@ -2071,7 +2067,7 @@ fn exchanges_and_setups_start_from_outside_a_tokio_runtime() {
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     state.bluetooth.start_exchange(&state, "peer-sync-command");
-    crate::services::communication::pairing::setup::start(&state, "peer-sync-command", ChannelKind::Network);
+    state.start_channel_setup("peer-sync-command", ChannelKind::Network);
 
     assert!(state.channel_setup("peer-sync-command", ChannelKind::Network).is_some());
     state.end_channel_setup("peer-sync-command", ChannelKind::Network);
@@ -2134,13 +2130,11 @@ async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bluetooth_setup_keeps_the_candidate_scan_aside_until_it_ends() {
-    use crate::services::communication::pairing::setup;
-
     let (state, db_path) = server_state("setup-holds-pairing-leg");
     seed_paired_device(&db_path, "peer-leg");
     let radio = state.bluetooth.scanner.clone();
 
-    setup::start(&state, "peer-leg", ChannelKind::Bluetooth);
+    state.start_channel_setup("peer-leg", ChannelKind::Bluetooth);
     assert!(
         holds_within(Duration::from_secs(2), || radio.pairing_steps_held() == 1).await,
         "the setup holds a leg"

@@ -648,9 +648,7 @@ impl CliContext {
             .map_err(CliError::runtime)?;
         // The CLI dials out for sync and cannot dial what it has not found,
         // so it starts discovery even though it runs no acceptor of its own.
-        for channel in
-            crate::services::communication::channel::service::services(&device_state)
-        {
+        for channel in device_state.channels() {
             channel.start_discovery(&device_state);
         }
         Ok(Self {

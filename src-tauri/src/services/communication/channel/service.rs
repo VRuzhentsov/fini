@@ -102,6 +102,20 @@ pub trait ChannelService: Send + Sync {
     /// (ADR-0008 D9) -- green on the row.
     fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
 
+    /// One round of a channel setup (ADR-0008 D1, D12): find the peer on
+    /// this channel and say hello. `true` if the peer acknowledged the
+    /// hello. A round that fails pauses before it returns, so the caller
+    /// can simply try again.
+    #[cfg(any(feature = "ui-plane", test))]
+    async fn setup_round(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
+
+    /// Whether this device is connecting to the peer on this channel right
+    /// now -- for the gate to settle two connections that cross.
+    #[cfg(any(feature = "ui-plane", test))]
+    fn connecting(&self, _peer_device_id: &str) -> bool {
+        false
+    }
+
     /// Whether the last exchange with this peer over this channel failed
     /// recently, so another channel should carry the work meanwhile.
     fn recently_failed(&self, _peer_device_id: &str) -> bool {
@@ -123,16 +137,18 @@ pub trait ChannelService: Send + Sync {
     fn keep_serving(&self, _state: &DeviceConnectionState) {}
 }
 
-/// The channels of one `DeviceConnectionState`, one per kind.
-pub fn services(state: &DeviceConnectionState) -> Vec<Arc<dyn ChannelService>> {
-    vec![state.network.clone(), state.bluetooth.clone()]
-}
+impl DeviceConnectionState {
+    /// This state's channels, one per kind.
+    pub fn channels(&self) -> [Arc<dyn ChannelService>; 2] {
+        [self.network.clone(), self.bluetooth.clone()]
+    }
 
-/// The channel of one kind, for callers that already know which channel
-/// they mean — a switch being flipped, a row being explained.
-pub fn service_for(state: &DeviceConnectionState, kind: ChannelKind) -> Arc<dyn ChannelService> {
-    match kind {
-        ChannelKind::Network => state.network.clone(),
-        ChannelKind::Bluetooth => state.bluetooth.clone(),
+    /// The channel of one kind, for callers that already know which channel
+    /// they mean — a switch being flipped, a row being explained.
+    pub fn channel(&self, kind: ChannelKind) -> Arc<dyn ChannelService> {
+        match kind {
+            ChannelKind::Network => self.network.clone(),
+            ChannelKind::Bluetooth => self.bluetooth.clone(),
+        }
     }
 }

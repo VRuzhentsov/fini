@@ -451,11 +451,10 @@ fn peer_reachable_now(
     device_connection: &DeviceConnectionState,
     peer_device_id: &str,
 ) -> bool {
-    use crate::services::communication::channel::service::service_for;
     use crate::services::communication::pairing::{channels, ChannelKind};
     [ChannelKind::Network, ChannelKind::Bluetooth].into_iter().any(|kind| {
         channels::is_enabled(conn, peer_device_id, kind)
-            && service_for(device_connection, kind).is_present(device_connection, peer_device_id)
+            && device_connection.channel(kind).is_present(device_connection, peer_device_id)
     })
 }
 
@@ -1479,11 +1478,9 @@ pub fn space_sync_tick_impl(
     // Keep this device reachable: on Android the peripheral starts from the
     // first tick, and whether to advertise at all follows the channels and
     // setups as they are now (ADR-0008 D8).
-    crate::services::communication::channel::service::service_for(
-        device_connection,
-        crate::services::communication::pairing::ChannelKind::Bluetooth,
-    )
-    .keep_serving(device_connection);
+    device_connection
+        .channel(crate::services::communication::pairing::ChannelKind::Bluetooth)
+        .keep_serving(device_connection);
 
     // Started on every platform now, but see `start_tick_keeper_once`: only
     // Android gets the periodic backstop, which is what ADR-0004 needed it
@@ -1763,7 +1760,6 @@ fn request_exchanges(
     device_connection: &DeviceConnectionState,
     peers_with_work: &std::collections::HashSet<String>,
 ) {
-    use crate::services::communication::channel::service::service_for;
     use crate::services::communication::pairing::{channels, ChannelKind};
 
     for peer_device_id in peers_with_work {
@@ -1772,15 +1768,17 @@ fn request_exchanges(
         }
         let order = channel_order(channels::primary_kind(conn, peer_device_id));
         let reachable_now = order.into_iter().find(|&kind| {
-            let service = service_for(device_connection, kind);
+            let channel = device_connection.channel(kind);
             channels::is_enabled(conn, peer_device_id, kind)
-                && service.is_present(device_connection, peer_device_id)
-                && !service.recently_failed(peer_device_id)
+                && channel.is_present(device_connection, peer_device_id)
+                && !channel.recently_failed(peer_device_id)
         });
         if let Some(kind) = reachable_now {
-            service_for(device_connection, kind).request_exchange(device_connection, peer_device_id);
+            device_connection.channel(kind).request_exchange(device_connection, peer_device_id);
         } else if channels::is_enabled(conn, peer_device_id, ChannelKind::Bluetooth) {
-            service_for(device_connection, ChannelKind::Bluetooth).request_exchange(device_connection, peer_device_id);
+            device_connection
+                .channel(ChannelKind::Bluetooth)
+                .request_exchange(device_connection, peer_device_id);
         }
     }
 }

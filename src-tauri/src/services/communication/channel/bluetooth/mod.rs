@@ -354,6 +354,26 @@ impl ChannelService for BluetoothChannel {
         self.scanner.heard_recently(peer_device_id)
     }
 
+    /// One search of up to `SETUP_ROUND`, with a hello the moment the peer
+    /// is heard. A round the radio refused pauses
+    /// `SETUP_ROUND_FAILURE_PAUSE`, so a broken radio is not hammered.
+    #[cfg(any(feature = "ui-plane", test))]
+    async fn setup_round(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+        match self.find_and_say_hello(state, peer_device_id, SETUP_ROUND).await {
+            Ok(acknowledged) => acknowledged,
+            Err(err) => {
+                log::warn!("[setup] bluetooth round for {peer_device_id} failed: {err}");
+                tokio::time::sleep(SETUP_ROUND_FAILURE_PAUSE).await;
+                false
+            }
+        }
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    fn connecting(&self, peer_device_id: &str) -> bool {
+        self.scanner.connecting(peer_device_id)
+    }
+
     #[cfg(any(feature = "ui-plane", test))]
     fn problem(&self, _state: &DeviceConnectionState) -> Option<ChannelProblem> {
         BluetoothAdapter::this_device()
@@ -746,15 +766,29 @@ fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, add
 
 // ---- Channel setup ----
 
+/// How long one Bluetooth setup round listens before the next one starts
+/// (ADR-0008 D12: a search lasts up to 60s and ends early on success).
+#[cfg(all(feature = "ui-plane", not(test)))]
+const SETUP_ROUND: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const SETUP_ROUND: Duration = Duration::from_millis(200);
+
+/// Pause after a Bluetooth round fails outright (scan refused, adapter
+/// gone), so a broken radio is not hammered.
+#[cfg(all(feature = "ui-plane", not(test)))]
+const SETUP_ROUND_FAILURE_PAUSE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const SETUP_ROUND_FAILURE_PAUSE: Duration = Duration::from_millis(200);
+
 /// How long the device with the higher id waits, in a Bluetooth setup, for the
 /// other device's hello to reach it before dialling anyway. See
-/// `BluetoothChannel::setup_round`.
+/// `BluetoothChannel::find_and_say_hello`.
 #[cfg(all(feature = "ui-plane", not(test)))]
 const HIGHER_ID_PATIENCE: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const HIGHER_ID_PATIENCE: Duration = Duration::from_millis(1_500);
 
-/// `setup_round`'s cap for one dial + hello + ack.
+/// `find_and_say_hello`'s cap for one dial + hello + ack.
 ///
 /// Against a real phone the dial alone takes 1-2s, and `BleDataLink::send`
 /// retries a `GattBusy` rejection for up to ~1.4s on top; 4s was once too
@@ -772,11 +806,11 @@ const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[cfg(any(feature = "ui-plane", test))]
 impl BluetoothChannel {
-    /// One Bluetooth setup-search round for `peer_id` (ADR-0008 D12): asks
-    /// the scanner for the peer for up to `timeout`, and says hello the
-    /// moment it is heard. `Ok(true)` if the peer acknowledged; `Err` when
-    /// the radio itself is unusable, so the caller can pause.
-    pub async fn setup_round(
+    /// One Bluetooth setup search for `peer_id` (ADR-0008 D12): asks the
+    /// scanner for the peer for up to `timeout`, and says hello the moment
+    /// it is heard. `Ok(true)` if the peer acknowledged; `Err` when the
+    /// radio itself is unusable, so the caller can pause.
+    pub async fn find_and_say_hello(
         &self, state: &DeviceConnectionState, peer_id: &str, timeout: Duration,
     ) -> Result<bool, String> {
         let scanner = &self.scanner;

@@ -271,9 +271,10 @@ impl Scanner {
         self.scan_running.load(Ordering::SeqCst)
     }
 
-    /// Whether this device is dialing the peer for an exchange right now.
+    /// Whether this device is connecting to the peer for an exchange right
+    /// now.
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn dialing(&self, peer_id: &str) -> bool {
+    pub fn connecting(&self, peer_id: &str) -> bool {
         self.exchanges.lock().unwrap().contains(peer_id)
     }
 

@@ -507,7 +507,7 @@ pub fn run() {
             // Each channel starts its own discovery and its own accept loop.
             // A channel that cannot run on this platform declines from inside
             // itself, so this stays one line however many channels exist.
-            for channel in services::communication::channel::service::services(&dc_state) {
+            for channel in dc_state.channels() {
                 channel.start_discovery(&dc_state);
                 channel.start_serving(&dc_state);
             }

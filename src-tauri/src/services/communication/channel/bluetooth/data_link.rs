@@ -51,7 +51,7 @@ impl DataLink for BleDataLink {
         //
         // Sized to the tightest caller on this path: `scan_add_mode_candidates`
         // gets `BLUETOOTH_SCAN_DURATION_MS` (4s) for the *whole* pass, dial
-        // included, and `BluetoothChannel::setup_round` allows `FIND_PEER_CANDIDATE_TIMEOUT`
+        // included, and `BluetoothChannel::find_and_say_hello` allows `FIND_PEER_CANDIDATE_TIMEOUT`
         // (4s) per candidate. With a dial typically eating 1-2s of that, the
         // ~1.4s worst case below still leaves the caller room to fail cleanly
         // instead of being cut off mid-retry.

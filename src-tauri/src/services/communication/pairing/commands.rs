@@ -8,8 +8,6 @@ use tauri::State;
 use super::channels;
 #[cfg(any(feature = "ui-plane", test))]
 use super::ChannelSetup;
-#[cfg(any(feature = "ui-plane", test))]
-use super::setup;
 use super::DISCOVERY_TTL_SECS;
 #[cfg(test)]
 use super::DISCOVERY_PROTOCOL;
@@ -255,7 +253,7 @@ pub fn device_connection_send_pair_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestInput,
 ) -> Result<(), String> {
-    super::flow::send_request(state, input)
+    state.send_pair_request(input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -267,13 +265,14 @@ pub fn device_connection_send_pair_request(
     device_connection_send_pair_request_impl(&state, input)
 }
 
-/// BLE-first pairing (ADR 0002 Phase 3); see `flow::send_request_bluetooth`.
+/// BLE-first pairing (ADR 0002 Phase 3); see
+/// `DeviceConnectionState::send_pair_request_bluetooth`.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn device_connection_send_pair_request_bluetooth_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestBluetoothInput,
 ) -> Result<(), String> {
-    super::flow::send_request_bluetooth(state, input)
+    state.send_pair_request_bluetooth(input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -495,7 +494,7 @@ pub fn device_connection_pair_accept_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<PairCodeUpdate, String> {
-    super::flow::accept_request(state, input)
+    state.accept_pair_request(input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -516,7 +515,7 @@ pub fn device_connection_pair_complete_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    super::flow::complete_request(state, input)
+    state.complete_pair_request(input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -537,7 +536,7 @@ pub fn device_connection_pair_acknowledge_request_impl(
     state: &DeviceConnectionState,
     input: DevicePairRequestAckInput,
 ) -> Result<(), String> {
-    super::flow::acknowledge_request(state, input)
+    state.acknowledge_pair_request(input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -927,7 +926,7 @@ pub fn device_connection_set_channel_enabled_impl(
         return Err("Set the channel up first".to_string());
     }
     if enabled
-        && !crate::services::communication::channel::service::service_for(state, kind).usable()
+        && !state.channel(kind).usable()
     {
         return Err(format!("{kind:?} is unavailable on this device"));
     }
@@ -936,8 +935,7 @@ pub fn device_connection_set_channel_enabled_impl(
     if enabled {
         // An explicit switch-on is tried now, not after an earlier retry
         // delay runs out.
-        crate::services::communication::channel::service::service_for(state, kind)
-            .forget_failures(&peer_device_id);
+        state.channel(kind).forget_failures(&peer_device_id);
     } else {
         // An exchange running on the channel ends now: off means off.
         state.close_session_on(&peer_device_id, kind);
@@ -963,7 +961,7 @@ pub async fn device_connection_set_channel_enabled(
     // the OS since; a person switching the channel on is the moment to ask
     // it again, before `usable` decides.
     if enabled {
-        let service = crate::services::communication::channel::service::service_for(state.inner(), kind);
+        let service = state.channel(kind);
         if !service.usable() {
             service.probe(state.inner()).await;
         }
@@ -1108,13 +1106,12 @@ pub async fn device_connection_begin_channel_setup(
                 tokio::time::sleep(PERMISSION_POLL_INTERVAL).await;
             }
         }
-        let service =
-            crate::services::communication::channel::service::service_for(state.inner(), kind);
+        let service = state.channel(kind);
         if !service.available() || !service.probe(state.inner()).await {
             return Err("Bluetooth is unavailable on this device".to_string());
         }
     }
-    setup::start(state.inner(), &peer_device_id, kind);
+    state.start_channel_setup(&peer_device_id, kind);
     Ok(())
 }
 
@@ -1140,7 +1137,7 @@ pub fn device_connection_end_channel_setup(
     switch_on: bool,
 ) -> Result<Vec<ChannelStatus>, String> {
     let mut conn = db.0.lock().map_err(|e| e.to_string())?;
-    setup::finish(&mut conn, state.inner(), &peer_device_id, kind, switch_on)?;
+    state.finish_channel_setup(&mut conn, &peer_device_id, kind, switch_on)?;
     device_connection_channel_statuses_impl(&mut conn, state.inner(), peer_device_id)
 }
 
@@ -1222,7 +1219,7 @@ pub fn device_connection_channel_statuses_impl(
                 Some(_) => ChannelState::Off,
             };
             let primary = channel.is_some_and(|channel| channel.is_primary);
-            let service = crate::services::communication::channel::service::service_for(state, kind);
+            let service = state.channel(kind);
             // An exchange running right now is presence too.
             let present = service.is_present(state, &peer_device_id) || state.has_session_on(&peer_device_id, kind);
             // Outranks whatever the channel itself reports: a radio that is
@@ -1288,7 +1285,7 @@ pub async fn e2e_set_radio(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, active: bool) {
-    for service in crate::services::communication::channel::service::services(state.inner()) {
+    for service in state.channels() {
         service.watch_presence(state.inner(), active);
     }
 }

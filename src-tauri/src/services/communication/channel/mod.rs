@@ -70,6 +70,13 @@ pub mod bluetooth {
 
         fn request_exchange(&self, _state: &DeviceConnectionState, _peer_device_id: &str) {}
 
+        /// Nothing to find: pause, so a setup that asks again does not spin.
+        #[cfg(any(feature = "ui-plane", test))]
+        async fn setup_round(&self, _state: &DeviceConnectionState, _peer_device_id: &str) -> bool {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            false
+        }
+
         fn is_present(&self, _state: &DeviceConnectionState, _peer_device_id: &str) -> bool {
             false
         }
