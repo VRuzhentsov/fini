@@ -224,7 +224,7 @@ impl ChannelService for NetworkChannelService {
 /// The Bluetooth channel: peers found by scanning for Fini's service UUID,
 /// connected over GATT.
 pub struct BluetoothChannelService {
-    state: DeviceConnectionState,
+    pub(super) state: DeviceConnectionState,
     /// Injected, not reached for: this service is the policy, and the radio
     /// is the mechanism. Real hardware on a device, loopback on CI, and the
     /// service cannot tell the difference — which is what makes the CI lane

@@ -131,13 +131,9 @@ async fn say_hello(state: &DeviceConnectionState, peer_device_id: &str, kind: Ch
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 async fn bluetooth_round(state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-    match crate::services::communication::channel::bluetooth::setup_hello_round(
-        state.clone(),
-        peer_device_id.to_string(),
-        SETUP_ROUND,
-    )
-    .await
-    {
+    use crate::services::communication::channel::{radio::for_this_device, service::BluetoothChannelService};
+    let channel = BluetoothChannelService::new(state.clone(), for_this_device());
+    match channel.setup_round(peer_device_id, SETUP_ROUND).await {
         Ok(acknowledged) => acknowledged,
         Err(err) => {
             log::warn!("[setup] bluetooth round for {peer_device_id} failed: {err}");

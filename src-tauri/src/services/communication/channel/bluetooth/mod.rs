@@ -62,15 +62,11 @@ use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport
 mod adapter;
 mod advertiser;
 mod data_link;
-#[cfg(any(feature = "ui-plane", test))]
-mod discovery;
 mod endpoint;
 mod scanner;
 
 pub use adapter::BluetoothAdapter;
 pub use data_link::*;
-#[cfg(any(feature = "ui-plane", test))]
-pub use discovery::*;
 pub use endpoint::*;
 
 pub use advertiser::Advertiser;
@@ -638,6 +634,112 @@ pub fn refresh_advertising(db_path: &std::path::Path, state: &DeviceConnectionSt
         || advertiser.answering_after_setup()
         || advertiser.in_add_mode();
     advertiser.set_wanted(wanted);
+}
+
+// ---- Channel setup ----
+
+/// How long the device with the higher id waits, in a Bluetooth setup, for the
+/// other device's hello to reach it before dialling anyway. See
+/// `BluetoothChannelService::setup_round`.
+#[cfg(all(feature = "ui-plane", not(test)))]
+const HIGHER_ID_PATIENCE: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const HIGHER_ID_PATIENCE: Duration = Duration::from_millis(1_500);
+
+/// `setup_round`'s cap for one dial + hello + ack.
+///
+/// Against a real phone the dial alone takes 1-2s, and `BleDataLink::send`
+/// retries a `GattBusy` rejection for up to ~1.4s on top; 4s was once too
+/// short and dropped every attempt mid-connect:
+///
+/// ```text
+/// 02:05:13  connect: dialling 52:E1:52:02:7D:37
+/// 02:05:17  connect: abandoned before completing (connect guard dropped)
+/// ```
+///
+/// 15s leaves a 60s setup round room for four candidates -- more than a
+/// room ever holds.
+#[cfg(any(feature = "ui-plane", test))]
+const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[cfg(any(feature = "ui-plane", test))]
+impl crate::services::communication::channel::service::BluetoothChannelService {
+    /// One Bluetooth setup-search round for `peer_id` (ADR-0008 D12): asks
+    /// the scanner for the peer for up to `timeout`, and says hello the
+    /// moment it is heard. `Ok(true)` if the peer acknowledged; `Err` when
+    /// the radio itself is unusable, so the caller can pause.
+    pub async fn setup_round(&self, peer_id: &str, timeout: Duration) -> Result<bool, String> {
+        let scanner = self.state.bluetooth_scanner.clone();
+        let Some(found) = scanner.find(peer_id, Purpose::Setup, timeout).await else {
+            if BluetoothAdapter::this_device().is_unavailable() {
+                return Err("bluetooth adapter unavailable".to_string());
+            }
+            return Ok(false);
+        };
+        // Both devices search for each other, and each dials the other the
+        // moment it hears it. Two dials crossing fail each other: a device
+        // that is itself mid-connect is not connectable, so the other's dial
+        // hangs until BlueZ aborts it ("le-connection-abort-by-local" after
+        // 8-12 s), and the retry crosses again. Measured on a laptop and a
+        // Pixel, this was most of the 40-120 s a setup took. So the device
+        // with the higher id lets the other dial first, and dials back once
+        // the other's hello has reached it.
+        self.wait_for_turn_to_dial(peer_id).await;
+        // A candidate probe already dialling is let finish, not cancelled;
+        // this dial must not overlap one to the same peer.
+        let _probe = scanner.candidate_probe().await;
+        // Bounded: a candidate that accepts the connection and never answers
+        // must not hold the round open.
+        let acknowledged =
+            tokio::time::timeout(FIND_PEER_CANDIDATE_TIMEOUT, self.say_hello(&found.address, peer_id))
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+        if !acknowledged {
+            scanner.note_dial_failed(&found.address);
+        }
+        Ok(acknowledged)
+    }
+
+    /// In a Bluetooth setup the device with the lower id dials first; the
+    /// one with the higher id waits until the other's hello has reached it
+    /// (or `HIGHER_ID_PATIENCE` runs out) before dialling back.
+    pub(crate) async fn wait_for_turn_to_dial(&self, peer_id: &str) {
+        let state = &self.state;
+        if state.identity.device_id.as_str() <= peer_id {
+            return;
+        }
+        let patience = tokio::time::Instant::now() + HIGHER_ID_PATIENCE;
+        while tokio::time::Instant::now() < patience
+            && !state
+                .channel_setup(peer_id, ChannelKind::Bluetooth)
+                .is_some_and(|setup| setup.acked_peer_hello)
+        {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Dials `address` and sends this device's hello (ADR-0008 D1).
+    /// `Some(())` if the device there is `peer_id` and acknowledged it --
+    /// which it does only while it is running its own setup search for us
+    /// (D2).
+    async fn say_hello(&self, address: &str, peer_id: &str) -> Option<()> {
+        let state = &self.state;
+        let mut link = dial_session(state, peer_id, address).await.ok()?;
+        send_frame(
+            link.as_mut(),
+            &PeerFrame::Hello {
+                device_id: state.identity.device_id.clone(),
+            },
+        )
+        .await
+        .ok()?;
+        match recv_frame(link.as_mut()).await {
+            Some(Ok(PeerFrame::HelloAck { device_id })) if device_id == peer_id => Some(()),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2097,20 +2097,21 @@ async fn holds_within(within: Duration, done: impl Fn() -> bool) -> bool {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
-    use crate::services::communication::channel::bluetooth::wait_for_turn_to_dial;
+    use crate::services::communication::channel::{radio::for_this_device, service::BluetoothChannelService};
 
     let (state, _db) = server_state("setup-dial-order");
+    let channel = std::sync::Arc::new(BluetoothChannelService::new(state.clone(), for_this_device()));
     // Device ids are UUIDs: "~" sorts after any of them, "!" before.
     let (above_me, below_me) = ("~", "!");
 
-    tokio::time::timeout(Duration::from_millis(100), wait_for_turn_to_dial(&state, above_me))
+    tokio::time::timeout(Duration::from_millis(100), channel.wait_for_turn_to_dial(above_me))
         .await
         .expect("the lower id dials at once");
 
     state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
     let turn = {
-        let state = state.clone();
-        tokio::spawn(async move { wait_for_turn_to_dial(&state, below_me).await })
+        let channel = channel.clone();
+        tokio::spawn(async move { channel.wait_for_turn_to_dial(below_me).await })
     };
     sleep(Duration::from_millis(300)).await;
     assert!(!turn.is_finished(), "the higher id waits for the peer's hello");
@@ -2122,7 +2123,7 @@ async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
 
     state.end_channel_setup(below_me, ChannelKind::Bluetooth);
     state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
-    tokio::time::timeout(Duration::from_secs(3), wait_for_turn_to_dial(&state, below_me))
+    tokio::time::timeout(Duration::from_secs(3), channel.wait_for_turn_to_dial(below_me))
         .await
         .expect("without the peer's hello the higher id still dials, once its patience runs out");
     state.end_channel_setup(below_me, ChannelKind::Bluetooth);

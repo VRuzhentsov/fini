@@ -390,8 +390,10 @@ pub async fn device_connection_identify_bluetooth_device(
             }
             None => crate::services::communication::channel::bluetooth::fingerprint_of(&device_id),
         };
-        let device =
-            crate::services::communication::channel::bluetooth::identify_heard_device(state.inner(), fingerprint).await?;
+        let device = state
+            .bluetooth_scanner
+            .identify_heard_device(fingerprint, state.bluetooth_advertiser.hello(), &state.identity.device_id)
+            .await?;
         Ok(DiscoveredDevice {
             device_id: device.device_id,
             hostname: device.hostname,
