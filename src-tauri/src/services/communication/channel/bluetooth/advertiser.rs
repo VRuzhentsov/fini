@@ -28,12 +28,32 @@ use crate::services::communication::sync::types::PeerFrame;
 #[cfg(any(feature = "ui-plane", test))]
 const ANSWER_AFTER_SETUP: Duration = Duration::from_secs(120);
 
+/// The longest name the scan response carries on every platform: Android
+/// fits 13 bytes next to the service UUID, Linux 29. Cut here, so both show
+/// the same name.
+#[cfg(any(feature = "ui-plane", test))]
+const SHORT_NAME_MAX_BYTES: usize = 13;
+
+/// `name` cut to `SHORT_NAME_MAX_BYTES` at a character boundary.
+#[cfg(any(feature = "ui-plane", test))]
+fn short_name(name: &str) -> String {
+    let mut end = name.len().min(SHORT_NAME_MAX_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].to_string()
+}
+
 pub struct Advertiser {
     /// This device's advertised identity fingerprint: what lets a scanning
     /// peer tell this device apart from any other Fini install without
     /// connecting to it first.
     #[cfg(any(feature = "ui-plane", test))]
     fingerprint: [u8; FINGERPRINT_LEN],
+    /// This device's name, cut to `SHORT_NAME_MAX_BYTES`, sent in the scan
+    /// response so the Add Device list can show it without a connection.
+    #[cfg(any(feature = "ui-plane", test))]
+    short_name: String,
     /// This device's `IdentifyDevice`, carrying its identity.
     #[cfg(any(feature = "ui-plane", test))]
     hello: PeerFrame,
@@ -78,6 +98,8 @@ impl Advertiser {
             #[cfg(any(feature = "ui-plane", test))]
             fingerprint: fingerprint_of(&identity.device_id),
             #[cfg(any(feature = "ui-plane", test))]
+            short_name: short_name(&identity.hostname),
+            #[cfg(any(feature = "ui-plane", test))]
             hello: PeerFrame::IdentifyDevice {
                 device_id: identity.device_id.clone(),
                 hostname: identity.hostname.clone(),
@@ -97,7 +119,8 @@ impl Advertiser {
     }
 
     /// The datagram config `run_server` advertises: Fini's service plus one
-    /// flags byte and the identity fingerprint as manufacturer data.
+    /// flags byte and the identity fingerprint as manufacturer data, and the
+    /// short name in the scan response.
     #[cfg(any(feature = "ui-plane", test))]
     pub fn advertised_config(&self) -> DatagramConfig {
         let mut config = datagram_config();
@@ -105,6 +128,7 @@ impl Advertiser {
         payload.push(if self.in_add_mode() { ADD_MODE_FLAG_BYTE } else { 0 });
         payload.extend_from_slice(&self.fingerprint);
         config.advertised_manufacturer_data.insert(FINI_MANUFACTURER_ID, payload);
+        config.advertised_local_name = Some(self.short_name.clone());
         config
     }
 
