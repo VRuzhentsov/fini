@@ -506,10 +506,10 @@ pub fn run() {
             let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
             // Each channel starts its own discovery and its own accept loop.
             // A channel that cannot run on this platform declines from inside
-            // its service, so this stays one line however many channels exist.
+            // itself, so this stays one line however many channels exist.
             for channel in services::communication::channel::service::services(&dc_state) {
-                channel.start_discovery();
-                channel.start_serving();
+                channel.start_discovery(&dc_state);
+                channel.start_serving(&dc_state);
             }
             tauri::async_runtime::spawn(forward_session_lifecycle_events(
                 dc_state.subscribe_lifecycle(),

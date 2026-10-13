@@ -128,22 +128,9 @@ pub struct DeviceConnectionState {
     /// The Network channel: its iroh endpoint, mDNS lookup and exchange
     /// attempts.
     pub(crate) network: Arc<crate::services::communication::channel::network::NetworkChannel>,
-    /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
-    /// transport, built on first use (`channel::bluetooth`).
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(crate) bluetooth_endpoint:
-        Arc<tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>>,
-    /// When to search again for a paired device that a delivery search did
-    /// not find.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(crate) bluetooth_delivery: Arc<crate::services::communication::channel::bluetooth::DeliverySchedule>,
-    /// The one Bluetooth scan, the turns on the radio, and what the scan
-    /// heard: the devices available for Add Device and the paired devices.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(crate) bluetooth_scanner: Arc<crate::services::communication::channel::bluetooth::Scanner>,
-    /// What this device advertises over Bluetooth, and whether it does.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(crate) bluetooth_advertiser: Arc<crate::services::communication::channel::bluetooth::Advertiser>,
+    /// The Bluetooth channel: its scan, advertisement, delivery schedule and
+    /// iroh endpoint. On a platform without Bluetooth it only says so.
+    pub(crate) bluetooth: Arc<crate::services::communication::channel::bluetooth::BluetoothChannel>,
     /// Carries pairing frames over Bluetooth, and holds the links requests
     /// arrived on.
     pub(crate) bluetooth_carrier: Arc<carrier::BluetoothCarrier>,
@@ -216,9 +203,7 @@ impl DeviceConnectionState {
         let secret_key = device_key::try_load_or_create_secret_key(&db_path)?;
         let mut identity = identity;
         identity.endpoint_id = secret_key.public().to_string();
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let bluetooth_advertiser =
-            Arc::new(crate::services::communication::channel::bluetooth::Advertiser::new(&identity));
+        let bluetooth = Arc::new(crate::services::communication::channel::bluetooth::BluetoothChannel::new(&identity));
 
         let space_sync_ws_port = env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT);
         let network = Arc::new(crate::services::communication::channel::network::NetworkChannel::new(
@@ -233,14 +218,7 @@ impl DeviceConnectionState {
             space_sync_ws_port,
             secret_key,
             network,
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            bluetooth_delivery: Arc::default(),
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            bluetooth_scanner: Arc::default(),
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            bluetooth_advertiser,
+            bluetooth,
             bluetooth_carrier: Arc::default(),
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),

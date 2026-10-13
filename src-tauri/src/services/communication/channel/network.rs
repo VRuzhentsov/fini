@@ -25,7 +25,10 @@ use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::sync::session;
 use crate::services::communication::channel::iroh_link::{IrohDataLink, ALPN};
+use crate::services::communication::channel::service::ChannelService;
 use crate::services::communication::channel::{send_frame, ChannelKind, DataLink};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::communication::pairing::ChannelProblem;
 use crate::services::communication::sync::types::PeerFrame;
 
 /// How long a dial may take before it counts as failed. A peer on the same
@@ -475,6 +478,54 @@ impl NetworkChannel {
             .await;
         }
         true
+    }
+}
+
+#[async_trait::async_trait]
+impl ChannelService for NetworkChannel {
+    /// Every platform Fini runs on has a network stack. Whether a *peer* is
+    /// reachable over it is `is_present`'s question, not this one.
+    #[cfg(any(feature = "ui-plane", test))]
+    fn available(&self) -> bool {
+        true
+    }
+
+    fn start_discovery(&self, state: &DeviceConnectionState) {
+        NetworkChannel::start_discovery(self, state);
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    fn start_serving(&self, state: &DeviceConnectionState) {
+        // Before the spawn: a dial that runs first must already see that
+        // this channel serves, or it could bind (and keep) a random port.
+        self.mark_serving();
+        let state = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let db_path = state.db_path.clone();
+            state.network.clone().run_server(state, db_path).await
+        });
+    }
+
+    fn request_exchange(&self, state: &DeviceConnectionState, peer_device_id: &str) {
+        self.start_exchange(state, peer_device_id);
+    }
+
+    fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+        state.network_peer_available(peer_device_id)
+    }
+
+    fn recently_failed(&self, peer_device_id: &str) -> bool {
+        NetworkChannel::recently_failed(self, peer_device_id)
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    fn forget_failures(&self, peer_device_id: &str) {
+        NetworkChannel::forget_failures(self, peer_device_id);
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    fn problem(&self, state: &DeviceConnectionState) -> Option<ChannelProblem> {
+        state.network_discovery_stopped().then_some(ChannelProblem::NetworkUnavailable)
     }
 }
 

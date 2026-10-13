@@ -61,7 +61,7 @@ pub struct Advertiser {
     /// than at each call site.
     ///
     /// This used to be a `Once` inside `start_peripheral_once`, which guarded
-    /// only that one caller. `GattRadio::serve` spawned `run_server` directly
+    /// only that one caller. `start_serving` spawned `run_server` directly
     /// as well, so on Android both ran: two accept loops, both handed the
     /// same inbound central, both running the gate on it. One claimed the
     /// session, the other was rejected as a duplicate, and dropping the
@@ -190,7 +190,7 @@ mod tests {
 
     /// The peripheral acceptor must be a singleton, whatever starts it.
     ///
-    /// It was not: `GattRadio::serve` spawned `run_server` on Linux *and*
+    /// It was not: `start_serving` spawned `run_server` on Linux *and*
     /// Android, while Android also started it from `dial` via
     /// `start_peripheral_once`. Two accept loops then received the same
     /// inbound central and both ran the gate on it -- one claimed the

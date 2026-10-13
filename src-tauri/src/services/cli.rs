@@ -651,7 +651,7 @@ impl CliContext {
         for channel in
             crate::services::communication::channel::service::services(&device_state)
         {
-            channel.start_discovery();
+            channel.start_discovery(&device_state);
         }
         Ok(Self {
             db_path,

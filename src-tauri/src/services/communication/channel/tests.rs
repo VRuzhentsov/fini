@@ -2070,7 +2070,7 @@ fn exchanges_and_setups_start_from_outside_a_tokio_runtime() {
     seed_paired_device(&db_path, "peer-sync-command");
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    crate::services::communication::channel::bluetooth::start_exchange(&state, "peer-sync-command");
+    state.bluetooth.start_exchange(&state, "peer-sync-command");
     crate::services::communication::pairing::setup::start(&state, "peer-sync-command", ChannelKind::Network);
 
     assert!(state.channel_setup("peer-sync-command", ChannelKind::Network).is_some());
@@ -2097,21 +2097,19 @@ async fn holds_within(within: Duration, done: impl Fn() -> bool) -> bool {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
-    use crate::services::communication::channel::{radio::for_this_device, service::BluetoothChannelService};
-
     let (state, _db) = server_state("setup-dial-order");
-    let channel = std::sync::Arc::new(BluetoothChannelService::new(state.clone(), for_this_device()));
+    let channel = state.bluetooth.clone();
     // Device ids are UUIDs: "~" sorts after any of them, "!" before.
     let (above_me, below_me) = ("~", "!");
 
-    tokio::time::timeout(Duration::from_millis(100), channel.wait_for_turn_to_dial(above_me))
+    tokio::time::timeout(Duration::from_millis(100), channel.wait_for_turn_to_dial(&state, above_me))
         .await
         .expect("the lower id dials at once");
 
     state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
     let turn = {
-        let channel = channel.clone();
-        tokio::spawn(async move { channel.wait_for_turn_to_dial(below_me).await })
+        let (channel, state) = (channel.clone(), state.clone());
+        tokio::spawn(async move { channel.wait_for_turn_to_dial(&state, below_me).await })
     };
     sleep(Duration::from_millis(300)).await;
     assert!(!turn.is_finished(), "the higher id waits for the peer's hello");
@@ -2123,7 +2121,7 @@ async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
 
     state.end_channel_setup(below_me, ChannelKind::Bluetooth);
     state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
-    tokio::time::timeout(Duration::from_secs(3), channel.wait_for_turn_to_dial(below_me))
+    tokio::time::timeout(Duration::from_secs(3), channel.wait_for_turn_to_dial(&state, below_me))
         .await
         .expect("without the peer's hello the higher id still dials, once its patience runs out");
     state.end_channel_setup(below_me, ChannelKind::Bluetooth);
@@ -2140,7 +2138,7 @@ async fn a_bluetooth_setup_keeps_the_candidate_scan_aside_until_it_ends() {
 
     let (state, db_path) = server_state("setup-holds-pairing-leg");
     seed_paired_device(&db_path, "peer-leg");
-    let radio = state.bluetooth_scanner.clone();
+    let radio = state.bluetooth.scanner.clone();
 
     setup::start(&state, "peer-leg", ChannelKind::Bluetooth);
     assert!(

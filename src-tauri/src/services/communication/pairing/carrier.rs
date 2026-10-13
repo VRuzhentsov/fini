@@ -107,8 +107,7 @@ impl BluetoothCarrier {
         tauri::async_runtime::block_on(async move {
             // Keeps the add-mode candidate scan off the adapter and out of
             // this peer's dial until the frame is sent.
-            let (mut link, _clear_of_scan) =
-                crate::services::communication::channel::bluetooth::dial_for_pairing(state, peer_key, address).await?;
+            let (mut link, _clear_of_scan) = state.bluetooth.dial_for_pairing(state, peer_key, address).await?;
             send_pair_frame(link.as_mut(), &msg).await
         })
     }
@@ -126,16 +125,15 @@ impl BluetoothCarrier {
         &self, state: &DeviceConnectionState, to_device_id: &str, address: &str, msg: PeerFrame,
     ) -> Result<(), String> {
         let peer_key = state
-            .bluetooth_scanner.available
+            .bluetooth.scanner.available
             .key(to_device_id)
             .ok_or_else(|| "that device has not been found over Bluetooth yet -- try again".to_string())?;
         // The picker's address can be stale: Android re-advertises from a
         // new private address on every add-mode change.
-        let latest = state.bluetooth_scanner.available.latest_address(to_device_id);
+        let latest = state.bluetooth.scanner.available.latest_address(to_device_id);
         let address = latest.as_deref().unwrap_or(address);
         let link = tauri::async_runtime::block_on(async {
-            let (mut link, _clear_of_scan) =
-                crate::services::communication::channel::bluetooth::dial_for_pairing(state, &peer_key, address).await?;
+            let (mut link, _clear_of_scan) = state.bluetooth.dial_for_pairing(state, &peer_key, address).await?;
             send_pair_frame(link.as_mut(), &msg).await?;
             Ok::<_, String>(link)
         })?;
@@ -160,7 +158,7 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>)
         // The whole exchange runs on this one link, so keep the add-mode
         // scan from probing the peer -- a second connection to the same
         // device -- until it is over.
-        let _leg = state.bluetooth_scanner.begin_pairing_step();
+        let _leg = state.bluetooth.scanner.begin_pairing_step();
         let listen_for = Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 30);
         let _ = tokio::time::timeout(listen_for, async {
             while let Some(Ok(frame)) = recv_frame(link.as_mut()).await {

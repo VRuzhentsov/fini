@@ -15,8 +15,9 @@
 //!   QUIC link on this device's iroh endpoint, ADR-0009).
 //! - `iroh_link` — the `DataLink` over an iroh connection that `network`
 //!   uses.
-//! - `ble` — how the Bluetooth channel connects (Linux BlueZ, Android GATT,
-//!   both via `ble-gatt`; see that module's doc comment).
+//! - `bluetooth` — the Bluetooth channel (Linux BlueZ, Android GATT, both
+//!   via `ble-gatt`; see that module's doc comment). Other systems get a
+//!   `BluetoothChannel` that only says Bluetooth is not supported.
 //!
 //! A `DataLink` moves opaque byte datagrams (whole payloads, boundaries
 //! preserved); each adapter owns its own chunking/framing. Above `DataLink` sits
@@ -29,10 +30,56 @@ pub mod codec;
 pub mod encryption;
 pub mod envelope;
 pub mod iroh_link;
-pub mod radio;
 pub mod selection;
 pub mod network;
 pub mod service;
+
+/// The Bluetooth channel on a system without `ble-gatt` (Windows, macOS):
+/// the same name as the real one, so the state and `service::services`
+/// need no platform branches. Rust's std does the same with its
+/// `sys/unsupported` modules.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub mod bluetooth {
+    use crate::services::communication::channel::service::ChannelService;
+    use crate::services::communication::pairing::{DeviceConnectionState, DeviceIdentity};
+    #[cfg(any(feature = "ui-plane", test))]
+    use crate::services::communication::pairing::ChannelProblem;
+
+    pub struct BluetoothChannel;
+
+    impl BluetoothChannel {
+        pub(crate) fn new(_identity: &DeviceIdentity) -> Self {
+            Self
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChannelService for BluetoothChannel {
+        #[cfg(any(feature = "ui-plane", test))]
+        fn available(&self) -> bool {
+            false
+        }
+
+        /// No adapter on this platform at all, so there is no radio to be
+        /// off. Answering `false` would blame the person's hardware for a
+        /// platform decision.
+        #[cfg(any(feature = "ui-plane", test))]
+        async fn probe(&self, _state: &DeviceConnectionState) -> bool {
+            true
+        }
+
+        fn request_exchange(&self, _state: &DeviceConnectionState, _peer_device_id: &str) {}
+
+        fn is_present(&self, _state: &DeviceConnectionState, _peer_device_id: &str) -> bool {
+            false
+        }
+
+        #[cfg(any(feature = "ui-plane", test))]
+        fn problem(&self, _state: &DeviceConnectionState) -> Option<ChannelProblem> {
+            Some(ChannelProblem::BluetoothNotSupported)
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

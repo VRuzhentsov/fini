@@ -455,7 +455,7 @@ fn peer_reachable_now(
     use crate::services::communication::pairing::{channels, ChannelKind};
     [ChannelKind::Network, ChannelKind::Bluetooth].into_iter().any(|kind| {
         channels::is_enabled(conn, peer_device_id, kind)
-            && service_for(device_connection, kind).is_present(peer_device_id)
+            && service_for(device_connection, kind).is_present(device_connection, peer_device_id)
     })
 }
 
@@ -1483,7 +1483,7 @@ pub fn space_sync_tick_impl(
         device_connection,
         crate::services::communication::pairing::ChannelKind::Bluetooth,
     )
-    .keep_serving();
+    .keep_serving(device_connection);
 
     // Started on every platform now, but see `start_tick_keeper_once`: only
     // Android gets the periodic backstop, which is what ADR-0004 needed it
@@ -1774,13 +1774,13 @@ fn request_exchanges(
         let reachable_now = order.into_iter().find(|&kind| {
             let service = service_for(device_connection, kind);
             channels::is_enabled(conn, peer_device_id, kind)
-                && service.is_present(peer_device_id)
+                && service.is_present(device_connection, peer_device_id)
                 && !service.recently_failed(peer_device_id)
         });
         if let Some(kind) = reachable_now {
-            service_for(device_connection, kind).request_exchange(peer_device_id);
+            service_for(device_connection, kind).request_exchange(device_connection, peer_device_id);
         } else if channels::is_enabled(conn, peer_device_id, ChannelKind::Bluetooth) {
-            service_for(device_connection, ChannelKind::Bluetooth).request_exchange(peer_device_id);
+            service_for(device_connection, ChannelKind::Bluetooth).request_exchange(device_connection, peer_device_id);
         }
     }
 }

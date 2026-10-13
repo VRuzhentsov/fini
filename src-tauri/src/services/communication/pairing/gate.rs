@@ -36,7 +36,7 @@ fn dialing(state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKin
     match kind {
         ChannelKind::Network => state.network.dialing(peer_device_id),
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        ChannelKind::Bluetooth => state.bluetooth_scanner.dialing(peer_device_id),
+        ChannelKind::Bluetooth => state.bluetooth.scanner.dialing(peer_device_id),
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         ChannelKind::Bluetooth => {
             let _ = state;
@@ -153,7 +153,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 // add-mode scan off the adapter meanwhile too: its probes
                 // dial the very device whose link is parked here.
                 #[cfg(any(target_os = "linux", target_os = "android"))]
-                let _leg = state.bluetooth_scanner.begin_pairing_step();
+                let _leg = state.bluetooth.scanner.begin_pairing_step();
                 let hold_until = tokio::time::Instant::now()
                     + Duration::from_secs(super::PAIR_REQUEST_TTL_SECS as u64 + 5);
                 while tokio::time::Instant::now() < hold_until {

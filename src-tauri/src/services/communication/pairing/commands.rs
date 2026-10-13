@@ -190,11 +190,11 @@ pub fn device_connection_enter_add_mode_impl(
     // existing mDNS beacon.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     if bluetooth {
-        state.bluetooth_advertiser.set_add_mode(true);
+        state.bluetooth.advertiser.set_add_mode(true);
     }
     #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
     if bluetooth {
-        state.bluetooth_scanner.set_add_device_mode(true);
+        state.bluetooth.scanner.set_add_device_mode(true);
     }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
@@ -238,9 +238,9 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
         state.identity.hostname, state.identity.device_id
     );
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    state.bluetooth_advertiser.set_add_mode(false);
+    state.bluetooth.advertiser.set_add_mode(false);
     #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
-    state.bluetooth_scanner.set_add_device_mode(false);
+    state.bluetooth.scanner.set_add_device_mode(false);
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
@@ -323,7 +323,7 @@ pub fn device_connection_bluetooth_available_devices(
                 .collect()
         };
         Ok(state
-            .bluetooth_scanner
+            .bluetooth.scanner
             .available
             .in_add_device(mine)
             .into_iter()
@@ -391,8 +391,8 @@ pub async fn device_connection_identify_bluetooth_device(
             None => crate::services::communication::channel::bluetooth::fingerprint_of(&device_id),
         };
         let device = state
-            .bluetooth_scanner
-            .identify_heard_device(fingerprint, state.bluetooth_advertiser.hello(), &state.identity.device_id)
+            .bluetooth.scanner
+            .identify_heard_device(fingerprint, state.bluetooth.advertiser.hello(), &state.identity.device_id)
             .await?;
         Ok(DiscoveredDevice {
             device_id: device.device_id,
@@ -965,7 +965,7 @@ pub async fn device_connection_set_channel_enabled(
     if enabled {
         let service = crate::services::communication::channel::service::service_for(state.inner(), kind);
         if !service.usable() {
-            service.probe().await;
+            service.probe(state.inner()).await;
         }
     }
     let mut conn = db.0.lock().unwrap();
@@ -1038,7 +1038,7 @@ pub async fn device_connection_probe_bluetooth_adapter(
 ) -> Result<bool, String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        Ok(crate::services::communication::channel::bluetooth::BluetoothAdapter::this_device().probe(&state.bluetooth_scanner).await)
+        Ok(crate::services::communication::channel::bluetooth::BluetoothAdapter::this_device().probe(&state.bluetooth.scanner).await)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
@@ -1110,7 +1110,7 @@ pub async fn device_connection_begin_channel_setup(
         }
         let service =
             crate::services::communication::channel::service::service_for(state.inner(), kind);
-        if !service.available() || !service.probe().await {
+        if !service.available() || !service.probe(state.inner()).await {
             return Err("Bluetooth is unavailable on this device".to_string());
         }
     }
@@ -1224,14 +1224,14 @@ pub fn device_connection_channel_statuses_impl(
             let primary = channel.is_some_and(|channel| channel.is_primary);
             let service = crate::services::communication::channel::service::service_for(state, kind);
             // An exchange running right now is presence too.
-            let present = service.is_present(&peer_device_id) || state.has_session_on(&peer_device_id, kind);
+            let present = service.is_present(state, &peer_device_id) || state.has_session_on(&peer_device_id, kind);
             // Outranks whatever the channel itself reports: a radio that is
             // off is worth saying only while there is a pair that could use
             // it once it comes back.
             let problem = if pair_key_missing {
                 Some(ChannelProblem::PairKeyMissing)
             } else {
-                service.problem()
+                service.problem(state)
             };
             channel_status(kind, stored, present, problem, primary)
         })
@@ -1289,7 +1289,7 @@ pub async fn e2e_set_radio(
 #[tauri::command]
 pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, active: bool) {
     for service in crate::services::communication::channel::service::services(state.inner()) {
-        service.watch_presence(active);
+        service.watch_presence(state.inner(), active);
     }
 }
 
@@ -1362,7 +1362,7 @@ pub fn device_connection_unpair(
     // this process's state, so only the app has any to forget.
     state.network.forget_failures(&peer_device_id);
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    state.bluetooth_delivery.forget_delivery_misses(&peer_device_id);
+    state.bluetooth.delivery.forget_delivery_misses(&peer_device_id);
     Ok(())
 }
 
