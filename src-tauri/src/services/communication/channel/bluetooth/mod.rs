@@ -718,7 +718,7 @@ impl BluetoothChannel {
                 db_path,
                 peer_id.to_string(),
                 version,
-                session::EXCHANGE_IDLE,
+                session::idle_after(ChannelKind::Bluetooth),
             )
             .await;
         }

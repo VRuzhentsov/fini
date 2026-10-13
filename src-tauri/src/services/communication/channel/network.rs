@@ -435,6 +435,7 @@ impl NetworkChannel {
             log::warn!("[transport][network] {peer_id} has no key pinned; pair the devices again");
             return false;
         };
+        log::info!("[transport][network] connecting to {peer_id} at {target_addr}:{ws_port}");
         let mut link = match self.connect(&peer_key, target_addr, ws_port).await {
             Ok(link) => link,
             Err(err) => {
@@ -459,6 +460,9 @@ impl NetworkChannel {
             };
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         if state.try_claim_session(peer_id, ChannelKind::Network, tx) {
+            // The session is held, not connecting: a new connection from the
+            // peer (its app restarted) must not be refused as crossed.
+            self.in_flight.lock().unwrap().remove(peer_id);
             log::info!("[transport][network] exchange with {peer_id}");
             session::run_session(
                 link,
@@ -467,7 +471,7 @@ impl NetworkChannel {
                 db_path,
                 peer_id.to_string(),
                 peer_protocol_version,
-                session::EXCHANGE_IDLE,
+                session::idle_after(ChannelKind::Network),
             )
             .await;
         }
@@ -504,8 +508,27 @@ impl ChannelService for NetworkChannel {
         self.start_exchange(state, peer_device_id);
     }
 
+    /// Green means a live connection: a held session with the peer
+    /// (`session::idle_after`), not only an mDNS record.
     fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        state.network_peer_available(peer_device_id)
+        state.has_session_on(peer_device_id, ChannelKind::Network)
+    }
+
+    /// Holds a session with every paired device that has the Network
+    /// channel on: on each tick, connects to those the mDNS lookup hears and
+    /// that have no session. `start_exchange` skips a device that has one,
+    /// is not heard, or failed within `FAILURE_COOLDOWN`.
+    fn keep_serving(&self, state: &DeviceConnectionState) {
+        let peers = tokio::task::block_in_place(|| {
+            let mut conn = open_db_at_path(&state.db_path);
+            crate::services::communication::pairing::channels::peers_with_channel_enabled(
+                &mut conn,
+                ChannelKind::Network,
+            )
+        });
+        for peer in peers {
+            self.start_exchange(state, &peer);
+        }
     }
 
     /// One hello to wherever the mDNS lookup last heard the peer; a hello

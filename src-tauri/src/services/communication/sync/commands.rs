@@ -1475,12 +1475,13 @@ pub fn space_sync_tick_impl(
         .load(&mut *conn)
         .map_err(|e| e.to_string())?;
 
-    // Keep this device reachable: on Android the peripheral starts from the
-    // first tick, and whether to advertise at all follows the channels and
-    // setups as they are now (ADR-0008 D8).
-    device_connection
-        .channel(crate::services::communication::pairing::ChannelKind::Bluetooth)
-        .keep_serving(device_connection);
+    // Keep this device reachable and its held connections up: on Android the
+    // Bluetooth peripheral starts from the first tick, whether to advertise
+    // follows the channels and setups as they are now (ADR-0008 D8), and the
+    // Network channel connects to each paired device it hears.
+    for channel in device_connection.channels() {
+        channel.keep_serving(device_connection);
+    }
 
     // Started on every platform now, but see `start_tick_keeper_once`: only
     // Android gets the periodic backstop, which is what ADR-0004 needed it

@@ -1854,7 +1854,7 @@ async fn an_exchange_closes_once_nothing_moves() {
             server_db,
             "peer-client".to_string(),
             crate::services::communication::sync::types::PROTOCOL_VERSION,
-            Duration::from_millis(200),
+            Some(Duration::from_millis(200)),
         )
         .await;
     });

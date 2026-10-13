@@ -80,6 +80,18 @@ pub async fn perform_client_auth(
 /// no connection is ever held for its own sake.
 pub const EXCHANGE_IDLE: Duration = Duration::from_secs(20);
 
+/// How long a session on this channel stays open with nothing moving.
+/// `None`: the session is held, and closes only when its link fails -- a
+/// held session is what makes the channel green (2026-10-13 decision: green
+/// means a live connection). Network holds; Bluetooth still closes after
+/// `EXCHANGE_IDLE` until it holds a low-power link of its own.
+pub fn idle_after(kind: ChannelKind) -> Option<Duration> {
+    match kind {
+        ChannelKind::Network => None,
+        ChannelKind::Bluetooth => Some(EXCHANGE_IDLE),
+    }
+}
+
 /// Writes every frame kept for the peer to the link, dropping each once
 /// written. `false` if the link failed; what was not written stays kept.
 async fn send_kept_frames(link: &mut dyn DataLink, db_path: &PathBuf, peer_device_id: &str) -> bool {
@@ -101,10 +113,10 @@ async fn send_kept_frames(link: &mut dyn DataLink, db_path: &PathBuf, peer_devic
 
 /// One exchange with a peer (ADR-0008 D10): after authentication, both sides
 /// push what they have, each message is acknowledged, and the connection
-/// closes once nothing has moved for `idle_after` (`EXCHANGE_IDLE` in the
-/// app). `rx` is the mailbox of
-/// the exchange already registered with `try_claim_session`; this function
-/// only releases it.
+/// closes once nothing has moved for `idle_after`, or only when the link
+/// fails if `idle_after` is `None` (see `idle_after()`). `rx` is the mailbox
+/// of the exchange already registered with `try_claim_session`; this
+/// function only releases it.
 pub async fn run_session(
     mut link: Box<dyn DataLink>,
     mut rx: mpsc::Receiver<SessionCommand>,
@@ -112,8 +124,11 @@ pub async fn run_session(
     db_path: PathBuf,
     peer_device_id: String,
     peer_protocol_version: u32,
-    idle_after: Duration,
+    idle_after: Option<Duration>,
 ) {
+    let closes_when_idle = idle_after.is_some();
+    // Only read while `closes_when_idle`; a held session never waits on it.
+    let idle_after = idle_after.unwrap_or(Duration::from_secs(3600));
     let kind = link.kind();
 
     // Our own Bluetooth address, for the peer's diagnostics, once per
@@ -173,7 +188,7 @@ pub async fn run_session(
                     }
                 }
             }
-            _ = &mut idle => {
+            _ = &mut idle, if closes_when_idle => {
                 log::info!("[exchange] {peer_device_id} {kind:?}: idle, closing");
                 break;
             }
@@ -191,7 +206,16 @@ pub async fn run_session(
     crate::services::communication::sync::commands::notify_sync_work_pending_after(
         EXCHANGE_END_RECHECK,
     );
+    // A held session ends only when its link failed: the channel is grey
+    // now, and the next tick lets it connect again (`keep_serving`) if the
+    // peer is still there.
+    if !closes_when_idle {
+        crate::services::communication::sync::commands::notify_sync_work_pending_after(HELD_SESSION_RECONNECT);
+    }
 }
+
+/// How soon after a held session ends the channel tries to connect again.
+const HELD_SESSION_RECONNECT: Duration = Duration::from_secs(2);
 
 /// How long after an exchange ends the keeper looks again for work it left
 /// unfinished.

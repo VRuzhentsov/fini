@@ -275,6 +275,7 @@ impl DeviceConnectionState {
         };
         // A device that appears is the moment waiting work can go to it.
         if newly_present {
+            log::info!("[transport][network] heard {device_id} at {addr}");
             crate::services::communication::sync::commands::notify_sync_work_pending();
         }
     }

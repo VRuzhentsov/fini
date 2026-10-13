@@ -31,6 +31,11 @@ use crate::services::communication::sync::session::{
 };
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
 
+/// How long a new connection waits for the held session it replaces to
+/// release its slot.
+#[cfg(any(feature = "ui-plane", test))]
+const HELD_SESSION_RELEASE_WAIT: Duration = Duration::from_secs(3);
+
 /// Whether this device refuses a peer's inbound exchange because its own
 /// dial to that peer is under way and takes precedence: the dial from the
 /// smaller device id wins a crossing.
@@ -344,6 +349,21 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         return;
     }
 
+    // A held session ends only when its connection drops. A peer that
+    // connects again while one is held has restarted, and its old
+    // connection is dead: close the old session, and wait until it has
+    // released its slot, so that its release cannot free the new claim.
+    #[cfg(any(feature = "ui-plane", test))]
+    if crate::services::communication::sync::session::idle_after(kind).is_none()
+        && state.close_session_on(&device_id, kind)
+    {
+        log::info!("[space_sync][gate] {kind:?} {device_id} connected again; closing its held session");
+        let until = tokio::time::Instant::now() + HELD_SESSION_RELEASE_WAIT;
+        while state.has_session_on(&device_id, kind) && tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);
     if !state.try_claim_session(&device_id, kind, tx) {
         // If this fires repeatedly for a peer that has no other live session
@@ -388,7 +408,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         db_path,
         device_id,
         peer_protocol_version,
-        crate::services::communication::sync::session::EXCHANGE_IDLE,
+        crate::services::communication::sync::session::idle_after(kind),
     )
     .await;
 }
