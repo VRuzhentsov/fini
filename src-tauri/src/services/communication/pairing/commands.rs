@@ -640,7 +640,7 @@ pub fn device_connection_debug_status_impl(
 
     Ok(DeviceConnectionDebugStatus {
         add_mode_enabled: guard.add_mode_enabled,
-        worker_started: guard.worker_started,
+        worker_started: state.network.discovery_started(),
         tx_count: guard.tx_count,
         rx_count: guard.rx_count,
         discovered_count: guard.discovered.len(),
@@ -1259,7 +1259,7 @@ pub async fn e2e_set_radio(
     state: State<'_, DeviceConnectionState>, bluetooth: Option<bool>, network: Option<bool>,
 ) -> Result<(), String> {
     if let Some(on) = network {
-        crate::services::communication::channel::network::set_network_switch(on);
+        state.network.set_switch(on);
         if !on {
             state.end_channel_for_test(ChannelKind::Network);
         }
@@ -1358,7 +1358,7 @@ pub fn device_connection_unpair(
     device_connection_unpair_impl(&mut conn, peer_device_id.clone())?;
     // Failed attempts with the old pair must not delay a new one. Held by
     // this process's state, so only the app has any to forget.
-    state.network_attempts.forget_failures(&peer_device_id);
+    state.network.forget_failures(&peer_device_id);
     #[cfg(any(target_os = "linux", target_os = "android"))]
     state.bluetooth_delivery.forget_delivery_misses(&peer_device_id);
     Ok(())

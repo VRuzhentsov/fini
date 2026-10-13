@@ -170,9 +170,7 @@ async fn network_hello(state: &DeviceConnectionState, peer_device_id: &str) -> b
         // ADR-0009 D8: a pair from before keys existed is paired again.
         return false;
     };
-    let Ok(mut link) =
-        crate::services::communication::channel::network::dial(state, &peer_key, ip, port).await
-    else {
+    let Ok(mut link) = state.network.dial(&peer_key, ip, port).await else {
         return false;
     };
     let hello = PeerFrame::Hello {

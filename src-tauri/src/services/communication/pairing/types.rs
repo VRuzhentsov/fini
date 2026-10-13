@@ -239,7 +239,6 @@ pub(super) struct SeenPeer {
 #[derive(Debug, Default)]
 pub(super) struct DiscoveryRuntime {
     pub add_mode_enabled: bool,
-    pub worker_started: bool,
     pub tx_count: u64,
     pub rx_count: u64,
     pub last_broadcast_at: Option<String>,

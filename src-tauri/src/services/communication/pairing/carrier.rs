@@ -45,9 +45,7 @@ impl NetworkCarrier {
     pub(crate) fn send(
         &self, state: &DeviceConnectionState, peer_key: &str, addr: IpAddr, port: u16, msg: PeerFrame,
     ) -> Result<(), String> {
-        tauri::async_runtime::block_on(crate::services::communication::channel::network::send_one_frame(
-            state, peer_key, addr, port, &msg,
-        ))
+        tauri::async_runtime::block_on(state.network.send_one_frame(peer_key, addr, port, &msg))
     }
 }
 

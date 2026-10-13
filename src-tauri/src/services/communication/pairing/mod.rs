@@ -125,16 +125,9 @@ pub struct DeviceConnectionState {
     pub space_sync_ws_port: u16,
     /// This device's iroh key (ADR-0009 D8).
     pub(crate) secret_key: iroh::SecretKey,
-    /// The Network channel's iroh endpoint, bound on first use
-    /// (`channel::network`). Per state, not per process: tests run two
-    /// devices in one process.
-    pub(crate) network_endpoint: Arc<tokio::sync::OnceCell<iroh::Endpoint>>,
-    /// Set once this state serves the Network channel. A serving endpoint
-    /// must sit on `space_sync_ws_port`, the port presence announces; only
-    /// a state that just dials out may fall back to any free port.
-    pub(crate) serves_network: Arc<std::sync::atomic::AtomicBool>,
-    /// Network exchanges being attempted, and peers that failed recently.
-    pub(crate) network_attempts: Arc<crate::services::communication::channel::network::ExchangeAttempts>,
+    /// The Network channel: its iroh endpoint, mDNS lookup and exchange
+    /// attempts.
+    pub(crate) network: Arc<crate::services::communication::channel::network::NetworkChannel>,
     /// The Bluetooth channel's iroh endpoint and its `ble-gatt-iroh`
     /// transport, built on first use (`channel::bluetooth`).
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -227,15 +220,19 @@ impl DeviceConnectionState {
         let bluetooth_advertiser =
             Arc::new(crate::services::communication::channel::bluetooth::Advertiser::new(&identity));
 
+        let space_sync_ws_port = env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT);
+        let network = Arc::new(crate::services::communication::channel::network::NetworkChannel::new(
+            secret_key.clone(),
+            space_sync_ws_port,
+        ));
+
         Ok(Self {
             identity,
             db_path,
             discovery_port: env_port("FINI_DISCOVERY_PORT", DISCOVERY_PORT),
-            space_sync_ws_port: env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT),
+            space_sync_ws_port,
             secret_key,
-            network_endpoint: Arc::new(tokio::sync::OnceCell::new()),
-            serves_network: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            network_attempts: Arc::default(),
+            network,
             #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
             #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -268,37 +265,6 @@ impl DeviceConnectionState {
             .get(device_id)
             .or_else(|| guard.discovered.get(device_id))
             .and_then(|peer| peer.endpoint_id.clone())
-    }
-
-    /// Start the mDNS/UDP presence worker, once per state.
-    ///
-    /// `pub(crate)` and called only from `NetworkChannelService`: the worker
-    /// needs this state's private identity and presence store, but *whether
-    /// and when* the Network channel starts looking is the service's call.
-    ///
-    /// Guarded on this state's own `worker_started` rather than a process
-    /// static, so asking twice is harmless while two states in one process
-    /// still each get their own worker. That matters for tests, where a
-    /// process-wide guard would let the first state ever created decide for
-    /// every one after it.
-    pub(crate) fn start_network_discovery(&self) {
-        {
-            let Ok(mut guard) = self.runtime.lock() else {
-                return;
-            };
-            if guard.worker_started {
-                return;
-            }
-            guard.worker_started = true;
-        }
-        // The Network channel finds devices with iroh's own mDNS lookup.
-        // Fini's own mDNS/UDP beacon discovery was removed when this came in;
-        // see `docs/architecture/communication.md`.
-        if std::env::var("FINI_DISCOVERY_DISABLED").ok().as_deref() != Some("1") {
-            tauri::async_runtime::spawn(crate::services::communication::channel::network::run_network_discovery(
-                self.clone(),
-            ));
-        }
     }
 
     /// Records a device that iroh's mDNS lookup heard on the network: its
@@ -549,7 +515,7 @@ impl DeviceConnectionState {
 
     /// Test-only: injects a presence entry directly, bypassing the real
     /// mDNS discovery worker entirely. Lets a test exercise
-    /// `channel::network::start_exchange` (which gates on presence) without
+    /// `NetworkChannel::start_exchange` (which gates on presence) without
     /// standing up real UDP broadcast traffic. `endpoint_id` is the key the
     /// peer would announce.
     #[cfg(test)]
@@ -812,7 +778,7 @@ impl DeviceConnectionState {
 
     /// Raw discovery presence: is this peer's beacon reaching us right now?
     /// ADR-0003 revision: this is now the *only* network-availability
-    /// signal that matters for dialing -- `network::start_exchange` dials
+    /// signal that matters for dialing -- `NetworkChannel::start_exchange` dials
     /// unconditionally whenever a peer is presenced and has no session on
     /// this channel yet, rather than withdrawing in favor of Bluetooth.
     /// Consulted by `ChannelStatusCode::NetworkUnavailable`'s gray-row

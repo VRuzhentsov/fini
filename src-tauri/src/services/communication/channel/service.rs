@@ -155,8 +155,8 @@ pub fn service_for(state: &DeviceConnectionState, kind: ChannelKind) -> Arc<dyn 
         .expect("every ChannelKind has a service")
 }
 
-/// The Network channel: peers found by mDNS/UDP presence, connected over
-/// TCP-WS.
+/// The Network channel as a `ChannelService`: `network::NetworkChannel` does
+/// the work.
 pub struct NetworkChannelService {
     state: DeviceConnectionState,
 }
@@ -181,24 +181,23 @@ impl ChannelService for NetworkChannelService {
     }
 
     fn start_discovery(&self) {
-        self.state.start_network_discovery();
+        self.state.network.start_discovery(&self.state);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self) {
         // Before the spawn: a dial that runs first must already see that
-        // this state serves, or it could bind (and keep) a random port.
-        self.state
-            .serves_network
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        tauri::async_runtime::spawn(super::network::run_server(
-            self.state.clone(),
-            self.state.db_path.clone(),
-        ));
+        // this channel serves, or it could bind (and keep) a random port.
+        self.state.network.mark_serving();
+        let state = self.state.clone();
+        tauri::async_runtime::spawn(async move {
+            let db_path = state.db_path.clone();
+            state.network.clone().run_server(state, db_path).await
+        });
     }
 
     fn request_exchange(&self, peer_device_id: &str) {
-        super::network::start_exchange(&self.state, peer_device_id);
+        self.state.network.start_exchange(&self.state, peer_device_id);
     }
 
     fn is_present(&self, peer_device_id: &str) -> bool {
@@ -206,12 +205,12 @@ impl ChannelService for NetworkChannelService {
     }
 
     fn recently_failed(&self, peer_device_id: &str) -> bool {
-        self.state.network_attempts.recently_failed(peer_device_id)
+        self.state.network.recently_failed(peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
     fn forget_failures(&self, peer_device_id: &str) {
-        self.state.network_attempts.forget_failures(peer_device_id);
+        self.state.network.forget_failures(peer_device_id);
     }
 
     #[cfg(any(feature = "ui-plane", test))]
