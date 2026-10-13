@@ -205,7 +205,7 @@ impl Scanner {
     }
 
     /// Records that `peer_id` was heard advertising at `address`.
-    fn note_paired_heard(&self, peer_id: &str, address: &str) {
+    fn record_paired_heard(&self, peer_id: &str, address: &str) {
         let newly_present = match self.paired_heard.lock() {
             Ok(mut heard) => heard
                 .insert(peer_id.to_string(), (Instant::now(), address.to_string()))
@@ -370,7 +370,7 @@ impl Scanner {
     #[cfg(any(feature = "ui-plane", test))]
     pub fn set_add_device_mode(self: &Arc<Self>, on: bool) {
         if on {
-            self.available.forget_heard();
+            self.available.remove_heard();
         }
         self.add_device_mode.store(on, Ordering::SeqCst);
         self.start_once();
@@ -516,7 +516,7 @@ impl Scanner {
                                     let add_device_flag = payload
                                         .and_then(|payload| payload.first())
                                         .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
-                                    self.available.note_heard(
+                                    self.available.record_heard(
                                         fingerprint,
                                         &candidate.address.0,
                                         candidate.name.clone(),
@@ -527,7 +527,7 @@ impl Scanner {
                             let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) else {
                                 continue;
                             };
-                            self.note_paired_heard(peer, &candidate.address.0);
+                            self.record_paired_heard(peer, &candidate.address.0);
                             if self.dial_recently_failed(&candidate.address.0) {
                                 continue;
                             }
@@ -609,14 +609,14 @@ pub struct HeardInAddDevice {
 impl AvailableDevices {
     /// Forgets what the scan heard, so that a new Add Device starts empty:
     /// a device listed now must be in Add Device now.
-    pub fn forget_heard(&self) {
+    pub fn remove_heard(&self) {
         if let Ok(mut heard) = self.heard.lock() {
             heard.clear();
         }
     }
 
     /// Records one advertisement: the newest address of that device wins.
-    pub fn note_heard(
+    pub fn record_heard(
         &self, fingerprint: [u8; FINGERPRINT_LEN], address: &str, name: Option<String>, add_device_flag: bool,
     ) {
         let Ok(mut heard) = self.heard.lock() else { return };
@@ -680,7 +680,7 @@ impl AvailableDevices {
     }
 
     /// Records what an identify step learned.
-    pub fn note_identified(&self, device: &AvailableDevice, endpoint_id: String) {
+    pub fn record_identified(&self, device: &AvailableDevice, endpoint_id: String) {
         if let Ok(mut identified) = self.identified.lock() {
             identified.insert(device.device_id.clone(), (device.clone(), endpoint_id));
         }

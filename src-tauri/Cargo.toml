@@ -67,8 +67,6 @@ tauri-plugin-notification = { version = "2.3.3", optional = true }
 tauri-plugin-autostart = { version = "2.5.1", optional = true }
 time = { version = "0.3.47", features = ["parsing", "formatting"] }
 tauri-plugin-playwright = { version = "0.2", optional = true }
-socket2 = "0.6"
-mdns-sd = "0.13"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
@@ -112,6 +110,3 @@ cli-plane = ["dep:clap", "dep:self_update", "dep:url", "dep:zipsign-api"]
 # Enable developer/test control-plane hooks. Off by default; production builds
 # must not ship this because it exposes an in-process Playwright socket bridge.
 devtools = ["dep:tauri-plugin-playwright", "ble-gatt/mock-broker"]
-# Fini's own mDNS/UDP beacon discovery as the Experimental network channel,
-# a way out if Fini leaves iroh. Off by default.
-experimental-network = []

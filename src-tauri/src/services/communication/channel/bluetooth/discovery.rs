@@ -184,7 +184,7 @@ pub async fn identify_heard_device(
                 return Err("that is this device".to_string());
             }
             let device = AvailableDevice { address, device_id, hostname };
-            scanner.available.note_identified(&device, endpoint_id);
+            scanner.available.record_identified(&device, endpoint_id);
             Ok(device)
         }
         _ => Err("the device did not answer -- make sure Add Device is open on it".to_string()),

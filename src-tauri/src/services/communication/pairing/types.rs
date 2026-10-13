@@ -149,22 +149,6 @@ pub struct DevicePairRequestAckInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct DiscoveryBeacon {
-    pub protocol: String,
-    pub mode: String,
-    pub device_id: String,
-    pub hostname: String,
-    pub sent_at: String,
-    #[serde(default)]
-    pub discovery_port: Option<u16>,
-    #[serde(default)]
-    pub ws_port: Option<u16>,
-    /// The sender's iroh key, so a pair request can be dialled to it.
-    #[serde(default)]
-    pub endpoint_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PairRequestPayload {
     pub protocol: String,
     pub kind: String,
@@ -275,9 +259,10 @@ pub(super) struct DiscoveryRuntime {
     /// Frames waiting for the next exchange with each peer -- a mapping
     /// update or a space-sync end raised while nothing was connected.
     pub pending_frames: HashMap<String, Vec<PeerFrame>>,
-    /// Whether the last presence beacon failed to go out at all: the
-    /// Network channel's problem signal (ADR-0008 D19).
-    pub network_broadcast_failing: bool,
+    /// Whether the Network channel cannot look for devices: iroh's mDNS
+    /// lookup did not start. The Network channel's problem signal
+    /// (ADR-0008 D19).
+    pub network_discovery_stopped: bool,
     /// ADR-0008 D1/D2: the channels this device is running a setup search
     /// for right now, and how far each one's init has got.
     pub channel_setups: HashMap<(String, ChannelKind), ChannelSetup>,

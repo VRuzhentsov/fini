@@ -217,7 +217,7 @@ impl ChannelService for NetworkChannelService {
     #[cfg(any(feature = "ui-plane", test))]
     fn problem(&self) -> Option<ChannelProblem> {
         self.state
-            .network_broadcast_failing()
+            .network_discovery_stopped()
             .then_some(ChannelProblem::NetworkUnavailable)
     }
 }

@@ -11,7 +11,6 @@ pub(crate) mod setup;
 pub(crate) mod gate;
 pub(crate) mod types;
 
-use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -81,7 +80,7 @@ pub use commands::{
     device_connection_channel_statuses_impl, device_connection_set_channel_enabled_impl,
     device_connection_set_primary_channel_impl, device_connection_unlink_channel_impl,
 };
-use runtime::{spawn_discovery_worker, try_load_or_create_identity};
+use runtime::try_load_or_create_identity;
 // `ChannelKind` is the channel a pair configured -- Network or Bluetooth --
 // and is what the `channels` table stores. Re-exported from `channel`,
 // where it is defined; there is no second enum saying the same thing any
@@ -103,7 +102,6 @@ use types::{
     PairRequestPayload,
 };
 
-pub const DISCOVERY_INTERVAL_MS: u64 = 5_000;
 pub const HEARTBEAT_INTERVAL_MS: u64 = 60_000;
 /// How long a peer's last Network beacon keeps it present (ADR-0008 D9):
 /// two and a half heartbeats, so one or two lost datagrams do not turn the
@@ -115,9 +113,7 @@ pub(crate) const DISCOVERY_PROTOCOL: &str = "fini-device-sync-v1";
 pub(crate) const DISCOVERY_PORT: u16 = 45_454;
 pub(super) const DISCOVERY_TTL_SECS: u64 = 15;
 pub(super) const PAIR_REQUEST_TTL_SECS: i64 = 60;
-pub(super) const MULTICAST_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 42, 99);
 pub(crate) const SPACE_SYNC_WS_PORT: u16 = 45_455;
-pub(crate) const MDNS_SERVICE_TYPE: &str = "_fini-sync._udp.local.";
 
 #[derive(Clone)]
 pub struct DeviceConnectionState {
@@ -191,26 +187,6 @@ fn env_port(name: &str, fallback: u16) -> u16 {
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(fallback)
-}
-
-fn env_port_list(name: &str, fallback: u16) -> Vec<u16> {
-    let mut ports: Vec<u16> = std::env::var(name)
-        .ok()
-        .map(|value| {
-            value
-                .split(',')
-                .filter_map(|item| item.trim().parse::<u16>().ok())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if !ports.contains(&fallback) {
-        ports.push(fallback);
-    }
-
-    ports.sort_unstable();
-    ports.dedup();
-    ports
 }
 
 impl DeviceConnectionState {
@@ -316,29 +292,19 @@ impl DeviceConnectionState {
             guard.worker_started = true;
         }
         // The Network channel finds devices with iroh's own mDNS lookup.
-        #[cfg(any(feature = "ui-plane", test))]
+        // Fini's own mDNS/UDP beacon discovery was removed when this came in;
+        // see `docs/architecture/communication.md`.
         if std::env::var("FINI_DISCOVERY_DISABLED").ok().as_deref() != Some("1") {
             tauri::async_runtime::spawn(crate::services::communication::channel::network::run_network_discovery(
                 self.clone(),
             ));
         }
-        // Fini's own mDNS/UDP beacon discovery: the Experimental network
-        // channel (a way out if Fini leaves iroh), and the CLI.
-        #[cfg(any(feature = "experimental-network", not(any(feature = "ui-plane", test))))]
-        spawn_discovery_worker(
-            self.identity.clone(),
-            self.runtime.clone(),
-            self.discovery_port,
-            env_port_list("FINI_DISCOVERY_PEER_PORTS", self.discovery_port),
-            self.space_sync_ws_port,
-        );
     }
 
     /// Records a device that iroh's mDNS lookup heard on the network: its
     /// presence (the Network channel goes green for a paired device), and a
     /// row in the Add Device list while it is in Add Device mode.
-    #[cfg(any(feature = "ui-plane", test))]
-    pub(crate) fn note_network_device(
+    pub(crate) fn record_network_device(
         &self, device_id: &str, hostname: &str, addr: std::net::SocketAddr, endpoint_id: &str, add_device: bool,
     ) {
         let newly_present = {
@@ -370,20 +336,18 @@ impl DeviceConnectionState {
         }
     }
 
-    /// iroh's mDNS lookup says the device is gone.
-    #[cfg(any(feature = "ui-plane", test))]
-    pub(crate) fn forget_network_device(&self, device_id: &str) {
+    /// iroh's mDNS lookup no longer hears the device.
+    pub(crate) fn remove_network_device(&self, device_id: &str) {
         if let Ok(mut guard) = self.runtime.lock() {
             guard.presence.remove(device_id);
             guard.discovered.remove(device_id);
         }
     }
 
-    /// Expires old network records; see `runtime::prune_network_records`.
-    #[cfg(any(feature = "ui-plane", test))]
-    pub(crate) fn prune_network_records(&self) {
+    /// Keeps only recent network records; see `runtime::keep_recent_network_records`.
+    pub(crate) fn keep_recent_network_records(&self) {
         if let Ok(mut guard) = self.runtime.lock() {
-            runtime::prune_network_records(&mut guard);
+            runtime::keep_recent_network_records(&mut guard);
         }
     }
 
@@ -565,7 +529,6 @@ impl DeviceConnectionState {
     /// `DiscoveryHello` handling (ADR 0002 Phase 3) to decide whether to
     /// reply at all, the BLE-scan equivalent of the existing check
     /// `receive_ws_pair_request` already makes for network `PairRequest`s.
-    #[cfg(any(feature = "ui-plane", test))]
     pub fn is_add_mode_enabled(&self) -> bool {
         self.runtime.lock().map(|guard| guard.add_mode_enabled).unwrap_or(false)
     }
@@ -864,13 +827,20 @@ impl DeviceConnectionState {
             .is_some_and(|peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT)
     }
 
-    /// Whether the last Network presence beacon failed to go out at all.
+    /// Whether the Network channel cannot look for devices; see
+    /// `DiscoveryRuntime::network_discovery_stopped`.
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn network_broadcast_failing(&self) -> bool {
+    pub fn network_discovery_stopped(&self) -> bool {
         self.runtime
             .lock()
-            .map(|guard| guard.network_broadcast_failing)
+            .map(|guard| guard.network_discovery_stopped)
             .unwrap_or(false)
+    }
+
+    pub(crate) fn set_network_discovery_stopped(&self, failing: bool) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.network_discovery_stopped = failing;
+        }
     }
 
     /// Start a setup search for this peer's channel (ADR-0008 D2). While it

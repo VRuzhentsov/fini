@@ -59,7 +59,6 @@ fn switched_off_error() -> String {
 }
 
 /// How long the Network server waits before trying its port again.
-#[cfg(any(feature = "ui-plane", test))]
 const REBIND_INTERVAL: Duration = Duration::from_secs(5);
 
 /// This state's Network endpoint, bound on first use to
@@ -224,14 +223,12 @@ async fn serve(state: DeviceConnectionState, db_path: PathBuf, endpoint: Endpoin
 
 /// The mDNS service name for Fini's Network channel. Only Fini endpoints use
 /// it, so other iroh apps on the network are not heard.
-#[cfg(any(feature = "ui-plane", test))]
 const MDNS_SERVICE_NAME: &str = "fini";
 
 /// The user data this device publishes with its iroh mDNS record: a version,
 /// the Add Device flag, the device id and the name, as
 /// `fini1;a=<0|1>;d=<device id>;n=<name>`. iroh limits it to 245 bytes, so the
 /// name is cut to fit.
-#[cfg(any(feature = "ui-plane", test))]
 fn network_user_data(state: &DeviceConnectionState) -> Option<iroh::endpoint_info::UserData> {
     let add_device = state.is_add_mode_enabled();
     let mut name = state.identity.hostname.clone();
@@ -243,7 +240,6 @@ fn network_user_data(state: &DeviceConnectionState) -> Option<iroh::endpoint_inf
 }
 
 /// What another device's user data says: Add Device flag, device id, name.
-#[cfg(any(feature = "ui-plane", test))]
 fn parse_network_user_data(data: &str) -> Option<(bool, String, String)> {
     let rest = data.strip_prefix("fini1;a=")?;
     let (flag, rest) = rest.split_once(";d=")?;
@@ -258,7 +254,6 @@ fn parse_network_user_data(data: &str) -> Option<(bool, String, String)> {
 ///
 /// The test switch (debug builds) stops the lookup while the network is off
 /// and starts a new one when it is on, which asks the network again at once.
-#[cfg(any(feature = "ui-plane", test))]
 pub(crate) async fn run_network_discovery(state: DeviceConnectionState) {
     use futures_util::StreamExt;
     use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
@@ -280,17 +275,20 @@ pub(crate) async fn run_network_discovery(state: DeviceConnectionState) {
             Ok(mdns) => mdns,
             Err(err) => {
                 log::warn!("[transport][network] mDNS lookup failed to start: {err}");
+                state.set_network_discovery_stopped(true);
                 tokio::time::sleep(REBIND_INTERVAL).await;
                 continue;
             }
         };
         let Ok(lookup) = endpoint.address_lookup() else {
             log::warn!("[transport][network] the endpoint has no address lookup");
+            state.set_network_discovery_stopped(true);
             return;
         };
         lookup.add(mdns.clone());
         let mut published = network_user_data(&state);
         endpoint.set_user_data_for_address_lookup(published.clone());
+        state.set_network_discovery_stopped(false);
         log::info!("[transport][network] mDNS lookup started");
 
         let mut events = mdns.subscribe().await;
@@ -316,11 +314,11 @@ pub(crate) async fn run_network_discovery(state: DeviceConnectionState) {
                             continue;
                         };
                         devices.insert(endpoint_id, device_id.clone());
-                        state.note_network_device(&device_id, &name, addr, &endpoint_id.to_string(), add_device);
+                        state.record_network_device(&device_id, &name, addr, &endpoint_id.to_string(), add_device);
                     }
                     Some(DiscoveryEvent::Expired { endpoint_id }) => {
                         if let Some(device_id) = devices.remove(&endpoint_id) {
-                            state.forget_network_device(&device_id);
+                            state.remove_network_device(&device_id);
                         }
                     }
                     Some(_) => {}
@@ -336,7 +334,7 @@ pub(crate) async fn run_network_discovery(state: DeviceConnectionState) {
                         endpoint.set_user_data_for_address_lookup(wanted.clone());
                         published = wanted;
                     }
-                    state.prune_network_records();
+                    state.keep_recent_network_records();
                 }
             }
         }
