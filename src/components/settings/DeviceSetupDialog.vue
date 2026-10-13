@@ -166,7 +166,7 @@ const step = computed(() => {
   if (knownDevice.value) {
     if (setupError.value) return "setupFailed";
     if (setupStatus.value?.initialized) return "setupReady";
-    if (setupStatus.value?.helloAckedByPeer || setupStatus.value?.ackedPeerHello) return "setupFound";
+    if (setupStatus.value?.sentRequestAccepted || setupStatus.value?.acceptedPeerRequest) return "setupFound";
     return "setupSearching";
   }
   if (!channel.value) return "channel";

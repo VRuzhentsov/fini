@@ -1238,7 +1238,7 @@ async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
 
 /// Sends a hello from `from_device_id` to this device's gate and returns
 /// whatever came back within a short window (`None` for silence).
-async fn say_hello(
+async fn send_request(
     state: DeviceConnectionState,
     db_path: PathBuf,
     from_device_id: &str,
@@ -1266,7 +1266,7 @@ async fn a_hello_is_acknowledged_while_this_device_searches_for_the_peer() {
     seed_paired_device(&receiver_db, "peer-client");
     receiver.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
 
-    match say_hello(receiver.clone(), receiver_db, "peer-client").await {
+    match send_request(receiver.clone(), receiver_db, "peer-client").await {
         Some(PeerFrame::AddChannelAccept { device_id }) => {
             assert_eq!(device_id, receiver.identity.device_id);
         }
@@ -1279,12 +1279,12 @@ async fn a_hello_is_acknowledged_while_this_device_searches_for_the_peer() {
         let setup = receiver
             .channel_setup("peer-client", ChannelKind::Bluetooth)
             .expect("the search is still running");
-        if setup.acked_peer_hello || tokio::time::Instant::now() >= deadline {
+        if setup.accepted_peer_request || tokio::time::Instant::now() >= deadline {
             break setup;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
-    assert!(setup.acked_peer_hello, "this device's half of the init is recorded");
+    assert!(setup.accepted_peer_request, "this device's half of the init is recorded");
     assert!(!setup.initialized(), "the other half is the peer acknowledging our hello");
 }
 
@@ -1295,7 +1295,7 @@ async fn a_hello_goes_unanswered_when_this_device_is_not_searching() {
     let (receiver, receiver_db) = server_state("adr-0008-hello-not-searching");
     seed_paired_device(&receiver_db, "peer-client");
     assert!(
-        say_hello(receiver, receiver_db, "peer-client").await.is_none(),
+        send_request(receiver, receiver_db, "peer-client").await.is_none(),
         "a device that is not searching must stay silent"
     );
 }
@@ -1314,7 +1314,7 @@ async fn a_hello_is_acknowledged_for_a_channel_that_already_exists() {
             channels::configure(&mut conn, "peer-client", ChannelKind::Bluetooth, enabled, None)
                 .expect("set the channel up");
         }
-        match say_hello(receiver.clone(), receiver_db, "peer-client").await {
+        match send_request(receiver.clone(), receiver_db, "peer-client").await {
             Some(PeerFrame::AddChannelAccept { device_id }) => {
                 assert_eq!(device_id, receiver.identity.device_id, "channel on={enabled}")
             }
@@ -1332,7 +1332,7 @@ async fn a_hello_from_an_unpaired_device_goes_unanswered() {
     receiver.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
     receiver.begin_channel_setup("a-stranger", ChannelKind::Bluetooth);
 
-    assert!(say_hello(receiver, receiver_db, "a-stranger").await.is_none());
+    assert!(send_request(receiver, receiver_db, "a-stranger").await.is_none());
 }
 
 /// ADR-0008 D15: finishing a setup writes the channel only when its init
@@ -1345,7 +1345,7 @@ fn finishing_a_setup_writes_the_channel_only_after_a_complete_init() {
     let mut conn = open_db_at_path(&db_path);
 
     state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
-    state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| s.acked_peer_hello = true);
+    state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| s.accepted_peer_request = true);
     state
         .finish_channel_setup(&mut conn, "peer-client", ChannelKind::Bluetooth, true)
         .expect("finish a half-done init");
@@ -1359,8 +1359,8 @@ fn finishing_a_setup_writes_the_channel_only_after_a_complete_init() {
     for (switch_on, expected) in [(false, false), (true, true), (false, true)] {
         state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
         state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| {
-            s.acked_peer_hello = true;
-            s.hello_acked_by_peer = true;
+            s.accepted_peer_request = true;
+            s.sent_request_accepted = true;
         });
         state
             .finish_channel_setup(&mut conn, "peer-client", ChannelKind::Bluetooth, switch_on)
@@ -1385,14 +1385,14 @@ fn a_late_result_from_a_closed_setup_does_not_count_for_the_next() {
     let reopened = state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
     assert_ne!(reopened, closed);
     state.note_channel_setup_attempt("peer-client", ChannelKind::Bluetooth, closed, |s| {
-        s.hello_acked_by_peer = true
+        s.sent_request_accepted = true
     });
-    assert!(!state.channel_setup("peer-client", ChannelKind::Bluetooth).unwrap().hello_acked_by_peer);
+    assert!(!state.channel_setup("peer-client", ChannelKind::Bluetooth).unwrap().sent_request_accepted);
 
     state.note_channel_setup_attempt("peer-client", ChannelKind::Bluetooth, reopened, |s| {
-        s.hello_acked_by_peer = true
+        s.sent_request_accepted = true
     });
-    assert!(state.channel_setup("peer-client", ChannelKind::Bluetooth).unwrap().hello_acked_by_peer);
+    assert!(state.channel_setup("peer-client", ChannelKind::Bluetooth).unwrap().sent_request_accepted);
 }
 
 /// ADR-0008 D9: a peer whose Network beacons stopped stops being present
@@ -1421,8 +1421,8 @@ fn a_completed_setup_survives_a_failed_channel_write() {
     let mut conn = open_db_at_path(&db_path);
     state.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
     state.note_channel_setup("peer-client", ChannelKind::Bluetooth, |s| {
-        s.acked_peer_hello = true;
-        s.hello_acked_by_peer = true;
+        s.accepted_peer_request = true;
+        s.sent_request_accepted = true;
     });
 
     state
@@ -1825,7 +1825,7 @@ async fn adr_0008_an_unlinked_channel_does_not_answer_a_hello() {
     seed_paired_device(&server_db, "peer-client");
     seed_bluetooth_channel_off(&server_db, true);
 
-    assert!(say_hello(server, server_db, "peer-client").await.is_none());
+    assert!(send_request(server, server_db, "peer-client").await.is_none());
 }
 
 // ADR-0008 D10: exchanges replace held sessions.
@@ -2110,7 +2110,7 @@ async fn in_a_bluetooth_setup_the_higher_id_connects_after_the_peers_hello() {
     };
     sleep(Duration::from_millis(300)).await;
     assert!(!turn.is_finished(), "the higher id waits for the peer's hello");
-    state.note_channel_setup(below_me, ChannelKind::Bluetooth, |setup| setup.acked_peer_hello = true);
+    state.note_channel_setup(below_me, ChannelKind::Bluetooth, |setup| setup.accepted_peer_request = true);
     tokio::time::timeout(Duration::from_millis(500), turn)
         .await
         .expect("the higher id connects once the peer's hello reached it")
@@ -2142,7 +2142,7 @@ async fn a_bluetooth_setup_keeps_the_candidate_scan_aside_until_it_ends() {
     );
 
     // This device's hello was acknowledged: its own hello round is over.
-    state.note_channel_setup("peer-leg", ChannelKind::Bluetooth, |setup| setup.hello_acked_by_peer = true);
+    state.note_channel_setup("peer-leg", ChannelKind::Bluetooth, |setup| setup.sent_request_accepted = true);
     sleep(Duration::from_secs(1)).await;
     assert_eq!(radio.pairing_steps_held(), 1, "the leg outlasts this device's own hello");
 

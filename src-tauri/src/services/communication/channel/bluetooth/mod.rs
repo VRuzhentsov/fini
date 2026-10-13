@@ -359,7 +359,7 @@ impl ChannelService for BluetoothChannel {
     /// `SETUP_ROUND_FAILURE_PAUSE`, so a broken radio is not hammered.
     #[cfg(any(feature = "ui-plane", test))]
     async fn setup_round(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        match self.find_and_say_hello(state, peer_device_id, SETUP_ROUND).await {
+        match self.find_and_send_request(state, peer_device_id, SETUP_ROUND).await {
             Ok(acknowledged) => acknowledged,
             Err(err) => {
                 log::warn!("[setup] bluetooth round for {peer_device_id} failed: {err}");
@@ -782,13 +782,13 @@ const SETUP_ROUND_FAILURE_PAUSE: Duration = Duration::from_millis(200);
 
 /// How long the device with the higher id waits, in a Bluetooth setup, for the
 /// other device's hello to reach it before dialling anyway. See
-/// `BluetoothChannel::find_and_say_hello`.
+/// `BluetoothChannel::find_and_send_request`.
 #[cfg(all(feature = "ui-plane", not(test)))]
 const HIGHER_ID_PATIENCE: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const HIGHER_ID_PATIENCE: Duration = Duration::from_millis(1_500);
 
-/// `find_and_say_hello`'s cap for one dial + hello + ack.
+/// `find_and_send_request`'s cap for one dial + hello + ack.
 ///
 /// Against a real phone the dial alone takes 1-2s, and `BleDataLink::send`
 /// retries a `GattBusy` rejection for up to ~1.4s on top; 4s was once too
@@ -810,7 +810,7 @@ impl BluetoothChannel {
     /// scanner for the peer for up to `timeout`, and says hello the moment
     /// it is heard. `Ok(true)` if the peer acknowledged; `Err` when the
     /// radio itself is unusable, so the caller can pause.
-    pub async fn find_and_say_hello(
+    pub async fn find_and_send_request(
         &self, state: &DeviceConnectionState, peer_id: &str, timeout: Duration,
     ) -> Result<bool, String> {
         let scanner = &self.scanner;
@@ -836,7 +836,7 @@ impl BluetoothChannel {
         // must not hold the round open.
         let acknowledged = tokio::time::timeout(
             FIND_PEER_CANDIDATE_TIMEOUT,
-            self.say_hello(state, &found.address, peer_id),
+            self.send_request(state, &found.address, peer_id),
         )
         .await
         .ok()
@@ -859,7 +859,7 @@ impl BluetoothChannel {
         while tokio::time::Instant::now() < patience
             && !state
                 .channel_setup(peer_id, ChannelKind::Bluetooth)
-                .is_some_and(|setup| setup.acked_peer_hello)
+                .is_some_and(|setup| setup.accepted_peer_request)
         {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -869,7 +869,7 @@ impl BluetoothChannel {
     /// `Some(())` if the device there is `peer_id` and acknowledged it --
     /// which it does only while it is running its own setup search for us
     /// (D2).
-    async fn say_hello(&self, state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
+    async fn send_request(&self, state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
         let mut link = self.connect_session(state, peer_id, address).await.ok()?;
         send_frame(
             link.as_mut(),

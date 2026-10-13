@@ -284,14 +284,14 @@ pub struct ChannelSetup {
     #[serde(skip)]
     pub attempt: u64,
     /// The peer answered this device's hello.
-    pub hello_acked_by_peer: bool,
+    pub sent_request_accepted: bool,
     /// This device answered the peer's hello.
-    pub acked_peer_hello: bool,
+    pub accepted_peer_request: bool,
 }
 
 impl ChannelSetup {
     #[cfg(any(feature = "ui-plane", test))]
     pub fn initialized(&self) -> bool {
-        self.hello_acked_by_peer && self.acked_peer_hello
+        self.sent_request_accepted && self.accepted_peer_request
     }
 }

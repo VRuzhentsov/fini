@@ -77,7 +77,7 @@ impl DeviceConnectionState {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         let _clear_of_candidate_scan =
             (kind == ChannelKind::Bluetooth).then(|| self.bluetooth.scanner.begin_pairing_step());
-        self.say_channel_hello(peer_device_id, kind, attempt).await;
+        self.send_channel_request(peer_device_id, kind, attempt).await;
         if kind == ChannelKind::Bluetooth {
             while self
                 .channel_setup(peer_device_id, kind)
@@ -88,16 +88,16 @@ impl DeviceConnectionState {
         }
     }
 
-    async fn say_channel_hello(&self, peer_device_id: &str, kind: ChannelKind, attempt: u64) {
+    async fn send_channel_request(&self, peer_device_id: &str, kind: ChannelKind, attempt: u64) {
         let channel = self.channel(kind);
         loop {
             match self.channel_setup(peer_device_id, kind) {
-                Some(setup) if setup.attempt == attempt && !setup.hello_acked_by_peer => {}
+                Some(setup) if setup.attempt == attempt && !setup.sent_request_accepted => {}
                 _ => return,
             }
             if channel.setup_round(self, peer_device_id).await {
                 self.note_channel_setup_attempt(peer_device_id, kind, attempt, |setup| {
-                    setup.hello_acked_by_peer = true
+                    setup.sent_request_accepted = true
                 });
                 return;
             }

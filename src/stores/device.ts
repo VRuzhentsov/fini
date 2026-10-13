@@ -30,8 +30,8 @@ export interface DeviceChannelStatus {
 
 // Where a channel's init stands during a setup search (ADR-0008 D1).
 export interface ChannelSetupStatus {
-  helloAckedByPeer: boolean;
-  ackedPeerHello: boolean;
+  sentRequestAccepted: boolean;
+  acceptedPeerRequest: boolean;
   // Both halves done: OK can be pressed (D4).
   initialized: boolean;
 }

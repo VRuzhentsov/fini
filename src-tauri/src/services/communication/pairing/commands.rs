@@ -1055,8 +1055,8 @@ pub async fn device_connection_probe_bluetooth_adapter(
 #[serde(rename_all = "camelCase")]
 #[cfg(any(feature = "ui-plane", test))]
 pub struct ChannelSetupStatus {
-    pub hello_acked_by_peer: bool,
-    pub acked_peer_hello: bool,
+    pub sent_request_accepted: bool,
+    pub accepted_peer_request: bool,
     /// Both halves done: OK can be pressed (D4).
     pub initialized: bool,
 }
@@ -1065,8 +1065,8 @@ pub struct ChannelSetupStatus {
 impl From<ChannelSetup> for ChannelSetupStatus {
     fn from(setup: ChannelSetup) -> Self {
         Self {
-            hello_acked_by_peer: setup.hello_acked_by_peer,
-            acked_peer_hello: setup.acked_peer_hello,
+            sent_request_accepted: setup.sent_request_accepted,
+            accepted_peer_request: setup.accepted_peer_request,
             initialized: setup.initialized(),
         }
     }

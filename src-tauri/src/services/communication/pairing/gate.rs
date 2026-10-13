@@ -192,7 +192,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 .await
                 .is_ok()
                 {
-                    state.note_channel_setup(&device_id, kind, |setup| setup.acked_peer_hello = true);
+                    state.note_channel_setup(&device_id, kind, |setup| setup.accepted_peer_request = true);
                 }
                 // Keep the link open briefly so the ack is read before the
                 // stream closes, as the `IdentifyDevice` arm below does.

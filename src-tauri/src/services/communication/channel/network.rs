@@ -513,7 +513,7 @@ impl ChannelService for NetworkChannel {
     /// returns.
     #[cfg(any(feature = "ui-plane", test))]
     async fn setup_round(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        let acknowledged = self.say_hello(state, peer_device_id).await;
+        let acknowledged = self.send_request(state, peer_device_id).await;
         if !acknowledged {
             tokio::time::sleep(SETUP_HELLO_RETRY).await;
         }
@@ -551,7 +551,7 @@ impl NetworkChannel {
     /// One hello over the Network channel, to wherever the mDNS lookup last
     /// heard the peer. `false` if the peer is not present or did not
     /// acknowledge.
-    async fn say_hello(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+    async fn send_request(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
         let Some((addr, port)) = state.network_presence_address(peer_device_id) else {
             return false;
         };

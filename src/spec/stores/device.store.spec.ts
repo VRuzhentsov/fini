@@ -254,8 +254,8 @@ describe("device store channel rows (ADR-0008)", () => {
 
     await store.beginChannelSetup("peer-1", ChannelKind.Bluetooth);
     (invoke as unknown as jest.Mock).mockResolvedValueOnce({
-      helloAckedByPeer: true,
-      ackedPeerHello: true,
+      sentRequestAccepted: true,
+      acceptedPeerRequest: true,
       initialized: true,
     });
     const status = await store.channelSetupStatus("peer-1", ChannelKind.Bluetooth);

@@ -16,6 +16,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     discoveredDevices: [],
     discoveredByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
     discoveredWithPairedByChannel: { [ChannelKind.Network]: [], [ChannelKind.Bluetooth]: [] },
+    pairedDevices: [],
     pairCompletedAt: null,
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
@@ -64,7 +65,8 @@ describe("DeviceSetupDialog, new device", () => {
    * the dialog must read the per-channel lists instead: filtering the
    * deduplicated one by the chosen channel made the peer vanish the moment
    * Bluetooth was selected, and two devices on one LAN is the common case,
-   * not an edge one.
+   * not an edge one. The per-channel list it reads also keeps devices this
+   * side has paired ("Paired here").
    */
   it("still lists a peer over Bluetooth when it is also visible over the network", async () => {
     const peer = {
@@ -76,11 +78,13 @@ describe("DeviceSetupDialog, new device", () => {
       last_seen_at: new Date().toISOString(),
       channel_kind: ChannelKind.Bluetooth,
     };
+    const perChannel = { [ChannelKind.Network]: [{ ...peer, channel_kind: ChannelKind.Network }], [ChannelKind.Bluetooth]: [peer] };
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(
       storeMock({
         // Deduplicated list keeps only the Network entry, as the store does.
         discoveredDevices: [{ ...peer, channel_kind: ChannelKind.Network }],
-        discoveredByChannel: { [ChannelKind.Network]: [{ ...peer, channel_kind: ChannelKind.Network }], [ChannelKind.Bluetooth]: [peer] },
+        discoveredByChannel: perChannel,
+        discoveredWithPairedByChannel: perChannel,
       }),
     );
 
@@ -94,13 +98,21 @@ describe("DeviceSetupDialog, new device", () => {
     expect(rows[0].attributes("data-channel-kind")).toBe(ChannelKind.Bluetooth);
   });
 
-  it("enters add mode on open, because that is what makes this device discoverable", async () => {
+  /**
+   * Add mode is what makes this device discoverable, and it starts for the
+   * chosen channel only: Network Add Device runs no Bluetooth scan.
+   */
+  it("enters add mode for the channel chosen, not before", async () => {
     const store = storeMock();
     (useDeviceStore as unknown as jest.Mock).mockReturnValue(store);
-    mountDialog();
+    const wrapper = mountDialog();
+    await flushUi();
+    expect(store.enterAddMode).not.toHaveBeenCalled();
+
+    await wrapper.find('[data-testid="pair-channel-network"]').trigger("click");
     await flushUi();
 
-    expect(store.enterAddMode).toHaveBeenCalled();
+    expect(store.enterAddMode).toHaveBeenCalledWith({ bluetooth: false });
   });
 
   /**
@@ -288,8 +300,8 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
     expect(wrapper.find('[data-testid="setup-ok"]').attributes("disabled")).toBeDefined();
 
     store.channelSetupStatus.mockResolvedValue({
-      helloAckedByPeer: true,
-      ackedPeerHello: true,
+      sentRequestAccepted: true,
+      acceptedPeerRequest: true,
       initialized: true,
     });
     jest.advanceTimersByTime(1_000);
@@ -306,8 +318,8 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
   it("lets OK be pressed again when writing the channel failed", async () => {
     const store = storeMock({
       channelSetupStatus: jest.fn().mockResolvedValue({
-        helloAckedByPeer: true,
-        ackedPeerHello: true,
+        sentRequestAccepted: true,
+        acceptedPeerRequest: true,
         initialized: true,
       }),
       endChannelSetup: jest
@@ -361,8 +373,8 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
         sender_code: "482915",
       },
       channelSetupStatus: jest.fn().mockResolvedValue({
-        helloAckedByPeer: true,
-        ackedPeerHello: true,
+        sentRequestAccepted: true,
+        acceptedPeerRequest: true,
         initialized: true,
       }),
     });
