@@ -237,8 +237,11 @@ When writing tests that mock an entire module (`jest.mock`), re-export all named
 A pull request moves through three stages. Use each stage's checks and no others:
 
 1. **Draft: build it.** Keep the PR a draft while the work is in progress. Iterate on the running HMR apps (desktop and phone), and prove behaviour by exercising it there. CI skips drafts (`.github/workflows/ci.yml`), and unit tests and e2e lanes wait for stage 3: tests on code that does not work yet are wasted runs.
+   - Prove each step with a compile check (`cargo check`, `npm run build`) and manual checks through the devtools bridge (`fini-android-testing`): the happy path and the basic edge cases of that step. Commit and push each step that passes.
+   - Leave test files alone during the draft. A test that fails after a planned behaviour change stays failing until stage 3; do not edit its expectation to match the new code, and do not run or fix the suites per step — the next step can change the behaviour again. The only allowed edit is a compile adaptation (a changed function signature), named in the report.
+   - Keep a list of the manual bridge checks you ran; stage 3 turns it into test proposals.
 2. **Gate to leave draft: the happy flow works.** Prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
-3. **Wrap-up: make it mergeable.** Run the unit tests and the relevant e2e lanes (see `fini-test`), fix whatever fails, get CI green, and bring the PR title and description up to date with everything the branch now contains.
+3. **Wrap-up: make it mergeable.** Once the system works as designed: run the unit tests and the relevant e2e lanes (see `fini-test`); for each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides. Then show the user the test cases you propose to add, based on the manual bridge checks from stage 1, and add the ones they choose. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
 
 The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
 
