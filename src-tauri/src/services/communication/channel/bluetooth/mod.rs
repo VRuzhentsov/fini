@@ -69,10 +69,7 @@ mod data_link;
 #[cfg(any(feature = "ui-plane", test))]
 mod discovery;
 mod endpoint;
-#[cfg(any(feature = "ui-plane", test))]
-mod peer_directory;
-mod presence;
-mod radio_arbiter;
+mod scanner;
 
 use adapter::*;
 #[cfg(any(feature = "ui-plane", test))]
@@ -88,10 +85,74 @@ pub use endpoint::*;
 
 pub use advertiser::Advertiser;
 #[cfg(any(feature = "ui-plane", test))]
-pub use peer_directory::PeerDirectory;
-pub use presence::Presence;
-pub use radio_arbiter::RadioArbiter;
-use radio_arbiter::Purpose;
+pub use scanner::AvailableDevices;
+pub use scanner::Scanner;
+
+use scanner::Purpose;
+
+/// When a delivery search does not find the device, the next one waits this
+/// long, one step further each time and then the last step always: 1, 5 and
+/// 15 minutes, then every 15 (ADR-0008 D12).
+const DELIVERY_RETRY: [Duration; 3] = [
+    Duration::from_secs(60),
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(15 * 60),
+];
+
+/// When the next delivery search is due after `misses` searches in a row
+/// found nothing.
+fn next_delivery_search(misses: usize, now: std::time::Instant) -> std::time::Instant {
+    now + DELIVERY_RETRY[misses.saturating_sub(1).min(DELIVERY_RETRY.len() - 1)]
+}
+
+/// Per paired device: how many delivery searches in a row found nothing,
+/// and when the next one is due. In memory only, as ADR-0008 decided: a
+/// started app tries at once.
+#[derive(Default)]
+pub struct DeliverySchedule {
+    schedule: std::sync::Mutex<std::collections::HashMap<String, (usize, std::time::Instant)>>,
+}
+
+impl DeliverySchedule {
+    /// Whether a delivery search for this device is due. A device heard
+    /// recently is always due: it is reached by one connection.
+    pub fn delivery_due(&self, scanner: &Scanner, peer_id: &str) -> bool {
+        if scanner.heard_recently(peer_id) {
+            return true;
+        }
+        match self.schedule.lock() {
+            Ok(schedule) => schedule
+                .get(peer_id)
+                .is_none_or(|(_, next)| std::time::Instant::now() >= *next),
+            Err(_) => true,
+        }
+    }
+
+    pub fn note_delivery_missed(&self, peer_id: &str) {
+        let now = std::time::Instant::now();
+        let next = match self.schedule.lock() {
+            Ok(mut schedule) => {
+                let misses = schedule.get(peer_id).map_or(0, |(misses, _)| *misses) + 1;
+                let next = next_delivery_search(misses, now);
+                schedule.insert(peer_id.to_string(), (misses, next));
+                next
+            }
+            Err(_) => return,
+        };
+        // The next search is due then; wake the keeper for it (ADR-0008 D12).
+        crate::services::communication::sync::commands::notify_sync_work_pending_after(
+            next.saturating_duration_since(now),
+        );
+    }
+
+    /// The device was reached, or see `ChannelService::forget_failures`: the
+    /// next delivery search is due at once. Also used when a pair is removed.
+    pub fn forget_delivery_misses(&self, peer_id: &str) {
+        if let Ok(mut schedule) = self.schedule.lock() {
+            schedule.remove(peer_id);
+        }
+    }
+}
 
 /// Fini's own GATT service/characteristic for the datagram tier. Fixed, not
 /// user-configurable: both sync peers must advertise/expect the same UUIDs
@@ -345,7 +406,7 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                         // add-mode scan must not dial back while it is here.
                         // A second, crossing connection to the same device is
                         // what kept dropping both (initiator = central).
-                        let _leg = state.bluetooth_radio.begin_pairing_leg();
+                        let _leg = state.bluetooth_scanner.begin_pairing_step();
                         if let Some(handled) = route_inbound(&state, db_path, channel).await {
                             let _ = handled.await;
                         }
@@ -416,21 +477,21 @@ const STATUS_SEARCH_WINDOW: Duration = Duration::from_secs(20);
 /// Start an exchange with this peer over Bluetooth unless one is running or
 /// being attempted (ADR-0008 D10). Called when there is work for the peer.
 pub fn start_exchange(state: &DeviceConnectionState, peer_id: &str) {
-    if state.has_session_on(peer_id, ChannelKind::Bluetooth) || !state.bluetooth_presence.delivery_due(peer_id) {
+    if state.has_session_on(peer_id, ChannelKind::Bluetooth) || !state.bluetooth_delivery.delivery_due(&state.bluetooth_scanner, peer_id) {
         return;
     }
     // While a device is being added, the adapter belongs to that search.
     if state.bluetooth_advertiser.in_add_mode() {
         return;
     }
-    if !state.bluetooth_radio.begin_exchange(peer_id) {
+    if !state.bluetooth_scanner.begin_exchange(peer_id) {
         return;
     }
     let state = state.clone();
     let peer_id = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
         exchange_with(&state, &peer_id).await;
-        state.bluetooth_radio.end_exchange(&peer_id);
+        state.bluetooth_scanner.end_exchange(&peer_id);
     });
 }
 
@@ -446,8 +507,8 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
     let deadline = tokio::time::Instant::now() + SEARCH_WINDOW;
     let mut last_error = None;
 
-    if let Some(address) = state.bluetooth_presence.last_seen_address(peer_id) {
-        let guard = state.bluetooth_radio.acquire_dial().await;
+    if let Some(address) = state.bluetooth_scanner.last_heard_address(peer_id) {
+        let guard = state.bluetooth_scanner.acquire_connect().await;
         match connect_and_auth(state, peer_id, &address).await {
             Ok((link, version)) => {
                 drop(guard);
@@ -465,14 +526,14 @@ async fn exchange_with(state: &DeviceConnectionState, peer_id: &str) {
         let found = if remaining.is_zero() {
             None
         } else {
-            state.bluetooth_radio.find(peer_id, Purpose::Delivery, remaining).await
+            state.bluetooth_scanner.find(peer_id, Purpose::Delivery, remaining).await
         };
         let Some(found) = found else {
             match last_error {
                 Some(err) => log::info!("[transport][ble] {peer_id} refused the exchange: {err}"),
                 None => log::info!("[transport][ble] {peer_id} not heard within the search window"),
             }
-            state.bluetooth_presence.note_delivery_missed(peer_id);
+            state.bluetooth_delivery.note_delivery_missed(peer_id);
             return;
         };
         match connect_and_auth(state, peer_id, &found.address).await {
@@ -505,13 +566,13 @@ async fn connect_and_auth(
         Ok(Err(err)) => {
             log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
             if !session::refused_for_running_exchange(&err) {
-                state.bluetooth_radio.note_dial_failed(address);
+                state.bluetooth_scanner.note_dial_failed(address);
             }
             Err(err)
         }
         Err(_elapsed) => {
             log::info!("[transport][ble] candidate {address} did not finish connect+auth in time");
-            state.bluetooth_radio.note_dial_failed(address);
+            state.bluetooth_scanner.note_dial_failed(address);
             Err("connect+auth timed out".to_string())
         }
     }
@@ -520,7 +581,7 @@ async fn connect_and_auth(
 async fn run_exchange(
     state: &DeviceConnectionState, peer_id: &str, link: Box<dyn DataLink>, version: u32, address: &str,
 ) {
-    state.bluetooth_presence.forget_delivery_misses(peer_id);
+    state.bluetooth_delivery.forget_delivery_misses(peer_id);
     log::info!("[transport][ble] exchange with {peer_id} via {address}");
     let db_path = state.db_path.clone();
     // The switch could have been turned off during the search.
@@ -568,7 +629,7 @@ fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, add
 /// search coordinator merges it with any delivery or setup search running.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn set_status_search(state: &DeviceConnectionState, active: bool) {
-    state.bluetooth_radio.set_status(active.then(|| state.db_path.clone()));
+    state.bluetooth_scanner.set_status(active.then(|| state.db_path.clone()));
 }
 
 /// Recompute whether to advertise, from the stored channels and the setups
@@ -593,6 +654,30 @@ pub fn refresh_advertising(db_path: &std::path::Path, state: &DeviceConnectionSt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0008 D12: a device not found is searched for again after 1, 5 and
+    /// 15 minutes, then every 15 minutes.
+    #[test]
+    fn delivery_searches_back_off_one_five_fifteen_then_every_fifteen() {
+        let now = std::time::Instant::now();
+        let waits: Vec<u64> = (1..=5)
+            .map(|misses| next_delivery_search(misses, now).duration_since(now).as_secs())
+            .collect();
+        assert_eq!(waits, vec![60, 300, 900, 900, 900]);
+    }
+
+    /// Switching Bluetooth on tries again at once, whatever retry delay
+    /// earlier misses left behind.
+    #[test]
+    fn forgetting_delivery_misses_makes_the_next_search_due_now() {
+        let schedule = DeliverySchedule::default();
+        let scanner = Scanner::default();
+        let peer = "peer-forget-delivery-misses";
+        schedule.note_delivery_missed(peer);
+        assert!(!schedule.delivery_due(&scanner, peer), "a miss delays the next search");
+        schedule.forget_delivery_misses(peer);
+        assert!(schedule.delivery_due(&scanner, peer));
+    }
 
     /// The fingerprint must be exactly FNV-1a, because both peers compute it
     /// independently from the same `device_id` and any divergence means they

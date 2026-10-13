@@ -1,10 +1,14 @@
-//! Who may use the Bluetooth radio, and when: scans, dials, candidate
-//! probes and pairing legs take turns on one adapter.
+//! The scanner: the one Bluetooth scan of the app, and what it heard.
 //!
-//! One `RadioArbiter` per `DeviceConnectionState`, so two devices in one
+//! It gives the radio to one task at a time: a scan, a connection, an
+//! identify step, or a pairing step. It also keeps what the scan heard:
+//! the devices available for Add Device (`AvailableDevices`), and when and
+//! where each paired device was last heard.
+//!
+//! One `Scanner` per `DeviceConnectionState`, so two devices in one
 //! test process each have their own.
 //!
-//! It also runs the search coordinator (ADR-0008 D13): one scan for the
+//! It runs the search coordinator (ADR-0008 D13): one scan for the
 //! whole app. Callers ask for a search with a purpose -- status while the
 //! Device page is open, delivery when there is work for a peer, setup while
 //! the setup dialog is open -- and the coordinator merges whatever is asked
@@ -15,13 +19,13 @@
 //!
 //! | heard | result |
 //! |---|---|
-//! | any wanted peer | presence is recorded (green, D9) |
+//! | any wanted peer | its last-heard time is recorded (green, D9) |
 //! | a peer a delivery or setup search waits for | its address is handed to that search, which dials it |
 //!
 //! Scanning and dialling never overlap: an adapter cannot usefully drive
 //! discovery and establish a connection at once (hardware evidence in
 //! `connect_by_advertisement`'s history). A handed-off address carries a
-//! `DialGuard`, and the scan does not resume until every guard is dropped.
+//! `ConnectGuard`, and the scan does not resume until every guard is dropped.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -31,11 +35,18 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
+#[cfg(any(feature = "ui-plane", test))]
+use super::AvailableDevice;
 use super::{
     adapter, advertised_fingerprint, datagram_config, fingerprint_of, note_adapter_reachable,
-    note_adapter_unreachable, note_scan_refused, open_db_at_path, Presence, FINGERPRINT_LEN,
+    note_adapter_unreachable, note_scan_refused, open_db_at_path, FINGERPRINT_LEN,
     FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
 };
+
+/// How long a heard advertisement keeps a paired device present: three
+/// status-search windows, so one missed window does not flicker the row
+/// (ADR-0008 D12).
+const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
 use crate::services::communication::pairing::ChannelKind;
 
 /// How long an address whose dial just failed is not handed off again.
@@ -67,23 +78,23 @@ pub enum Purpose {
 /// this lives, so the caller can dial without competing with the scan.
 pub struct Found {
     pub address: String,
-    _dial: DialGuard,
+    _dial: ConnectGuard,
 }
 
 /// Held while a dial runs. The scan waits for every guard to be dropped.
-pub struct DialGuard(Arc<watch::Sender<usize>>);
+pub struct ConnectGuard(Arc<watch::Sender<usize>>);
 
-impl Drop for DialGuard {
+impl Drop for ConnectGuard {
     fn drop(&mut self) {
         self.0.send_modify(|count| *count = count.saturating_sub(1));
     }
 }
 
 /// Held while a pairing leg or a Bluetooth channel setup runs; see
-/// `RadioArbiter::pairing_legs`.
-pub struct PairingLeg(Arc<watch::Sender<usize>>);
+/// `Scanner::pairing_steps`.
+pub struct PairingStep(Arc<watch::Sender<usize>>);
 
-impl Drop for PairingLeg {
+impl Drop for PairingStep {
     fn drop(&mut self) {
         self.0.send_modify(|count| *count = count.saturating_sub(1));
     }
@@ -114,14 +125,14 @@ struct Requests {
     status: Option<PathBuf>,
 }
 
-pub struct RadioArbiter {
+pub struct Scanner {
     /// Pairing legs (request / accept / complete) in progress. The add-mode
     /// candidate scan yields to them: it holds a discovery session and
     /// re-dials the same phone every pass, and an adapter doing either while
     /// a pairing dial runs refuses or stalls it -- ble-gatt answered the pair
     /// dial with "a dial to this peer is already in flight" and one dial hung
     /// until abandoned, so the Pair button reported "Couldn't reach".
-    pairing_legs: Arc<watch::Sender<usize>>,
+    pairing_steps: Arc<watch::Sender<usize>>,
     /// Held for the length of one candidate probe; see `dial_for_pairing`.
     candidate_probe: Mutex<()>,
     /// One Bluetooth scan at a time. Every scan holds this for
@@ -135,9 +146,9 @@ pub struct RadioArbiter {
     /// reverse. Linux has no such refusal, but an adapter driving two
     /// discovery sessions competes with itself (see
     /// `connect_by_advertisement`), so the lease applies on every platform.
-    scan_lease: Mutex<()>,
+    scan_lock: Mutex<()>,
     /// Set while a discovery session is actually running: `scan()` returned
-    /// Ok and the stream is alive. Holding `scan_lease` is not enough -- the
+    /// Ok and the stream is alive. Holding `scan_lock` is not enough -- the
     /// holder may still be waiting on an adapter that will refuse it.
     scan_running: AtomicBool,
     /// Peers with an exchange attempt in flight -- one at a time per peer.
@@ -149,22 +160,27 @@ pub struct RadioArbiter {
     changed: Notify,
     started: Once,
     failed_dials: StdMutex<HashMap<String, Instant>>,
-    /// Where the scan records every wanted peer it hears.
-    presence: Arc<Presence>,
+    /// When each paired device was last heard advertising, and at which
+    /// address. Written only on a fingerprint match, so "heard" means "heard
+    /// advertising as this device".
+    paired_heard: StdMutex<HashMap<String, (Instant, String)>>,
+    /// The devices around this one in Add Device mode.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) available: AvailableDevices,
 }
 
-impl Default for RadioArbiter {
+impl Default for Scanner {
     fn default() -> Self {
-        Self::new(Arc::default())
+        Self::new()
     }
 }
 
-impl RadioArbiter {
-    pub fn new(presence: Arc<Presence>) -> Self {
+impl Scanner {
+    pub fn new() -> Self {
         Self {
-            pairing_legs: Arc::new(watch::channel(0).0),
+            pairing_steps: Arc::new(watch::channel(0).0),
             candidate_probe: Mutex::new(()),
-            scan_lease: Mutex::new(()),
+            scan_lock: Mutex::new(()),
             scan_running: AtomicBool::new(false),
             exchanges: StdMutex::new(HashSet::new()),
             dials: Arc::new(watch::channel(0).0),
@@ -172,25 +188,58 @@ impl RadioArbiter {
             changed: Notify::new(),
             started: Once::new(),
             failed_dials: StdMutex::new(HashMap::new()),
-            presence,
+            paired_heard: StdMutex::new(HashMap::new()),
+            #[cfg(any(feature = "ui-plane", test))]
+            available: AvailableDevices::default(),
         }
     }
 
-    pub fn begin_pairing_leg(&self) -> PairingLeg {
-        self.pairing_legs.send_modify(|count| *count += 1);
-        PairingLeg(self.pairing_legs.clone())
+    /// Records that `peer_id` was heard advertising at `address`.
+    fn note_paired_heard(&self, peer_id: &str, address: &str) {
+        let newly_present = match self.paired_heard.lock() {
+            Ok(mut heard) => heard
+                .insert(peer_id.to_string(), (Instant::now(), address.to_string()))
+                .is_none_or(|(previous, _)| previous.elapsed() >= BLUETOOTH_CHANNEL_TIMEOUT),
+            Err(_) => false,
+        };
+        // A device that appears is the moment waiting work can go to it
+        // (ADR-0008 D8). Only on that change: a device heard in every window
+        // must not make the keeper poll.
+        if newly_present {
+            crate::services::communication::sync::commands::notify_sync_work_pending();
+        }
+    }
+
+    /// Where `peer_id` was last heard advertising, if within the channel
+    /// timeout: a present device is reached by one connection, not a search.
+    pub fn last_heard_address(&self, peer_id: &str) -> Option<String> {
+        let heard = self.paired_heard.lock().ok()?;
+        heard
+            .get(peer_id)
+            .filter(|(at, _)| at.elapsed() < BLUETOOTH_CHANNEL_TIMEOUT)
+            .map(|(_, address)| address.clone())
+    }
+
+    /// Whether `peer_id` advertised within the channel timeout (ADR-0008 D9).
+    pub fn heard_recently(&self, peer_id: &str) -> bool {
+        self.last_heard_address(peer_id).is_some()
+    }
+
+    pub fn begin_pairing_step(&self) -> PairingStep {
+        self.pairing_steps.send_modify(|count| *count += 1);
+        PairingStep(self.pairing_steps.clone())
     }
 
     /// Follows how many pairing legs are held.
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn watch_pairing_legs(&self) -> watch::Receiver<usize> {
-        self.pairing_legs.subscribe()
+    pub fn watch_pairing_steps(&self) -> watch::Receiver<usize> {
+        self.pairing_steps.subscribe()
     }
 
     /// Pairing legs held right now.
     #[cfg(test)]
-    pub(crate) fn pairing_legs_held(&self) -> usize {
-        *self.pairing_legs.borrow()
+    pub(crate) fn pairing_steps_held(&self) -> usize {
+        *self.pairing_steps.borrow()
     }
 
     /// Held for the length of one candidate probe. A dial to a peer the
@@ -199,13 +248,13 @@ impl RadioArbiter {
         self.candidate_probe.lock().await
     }
 
-    pub(super) async fn scan_lease(&self) -> MutexGuard<'_, ()> {
-        self.scan_lease.lock().await
+    pub(super) async fn scan_lock(&self) -> MutexGuard<'_, ()> {
+        self.scan_lock.lock().await
     }
 
     #[cfg(any(feature = "ui-plane", test))]
-    pub(super) fn try_scan_lease(&self) -> Option<MutexGuard<'_, ()>> {
-        self.scan_lease.try_lock().ok()
+    pub(super) fn try_scan_lock(&self) -> Option<MutexGuard<'_, ()>> {
+        self.scan_lock.try_lock().ok()
     }
 
     pub(super) fn start_running_scan(&self) -> RunningScan<'_> {
@@ -234,17 +283,17 @@ impl RadioArbiter {
         self.exchanges.lock().unwrap().remove(peer_id);
     }
 
-    fn dial_guard(&self) -> DialGuard {
+    fn connect_guard(&self) -> ConnectGuard {
         self.dials.send_modify(|count| *count += 1);
-        DialGuard(self.dials.clone())
+        ConnectGuard(self.dials.clone())
     }
 
     /// A guard for a dial the coordinator did not hand off: the running
     /// scan sees the guard and stops, and this returns once it has (the
     /// scan lease is free), so the dial never overlaps a scan.
-    pub async fn acquire_dial(&self) -> DialGuard {
-        let guard = self.dial_guard();
-        drop(self.scan_lease().await);
+    pub async fn acquire_connect(&self) -> ConnectGuard {
+        let guard = self.connect_guard();
+        drop(self.scan_lock().await);
         guard
     }
 
@@ -253,11 +302,11 @@ impl RadioArbiter {
     /// does not see a dial already under way, and scanning during it breaks
     /// the dial.
     #[cfg(any(feature = "ui-plane", test))]
-    pub(super) async fn scan_lease_between_dials(&self) -> MutexGuard<'_, ()> {
+    pub(super) async fn scan_lock_between_connects(&self) -> MutexGuard<'_, ()> {
         let mut dials = self.dials.subscribe();
         loop {
             let _ = dials.wait_for(|count| *count == 0).await;
-            let lease = self.scan_lease().await;
+            let lease = self.scan_lock().await;
             if *dials.borrow() == 0 {
                 return lease;
             }
@@ -312,7 +361,7 @@ impl RadioArbiter {
             // its discovery stream; the lease comes free only once it has, so
             // the caller's dial never overlaps the scan. `Found` holds a dial
             // guard, so no new scan starts meanwhile.
-            drop(self.scan_lease().await);
+            drop(self.scan_lock().await);
         }
         found
     }
@@ -358,7 +407,7 @@ impl RadioArbiter {
                 handed |= reply
                     .send(Found {
                         address: address.to_string(),
-                        _dial: self.dial_guard(),
+                        _dial: self.connect_guard(),
                     })
                     .is_ok();
             }
@@ -405,7 +454,7 @@ impl RadioArbiter {
                 let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
                 continue;
             };
-            let scan = self.scan_lease().await;
+            let scan = self.scan_lock().await;
             let mut discovered = match adapter.central().scan(datagram_config().service).await {
                 Ok(discovered) => discovered,
                 Err(err) => {
@@ -439,7 +488,7 @@ impl RadioArbiter {
                             let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) else {
                                 continue;
                             };
-                            self.presence.note_advertising(peer, &candidate.address.0);
+                            self.note_paired_heard(peer, &candidate.address.0);
                             if self.dial_recently_failed(&candidate.address.0) {
                                 continue;
                             }
@@ -470,11 +519,134 @@ impl RadioArbiter {
     }
 }
 
+// ---- Devices available for Add Device (was `PeerDirectory`) ----
+
+/// How long one probe's answer stands for its address. Shorter than
+/// `INBOUND_HELLO_FRESH`: the device this one does not dial lists it only
+/// from the hellos these probes deliver.
+#[cfg(any(feature = "ui-plane", test))]
+const PROBE_FRESH: Duration = Duration::from_secs(20);
+
+/// How long an inbound hello stands for a device in the candidate list.
+/// The prober repeats its pass every few seconds while it is in add-mode.
+#[cfg(any(feature = "ui-plane", test))]
+const INBOUND_HELLO_FRESH: Duration = Duration::from_secs(60);
+
+/// A device that probed this one in add-mode: its hello, and when.
+#[cfg(any(feature = "ui-plane", test))]
+struct InboundHello {
+    hostname: String,
+    endpoint_id: String,
+    heard_at: Instant,
+}
+
+/// One probe's answer, and when it came.
+#[cfg(any(feature = "ui-plane", test))]
+struct ProbedAt {
+    candidate: AvailableDevice,
+    at: Instant,
+}
+
+/// Who is around, by what each device told us and where we last heard it.
+#[cfg(any(feature = "ui-plane", test))]
+#[derive(Default)]
+pub struct AvailableDevices {
+    /// The iroh key each candidate's hello reported, by device id: what a
+    /// pairing leg to that candidate dials.
+    keys: StdMutex<HashMap<String, String>>,
+    /// The newest address each known device was heard advertising from, by
+    /// device id. Android restarts its advertisement with a fresh private
+    /// address on every add-mode change, so the address a picker row was
+    /// built from can be gone by the time the person presses Pair.
+    addresses: StdMutex<HashMap<String, String>>,
+    /// Probe answers by address, so an advertiser already probed is not
+    /// dialled again on every pass: each probe is a connection that can
+    /// cross the other device's own dial to this one.
+    probed: StdMutex<HashMap<String, ProbedAt>>,
+    /// Hellos from devices that dialled this one, by device id. Of two
+    /// devices in add-mode only the lower fingerprint dials, so the other
+    /// learns of it only from this.
+    hellos: StdMutex<HashMap<String, InboundHello>>,
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+impl AvailableDevices {
+    /// The iroh key `device_id` reported, if it has been heard from.
+    pub fn key(&self, device_id: &str) -> Option<String> {
+        self.keys.lock().ok()?.get(device_id).cloned()
+    }
+
+    /// Where `device_id` was last heard advertising, if anywhere.
+    pub fn latest_address(&self, device_id: &str) -> Option<String> {
+        self.addresses.lock().ok()?.get(device_id).cloned()
+    }
+
+    /// Records `address` for whichever known device advertises
+    /// `fingerprint`.
+    pub fn note_advertiser(&self, address: &str, fingerprint: [u8; FINGERPRINT_LEN]) {
+        let known: Vec<String> = self.keys.lock().map(|keys| keys.keys().cloned().collect()).unwrap_or_default();
+        if let Some(device_id) = known.into_iter().find(|id| fingerprint_of(id) == fingerprint) {
+            if let Ok(mut addresses) = self.addresses.lock() {
+                addresses.insert(device_id, address.to_string());
+            }
+        }
+    }
+
+    /// The candidate a recent probe of `address` found, if one is fresh.
+    pub fn recent_probe(&self, address: &str) -> Option<AvailableDevice> {
+        let probed = self.probed.lock().ok()?;
+        probed.get(address).filter(|entry| entry.at.elapsed() < PROBE_FRESH).map(|entry| entry.candidate.clone())
+    }
+
+    /// Records what a probe of `candidate.address` answered.
+    pub fn note_probe(&self, candidate: &AvailableDevice, endpoint_id: String) {
+        if let Ok(mut keys) = self.keys.lock() {
+            keys.insert(candidate.device_id.clone(), endpoint_id);
+        }
+        if let Ok(mut addresses) = self.addresses.lock() {
+            addresses.insert(candidate.device_id.clone(), candidate.address.clone());
+        }
+        if let Ok(mut probed) = self.probed.lock() {
+            probed.insert(candidate.address.clone(), ProbedAt { candidate: candidate.clone(), at: Instant::now() });
+        }
+    }
+
+    /// Records the identity a prober sent.
+    pub fn note_inbound_hello(&self, device_id: String, hostname: String, endpoint_id: String) {
+        if let Ok(mut hellos) = self.hellos.lock() {
+            hellos.insert(device_id, InboundHello { hostname, endpoint_id, heard_at: Instant::now() });
+        }
+    }
+
+    /// The device that recently probed this one and advertises
+    /// `fingerprint`, listed at `address` (where it advertises from, the
+    /// address a pairing leg from this side can reach). Its key is recorded
+    /// for that leg.
+    pub fn prober_at(
+        &self, address: &str, fingerprint: [u8; FINGERPRINT_LEN], my_device_id: &str,
+    ) -> Option<AvailableDevice> {
+        let (device_id, hostname, endpoint_id) = {
+            let hellos = self.hellos.lock().ok()?;
+            let (device_id, hello) = hellos.iter().find(|(device_id, hello)| {
+                fingerprint_of(device_id) == fingerprint && hello.heard_at.elapsed() < INBOUND_HELLO_FRESH
+            })?;
+            (device_id.clone(), hello.hostname.clone(), hello.endpoint_id.clone())
+        };
+        if device_id == my_device_id {
+            return None;
+        }
+        if let Ok(mut keys) = self.keys.lock() {
+            keys.insert(device_id.clone(), endpoint_id);
+        }
+        Some(AvailableDevice { address: address.to_string(), device_id, hostname })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn searching(radio: &RadioArbiter, peer: &str) -> bool {
+    fn searching(radio: &Scanner, peer: &str) -> bool {
         radio.requests.lock().unwrap().searches.iter().any(|request| request.peer == peer)
     }
 
@@ -482,11 +654,11 @@ mod tests {
     /// adapter has stopped, and the scan sees the dial.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_dial_waits_for_the_running_scan_to_stop() {
-        let radio = Arc::new(RadioArbiter::default());
-        let scan = radio.scan_lease().await;
+        let radio = Arc::new(Scanner::default());
+        let scan = radio.scan_lock().await;
         let dial = tokio::spawn({
             let radio = radio.clone();
-            async move { radio.acquire_dial().await }
+            async move { radio.acquire_connect().await }
         });
         while *radio.dials.borrow() == 0 {
             tokio::task::yield_now().await;
@@ -501,7 +673,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn searches_for_different_peers_share_one_scan() {
-        let radio = Arc::new(RadioArbiter::default());
+        let radio = Arc::new(Scanner::default());
         let first = tokio::spawn({
             let radio = radio.clone();
             async move { radio.find("coord-merge-a", Purpose::Delivery, Duration::from_secs(5)).await }
@@ -526,7 +698,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_heard_peer_reaches_every_search_waiting_for_it_and_pauses_the_scan() {
-        let radio = Arc::new(RadioArbiter::default());
+        let radio = Arc::new(Scanner::default());
         let delivery = tokio::spawn({
             let radio = radio.clone();
             async move { radio.find("coord-both", Purpose::Delivery, Duration::from_secs(5)).await }
@@ -557,7 +729,7 @@ mod tests {
     /// same one once it answers again, is dialled as usual.
     #[test]
     fn a_failed_address_is_skipped_until_its_cooldown_expires() {
-        let radio = RadioArbiter::default();
+        let radio = Scanner::default();
         radio.note_dial_failed("AA:00:00:00:00:10");
         assert!(radio.dial_recently_failed("AA:00:00:00:00:10"));
         assert!(!radio.dial_recently_failed("AA:00:00:00:00:11"), "only the failed address is skipped");
@@ -575,7 +747,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_search_that_hears_nothing_ends_with_its_window_and_withdraws() {
-        let radio = Arc::new(RadioArbiter::default());
+        let radio = Arc::new(Scanner::default());
         let found = radio.find("coord-silent", Purpose::Delivery, Duration::from_millis(50)).await;
         assert!(found.is_none());
         assert!(!searching(&radio, "coord-silent"));

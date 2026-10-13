@@ -475,18 +475,18 @@ fn pin_adapter_unreachable_on_this_thread() {
 ///
 /// A scan already running elsewhere answers the question without a second
 /// one: the adapter accepted that discovery session, so it is reachable.
-/// Starting our own would only be refused (see `scan_lease`). A caller that
+/// Starting our own would only be refused (see `scan_lock`). A caller that
 /// merely holds the lease proves nothing yet -- its scan may still be
 /// refused -- so the probe waits for it to start or finish.
 #[cfg(any(feature = "ui-plane", test))]
-pub async fn probe_adapter_available(radio: &RadioArbiter) -> bool {
+pub async fn probe_adapter_available(radio: &Scanner) -> bool {
     let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
     loop {
         if radio.scan_is_running() {
             note_adapter_reachable();
             return true;
         }
-        if let Some(_scan) = radio.try_scan_lease() {
+        if let Some(_scan) = radio.try_scan_lock() {
             let Ok(adapter) = adapter().await else {
                 note_adapter_unreachable();
                 return false;
@@ -589,8 +589,8 @@ mod tests {
     /// which used to be recorded as "Bluetooth is unavailable on this device".
     #[tokio::test]
     async fn adapter_probe_during_another_scan_reports_the_adapter_reachable() {
-        let radio = RadioArbiter::default();
-        let _other_scan = radio.scan_lease().await;
+        let radio = Scanner::default();
+        let _other_scan = radio.scan_lock().await;
         let _running = radio.start_running_scan();
         note_adapter_unreachable();
 
@@ -606,8 +606,8 @@ mod tests {
     /// report a missing radio as working, so adding Bluetooth never failed.
     #[tokio::test(start_paused = true)]
     async fn adapter_probe_does_not_trust_a_scan_that_has_not_started() {
-        let radio = Arc::new(RadioArbiter::default());
-        let other_scan = radio.scan_lease().await;
+        let radio = Arc::new(Scanner::default());
+        let other_scan = radio.scan_lock().await;
         // Pinned, not recorded: other tests' scans write the process-wide
         // health while this one waits out the probe.
         pin_adapter_unreachable_on_this_thread();

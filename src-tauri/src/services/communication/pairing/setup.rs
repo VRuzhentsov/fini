@@ -91,7 +91,7 @@ async fn run(state: DeviceConnectionState, peer_device_id: String, kind: Channel
     // device's scan dialling it in the meantime keeps that from happening.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let _clear_of_candidate_scan =
-        (kind == ChannelKind::Bluetooth).then(|| state.bluetooth_radio.begin_pairing_leg());
+        (kind == ChannelKind::Bluetooth).then(|| state.bluetooth_scanner.begin_pairing_step());
     say_hello(&state, &peer_device_id, kind, attempt).await;
     if kind == ChannelKind::Bluetooth {
         while state

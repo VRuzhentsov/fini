@@ -75,7 +75,7 @@ impl Radio for GattRadio {
     async fn probe(&self, state: &DeviceConnectionState) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            super::bluetooth::probe_adapter_available(&state.bluetooth_radio).await
+            super::bluetooth::probe_adapter_available(&state.bluetooth_scanner).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
@@ -132,7 +132,7 @@ impl Radio for GattRadio {
     #[cfg(any(feature = "ui-plane", test))]
     fn forget_failures(&self, state: &DeviceConnectionState, peer_device_id: &str) {
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        state.bluetooth_presence.forget_delivery_misses(peer_device_id);
+        state.bluetooth_delivery.forget_delivery_misses(peer_device_id);
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = (state, peer_device_id);
     }
@@ -147,7 +147,7 @@ impl Radio for GattRadio {
 
     fn is_reachable(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        return state.bluetooth_presence.seen_recently(peer_device_id);
+        return state.bluetooth_scanner.heard_recently(peer_device_id);
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
             let _ = (state, peer_device_id);

@@ -5,7 +5,7 @@
 use super::*;
 
 /// Per-candidate cap for a dial+probe+reply confirmation round trip
-/// (`hello_candidate`/`probe_discovery_hello`), separate from the overall
+/// (`hello_candidate`/`identify_device`), separate from the overall
 /// scan deadline: without this, a single candidate that accepts the
 /// connection but never replies could consume the *entire* remaining scan
 /// budget, starving out every other candidate that might otherwise have
@@ -135,7 +135,7 @@ async fn hello_candidate(state: &DeviceConnectionState, address: &str, peer_id: 
 pub async fn setup_hello_round(
     state: DeviceConnectionState, peer_id: String, timeout: Duration,
 ) -> Result<bool, String> {
-    let radio = state.bluetooth_radio.clone();
+    let radio = state.bluetooth_scanner.clone();
     let Some(found) = radio.find(&peer_id, Purpose::Setup, timeout).await else {
         if is_bluetooth_adapter_unavailable() {
             return Err("bluetooth adapter unavailable".to_string());
@@ -193,7 +193,7 @@ pub(crate) async fn wait_for_turn_to_dial(state: &DeviceConnectionState, peer_id
 /// candidate list merges alongside mDNS-discovered ones (ADR 0002 Phase 3).
 #[cfg(any(feature = "ui-plane", test))]
 #[derive(Clone)]
-pub struct AddModeCandidate {
+pub struct AvailableDevice {
     pub address: String,
     pub device_id: String,
     pub hostname: String,
@@ -203,11 +203,11 @@ pub struct AddModeCandidate {
 /// `None` on any failure along the way (dial, send, no/wrong reply); the
 /// caller is responsible for bounding how long this is allowed to run.
 #[cfg(any(feature = "ui-plane", test))]
-async fn probe_discovery_hello(radio: &RadioArbiter, hello: &PeerFrame, address: &str) -> Option<PeerFrame> {
+async fn identify_device(radio: &Scanner, hello: &PeerFrame, address: &str) -> Option<PeerFrame> {
     // The add-mode scan has closed by now, but a search for a paired peer
     // may start one; registering the dial keeps it paused until we finish.
     let _probe = radio.candidate_probe().await;
-    let _dial = radio.acquire_dial().await;
+    let _dial = radio.acquire_connect().await;
     let mut link = dial(address).await.ok()?;
     send_frame(link.as_mut(), hello).await.ok()?;
     recv_frame(link.as_mut()).await?.ok()
@@ -227,9 +227,9 @@ async fn probe_discovery_hello(radio: &RadioArbiter, hello: &PeerFrame, address:
 /// repeatedly rather than once for a long window.
 #[cfg(any(feature = "ui-plane", test))]
 pub async fn scan_add_mode_candidates(
-    my_device_id: &str, timeout: Duration, peers: &PeerDirectory, radio: &RadioArbiter, hello: &PeerFrame,
-) -> Result<Vec<AddModeCandidate>, String> {
-    let mut legs = radio.watch_pairing_legs();
+    my_device_id: &str, timeout: Duration, peers: &AvailableDevices, radio: &Scanner, hello: &PeerFrame,
+) -> Result<Vec<AvailableDevice>, String> {
+    let mut legs = radio.watch_pairing_steps();
     // Wait out a pairing leg already running, then run the pass and give it
     // up when one starts. An `Err` keeps the picker's previous list (the
     // caller treats it as "retry later"), where an empty `Ok` would wipe the
@@ -245,7 +245,7 @@ pub async fn scan_add_mode_candidates(
     }
     let adapter = adapter().await.inspect_err(|_| note_adapter_unreachable())?;
     scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, adapter, peers, radio, |address| async move {
-        probe_discovery_hello(radio, hello, &address).await
+        identify_device(radio, hello, &address).await
     })
     .await
 }
@@ -259,10 +259,10 @@ async fn scan_add_mode_candidates_pass<Probe, Reply>(
     timeout: Duration,
     legs: &mut tokio::sync::watch::Receiver<usize>,
     adapter: Adapter,
-    peers: &PeerDirectory,
-    radio: &RadioArbiter,
+    peers: &AvailableDevices,
+    radio: &Scanner,
     probe: Probe,
-) -> Result<Vec<AddModeCandidate>, String>
+) -> Result<Vec<AvailableDevice>, String>
 where
     Probe: Fn(String) -> Reply,
     Reply: std::future::Future<Output = Option<PeerFrame>>,
@@ -288,7 +288,7 @@ where
     let mut answered_by: Vec<(String, [u8; FINGERPRINT_LEN])> = Vec::new();
     let flagged_addresses = {
         let waited = std::time::Instant::now();
-        let _scan = radio.scan_lease_between_dials().await;
+        let _scan = radio.scan_lock_between_connects().await;
         if waited.elapsed() > Duration::from_millis(500) {
             log::info!(
                 "[transport][ble] add-device scan waited {:?} for the scan lock",
@@ -474,7 +474,7 @@ where
             // same machine, or a previous scan's own peripheral still
             // winding down) must not show up as a candidate to pair with.
             if device_id != my_device_id {
-                let candidate = AddModeCandidate { address, device_id, hostname };
+                let candidate = AvailableDevice { address, device_id, hostname };
                 peers.note_probe(&candidate, endpoint_id);
                 candidates.push(candidate);
             }
@@ -539,14 +539,14 @@ mod tests {
     /// paused error -- which keeps the picker's list -- and dials nobody.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_candidate_scan_stands_aside_while_a_pairing_step_runs() {
-        let radio = RadioArbiter::default();
+        let radio = Scanner::default();
         let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:01:01"]).await;
         advertise_all(&advertisers).await;
         let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        let leg = radio.begin_pairing_leg();
-        let mut legs = radio.watch_pairing_legs();
-        let peers = PeerDirectory::default();
+        let leg = radio.begin_pairing_step();
+        let mut legs = radio.watch_pairing_steps();
+        let peers = AvailableDevices::default();
         let result = scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, &radio, |address| {
             let probes = probes.clone();
             async move {
@@ -564,13 +564,13 @@ mod tests {
     /// A new pass does not start while a pairing step runs: it waits for it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_candidate_scan_waits_for_a_running_pairing_step() {
-        let radio = Arc::new(RadioArbiter::default());
-        let leg = radio.begin_pairing_leg();
+        let radio = Arc::new(Scanner::default());
+        let leg = radio.begin_pairing_step();
         let scan = tokio::spawn({
             let radio = radio.clone();
             async move {
                 let hello = PeerFrame::Hello { device_id: "me".to_string() };
-                scan_add_mode_candidates("me", Duration::from_millis(50), &PeerDirectory::default(), &radio, &hello)
+                scan_add_mode_candidates("me", Duration::from_millis(50), &AvailableDevices::default(), &radio, &hello)
                     .await
             }
         });
@@ -587,7 +587,7 @@ mod tests {
     /// pairing dial that follows. The pass then stops before the next probe.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_probe_in_flight_finishes_when_a_pairing_step_starts() {
-        let radio = Arc::new(RadioArbiter::default());
+        let radio = Arc::new(Scanner::default());
         let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:02:01", "AA:00:00:00:02:02"]).await;
         advertise_all(&advertisers).await;
         let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -598,8 +598,8 @@ mod tests {
             let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
             let radio = radio.clone();
             tokio::spawn(async move {
-                let mut legs = radio.watch_pairing_legs();
-                let peers = PeerDirectory::default();
+                let mut legs = radio.watch_pairing_steps();
+                let peers = AvailableDevices::default();
                 scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, &radio, move |address| {
                     let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
                     async move {
@@ -616,7 +616,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        let leg = radio.begin_pairing_leg();
+        let leg = radio.begin_pairing_step();
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!pass.is_finished(), "the probe in flight is not cancelled");
         release.notify_one();

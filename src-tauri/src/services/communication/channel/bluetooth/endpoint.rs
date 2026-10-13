@@ -31,13 +31,13 @@ pub async fn dial_for_pairing(
     let peer_key: iroh::EndpointId = peer_key
         .parse()
         .map_err(|err| format!("invalid key for the pairing peer: {err}"))?;
-    let radio = &state.bluetooth_radio;
-    let leg = radio.begin_pairing_leg();
+    let radio = &state.bluetooth_scanner;
+    let leg = radio.begin_pairing_step();
     // A candidate probe already dialling is let finish, not cancelled; wait
     // for it so this dial never overlaps one to the same peer.
     drop(radio.candidate_probe().await);
     tokio::time::timeout(PAIRING_DIAL_BUDGET, async {
-        let dial_guard = radio.acquire_dial().await;
+        let connect_guard = radio.acquire_connect().await;
         let (endpoint, transport) = bluetooth_endpoint(state).await?;
         let peer = PeerAddress(address.to_string());
         transport.set_peer_address(peer_key, peer.clone());
@@ -51,7 +51,7 @@ pub async fn dial_for_pairing(
             match attempt {
                 Ok(Ok(connection)) => {
                     let link = IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
-                    return Ok((Box::new(link) as Box<dyn DataLink>, dial_guard));
+                    return Ok((Box::new(link) as Box<dyn DataLink>, connect_guard));
                 }
                 // The probe's connection may still be closing.
                 Ok(Err(_)) if started.elapsed() < PAIRING_DIAL_RETRY_WINDOW => {
@@ -64,7 +64,7 @@ pub async fn dial_for_pairing(
     })
     .await
     .map_err(|_| format!("bluetooth pairing dial to {address} timed out"))?
-    .map(|(link, dial_guard)| (link, (leg, dial_guard)))
+    .map(|(link, connect_guard)| (link, (leg, connect_guard)))
 }
 
 /// How long a new inbound channel may take to send its first datagram,

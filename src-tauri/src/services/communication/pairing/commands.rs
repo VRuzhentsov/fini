@@ -326,8 +326,8 @@ pub async fn device_connection_discover_bluetooth_candidates(
         let candidates = crate::services::communication::channel::bluetooth::scan_add_mode_candidates(
             &my_device_id,
             std::time::Duration::from_millis(duration_ms),
-            &state.bluetooth_peers,
-            &state.bluetooth_radio,
+            &state.bluetooth_scanner.available,
+            &state.bluetooth_scanner,
             state.bluetooth_advertiser.hello(),
         )
         .await?;
@@ -983,7 +983,7 @@ pub async fn device_connection_probe_bluetooth_adapter(
 ) -> Result<bool, String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        Ok(crate::services::communication::channel::bluetooth::probe_adapter_available(&state.bluetooth_radio).await)
+        Ok(crate::services::communication::channel::bluetooth::probe_adapter_available(&state.bluetooth_scanner).await)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
@@ -1307,7 +1307,7 @@ pub fn device_connection_unpair(
     // this process's state, so only the app has any to forget.
     state.network_attempts.forget_failures(&peer_device_id);
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    state.bluetooth_presence.forget_delivery_misses(&peer_device_id);
+    state.bluetooth_delivery.forget_delivery_misses(&peer_device_id);
     Ok(())
 }
 

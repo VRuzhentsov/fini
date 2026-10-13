@@ -143,18 +143,14 @@ pub struct DeviceConnectionState {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_endpoint:
         Arc<tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>>,
-    /// The Bluetooth devices around this one in add-mode: their keys, where
-    /// they were last heard, and who probed us.
-    #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
-    pub(crate) bluetooth_peers: Arc<crate::services::communication::channel::bluetooth::PeerDirectory>,
-    /// Which paired peers were heard over Bluetooth, and when to search for
-    /// one again.
+    /// When to search again for a paired device that a delivery search did
+    /// not find.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(crate) bluetooth_presence: Arc<crate::services::communication::channel::bluetooth::Presence>,
-    /// Takes turns on the Bluetooth radio: scans, dials, probes and pairing
-    /// legs.
+    pub(crate) bluetooth_delivery: Arc<crate::services::communication::channel::bluetooth::DeliverySchedule>,
+    /// The one Bluetooth scan, the turns on the radio, and what the scan
+    /// heard: the devices available for Add Device and the paired devices.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(crate) bluetooth_radio: Arc<crate::services::communication::channel::bluetooth::RadioArbiter>,
+    pub(crate) bluetooth_scanner: Arc<crate::services::communication::channel::bluetooth::Scanner>,
     /// What this device advertises over Bluetooth, and whether it does.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) bluetooth_advertiser: Arc<crate::services::communication::channel::bluetooth::Advertiser>,
@@ -253,12 +249,6 @@ impl DeviceConnectionState {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         let bluetooth_advertiser =
             Arc::new(crate::services::communication::channel::bluetooth::Advertiser::new(&identity));
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let bluetooth_presence = Arc::new(crate::services::communication::channel::bluetooth::Presence::default());
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let bluetooth_radio = Arc::new(crate::services::communication::channel::bluetooth::RadioArbiter::new(
-            bluetooth_presence.clone(),
-        ));
 
         Ok(Self {
             identity,
@@ -271,12 +261,10 @@ impl DeviceConnectionState {
             network_attempts: Arc::default(),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_endpoint: Arc::new(tokio::sync::OnceCell::new()),
-            #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
-            bluetooth_peers: Arc::default(),
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            bluetooth_presence,
+            bluetooth_delivery: Arc::default(),
             #[cfg(any(target_os = "linux", target_os = "android"))]
-            bluetooth_radio,
+            bluetooth_scanner: Arc::default(),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             bluetooth_advertiser,
             bluetooth_carrier: Arc::default(),
