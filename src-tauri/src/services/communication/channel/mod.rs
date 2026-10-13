@@ -167,7 +167,7 @@ pub trait DataLink: Send {
     async fn recv(&mut self) -> Option<Result<Vec<u8>, String>>;
     /// The peer's address, if the transport has one at the byte-stream
     /// level (network transports do; used by `run_peer_gate` as the
-    /// `from_addr` stored with a pre-auth `PairRequest` so the receiver can
+    /// `from_addr` stored with a pre-auth `PairStart` so the receiver can
     /// address its `PairAccept`/`PairComplete` reply). `None` for transports
     /// without a meaningful notion of address (or where it isn't known).
     fn peer_addr(&self) -> Option<String> {

@@ -3,7 +3,7 @@
 //!
 //! Two kinds of link share one GATT service (ADR-0009 D2, D3, D8):
 //!
-//! - **Sessions** (`Auth`, channel `Hello`) are iroh connections over
+//! - **Sessions** (`Auth`, `AddChannel`) are iroh connections over
 //!   `ble-gatt-iroh`, to the key pinned for the pair, which TLS proves
 //!   (`BluetoothChannel::connect_session`, `BluetoothChannel::iroh_endpoint`).
 //! - **Pre-pairing frames** (discovery, pair request/accept/complete) go over
@@ -873,14 +873,14 @@ impl BluetoothChannel {
         let mut link = self.connect_session(state, peer_id, address).await.ok()?;
         send_frame(
             link.as_mut(),
-            &PeerFrame::Hello {
+            &PeerFrame::AddChannel {
                 device_id: state.identity.device_id.clone(),
             },
         )
         .await
         .ok()?;
         match recv_frame(link.as_mut()).await {
-            Some(Ok(PeerFrame::HelloAck { device_id })) if device_id == peer_id => Some(()),
+            Some(Ok(PeerFrame::AddChannelAccept { device_id })) if device_id == peer_id => Some(()),
             _ => None,
         }
     }

@@ -1458,7 +1458,7 @@ mod tests {
 
     /// The key a pair is saved with is the one that came with that
     /// pairing. Another frame that claims the same device id -- here a
-    /// `PairRequest` raced in after the legitimate `PairComplete` -- must
+    /// `PairStart` raced in after the legitimate `PairComplete` -- must
     /// not replace it, or whoever sent that frame could pass the session
     /// gate as the peer.
     #[test]
@@ -1488,7 +1488,7 @@ mod tests {
             .receive_ws_pair_request(
                 PairRequestPayload {
                     protocol: DISCOVERY_PROTOCOL.to_string(),
-                    kind: "pair_request".to_string(),
+                    kind: "pair_start".to_string(),
                     request_id: "req-attacker".to_string(),
                     from_device_id: "peer-b".to_string(),
                     from_hostname: "beta".to_string(),

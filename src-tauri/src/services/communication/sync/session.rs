@@ -367,13 +367,13 @@ async fn handle_inbound(
         PeerFrame::Auth { .. }
         | PeerFrame::AuthOk { .. }
         | PeerFrame::AuthFail { .. }
-        | PeerFrame::PairRequest(_)
+        | PeerFrame::PairStart(_)
         | PeerFrame::PairAccept(_)
         | PeerFrame::PairComplete(_)
-        | PeerFrame::DiscoveryHello { .. }
-        | PeerFrame::DiscoveryHelloReply { .. }
-        | PeerFrame::Hello { .. }
-        | PeerFrame::HelloAck { .. }
+        | PeerFrame::IdentifyDevice { .. }
+        | PeerFrame::DeviceIdentified { .. }
+        | PeerFrame::AddChannel { .. }
+        | PeerFrame::AddChannelAccept { .. }
         // A tag this build doesn't recognize -- see `PeerFrame::Unknown`'s
         // doc comment. Ignoring it is the whole point: the session must
         // keep running rather than treat it as a decode failure.

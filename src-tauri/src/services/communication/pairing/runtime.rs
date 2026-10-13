@@ -192,7 +192,7 @@ mod tests {
     fn sample_pair_request_payload(expires_at: &str) -> PairRequestPayload {
         PairRequestPayload {
             protocol: DISCOVERY_PROTOCOL.to_string(),
-            kind: "pair_request".to_string(),
+            kind: "pair_start".to_string(),
             request_id: "req-1".to_string(),
             from_device_id: "device-a".to_string(),
             from_hostname: "alpha".to_string(),

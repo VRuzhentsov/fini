@@ -46,14 +46,14 @@ impl Incoming {
 }
 
 impl DeviceConnectionState {
-    /// A `PairRequest` from this device to `to_device_id`.
+    /// A `PairStart` from this device to `to_device_id`.
     fn pair_request_payload(&self, request_id: String, to_device_id: String) -> PairRequestPayload {
         let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
         PairRequestPayload {
             protocol: DISCOVERY_PROTOCOL.to_string(),
-            kind: "pair_request".to_string(),
+            kind: "pair_start".to_string(),
             request_id,
             from_device_id: self.identity.device_id.clone(),
             from_endpoint_id: Some(self.identity.endpoint_id.clone()),
@@ -87,7 +87,7 @@ impl DeviceConnectionState {
             .ok_or_else(|| {
                 "this device has not announced its key yet; try again in a moment, or pass its key".to_string()
             })?;
-        NetworkCarrier.send(self, &peer_key, target_ip, target_port, PeerFrame::PairRequest(payload.clone()))?;
+        NetworkCarrier.send(self, &peer_key, target_ip, target_port, PeerFrame::PairStart(payload.clone()))?;
         self.count_sent();
 
         eprintln!(
@@ -99,7 +99,7 @@ impl DeviceConnectionState {
 
     /// Sends the same `PairRequestPayload` shape `send_pair_request` does,
     /// just over Bluetooth -- `run_peer_gate` handles the resulting
-    /// `PeerFrame::PairRequest` identically regardless of which channel
+    /// `PeerFrame::PairStart` identically regardless of which channel
     /// carried it. `to_device_id` comes from an identify step, not typed in
     /// by the user.
     #[cfg(any(feature = "ui-plane", test))]
@@ -116,7 +116,7 @@ impl DeviceConnectionState {
                 self,
                 &payload.to_device_id,
                 &input.to_bluetooth_address,
-                PeerFrame::PairRequest(payload.clone()),
+                PeerFrame::PairStart(payload.clone()),
             )?;
             self.count_sent();
 

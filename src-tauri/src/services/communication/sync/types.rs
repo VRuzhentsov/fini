@@ -68,8 +68,9 @@ pub enum PeerFrame {
     },
     #[serde(rename = "auth_fail")]
     AuthFail { reason: String },
-    #[serde(rename = "pair_request")]
-    PairRequest(PairRequestPayload),
+    /// Starts pairing: a device in Add Device asks another to pair.
+    #[serde(rename = "pair_start")]
+    PairStart(PairRequestPayload),
     #[serde(rename = "pair_accept")]
     PairAccept(PairAcceptPayload),
     #[serde(rename = "pair_complete")]
@@ -102,42 +103,39 @@ pub enum PeerFrame {
     /// `docs/adr/0002-bluetooth-address-exchange-live-status-and-ble-pairing.md`.
     #[serde(rename = "bluetooth_address_update")]
     BluetoothAddressUpdate { address: String },
-    /// Pre-auth, sent by a scanner over a fresh BLE connection to a
-    /// candidate whose advertisement already carried the add-mode flag
-    /// (`channel::bluetooth`'s own scan-side filtering, so a stranger not in
-    /// add-mode is never even connected to). BLE advertisements can't carry
-    /// a device_id/hostname the way mDNS's `DiscoveryBeacon` does (payload
-    /// too small alongside the service UUID), and `PairRequestPayload`
-    /// itself requires `to_device_id` up front -- this is what lets a
-    /// scanner learn it before attempting a real `PairRequest`. Untrusted,
-    /// same as `PairRequest`/`PairAccept`/`PairComplete`: discovery
-    /// metadata is never the trust boundary, Fini's own pairing handshake
-    /// is (`specs/device-connect/README.md`).
+    /// Pre-auth, sent over a fresh Bluetooth connection when Pair is pressed
+    /// on a device the Add Device list shows from its advertisement. A BLE
+    /// advertisement cannot carry the device id, name and iroh key (too
+    /// small next to the service UUID), and `PairRequestPayload` needs
+    /// `to_device_id` -- this is how the sender learns them before
+    /// `PairStart`. Untrusted, the same as `PairStart`/`PairAccept`/
+    /// `PairComplete`: Fini's own pairing handshake is the trust boundary
+    /// (`specs/device-connect/README.md`).
     ///
-    /// Carries the prober's own identity: of two devices in add-mode only
-    /// one dials the other (the lower advertised fingerprint), so this one
-    /// connection is how the probed device learns of the prober too.
-    #[serde(rename = "discovery_hello")]
-    DiscoveryHello { device_id: String, hostname: String, endpoint_id: String },
-    /// Reply to `DiscoveryHello`, sent only if the receiver is currently in
-    /// add-mode itself -- `specs/device-connect/README.md`: "Only devices
-    /// in add-mode are pairing candidates." `endpoint_id` is the replier's
-    /// iroh key: a pairing leg to it dials iroh by that key (ADR-0009).
-    #[serde(rename = "discovery_hello_reply")]
-    DiscoveryHelloReply { device_id: String, hostname: String, endpoint_id: String },
+    /// Carries the sender's own identity too, so the receiver learns of
+    /// the sender on the same connection.
+    #[serde(rename = "identify_device")]
+    IdentifyDevice { device_id: String, hostname: String, endpoint_id: String },
+    /// Reply to `IdentifyDevice`, sent only if the receiver is in Add Device
+    /// itself -- `specs/device-connect/README.md`: "Only devices in
+    /// add-mode are pairing candidates." `endpoint_id` is the replier's
+    /// iroh key: a pairing step to it connects by that key (ADR-0009).
+    #[serde(rename = "device_identified")]
+    DeviceIdentified { device_id: String, hostname: String, endpoint_id: String },
     /// ADR-0008 D1/D2: one half of a channel's init. Pre-auth, sent over a
     /// fresh link by a device running a setup search for a paired peer.
-    /// Answered with `HelloAck` only if the receiver has this device paired
-    /// *and* is running a setup search for it on this channel itself -- so
-    /// an init needs both people searching, and a device that is not
-    /// setting the channel up (switched off, unlinked, or simply not asked)
-    /// says nothing. Not a trust boundary: it proves "you know a device id
-    /// I have paired", the same as `DiscoveryHello` (see #184).
-    #[serde(rename = "hello")]
-    Hello { device_id: String },
-    /// Reply to `Hello`; carries the replier's own device id.
-    #[serde(rename = "hello_ack")]
-    HelloAck { device_id: String },
+    /// Answered with `AddChannelAccept` only if the receiver has this
+    /// device paired *and* is running a setup search for it on this
+    /// channel itself -- so an init needs both people searching, and a
+    /// device that is not setting the channel up (switched off, unlinked,
+    /// or simply not asked) says nothing. Not a trust boundary: it proves
+    /// "you know a device id I have paired", the same as `IdentifyDevice`
+    /// (see #184).
+    #[serde(rename = "add_channel")]
+    AddChannel { device_id: String },
+    /// Reply to `AddChannel`; carries the replier's own device id.
+    #[serde(rename = "add_channel_accept")]
+    AddChannelAccept { device_id: String },
     /// "I unlinked this channel on my side" (ADR-0008 D14), pushed like
     /// any other frame. The receiver removes its own row for it.
     #[serde(rename = "channel_unlinked")]
@@ -184,11 +182,11 @@ mod tests {
             reason: "private detail".to_string(),
         };
         assert_eq!(frame.wire_type(), "auth_fail");
-        let hello = PeerFrame::DiscoveryHello {
+        let identify = PeerFrame::IdentifyDevice {
             device_id: "d".to_string(),
             hostname: "h".to_string(),
             endpoint_id: "k".to_string(),
         };
-        assert_eq!(hello.wire_type(), "discovery_hello");
+        assert_eq!(identify.wire_type(), "identify_device");
     }
 }

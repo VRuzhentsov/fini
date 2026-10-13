@@ -62,7 +62,7 @@ pub struct IncomingPairRequest {
     pub expires_at: String,
     pub attempts: i64,
     pub cooldown_until: Option<String>,
-    /// Whether this `PairRequest` arrived over a Bluetooth link (ADR 0002
+    /// Whether this `PairStart` arrived over a Bluetooth link (ADR 0002
     /// Phase 3's BLE-first pairing) rather than network. When true,
     /// `from_bluetooth_address` carries the sender's address as *observed*
     /// on this connection (`DataLink::peer_addr()`), which is more trustworthy

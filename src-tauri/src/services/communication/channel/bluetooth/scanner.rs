@@ -592,7 +592,7 @@ impl Scanner {
             if reply.is_some() { "answered" } else { "no answer" }
         );
         match reply {
-            Some(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id }) => {
+            Some(PeerFrame::DeviceIdentified { device_id, hostname, endpoint_id }) => {
                 if device_id == own_device_id {
                     return Err("that is this device".to_string());
                 }
@@ -604,7 +604,7 @@ impl Scanner {
         }
     }
 
-    /// Dials `address` and exchanges `DiscoveryHello`/`DiscoveryHelloReply`.
+    /// Connects to `address` and exchanges `IdentifyDevice`/`DeviceIdentified`.
     /// `None` on any failure along the way (dial, send, no/wrong reply).
     async fn identify_device(&self, hello: &PeerFrame, address: &str) -> Option<PeerFrame> {
         // A search for a paired device may start a scan; holding a connect

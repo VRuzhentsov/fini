@@ -39,7 +39,7 @@ pub(crate) trait PairingCarrier: Send + Sync {
 pub(crate) struct NetworkCarrier;
 
 impl NetworkCarrier {
-    /// One-shot pre-auth pairing sender (`PairRequest`/`PairAccept`/
+    /// One-shot pre-auth pairing sender (`PairStart`/`PairAccept`/
     /// `PairComplete`): one iroh connection to the device holding
     /// `peer_key`, one frame, closed once the peer has it.
     pub(crate) fn send(
@@ -73,7 +73,7 @@ impl PairingCarrier for NetworkCarrier {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const PAIR_FRAME_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The link a Bluetooth `PairRequest` arrived on, kept open by request id so
+/// The link a Bluetooth `PairStart` arrived on, kept open by request id so
 /// the accept and the complete answer on it rather than dialling the
 /// requester back -- see `BluetoothCarrier::send_request` for why.
 #[cfg(any(feature = "ui-plane", test))]
@@ -112,7 +112,7 @@ impl BluetoothCarrier {
         })
     }
 
-    /// Sends a Bluetooth `PairRequest` over iroh, to the key the peer's
+    /// Sends a Bluetooth `PairStart` over iroh, to the key the peer's
     /// add-mode hello reported, and keeps that one connection open, reading
     /// the accept and the complete that come back on it until the request
     /// has expired. Nothing is dialled back to this device: Android connects
@@ -184,7 +184,7 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>)
 }
 
 impl PairingCarrier for BluetoothCarrier {
-    /// Answers a Bluetooth `PairRequest` on the iroh connection it arrived
+    /// Answers a Bluetooth `PairStart` on the iroh connection it arrived
     /// on, which the gate parked (see `send_request`). `more` parks it again
     /// for the next answer. With no parked connection, or a dead one, it
     /// dials the requester's key over iroh, starting from where the request

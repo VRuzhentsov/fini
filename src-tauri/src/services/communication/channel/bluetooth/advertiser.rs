@@ -34,7 +34,7 @@ pub struct Advertiser {
     /// connecting to it first.
     #[cfg(any(feature = "ui-plane", test))]
     fingerprint: [u8; FINGERPRINT_LEN],
-    /// This device's `DiscoveryHello`, carrying its identity.
+    /// This device's `IdentifyDevice`, carrying its identity.
     #[cfg(any(feature = "ui-plane", test))]
     hello: PeerFrame,
     /// Whether this device is in add-mode, watched by `run_server`'s
@@ -78,7 +78,7 @@ impl Advertiser {
             #[cfg(any(feature = "ui-plane", test))]
             fingerprint: fingerprint_of(&identity.device_id),
             #[cfg(any(feature = "ui-plane", test))]
-            hello: PeerFrame::DiscoveryHello {
+            hello: PeerFrame::IdentifyDevice {
                 device_id: identity.device_id.clone(),
                 hostname: identity.hostname.clone(),
                 endpoint_id: identity.endpoint_id.clone(),

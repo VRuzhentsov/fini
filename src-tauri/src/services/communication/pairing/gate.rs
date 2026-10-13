@@ -100,7 +100,7 @@ fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) 
 }
 
 /// Server-side gate: read the first frame off a freshly accepted `DataLink` and
-/// dispatch it. Pre-auth pairing messages (`PairRequest`/`PairAccept`/
+/// dispatch it. Pre-auth pairing messages (`PairStart`/`PairAccept`/
 /// `PairComplete`) are handled and the link is then closed — discovery and
 /// pairing metadata are untrusted regardless of which channel carried
 /// them. An `Auth` frame is checked against `paired_devices`; on success the
@@ -124,7 +124,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     };
 
     let (device_id, peer_device_id, peer_protocol_version) = match frame {
-        PeerFrame::PairRequest(payload) => {
+        PeerFrame::PairStart(payload) => {
             let key = link_key.or_else(|| payload.from_endpoint_id.clone());
             let request_id = payload.request_id.clone();
             let via_bluetooth = kind == ChannelKind::Bluetooth;
@@ -177,7 +177,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         // the channel it made still exists: an ack lost on the way means the
         // peer is still asking after this side has finished. Anything else
         // (not paired, not searching and never set up, unlinked) gets silence.
-        PeerFrame::Hello { device_id } => {
+        PeerFrame::AddChannel { device_id } => {
             let searching = state.channel_setup(&device_id, kind).is_some();
             if check_paired(&db_path, &device_id)
                 && key_matches(&db_path, &device_id, link_key.as_deref())
@@ -185,7 +185,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             {
                 if send_frame(
                     link.as_mut(),
-                    &PeerFrame::HelloAck {
+                    &PeerFrame::AddChannelAccept {
                         device_id: state.identity.device_id.clone(),
                     },
                 )
@@ -195,12 +195,12 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                     state.note_channel_setup(&device_id, kind, |setup| setup.acked_peer_hello = true);
                 }
                 // Keep the link open briefly so the ack is read before the
-                // stream closes, as the `DiscoveryHello` arm below does.
+                // stream closes, as the `IdentifyDevice` arm below does.
                 let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
             }
             return;
         }
-        PeerFrame::DiscoveryHello { device_id, hostname, endpoint_id } => {
+        PeerFrame::IdentifyDevice { device_id, hostname, endpoint_id } => {
             // No reply at all when not in add-mode -- matching the
             // network-discovery equivalent (a mDNS beacon simply isn't
             // broadcast outside add-mode), rather than an explicit
@@ -212,7 +212,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 let _ = (device_id, hostname, endpoint_id);
                 let _ = send_frame(
                     link.as_mut(),
-                    &PeerFrame::DiscoveryHelloReply {
+                    &PeerFrame::DeviceIdentified {
                         device_id: state.identity.device_id.clone(),
                         hostname: state.identity.hostname.clone(),
                         endpoint_id: state.identity.endpoint_id.clone(),

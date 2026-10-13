@@ -568,7 +568,7 @@ impl NetworkChannel {
         let Ok(mut link) = self.connect(&peer_key, ip, port).await else {
             return false;
         };
-        let hello = PeerFrame::Hello {
+        let hello = PeerFrame::AddChannel {
             device_id: state.identity.device_id.clone(),
         };
         if send_frame(link.as_mut(), &hello).await.is_err() {
@@ -576,7 +576,7 @@ impl NetworkChannel {
         }
         matches!(
             tokio::time::timeout(Duration::from_secs(5), crate::services::communication::channel::recv_frame(link.as_mut())).await,
-            Ok(Some(Ok(PeerFrame::HelloAck { device_id }))) if device_id == peer_device_id
+            Ok(Some(Ok(PeerFrame::AddChannelAccept { device_id }))) if device_id == peer_device_id
         )
     }
 }

@@ -23,7 +23,7 @@ const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 /// How long a closing link waits for the peer to take what was sent last.
 /// Dropping a QUIC connection discards data still in flight, which would
-/// lose the last frame of a reply (an `AuthFail`, a `HelloAck`).
+/// lose the last frame of a reply (an `AuthFail`, an `AddChannelAccept`).
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct IrohDataLink {

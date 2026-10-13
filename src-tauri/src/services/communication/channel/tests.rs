@@ -757,7 +757,7 @@ async fn arrived<T>(read: impl Fn() -> Vec<T>) -> Vec<T> {
 /// not go through `DataLink::send`, so nothing structurally forces it to stay
 /// wire-compatible with what `run_peer_gate`/`codec::decode_frame` expect
 /// on the receiving end. This regression-tests that compatibility directly:
-/// a real `PairRequest` sent via the production
+/// a real `PairStart` sent via the production
 /// `device_connection_send_pair_request_impl` path must be readable by a
 /// real `tcp_ws` listener and land in the receiver's incoming-request queue.
 #[tokio::test(flavor = "multi_thread")]
@@ -805,7 +805,7 @@ async fn send_pair_request_is_readable_by_the_receiving_gate() {
 
 /// Full pairing round trip: request -> accept -> code delivered back to the
 /// requester. Catches a specific regression class the previous test didn't:
-/// `run_peer_gate` must capture the real peer address for a `PairRequest`
+/// `run_peer_gate` must capture the real peer address for a `PairStart`
 /// (matching the original `ws_server::handle_connection`'s
 /// `stream.peer_addr()`), not an empty string — otherwise the accepter's
 /// reply (`PairAccept`, addressed using that stored `from_addr`) fails to
@@ -1073,7 +1073,7 @@ async fn bluetooth_gate_accepts_a_peer_whose_address_matches_nothing_stored() {
     std::env::remove_var("FINI_BLUETOOTH_PAIRED_ADDRESSES");
 }
 
-/// ADR 0002 Phase 3: a `PairRequest` delivered over a Bluetooth-kind link
+/// ADR 0002 Phase 3: a `PairStart` delivered over a Bluetooth-kind link
 /// must be flagged `via_bluetooth`, with `from_bluetooth_address` set to the
 /// address actually *observed* on that connection (`DataLink::peer_addr()`) --
 /// trusted over any self-report, since the sender has no network endpoint
@@ -1105,9 +1105,9 @@ async fn pair_request_over_a_bluetooth_link_captures_the_observed_address() {
     let mut link: Box<dyn DataLink> = Box::new(bluetooth_stub::StubDataLink::new(stream));
     send_frame(
         link.as_mut(),
-        &PeerFrame::PairRequest(PairRequestPayload {
+        &PeerFrame::PairStart(PairRequestPayload {
             protocol: DISCOVERY_PROTOCOL.to_string(),
-            kind: "pair_request".to_string(),
+            kind: "pair_start".to_string(),
             request_id: "req-ble-1".to_string(),
             from_device_id: "device-a".to_string(),
             from_hostname: "alpha".to_string(),
@@ -1246,7 +1246,7 @@ async fn say_hello(
     let mut link = connect_bluetooth_gate(state, db_path).await;
     send_frame(
         link.as_mut(),
-        &PeerFrame::Hello {
+        &PeerFrame::AddChannel {
             device_id: from_device_id.to_string(),
         },
     )
@@ -1267,10 +1267,10 @@ async fn a_hello_is_acknowledged_while_this_device_searches_for_the_peer() {
     receiver.begin_channel_setup("peer-client", ChannelKind::Bluetooth);
 
     match say_hello(receiver.clone(), receiver_db, "peer-client").await {
-        Some(PeerFrame::HelloAck { device_id }) => {
+        Some(PeerFrame::AddChannelAccept { device_id }) => {
             assert_eq!(device_id, receiver.identity.device_id);
         }
-        other => panic!("expected a HelloAck, got {other:?}"),
+        other => panic!("expected a AddChannelAccept, got {other:?}"),
     }
     // The gate records its half only once the ack is sent, so the test can
     // read the ack a moment before the record lands.
@@ -1315,10 +1315,10 @@ async fn a_hello_is_acknowledged_for_a_channel_that_already_exists() {
                 .expect("set the channel up");
         }
         match say_hello(receiver.clone(), receiver_db, "peer-client").await {
-            Some(PeerFrame::HelloAck { device_id }) => {
+            Some(PeerFrame::AddChannelAccept { device_id }) => {
                 assert_eq!(device_id, receiver.identity.device_id, "channel on={enabled}")
             }
-            other => panic!("channel on={enabled}: expected a HelloAck, got {other:?}"),
+            other => panic!("channel on={enabled}: expected a AddChannelAccept, got {other:?}"),
         }
     }
 }
@@ -1509,16 +1509,16 @@ fn switching_on_a_channel_that_was_never_set_up_is_refused() {
     assert!(channels::find(&mut conn, "peer-client", ChannelKind::Bluetooth).is_none());
 }
 
-/// A `DiscoveryHello` from a prober that is not the server under test.
+/// A `IdentifyDevice` from a prober that is not the server under test.
 fn test_hello() -> PeerFrame {
-    PeerFrame::DiscoveryHello {
+    PeerFrame::IdentifyDevice {
         device_id: "prober-device".to_string(),
         hostname: "prober".to_string(),
         endpoint_id: "prober-key".to_string(),
     }
 }
 
-/// Regression test for Phase 3 of ADR 0002: `DiscoveryHello` only gets a
+/// Regression test for Phase 3 of ADR 0002: `IdentifyDevice` only gets a
 /// reply when the receiver is actually in add-mode -- the BLE-scan
 /// equivalent of network discovery simply not broadcasting outside
 /// add-mode. Uses `set_add_mode_for_test` (instance-scoped) rather than the
@@ -1526,7 +1526,7 @@ fn test_hello() -> PeerFrame {
 /// `channel::bluetooth` advertising flag `ble::tests` already covers
 /// separately.
 #[tokio::test(flavor = "multi_thread")]
-async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
+async fn identify_device_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
     let (server, server_db) = server_state("transport-discovery-hello-on");
     server.set_add_mode_for_test(true);
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
@@ -1539,17 +1539,17 @@ async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
         .await
         .expect("send discovery hello");
     match recv_frame(link.as_mut()).await {
-        Some(Ok(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id })) => {
+        Some(Ok(PeerFrame::DeviceIdentified { device_id, hostname, endpoint_id })) => {
             assert_eq!(device_id, server.identity.device_id);
             assert_eq!(hostname, server.identity.hostname);
             assert_eq!(endpoint_id, server.identity.endpoint_id);
         }
-        other => panic!("expected a DiscoveryHelloReply while in add-mode, got {other:?}"),
+        other => panic!("expected a DeviceIdentified while in add-mode, got {other:?}"),
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
+async fn identify_device_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
     let (server, server_db) = server_state("transport-discovery-hello-off");
     // Add-mode is off by default -- no set_add_mode_for_test call.
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
@@ -1565,11 +1565,11 @@ async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
     // link -- observed here as either a clean EOF (`None`) or a connection
     // error from the abrupt close (`Some(Err(_))`), depending on how the
     // underlying transport surfaces an ungraceful drop. Either is "no
-    // valid reply was given"; only an actual `DiscoveryHelloReply` fails
+    // valid reply was given"; only an actual `DeviceIdentified` fails
     // the test.
     match recv_frame(link.as_mut()).await {
         None | Some(Err(_)) => {}
-        other => panic!("a receiver not in add-mode must not reply to DiscoveryHello, got {other:?}"),
+        other => panic!("a receiver not in add-mode must not reply to IdentifyDevice, got {other:?}"),
     }
 }
 

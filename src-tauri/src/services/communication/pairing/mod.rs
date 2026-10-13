@@ -469,9 +469,9 @@ impl DeviceConnectionState {
     /// Whether this device is currently discoverable for pairing —
     /// `specs/device-connect/README.md`: "Only devices in add-mode are
     /// pairing candidates." Used by `session::run_peer_gate`'s
-    /// `DiscoveryHello` handling (ADR 0002 Phase 3) to decide whether to
+    /// `IdentifyDevice` handling (ADR 0002 Phase 3) to decide whether to
     /// reply at all, the BLE-scan equivalent of the existing check
-    /// `receive_ws_pair_request` already makes for network `PairRequest`s.
+    /// `receive_ws_pair_request` already makes for network `PairStart`s.
     pub fn is_add_mode_enabled(&self) -> bool {
         self.runtime.lock().map(|guard| guard.add_mode_enabled).unwrap_or(false)
     }
@@ -481,7 +481,7 @@ impl DeviceConnectionState {
     /// (unlike the real `device_connection_enter_add_mode_impl`/
     /// `leave_add_mode_impl`), since that is a *process-global* singleton
     /// shared by every test in the binary. Exercising `run_peer_gate`'s
-    /// `DiscoveryHello` gating needs only this instance's flag, not the
+    /// `IdentifyDevice` gating needs only this instance's flag, not the
     /// BLE-advertising side effect.
     #[cfg(test)]
     pub fn set_add_mode_for_test(&self, enabled: bool) {
