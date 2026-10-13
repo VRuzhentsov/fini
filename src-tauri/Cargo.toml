@@ -78,6 +78,7 @@ tauri-plugin-fs = { version = "2", optional = true }
 tauri-plugin-log = { version = "2", optional = true }
 url = { version = "2", optional = true }
 log = "0.4"
+iroh-mdns-address-lookup = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18.2", optional = true }
@@ -111,3 +112,6 @@ cli-plane = ["dep:clap", "dep:self_update", "dep:url", "dep:zipsign-api"]
 # Enable developer/test control-plane hooks. Off by default; production builds
 # must not ship this because it exposes an in-process Playwright socket bridge.
 devtools = ["dep:tauri-plugin-playwright", "ble-gatt/mock-broker"]
+# Fini's own mDNS/UDP beacon discovery as the Experimental network channel,
+# a way out if Fini leaves iroh. Off by default.
+experimental-network = []

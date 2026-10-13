@@ -222,6 +222,129 @@ async fn serve(state: DeviceConnectionState, db_path: PathBuf, endpoint: Endpoin
     }
 }
 
+/// The mDNS service name for Fini's Network channel. Only Fini endpoints use
+/// it, so other iroh apps on the network are not heard.
+#[cfg(any(feature = "ui-plane", test))]
+const MDNS_SERVICE_NAME: &str = "fini";
+
+/// The user data this device publishes with its iroh mDNS record: a version,
+/// the Add Device flag, the device id and the name, as
+/// `fini1;a=<0|1>;d=<device id>;n=<name>`. iroh limits it to 245 bytes, so the
+/// name is cut to fit.
+#[cfg(any(feature = "ui-plane", test))]
+fn network_user_data(state: &DeviceConnectionState) -> Option<iroh::endpoint_info::UserData> {
+    let add_device = state.is_add_mode_enabled();
+    let mut name = state.identity.hostname.clone();
+    let prefix = format!("fini1;a={};d={};n=", u8::from(add_device), state.identity.device_id);
+    while prefix.len() + name.len() > 245 {
+        name.pop();
+    }
+    format!("{prefix}{name}").parse().ok()
+}
+
+/// What another device's user data says: Add Device flag, device id, name.
+#[cfg(any(feature = "ui-plane", test))]
+fn parse_network_user_data(data: &str) -> Option<(bool, String, String)> {
+    let rest = data.strip_prefix("fini1;a=")?;
+    let (flag, rest) = rest.split_once(";d=")?;
+    let (device_id, name) = rest.split_once(";n=")?;
+    Some((flag == "1", device_id.to_string(), name.to_string()))
+}
+
+/// Finds other Fini devices on the network with iroh's own mDNS lookup
+/// (`iroh-mdns-address-lookup`), and announces this one. What it hears goes
+/// to the same records the rest of the Network channel reads: presence for
+/// paired devices, and the Add Device list.
+///
+/// The test switch (debug builds) stops the lookup while the network is off
+/// and starts a new one when it is on, which asks the network again at once.
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) async fn run_network_discovery(state: DeviceConnectionState) {
+    use futures_util::StreamExt;
+    use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
+
+    let endpoint = loop {
+        match endpoint(&state).await {
+            Ok(endpoint) => break endpoint,
+            Err(err) => {
+                log::warn!("[transport][network] discovery waits for the endpoint: {err}");
+                tokio::time::sleep(REBIND_INTERVAL).await;
+            }
+        }
+    };
+    loop {
+        while network_switched_off() {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let mdns = match MdnsAddressLookup::builder().service_name(MDNS_SERVICE_NAME).build(endpoint.id()) {
+            Ok(mdns) => mdns,
+            Err(err) => {
+                log::warn!("[transport][network] mDNS lookup failed to start: {err}");
+                tokio::time::sleep(REBIND_INTERVAL).await;
+                continue;
+            }
+        };
+        let Ok(lookup) = endpoint.address_lookup() else {
+            log::warn!("[transport][network] the endpoint has no address lookup");
+            return;
+        };
+        lookup.add(mdns.clone());
+        let mut published = network_user_data(&state);
+        endpoint.set_user_data_for_address_lookup(published.clone());
+        log::info!("[transport][network] mDNS lookup started");
+
+        let mut events = mdns.subscribe().await;
+        // Which device each endpoint is, to forget it when it expires.
+        let mut devices: HashMap<EndpointId, String> = HashMap::new();
+        let mut tick = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            tokio::select! {
+                event = events.next() => match event {
+                    Some(DiscoveryEvent::Discovered { endpoint_info, .. }) => {
+                        let endpoint_id = endpoint_info.endpoint_id;
+                        let Some((add_device, device_id, name)) = endpoint_info
+                            .data
+                            .user_data()
+                            .and_then(|data| parse_network_user_data(data.as_ref()))
+                        else {
+                            continue;
+                        };
+                        if device_id == state.identity.device_id {
+                            continue;
+                        }
+                        let Some(addr) = endpoint_info.data.ip_addrs().next().copied() else {
+                            continue;
+                        };
+                        devices.insert(endpoint_id, device_id.clone());
+                        state.note_network_device(&device_id, &name, addr, &endpoint_id.to_string(), add_device);
+                    }
+                    Some(DiscoveryEvent::Expired { endpoint_id }) => {
+                        if let Some(device_id) = devices.remove(&endpoint_id) {
+                            state.forget_network_device(&device_id);
+                        }
+                    }
+                    Some(_) => {}
+                    None => break,
+                },
+                _ = tick.tick() => {
+                    if network_switched_off() {
+                        break;
+                    }
+                    // Add Device opened or closed: publish the new flag.
+                    let wanted = network_user_data(&state);
+                    if wanted != published {
+                        endpoint.set_user_data_for_address_lookup(wanted.clone());
+                        published = wanted;
+                    }
+                    state.prune_network_records();
+                }
+            }
+        }
+        lookup.clear();
+        log::info!("[transport][network] mDNS lookup stopped");
+    }
+}
+
 /// Start an exchange with this peer over the Network channel unless one is
 /// running or being attempted (ADR-0008 D10). Called when there is work for
 /// the peer; a no-op while the peer is not present on the network -- its

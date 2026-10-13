@@ -101,6 +101,28 @@ pub(super) fn request_is_expired(expires_at: &str) -> bool {
     Utc::now() >= expires_at
 }
 
+/// Expires what the network discovery heard, the same way for every source
+/// (iroh's mDNS lookup, or the experimental beacons): a device not heard
+/// within the channel timeout is no longer present, and the Add Device list
+/// keeps only devices heard in the last `DISCOVERY_TTL_SECS` while this device
+/// is in Add Device mode.
+pub(super) fn prune_network_records(guard: &mut DiscoveryRuntime) {
+    let discovery_ttl = Duration::from_secs(DISCOVERY_TTL_SECS);
+    guard.discovered.retain(|_, peer| peer.last_seen_mono.elapsed() <= discovery_ttl);
+    // A device that stopped announcing is no longer present, and its next
+    // announcement counts as arriving anew.
+    guard.presence.retain(|_, peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT);
+    prune_expired_incoming_requests(guard);
+
+    if !guard.add_mode_enabled {
+        guard.discovered.clear();
+        guard.incoming_requests.clear();
+        guard.outgoing_code_updates.clear();
+        guard.outgoing_pair_completions.clear();
+        guard.pairing_keys.clear();
+    }
+}
+
 pub(super) fn prune_expired_incoming_requests(runtime: &mut DiscoveryRuntime) {
     runtime
         .incoming_requests
@@ -546,7 +568,6 @@ pub(super) fn spawn_discovery_worker(
         let mut buffer = [0_u8; 2048];
         let discovery_interval = Duration::from_millis(DISCOVERY_INTERVAL_MS);
         let heartbeat_interval = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
-        let discovery_ttl = Duration::from_secs(DISCOVERY_TTL_SECS);
         let mut next_add_broadcast_at = Instant::now();
         let mut next_heartbeat_at = Instant::now();
 
@@ -765,23 +786,7 @@ pub(super) fn spawn_discovery_worker(
             }
 
             if let Ok(mut guard) = runtime.lock() {
-                guard
-                    .discovered
-                    .retain(|_, peer| peer.last_seen_mono.elapsed() <= discovery_ttl);
-                // A peer whose beacons stopped is no longer present, and its
-                // next beacon counts as arriving anew.
-                guard
-                    .presence
-                    .retain(|_, peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT);
-                prune_expired_incoming_requests(&mut guard);
-
-                if !guard.add_mode_enabled {
-                    guard.discovered.clear();
-                    guard.incoming_requests.clear();
-                    guard.outgoing_code_updates.clear();
-                    guard.outgoing_pair_completions.clear();
-                    guard.pairing_keys.clear();
-                }
+                prune_network_records(&mut guard);
             }
         }
     });
@@ -1073,7 +1078,7 @@ mod tests {
 /// Whether a peer's last Network beacon is recent enough to count: an entry
 /// past the channel timeout is a peer that went away, and its next beacon
 /// is an arrival, even before the worker prunes the entry.
-fn is_present(presence: &HashMap<String, SeenPeer>, device_id: &str) -> bool {
+pub(super) fn is_present(presence: &HashMap<String, SeenPeer>, device_id: &str) -> bool {
     presence
         .get(device_id)
         .is_some_and(|peer| peer.last_seen_mono.elapsed() < NETWORK_CHANNEL_TIMEOUT)

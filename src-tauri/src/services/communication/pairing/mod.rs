@@ -307,13 +307,24 @@ impl DeviceConnectionState {
     /// every one after it.
     pub(crate) fn start_network_discovery(&self) {
         {
-            let Ok(guard) = self.runtime.lock() else {
+            let Ok(mut guard) = self.runtime.lock() else {
                 return;
             };
             if guard.worker_started {
                 return;
             }
+            guard.worker_started = true;
         }
+        // The Network channel finds devices with iroh's own mDNS lookup.
+        #[cfg(any(feature = "ui-plane", test))]
+        if std::env::var("FINI_DISCOVERY_DISABLED").ok().as_deref() != Some("1") {
+            tauri::async_runtime::spawn(crate::services::communication::channel::network::run_network_discovery(
+                self.clone(),
+            ));
+        }
+        // Fini's own mDNS/UDP beacon discovery: the Experimental network
+        // channel (a way out if Fini leaves iroh), and the CLI.
+        #[cfg(any(feature = "experimental-network", not(any(feature = "ui-plane", test))))]
         spawn_discovery_worker(
             self.identity.clone(),
             self.runtime.clone(),
@@ -321,6 +332,59 @@ impl DeviceConnectionState {
             env_port_list("FINI_DISCOVERY_PEER_PORTS", self.discovery_port),
             self.space_sync_ws_port,
         );
+    }
+
+    /// Records a device that iroh's mDNS lookup heard on the network: its
+    /// presence (the Network channel goes green for a paired device), and a
+    /// row in the Add Device list while it is in Add Device mode.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) fn note_network_device(
+        &self, device_id: &str, hostname: &str, addr: std::net::SocketAddr, endpoint_id: &str, add_device: bool,
+    ) {
+        let newly_present = {
+            let Ok(mut guard) = self.runtime.lock() else {
+                return;
+            };
+            let newly_present = !runtime::is_present(&guard.presence, device_id);
+            let seen = types::SeenPeer {
+                hostname: hostname.to_string(),
+                addr: addr.ip().to_string(),
+                discovery_port: 0,
+                ws_port: Some(addr.port()),
+                endpoint_id: Some(endpoint_id.to_string()),
+                last_seen_at: runtime::utc_now(),
+                last_seen_mono: std::time::Instant::now(),
+            };
+            guard.rx_count += 1;
+            guard.presence.insert(device_id.to_string(), seen.clone());
+            if add_device && guard.add_mode_enabled {
+                guard.discovered.insert(device_id.to_string(), seen);
+            } else {
+                guard.discovered.remove(device_id);
+            }
+            newly_present
+        };
+        // A device that appears is the moment waiting work can go to it.
+        if newly_present {
+            crate::services::communication::sync::commands::notify_sync_work_pending();
+        }
+    }
+
+    /// iroh's mDNS lookup says the device is gone.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) fn forget_network_device(&self, device_id: &str) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            guard.presence.remove(device_id);
+            guard.discovered.remove(device_id);
+        }
+    }
+
+    /// Expires old network records; see `runtime::prune_network_records`.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) fn prune_network_records(&self) {
+        if let Ok(mut guard) = self.runtime.lock() {
+            runtime::prune_network_records(&mut guard);
+        }
     }
 
     pub fn take_incoming_sync_events(&self) -> Vec<SyncEventEnvelope> {
