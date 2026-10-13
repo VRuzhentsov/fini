@@ -15,7 +15,7 @@ import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/c
  * session claim) against a cross-process mock radio instead of a plain TCP
  * stand-in, and pairing is marked `viaBluetooth: true` so the Bluetooth
  * channel is switched on for the pair -- which is what
- * `bluetooth_dial_candidates` actually reads. See `fixtures.ts`'s
+ * `bluetooth_connect_candidates` actually reads. See `fixtures.ts`'s
  * `fakeBluetoothAddress` wiring and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  */

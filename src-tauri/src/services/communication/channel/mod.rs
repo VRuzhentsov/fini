@@ -191,11 +191,11 @@ pub trait DataLink: Send {
 #[allow(dead_code)]
 pub trait Transport: Send + Sync {
     fn kind(&self) -> ChannelKind;
-    fn dial(&self, peer_device_id: &str, addr: &str, port: u16) -> BoxDialFuture;
+    fn connect(&self, peer_device_id: &str, addr: &str, port: u16) -> BoxConnectFuture;
 }
 
 #[allow(dead_code)]
-pub type BoxDialFuture =
+pub type BoxConnectFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Box<dyn DataLink>, String>> + Send>>;
 
 /// Send one `PeerFrame` over a link (encode via `codec`, transport carries bytes).

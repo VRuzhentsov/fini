@@ -5,14 +5,14 @@ use super::*;
 
 /// How long a pairing dial keeps retrying a refusal caused by the candidate
 /// scan's cancelled probe still tearing down its connection.
-const PAIRING_DIAL_RETRY_WINDOW: Duration = Duration::from_secs(5);
+const PAIRING_CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(5);
 
 /// How long a pairing dial may take once it has the radio: its retries, one
 /// connect that runs to `SESSION_CONNECT_TIMEOUT`, and opening the stream.
 /// Counted from after any candidate probe it waited out, so a probe that
 /// held the radio does not eat the dial's own time.
-const PAIRING_DIAL_BUDGET: Duration =
-    Duration::from_secs(PAIRING_DIAL_RETRY_WINDOW.as_secs() + SESSION_CONNECT_TIMEOUT.as_secs() + 5);
+const PAIRING_CONNECT_BUDGET: Duration =
+    Duration::from_secs(PAIRING_CONNECT_RETRY_WINDOW.as_secs() + SESSION_CONNECT_TIMEOUT.as_secs() + 5);
 
 /// How long a new inbound channel may take to send its first datagram,
 /// which decides what it carries (`route_inbound`).
@@ -31,11 +31,11 @@ impl BluetoothChannel {
     /// the caller drops the returned guards.
     ///
     /// Waits out a candidate probe already dialling, then dials within
-    /// `PAIRING_DIAL_BUDGET`.
+    /// `PAIRING_CONNECT_BUDGET`.
     ///
     /// The peer's key is not pinned yet, so TLS proves only that whoever
     /// answers holds `peer_key`; pairing pins it (D8).
-    pub async fn dial_for_pairing(
+    pub async fn connect_for_pairing(
         &self, state: &DeviceConnectionState, peer_key: &str, address: &str,
     ) -> Result<(Box<dyn DataLink>, impl Sized), String> {
         let peer_key: iroh::EndpointId = peer_key
@@ -46,7 +46,7 @@ impl BluetoothChannel {
         // A candidate probe already dialling is let finish, not cancelled;
         // wait for it so this dial never overlaps one to the same peer.
         drop(scanner.candidate_probe().await);
-        tokio::time::timeout(PAIRING_DIAL_BUDGET, async {
+        tokio::time::timeout(PAIRING_CONNECT_BUDGET, async {
             let connect_guard = scanner.acquire_connect().await;
             let (endpoint, transport) = self.iroh_endpoint(state).await?;
             let peer = PeerAddress(address.to_string());
@@ -66,7 +66,7 @@ impl BluetoothChannel {
                         return Ok((Box::new(link) as Box<dyn DataLink>, connect_guard));
                     }
                     // The probe's connection may still be closing.
-                    Ok(Err(_)) if started.elapsed() < PAIRING_DIAL_RETRY_WINDOW => {
+                    Ok(Err(_)) if started.elapsed() < PAIRING_CONNECT_RETRY_WINDOW => {
                         tokio::time::sleep(Duration::from_millis(500)).await;
                     }
                     Ok(Err(err)) => return Err(format!("bluetooth connect to {address} failed: {err}")),
@@ -75,7 +75,7 @@ impl BluetoothChannel {
             }
         })
         .await
-        .map_err(|_| format!("bluetooth pairing dial to {address} timed out"))?
+        .map_err(|_| format!("bluetooth pairing connection to {address} timed out"))?
         .map(|(link, connect_guard)| (link, (step, connect_guard)))
     }
 
@@ -149,7 +149,7 @@ impl BluetoothChannel {
     /// connection over Bluetooth to the key pinned for the pair, which TLS
     /// proves (ADR-0009 D8). A device at that address holding another key
     /// fails the handshake, so this also confirms the candidate is the peer.
-    pub async fn dial_session(
+    pub async fn connect_session(
         &self, state: &DeviceConnectionState, peer_id: &str, address: &str,
     ) -> Result<Box<dyn DataLink>, String> {
         let pinned = tokio::task::block_in_place(|| {

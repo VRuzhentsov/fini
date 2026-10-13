@@ -27,15 +27,15 @@ use crate::services::db::open_db_at_path;
 use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
 use crate::services::communication::sync::session::{
-    run_session, CROSSED_DIAL_REASON, SESSION_ACTIVE_REASON,
+    run_session, CROSSED_CONNECT_REASON, SESSION_ACTIVE_REASON,
 };
 use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
 
 /// Whether this device refuses a peer's inbound exchange because its own
 /// dial to that peer is under way and takes precedence: the dial from the
 /// smaller device id wins a crossing.
-fn yields_to_own_dial(own_device_id: &str, peer_device_id: &str, dialing_peer: bool) -> bool {
-    dialing_peer && own_device_id < peer_device_id
+fn yields_to_own_connection(own_device_id: &str, peer_device_id: &str, connecting_to_peer: bool) -> bool {
+    connecting_to_peer && own_device_id < peer_device_id
 }
 
 /// ADR-0009 D8: a session or a channel hello comes only over a link whose
@@ -332,12 +332,12 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
     // Both devices dialed each other at once. Were both links kept and
     // then each dropped for the other, neither exchange would survive; the
     // dial from the smaller device id wins on both sides.
-    if yields_to_own_dial(&state.identity.device_id, &device_id, state.channel(kind).connecting(&device_id)) {
-        log::info!("[space_sync][gate] {kind:?} auth from {device_id} refused: this device's dial wins");
+    if yields_to_own_connection(&state.identity.device_id, &device_id, state.channel(kind).connecting(&device_id)) {
+        log::info!("[space_sync][gate] {kind:?} auth from {device_id} refused: this device's connection is kept");
         let _ = send_frame(
             link.as_mut(),
             &PeerFrame::AuthFail {
-                reason: CROSSED_DIAL_REASON.into(),
+                reason: CROSSED_CONNECT_REASON.into(),
             },
         )
         .await;
@@ -394,21 +394,21 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
 }
 
 #[cfg(test)]
-mod crossed_dial_tests {
+mod crossed_connection_tests {
     use super::*;
     use crate::services::communication::sync::session::refused_for_running_exchange;
 
     /// Both sides apply the same rule, so exactly one of two crossed dials
     /// survives: the one from the smaller device id.
     #[test]
-    fn exactly_one_of_two_crossed_dials_survives() {
+    fn exactly_one_of_two_crossed_connections_survives() {
         // "a" dials "b" and "b" dials "a", both at once.
-        let a_refuses_b = yields_to_own_dial("a", "b", true);
-        let b_refuses_a = yields_to_own_dial("b", "a", true);
-        assert!(a_refuses_b, "a's own dial wins, so it refuses b's");
-        assert!(!b_refuses_a, "b accepts a's dial");
-        assert!(!yields_to_own_dial("a", "b", false), "no crossing, nothing refused");
-        assert!(refused_for_running_exchange(&format!("auth rejected: {CROSSED_DIAL_REASON}")));
+        let a_refuses_b = yields_to_own_connection("a", "b", true);
+        let b_refuses_a = yields_to_own_connection("b", "a", true);
+        assert!(a_refuses_b, "a's own connection is kept, so it refuses b's");
+        assert!(!b_refuses_a, "b accepts a's connection");
+        assert!(!yields_to_own_connection("a", "b", false), "no crossing, nothing refused");
+        assert!(refused_for_running_exchange(&format!("auth rejected: {CROSSED_CONNECT_REASON}")));
         assert!(refused_for_running_exchange(&format!("auth rejected: {SESSION_ACTIVE_REASON}")));
         assert!(!refused_for_running_exchange("auth rejected: unknown device"));
     }

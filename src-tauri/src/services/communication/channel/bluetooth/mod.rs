@@ -5,7 +5,7 @@
 //!
 //! - **Sessions** (`Auth`, channel `Hello`) are iroh connections over
 //!   `ble-gatt-iroh`, to the key pinned for the pair, which TLS proves
-//!   (`BluetoothChannel::dial_session`, `BluetoothChannel::iroh_endpoint`).
+//!   (`BluetoothChannel::connect_session`, `BluetoothChannel::iroh_endpoint`).
 //! - **Pre-pairing frames** (discovery, pair request/accept/complete) go over
 //!   a plain `BleDataLink`: there is no pinned key to dial yet, so each frame
 //!   carries the sender's key itself.
@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::{
-    bluetooth_dial_candidates, note_observed_bluetooth_address as store_observed_bluetooth_address,
+    bluetooth_connect_candidates, note_observed_bluetooth_address as store_observed_bluetooth_address,
     DeviceConnectionState, DeviceIdentity,
 };
 use crate::services::communication::sync::session;
@@ -51,7 +51,7 @@ use crate::services::communication::sync::types::PeerFrame;
 use crate::services::communication::channel::{recv_frame, send_frame};
 use crate::services::communication::channel::iroh_link::{IrohDataLink, ALPN};
 use crate::services::communication::channel::service::ChannelService;
-use crate::services::communication::channel::{BoxDialFuture, DataLink, Transport, ChannelKind};
+use crate::services::communication::channel::{BoxConnectFuture, DataLink, Transport, ChannelKind};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::pairing::ChannelProblem;
 
@@ -251,9 +251,9 @@ impl Transport for BleTransport {
         ChannelKind::Bluetooth
     }
 
-    fn dial(&self, _peer_device_id: &str, addr: &str, _port: u16) -> BoxDialFuture {
+    fn connect(&self, _peer_device_id: &str, addr: &str, _port: u16) -> BoxConnectFuture {
         let addr = addr.to_string();
-        Box::pin(async move { dial(&addr).await })
+        Box::pin(async move { connect(&addr).await })
     }
 }
 
@@ -278,7 +278,7 @@ const SEARCH_WINDOW: Duration = Duration::from_secs(60);
 /// Per-candidate cap for one dial + authentication inside a delivery search:
 /// an advertiser that accepts the connection and never answers must not
 /// hold the whole window.
-const DIAL_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long one status-search window listens while the Device page is open.
 const STATUS_SEARCH_WINDOW: Duration = Duration::from_secs(20);
@@ -673,8 +673,8 @@ impl BluetoothChannel {
     async fn connect_and_auth(
         &self, state: &DeviceConnectionState, peer_id: &str, address: &str,
     ) -> Result<(Box<dyn DataLink>, u32), String> {
-        let attempt = tokio::time::timeout(DIAL_CANDIDATE_TIMEOUT, async {
-            let mut link = self.dial_session(state, peer_id, address).await?;
+        let attempt = tokio::time::timeout(CONNECT_CANDIDATE_TIMEOUT, async {
+            let mut link = self.connect_session(state, peer_id, address).await?;
             let version =
                 session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id).await?;
             Ok::<_, String>((link, version))
@@ -685,13 +685,13 @@ impl BluetoothChannel {
             Ok(Err(err)) => {
                 log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
                 if !session::refused_for_running_exchange(&err) {
-                    self.scanner.note_dial_failed(address);
+                    self.scanner.note_connect_failed(address);
                 }
                 Err(err)
             }
             Err(_elapsed) => {
                 log::info!("[transport][ble] candidate {address} did not finish connect+auth in time");
-                self.scanner.note_dial_failed(address);
+                self.scanner.note_connect_failed(address);
                 Err("connect+auth timed out".to_string())
             }
         }
@@ -753,7 +753,7 @@ impl BluetoothChannel {
 fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
     tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
-        bluetooth_dial_candidates(&mut conn).iter().any(|candidate_id| candidate_id == peer_id)
+        bluetooth_connect_candidates(&mut conn).iter().any(|candidate_id| candidate_id == peer_id)
     })
 }
 
@@ -828,7 +828,7 @@ impl BluetoothChannel {
         // Pixel, this was most of the 40-120 s a setup took. So the device
         // with the higher id lets the other dial first, and dials back once
         // the other's hello has reached it.
-        self.wait_for_turn_to_dial(state, peer_id).await;
+        self.wait_for_turn_to_connect(state, peer_id).await;
         // A candidate probe already dialling is let finish, not cancelled;
         // this dial must not overlap one to the same peer.
         let _probe = scanner.candidate_probe().await;
@@ -843,7 +843,7 @@ impl BluetoothChannel {
         .flatten()
         .is_some();
         if !acknowledged {
-            scanner.note_dial_failed(&found.address);
+            scanner.note_connect_failed(&found.address);
         }
         Ok(acknowledged)
     }
@@ -851,7 +851,7 @@ impl BluetoothChannel {
     /// In a Bluetooth setup the device with the lower id dials first; the
     /// one with the higher id waits until the other's hello has reached it
     /// (or `HIGHER_ID_PATIENCE` runs out) before dialling back.
-    pub(crate) async fn wait_for_turn_to_dial(&self, state: &DeviceConnectionState, peer_id: &str) {
+    pub(crate) async fn wait_for_turn_to_connect(&self, state: &DeviceConnectionState, peer_id: &str) {
         if state.identity.device_id.as_str() <= peer_id {
             return;
         }
@@ -870,7 +870,7 @@ impl BluetoothChannel {
     /// which it does only while it is running its own setup search for us
     /// (D2).
     async fn say_hello(&self, state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
-        let mut link = self.dial_session(state, peer_id, address).await.ok()?;
+        let mut link = self.connect_session(state, peer_id, address).await.ok()?;
         send_frame(
             link.as_mut(),
             &PeerFrame::Hello {

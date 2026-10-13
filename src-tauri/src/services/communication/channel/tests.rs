@@ -38,7 +38,7 @@ mod bluetooth_stub {
     use async_trait::async_trait;
     use tokio::net::{TcpListener, TcpStream};
 
-    use crate::services::communication::channel::{DataLink, Transport, BoxDialFuture, ChannelKind};
+    use crate::services::communication::channel::{DataLink, Transport, BoxConnectFuture, ChannelKind};
     use crate::services::communication::pairing::DeviceConnectionState;
     use std::path::PathBuf;
 
@@ -215,7 +215,7 @@ mod bluetooth_stub {
         }
     }
 
-    pub async fn dial(port: u16) -> Result<Box<dyn DataLink>, String> {
+    pub async fn connect(port: u16) -> Result<Box<dyn DataLink>, String> {
         let stream = TcpStream::connect(("127.0.0.1", port))
             .await
             .map_err(|err| format!("stub connect 127.0.0.1:{port} failed: {err}"))?;
@@ -230,8 +230,8 @@ mod bluetooth_stub {
             ChannelKind::Bluetooth
         }
 
-        fn dial(&self, _peer_device_id: &str, _addr: &str, port: u16) -> BoxDialFuture {
-            Box::pin(async move { dial(port).await })
+        fn connect(&self, _peer_device_id: &str, _addr: &str, port: u16) -> BoxConnectFuture {
+            Box::pin(async move { connect(port).await })
         }
     }
 
@@ -273,11 +273,11 @@ fn test_client_key() -> iroh::SecretKey {
 /// Dials `server`'s Network endpoint on `port` as the test client. The
 /// client's state is leaked so its endpoint outlives the call, as a real
 /// device's does.
-async fn dial_to(server: &DeviceConnectionState, port: u16) -> Result<Box<dyn DataLink>, String> {
+async fn connect_to(server: &DeviceConnectionState, port: u16) -> Result<Box<dyn DataLink>, String> {
     let (mut client, _) = server_state_on_port("test-client", 0);
     client.secret_key = test_client_key();
     client.network = std::sync::Arc::new(network::NetworkChannel::new(client.secret_key.clone(), 0));
-    let link = client.network.dial(&server.identity.endpoint_id, "127.0.0.1".parse().unwrap(), port).await;
+    let link = client.network.connect(&server.identity.endpoint_id, "127.0.0.1".parse().unwrap(), port).await;
     std::mem::forget(client);
     link
 }
@@ -368,12 +368,12 @@ fn server_state_on_port(label: &str, port: u16) -> (DeviceConnectionState, PathB
 /// taken (the CLI next to a running app). A serving state does not: peers
 /// dial the port presence announces, so it must sit there or nowhere.
 #[tokio::test(flavor = "multi_thread")]
-async fn only_a_dialing_state_falls_back_to_a_free_port() {
+async fn only_a_state_that_does_not_serve_falls_back_to_a_free_port() {
     let taken = std::net::UdpSocket::bind(("0.0.0.0", 0)).unwrap();
     let port = taken.local_addr().unwrap().port();
 
-    let (dialer, _) = server_state_on_port("network-port-dialer", port);
-    let endpoint = dialer.network.endpoint().await.expect("a dialer binds some port");
+    let (client, _) = server_state_on_port("network-port-client", port);
+    let endpoint = client.network.endpoint().await.expect("a state that does not serve binds some port");
     assert_ne!(network::bound_port(&endpoint), port);
 
     let (server, _) = server_state_on_port("network-port-server", port);
@@ -392,9 +392,9 @@ async fn network_gate_accepts_paired_device_and_claims_session_as_network() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth should succeed for paired device");
@@ -421,9 +421,9 @@ async fn bluetooth_self_report_is_sent_once_over_a_network_session() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth should succeed for paired device");
@@ -456,9 +456,9 @@ async fn bluetooth_self_report_is_withheld_from_a_peer_that_reports_no_protocol_
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
 
     // Hand-crafted, deliberately omitting `protocol_version` -- this is
     // what an old build's `Auth` frame looked like before this field
@@ -521,9 +521,9 @@ async fn bluetooth_self_report_does_not_switch_a_channel_on_even_for_a_bonded_ad
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth should succeed for paired device");
@@ -568,9 +568,9 @@ async fn bluetooth_self_report_does_not_set_up_a_channel_that_was_never_configur
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth should succeed for paired device");
@@ -597,9 +597,9 @@ async fn network_gate_rejects_unpaired_device() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server.db_path.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("unpaired device should be rejected");
@@ -616,9 +616,9 @@ async fn network_gate_rejects_a_paired_device_id_presented_with_another_key() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
 
     let (impostor, _) = server_state_on_port("network-key-mismatch-impostor", 0);
-    let mut link = impostor.network.dial(&server.identity.endpoint_id, "127.0.0.1".parse().unwrap(), port)
+    let mut link = impostor.network.connect(&server.identity.endpoint_id, "127.0.0.1".parse().unwrap(), port)
         .await
-        .expect("dial");
+        .expect("connect");
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("another key must be refused");
@@ -641,7 +641,7 @@ async fn network_gate_rejects_a_pair_with_no_key_pinned() {
     }
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
 
-    let mut link = dial_to(&server, port).await.expect("dial");
+    let mut link = connect_to(&server, port).await.expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("a pair with no key pinned must be refused");
@@ -659,7 +659,7 @@ async fn loopback_gate_accepts_a_paired_device_and_claims_the_bluetooth_session(
     tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = bluetooth_stub::dial(port).await.expect("dial");
+    let mut link = bluetooth_stub::connect(port).await.expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth should succeed for paired device");
@@ -685,9 +685,9 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
     tokio::spawn(bluetooth_stub::run_server(server.clone(), server_db.clone(), loopback_port));
     sleep(Duration::from_millis(100)).await;
 
-    let mut first_link = dial_to(&server, tcp_port)
+    let mut first_link = connect_to(&server, tcp_port)
         .await
-        .expect("dial network");
+        .expect("connect network");
     session::perform_client_auth(first_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("first session should authenticate");
@@ -696,7 +696,7 @@ async fn both_channels_can_be_simultaneously_connected_for_the_same_peer() {
 
     // A second connection on a *different* transport must be accepted, not
     // rejected -- the old sticky single-session invariant no longer holds.
-    let mut second_link = bluetooth_stub::dial(loopback_port).await.expect("dial loopback");
+    let mut second_link = bluetooth_stub::connect(loopback_port).await.expect("connect loopback");
     session::perform_client_auth(second_link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("a session on a second transport must also be accepted");
@@ -732,9 +732,9 @@ async fn both_adapters_satisfy_the_transport_port() {
     for (adapter, port, expected_kind) in adapters {
         assert_eq!(adapter.kind(), expected_kind);
         let link = adapter
-            .dial("peer-server", "127.0.0.1", port)
+            .connect("peer-server", "127.0.0.1", port)
             .await
-            .expect("dial via Transport trait object");
+            .expect("connect via Transport trait object");
         assert_eq!(link.kind(), expected_kind);
     }
 }
@@ -1206,9 +1206,9 @@ async fn pair_complete_over_network_uses_the_self_reported_bluetooth_address() {
     let port = receiver.network.spawn_server_on_free_port(receiver.clone(), receiver_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&receiver, port)
+    let mut link = connect_to(&receiver, port)
         .await
-        .expect("dial");
+        .expect("connect");
     send_frame(
         link.as_mut(),
         &PeerFrame::PairComplete(PairCompletePayload {
@@ -1243,7 +1243,7 @@ async fn say_hello(
     db_path: PathBuf,
     from_device_id: &str,
 ) -> Option<PeerFrame> {
-    let mut link = dial_bluetooth_gate(state, db_path).await;
+    let mut link = connect_bluetooth_gate(state, db_path).await;
     send_frame(
         link.as_mut(),
         &PeerFrame::Hello {
@@ -1532,9 +1532,9 @@ async fn discovery_hello_gets_a_reply_only_when_the_receiver_is_in_add_mode() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
     send_frame(link.as_mut(), &test_hello())
         .await
         .expect("send discovery hello");
@@ -1555,9 +1555,9 @@ async fn discovery_hello_gets_no_reply_when_the_receiver_is_not_in_add_mode() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port)
+    let mut link = connect_to(&server, port)
         .await
-        .expect("dial");
+        .expect("connect");
     send_frame(link.as_mut(), &test_hello())
         .await
         .expect("send discovery hello");
@@ -1588,7 +1588,7 @@ async fn a_channel_the_peer_unlinked_is_removed_here() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port).await.expect("dial");
+    let mut link = connect_to(&server, port).await.expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth over the network channel");
@@ -1640,7 +1640,7 @@ async fn unlinking_keeps_the_notice_until_an_exchange_delivers_it() {
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
 
-    let mut link = dial_to(&server, port).await.expect("dial");
+    let mut link = connect_to(&server, port).await.expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth over the network channel");
@@ -1725,7 +1725,7 @@ async fn a_frame_kept_during_an_exchange_goes_over_it() {
     }
     let port = server.network.spawn_server_on_free_port(server.clone(), server_db.clone()).await;
     sleep(Duration::from_millis(100)).await;
-    let mut link = dial_to(&server, port).await.expect("dial");
+    let mut link = connect_to(&server, port).await.expect("connect");
     session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect("auth");
@@ -1761,7 +1761,7 @@ async fn a_frame_kept_during_an_exchange_goes_over_it() {
 
 /// Runs this device's gate for one inbound Bluetooth-kind link and returns
 /// the dialling side of it.
-async fn dial_bluetooth_gate(state: DeviceConnectionState, db_path: PathBuf) -> Box<dyn DataLink> {
+async fn connect_bluetooth_gate(state: DeviceConnectionState, db_path: PathBuf) -> Box<dyn DataLink> {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -1794,7 +1794,7 @@ async fn adr_0008_an_off_channel_refuses_the_exchange() {
     seed_paired_device(&server_db, "peer-client");
     seed_bluetooth_channel_off(&server_db, false);
 
-    let mut link = dial_bluetooth_gate(server.clone(), server_db).await;
+    let mut link = connect_bluetooth_gate(server.clone(), server_db).await;
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("an Off channel must refuse");
@@ -1809,7 +1809,7 @@ async fn adr_0008_an_unlinked_channel_refuses_the_exchange() {
     seed_paired_device(&server_db, "peer-client");
     seed_bluetooth_channel_off(&server_db, true);
 
-    let mut link = dial_bluetooth_gate(server.clone(), server_db).await;
+    let mut link = connect_bluetooth_gate(server.clone(), server_db).await;
     let err = session::perform_client_auth(link.as_mut(), "peer-client", &server.identity.device_id)
         .await
         .expect_err("an unlinked channel must refuse");
@@ -2086,40 +2086,41 @@ async fn holds_within(within: Duration, done: impl Fn() -> bool) -> bool {
     true
 }
 
-/// In a Bluetooth setup both devices hear each other and would dial at once,
-/// and crossing dials fail each other. The device with the lower id dials at
-/// once; the one with the higher id waits until the other's hello has
-/// reached it, and dials anyway once its patience runs out.
+/// In a Bluetooth setup both devices hear each other and would connect at
+/// once, and crossing connections fail each other. The device with the
+/// lower id connects at once; the one with the higher id waits until the
+/// other's hello has reached it, and connects anyway once its patience runs
+/// out.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[tokio::test(flavor = "multi_thread")]
-async fn in_a_bluetooth_setup_the_higher_id_dials_after_the_peers_hello() {
-    let (state, _db) = server_state("setup-dial-order");
+async fn in_a_bluetooth_setup_the_higher_id_connects_after_the_peers_hello() {
+    let (state, _db) = server_state("setup-connect-order");
     let channel = state.bluetooth.clone();
     // Device ids are UUIDs: "~" sorts after any of them, "!" before.
     let (above_me, below_me) = ("~", "!");
 
-    tokio::time::timeout(Duration::from_millis(100), channel.wait_for_turn_to_dial(&state, above_me))
+    tokio::time::timeout(Duration::from_millis(100), channel.wait_for_turn_to_connect(&state, above_me))
         .await
-        .expect("the lower id dials at once");
+        .expect("the lower id connects at once");
 
     state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
     let turn = {
         let (channel, state) = (channel.clone(), state.clone());
-        tokio::spawn(async move { channel.wait_for_turn_to_dial(&state, below_me).await })
+        tokio::spawn(async move { channel.wait_for_turn_to_connect(&state, below_me).await })
     };
     sleep(Duration::from_millis(300)).await;
     assert!(!turn.is_finished(), "the higher id waits for the peer's hello");
     state.note_channel_setup(below_me, ChannelKind::Bluetooth, |setup| setup.acked_peer_hello = true);
     tokio::time::timeout(Duration::from_millis(500), turn)
         .await
-        .expect("the higher id dials once the peer's hello reached it")
+        .expect("the higher id connects once the peer's hello reached it")
         .unwrap();
 
     state.end_channel_setup(below_me, ChannelKind::Bluetooth);
     state.begin_channel_setup(below_me, ChannelKind::Bluetooth);
-    tokio::time::timeout(Duration::from_secs(3), channel.wait_for_turn_to_dial(&state, below_me))
+    tokio::time::timeout(Duration::from_secs(3), channel.wait_for_turn_to_connect(&state, below_me))
         .await
-        .expect("without the peer's hello the higher id still dials, once its patience runs out");
+        .expect("without the peer's hello the higher id still connects, once its patience runs out");
     state.end_channel_setup(below_me, ChannelKind::Bluetooth);
 }
 

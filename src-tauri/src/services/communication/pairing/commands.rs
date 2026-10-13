@@ -1300,7 +1300,7 @@ pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, act
 /// there is no address to dial *to* — the dialer finds the peer by scanning
 /// for Fini's service UUID and proves who answered with the `Auth` frame.
 
-pub fn bluetooth_dial_candidates(conn: &mut SqliteConnection) -> Vec<String> {
+pub fn bluetooth_connect_candidates(conn: &mut SqliteConnection) -> Vec<String> {
     channels::peers_with_channel_enabled(conn, ChannelKind::Bluetooth)
 }
 

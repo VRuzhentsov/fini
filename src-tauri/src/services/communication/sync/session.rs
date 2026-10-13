@@ -35,14 +35,14 @@ use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 /// Why an auth is refused while an exchange with that peer already runs on
 /// the channel.
 pub(crate) const SESSION_ACTIVE_REASON: &str = "session already active on this channel";
-/// Why an auth is refused when both devices dialed each other and this
-/// device's dial wins.
-pub(crate) const CROSSED_DIAL_REASON: &str = "crossed dials: the other device's dial wins";
+/// Why an auth is refused when both devices connected to each other at the
+/// same time and this device's connection is the one kept.
+pub(crate) const CROSSED_CONNECT_REASON: &str = "crossed connections: the other device's connection is kept";
 
 /// Whether a refused auth only means an exchange with the peer is (or is
 /// about to be) running already.
 pub(crate) fn refused_for_running_exchange(error: &str) -> bool {
-    error.contains(SESSION_ACTIVE_REASON) || error.contains(CROSSED_DIAL_REASON)
+    error.contains(SESSION_ACTIVE_REASON) || error.contains(CROSSED_CONNECT_REASON)
 }
 
 /// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.

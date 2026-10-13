@@ -96,10 +96,10 @@ impl DataLink for BleDataLink {
     }
 }
 
-/// Central role: dial a peer's Bluetooth address over a plain link, for
-/// Fini's own pre-pairing frames (discovery, pair request/accept/complete).
-/// Sessions use `dial_session`.
-pub async fn dial(address: &str) -> Result<Box<dyn DataLink>, String> {
+/// Central role: connect to a peer's Bluetooth address over a plain link,
+/// for Fini's own pre-pairing frames (identify, pair request/accept/
+/// complete). Sessions use `BluetoothChannel::connect_session`.
+pub async fn connect(address: &str) -> Result<Box<dyn DataLink>, String> {
     let adapter = BluetoothAdapter::this_device().adapter().await?;
     let peer = PeerAddress(address.to_string());
     let channel = datagram::connect(&adapter, &peer, &datagram_config())

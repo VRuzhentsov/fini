@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
 #[cfg(any(feature = "ui-plane", test))]
-use super::{dial, recv_frame, send_frame, PeerFrame, ADD_MODE_FLAG_BYTE};
+use super::{connect, recv_frame, send_frame, PeerFrame, ADD_MODE_FLAG_BYTE};
 use super::{
     advertised_fingerprint, datagram_config, fingerprint_of, open_db_at_path, BluetoothAdapter,
     FINGERPRINT_LEN, FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
@@ -58,7 +58,7 @@ use crate::services::communication::pairing::ChannelKind;
 /// 2s that ended with BlueZ answering every later `StartDiscovery` with
 /// "Operation already in progress" and `StopDiscovery` with "No discovery
 /// started", after which nothing could be found until bluetoothd restarted.
-const FAILED_DIAL_COOLDOWN: Duration = Duration::from_secs(10);
+const FAILED_CONNECT_COOLDOWN: Duration = Duration::from_secs(10);
 
 /// On Linux in Add Device mode: scan this long, then pause for
 /// `ADD_DEVICE_SCAN_PAUSE`. BlueZ discovery scans without a gap, and while it
@@ -84,7 +84,7 @@ pub enum Purpose {
 /// this lives, so the caller can dial without competing with the scan.
 pub struct Found {
     pub address: String,
-    _dial: ConnectGuard,
+    _connect: ConnectGuard,
 }
 
 /// Held while a dial runs. The scan waits for every guard to be dropped.
@@ -139,7 +139,7 @@ pub struct Scanner {
     /// dial with "a dial to this peer is already in flight" and one dial hung
     /// until abandoned, so the Pair button reported "Couldn't reach".
     pairing_steps: Arc<watch::Sender<usize>>,
-    /// Held for the length of one candidate probe; see `dial_for_pairing`.
+    /// Held for the length of one candidate probe; see `connect_for_pairing`.
     candidate_probe: Mutex<()>,
     /// One Bluetooth scan at a time. Every scan holds this for
     /// as long as its discovery stream lives.
@@ -160,12 +160,12 @@ pub struct Scanner {
     /// Peers with an exchange attempt in flight -- one at a time per peer.
     exchanges: StdMutex<HashSet<String>>,
     /// Dials running now; the coordinator's scan waits for none.
-    dials: Arc<watch::Sender<usize>>,
+    connections: Arc<watch::Sender<usize>>,
     requests: StdMutex<Requests>,
     /// Wakes the scan loop whenever what is wanted changes.
     changed: Notify,
     started: Once,
-    failed_dials: StdMutex<HashMap<String, Instant>>,
+    failed_connects: StdMutex<HashMap<String, Instant>>,
     /// When each paired device was last heard advertising, and at which
     /// address. Written only on a fingerprint match, so "heard" means "heard
     /// advertising as this device".
@@ -191,11 +191,11 @@ impl Scanner {
             scan_lock: Mutex::new(()),
             scan_running: AtomicBool::new(false),
             exchanges: StdMutex::new(HashSet::new()),
-            dials: Arc::new(watch::channel(0).0),
+            connections: Arc::new(watch::channel(0).0),
             requests: StdMutex::new(Requests::default()),
             changed: Notify::new(),
             started: Once::new(),
-            failed_dials: StdMutex::new(HashMap::new()),
+            failed_connects: StdMutex::new(HashMap::new()),
             paired_heard: StdMutex::new(HashMap::new()),
             add_device_mode: AtomicBool::new(false),
             #[cfg(any(feature = "ui-plane", test))]
@@ -288,8 +288,8 @@ impl Scanner {
     }
 
     fn connect_guard(&self) -> ConnectGuard {
-        self.dials.send_modify(|count| *count += 1);
-        ConnectGuard(self.dials.clone())
+        self.connections.send_modify(|count| *count += 1);
+        ConnectGuard(self.connections.clone())
     }
 
     /// A guard for a dial the coordinator did not hand off: the running
@@ -424,7 +424,7 @@ impl Scanner {
                 handed |= reply
                     .send(Found {
                         address: address.to_string(),
-                        _dial: self.connect_guard(),
+                        _connect: self.connect_guard(),
                     })
                     .is_ok();
             }
@@ -433,25 +433,25 @@ impl Scanner {
     }
 
     /// A dial to `address` after a hand-off failed: the search skips that
-    /// address for `FAILED_DIAL_COOLDOWN` and keeps listening for the peer's
+    /// address for `FAILED_CONNECT_COOLDOWN` and keeps listening for the peer's
     /// current one.
-    pub fn note_dial_failed(&self, address: &str) {
-        self.failed_dials.lock().unwrap().insert(address.to_string(), Instant::now());
+    pub fn note_connect_failed(&self, address: &str) {
+        self.failed_connects.lock().unwrap().insert(address.to_string(), Instant::now());
     }
 
-    fn dial_recently_failed(&self, address: &str) -> bool {
-        let mut failed = self.failed_dials.lock().unwrap();
-        failed.retain(|_, at| at.elapsed() < FAILED_DIAL_COOLDOWN);
+    fn connect_recently_failed(&self, address: &str) -> bool {
+        let mut failed = self.failed_connects.lock().unwrap();
+        failed.retain(|_, at| at.elapsed() < FAILED_CONNECT_COOLDOWN);
         failed.contains_key(address)
     }
 
     async fn run(self: Arc<Self>) {
         use futures_util::StreamExt;
 
-        let mut dials = self.dials.subscribe();
+        let mut connections = self.connections.subscribe();
         loop {
             // Never scan while a dial runs.
-            let _ = dials.wait_for(|count| *count == 0).await;
+            let _ = connections.wait_for(|count| *count == 0).await;
 
             let mut wanted = self.wanted();
             if !self.scan_wanted(&wanted) {
@@ -529,7 +529,7 @@ impl Scanner {
                                 continue;
                             };
                             self.record_paired_heard(peer, &candidate.address.0);
-                            if self.dial_recently_failed(&candidate.address.0) {
+                            if self.connect_recently_failed(&candidate.address.0) {
                                 continue;
                             }
                             if self.hand_off(peer, &candidate.address.0) {
@@ -539,7 +539,7 @@ impl Scanner {
                         Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
                     },
                     // A dial started outside a hand-off: stop for it.
-                    _ = dials.wait_for(|count| *count > 0) => break,
+                    _ = connections.wait_for(|count| *count > 0) => break,
                     // What is wanted changed: keep the scan running over the
                     // new set rather than restarting the radio, and stop only
                     // once nothing is wanted any more.
@@ -611,7 +611,7 @@ impl Scanner {
         // guard keeps it paused until this step ends.
         let _probe = self.candidate_probe().await;
         let _connect = self.acquire_connect().await;
-        let mut link = dial(address).await.ok()?;
+        let mut link = connect(address).await.ok()?;
         send_frame(link.as_mut(), hello).await.ok()?;
         tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(link.as_mut())).await.ok()??.ok()
     }
@@ -761,24 +761,24 @@ mod tests {
         radio.requests.lock().unwrap().searches.iter().any(|request| request.peer == peer)
     }
 
-    /// A dial started outside a hand-off waits until the scan holding the
-    /// adapter has stopped, and the scan sees the dial.
+    /// A connection started outside a hand-off waits until the scan holding
+    /// the adapter has stopped, and the scan sees the connection.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_dial_waits_for_the_running_scan_to_stop() {
+    async fn a_connection_waits_for_the_running_scan_to_stop() {
         let radio = Arc::new(Scanner::default());
         let scan = radio.scan_lock().await;
-        let dial = tokio::spawn({
+        let connection = tokio::spawn({
             let radio = radio.clone();
             async move { radio.acquire_connect().await }
         });
-        while *radio.dials.borrow() == 0 {
+        while *radio.connections.borrow() == 0 {
             tokio::task::yield_now().await;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(!dial.is_finished(), "no dial while the scan holds the adapter");
+        assert!(!connection.is_finished(), "no connection while the scan holds the adapter");
 
         drop(scan);
-        let guard = tokio::time::timeout(Duration::from_secs(2), dial).await.unwrap().unwrap();
+        let guard = tokio::time::timeout(Duration::from_secs(2), connection).await.unwrap().unwrap();
         drop(guard);
     }
 
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(delivery.address, "AA:00:00:00:00:03");
         assert_eq!(setup.address, "AA:00:00:00:00:03");
         // Scanning waits while either dial is possible.
-        assert_eq!(*radio.dials.borrow(), 2);
+        assert_eq!(*radio.connections.borrow(), 2);
 
         drop(delivery);
         drop(setup);
@@ -841,17 +841,17 @@ mod tests {
     #[test]
     fn a_failed_address_is_skipped_until_its_cooldown_expires() {
         let radio = Scanner::default();
-        radio.note_dial_failed("AA:00:00:00:00:10");
-        assert!(radio.dial_recently_failed("AA:00:00:00:00:10"));
-        assert!(!radio.dial_recently_failed("AA:00:00:00:00:11"), "only the failed address is skipped");
+        radio.note_connect_failed("AA:00:00:00:00:10");
+        assert!(radio.connect_recently_failed("AA:00:00:00:00:10"));
+        assert!(!radio.connect_recently_failed("AA:00:00:00:00:11"), "only the failed address is skipped");
 
         let expired = Instant::now()
-            .checked_sub(FAILED_DIAL_COOLDOWN)
+            .checked_sub(FAILED_CONNECT_COOLDOWN)
             .expect("the clock is past one cooldown");
-        radio.failed_dials.lock().unwrap().insert("AA:00:00:00:00:10".to_string(), expired);
-        assert!(!radio.dial_recently_failed("AA:00:00:00:00:10"), "the cooldown has passed");
+        radio.failed_connects.lock().unwrap().insert("AA:00:00:00:00:10".to_string(), expired);
+        assert!(!radio.connect_recently_failed("AA:00:00:00:00:10"), "the cooldown has passed");
         assert!(
-            !radio.failed_dials.lock().unwrap().contains_key("AA:00:00:00:00:10"),
+            !radio.failed_connects.lock().unwrap().contains_key("AA:00:00:00:00:10"),
             "an expired entry is dropped"
         );
     }

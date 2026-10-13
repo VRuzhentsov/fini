@@ -156,11 +156,11 @@ impl NetworkChannel {
     }
 
     /// Connects to the device holding `peer_key` at `ip:port`.
-    pub async fn dial(&self, peer_key: &str, ip: IpAddr, port: u16) -> Result<Box<dyn DataLink>, String> {
-        Ok(Box::new(self.dial_link(peer_key, ip, port).await?))
+    pub async fn connect(&self, peer_key: &str, ip: IpAddr, port: u16) -> Result<Box<dyn DataLink>, String> {
+        Ok(Box::new(self.connect_link(peer_key, ip, port).await?))
     }
 
-    async fn dial_link(&self, peer_key: &str, ip: IpAddr, port: u16) -> Result<IrohDataLink, String> {
+    async fn connect_link(&self, peer_key: &str, ip: IpAddr, port: u16) -> Result<IrohDataLink, String> {
         if self.switched_off() {
             return Err("the test switch set the network to off".to_string());
         }
@@ -179,7 +179,7 @@ impl NetworkChannel {
     /// Sends one pre-auth frame (a pair request, accept or completion) and
     /// lets the connection close once the peer has it.
     pub async fn send_one_frame(&self, peer_key: &str, ip: IpAddr, port: u16, frame: &PeerFrame) -> Result<(), String> {
-        let mut link = self.dial_link(peer_key, ip, port).await?;
+        let mut link = self.connect_link(peer_key, ip, port).await?;
         send_frame(&mut link, frame).await?;
         link.finish().await;
         Ok(())
@@ -435,7 +435,7 @@ impl NetworkChannel {
             log::warn!("[transport][network] {peer_id} has no key pinned; pair the devices again");
             return false;
         };
-        let mut link = match self.dial(&peer_key, target_addr, ws_port).await {
+        let mut link = match self.connect(&peer_key, target_addr, ws_port).await {
             Ok(link) => link,
             Err(err) => {
                 log::warn!("[transport][network] connect to {peer_id} failed: {err}");
@@ -565,7 +565,7 @@ impl NetworkChannel {
             // ADR-0009 D8: a pair from before keys existed is paired again.
             return false;
         };
-        let Ok(mut link) = self.dial(&peer_key, ip, port).await else {
+        let Ok(mut link) = self.connect(&peer_key, ip, port).await else {
             return false;
         };
         let hello = PeerFrame::Hello {

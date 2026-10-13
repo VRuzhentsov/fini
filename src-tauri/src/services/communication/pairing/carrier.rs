@@ -66,7 +66,7 @@ impl PairingCarrier for NetworkCarrier {
 /// hang freezes the whole command and leaves the pairing controls stuck
 /// disabled.
 ///
-/// The dial before it bounds itself (`dial_for_pairing`): first the wait for
+/// The dial before it bounds itself (`connect_for_pairing`): first the wait for
 /// a candidate probe already in flight, then its own budget. One shared
 /// deadline over both once let the wait eat the dial's time, so a dial that
 /// would have connected was abandoned mid-connect.
@@ -107,7 +107,7 @@ impl BluetoothCarrier {
         tauri::async_runtime::block_on(async move {
             // Keeps the add-mode candidate scan off the adapter and out of
             // this peer's dial until the frame is sent.
-            let (mut link, _clear_of_scan) = state.bluetooth.dial_for_pairing(state, peer_key, address).await?;
+            let (mut link, _clear_of_scan) = state.bluetooth.connect_for_pairing(state, peer_key, address).await?;
             send_pair_frame(link.as_mut(), &msg).await
         })
     }
@@ -133,7 +133,7 @@ impl BluetoothCarrier {
         let latest = state.bluetooth.scanner.available.latest_address(to_device_id);
         let address = latest.as_deref().unwrap_or(address);
         let link = tauri::async_runtime::block_on(async {
-            let (mut link, _clear_of_scan) = state.bluetooth.dial_for_pairing(state, &peer_key, address).await?;
+            let (mut link, _clear_of_scan) = state.bluetooth.connect_for_pairing(state, &peer_key, address).await?;
             send_pair_frame(link.as_mut(), &msg).await?;
             Ok::<_, String>(link)
         })?;
@@ -217,11 +217,11 @@ impl PairingCarrier for BluetoothCarrier {
                         }
                         return Ok(());
                     }
-                    Ok(Err(err)) => log::warn!("[pairing][ble] request link failed: {err}; dialling instead"),
-                    Err(_) => log::warn!("[pairing][ble] request link timed out; dialling instead"),
+                    Ok(Err(err)) => log::warn!("[pairing][ble] request link failed: {err}; connecting instead"),
+                    Err(_) => log::warn!("[pairing][ble] request link timed out; connecting instead"),
                 }
             }
-            None => log::warn!("[pairing][ble] no parked link for {request_id}; dialling instead"),
+            None => log::warn!("[pairing][ble] no parked link for {request_id}; connecting instead"),
         }
         let peer_key = to.key.ok_or_else(|| "the requester's key is unknown".to_string())?;
         self.send(state, peer_key, to.addr, msg)
