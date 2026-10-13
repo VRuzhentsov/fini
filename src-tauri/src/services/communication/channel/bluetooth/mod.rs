@@ -44,8 +44,6 @@ use async_trait::async_trait;
 use ble_gatt::drivers::linux::LinuxBackend;
 use ble_gatt::datagram::{self, DatagramChannel, DatagramConfig};
 use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, ServiceUuid};
-#[cfg(target_os = "linux")]
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::services::db::open_db_at_path;
@@ -69,13 +67,7 @@ mod discovery;
 mod endpoint;
 mod scanner;
 
-use adapter::*;
-#[cfg(any(feature = "ui-plane", test))]
-pub use adapter::{is_bluetooth_adapter_unavailable, probe_adapter_available};
-#[cfg(test)]
-pub use adapter::pin_adapter_reachable_on_this_thread;
-#[cfg(feature = "devtools")]
-pub use adapter::set_bluetooth_switch;
+pub use adapter::BluetoothAdapter;
 pub use data_link::*;
 #[cfg(any(feature = "ui-plane", test))]
 pub use discovery::*;
@@ -304,10 +296,11 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
                 return;
             }
         }
-        let adapter = match adapter().await {
+        let bluetooth = BluetoothAdapter::this_device();
+        let adapter = match bluetooth.adapter().await {
             Ok(adapter) => adapter,
             Err(err) => {
-                note_adapter_unreachable();
+                bluetooth.note_unreachable();
                 log::warn!("[transport][ble] adapter unavailable, retrying in {delay:?}: {err}");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(max_delay);
@@ -343,11 +336,11 @@ pub async fn run_server(state: DeviceConnectionState, db_path: PathBuf) {
             Ok(stream) => {
                 // Advertising is a real use of the radio, so it clears a
                 // previously-recorded failure just as a scan does.
-                note_adapter_reachable();
+                bluetooth.note_reachable();
                 stream
             }
             Err(err) => {
-                note_adapter_unreachable();
+                bluetooth.note_unreachable();
                 log::warn!("[transport][ble] advertise failed, retrying in {delay:?}: {err}");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(max_delay);

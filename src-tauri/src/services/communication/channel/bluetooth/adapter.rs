@@ -7,13 +7,37 @@
 
 use super::*;
 
-/// The Bluetooth adapter of this device, made one time for the process.
-///
-/// The Linux driver opens a BlueZ D-Bus session and needs a powered adapter.
-/// Fini makes it at the first use, not at startup, so a computer without a
-/// usable adapter still starts the app.
-#[cfg(target_os = "linux")]
-pub(super) async fn adapter() -> Result<Adapter, String> {
+/// The Bluetooth adapter of this device: the ble-gatt `Adapter`, made one
+/// time for the process at the first use; whether it worked the last time
+/// anything used it; and, in debug builds, the test switch over its driver.
+pub struct BluetoothAdapter {
+    adapter: tokio::sync::OnceCell<Adapter>,
+    /// See `ADAPTER_UNKNOWN`.
+    health: AtomicU8,
+    #[cfg(feature = "devtools")]
+    switch: std::sync::OnceLock<Arc<test_switch::RadioSwitch>>,
+}
+
+static THIS_DEVICE: BluetoothAdapter = BluetoothAdapter {
+    adapter: tokio::sync::OnceCell::const_new(),
+    health: AtomicU8::new(ADAPTER_UNKNOWN),
+    #[cfg(feature = "devtools")]
+    switch: std::sync::OnceLock::new(),
+};
+
+impl BluetoothAdapter {
+    /// The one adapter of this process.
+    pub fn this_device() -> &'static Self {
+        &THIS_DEVICE
+    }
+
+    /// The ble-gatt adapter, made at the first use.
+    ///
+    /// The Linux driver opens a BlueZ D-Bus session and needs a powered
+    /// adapter. Fini makes it at the first use, not at startup, so a
+    /// computer without a usable adapter still starts the app.
+    #[cfg(target_os = "linux")]
+    pub(super) async fn adapter(&self) -> Result<Adapter, String> {
     // `get_or_try_init`, not `get_or_init` over a cached `Result`: the
     // latter permanently bakes in whatever the *first* call returned,
     // success or failure. If Fini starts while Bluetooth is off, BlueZ is
@@ -31,25 +55,183 @@ pub(super) async fn adapter() -> Result<Adapter, String> {
     // `tauri::async_runtime::spawn`, so an unbounded wait here would tie up
     // an async worker thread for however long that takes. A timeout turns
     // "no adapter reachable" into a fast, retryable failure instead.
-    const ADAPTER_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+        const ADAPTER_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
-    static ADAPTER: OnceCell<Adapter> = OnceCell::const_new();
-    ADAPTER
-        .get_or_try_init(|| async {
-            #[cfg(feature = "devtools")]
-            if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
-                return Ok(Adapter::new(switched(mock_driver(&endpoint).await?)).await);
+        self.adapter
+            .get_or_try_init(|| async {
+                #[cfg(feature = "devtools")]
+                if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
+                    return Ok(Adapter::new(self.switched(mock_driver(&endpoint).await?)).await);
+                }
+                match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, LinuxBackend::new()).await {
+                    Ok(Ok(driver)) => Ok(Adapter::new(self.switched(Arc::new(driver))).await),
+                    Ok(Err(err)) => Err(err.to_string()),
+                    Err(_) => Err(format!(
+                        "timed out after {ADAPTER_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
+                    )),
+                }
+            })
+            .await
+            .cloned()
+    }
+
+    /// The ble-gatt adapter on Android, which `tauri-plugin-ble-gatt` makes.
+    /// Made at the first use, not at `.setup()`: the driver needs the
+    /// Activity, and the Activity does not exist at `.setup()` (see the
+    /// plugin's `lazy` module). The first use comes from a command or a tick
+    /// after startup (`start_peripheral_once`, `start_exchange`). A
+    /// `devtools` build puts the adapter's driver behind the test switch.
+    #[cfg(target_os = "android")]
+    pub(super) async fn adapter(&self) -> Result<Adapter, String> {
+        self.adapter
+            .get_or_try_init(|| async {
+                let adapter = crate::services::ble_plugin::adapter().await?;
+                #[cfg(feature = "devtools")]
+                return Ok(Adapter::new(self.switched(adapter.backend())).await);
+                #[cfg(not(feature = "devtools"))]
+                Ok(adapter)
+            })
+            .await
+            .cloned()
+    }
+
+    /// The driver as the adapter gets it. In a build without `devtools` this
+    /// is the platform driver itself.
+    #[cfg(all(target_os = "linux", not(feature = "devtools")))]
+    fn switched(&self, driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
+        driver
+    }
+
+    /// The driver as the adapter gets it. In a `devtools` build the driver is
+    /// behind the test switch (`set_switch`).
+    #[cfg(feature = "devtools")]
+    fn switched(&self, driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
+        let switch = test_switch::RadioSwitch::new(driver);
+        let _ = self.switch.set(switch.clone());
+        Arc::new(test_switch::SwitchedDriver(switch))
+    }
+
+    /// Sets the test switch of the Bluetooth radio. Off makes the radio look
+    /// switched off to Fini: scans and connections fail, links close, and
+    /// `RadioChanged` tells ble-gatt. On makes everything pass through
+    /// again. The real radio stays on. False if this device has no usable
+    /// adapter.
+    #[cfg(feature = "devtools")]
+    pub async fn set_switch(&self, on: bool) -> bool {
+        if self.adapter().await.is_err() {
+            return false;
+        }
+        match self.switch.get() {
+            Some(switch) => {
+                switch.set(on).await;
+                true
             }
-            match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, LinuxBackend::new()).await {
-                Ok(Ok(driver)) => Ok(Adapter::new(switched(Arc::new(driver))).await),
-                Ok(Err(err)) => Err(err.to_string()),
-                Err(_) => Err(format!(
-                    "timed out after {ADAPTER_INIT_TIMEOUT:?} waiting for the Bluetooth adapter"
-                )),
+            None => false,
+        }
+    }
+
+    pub(super) fn note_reachable(&self) {
+        self.health.store(ADAPTER_REACHABLE, Ordering::Relaxed);
+    }
+
+    pub(super) fn note_unreachable(&self) {
+        self.health.store(ADAPTER_UNREACHABLE, Ordering::Relaxed);
+    }
+
+    /// Records what a refused scan says about the adapter. A busy adapter (a
+    /// discovery already running, which ble-gatt has tried to recover) is
+    /// there and working -- only something else refuses it as missing.
+    pub(super) fn note_scan_refused(&self, err: &ble_gatt::BleError) -> bool {
+        if matches!(err, ble_gatt::BleError::AdapterBusy(_)) {
+            self.note_reachable();
+            true
+        } else {
+            self.note_unreachable();
+            false
+        }
+    }
+
+    /// `true` only once a genuine attempt has failed -- never merely because
+    /// nothing has been tried yet. See `ADAPTER_UNKNOWN`.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn is_unavailable(&self) -> bool {
+        #[cfg(test)]
+        if let Some(reachable) = ADAPTER_PINNED.with(|pinned| pinned.get()) {
+            return !reachable;
+        }
+        self.health.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
+    }
+
+    /// Asks the radio, right now, whether it can be used -- and records the
+    /// answer into the health like any other attempt.
+    ///
+    /// The observed signal is free but unhurried: it only refreshes when
+    /// the dial loop next scans, which since ADR-0007 is up to 30s away. That
+    /// is fine for a row correcting itself in the background and wrong for
+    /// the one moment the user is watching -- switching a channel on and
+    /// expecting to be told immediately if their own Bluetooth is off. So
+    /// this exists to be called from that user action, and only from it.
+    ///
+    /// It opens a discovery session and drops it immediately rather than
+    /// asking BlueZ whether the adapter reports itself powered. An adapter
+    /// that claims to be powered and then refuses to scan is a real failure
+    /// mode, and the question worth answering is "can we do the thing", not
+    /// "does the hardware feel well".
+    ///
+    /// A scan already running elsewhere answers the question without a
+    /// second one: the adapter accepted that discovery session, so it is
+    /// reachable. Starting our own would only be refused (see `scan_lock`).
+    /// A caller that merely holds the lease proves nothing yet -- its scan
+    /// may still be refused -- so the probe waits for it to start or finish.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub async fn probe(&self, scanner: &Scanner) -> bool {
+        let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
+        loop {
+            if scanner.scan_is_running() {
+                self.note_reachable();
+                return true;
             }
-        })
-        .await
-        .cloned()
+            if let Some(_scan) = scanner.try_scan_lock() {
+                let Ok(adapter) = self.adapter().await else {
+                    self.note_unreachable();
+                    return false;
+                };
+                return match adapter.central().scan(datagram_config().service).await {
+                    Ok(stream) => {
+                        drop(stream);
+                        self.note_reachable();
+                        true
+                    }
+                    Err(err) => {
+                        log::warn!("[transport][ble] adapter probe failed: {err}");
+                        self.note_scan_refused(&err)
+                    }
+                };
+            }
+            // Another caller holds the lease but its scan has not started:
+            // wait for it to start (the adapter works) or give the lease up.
+            if tokio::time::Instant::now() >= deadline {
+                return !self.is_unavailable();
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// For a test on this thread that is not about the adapter: the
+    /// process-wide health is written by concurrent tests (and by any scan
+    /// they start), so a check that reads it would pass or fail with their
+    /// timing.
+    #[cfg(test)]
+    pub fn pin_reachable_on_this_thread() {
+        ADAPTER_PINNED.with(|pinned| pinned.set(Some(true)));
+    }
+
+    /// For a test about what an unreachable adapter does, for the same
+    /// reason.
+    #[cfg(test)]
+    fn pin_unreachable_on_this_thread() {
+        ADAPTER_PINNED.with(|pinned| pinned.set(Some(false)));
+    }
 }
 
 /// The `actors-ble` e2e lane's radio: a `MockBackend` talking to a
@@ -82,68 +264,13 @@ async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Backend>, Strin
     )) as Arc<dyn ble_gatt::Backend>)
 }
 
-/// The Bluetooth adapter on Android, which `tauri-plugin-ble-gatt` makes.
-/// Made at the first use, not at `.setup()`: the driver needs the Activity,
-/// and the Activity does not exist at `.setup()` (see the plugin's `lazy`
-/// module). The first use comes from a command or a tick after startup
-/// (`start_peripheral_once`, `start_exchange`). A `devtools` build puts the
-/// adapter's driver behind the test switch.
-#[cfg(target_os = "android")]
-pub(super) async fn adapter() -> Result<Adapter, String> {
-    static ADAPTER: tokio::sync::OnceCell<Adapter> = tokio::sync::OnceCell::const_new();
-    ADAPTER
-        .get_or_try_init(|| async {
-            let adapter = crate::services::ble_plugin::adapter().await?;
-            #[cfg(feature = "devtools")]
-            return Ok(Adapter::new(switched(adapter.backend())).await);
-            #[cfg(not(feature = "devtools"))]
-            Ok(adapter)
-        })
-        .await
-        .cloned()
-}
-
-/// The driver as the adapter gets it. In a build without `devtools` this
-/// is the platform driver itself.
-#[cfg(all(target_os = "linux", not(feature = "devtools")))]
-fn switched(driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
-    driver
-}
-
-/// The driver as the adapter gets it. In a `devtools` build the driver is
-/// behind the test switch (`set_bluetooth_switch`).
-#[cfg(feature = "devtools")]
-fn switched(driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
-    let switch = test_switch::RadioSwitch::new(driver);
-    let _ = test_switch::BLUETOOTH_SWITCH.set(switch.clone());
-    Arc::new(test_switch::SwitchedDriver(switch))
-}
-
-/// Sets the test switch of the Bluetooth radio. Off makes the radio look
-/// switched off to Fini: scans and connections fail, links close, and
-/// `RadioChanged` tells ble-gatt. On makes everything pass through again.
-/// The real radio stays on. False if this device has no usable adapter.
-#[cfg(feature = "devtools")]
-pub async fn set_bluetooth_switch(on: bool) -> bool {
-    if adapter().await.is_err() {
-        return false;
-    }
-    match test_switch::BLUETOOTH_SWITCH.get() {
-        Some(switch) => {
-            switch.set(on).await;
-            true
-        }
-        None => false,
-    }
-}
-
 /// A test switch over the Bluetooth driver, for debug builds only. It
 /// makes the radio look off without a change to the real radio, so that
 /// no test must switch off the Bluetooth of a person's device.
 #[cfg(feature = "devtools")]
 mod test_switch {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use ble_gatt::{
@@ -153,8 +280,6 @@ mod test_switch {
     };
     use futures_util::StreamExt;
     use tokio::sync::broadcast;
-
-    pub(super) static BLUETOOTH_SWITCH: OnceLock<Arc<RadioSwitch>> = OnceLock::new();
 
     fn switched_off() -> BleError {
         BleError::AdapterUnavailable("the test switch set the radio to off".into())
@@ -403,113 +528,10 @@ const ADAPTER_UNKNOWN: u8 = 0;
 const ADAPTER_REACHABLE: u8 = 1;
 const ADAPTER_UNREACHABLE: u8 = 2;
 
-static ADAPTER_HEALTH: AtomicU8 = AtomicU8::new(ADAPTER_UNKNOWN);
-
-pub(super) fn note_adapter_reachable() {
-    ADAPTER_HEALTH.store(ADAPTER_REACHABLE, Ordering::Relaxed);
-}
-
-pub(super) fn note_adapter_unreachable() {
-    ADAPTER_HEALTH.store(ADAPTER_UNREACHABLE, Ordering::Relaxed);
-}
-
-/// Records what a refused scan says about the adapter. A busy adapter (a
-/// discovery already running, which ble-gatt has tried to recover) is
-/// there and working -- only something else refuses it as missing.
-pub(super) fn note_scan_refused(err: &ble_gatt::BleError) -> bool {
-    if matches!(err, ble_gatt::BleError::AdapterBusy(_)) {
-        note_adapter_reachable();
-        true
-    } else {
-        note_adapter_unreachable();
-        false
-    }
-}
-
-/// `true` only once a genuine attempt has failed -- never merely because
-/// nothing has been tried yet. See `ADAPTER_HEALTH`.
-#[cfg(any(feature = "ui-plane", test))]
-pub fn is_bluetooth_adapter_unavailable() -> bool {
-    #[cfg(test)]
-    if let Some(reachable) = ADAPTER_PINNED.with(|pinned| pinned.get()) {
-        return !reachable;
-    }
-    ADAPTER_HEALTH.load(Ordering::Relaxed) == ADAPTER_UNREACHABLE
-}
-
 #[cfg(test)]
 thread_local! {
     // The adapter health a test pinned on its thread, if any.
     static ADAPTER_PINNED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
-}
-
-/// For a test on this thread that is not about the adapter: the process-wide
-/// health is written by concurrent tests (and by any scan they start), so a
-/// check that reads it would pass or fail with their timing.
-#[cfg(test)]
-pub fn pin_adapter_reachable_on_this_thread() {
-    ADAPTER_PINNED.with(|pinned| pinned.set(Some(true)));
-}
-
-/// For a test about what an unreachable adapter does, for the same reason.
-#[cfg(test)]
-fn pin_adapter_unreachable_on_this_thread() {
-    ADAPTER_PINNED.with(|pinned| pinned.set(Some(false)));
-}
-
-/// Asks the radio, right now, whether it can be used -- and records the
-/// answer into `ADAPTER_HEALTH` like any other attempt.
-///
-/// The observed signal above is free but unhurried: it only refreshes when
-/// the dial loop next scans, which since ADR-0007 is up to 30s away. That
-/// is fine for a row correcting itself in the background and wrong for the
-/// one moment the user is watching -- switching a channel on and expecting
-/// to be told immediately if their own Bluetooth is off. So this exists to
-/// be called from that user action, and only from it.
-///
-/// It opens a discovery session and drops it immediately rather than asking
-/// BlueZ whether the adapter reports itself powered. An adapter that claims
-/// to be powered and then refuses to scan is a real failure mode, and the
-/// question worth answering is "can we do the thing", not "does the
-/// hardware feel well".
-///
-/// A scan already running elsewhere answers the question without a second
-/// one: the adapter accepted that discovery session, so it is reachable.
-/// Starting our own would only be refused (see `scan_lock`). A caller that
-/// merely holds the lease proves nothing yet -- its scan may still be
-/// refused -- so the probe waits for it to start or finish.
-#[cfg(any(feature = "ui-plane", test))]
-pub async fn probe_adapter_available(radio: &Scanner) -> bool {
-    let deadline = tokio::time::Instant::now() + PROBE_WAIT_FOR_OTHER_SCAN;
-    loop {
-        if radio.scan_is_running() {
-            note_adapter_reachable();
-            return true;
-        }
-        if let Some(_scan) = radio.try_scan_lock() {
-            let Ok(adapter) = adapter().await else {
-                note_adapter_unreachable();
-                return false;
-            };
-            return match adapter.central().scan(datagram_config().service).await {
-                Ok(stream) => {
-                    drop(stream);
-                    note_adapter_reachable();
-                    true
-                }
-                Err(err) => {
-                    log::warn!("[transport][ble] adapter probe failed: {err}");
-                    note_scan_refused(&err)
-                }
-            };
-        }
-        // Another caller holds the lease but its scan has not started: wait
-        // for it to start (the adapter works) or give the lease up.
-        if tokio::time::Instant::now() >= deadline {
-            return !is_bluetooth_adapter_unavailable();
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
 }
 
 /// How long the probe waits on another caller's scan that is still being
@@ -579,8 +601,9 @@ mod tests {
     /// missing: that adapter works, so Bluetooth must not read as unavailable.
     #[test]
     fn a_busy_adapter_is_not_an_unavailable_one() {
-        assert!(note_scan_refused(&ble_gatt::BleError::AdapterBusy("in progress".into())));
-        assert!(!note_scan_refused(&ble_gatt::BleError::AdapterUnavailable("no adapter".into())));
+        let adapter = BluetoothAdapter::this_device();
+        assert!(adapter.note_scan_refused(&ble_gatt::BleError::AdapterBusy("in progress".into())));
+        assert!(!adapter.note_scan_refused(&ble_gatt::BleError::AdapterUnavailable("no adapter".into())));
     }
 
     /// A scan already running is proof the adapter works, so the check a
@@ -592,13 +615,14 @@ mod tests {
         let radio = Scanner::default();
         let _other_scan = radio.scan_lock().await;
         let _running = radio.start_running_scan();
-        note_adapter_unreachable();
+        let adapter = BluetoothAdapter::this_device();
+        adapter.note_unreachable();
 
         assert!(
-            probe_adapter_available(&radio).await,
+            adapter.probe(&radio).await,
             "a scan in flight means the adapter accepted a discovery session"
         );
-        assert!(!is_bluetooth_adapter_unavailable());
+        assert!(!adapter.is_unavailable());
     }
 
     /// Holding the lease is not a running scan. The add-mode scan takes the
@@ -610,11 +634,11 @@ mod tests {
         let other_scan = radio.scan_lock().await;
         // Pinned, not recorded: other tests' scans write the process-wide
         // health while this one waits out the probe.
-        pin_adapter_unreachable_on_this_thread();
+        BluetoothAdapter::pin_unreachable_on_this_thread();
 
         let probe = tokio::spawn({
             let radio = radio.clone();
-            async move { probe_adapter_available(&radio).await }
+            async move { BluetoothAdapter::this_device().probe(&radio).await }
         });
         tokio::time::sleep(PROBE_WAIT_FOR_OTHER_SCAN + Duration::from_secs(1)).await;
         drop(other_scan);

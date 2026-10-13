@@ -38,9 +38,8 @@ use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 #[cfg(any(feature = "ui-plane", test))]
 use super::{AvailableDevice, ADD_MODE_FLAG_BYTE};
 use super::{
-    adapter, advertised_fingerprint, datagram_config, fingerprint_of, note_adapter_reachable,
-    note_adapter_unreachable, note_scan_refused, open_db_at_path, FINGERPRINT_LEN,
-    FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
+    advertised_fingerprint, datagram_config, fingerprint_of, open_db_at_path, BluetoothAdapter,
+    FINGERPRINT_LEN, FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
 };
 
 /// How long a heard advertisement keeps a paired device present: three
@@ -263,7 +262,7 @@ impl Scanner {
 
     pub(super) fn start_running_scan(&self) -> RunningScan<'_> {
         self.scan_running.store(true, Ordering::SeqCst);
-        note_adapter_reachable();
+        BluetoothAdapter::this_device().note_reachable();
         RunningScan(&self.scan_running)
     }
 
@@ -466,8 +465,9 @@ impl Scanner {
                 continue;
             }
 
-            let Ok(adapter) = adapter().await else {
-                note_adapter_unreachable();
+            let bluetooth = BluetoothAdapter::this_device();
+            let Ok(adapter) = bluetooth.adapter().await else {
+                bluetooth.note_unreachable();
                 let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
                 continue;
             };
@@ -476,7 +476,7 @@ impl Scanner {
                 Ok(discovered) => discovered,
                 Err(err) => {
                     log::warn!("[transport][ble] search scan refused: {err}");
-                    note_scan_refused(&err);
+                    bluetooth.note_scan_refused(&err);
                     drop(scan);
                     let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
                     continue;

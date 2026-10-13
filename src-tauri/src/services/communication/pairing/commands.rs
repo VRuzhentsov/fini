@@ -1036,7 +1036,7 @@ pub async fn device_connection_probe_bluetooth_adapter(
 ) -> Result<bool, String> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        Ok(crate::services::communication::channel::bluetooth::probe_adapter_available(&state.bluetooth_scanner).await)
+        Ok(crate::services::communication::channel::bluetooth::BluetoothAdapter::this_device().probe(&state.bluetooth_scanner).await)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
@@ -1267,7 +1267,7 @@ pub async fn e2e_set_radio(
     if let Some(on) = bluetooth {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            if !crate::services::communication::channel::bluetooth::set_bluetooth_switch(on).await {
+            if !crate::services::communication::channel::bluetooth::BluetoothAdapter::this_device().set_switch(on).await {
                 return Err("this device has no usable Bluetooth adapter".to_string());
             }
             if !on {
@@ -1768,7 +1768,7 @@ mod tests {
         // ADR-0008 D15: the channel exists (set up by an init), switched off.
         channels::configure(&mut conn, "peer-a", ChannelKind::Bluetooth, false, None)
             .expect("a channel that went through init");
-        crate::services::communication::channel::bluetooth::pin_adapter_reachable_on_this_thread();
+        crate::services::communication::channel::bluetooth::BluetoothAdapter::pin_reachable_on_this_thread();
         let statuses = device_connection_set_channel_enabled_impl(
             &mut conn,
             &state,

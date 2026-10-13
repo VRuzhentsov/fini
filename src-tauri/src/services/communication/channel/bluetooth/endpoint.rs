@@ -86,7 +86,7 @@ pub(crate) async fn bluetooth_endpoint(
     state
         .bluetooth_endpoint
         .get_or_try_init(|| async {
-            let adapter = adapter().await?;
+            let adapter = BluetoothAdapter::this_device().adapter().await?;
             let transport = ble_gatt_iroh::BleGattTransport::builder()
                 .dialer(ble_gatt_iroh::dial_with(adapter, datagram_config()))
                 .build();

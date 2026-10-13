@@ -82,7 +82,7 @@ pub async fn setup_hello_round(
 ) -> Result<bool, String> {
     let radio = state.bluetooth_scanner.clone();
     let Some(found) = radio.find(&peer_id, Purpose::Setup, timeout).await else {
-        if is_bluetooth_adapter_unavailable() {
+        if BluetoothAdapter::this_device().is_unavailable() {
             return Err("bluetooth adapter unavailable".to_string());
         }
         return Ok(false);

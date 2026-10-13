@@ -75,7 +75,7 @@ impl Radio for GattRadio {
     async fn probe(&self, state: &DeviceConnectionState) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            super::bluetooth::probe_adapter_available(&state.bluetooth_scanner).await
+            super::bluetooth::BluetoothAdapter::this_device().probe(&state.bluetooth_scanner).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
@@ -159,7 +159,7 @@ impl Radio for GattRadio {
     fn adapter_available(&self) -> bool {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
-            !super::bluetooth::is_bluetooth_adapter_unavailable()
+            !super::bluetooth::BluetoothAdapter::this_device().is_unavailable()
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         {
