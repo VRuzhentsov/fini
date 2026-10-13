@@ -17,7 +17,8 @@ use services::db::{app_data_dir, try_open_db, AppDbConnection};
 #[cfg(feature = "ui-plane")]
 use services::communication::pairing::{
     device_connection_consume_space_mapping_updates, device_connection_debug_status,
-    device_connection_discover_bluetooth_candidates, device_connection_discovery_snapshot,
+    device_connection_bluetooth_available_devices, device_connection_identify_bluetooth_device,
+    device_connection_discovery_snapshot,
     device_connection_enter_add_mode, device_connection_begin_channel_setup,
     device_connection_channel_setup_status, device_connection_end_channel_setup,
     device_connection_get_identity, device_connection_get_paired_devices,
@@ -574,7 +575,8 @@ pub fn run() {
             device_connection_channel_setup_status,
             device_connection_end_channel_setup,
             device_connection_send_pair_request_bluetooth,
-            device_connection_discover_bluetooth_candidates,
+            device_connection_bluetooth_available_devices,
+            device_connection_identify_bluetooth_device,
             device_connection_channel_statuses,
             device_connection_unpair,
             device_connection_update_last_seen,

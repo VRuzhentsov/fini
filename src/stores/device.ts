@@ -213,13 +213,13 @@ export const ADD_MODE_DISCOVERY_INTERVAL_MS = 5_000;
 const ADD_MODE_POLL_INTERVAL_MS = 1_000;
 const PRESENCE_POLL_INTERVAL_MS = 15_000;
 
-// A BLE scan pass has its own internal deadline covering both scanning and
-// dialing each flagged candidate for a `DiscoveryHello`, so it can take up
-// to `BLUETOOTH_SCAN_DURATION_MS` to resolve -- unlike the other polls,
-// this loop is self-rescheduling (not `setInterval`) so passes never
-// overlap.
-const BLUETOOTH_SCAN_DURATION_MS = 60_000;
-const BLUETOOTH_SCAN_IDLE_GAP_MS = 2_000;
+// The Bluetooth half of the Add Device list is read from what the scan
+// heard (no scan or connection per read), so it is read as often as the
+// network half.
+const BLUETOOTH_LIST_POLL_MS = 1_000;
+// A Bluetooth list row that no identify step answered yet has this id
+// prefix; Pair identifies the device first to learn its real id.
+export const BLUETOOTH_LIST_ID_PREFIX = "bt:";
 const NORMAL_HEARTBEAT_MS = 60_000;
 const OFFLINE_AFTER_MISSED_HEARTBEATS_MS = NORMAL_HEARTBEAT_MS * 2;
 const REQUEST_TTL_MS = 60_000;
@@ -1000,35 +1000,21 @@ export const useDeviceStore = defineStore("device", () => {
   async function bluetoothScanTick(generation: number) {
     if (generation !== bluetoothScanGeneration) return;
 
-    // While a pairing is under way (a request we sent is waiting on the
-    // peer, or one we received is not finished) the pair's own dials own the
-    // adapter. A pass here would probe the peer while the peer is dialling us
-    // back, and two crossing connections make each side's GATT setup fail
-    // ("peer refused notifications"). The picker list is kept as it is.
-    const pairingInProgress = outgoingRequest.value !== null || incomingRequests.value.length > 0;
-
     try {
-      if (!pairingInProgress) {
-        const items = await invoke<DiscoveredDevice[]>("device_connection_discover_bluetooth_candidates", {
-          durationMs: BLUETOOTH_SCAN_DURATION_MS,
-        });
-        if (generation !== bluetoothScanGeneration) return;
-        setBluetoothDiscovered(items);
-      }
+      const items = await invoke<DiscoveredDevice[]>("device_connection_bluetooth_available_devices");
+      if (generation !== bluetoothScanGeneration) return;
+      setBluetoothDiscovered(items);
     } catch (error) {
-      // Keep retrying rather than giving up for the rest of the session:
-      // the most common failure on a fresh install is the Android
-      // permission dialog not having been answered yet, which is resolved
-      // the moment the user grants it -- not a permanent condition. On a
-      // platform with no Bluetooth backend at all this just retries
-      // harmlessly until `leaveAddMode` stops the loop.
-      console.warn("[device-connection] bluetooth candidate scan failed, will retry", error);
+      // Keep trying: on a fresh install the Android permission dialog may
+      // not have an answer yet. On a platform without Bluetooth this fails
+      // without harm until `leaveAddMode` stops the loop.
+      console.warn("[device-connection] bluetooth list read failed, will retry", error);
     }
 
     if (generation !== bluetoothScanGeneration) return;
     bluetoothScanTimer = setTimeout(() => {
       void bluetoothScanTick(generation);
-    }, BLUETOOTH_SCAN_IDLE_GAP_MS);
+    }, BLUETOOTH_LIST_POLL_MS);
   }
 
   function startBluetoothScanLoop() {
@@ -1217,7 +1203,7 @@ export const useDeviceStore = defineStore("device", () => {
     void refreshDebugStatus();
   }
 
-  async function requestPair(device: DiscoveredDevice) {
+  async function requestPair(listed: DiscoveredDevice) {
     const existingRequest = outgoingRequest.value;
     if (existingRequest && (existingRequest.status === "pending" || existingRequest.status === "awaiting_code")) {
       return;
@@ -1227,8 +1213,8 @@ export const useDeviceStore = defineStore("device", () => {
 
     outgoingRequest.value = {
       request_id: requestId,
-      to_device_id: device.device_id,
-      to_hostname: device.hostname,
+      to_device_id: listed.device_id,
+      to_hostname: listed.hostname,
       created_at: nowIso(),
       expires_at: new Date(Date.now() + REQUEST_TTL_MS).toISOString(),
       status: "pending",
@@ -1236,6 +1222,24 @@ export const useDeviceStore = defineStore("device", () => {
     };
 
     try {
+      // A Bluetooth row from an advertisement alone, or a device paired here
+      // that is paired again: one connection to learn its id, name and
+      // current key, then the pair request.
+      let device = listed;
+      const needsIdentify =
+        listed.device_id.startsWith(BLUETOOTH_LIST_ID_PREFIX) || pairedDeviceIds.value.has(listed.device_id);
+      if (listed.channel_kind === ChannelKind.Bluetooth && needsIdentify) {
+        device = await invoke<DiscoveredDevice>("device_connection_identify_bluetooth_device", {
+          deviceId: listed.device_id,
+        });
+        if (outgoingRequest.value?.request_id === requestId) {
+          outgoingRequest.value = {
+            ...outgoingRequest.value,
+            to_device_id: device.device_id,
+            to_hostname: device.hostname,
+          };
+        }
+      }
       if (device.channel_kind === ChannelKind.Bluetooth) {
         const payload: DevicePairRequestBluetoothInput = {
           request_id: requestId,

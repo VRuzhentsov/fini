@@ -1,75 +1,20 @@
-//! Finding a device to pair with, and saying hello to a paired one:
-//! the add-mode candidate scan (ADR 0002 Phase 3) and the setup search
-//! (ADR-0008 D1, D12).
+//! Identify a device to pair with, and say hello to a paired one: the
+//! identify step that Pair starts (option B: the list needs no connection),
+//! and the setup search (ADR-0008 D1, D12).
 
 use super::*;
 
-/// Per-candidate cap for a dial+probe+reply confirmation round trip
-/// (`hello_candidate`/`identify_device`), separate from the overall
-/// scan deadline: without this, a single candidate that accepts the
-/// connection but never replies could consume the *entire* remaining scan
-/// budget, starving out every other candidate that might otherwise have
-/// matched sooner -- including the actual peer being searched for.
-/// Still shorter than `AddDeviceView.vue`'s own per-pass scan duration
-/// (`BLUETOOTH_SCAN_DURATION_MS`, currently 60s), so a slow candidate cannot
-/// quietly consume a whole pass -- but no longer *much* shorter, because the
-/// round trip it caps now has a third stage. `BleDataLink::send` retries a
-/// `GattBusy` rejection for up to ~1.4s (see its comment), on top of a dial
-/// that measurably takes 1-2s against a real phone. At the previous 1.5s this
-/// budget could not fit dial + retry, so the retry was cut off mid-flight
-/// every time and existed only on paper; the caller dropping the future also
-/// cancels ble-gatt's own connect timeout, which is why those attempts left
-/// no outcome in the logs at all.
-///
-/// The trade this accepts: with several candidates, one silent peer can now
-/// take most of a pass. That is the lesser evil -- a probe too short to ever
-/// complete fails *every* candidate, not just the ones behind a slow one.
-///
-/// Raised from 3s to 12s after instrumenting it on hardware: dial + hello +
-/// reply took 2.4-3.9s against a Pixel, so 3s cut off the reply every time,
-/// and the 4s scan window left the probe phase only ~2s of budget besides.
-///
-/// Then from 12s to 25s, because 12s was still under the *driver's* own
-/// bound and so could never express anything but "give up early". ble-gatt
-/// gives a connect `CONNECT_TIMEOUT` (20s) to finish; a probe capped below
-/// that is guaranteed to abandon a dial the driver had not yet given up on.
-/// Measured here, Add Device found the peer every pass and never once
-/// probed it successfully:
-///
-///   connect: dialling 6E:1C:BD:59:00:20            12:25:35
-///   connect: abandoned before completing           12:25:47   <- 12.0s
-///     (connect guard dropped); quarantining and cleaning up in the background
-///
-/// and the quarantine then also broke the *next* pass, so the picker stayed
-/// empty for as long as anyone cared to watch. A GATT connect is simply this
-/// slow: 10.0-10.5s phone-to-desktop on every one of four passes, and
-/// `SESSION_CONNECT_TIMEOUT` below records ~28s seen elsewhere. So the cap
-/// has to sit above the driver's own, and its job is only to stop a silent
-/// peer from eating the pass -- never to pre-empt a dial still in progress.
-///
-/// *Just* above `CONNECT_TIMEOUT` rather than comfortably above it, because
-/// `dial_for_pairing` waits out a probe already in flight before its own
-/// dial. A probe still running past the driver's own bound is one the
-/// driver has already given up on, so further margin buys nothing here and
-/// only lengthens the worst case Pair has to sit through.
+/// How long the identify step waits for the answer once the link is open.
+/// The connection itself is never cut short: ble-gatt gives it its own 20 s,
+/// and an abandoned connect makes BlueZ crash (two crashes in the spike).
 #[cfg(any(feature = "ui-plane", test))]
-const CANDIDATE_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
-
-/// Once the listening phase of a candidate scan has heard its first
-/// advertiser, it keeps listening this much longer (for a second device,
-/// say) and then moves on to probing. The scan window is long (a minute,
-/// `BLUETOOTH_SCAN_DURATION_MS`) so a slow adapter gets time, but a
-/// candidate is only reported when the whole call returns: without this the
-/// picker would sit empty for the full listening half after the peer was
-/// already heard.
-#[cfg(any(feature = "ui-plane", test))]
-const ADVERTISER_SETTLE: Duration = Duration::from_secs(3);
+const IDENTIFY_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the device with the higher id waits, in a Bluetooth setup, for the
 /// other device's hello to reach it before dialling anyway. See
 /// `setup_hello_round`.
 #[cfg(all(feature = "ui-plane", not(test)))]
-const HIGHER_ID_PATIENCE: Duration = Duration::from_secs(15);
+const HIGHER_ID_PATIENCE: Duration = Duration::from_secs(3);
 #[cfg(test)]
 const HIGHER_ID_PATIENCE: Duration = Duration::from_millis(1_500);
 
@@ -204,427 +149,44 @@ pub struct AvailableDevice {
 /// caller is responsible for bounding how long this is allowed to run.
 #[cfg(any(feature = "ui-plane", test))]
 async fn identify_device(radio: &Scanner, hello: &PeerFrame, address: &str) -> Option<PeerFrame> {
-    // The add-mode scan has closed by now, but a search for a paired peer
-    // may start one; registering the dial keeps it paused until we finish.
+    // A search for a paired device may start a scan; holding a connect
+    // guard keeps it paused until this step ends.
     let _probe = radio.candidate_probe().await;
-    let _dial = radio.acquire_connect().await;
+    let _connect = radio.acquire_connect().await;
     let mut link = dial(address).await.ok()?;
     send_frame(link.as_mut(), hello).await.ok()?;
-    recv_frame(link.as_mut()).await?.ok()
+    tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(link.as_mut())).await.ok()??.ok()
 }
 
-/// Scans for nearby Fini BLE advertisers carrying the add-mode flag (see
-/// `datagram_config`/`set_add_mode`) and exchanges `DiscoveryHello` with
-/// each one to learn its identity — Phase 3's discovery mechanism for
-/// devices that have never paired at all. Devices not currently
-/// advertising the flag are invisible here and never connected to; this is
-/// the client-side half of the filtering `datagram_config` implements on
-/// the advertising side.
-///
-/// Returns everything found within `timeout`, not just the first match
-/// (unlike `setup_hello_round`, this feeds a picker list, not a single
-/// confirm-and-persist action) — callers needing an ongoing view call this
-/// repeatedly rather than once for a long window.
+/// Pair pressed on a device the Add Device list shows from its
+/// advertisement: one connection to the newest address the scan heard it at,
+/// to learn its device id, name and iroh key. The result is recorded, so the
+/// pair request that follows can connect over iroh.
 #[cfg(any(feature = "ui-plane", test))]
-pub async fn scan_add_mode_candidates(
-    my_device_id: &str, timeout: Duration, peers: &AvailableDevices, radio: &Scanner, hello: &PeerFrame,
-) -> Result<Vec<AvailableDevice>, String> {
-    let mut legs = radio.watch_pairing_steps();
-    // Wait out a pairing leg already running, then run the pass and give it
-    // up when one starts. An `Err` keeps the picker's previous list (the
-    // caller treats it as "retry later"), where an empty `Ok` would wipe the
-    // very candidate being paired.
-    let held = *legs.borrow();
-    let waited = std::time::Instant::now();
-    let _ = legs.wait_for(|count| *count == 0).await;
-    if held > 0 {
-        log::info!(
-            "[transport][ble] add-device scan waited {:?} for {held} pairing step(s) to end",
-            waited.elapsed()
-        );
-    }
-    let adapter = adapter().await.inspect_err(|_| note_adapter_unreachable())?;
-    scan_add_mode_candidates_pass(my_device_id, timeout, &mut legs, adapter, peers, radio, |address| async move {
-        identify_device(radio, hello, &address).await
-    })
-    .await
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-const PAIRING_PAUSED: &str = "candidate scan paused: a pairing step is running";
-
-#[cfg(any(feature = "ui-plane", test))]
-async fn scan_add_mode_candidates_pass<Probe, Reply>(
-    my_device_id: &str,
-    timeout: Duration,
-    legs: &mut tokio::sync::watch::Receiver<usize>,
-    adapter: Adapter,
-    peers: &AvailableDevices,
-    radio: &Scanner,
-    probe: Probe,
-) -> Result<Vec<AvailableDevice>, String>
-where
-    Probe: Fn(String) -> Reply,
-    Reply: std::future::Future<Output = Option<PeerFrame>>,
-{
-    use futures_util::StreamExt;
-
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    // Two phases, and the split is the point: listen to completion, close
-    // the scan, *then* probe. Probing while the discovery stream is still
-    // open asks one adapter to run active discovery and establish a
-    // connection at the same moment, and it does not do both -- measured on
-    // this hardware in the dial path, where BlueZ answered `Connect` with
-    // nothing at all until ble-gatt's own 20s timeout fired, every single
-    // attempt, against a peer at rssi -62.
-    //
-    // This function had the same shape and is the prime suspect for why
-    // in-app BLE pairing has never worked. Unverified on hardware: the fix
-    // is mechanical and mirrors `connect_by_advertisement`, but the symptom
-    // it is meant to cure has only been observed in that sibling.
-    // Advertisers that dial this device rather than being dialled by it,
-    // with their fingerprints; see below.
-    let mut answered_by: Vec<(String, [u8; FINGERPRINT_LEN])> = Vec::new();
-    let flagged_addresses = {
-        let waited = std::time::Instant::now();
-        let _scan = radio.scan_lock_between_connects().await;
-        if waited.elapsed() > Duration::from_millis(500) {
-            log::info!(
-                "[transport][ble] add-device scan waited {:?} for the scan lock",
-                waited.elapsed()
-            );
-        }
-        let mut discovered = adapter
-            .central()
-            .scan(datagram_config().service)
-            .await
-            .inspect_err(|err| {
-                note_scan_refused(err);
-            })
-            .map_err(|err| format!("ble scan failed: {err}"))?;
-        let _running = radio.start_running_scan();
-
-        // Listening gets at most half the caller's window, so the probe
-        // phase always has something left. Splitting scan from probe fixed
-        // one bug and introduced the risk of another: a scan that runs to
-        // the full deadline leaves zero budget for the dials it just queued
-        // up, and the pass returns nothing having done nothing -- looking
-        // exactly like "no candidates" while actually meaning "no time".
-        let mut listen_deadline = deadline - timeout / 2;
-
-        let mut flagged: Vec<String> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mine = fingerprint_of(my_device_id);
-        loop {
-            let remaining =
-                listen_deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
+pub async fn identify_heard_device(
+    state: &DeviceConnectionState, fingerprint: [u8; FINGERPRINT_LEN],
+) -> Result<AvailableDevice, String> {
+    let scanner = &state.bluetooth_scanner;
+    let address = scanner
+        .available
+        .heard_address(fingerprint)
+        .ok_or_else(|| "that device is not heard any more -- open Add Device on it again".to_string())?;
+    let started = std::time::Instant::now();
+    let reply = identify_device(scanner, state.bluetooth_advertiser.hello(), &address).await;
+    log::info!(
+        "[transport][ble] identify {address} took {:?}: {}",
+        started.elapsed(),
+        if reply.is_some() { "answered" } else { "no answer" }
+    );
+    match reply {
+        Some(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id }) => {
+            if device_id == state.identity.device_id {
+                return Err("that is this device".to_string());
             }
-            // Listening is safe to drop mid-way (it is only a discovery
-            // session), so a pairing step takes the adapter at once.
-            let next = tokio::select! {
-                next = tokio::time::timeout(remaining, discovered.next()) => next,
-                _ = legs.wait_for(|count| *count > 0) => {
-                    return Err(PAIRING_PAUSED.to_string());
-                }
-            };
-            let peer = match next {
-                Ok(Some(Ok(peer))) => peer,
-                // A driver-level scan failure (e.g. Android's async
-                // `onScanFailed`) means Bluetooth itself is unusable, not
-                // merely "no more candidates" -- propagate it like
-                // `setup_hello_round` does, rather than reporting an
-                // apparently-successful empty/partial scan.
-                Ok(Some(Err(err))) => return Err(format!("ble scan failed: {err}")),
-                // Timed out, or the stream ended: stop with whatever was
-                // already found.
-                Ok(None) | Err(_) => break,
-            };
-            let address = peer.address.0.clone();
-            if !seen.insert(address.clone()) {
-                continue;
-            }
-            if seen.len() == 1 {
-                listen_deadline =
-                    listen_deadline.min(tokio::time::Instant::now() + ADVERTISER_SETTLE);
-            }
-            // Deliberately probes *every* Fini advertiser, not only those
-            // carrying the add-mode flag.
-            //
-            // The flag was only ever a cheap pre-filter. The authority is
-            // the `DiscoveryHello` reply: `run_peer_gate` answers it solely
-            // `if state.is_add_mode_enabled()`, so a device that is not in
-            // add-mode stays silent and never becomes a candidate. Skipping
-            // the pre-filter costs a dial per nearby Fini install and
-            // changes no outcome.
-            //
-            // Why it is skipped: on hardware the desktop discovered the
-            // phone repeatedly for two minutes and probed it zero times,
-            // because the phone's advertisement did not carry the flag even
-            // though the phone was in add-mode. Two attempts to explain that
-            // were wrong, and pairing is blocked meanwhile. This trades an
-            // unexplained filter for a slower but working discovery, and the
-            // real fix belongs with the rest of BLE pairing in its own
-            // change -- issue #169.
-            //
-            // Cost to be honest about: a room with several Fini devices
-            // makes every Add Device scan dial all of them and wait out
-            // `CANDIDATE_PROBE_TIMEOUT` on the ones that are not pairing.
-            //
-            // Only one of two devices dials the other: the lower
-            // fingerprint. Both dialling each other crossed connections to
-            // the same device, and BlueZ tore both down. The higher side
-            // lists the lower one from the hello it receives instead
-            // (`inbound_hellos`), at the address it advertises from.
-            let theirs = advertised_fingerprint(
-                peer.manufacturer_data.get(&FINI_MANUFACTURER_ID).map(Vec::as_slice),
-            );
-            if let Some(theirs) = theirs {
-                peers.note_advertiser(&address, theirs);
-            }
-            let add_device_flag = peer
-                .manufacturer_data
-                .get(&FINI_MANUFACTURER_ID)
-                .and_then(|payload| payload.first())
-                .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
-            let they_connect = matches!(theirs, Some(theirs) if theirs <= mine);
-            log::info!(
-                "[transport][ble] add-device scan heard {address} fingerprint={:02x?} add_device_flag={add_device_flag} rssi={:?} -> {}",
-                theirs.unwrap_or_default(),
-                peer.rssi,
-                if they_connect { "it connects to us" } else { "we identify it" }
-            );
-            match theirs {
-                Some(theirs) if theirs <= mine => answered_by.push((address, theirs)),
-                _ => flagged.push(address),
-            }
+            let device = AvailableDevice { address, device_id, hostname };
+            scanner.available.note_identified(&device, endpoint_id);
+            Ok(device)
         }
-        // Logged unconditionally, at info. Three separate hypotheses about
-        // why add-mode discovery finds nothing have now been wrong, each
-        // costing a build/deploy/hardware cycle, because the only evidence
-        // available was `scan: discovered` lines from ble-gatt that cannot
-        // distinguish this scan from the dial loop's. This line says what
-        // *this* call saw and what it will probe, which is the fact every
-        // one of those attempts was missing.
-        log::info!(
-            "[transport][ble] add-mode scan saw {} advertiser(s), probing {}, leaving {} to dial us",
-            seen.len(),
-            flagged.len(),
-            answered_by.len()
-        );
-        flagged
-        // `discovered` is dropped here, stopping discovery, before any
-        // probe below runs.
-    };
-
-    let mut candidates = Vec::new();
-    for address in flagged_addresses {
-        // The scan deadline decides which candidates are *started*, and
-        // `CANDIDATE_PROBE_TIMEOUT` bounds each one that is: one
-        // unresponsive candidate (in range, advertising, but slow or gone
-        // by the time this connects) must not eat the whole scan -- the
-        // frontend runs this as a single self-rescheduling chain, so one
-        // stuck candidate here would otherwise delay every subsequent Add
-        // Device discovery pass. Dial and send are covered too, not just
-        // the reply: neither has a bound of its own.
-        //
-        // The deadline deliberately does *not* also clip a probe already
-        // running. A probe in flight is never cancelled -- not for pairing,
-        // and not for the caller's window either: abandoning a dial makes
-        // ble-gatt quarantine the address and disconnect it in the
-        // background, which removes the device from BlueZ and fails both
-        // the pairing dial that follows and the next pass's probe. So the
-        // pass may overrun `duration_ms` by its last candidate, and stops
-        // before starting another.
-        if *legs.borrow() > 0 {
-            return Err(PAIRING_PAUSED.to_string());
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        // `CANDIDATE_PROBE_TIMEOUT` outright, not clipped to `remaining`:
-        // the deadline decides whether another probe *starts* (the check
-        // just above), and once one has, cutting it short is the one
-        // outcome this loop must not produce. A dial abandoned part-way is
-        // not a probe that merely failed -- ble-gatt quarantines the
-        // address and disconnects it in the background, so the pass after
-        // this one cannot reach the peer either. Overrunning the caller's
-        // window by one slow candidate is the cheaper of the two.
-        if let Some(candidate) = peers.recent_probe(&address) {
-            candidates.push(candidate);
-            continue;
-        }
-        let started = std::time::Instant::now();
-        let reply = tokio::time::timeout(CANDIDATE_PROBE_TIMEOUT, probe(address.clone())).await;
-        log::info!(
-            "[transport][ble] add-device identify {address} took {:?}: {}",
-            started.elapsed(),
-            match &reply {
-                Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, .. })) => format!("answered by {device_id}"),
-                Ok(Some(other)) => format!("unexpected {}", other.wire_type()),
-                Ok(None) => "no answer".to_string(),
-                Err(_) => "timed out".to_string(),
-            }
-        );
-        if let Ok(Some(PeerFrame::DiscoveryHelloReply { device_id, hostname, endpoint_id })) = reply {
-            // A stale/self-seen advertisement (e.g. two adapters on the
-            // same machine, or a previous scan's own peripheral still
-            // winding down) must not show up as a candidate to pair with.
-            if device_id != my_device_id {
-                let candidate = AvailableDevice { address, device_id, hostname };
-                peers.note_probe(&candidate, endpoint_id);
-                candidates.push(candidate);
-            }
-        }
-    }
-    // The advertisers left to dial this device: listed from the hello they
-    // sent, at the address they advertise from -- the one a pairing leg
-    // from this side can reach.
-    for (address, fingerprint) in answered_by {
-        if let Some(candidate) = peers.prober_at(&address, fingerprint, my_device_id) {
-            if !candidates.iter().any(|c| c.device_id == candidate.device_id) {
-                candidates.push(candidate);
-            }
-        }
-    }
-    Ok(candidates)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A mock radio with Fini advertisers at `addresses`, and an adapter that
-    /// scans it from its own address.
-    async fn mock_radio_with_advertisers(addresses: &[&str]) -> (Adapter, Vec<Arc<dyn ble_gatt::Backend>>) {
-        use ble_gatt::drivers::mock::{MockBackend, MockNetwork};
-        use ble_gatt::Backend;
-        use ble_gatt::CapabilityReport;
-
-        let network = MockNetwork::new();
-        let capabilities = CapabilityReport { central: true, peripheral: true };
-        let scanner: Arc<dyn Backend> = Arc::new(MockBackend::new(
-            PeerAddress("AA:00:00:00:01:00".to_string()),
-            network.clone(),
-            capabilities,
-        ));
-        let advertisers = addresses
-            .iter()
-            .map(|address| {
-                Arc::new(MockBackend::new(PeerAddress(address.to_string()), network.clone(), capabilities))
-                    as Arc<dyn Backend>
-            })
-            .collect();
-        (Adapter::new(scanner).await, advertisers)
-    }
-
-    async fn advertise_all(advertisers: &[Arc<dyn ble_gatt::Backend>]) {
-        for advertiser in advertisers {
-            advertiser.advertise(datagram_config().service_spec()).await.expect("advertise on the mock radio");
-        }
-    }
-
-    fn reply_from(address: &str) -> PeerFrame {
-        PeerFrame::DiscoveryHelloReply {
-            device_id: format!("device-{address}"),
-            hostname: format!("host-{address}"),
-            endpoint_id: format!("key-{address}"),
-        }
-    }
-
-    /// A pass that finds a pairing step already running gives up with the
-    /// paused error -- which keeps the picker's list -- and dials nobody.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_candidate_scan_stands_aside_while_a_pairing_step_runs() {
-        let radio = Scanner::default();
-        let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:01:01"]).await;
-        advertise_all(&advertisers).await;
-        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-        let leg = radio.begin_pairing_step();
-        let mut legs = radio.watch_pairing_steps();
-        let peers = AvailableDevices::default();
-        let result = scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, &radio, |address| {
-            let probes = probes.clone();
-            async move {
-                probes.fetch_add(1, Ordering::SeqCst);
-                Some(reply_from(&address))
-            }
-        })
-        .await;
-        drop(leg);
-
-        assert_eq!(result.err().as_deref(), Some(PAIRING_PAUSED));
-        assert_eq!(probes.load(Ordering::SeqCst), 0, "no candidate is dialled during a pairing step");
-    }
-
-    /// A new pass does not start while a pairing step runs: it waits for it.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_candidate_scan_waits_for_a_running_pairing_step() {
-        let radio = Arc::new(Scanner::default());
-        let leg = radio.begin_pairing_step();
-        let scan = tokio::spawn({
-            let radio = radio.clone();
-            async move {
-                let hello = PeerFrame::Hello { device_id: "me".to_string() };
-                scan_add_mode_candidates("me", Duration::from_millis(50), &AvailableDevices::default(), &radio, &hello)
-                    .await
-            }
-        });
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(!scan.is_finished(), "the pass waits while the pairing step runs");
-        drop(leg);
-        // What the pass does once it may run depends on this machine's
-        // adapter; only the wait is under test.
-        scan.abort();
-    }
-
-    /// A probe already dialling when a pairing step starts is let finish:
-    /// abandoning it makes ble-gatt quarantine the address and fails the
-    /// pairing dial that follows. The pass then stops before the next probe.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_probe_in_flight_finishes_when_a_pairing_step_starts() {
-        let radio = Arc::new(Scanner::default());
-        let (scanner, advertisers) = mock_radio_with_advertisers(&["AA:00:00:00:02:01", "AA:00:00:00:02:02"]).await;
-        advertise_all(&advertisers).await;
-        let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let finished = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let release = Arc::new(tokio::sync::Notify::new());
-
-        let pass = {
-            let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
-            let radio = radio.clone();
-            tokio::spawn(async move {
-                let mut legs = radio.watch_pairing_steps();
-                let peers = AvailableDevices::default();
-                scan_add_mode_candidates_pass("me", Duration::from_secs(10), &mut legs, scanner, &peers, &radio, move |address| {
-                    let (started, finished, release) = (started.clone(), finished.clone(), release.clone());
-                    async move {
-                        started.fetch_add(1, Ordering::SeqCst);
-                        release.notified().await;
-                        finished.fetch_add(1, Ordering::SeqCst);
-                        Some(reply_from(&address))
-                    }
-                })
-                .await
-            })
-        };
-        while started.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let leg = radio.begin_pairing_step();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(!pass.is_finished(), "the probe in flight is not cancelled");
-        release.notify_one();
-        let result = tokio::time::timeout(Duration::from_secs(2), pass).await.unwrap().unwrap();
-        drop(leg);
-
-        assert_eq!(finished.load(Ordering::SeqCst), 1, "the probe in flight ran to its end");
-        assert_eq!(started.load(Ordering::SeqCst), 1, "no probe starts after the pairing step began");
-        assert_eq!(result.err().as_deref(), Some(PAIRING_PAUSED));
+        _ => Err("the device did not answer -- make sure Add Device is open on it".to_string()),
     }
 }

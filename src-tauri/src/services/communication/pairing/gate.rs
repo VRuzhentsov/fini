@@ -221,14 +221,8 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             // rejection frame that would let a scanner distinguish "not in
             // add-mode" from "connection failed."
             if state.is_add_mode_enabled() {
-                // The prober will not be probed back (only the lower
-                // fingerprint dials), so its hello is how it reaches this
-                // device's own candidate list.
-                #[cfg(any(target_os = "linux", target_os = "android"))]
-                if kind == ChannelKind::Bluetooth && device_id != state.identity.device_id {
-                    state.bluetooth_scanner.available.note_inbound_hello(device_id, hostname, endpoint_id);
-                }
-                #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                // Both devices list each other from advertisements; the
+                // device that identifies us needs only our answer.
                 let _ = (device_id, hostname, endpoint_id);
                 let _ = send_frame(
                     link.as_mut(),

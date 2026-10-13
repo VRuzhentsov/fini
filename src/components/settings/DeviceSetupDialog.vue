@@ -86,11 +86,19 @@ const incoming = computed(() => {
 // Bluetooth. Two devices on one LAN is the common case, so the dialog would
 // have reported "nobody found" while the BLE scan was looking straight at
 // the peer.
-const candidates = computed<DiscoveredDevice[]>(() =>
-  channel.value ? deviceStore.discoveredByChannel[channel.value] : [],
-);
-
 const knownDevice = computed(() => Boolean(props.peerDeviceId && props.kind));
+
+// A new device: the list keeps devices that are paired on this side too, so
+// that a pair deleted on the other side only can be made again ("Pair
+// again"). A known device: the ordinary list, the known peer has its own row.
+const candidates = computed<DiscoveredDevice[]>(() => {
+  if (!channel.value) return [];
+  return knownDevice.value
+    ? deviceStore.discoveredByChannel[channel.value]
+    : deviceStore.discoveredWithPairedByChannel[channel.value];
+});
+
+const pairedHereIds = computed(() => new Set(deviceStore.pairedDevices.map((device) => device.peer_device_id)));
 
 // The known-device list (ADR-0008 D20 steps 2-3): the known peer is marked
 // and preselected at the top, and every other device in range can still be
@@ -98,6 +106,12 @@ const knownDevice = computed(() => Boolean(props.peerDeviceId && props.kind));
 // with, because automatic confirmation cannot work with it -- goes through
 // the code ceremony.
 const renderLists = computed(() => ({
+  // The rows of the Add Device list; a device paired on this side says so
+  // and offers "Pair again".
+  lookingRows: candidates.value.map((device) => {
+    const pairedHere = pairedHereIds.value.has(device.device_id);
+    return { device, pairedHere, pairLabel: pairedHere ? "Pair again" : "Pair" };
+  }),
   otherCandidates: knownDevice.value
     ? candidates.value.filter((device) => device.device_id !== props.peerDeviceId)
     : candidates.value,
@@ -220,12 +234,17 @@ const addModeUsesBluetooth = computed(
   () => !(knownDevice.value && props.kind === ChannelKind.Network),
 );
 
-function startAddMode() {
+function resetDialog() {
   channel.value = null;
   codeInput.value = "";
   codeError.value = null;
   acceptedRequestId.value = null;
-  void deviceStore.enterAddMode({ bluetooth: addModeUsesBluetooth.value });
+}
+
+// Add mode starts for the chosen channel only: Network Add Device runs no
+// Bluetooth scan (the spike measured one there that crashed bluetoothd).
+function startAddMode(bluetooth: boolean) {
+  void deviceStore.enterAddMode({ bluetooth });
   stopClock();
   clockTimer = setInterval(() => {
     nowMs.value = Date.now();
@@ -297,9 +316,10 @@ async function finishChannelSetup(switchOn: boolean): Promise<boolean> {
 // A known device runs both: the setup search for the automatic path, and
 // add mode so the list and the code fallback work (ADR-0008 D20).
 function begin() {
-  startAddMode();
+  resetDialog();
   if (knownDevice.value) {
     channel.value = props.kind ?? null;
+    startAddMode(addModeUsesBluetooth.value);
     void startChannelSetup();
   }
 }
@@ -342,12 +362,20 @@ onUnmounted(() => {
 
 function pickChannel(kind: ChannelKind) {
   channel.value = kind;
+  startAddMode(kind === ChannelKind.Bluetooth);
 }
 
-// Back to the list. A known device keeps its channel: the row's Add set it.
+// Back to the start. A known device keeps its channel: the row's Add set it.
+// A new device goes back to the channel choice, so its add mode ends here and
+// starts again for the next channel picked.
 function startOver() {
   deviceStore.cancelOutgoingRequest();
-  channel.value = knownDevice.value ? (props.kind ?? null) : null;
+  if (knownDevice.value) {
+    channel.value = props.kind ?? null;
+    return;
+  }
+  stopAddMode();
+  channel.value = null;
 }
 
 async function requestPair(device: DiscoveredDevice) {
@@ -526,21 +554,26 @@ async function confirmChannelSetup() {
 
           <ul v-else class="flex list-none flex-col overflow-hidden rounded-lg">
             <li
-              v-for="device in candidates"
-              :key="device.device_id"
+              v-for="row in renderLists.lookingRows"
+              :key="row.device.device_id"
               class="flex items-center gap-2.5 border-b border-base-200 bg-base-100 px-2 py-2 last:border-b-0"
               data-testid="nearby-device-row"
-              :data-device-hostname="device.hostname"
-              :data-device-id="device.device_id"
-              :data-channel-kind="device.channel_kind"
+              :data-device-hostname="row.device.hostname"
+              :data-device-id="row.device.device_id"
+              :data-channel-kind="row.device.channel_kind"
             >
               <span class="size-2.5 shrink-0 rounded-full bg-success" />
-              <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ device.hostname }}</span>
+              <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ row.device.hostname }}</span>
+              <span
+                v-if="row.pairedHere"
+                class="shrink-0 text-[11px] text-[var(--fg-3)]"
+                data-testid="paired-here"
+              >Paired here</span>
               <button
                 class="btn btn-primary btn-xs"
                 data-testid="request-pair"
-                @click="void requestPair(device)"
-              >Pair</button>
+                @click="void requestPair(row.device)"
+              >{{ row.pairLabel }}</button>
             </li>
           </ul>
         </template>

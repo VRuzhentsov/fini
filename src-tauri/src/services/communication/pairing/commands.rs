@@ -192,13 +192,16 @@ pub fn device_connection_enter_add_mode_impl(
     if bluetooth {
         state.bluetooth_advertiser.set_add_mode(true);
     }
+    #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+    if bluetooth {
+        state.bluetooth_scanner.set_add_device_mode(true);
+    }
     crate::services::communication::sync::commands::notify_sync_work_pending();
     // Opening Add Device is a genuine user action, the right point to
     // prompt -- see `ble_plugin::request_permission`'s doc
     // comment. Requested exactly once per add-mode entry, here, not from
-    // `device_connection_discover_bluetooth_candidates`: that command is
-    // invoked repeatedly by the frontend's self-rescheduling scan loop
-    // (every ~2s for as long as this view stays open), and prompting
+    // the Add Device list command: that command is invoked every second
+    // for as long as this view stays open, and prompting
     // again on every retry after the user has already explicitly denied
     // it once would violate that same contract.
     #[cfg(target_os = "android")]
@@ -236,6 +239,8 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
     );
     #[cfg(any(target_os = "linux", target_os = "android"))]
     state.bluetooth_advertiser.set_add_mode(false);
+    #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+    state.bluetooth_scanner.set_add_device_mode(false);
     crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
@@ -287,67 +292,115 @@ pub async fn device_connection_send_pair_request_bluetooth(
     .map_err(|err| format!("pair request task failed: {err}"))?
 }
 
-/// Phase 3's discovery scan, exposed to `AddDeviceView.vue`: scans for
-/// add-mode-flagged BLE candidates for `duration_ms` and maps them into the
-/// same `DiscoveredDevice` shape mDNS-sourced candidates use, tagged
-/// `channel: Bluetooth`, for the unified candidate list.
+/// The Bluetooth half of the Add Device list: devices the scan heard with
+/// the Add Device flag in the last 15 s, from their advertisements alone (no
+/// connection). A device that an identify step has not answered yet has the
+/// id `bt:<fingerprint>` and its short advertised name.
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub async fn device_connection_discover_bluetooth_candidates(
-    state: State<'_, DeviceConnectionState>, duration_ms: u64,
+pub fn device_connection_bluetooth_available_devices(
+    state: State<'_, DeviceConnectionState>,
 ) -> Result<Vec<DiscoveredDevice>, String> {
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        let _ = duration_ms;
         let _ = state.identity.device_id.as_str();
         return Err("Bluetooth is not available on this platform".to_string());
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        // Only *rechecks* permission here, doesn't re-prompt:
-        // `device_connection_enter_add_mode_impl` already requested it once
-        // for this add-mode session. This command is invoked repeatedly by
-        // the frontend's self-rescheduling scan loop (every ~2s for as
-        // long as Add Device stays open), and re-prompting on every retry
-        // after an explicit denial would violate
-        // `ble_plugin::request_permission`'s "tied to a
-        // genuine user action" contract.
-        #[cfg(target_os = "android")]
-        {
-            if !crate::services::ble_plugin::permission_granted() {
-                return Err(
-                    "Bluetooth permission required -- grant it in the dialog, then try again"
-                        .to_string(),
-                );
-            }
-        }
-
-        let my_device_id = state.identity.device_id.clone();
-        let candidates = crate::services::communication::channel::bluetooth::scan_add_mode_candidates(
-            &my_device_id,
-            std::time::Duration::from_millis(duration_ms),
-            &state.bluetooth_scanner.available,
-            &state.bluetooth_scanner,
-            state.bluetooth_advertiser.hello(),
-        )
-        .await?;
-        log::info!(
-            "[transport][ble] add-device list: [{}]",
-            candidates.iter().map(|c| format!("{} at {}", c.hostname, c.address)).collect::<Vec<_>>().join(", ")
-        );
+        use crate::services::communication::channel::bluetooth::fingerprint_of;
+        let mine = fingerprint_of(&state.identity.device_id);
         let now = utc_now();
-        Ok(candidates
+        // A device paired on this side is listed with its id and name, so
+        // that the list can offer "Pair again" for a pair the other side
+        // deleted.
+        let paired: Vec<(String, String)> = {
+            let mut conn = crate::services::db::open_db_at_path(&state.db_path);
+            device_connection_get_paired_devices_impl(&mut conn)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|device| (device.peer_device_id, device.display_name))
+                .collect()
+        };
+        Ok(state
+            .bluetooth_scanner
+            .available
+            .in_add_device(mine)
             .into_iter()
-            .map(|candidate| DiscoveredDevice {
-                device_id: candidate.device_id,
-                hostname: candidate.hostname,
-                addr: candidate.address,
-                discovery_port: 0,
-                ws_port: None,
-                last_seen_at: now.clone(),
-                channel_kind: crate::services::communication::pairing::channel_status::ChannelKind::Bluetooth,
+            .map(|device| {
+                let code = fingerprint_code(&device.fingerprint);
+                let paired_here =
+                    paired.iter().find(|(id, _)| fingerprint_of(id) == device.fingerprint).cloned();
+                let (device_id, hostname) = match device.identified.or(paired_here) {
+                    Some((device_id, hostname)) => (device_id, hostname),
+                    None => (
+                        format!("bt:{code}"),
+                        device.name.unwrap_or_else(|| format!("Fini device {}", &code[..4])),
+                    ),
+                };
+                DiscoveredDevice {
+                    device_id,
+                    hostname,
+                    addr: device.address,
+                    discovery_port: 0,
+                    ws_port: None,
+                    last_seen_at: now.clone(),
+                    channel_kind: crate::services::communication::pairing::channel_status::ChannelKind::Bluetooth,
+                }
             })
             .collect())
+    }
+}
+
+/// The fingerprint as hexadecimal text, for a `bt:` device id.
+#[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
+fn fingerprint_code(fingerprint: &[u8]) -> String {
+    fingerprint.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Pair pressed on a Bluetooth device the list shows from its advertisement
+/// (`bt:<fingerprint>`): one connection to learn its device id, name and
+/// key. Returns the device with its real id, for the pair request.
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub async fn device_connection_identify_bluetooth_device(
+    state: State<'_, DeviceConnectionState>, device_id: String,
+) -> Result<DiscoveredDevice, String> {
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let _ = (state.identity.device_id.as_str(), device_id);
+        return Err("Bluetooth is not available on this platform".to_string());
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        #[cfg(target_os = "android")]
+        if !crate::services::ble_plugin::permission_granted() {
+            return Err("Bluetooth permission required -- grant it in the dialog, then try again".to_string());
+        }
+        // A `bt:<fingerprint>` row, or a device id (a device paired here,
+        // or one an earlier identify step answered).
+        let fingerprint: [u8; 4] = match device_id.strip_prefix("bt:") {
+            Some(code) => {
+                let bytes: Vec<u8> = (0..code.len())
+                    .step_by(2)
+                    .map(|at| u8::from_str_radix(code.get(at..at + 2).unwrap_or("zz"), 16))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| format!("not a Bluetooth list id: {device_id}"))?;
+                bytes.try_into().map_err(|_| format!("not a Bluetooth list id: {device_id}"))?
+            }
+            None => crate::services::communication::channel::bluetooth::fingerprint_of(&device_id),
+        };
+        let device =
+            crate::services::communication::channel::bluetooth::identify_heard_device(state.inner(), fingerprint).await?;
+        Ok(DiscoveredDevice {
+            device_id: device.device_id,
+            hostname: device.hostname,
+            addr: device.address,
+            discovery_port: 0,
+            ws_port: None,
+            last_seen_at: utc_now(),
+            channel_kind: crate::services::communication::pairing::channel_status::ChannelKind::Bluetooth,
+        })
     }
 }
 

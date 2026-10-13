@@ -34,8 +34,6 @@
 //! checks for the enable command.
 
 #[cfg(any(feature = "ui-plane", test))]
-use std::collections::HashSet;
-#[cfg(any(feature = "ui-plane", test))]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -84,8 +82,6 @@ pub use discovery::*;
 pub use endpoint::*;
 
 pub use advertiser::Advertiser;
-#[cfg(any(feature = "ui-plane", test))]
-pub use scanner::AvailableDevices;
 pub use scanner::Scanner;
 
 use scanner::Purpose;
@@ -189,7 +185,7 @@ fn datagram_config() -> DatagramConfig {
 /// broadcast continuously is trackable, which is why the rotating,
 /// secret-derived form is the intended successor once pairing establishes
 /// key material (issue #162).
-fn fingerprint_of(device_id: &str) -> [u8; FINGERPRINT_LEN] {
+pub fn fingerprint_of(device_id: &str) -> [u8; FINGERPRINT_LEN] {
     const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
     const FNV_PRIME: u32 = 0x0100_0193;
 

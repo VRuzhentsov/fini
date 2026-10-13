@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
 #[cfg(any(feature = "ui-plane", test))]
-use super::AvailableDevice;
+use super::{AvailableDevice, ADD_MODE_FLAG_BYTE};
 use super::{
     adapter, advertised_fingerprint, datagram_config, fingerprint_of, note_adapter_reachable,
     note_adapter_unreachable, note_scan_refused, open_db_at_path, FINGERPRINT_LEN,
@@ -60,6 +60,13 @@ use crate::services::communication::pairing::ChannelKind;
 /// "Operation already in progress" and `StopDiscovery` with "No discovery
 /// started", after which nothing could be found until bluetoothd restarted.
 const FAILED_DIAL_COOLDOWN: Duration = Duration::from_secs(10);
+
+/// On Linux in Add Device mode: scan this long, then pause for
+/// `ADD_DEVICE_SCAN_PAUSE`. BlueZ discovery scans without a gap, and while it
+/// does, the phone heard this desktop's advertisement only once in about 3 s
+/// (measured, Intel AX210); the old design paused its scan between passes.
+const ADD_DEVICE_SCAN_WINDOW: Duration = Duration::from_secs(4);
+const ADD_DEVICE_SCAN_PAUSE: Duration = Duration::from_secs(1);
 
 /// Pause after the radio refused a scan, so a broken adapter is not hammered.
 const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
@@ -164,6 +171,8 @@ pub struct Scanner {
     /// address. Written only on a fingerprint match, so "heard" means "heard
     /// advertising as this device".
     paired_heard: StdMutex<HashMap<String, (Instant, String)>>,
+    /// Set while Add Device is open; see `set_add_device_mode`.
+    add_device_mode: AtomicBool,
     /// The devices around this one in Add Device mode.
     #[cfg(any(feature = "ui-plane", test))]
     pub(crate) available: AvailableDevices,
@@ -189,6 +198,7 @@ impl Scanner {
             started: Once::new(),
             failed_dials: StdMutex::new(HashMap::new()),
             paired_heard: StdMutex::new(HashMap::new()),
+            add_device_mode: AtomicBool::new(false),
             #[cfg(any(feature = "ui-plane", test))]
             available: AvailableDevices::default(),
         }
@@ -230,13 +240,7 @@ impl Scanner {
         PairingStep(self.pairing_steps.clone())
     }
 
-    /// Follows how many pairing legs are held.
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn watch_pairing_steps(&self) -> watch::Receiver<usize> {
-        self.pairing_steps.subscribe()
-    }
-
-    /// Pairing legs held right now.
+    /// Pairing steps held right now.
     #[cfg(test)]
     pub(crate) fn pairing_steps_held(&self) -> usize {
         *self.pairing_steps.borrow()
@@ -295,22 +299,6 @@ impl Scanner {
         let guard = self.connect_guard();
         drop(self.scan_lock().await);
         guard
-    }
-
-    /// The scan lease, taken only while no dial is running. For scans
-    /// outside the coordinator (the add-mode candidate scan): the lease alone
-    /// does not see a dial already under way, and scanning during it breaks
-    /// the dial.
-    #[cfg(any(feature = "ui-plane", test))]
-    pub(super) async fn scan_lock_between_connects(&self) -> MutexGuard<'_, ()> {
-        let mut dials = self.dials.subscribe();
-        loop {
-            let _ = dials.wait_for(|count| *count == 0).await;
-            let lease = self.scan_lock().await;
-            if *dials.borrow() == 0 {
-                return lease;
-            }
-        }
     }
 
     fn start_once(self: &Arc<Self>) {
@@ -375,12 +363,41 @@ impl Scanner {
         self.changed.notify_one();
     }
 
+    /// Add Device opened or closed. While it is open, the scan runs without
+    /// a stop, records every Fini device it hears (`AvailableDevices`), and
+    /// serves only setup searches: status and delivery searches wait, so
+    /// that the radio stays on the scan the person is watching.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn set_add_device_mode(self: &Arc<Self>, on: bool) {
+        if on {
+            self.available.forget_heard();
+        }
+        self.add_device_mode.store(on, Ordering::SeqCst);
+        self.start_once();
+        self.changed.notify_one();
+    }
+
+    fn in_add_device_mode(&self) -> bool {
+        self.add_device_mode.load(Ordering::SeqCst)
+    }
+
+    /// Whether the scan has a reason to run.
+    fn scan_wanted(&self, wanted: &HashMap<[u8; FINGERPRINT_LEN], String>) -> bool {
+        !wanted.is_empty() || self.in_add_device_mode()
+    }
+
     /// The peers the next scan listens for, by advertised fingerprint.
     fn wanted(&self) -> HashMap<[u8; FINGERPRINT_LEN], String> {
+        let adding = self.in_add_device_mode();
         let (peers, status) = {
             let requests = self.requests.lock().unwrap();
-            let peers: Vec<String> = requests.searches.iter().map(|request| request.peer.clone()).collect();
-            (peers, requests.status.clone())
+            let peers: Vec<String> = requests
+                .searches
+                .iter()
+                .filter(|request| !adding || request.purpose != Purpose::Delivery)
+                .map(|request| request.peer.clone())
+                .collect();
+            (peers, requests.status.clone().filter(|_| !adding))
         };
         let mut wanted: HashMap<[u8; FINGERPRINT_LEN], String> =
             peers.into_iter().map(|peer| (fingerprint_of(&peer), peer)).collect();
@@ -437,7 +454,7 @@ impl Scanner {
             let _ = dials.wait_for(|count| *count == 0).await;
 
             let mut wanted = self.wanted();
-            if wanted.is_empty() {
+            if !self.scan_wanted(&wanted) {
                 // With the page open, a channel set up meanwhile joins the
                 // next window; otherwise only a new search can change
                 // anything.
@@ -467,24 +484,46 @@ impl Scanner {
             };
             let running = self.start_running_scan();
             log::info!(
-                "[transport][ble] shared scan window started for {} device(s), status search {}",
+                "[transport][ble] shared scan window started for {} device(s), status search {}, add device {}",
                 wanted.len(),
-                if self.requests.lock().unwrap().status.is_some() { "on" } else { "off" }
+                if self.requests.lock().unwrap().status.is_some() { "on" } else { "off" },
+                if self.in_add_device_mode() { "on" } else { "off" }
             );
 
             // One window at a time: the wanted set is re-read between
-            // windows, and at once whenever a search starts or ends.
-            let deadline = tokio::time::Instant::now() + STATUS_SEARCH_WINDOW;
+            // windows, and at once whenever a search starts or ends. On Linux
+            // in Add Device mode the windows are short with a pause between
+            // them (`ADD_DEVICE_SCAN_WINDOW`), so this device's own
+            // advertisement gets air time.
+            let window = if self.in_add_device_mode() && cfg!(target_os = "linux") {
+                ADD_DEVICE_SCAN_WINDOW
+            } else {
+                STATUS_SEARCH_WINDOW
+            };
+            let deadline = tokio::time::Instant::now() + window;
             loop {
                 tokio::select! {
                     next = tokio::time::timeout_at(deadline, discovered.next()) => match next {
                         Ok(Some(Ok(candidate))) => {
-                            let advertised = advertised_fingerprint(
-                                candidate
-                                    .manufacturer_data
-                                    .get(&FINI_MANUFACTURER_ID)
-                                    .map(|payload| payload.as_slice()),
-                            );
+                            let payload = candidate
+                                .manufacturer_data
+                                .get(&FINI_MANUFACTURER_ID)
+                                .map(|payload| payload.as_slice());
+                            let advertised = advertised_fingerprint(payload);
+                            #[cfg(any(feature = "ui-plane", test))]
+                            if self.in_add_device_mode() {
+                                if let Some(fingerprint) = advertised {
+                                    let add_device_flag = payload
+                                        .and_then(|payload| payload.first())
+                                        .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
+                                    self.available.note_heard(
+                                        fingerprint,
+                                        &candidate.address.0,
+                                        candidate.name.clone(),
+                                        add_device_flag,
+                                    );
+                                }
+                            }
                             let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) else {
                                 continue;
                             };
@@ -505,7 +544,7 @@ impl Scanner {
                     // once nothing is wanted any more.
                     _ = self.changed.notified() => {
                         wanted = self.wanted();
-                        if wanted.is_empty() {
+                        if !self.scan_wanted(&wanted) {
                             break;
                         }
                     }
@@ -515,130 +554,136 @@ impl Scanner {
             drop(running);
             drop(discovered);
             drop(scan);
+            if self.in_add_device_mode() && cfg!(target_os = "linux") {
+                let _ = tokio::time::timeout(ADD_DEVICE_SCAN_PAUSE, self.changed.notified()).await;
+            }
         }
     }
 }
 
-// ---- Devices available for Add Device (was `PeerDirectory`) ----
+// ---- Devices available for Add Device ----
 
-/// How long one probe's answer stands for its address. Shorter than
-/// `INBOUND_HELLO_FRESH`: the device this one does not dial lists it only
-/// from the hellos these probes deliver.
-#[cfg(any(feature = "ui-plane", test))]
-const PROBE_FRESH: Duration = Duration::from_secs(20);
-
-/// How long an inbound hello stands for a device in the candidate list.
-/// The prober repeats its pass every few seconds while it is in add-mode.
-#[cfg(any(feature = "ui-plane", test))]
-const INBOUND_HELLO_FRESH: Duration = Duration::from_secs(60);
-
-/// A device that probed this one in add-mode: its hello, and when.
-#[cfg(any(feature = "ui-plane", test))]
-struct InboundHello {
-    hostname: String,
-    endpoint_id: String,
-    heard_at: Instant,
-}
-
-/// One probe's answer, and when it came.
-#[cfg(any(feature = "ui-plane", test))]
-struct ProbedAt {
-    candidate: AvailableDevice,
-    at: Instant,
-}
-
-/// Who is around, by what each device told us and where we last heard it.
+/// The Fini devices around this one while Add Device is open: what their
+/// advertisements told the scan, and what an identify step learned.
 #[cfg(any(feature = "ui-plane", test))]
 #[derive(Default)]
 pub struct AvailableDevices {
-    /// The iroh key each candidate's hello reported, by device id: what a
-    /// pairing leg to that candidate dials.
-    keys: StdMutex<HashMap<String, String>>,
-    /// The newest address each known device was heard advertising from, by
-    /// device id. Android restarts its advertisement with a fresh private
-    /// address on every add-mode change, so the address a picker row was
-    /// built from can be gone by the time the person presses Pair.
-    addresses: StdMutex<HashMap<String, String>>,
-    /// Probe answers by address, so an advertiser already probed is not
-    /// dialled again on every pass: each probe is a connection that can
-    /// cross the other device's own dial to this one.
-    probed: StdMutex<HashMap<String, ProbedAt>>,
-    /// Hellos from devices that dialled this one, by device id. Of two
-    /// devices in add-mode only the lower fingerprint dials, so the other
-    /// learns of it only from this.
-    hellos: StdMutex<HashMap<String, InboundHello>>,
+    /// Every Fini device the scan heard while Add Device is open, by
+    /// advertised fingerprint: from its advertisement alone, with no
+    /// connection.
+    heard: StdMutex<HashMap<[u8; FINGERPRINT_LEN], HeardDevice>>,
+    /// What identify steps learned, by device id: the device, and the iroh
+    /// key that a pair request connects to.
+    identified: StdMutex<HashMap<String, (AvailableDevice, String)>>,
+}
+
+/// How long a device stays in the Add Device list after the scan last heard
+/// it with the Add Device flag. A phone advertises several times a second, so
+/// a device that stops (it left Add Device, or went away) drops out quickly.
+#[cfg(any(feature = "ui-plane", test))]
+const HEARD_FRESH: Duration = Duration::from_secs(15);
+
+/// What one advertisement told the scan.
+#[cfg(any(feature = "ui-plane", test))]
+#[derive(Clone)]
+struct HeardDevice {
+    address: String,
+    name: Option<String>,
+    add_device_flag: bool,
+    at: Instant,
+}
+
+/// A device for the Add Device list, from the advertisement alone.
+#[cfg(any(feature = "ui-plane", test))]
+#[derive(Clone, Debug)]
+pub struct HeardInAddDevice {
+    pub fingerprint: [u8; FINGERPRINT_LEN],
+    pub address: String,
+    /// The short name from the scan response, if the device sent one.
+    pub name: Option<String>,
+    /// The device id and full name, if an identify step learned them.
+    pub identified: Option<(String, String)>,
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 impl AvailableDevices {
-    /// The iroh key `device_id` reported, if it has been heard from.
-    pub fn key(&self, device_id: &str) -> Option<String> {
-        self.keys.lock().ok()?.get(device_id).cloned()
-    }
-
-    /// Where `device_id` was last heard advertising, if anywhere.
-    pub fn latest_address(&self, device_id: &str) -> Option<String> {
-        self.addresses.lock().ok()?.get(device_id).cloned()
-    }
-
-    /// Records `address` for whichever known device advertises
-    /// `fingerprint`.
-    pub fn note_advertiser(&self, address: &str, fingerprint: [u8; FINGERPRINT_LEN]) {
-        let known: Vec<String> = self.keys.lock().map(|keys| keys.keys().cloned().collect()).unwrap_or_default();
-        if let Some(device_id) = known.into_iter().find(|id| fingerprint_of(id) == fingerprint) {
-            if let Ok(mut addresses) = self.addresses.lock() {
-                addresses.insert(device_id, address.to_string());
-            }
+    /// Forgets what the scan heard, so that a new Add Device starts empty:
+    /// a device listed now must be in Add Device now.
+    pub fn forget_heard(&self) {
+        if let Ok(mut heard) = self.heard.lock() {
+            heard.clear();
         }
     }
 
-    /// The candidate a recent probe of `address` found, if one is fresh.
-    pub fn recent_probe(&self, address: &str) -> Option<AvailableDevice> {
-        let probed = self.probed.lock().ok()?;
-        probed.get(address).filter(|entry| entry.at.elapsed() < PROBE_FRESH).map(|entry| entry.candidate.clone())
+    /// Records one advertisement: the newest address of that device wins.
+    pub fn note_heard(
+        &self, fingerprint: [u8; FINGERPRINT_LEN], address: &str, name: Option<String>, add_device_flag: bool,
+    ) {
+        let Ok(mut heard) = self.heard.lock() else { return };
+        let name = name.or_else(|| heard.get(&fingerprint).and_then(|known| known.name.clone()));
+        heard.insert(
+            fingerprint,
+            HeardDevice { address: address.to_string(), name, add_device_flag, at: Instant::now() },
+        );
     }
 
-    /// Records what a probe of `candidate.address` answered.
-    pub fn note_probe(&self, candidate: &AvailableDevice, endpoint_id: String) {
-        if let Ok(mut keys) = self.keys.lock() {
-            keys.insert(candidate.device_id.clone(), endpoint_id);
-        }
-        if let Ok(mut addresses) = self.addresses.lock() {
-            addresses.insert(candidate.device_id.clone(), candidate.address.clone());
-        }
-        if let Ok(mut probed) = self.probed.lock() {
-            probed.insert(candidate.address.clone(), ProbedAt { candidate: candidate.clone(), at: Instant::now() });
-        }
-    }
-
-    /// Records the identity a prober sent.
-    pub fn note_inbound_hello(&self, device_id: String, hostname: String, endpoint_id: String) {
-        if let Ok(mut hellos) = self.hellos.lock() {
-            hellos.insert(device_id, InboundHello { hostname, endpoint_id, heard_at: Instant::now() });
-        }
-    }
-
-    /// The device that recently probed this one and advertises
-    /// `fingerprint`, listed at `address` (where it advertises from, the
-    /// address a pairing leg from this side can reach). Its key is recorded
-    /// for that leg.
-    pub fn prober_at(
-        &self, address: &str, fingerprint: [u8; FINGERPRINT_LEN], my_device_id: &str,
-    ) -> Option<AvailableDevice> {
-        let (device_id, hostname, endpoint_id) = {
-            let hellos = self.hellos.lock().ok()?;
-            let (device_id, hello) = hellos.iter().find(|(device_id, hello)| {
-                fingerprint_of(device_id) == fingerprint && hello.heard_at.elapsed() < INBOUND_HELLO_FRESH
-            })?;
-            (device_id.clone(), hello.hostname.clone(), hello.endpoint_id.clone())
+    /// The devices for the Add Device list: heard with the Add Device flag
+    /// in the last `HEARD_FRESH`, without this device itself.
+    pub fn in_add_device(&self, mine: [u8; FINGERPRINT_LEN]) -> Vec<HeardInAddDevice> {
+        let heard: Vec<([u8; FINGERPRINT_LEN], HeardDevice)> = match self.heard.lock() {
+            Ok(heard) => heard
+                .iter()
+                .filter(|(fingerprint, device)| {
+                    **fingerprint != mine && device.add_device_flag && device.at.elapsed() < HEARD_FRESH
+                })
+                .map(|(fingerprint, device)| (*fingerprint, device.clone()))
+                .collect(),
+            Err(_) => return Vec::new(),
         };
-        if device_id == my_device_id {
-            return None;
+        let identified: Vec<(String, String)> = match self.identified.lock() {
+            Ok(identified) => identified
+                .values()
+                .map(|(device, _)| (device.device_id.clone(), device.hostname.clone()))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        heard
+            .into_iter()
+            .map(|(fingerprint, device)| HeardInAddDevice {
+                fingerprint,
+                address: device.address,
+                name: device.name,
+                identified: identified.iter().find(|(id, _)| fingerprint_of(id) == fingerprint).cloned(),
+            })
+            .collect()
+    }
+
+    /// The newest address the scan heard `fingerprint` at, if fresh.
+    pub fn heard_address(&self, fingerprint: [u8; FINGERPRINT_LEN]) -> Option<String> {
+        let heard = self.heard.lock().ok()?;
+        heard.get(&fingerprint).filter(|device| device.at.elapsed() < HEARD_FRESH).map(|device| device.address.clone())
+    }
+
+    /// The iroh key `device_id` reported, if an identify step learned it.
+    pub fn key(&self, device_id: &str) -> Option<String> {
+        self.identified.lock().ok()?.get(device_id).map(|(_, key)| key.clone())
+    }
+
+    /// The newest address of `device_id`: where the scan last heard it, or
+    /// else where it was identified. Android changes its address on every
+    /// Add Device change, so the address a list row was built from can be
+    /// gone when the person presses Pair.
+    pub fn latest_address(&self, device_id: &str) -> Option<String> {
+        self.heard_address(fingerprint_of(device_id)).or_else(|| {
+            self.identified.lock().ok()?.get(device_id).map(|(device, _)| device.address.clone())
+        })
+    }
+
+    /// Records what an identify step learned.
+    pub fn note_identified(&self, device: &AvailableDevice, endpoint_id: String) {
+        if let Ok(mut identified) = self.identified.lock() {
+            identified.insert(device.device_id.clone(), (device.clone(), endpoint_id));
         }
-        if let Ok(mut keys) = self.keys.lock() {
-            keys.insert(device_id.clone(), endpoint_id);
-        }
-        Some(AvailableDevice { address: address.to_string(), device_id, hostname })
     }
 }
 
