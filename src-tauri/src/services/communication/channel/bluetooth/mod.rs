@@ -45,6 +45,7 @@ use crate::services::communication::pairing::{
     DeviceConnectionState, DeviceIdentity,
 };
 use crate::services::communication::sync::session;
+use crate::services::communication::sync::space_sync::SpaceSync;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::sync::types::PeerFrame;
 #[cfg(any(feature = "ui-plane", test))]
@@ -88,9 +89,9 @@ pub struct BluetoothChannel {
 }
 
 impl BluetoothChannel {
-    pub(crate) fn new(identity: &DeviceIdentity) -> Self {
+    pub(crate) fn new(identity: &DeviceIdentity, space_sync: Arc<SpaceSync>) -> Self {
         Self {
-            scanner: Arc::default(),
+            scanner: Arc::new(Scanner::new(space_sync)),
             advertiser: Arc::new(Advertiser::new(identity)),
             delivery: DeliverySchedule::default(),
             endpoint: tokio::sync::OnceCell::new(),
@@ -136,7 +137,7 @@ impl DeliverySchedule {
         }
     }
 
-    pub fn note_delivery_missed(&self, peer_id: &str) {
+    pub fn note_delivery_missed(&self, peer_id: &str, space_sync: &SpaceSync) {
         let now = std::time::Instant::now();
         let next = match self.schedule.lock() {
             Ok(mut schedule) => {
@@ -148,9 +149,7 @@ impl DeliverySchedule {
             Err(_) => return,
         };
         // The next search is due then; wake the keeper for it (ADR-0008 D12).
-        crate::services::communication::sync::commands::notify_sync_work_pending_after(
-            next.saturating_duration_since(now),
-        );
+        space_sync.wake_after(next.saturating_duration_since(now));
     }
 
     /// The device was reached, or see `ChannelService::forget_failures`: the
@@ -652,7 +651,7 @@ impl BluetoothChannel {
                     Some(err) => log::info!("[transport][ble] {peer_id} refused the exchange: {err}"),
                     None => log::info!("[transport][ble] {peer_id} not heard within the search window"),
                 }
-                self.delivery.note_delivery_missed(peer_id);
+                self.delivery.note_delivery_missed(peer_id, &state.space_sync);
                 return;
             };
             match self.connect_and_auth(state, peer_id, &found.address).await {
@@ -908,7 +907,7 @@ mod tests {
         let schedule = DeliverySchedule::default();
         let scanner = Scanner::default();
         let peer = "peer-forget-delivery-misses";
-        schedule.note_delivery_missed(peer);
+        schedule.note_delivery_missed(peer, &SpaceSync::default());
         assert!(!schedule.delivery_due(&scanner, peer), "a miss delays the next search");
         schedule.forget_delivery_misses(peer);
         assert!(schedule.delivery_due(&scanner, peer));

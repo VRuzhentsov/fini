@@ -133,6 +133,8 @@ pub struct DeviceConnectionState {
     /// Carries pairing frames over Bluetooth, and holds the links requests
     /// arrived on.
     pub(crate) bluetooth_carrier: Arc<carrier::BluetoothCarrier>,
+    /// When sync runs and which channel it goes over.
+    pub(crate) space_sync: Arc<crate::services::communication::sync::space_sync::SpaceSync>,
     runtime: Arc<Mutex<DiscoveryRuntime>>,
     lifecycle_tx: LifecycleBus,
 }
@@ -202,7 +204,11 @@ impl DeviceConnectionState {
         let secret_key = device_key::try_load_or_create_secret_key(&db_path)?;
         let mut identity = identity;
         identity.endpoint_id = secret_key.public().to_string();
-        let bluetooth = Arc::new(crate::services::communication::channel::bluetooth::BluetoothChannel::new(&identity));
+        let space_sync = Arc::new(crate::services::communication::sync::space_sync::SpaceSync::default());
+        let bluetooth = Arc::new(crate::services::communication::channel::bluetooth::BluetoothChannel::new(
+            &identity,
+            space_sync.clone(),
+        ));
 
         let space_sync_ws_port = env_port("FINI_SPACE_SYNC_WS_PORT", SPACE_SYNC_WS_PORT);
         let network = Arc::new(crate::services::communication::channel::network::NetworkChannel::new(
@@ -219,6 +225,7 @@ impl DeviceConnectionState {
             network,
             bluetooth,
             bluetooth_carrier: Arc::default(),
+            space_sync,
             runtime: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             lifecycle_tx: new_lifecycle_bus(),
         })
@@ -276,7 +283,7 @@ impl DeviceConnectionState {
         // A device that appears is the moment waiting work can go to it.
         if newly_present {
             log::info!("[transport][network] heard {device_id} at {addr}");
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            self.space_sync.wake();
         }
     }
 
@@ -425,7 +432,7 @@ impl DeviceConnectionState {
             kind,
         });
         // A connection coming up makes waiting work sendable.
-        crate::services::communication::sync::commands::notify_sync_work_pending();
+        self.space_sync.wake();
         true
     }
 
@@ -439,7 +446,7 @@ impl DeviceConnectionState {
         // Frames queued while this exchange ran (its mailbox was full) wait
         // for the next one; ask for it rather than for unrelated work.
         if self.has_queued_frames(peer_device_id) {
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            self.space_sync.wake();
         }
         if removed {
             let _ = self.lifecycle_tx.send(LifecycleEvent::SessionEnded {
@@ -570,7 +577,7 @@ impl DeviceConnectionState {
             sent
         };
         if !sent {
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            self.space_sync.wake();
         }
     }
 

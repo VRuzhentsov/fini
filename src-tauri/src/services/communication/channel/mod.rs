@@ -48,7 +48,10 @@ pub mod bluetooth {
     pub struct BluetoothChannel;
 
     impl BluetoothChannel {
-        pub(crate) fn new(_identity: &DeviceIdentity) -> Self {
+        pub(crate) fn new(
+            _identity: &DeviceIdentity,
+            _space_sync: std::sync::Arc<crate::services::communication::sync::space_sync::SpaceSync>,
+        ) -> Self {
             Self
         }
     }

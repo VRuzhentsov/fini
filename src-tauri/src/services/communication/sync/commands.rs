@@ -1,11 +1,11 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(any(feature = "ui-plane", test))]
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::Instant;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::State;
 
@@ -29,38 +29,6 @@ use crate::services::quest::QuestService;
 use crate::services::communication::channel::ChannelKind;
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
-
-/// Minimum interval between successive resend attempts of the *same*
-/// unacked sync event -- see the resend loop in `space_sync_tick_impl` for
-/// why this exists (a P1 finding from the actors-ble e2e lane: sustained
-/// per-tick resends of one small event overwhelmed the BLE mock's
-/// peripheral-role inbound reassembly queue and made it defensively
-/// disconnect+reconnect the session, losing exactly the ack that would
-/// have stopped the resends). Comfortably above the fastest tick cadence
-/// either a test or `MAPPING_UPDATE_POLL_INTERVAL_MS` (3s, in
-/// `src/stores/device.ts`) ever calls this at, so a healthy connection
-/// never waits meaningfully longer for a resend than it does today.
-const EVENT_RESEND_COOLDOWN: Duration = Duration::from_secs(5);
-
-/// Process-local, not persisted: resend pacing only matters within one
-/// running process's lifetime, and an entry for an event this process
-/// never sees again (acked, or the peer unpaired) is a few dozen bytes --
-/// not worth a DB column or explicit eviction for what a desktop app's
-/// process lifetime already bounds.
-///
-/// Keyed by `(peer_device_id, event_id)`, not `event_id` alone: one
-/// `sync_outbox` event can be pending for multiple peers at once (a space
-/// mapped to more than one peer), and each peer's delivery is independent.
-/// An `event_id`-only key let one peer's attempts suppress delivery to
-/// every other peer -- worst case, an offline peer's failed attempts kept
-/// refreshing the cooldown and a connected peer never got the event. Fixed
-/// by the peer in the key, and by only recording an attempt once
-/// `send_sync_event_to_peer` actually succeeds (a failed send must not
-/// start the cooldown).
-fn event_resend_tracker() -> &'static Mutex<HashMap<(String, String), Instant>> {
-    static TRACKER: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
-    TRACKER.get_or_init(|| Mutex::new(HashMap::new()))
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SpaceSyncStatus {
@@ -1018,7 +986,7 @@ pub fn space_sync_update_mappings_impl(
         })
         .map_err(|err| failed.take().unwrap_or_else(|| err.to_string()))?;
     if !ended.is_empty() {
-        super::control_outbox::kept();
+        super::control_outbox::kept(&device_connection.space_sync);
     }
 
     let custom_spaces = load_custom_space_descriptors(conn, &requested)?;
@@ -1182,97 +1150,9 @@ pub fn space_sync_resolve_custom_space_mapping(
     )
 }
 
-/// The longest an idle, fully-connected pair may go without a tick.
-///
-/// This is a floor for the *unprompted* cadence, not the latency of a
-/// change: a local edit wakes the drain immediately through
-/// [`notify_sync_work_pending`], so this interval no longer decides how fast
-/// data moves. What it still covers is everything a tick does besides
-/// moving data -- re-arming dial loops for a peer that is not connected,
-/// draining incoming space-sync ends -- plus being the backstop if a
-/// notification is ever missed.
-///
-/// It was 3s, chosen when the only channel was a network socket on mains
-/// power. Issue #171 did the arithmetic: ~28,800 wakeups a day to deliver a
-/// handful of quest changes. The cost is not the BLE link, which draws
-/// microamps while idle; it is waking the radio because a timer said so.
-///
-/// Now an hour, because every moment that makes work possible raises
-/// [`notify_sync_work_pending`] instead:
-///
-/// - a local edit, via `outbox::emit_sync_event_at`
-/// - an inbound frame, via `session::handle_inbound`
-/// - a session being claimed, which makes already-queued work sendable
-/// - a channel being switched on, which makes a peer eligible again
-/// - a peer becoming reachable -- mDNS presence arriving, or a BLE
-///   advertisement matching a paired peer after a gap
-///
-/// That last one is what makes an hour defensible rather than reckless: it
-/// is what re-arms the dial loop, and at 30s a missed wake cost half a
-/// minute while at an hour it would cost an hour. The interval moved only
-/// once reconnection stopped depending on it.
-///
-/// Each of those fires on a *transition*, never on the steady state that
-/// follows -- an advertisement seen on every scan window, or an mDNS
-/// re-resolve, must not wake anything, or the backstop becomes a poll
-/// wearing a different name.
-#[cfg(target_os = "android")]
-const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-
-/// Raised whenever something lands in the outbox, so the keeper can send it
-/// now instead of at the next `TICK_INTERVAL`.
-///
-/// A `Notify` rather than a channel because the payload is irrelevant: the
-/// tick re-reads the outbox from SQLite anyway, so the only question is
-/// "is there work", and coalescing several edits into one wake is correct
-/// and desirable.
-///
-/// `notify_one`, not `notify_waiters`: a signal raised while the keeper is
-/// mid-tick must survive until it next waits. The earlier reasoning -- that
-/// the running tick would read those rows itself -- only holds if the write
-/// lands before that tick's read, and for an inbound frame arriving on
-/// another task there is nothing to make that true. Dropping the signal
-/// there costs a full backstop interval of latency for data that had
-/// already arrived. `notify_one` stores a single permit, so at worst the
-/// keeper runs one extra pass that finds nothing.
-static OUTBOX_NOTIFY: OnceLock<Arc<tokio::sync::Notify>> = OnceLock::new();
-
-fn outbox_notify() -> &'static Arc<tokio::sync::Notify> {
-    OUTBOX_NOTIFY.get_or_init(|| Arc::new(tokio::sync::Notify::new()))
-}
-
-/// Wakes the keeper because there is sync work pending -- in either
-/// direction.
-///
-/// Raised from `outbox::emit_sync_event_at` (the single funnel every local
-/// change passes through) and from `session::handle_inbound` when a peer's
-/// frame lands in an incoming queue. Both are "there is something to do
-/// that the last tick could not have seen", and the keeper cannot tell them
-/// apart anyway.
-///
-/// Deliberately infallible and sync: it runs inside the same SQLite
-/// transaction path as the write, so it must not block, await, or fail the
-/// caller. A missed wake costs latency until the next tick, never data.
-pub fn notify_sync_work_pending() {
-    outbox_notify().notify_one();
-}
-
 /// How soon to ask again for bootstrap requests a live exchange's full
 /// mailbox refused.
 const BOOTSTRAP_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Wake the keeper once `delay` has passed: a retry that is due later.
-///
-/// A failed exchange records when it may be tried again (the Bluetooth
-/// delivery schedule, the Network cooldown), but only a tick acts on that,
-/// and the desktop keeper has no periodic tick. Without this, work for a
-/// peer that was unreachable once waited for some unrelated wake-up.
-pub fn notify_sync_work_pending_after(delay: std::time::Duration) {
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(delay).await;
-        notify_sync_work_pending();
-    });
-}
 
 /// Announces that a peer's change has been applied to our database, so the
 /// UI can refresh without polling for it.
@@ -1298,138 +1178,6 @@ pub(crate) fn note_data_changed() {
 #[cfg(any(feature = "ui-plane", test))]
 pub fn subscribe_data_changed() -> tokio::sync::broadcast::Receiver<()> {
     data_changed_tx().subscribe()
-}
-
-/// When the last tick ran, from any caller -- the frontend command or the
-/// keeper. `None` until the first tick.
-static LAST_TICK_AT: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
-
-fn note_tick_ran() {
-    let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = cell.lock() {
-        *guard = Some(Instant::now());
-    }
-}
-
-
-#[cfg(target_os = "android")]
-fn tick_is_overdue() -> bool {
-    let cell = LAST_TICK_AT.get_or_init(|| Mutex::new(None));
-    match cell.lock() {
-        Ok(guard) => guard.map(|at| at.elapsed() >= TICK_INTERVAL).unwrap_or(true),
-        // Poisoned only if a tick panicked. Ticking again is the safer read:
-        // a stalled sync is worse than one redundant pass.
-        Err(_) => true,
-    }
-}
-
-/// Keeps the sync tick running when the webview stops driving it.
-///
-/// Ticks are scheduled by the frontend (`startMappingUpdateLoop`'s
-/// `setInterval`), which is fine on desktop but not on Android: once the app
-/// is backgrounded the WebView throttles its timers, the ticks stop, and with
-/// them every dial loop, session keepalive and BLE peripheral start that a
-/// tick drives. Observed directly on a Pixel 6 Pro -- backgrounding the app
-/// while pairing over Bluetooth silenced the process completely (not one log
-/// line), and the peer's session died of missed pings.
-///
-/// Deliberately a keeper rather than a replacement scheduler: it only ticks
-/// when nothing else has within `TICK_INTERVAL`, so a foreground webview
-/// driving ticks normally leaves it idle and the work is never doubled. The
-/// frontend keeps its own loop because it also refreshes UI state from each
-/// tick's result, which this cannot do.
-///
-/// Started from the first tick rather than from `.setup()` on purpose: on
-/// Android that first JS-triggered tick is the earliest point the peripheral
-/// role can safely start (see `start_peripheral_once`'s caller below), and
-/// starting a Rust timer any earlier would just reintroduce that problem from
-/// a different thread.
-/// Runs on every platform, but does different amounts of work on each.
-///
-/// The wake-on-change half is universal: without it, `notify_sync_work_pending`
-/// has no consumer at all off Android, so a local edit or an inbound frame
-/// waits for whatever the frontend's own cadence happens to be -- which
-/// ADR-0007 slowed to 30s at the same time as it claimed edits had become
-/// event-driven. They had, on one platform.
-///
-/// The *periodic backstop* stays Android-only, and that asymmetry is the
-/// original reason this was gated. On desktop the frontend always drives
-/// ticks, so a second periodic ticker only contends with it for the SQLite
-/// write lock -- a real desktop log showed 21 keeper ticks and 21
-/// `database is locked` failures, each doing no work while adding lock
-/// pressure to everything else, including the auth gate. A keeper that only
-/// ever wakes on a signal cannot cause that: it runs exactly when there is
-/// something new to carry.
-/// How long the keeper waits after a wake before it opens its own
-/// connection. Long enough for an in-flight write to finish, short enough
-/// that nobody watching a screen can tell.
-const KEEPER_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
-
-fn start_tick_keeper_once(device_connection: DeviceConnectionState) {
-    static STARTED: std::sync::Once = std::sync::Once::new();
-    STARTED.call_once(|| {
-        tauri::async_runtime::spawn(async move {
-            loop {
-                // Registered *before* the wait so a signal raised while this
-                // task was mid-tick is not lost between iterations.
-                let notified = outbox_notify().notified();
-
-                #[cfg(target_os = "android")]
-                {
-                    tokio::select! {
-                        _ = tokio::time::sleep(TICK_INTERVAL) => {
-                            // Unprompted pass. Skip it if the frontend already
-                            // ticked recently -- that tick did the same work.
-                            if !tick_is_overdue() {
-                                continue;
-                            }
-                        }
-                        _ = notified => {
-                            // Something is waiting. Run regardless of when the
-                            // last tick was: the whole point is that this one
-                            // carries data the previous tick could not have
-                            // seen.
-                        }
-                    }
-                }
-                #[cfg(not(target_os = "android"))]
-                {
-                    notified.await;
-                }
-                // Collapse a burst before ticking.
-                //
-                // A wake means "there is something to carry", never "carry it
-                // this millisecond". Frames arrive together -- a sync event,
-                // a mapping update and a sync-end from the same peer in the
-                // same breath -- and each one signals. Without a pause that
-                // is a tick apiece, each opening its own connection to do
-                // work the next one would have done anyway.
-                //
-                // This is not what fixed the `database is locked` in the
-                // v0.3.11 release gate; the pragmas never being applied was
-                // (see `db::try_open_db_at_path_once`). It stands on its own
-                // terms, and a settle this short is imperceptible next to
-                // the interval it replaced.
-                tokio::time::sleep(KEEPER_SETTLE).await;
-
-                let state = device_connection.clone();
-                // `space_sync_tick_impl` is blocking (SQLite plus the dial
-                // loops it spawns), so it must not run on the async worker
-                // directly. Opening its own connection from `db_path` is what
-                // every other background path here already does.
-                let result = tokio::task::spawn_blocking(move || {
-                    let mut conn = crate::services::db::open_db_at_path(&state.db_path);
-                    space_sync_tick_impl(&mut conn, &state)
-                })
-                .await;
-                match result {
-                    Ok(Err(err)) => log::warn!("[space_sync][keeper] tick failed: {err}"),
-                    Err(err) => log::warn!("[space_sync][keeper] tick task failed: {err}"),
-                    Ok(Ok(_)) => {}
-                }
-            }
-        });
-    });
 }
 
 /// Starts the Android foreground service that keeps this process alive in the
@@ -1469,7 +1217,7 @@ pub fn space_sync_tick_impl(
     mut conn: &mut SqliteConnection,
     device_connection: &DeviceConnectionState,
 ) -> Result<SpaceSyncTickResult, String> {
-    note_tick_ran();
+    device_connection.space_sync.note_tick_ran();
     let peer_ids: Vec<String> = paired_devices::table
         .select(paired_devices::peer_device_id)
         .load(&mut *conn)
@@ -1483,21 +1231,8 @@ pub fn space_sync_tick_impl(
         channel.keep_serving(device_connection);
     }
 
-    // Started on every platform now, but see `start_tick_keeper_once`: only
-    // Android gets the periodic backstop, which is what ADR-0004 needed it
-    // for (a backgrounded WebView has its timers throttled, so ticks stop).
-    //
-    // A *periodic* keeper on desktop was actively harmful, and measurably so:
-    // it opens its own SQLite connection while the app holds one, and
-    // `space_sync_tick_impl` writes, so the two contend -- a real desktop log
-    // had 21 keeper ticks and 21 `database is locked` failures, each doing no
-    // work while adding lock pressure to everything else reading the DB,
-    // including the auth gate. The wake-on-change keeper runs only when there
-    // is something new to carry, so it cannot reproduce that.
-    //
-    // Same "first tick is the earliest safe point" reasoning as the peripheral
-    // start below, and a no-op on every call after the first.
-    start_tick_keeper_once(device_connection.clone());
+    // A no-op on every call after the first (`SpaceSync::start_keeper_once`).
+    device_connection.space_sync.start_keeper_once(device_connection);
 
     // The keeper above only decides *who* drives the tick inside this process.
     // On Android that is not enough on its own: a backgrounded app has its
@@ -1535,7 +1270,6 @@ pub fn space_sync_tick_impl(
         peers_with_work.insert(peer_device_id.clone());
 
         let mut sent_events = 0usize;
-        let mut resend_tracker = event_resend_tracker().lock().unwrap();
         for event in pending.iter() {
             if sent_events >= MAX_EVENTS_PER_PEER_PER_TICK {
                 break;
@@ -1554,18 +1288,14 @@ pub fn space_sync_tick_impl(
             // fragment budget on the peripheral role just made the ceiling
             // low enough to hit it inside a single test run.
             let now = Instant::now();
-            let tracker_key = (peer_device_id.clone(), event.event_id.clone());
-            if let Some(&last_sent) = resend_tracker.get(&tracker_key) {
-                if now.duration_since(last_sent) < EVENT_RESEND_COOLDOWN {
-                    continue;
-                }
+            if !device_connection.space_sync.may_send(peer_device_id, &event.event_id, now) {
+                continue;
             }
             if send_sync_event_to_peer(&device_connection, &peer_device_id, event).is_ok() {
-                resend_tracker.insert(tracker_key, now);
+                device_connection.space_sync.note_sent(peer_device_id, &event.event_id, now);
                 sent_events += 1;
             }
         }
-        drop(resend_tracker);
 
         sent_events_total += sent_events;
         if sent_events > 0 {
@@ -1598,7 +1328,7 @@ pub fn space_sync_tick_impl(
         // A full mailbox refused some; the spaces are still unsynced, so a
         // tick shortly after asks again.
         if !all_taken {
-            notify_sync_work_pending_after(BOOTSTRAP_RETRY);
+            device_connection.space_sync.wake_after(BOOTSTRAP_RETRY);
         }
     }
 
@@ -1715,7 +1445,9 @@ pub fn space_sync_tick_impl(
     }
     // Frames kept across restarts (ADR-0008 D14) need an exchange too.
     peers_with_work.extend(super::control_outbox::peers_waiting(&mut conn));
-    request_exchanges(&mut conn, device_connection, &peers_with_work);
+    device_connection
+        .space_sync
+        .request_exchanges(&mut conn, device_connection, &peers_with_work);
 
     let _ = cleanup_old_tombstones(&mut conn);
 
@@ -1726,6 +1458,10 @@ pub fn space_sync_tick_impl(
     // should produce no work for anyone, including the UI.
     if applied_events > 0 {
         note_data_changed();
+        // Applying can write events of its own (a checklist merge that
+        // converged, `emit_checklist_convergence_event`); the next tick
+        // sends them.
+        device_connection.space_sync.wake();
     }
 
     Ok(SpaceSyncTickResult {
@@ -1735,53 +1471,6 @@ pub fn space_sync_tick_impl(
         peers,
         ticked_at,
     })
-}
-
-/// Which channels to try, in order: the person's primary first
-/// (ADR-0007), otherwise Network first.
-fn channel_order(
-    primary: Option<crate::services::communication::pairing::ChannelKind>,
-) -> [crate::services::communication::pairing::ChannelKind; 2] {
-    use crate::services::communication::pairing::ChannelKind;
-    match primary {
-        Some(ChannelKind::Bluetooth) => [ChannelKind::Bluetooth, ChannelKind::Network],
-        _ => [ChannelKind::Network, ChannelKind::Bluetooth],
-    }
-}
-
-/// Starts an exchange with each peer that has work and none running
-/// (ADR-0008 D10). The person's primary channel (ADR-0007) is tried first,
-/// then the other; without a primary, Network first. A channel is taken
-/// when the peer is present on it -- for Network, also not while its
-/// exchanges keep failing (a blocked port, say). If the peer is present on
-/// neither, Bluetooth's delivery search looks for it (D12). A channel that
-/// is not `On` for the pair is never used.
-fn request_exchanges(
-    conn: &mut SqliteConnection,
-    device_connection: &DeviceConnectionState,
-    peers_with_work: &std::collections::HashSet<String>,
-) {
-    use crate::services::communication::pairing::{channels, ChannelKind};
-
-    for peer_device_id in peers_with_work {
-        if device_connection.has_session(peer_device_id) {
-            continue;
-        }
-        let order = channel_order(channels::primary_kind(conn, peer_device_id));
-        let reachable_now = order.into_iter().find(|&kind| {
-            let channel = device_connection.channel(kind);
-            channels::is_enabled(conn, peer_device_id, kind)
-                && channel.is_present(device_connection, peer_device_id)
-                && !channel.recently_failed(peer_device_id)
-        });
-        if let Some(kind) = reachable_now {
-            device_connection.channel(kind).request_exchange(device_connection, peer_device_id);
-        } else if channels::is_enabled(conn, peer_device_id, ChannelKind::Bluetooth) {
-            device_connection
-                .channel(ChannelKind::Bluetooth)
-                .request_exchange(device_connection, peer_device_id);
-        }
-    }
 }
 
 /// Kept for callers that still ask for a tick explicitly -- the CLI, tests,
@@ -1985,6 +1674,7 @@ mod tests {
     #[test]
     fn the_primary_channel_is_tried_first() {
         use crate::services::communication::pairing::ChannelKind;
+        let channel_order = super::super::space_sync::SpaceSync::channel_order;
         assert_eq!(channel_order(None), [ChannelKind::Network, ChannelKind::Bluetooth]);
         assert_eq!(channel_order(Some(ChannelKind::Network)), [ChannelKind::Network, ChannelKind::Bluetooth]);
         assert_eq!(channel_order(Some(ChannelKind::Bluetooth)), [ChannelKind::Bluetooth, ChannelKind::Network]);

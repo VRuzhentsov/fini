@@ -179,13 +179,11 @@ impl Advertiser {
     /// A Bluetooth init completed here: keep advertising for a while, then
     /// look again whether anything still wants it.
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn keep_answering_after_setup(&self) {
+    pub fn keep_answering_after_setup(&self, space_sync: &crate::services::communication::sync::space_sync::SpaceSync) {
         if let Ok(mut until) = self.answer_after_setup_until.lock() {
             *until = Some(Instant::now() + ANSWER_AFTER_SETUP);
         }
-        crate::services::communication::sync::commands::notify_sync_work_pending_after(
-            ANSWER_AFTER_SETUP + Duration::from_secs(1),
-        );
+        space_sync.wake_after(ANSWER_AFTER_SETUP + Duration::from_secs(1));
     }
 
     /// Takes the peripheral role; false if an acceptor already runs.
@@ -279,7 +277,7 @@ mod tests {
     #[test]
     fn a_finished_bluetooth_setup_keeps_advertising_a_while() {
         let advertiser = Advertiser::new(&identity("test-device"));
-        advertiser.keep_answering_after_setup();
+        advertiser.keep_answering_after_setup(&Default::default());
         assert!(advertiser.answering_after_setup());
     }
 }

@@ -393,8 +393,8 @@ impl NetworkChannel {
                 // Look again now, while the failure still counts, so the work
                 // can go over Bluetooth meanwhile; and once the cooldown is
                 // over, to try Network again.
-                crate::services::communication::sync::commands::notify_sync_work_pending();
-                crate::services::communication::sync::commands::notify_sync_work_pending_after(FAILURE_COOLDOWN);
+                state.space_sync.wake();
+                state.space_sync.wake_after(FAILURE_COOLDOWN);
             }
             channel.in_flight.lock().unwrap().remove(&peer_id);
         });

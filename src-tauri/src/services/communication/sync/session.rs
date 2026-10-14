@@ -203,14 +203,14 @@ pub async fn run_session(
     // exchange does not stall sync, and a peer that keeps dropping off does
     // not turn into back-to-back exchanges. A tick with nothing left to do
     // starts nothing.
-    crate::services::communication::sync::commands::notify_sync_work_pending_after(
+    state.space_sync.wake_after(
         EXCHANGE_END_RECHECK,
     );
     // A held session ends only when its link failed: the channel is grey
     // now, and the next tick lets it connect again (`keep_serving`) if the
     // peer is still there.
     if !closes_when_idle {
-        crate::services::communication::sync::commands::notify_sync_work_pending_after(HELD_SESSION_RECONNECT);
+        state.space_sync.wake_after(HELD_SESSION_RECONNECT);
     }
 }
 
@@ -237,7 +237,7 @@ async fn handle_inbound(
             // waits for the backstop interval -- which ADR-0007 raised to 30s
             // while describing remote changes as pushed. Pushed to the queue,
             // yes; to the database and the UI, only on the next tick.
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            state.space_sync.wake();
             let _ = send_frame(link, &PeerFrame::Ack { event_id }).await;
         }
         PeerFrame::Ack { event_id } => {
@@ -248,7 +248,7 @@ async fn handle_inbound(
                 acked_at,
             });
             // Only a tick clears the delivered entry from the outbox.
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            state.space_sync.wake();
         }
         PeerFrame::SpaceMappingUpdate {
             mapped_space_ids,
@@ -264,7 +264,7 @@ async fn handle_inbound(
             // Same reason as `SyncEvent` above: a mapping request the other
             // person is waiting on should not sit in a queue for a tick
             // interval before it can even be shown.
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            state.space_sync.wake();
             // ...and a mapping update is consumed by the *frontend*, not by
             // the tick, so waking the keeper alone would not surface it.
             // `space-sync://changed` is what `startSyncChangedListener`
@@ -285,7 +285,7 @@ async fn handle_inbound(
             // something unrelated woke the keeper -- and since this PR
             // removed the periodic backstop, "unrelated" can mean never.
             // The peer would stay mapped on a space it had stopped sharing.
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            state.space_sync.wake();
         }
         PeerFrame::BootstrapStart { space_id } => {
             let db = db_path.clone();
@@ -339,7 +339,7 @@ async fn handle_inbound(
                     log::info!("[session] {peer_device_id}: peer unlinked {kind:?}; removed it here");
                     // Whether this device should still advertise, and which
                     // channel carries waiting work, may have changed.
-                    crate::services::communication::sync::commands::notify_sync_work_pending();
+                    state.space_sync.wake();
                 }
                 Err(err) => {
                     log::warn!("[session] {peer_device_id}: could not remove unlinked {kind:?}: {err}");

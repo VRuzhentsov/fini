@@ -1481,6 +1481,7 @@ pub fn create_quest(
         }
     }
 
+    device_connection.space_sync.wake();
     Ok(quest)
 }
 
@@ -1543,6 +1544,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
             {
                 eprintln!("[notification] complete: sync emit failed: {e}");
             }
+            dc.space_sync.wake();
         }
         Err(e) => eprintln!("[notification] complete: update failed for {quest_id}: {e}"),
     }
@@ -1614,6 +1616,7 @@ pub fn update_quest(
         &previous_space_id,
         &quest,
     )?;
+    device_connection.space_sync.wake();
 
     Ok(quest)
 }
@@ -1646,6 +1649,7 @@ pub fn delete_quest(
     )?;
 
     QuestService::new(&mut conn).delete(&id)?;
+    device_connection.space_sync.wake();
     Ok(())
 }
 
@@ -1707,6 +1711,7 @@ pub fn add_checklist_item(
     let quest =
         QuestService::new(&mut conn).add_checklist_item(&quest_id, &text, Some(&device_id))?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    device_connection.space_sync.wake();
     Ok(quest)
 }
 
@@ -1723,6 +1728,7 @@ pub fn toggle_checklist_item(
     let device_id = device_connection.identity.device_id.clone();
     let quest = QuestService::new(&mut conn).toggle_checklist_item(&quest_id, &item_id, checked)?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    device_connection.space_sync.wake();
     Ok(quest)
 }
 
@@ -1744,6 +1750,7 @@ pub fn edit_checklist_item(
         Some(&device_id),
     )?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    device_connection.space_sync.wake();
     Ok(quest)
 }
 
@@ -1763,6 +1770,7 @@ pub fn remove_checklist_item(
         Some(&device_id),
     )?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    device_connection.space_sync.wake();
     Ok(quest)
 }
 
@@ -1778,6 +1786,7 @@ pub fn reorder_checklist(
     let device_id = device_connection.identity.device_id.clone();
     let quest = QuestService::new(&mut conn).reorder_checklist(&quest_id, &ordered_item_ids)?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    device_connection.space_sync.wake();
     Ok(quest)
 }
 
@@ -1805,6 +1814,7 @@ pub fn update_series_checklist(
     if scope == "future" {
         emit_series_checklist_template_sync(&mut conn, &device_id, &series_id, &quest.space_id)?;
     }
+    device_connection.space_sync.wake();
     Ok(quest)
 }
 
@@ -1852,7 +1862,9 @@ pub fn delete_quest_series(
 
     QuestService::new(&mut conn)
         .delete_series_with_sync(&origin_device_id, &series_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    device_connection.space_sync.wake();
+    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

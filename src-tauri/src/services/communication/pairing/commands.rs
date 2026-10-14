@@ -194,7 +194,7 @@ pub fn device_connection_enter_add_mode_impl(
     if bluetooth {
         state.bluetooth.scanner.set_add_device_mode(true);
     }
-    crate::services::communication::sync::commands::notify_sync_work_pending();
+    state.space_sync.wake();
     // Opening Add Device is a genuine user action, the right point to
     // prompt -- see `ble_plugin::request_permission`'s doc
     // comment. Requested exactly once per add-mode entry, here, not from
@@ -239,7 +239,7 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
     state.bluetooth.advertiser.set_add_mode(false);
     #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
     state.bluetooth.scanner.set_add_device_mode(false);
-    crate::services::communication::sync::commands::notify_sync_work_pending();
+    state.space_sync.wake();
     Ok(())
 }
 
@@ -820,12 +820,6 @@ pub fn device_connection_save_paired_device_impl(
         channels::note_address(&mut *conn, &peer_device_id, ChannelKind::Bluetooth, address);
     }
 
-    // The pairing set a channel up, so whether to advertise may have changed
-    // (ADR-0008 D8), and there may be work for the new pair. The keeper's
-    // tick is what applies both; without this a device paired over Bluetooth
-    // stayed silent until something unrelated woke it.
-    crate::services::communication::sync::commands::notify_sync_work_pending();
-
     paired_devices::table
         .find(&peer_device_id)
         .select(PairedDevice::as_select())
@@ -857,7 +851,7 @@ pub fn device_connection_save_paired_device(
     let endpoint_id = request_id
         .and_then(|request_id| state.pairing_key(&request_id, &peer_device_id))
         .or(endpoint_id);
-    device_connection_save_paired_device_impl(
+    let saved = device_connection_save_paired_device_impl(
         &mut conn,
         peer_device_id,
         display_name,
@@ -865,7 +859,13 @@ pub fn device_connection_save_paired_device(
         via_bluetooth,
         endpoint_id,
         state.db_path.clone(),
-    )
+    )?;
+    // The pairing set a channel up, so whether to advertise may have changed
+    // (ADR-0008 D8), and there may be work for the new pair. The keeper's
+    // tick is what applies both; without this a device paired over Bluetooth
+    // stayed silent until something unrelated woke it.
+    state.space_sync.wake();
+    Ok(saved)
 }
 
 /// The switch on a channel row: one function for both kinds, because
@@ -943,7 +943,7 @@ pub fn device_connection_set_channel_enabled_impl(
     // Switching on makes waiting work deliverable, and either way whether
     // this device should advertise may have changed (ADR-0008 D8); the
     // keeper's next pass handles both.
-    crate::services::communication::sync::commands::notify_sync_work_pending();
+    state.space_sync.wake();
 
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
@@ -1000,7 +1000,7 @@ pub fn device_connection_unlink_channel_impl(
         )
     })
     .map_err(|err| refused.take().unwrap_or_else(|| err.to_string()))?;
-    control_outbox::kept();
+    control_outbox::kept(&state.space_sync);
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
@@ -1171,7 +1171,7 @@ pub fn device_connection_set_primary_channel_impl(
     }
     channels::set_primary(&mut *conn, &peer_device_id, primary)?;
     // Waiting work may now go over a different channel.
-    crate::services::communication::sync::commands::notify_sync_work_pending();
+    state.space_sync.wake();
     device_connection_channel_statuses_impl(conn, state, peer_device_id)
 }
 
@@ -1341,8 +1341,6 @@ pub fn device_connection_unpair_impl(
     diesel::delete(paired_devices::table.find(&peer_device_id))
         .execute(conn)
         .map_err(|e| e.to_string())?;
-    // Its channels went with it, which can leave nobody to advertise for.
-    crate::services::communication::sync::commands::notify_sync_work_pending();
     Ok(())
 }
 
@@ -1355,6 +1353,8 @@ pub fn device_connection_unpair(
 ) -> Result<(), String> {
     let mut conn = db.0.lock().unwrap();
     device_connection_unpair_impl(&mut conn, peer_device_id.clone())?;
+    // Its channels went with it, which can leave nobody to advertise for.
+    state.space_sync.wake();
     // Failed attempts with the old pair must not delay a new one. Held by
     // this process's state, so only the app has any to forget.
     state.network.forget_failures(&peer_device_id);

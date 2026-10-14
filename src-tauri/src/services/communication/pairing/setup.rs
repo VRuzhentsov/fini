@@ -27,7 +27,7 @@ impl DeviceConnectionState {
         let attempt = self.begin_channel_setup(peer_device_id, kind);
         // The peer must be able to reach this device while it searches, so a
         // setup is a reason to advertise (ADR-0008 D8); the keeper applies it.
-        crate::services::communication::sync::commands::notify_sync_work_pending();
+        self.space_sync.wake();
         if already_running {
             return;
         }
@@ -59,9 +59,9 @@ impl DeviceConnectionState {
         self.end_channel_setup(peer_device_id, kind);
         #[cfg(any(target_os = "linux", target_os = "android"))]
         if kind == ChannelKind::Bluetooth && setup.is_some_and(|setup| setup.initialized()) {
-            self.bluetooth.advertiser.keep_answering_after_setup();
+            self.bluetooth.advertiser.keep_answering_after_setup(&self.space_sync);
         }
-        crate::services::communication::sync::commands::notify_sync_work_pending();
+        self.space_sync.wake();
         Ok(setup)
     }
 

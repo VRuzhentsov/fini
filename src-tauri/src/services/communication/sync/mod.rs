@@ -4,6 +4,7 @@ mod merge;
 pub(crate) mod outbox;
 mod replay;
 pub(crate) mod session;
+pub(crate) mod space_sync;
 pub mod types;
 
 #[cfg(any(feature = "ui-plane", test))]

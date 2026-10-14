@@ -44,7 +44,7 @@ fn kept_as(frame: &PeerFrame) -> Option<(&'static str, String)> {
 pub fn keep(conn: &mut SqliteConnection, peer_device_id: &str, frame: &PeerFrame) -> Result<(), String> {
     conn.transaction(|conn| keep_in(conn, peer_device_id, frame))
         .map_err(|e: diesel::result::Error| e.to_string())?;
-    kept();
+    kept(&Default::default());
     Ok(())
 }
 
@@ -75,9 +75,9 @@ pub fn keep_in(
 
 /// A frame was kept: a running exchange sends it now, otherwise one is
 /// asked for.
-pub fn kept() {
+pub fn kept(space_sync: &super::space_sync::SpaceSync) {
     changed().send_modify(|count| *count = count.wrapping_add(1));
-    super::commands::notify_sync_work_pending();
+    space_sync.wake();
 }
 
 fn drop_about(

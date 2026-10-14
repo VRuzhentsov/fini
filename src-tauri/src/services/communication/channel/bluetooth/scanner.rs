@@ -47,6 +47,7 @@ use super::{
 /// (ADR-0008 D12).
 const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
 use crate::services::communication::pairing::ChannelKind;
+use crate::services::communication::sync::space_sync::SpaceSync;
 
 /// How long an address whose dial just failed is not handed off again.
 ///
@@ -175,17 +176,21 @@ pub struct Scanner {
     /// The devices around this one in Add Device mode.
     #[cfg(any(feature = "ui-plane", test))]
     pub(crate) available: AvailableDevices,
+    /// Woken when a paired device is heard again.
+    space_sync: Arc<SpaceSync>,
 }
 
+#[cfg(test)]
 impl Default for Scanner {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::default())
     }
 }
 
 impl Scanner {
-    pub fn new() -> Self {
+    pub fn new(space_sync: Arc<SpaceSync>) -> Self {
         Self {
+            space_sync,
             pairing_steps: Arc::new(watch::channel(0).0),
             candidate_probe: Mutex::new(()),
             scan_lock: Mutex::new(()),
@@ -215,7 +220,7 @@ impl Scanner {
         // (ADR-0008 D8). Only on that change: a device heard in every window
         // must not make the keeper poll.
         if newly_present {
-            crate::services::communication::sync::commands::notify_sync_work_pending();
+            self.space_sync.wake();
         }
     }
 
