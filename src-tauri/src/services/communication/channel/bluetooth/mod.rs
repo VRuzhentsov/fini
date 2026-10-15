@@ -329,6 +329,19 @@ impl ChannelService for BluetoothChannel {
             self.start_peripheral_once(state);
         }
         self.refresh_advertising(state);
+        // Hold a session with every paired device that has Bluetooth on
+        // (2026-10-13: green is a live connection). `start_exchange` skips
+        // a device that has one, or whose delivery search is not due.
+        let peers = tokio::task::block_in_place(|| {
+            let mut conn = open_db_at_path(&state.db_path);
+            crate::services::communication::pairing::channels::peers_with_channel_enabled(
+                &mut conn,
+                ChannelKind::Bluetooth,
+            )
+        });
+        for peer in peers {
+            self.start_exchange(state, &peer);
+        }
     }
 
     fn request_exchange(&self, state: &DeviceConnectionState, peer_device_id: &str) {
@@ -349,8 +362,10 @@ impl ChannelService for BluetoothChannel {
         self.scanner.set_status(active.then(|| state.db_path.clone()));
     }
 
-    fn is_present(&self, _state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        self.scanner.heard_recently(peer_device_id)
+    /// Green means a live connection: a held session with the peer, not
+    /// only an advertisement heard.
+    fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+        state.has_session_on(peer_device_id, ChannelKind::Bluetooth)
     }
 
     /// One search of up to `SETUP_ROUND`, with a hello the moment the peer
@@ -704,6 +719,8 @@ impl BluetoothChannel {
         note_observed_bluetooth_address(&db_path, peer_id, address);
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         if state.try_claim_session(peer_id, ChannelKind::Bluetooth, tx) {
+            self.scanner.note_connected(peer_id);
+            log::info!("[transport][ble] holding a session with {peer_id}");
             let close_code = session::run_session(
                 link,
                 rx,

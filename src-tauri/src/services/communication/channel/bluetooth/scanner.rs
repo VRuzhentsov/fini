@@ -160,6 +160,10 @@ pub struct Scanner {
     scan_running: AtomicBool,
     /// Peers with an exchange attempt in flight -- one at a time per peer.
     exchanges: StdMutex<HashSet<String>>,
+    /// When this device's own connection to each peer became a session
+    /// (`note_connected`).
+    #[cfg(any(feature = "ui-plane", test))]
+    connected_at: StdMutex<HashMap<String, Instant>>,
     /// Dials running now; the coordinator's scan waits for none.
     connections: Arc<watch::Sender<usize>>,
     requests: StdMutex<Requests>,
@@ -196,6 +200,8 @@ impl Scanner {
             scan_lock: Mutex::new(()),
             scan_running: AtomicBool::new(false),
             exchanges: StdMutex::new(HashSet::new()),
+            #[cfg(any(feature = "ui-plane", test))]
+            connected_at: StdMutex::new(HashMap::new()),
             connections: Arc::new(watch::channel(0).0),
             requests: StdMutex::new(Requests::default()),
             changed: Notify::new(),
@@ -276,11 +282,17 @@ impl Scanner {
         self.scan_running.load(Ordering::SeqCst)
     }
 
-    /// Whether this device is connecting to the peer for an exchange right
-    /// now.
+    /// Whether this device is connecting to the peer right now, or its own
+    /// connection became a session within `session::CROSSING_WINDOW`.
     #[cfg(any(feature = "ui-plane", test))]
     pub fn connecting(&self, peer_id: &str) -> bool {
         self.exchanges.lock().unwrap().contains(peer_id)
+            || self
+                .connected_at
+                .lock()
+                .unwrap()
+                .get(peer_id)
+                .is_some_and(|at| at.elapsed() < crate::services::communication::sync::session::CROSSING_WINDOW)
     }
 
     /// Registers an exchange attempt with `peer_id`; false if one runs.
@@ -290,6 +302,15 @@ impl Scanner {
 
     pub(super) fn end_exchange(&self, peer_id: &str) {
         self.exchanges.lock().unwrap().remove(peer_id);
+    }
+
+    /// This device's own connection to `peer_id` became a held session: it
+    /// is no longer connecting, but for `CROSSING_WINDOW` a connection from
+    /// the peer is still a crossing.
+    pub(super) fn note_connected(&self, peer_id: &str) {
+        #[cfg(any(feature = "ui-plane", test))]
+        self.connected_at.lock().unwrap().insert(peer_id.to_string(), Instant::now());
+        self.end_exchange(peer_id);
     }
 
     fn connect_guard(&self) -> ConnectGuard {

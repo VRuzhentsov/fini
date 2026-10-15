@@ -53,23 +53,24 @@ pub(crate) fn refused_by_peer(close_code: Option<u32>) -> bool {
     matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF))
 }
 
-/// How long an exchange stays open with nothing moving in either direction
-/// before it closes (ADR-0008 D10). Long enough for the peer to apply what
-/// it received and acknowledge it on the same connection; short enough that
-/// no connection is ever held for its own sake.
-pub const EXCHANGE_IDLE: Duration = Duration::from_secs(20);
 
 /// How long a session on this channel stays open with nothing moving.
 /// `None`: the session is held, and closes only when its link fails -- a
 /// held session is what makes the channel green (2026-10-13 decision: green
-/// means a live connection). Network holds; Bluetooth still closes after
-/// `EXCHANGE_IDLE` until it holds a low-power link of its own.
+/// means a live connection). Both channels hold.
 pub fn idle_after(kind: ChannelKind) -> Option<Duration> {
     match kind {
-        ChannelKind::Network => None,
-        ChannelKind::Bluetooth => Some(EXCHANGE_IDLE),
+        ChannelKind::Network | ChannelKind::Bluetooth => None,
     }
 }
+
+/// How long after this device's own connection to a peer became a session a
+/// connection from that peer counts as a crossing (both connected at the
+/// same moment; the smaller device id's connection is kept). Later, it is a
+/// peer that restarted, and replaces the session. See each channel's
+/// `connecting`.
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) const CROSSING_WINDOW: Duration = Duration::from_secs(3);
 
 /// Writes every frame kept for the peer to the link, dropping each once
 /// written. `false` if the link failed; what was not written stays kept.

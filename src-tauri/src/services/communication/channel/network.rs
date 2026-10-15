@@ -43,13 +43,6 @@ const REBIND_INTERVAL: Duration = Duration::from_secs(5);
 /// does not turn every wake into another connection.
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 
-/// How long after this device's own connection to a peer became a session a
-/// connection from that peer counts as a crossing (both connected at the
-/// same moment; the smaller device id's connection is kept). Later, it is a
-/// peer that restarted, and replaces the session.
-#[cfg(any(feature = "ui-plane", test))]
-const CROSSING_WINDOW: Duration = Duration::from_secs(3);
-
 /// The mDNS service name for Fini's Network channel. Only Fini endpoints use
 /// it, so other iroh apps on the network are not heard.
 const MDNS_SERVICE_NAME: &str = "fini";
@@ -72,7 +65,7 @@ pub struct NetworkChannel {
     /// Peers with an exchange attempt in flight -- one at a time per peer.
     in_flight: Mutex<HashSet<String>>,
     /// When this device's own connection to each peer became a session. For
-    /// `CROSSING_WINDOW` after that, a connection from the peer is a crossing,
+    /// `session::CROSSING_WINDOW` after that, a connection from the peer is a crossing,
     /// not a restart (`connecting`).
     connected_at: Mutex<HashMap<String, Instant>>,
     /// Until when each peer whose last attempt failed is left alone.
@@ -564,7 +557,7 @@ impl ChannelService for NetworkChannel {
                 .lock()
                 .unwrap()
                 .get(peer_device_id)
-                .is_some_and(|at| at.elapsed() < CROSSING_WINDOW)
+                .is_some_and(|at| at.elapsed() < session::CROSSING_WINDOW)
     }
 
     fn recently_failed(&self, peer_device_id: &str) -> bool {
