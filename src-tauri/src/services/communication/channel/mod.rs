@@ -75,9 +75,11 @@ pub mod bluetooth {
 
         /// Nothing to find: pause, so a setup that asks again does not spin.
         #[cfg(any(feature = "ui-plane", test))]
-        async fn setup_round(&self, _state: &DeviceConnectionState, _peer_device_id: &str) -> bool {
+        async fn connect_plain(
+            &self, _state: &DeviceConnectionState, _peer_device_id: &str, _within: std::time::Duration,
+        ) -> Result<Box<dyn crate::services::communication::channel::DataLink>, String> {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            false
+            Err("Bluetooth is not available on this platform".to_string())
         }
 
         fn is_present(&self, _state: &DeviceConnectionState, _peer_device_id: &str) -> bool {

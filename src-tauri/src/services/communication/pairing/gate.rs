@@ -187,20 +187,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
                 && key_matches(&db_path, &device_id, link_key.as_deref())
                 && (searching || check_channel_initialized(&db_path, &device_id, kind))
             {
-                if send_frame(
-                    link.as_mut(),
-                    &PeerFrame::AddChannelAccept {
-                        device_id: state.identity.device_id.clone(),
-                    },
-                )
-                .await
-                .is_ok()
-                {
-                    state.note_channel_setup(&device_id, kind, |setup| setup.accepted_peer_request = true);
-                }
-                // Keep the link open briefly so the ack is read before the
-                // stream closes, as the `IdentifyDevice` arm below does.
-                let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
+                state.accept_channel_request(link.as_mut(), &device_id, kind).await;
             }
             return;
         }

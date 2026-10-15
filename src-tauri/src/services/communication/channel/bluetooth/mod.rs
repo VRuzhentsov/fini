@@ -46,10 +46,6 @@ use crate::services::communication::pairing::{
 };
 use crate::services::communication::sync::session;
 use crate::services::communication::sync::space_sync::SpaceSync;
-#[cfg(any(feature = "ui-plane", test))]
-use crate::services::communication::sync::types::PeerFrame;
-#[cfg(any(feature = "ui-plane", test))]
-use crate::services::communication::channel::{recv_frame, send_frame};
 use crate::services::communication::channel::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
 use crate::services::communication::channel::service::ChannelService;
 use crate::services::communication::channel::{BoxConnectFuture, DataLink, Transport, ChannelKind};
@@ -67,6 +63,8 @@ pub use data_link::*;
 
 pub use advertiser::Advertiser;
 pub use scanner::Scanner;
+#[cfg(any(feature = "ui-plane", test))]
+pub use scanner::AvailableDevice;
 
 use scanner::Purpose;
 
@@ -217,7 +215,7 @@ fn advertised_fingerprint(manufacturer_payload: Option<&[u8]>) -> Option<[u8; FI
     payload.get(1..1 + FINGERPRINT_LEN)?.try_into().ok()
 }
 
-const FINGERPRINT_LEN: usize = 4;
+pub(crate) const FINGERPRINT_LEN: usize = 4;
 
 /// `0xFFFF` is the Bluetooth SIG's own reserved value for "manufacturer
 /// specific data" used for testing and non-market purposes — the
@@ -368,19 +366,18 @@ impl ChannelService for BluetoothChannel {
         state.has_session_on(peer_device_id, ChannelKind::Bluetooth)
     }
 
-    /// One search of up to `SETUP_ROUND`, with a hello the moment the peer
-    /// is heard. A round the radio refused pauses
-    /// `SETUP_ROUND_FAILURE_PAUSE`, so a broken radio is not hammered.
+    /// A search of up to `within`, and a connection the moment the peer is
+    /// heard. A search the radio refused pauses `SETUP_ROUND_FAILURE_PAUSE`
+    /// before it returns, so a broken radio is not hammered.
     #[cfg(any(feature = "ui-plane", test))]
-    async fn setup_round(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        match self.find_and_send_request(state, peer_device_id, SETUP_ROUND).await {
-            Ok(acknowledged) => acknowledged,
-            Err(err) => {
-                log::warn!("[setup] bluetooth round for {peer_device_id} failed: {err}");
-                tokio::time::sleep(SETUP_ROUND_FAILURE_PAUSE).await;
-                false
-            }
+    async fn connect_plain(
+        &self, state: &DeviceConnectionState, peer_device_id: &str, within: Duration,
+    ) -> Result<Box<dyn DataLink>, String> {
+        let result = self.find_and_connect_plain(state, peer_device_id, within).await;
+        if BluetoothAdapter::this_device().is_unavailable() {
+            tokio::time::sleep(SETUP_ROUND_FAILURE_PAUSE).await;
         }
+        result
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -779,13 +776,6 @@ fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, add
 
 // ---- Channel setup ----
 
-/// How long one Bluetooth setup round listens before the next one starts
-/// (ADR-0008 D12: a search lasts up to 60s and ends early on success).
-#[cfg(all(feature = "ui-plane", not(test)))]
-const SETUP_ROUND: Duration = Duration::from_secs(60);
-#[cfg(test)]
-const SETUP_ROUND: Duration = Duration::from_millis(200);
-
 /// Pause after a Bluetooth round fails outright (scan refused, adapter
 /// gone), so a broken radio is not hammered.
 #[cfg(all(feature = "ui-plane", not(test)))]
@@ -820,18 +810,17 @@ const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
 #[cfg(any(feature = "ui-plane", test))]
 impl BluetoothChannel {
     /// One Bluetooth setup search for `peer_id` (ADR-0008 D12): asks the
-    /// scanner for the peer for up to `timeout`, and says hello the moment
-    /// it is heard. `Ok(true)` if the peer acknowledged; `Err` when the
-    /// radio itself is unusable, so the caller can pause.
-    pub async fn find_and_send_request(
+    /// scanner for the peer for up to `timeout`, and connects the moment it
+    /// is heard.
+    async fn find_and_connect_plain(
         &self, state: &DeviceConnectionState, peer_id: &str, timeout: Duration,
-    ) -> Result<bool, String> {
+    ) -> Result<Box<dyn DataLink>, String> {
         let scanner = &self.scanner;
         let Some(found) = scanner.find(peer_id, Purpose::Setup, timeout).await else {
             if BluetoothAdapter::this_device().is_unavailable() {
                 return Err("bluetooth adapter unavailable".to_string());
             }
-            return Ok(false);
+            return Err(format!("{peer_id} not heard within {timeout:?}"));
         };
         // Both devices search for each other, and each dials the other the
         // moment it hears it. Two dials crossing fail each other: a device
@@ -845,20 +834,19 @@ impl BluetoothChannel {
         // A candidate probe already dialling is let finish, not cancelled;
         // this dial must not overlap one to the same peer.
         let _probe = scanner.candidate_probe().await;
-        // Bounded: a candidate that accepts the connection and never answers
-        // must not hold the round open.
-        let acknowledged = tokio::time::timeout(
+        // Bounded: a candidate that accepts the connection and never
+        // finishes the handshake must not hold the round open.
+        let connected = tokio::time::timeout(
             FIND_PEER_CANDIDATE_TIMEOUT,
-            self.send_request(state, &found.address, peer_id),
+            self.connect_session(state, peer_id, &found.address, PEER_ALPN),
         )
         .await
-        .ok()
-        .flatten()
-        .is_some();
-        if !acknowledged {
+        .map_err(|_| format!("connect to {} timed out", found.address))
+        .and_then(|result| result);
+        if connected.is_err() {
             scanner.note_connect_failed(&found.address);
         }
-        Ok(acknowledged)
+        connected
     }
 
     /// In a Bluetooth setup the device with the lower id dials first; the
@@ -875,26 +863,6 @@ impl BluetoothChannel {
                 .is_some_and(|setup| setup.accepted_peer_request)
         {
             tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-
-    /// Dials `address` and sends this device's hello (ADR-0008 D1).
-    /// `Some(())` if the device there is `peer_id` and acknowledged it --
-    /// which it does only while it is running its own setup search for us
-    /// (D2).
-    async fn send_request(&self, state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
-        let mut link = self.connect_session(state, peer_id, address, PEER_ALPN).await.ok()?;
-        send_frame(
-            link.as_mut(),
-            &PeerFrame::AddChannel {
-                device_id: state.identity.device_id.clone(),
-            },
-        )
-        .await
-        .ok()?;
-        match recv_frame(link.as_mut()).await {
-            Some(Ok(PeerFrame::AddChannelAccept { device_id })) if device_id == peer_id => Some(()),
-            _ => None,
         }
     }
 }

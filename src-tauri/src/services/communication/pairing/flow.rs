@@ -45,7 +45,83 @@ impl Incoming {
     }
 }
 
+/// How long the identify step waits for the answer once the link is open.
+#[cfg(all(any(feature = "ui-plane", test), any(target_os = "linux", target_os = "android")))]
+const IDENTIFY_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl DeviceConnectionState {
+    /// Pair pressed on a device the Add Device list shows from its Bluetooth
+    /// advertisement: one plain link to it (the scanner finds the newest
+    /// address), this device's `IdentifyDevice`, and its `DeviceIdentified`
+    /// answer -- device id, name and iroh key. The result is recorded, so
+    /// the pair request that follows can connect over iroh.
+    #[cfg(all(any(feature = "ui-plane", test), any(target_os = "linux", target_os = "android")))]
+    pub(crate) async fn identify_heard_device(
+        &self, fingerprint: [u8; crate::services::communication::channel::bluetooth::FINGERPRINT_LEN],
+    ) -> Result<crate::services::communication::channel::bluetooth::AvailableDevice, String> {
+        use crate::services::communication::channel::{recv_frame, send_frame};
+        self.close_held_bluetooth_session_to(fingerprint).await;
+        let scanner = &self.bluetooth.scanner;
+        let started = std::time::Instant::now();
+        let (mut link, address, _guards) = scanner.connect_heard_device(fingerprint).await?;
+        let hello = PeerFrame::IdentifyDevice {
+            device_id: self.identity.device_id.clone(),
+            hostname: self.identity.hostname.clone(),
+            endpoint_id: self.identity.endpoint_id.clone(),
+        };
+        send_frame(link.as_mut(), &hello).await?;
+        let reply = tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(link.as_mut())).await;
+        log::info!("[pairing][ble] identify {address} took {:?}", started.elapsed());
+        match reply {
+            Ok(Some(Ok(PeerFrame::DeviceIdentified { device_id, hostname, endpoint_id }))) => {
+                if device_id == self.identity.device_id {
+                    return Err("that is this device".to_string());
+                }
+                let device = crate::services::communication::channel::bluetooth::AvailableDevice {
+                    address,
+                    device_id,
+                    hostname,
+                };
+                scanner.available.record_identified(&device, endpoint_id);
+                Ok(device)
+            }
+            _ => Err("the device did not answer -- make sure Add Device is open on it".to_string()),
+        }
+    }
+
+    /// Closes a held Bluetooth session to the paired device that advertises
+    /// `fingerprint`, and waits until it has released. While one is held,
+    /// BlueZ refuses a second LE connection to the same device
+    /// (`le-connection-abort-by-local`), so the identify step for adding it
+    /// again could never connect. Pairing again replaces the pair anyway;
+    /// the session connects again once Add Device closes.
+    #[cfg(all(any(feature = "ui-plane", test), any(target_os = "linux", target_os = "android")))]
+    async fn close_held_bluetooth_session_to(
+        &self, fingerprint: [u8; crate::services::communication::channel::bluetooth::FINGERPRINT_LEN],
+    ) {
+        use super::ChannelKind;
+        let paired: Vec<String> = tokio::task::block_in_place(|| {
+            use diesel::prelude::*;
+            crate::schema::paired_devices::table
+                .select(crate::schema::paired_devices::peer_device_id)
+                .load(&mut crate::services::db::open_db_at_path(&self.db_path))
+                .unwrap_or_default()
+        });
+        let held = paired.into_iter().find(|peer| {
+            crate::services::communication::channel::bluetooth::fingerprint_of(peer) == fingerprint
+                && self.has_session_on(peer, ChannelKind::Bluetooth)
+        });
+        let Some(peer) = held else {
+            return;
+        };
+        log::info!("[pairing][ble] closing the held Bluetooth session with {peer} to identify it again");
+        self.close_session_on(&peer, ChannelKind::Bluetooth);
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while self.has_session_on(&peer, ChannelKind::Bluetooth) && tokio::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     /// A `PairStart` from this device to `to_device_id`.
     fn pair_request_payload(&self, request_id: String, to_device_id: String) -> PairRequestPayload {
         let expires_at = (Utc::now() + chrono::Duration::seconds(PAIR_REQUEST_TTL_SECS))

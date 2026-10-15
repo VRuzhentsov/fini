@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
 #[cfg(any(feature = "ui-plane", test))]
-use super::{connect, recv_frame, send_frame, PeerFrame, ADD_MODE_FLAG_BYTE};
+use super::{connect, DataLink, ADD_MODE_FLAG_BYTE};
 use super::{
     advertised_fingerprint, datagram_config, fingerprint_of, open_db_at_path, BluetoothAdapter,
     FINGERPRINT_LEN, FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
@@ -588,58 +588,31 @@ impl Scanner {
     }
 }
 
-// ---- Identify step ----
-
-/// How long the identify step waits for the answer once the link is open.
-/// The connection itself is never cut short: ble-gatt gives it its own 20 s,
-/// and an abandoned connect makes BlueZ crash (two crashes in the spike).
-#[cfg(any(feature = "ui-plane", test))]
-const IDENTIFY_ANSWER_TIMEOUT: Duration = Duration::from_secs(5);
+// ---- A device heard in Add Device ----
 
 #[cfg(any(feature = "ui-plane", test))]
 impl Scanner {
-    /// Pair pressed on a device the Add Device list shows from its
-    /// advertisement: one connection to the newest address the scan heard it
-    /// at, to learn its device id, name and iroh key. `hello` is this
-    /// device's identify message, `own_device_id` its device id. The result
-    /// is recorded, so the pair request that follows can connect over iroh.
-    pub async fn identify_heard_device(
-        &self, fingerprint: [u8; FINGERPRINT_LEN], hello: &PeerFrame, own_device_id: &str,
-    ) -> Result<AvailableDevice, String> {
+    /// One plain link (no key yet) to the newest address the scan heard the
+    /// device with `fingerprint` at: what pairing's identify step talks over
+    /// (`DeviceConnectionState::identify_heard_device`). Returns the link,
+    /// the address, and guards that keep any scan paused until dropped.
+    /// The connection is never cut short: ble-gatt gives it its own 20 s,
+    /// and an abandoned connect makes BlueZ crash (two crashes in the spike).
+    pub async fn connect_heard_device(
+        &self, fingerprint: [u8; FINGERPRINT_LEN],
+    ) -> Result<(Box<dyn DataLink>, String, impl Sized + '_), String> {
         let address = self
             .available
             .heard_address(fingerprint)
             .ok_or_else(|| "that device is not heard any more -- open Add Device on it again".to_string())?;
-        let started = Instant::now();
-        let reply = self.identify_device(hello, &address).await;
-        log::info!(
-            "[transport][ble] identify {address} took {:?}: {}",
-            started.elapsed(),
-            if reply.is_some() { "answered" } else { "no answer" }
-        );
-        match reply {
-            Some(PeerFrame::DeviceIdentified { device_id, hostname, endpoint_id }) => {
-                if device_id == own_device_id {
-                    return Err("that is this device".to_string());
-                }
-                let device = AvailableDevice { address, device_id, hostname };
-                self.available.record_identified(&device, endpoint_id);
-                Ok(device)
-            }
-            _ => Err("the device did not answer -- make sure Add Device is open on it".to_string()),
-        }
-    }
-
-    /// Connects to `address` and exchanges `IdentifyDevice`/`DeviceIdentified`.
-    /// `None` on any failure along the way (dial, send, no/wrong reply).
-    async fn identify_device(&self, hello: &PeerFrame, address: &str) -> Option<PeerFrame> {
         // A search for a paired device may start a scan; holding a connect
-        // guard keeps it paused until this step ends.
-        let _probe = self.candidate_probe().await;
-        let _connect = self.acquire_connect().await;
-        let mut link = connect(address).await.ok()?;
-        send_frame(link.as_mut(), hello).await.ok()?;
-        tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(link.as_mut())).await.ok()??.ok()
+        // guard keeps it paused until the caller is done.
+        let probe = self.candidate_probe().await;
+        let connect_guard = self.acquire_connect().await;
+        let link = connect(&address)
+            .await
+            .map_err(|err| format!("the device did not answer ({err}) -- make sure Add Device is open on it"))?;
+        Ok((link, address, (probe, connect_guard)))
     }
 }
 

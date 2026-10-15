@@ -535,16 +535,23 @@ impl ChannelService for NetworkChannel {
         }
     }
 
-    /// One hello to wherever the mDNS lookup last heard the peer; a hello
-    /// that is not acknowledged waits `SETUP_HELLO_RETRY` before it
-    /// returns.
+    /// A connection to wherever the mDNS lookup last heard the peer. The
+    /// lookup, not this, finds the peer, so `within` is not needed: a peer
+    /// not heard is an error at once.
     #[cfg(any(feature = "ui-plane", test))]
-    async fn setup_round(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        let acknowledged = self.send_request(state, peer_device_id).await;
-        if !acknowledged {
-            tokio::time::sleep(SETUP_HELLO_RETRY).await;
-        }
-        acknowledged
+    async fn connect_plain(
+        &self, state: &DeviceConnectionState, peer_device_id: &str, _within: Duration,
+    ) -> Result<Box<dyn DataLink>, String> {
+        let (addr, port) = state
+            .network_presence_address(peer_device_id)
+            .ok_or_else(|| format!("{peer_device_id} is not heard on the network"))?;
+        let ip: IpAddr = addr.parse().map_err(|err| format!("invalid peer addr '{addr}': {err}"))?;
+        let peer_key = tokio::task::block_in_place(|| {
+            crate::services::communication::pairing::pinned_key(&mut open_db_at_path(&state.db_path), peer_device_id)
+        })
+        // ADR-0009 D8: a pair from before keys existed is paired again.
+        .ok_or_else(|| format!("{peer_device_id} has no key pinned; pair the devices again"))?;
+        self.connect(&peer_key, ip, port, PEER_ALPN).await
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -572,47 +579,6 @@ impl ChannelService for NetworkChannel {
     #[cfg(any(feature = "ui-plane", test))]
     fn problem(&self, state: &DeviceConnectionState) -> Option<ChannelProblem> {
         state.network_discovery_stopped().then_some(ChannelProblem::NetworkUnavailable)
-    }
-}
-
-/// Pause between Network hello attempts while the peer is not answering.
-/// The mDNS lookup, not this, is what finds the peer; this only bounds how
-/// often an unanswered hello is repeated.
-#[cfg(any(feature = "ui-plane", test))]
-const SETUP_HELLO_RETRY: Duration = Duration::from_secs(2);
-
-#[cfg(any(feature = "ui-plane", test))]
-impl NetworkChannel {
-    /// One hello over the Network channel, to wherever the mDNS lookup last
-    /// heard the peer. `false` if the peer is not present or did not
-    /// acknowledge.
-    async fn send_request(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
-        let Some((addr, port)) = state.network_presence_address(peer_device_id) else {
-            return false;
-        };
-        let Ok(ip) = addr.parse() else {
-            return false;
-        };
-        let pinned = tokio::task::block_in_place(|| {
-            crate::services::communication::pairing::pinned_key(&mut open_db_at_path(&state.db_path), peer_device_id)
-        });
-        let Some(peer_key) = pinned else {
-            // ADR-0009 D8: a pair from before keys existed is paired again.
-            return false;
-        };
-        let Ok(mut link) = self.connect(&peer_key, ip, port, PEER_ALPN).await else {
-            return false;
-        };
-        let hello = PeerFrame::AddChannel {
-            device_id: state.identity.device_id.clone(),
-        };
-        if send_frame(link.as_mut(), &hello).await.is_err() {
-            return false;
-        }
-        matches!(
-            tokio::time::timeout(Duration::from_secs(5), crate::services::communication::channel::recv_frame(link.as_mut())).await,
-            Ok(Some(Ok(PeerFrame::AddChannelAccept { device_id }))) if device_id == peer_device_id
-        )
     }
 }
 

@@ -10,14 +10,31 @@
 //! alone.
 //!
 //! Methods of `DeviceConnectionState`, because the setup records are held
-//! by the state. How a hello finds the peer is the channel's own
-//! (`ChannelService::setup_round`).
+//! by the state. The hello is `AddChannel`, the acknowledgement
+//! `AddChannelAccept`; both are sent and read here. How the link reaches
+//! the peer is the channel's own (`ChannelService::connect_plain`).
 
 use std::time::Duration;
 
 use diesel::SqliteConnection;
 
 use super::{channels, ChannelKind, ChannelSetup, DeviceConnectionState};
+use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
+use crate::services::communication::sync::types::PeerFrame;
+
+/// How long one search for the peer may take before the hello is tried
+/// again (ADR-0008 D12: a search lasts up to 60s and ends early on success).
+#[cfg(not(test))]
+const SETUP_SEARCH: Duration = Duration::from_secs(60);
+#[cfg(test)]
+const SETUP_SEARCH: Duration = Duration::from_millis(200);
+
+/// Pause after a hello that found no peer or got no acknowledgement, so an
+/// unanswered hello is not repeated in a tight loop.
+const SETUP_RETRY: Duration = Duration::from_secs(2);
+
+/// How long the peer may take to acknowledge a hello once it has it.
+const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl DeviceConnectionState {
     /// Start (or keep) the setup search for this peer's channel. The search
@@ -95,12 +112,54 @@ impl DeviceConnectionState {
                 Some(setup) if setup.attempt == attempt && !setup.sent_request_accepted => {}
                 _ => return,
             }
-            if channel.setup_round(self, peer_device_id).await {
+            let accepted = match channel.connect_plain(self, peer_device_id, SETUP_SEARCH).await {
+                Ok(mut link) => self.request_channel(link.as_mut(), peer_device_id).await,
+                Err(err) => {
+                    log::info!("[setup] {kind:?} hello to {peer_device_id}: {err}");
+                    false
+                }
+            };
+            if accepted {
                 self.note_channel_setup_attempt(peer_device_id, kind, attempt, |setup| {
                     setup.sent_request_accepted = true
                 });
                 return;
             }
+            tokio::time::sleep(SETUP_RETRY).await;
         }
+    }
+
+    /// Sends this device's hello on `link` (ADR-0008 D1). `true` if the
+    /// device there is `peer_device_id` and acknowledged it -- which it does
+    /// only while it runs its own setup search for us, or the channel
+    /// exists there (D2).
+    async fn request_channel(&self, link: &mut dyn DataLink, peer_device_id: &str) -> bool {
+        let hello = PeerFrame::AddChannel {
+            device_id: self.identity.device_id.clone(),
+        };
+        if send_frame(link, &hello).await.is_err() {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(ACCEPT_TIMEOUT, recv_frame(link)).await,
+            Ok(Some(Ok(PeerFrame::AddChannelAccept { device_id }))) if device_id == peer_device_id
+        )
+    }
+
+    /// Acknowledges the peer's hello on `link`, and records that this half
+    /// of the init happened here. The gate decided the peer may set this
+    /// channel up (`run_peer_gate`).
+    pub(crate) async fn accept_channel_request(
+        &self, link: &mut dyn DataLink, peer_device_id: &str, kind: ChannelKind,
+    ) {
+        let accept = PeerFrame::AddChannelAccept {
+            device_id: self.identity.device_id.clone(),
+        };
+        if send_frame(link, &accept).await.is_ok() {
+            self.note_channel_setup(peer_device_id, kind, |setup| setup.accepted_peer_request = true);
+        }
+        // Keep the link open briefly so the ack is read before the stream
+        // closes.
+        let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
     }
 }

@@ -102,12 +102,14 @@ pub trait ChannelService: Send + Sync {
     /// (ADR-0008 D9) -- green on the row.
     fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
 
-    /// One round of a channel setup (ADR-0008 D1, D12): find the peer on
-    /// this channel and say hello. `true` if the peer acknowledged the
-    /// hello. A round that fails pauses before it returns, so the caller
-    /// can simply try again.
+    /// A link to a paired device for the frames before a session
+    /// (`PEER_ALPN`), such as a channel setup's `AddChannel`: this channel
+    /// finds the device, for up to `within`, and connects to the key pinned
+    /// for the pair. The channel does not know what is sent on it.
     #[cfg(any(feature = "ui-plane", test))]
-    async fn setup_round(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
+    async fn connect_plain(
+        &self, state: &DeviceConnectionState, peer_device_id: &str, within: std::time::Duration,
+    ) -> Result<Box<dyn crate::services::communication::channel::DataLink>, String>;
 
     /// Whether this device is connecting to the peer on this channel right
     /// now -- for the gate to settle two connections that cross.

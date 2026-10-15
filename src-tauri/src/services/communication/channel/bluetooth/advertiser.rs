@@ -19,7 +19,6 @@ use super::{datagram_config, fingerprint_of, ADD_MODE_FLAG_BYTE, FINGERPRINT_LEN
 use ble_gatt::datagram::DatagramConfig;
 use crate::services::communication::pairing::DeviceIdentity;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::communication::sync::types::PeerFrame;
 
 /// How long this device stays reachable after a Bluetooth init completes
 /// here. Its ack to the peer's hello can be lost when the link drops, so the
@@ -54,9 +53,6 @@ pub struct Advertiser {
     /// response so the Add Device list can show it without a connection.
     #[cfg(any(feature = "ui-plane", test))]
     short_name: String,
-    /// This device's `IdentifyDevice`, carrying its identity.
-    #[cfg(any(feature = "ui-plane", test))]
-    hello: PeerFrame,
     /// Whether this device is in add-mode, watched by `run_server`'s
     /// peripheral loop so a toggle can trigger a fresh advertisement
     /// carrying (or dropping) the add-mode flag without restarting the whole
@@ -99,23 +95,12 @@ impl Advertiser {
             fingerprint: fingerprint_of(&identity.device_id),
             #[cfg(any(feature = "ui-plane", test))]
             short_name: short_name(&identity.hostname),
-            #[cfg(any(feature = "ui-plane", test))]
-            hello: PeerFrame::IdentifyDevice {
-                device_id: identity.device_id.clone(),
-                hostname: identity.hostname.clone(),
-                endpoint_id: identity.endpoint_id.clone(),
-            },
             add_mode: watch::channel(false).0,
             wanted: watch::channel(false).0,
             answer_after_setup_until: StdMutex::new(None),
             #[cfg(any(feature = "ui-plane", test))]
             peripheral_running: AtomicBool::new(false),
         }
-    }
-
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn hello(&self) -> &PeerFrame {
-        &self.hello
     }
 
     /// The datagram config `run_server` advertises: Fini's service plus one
