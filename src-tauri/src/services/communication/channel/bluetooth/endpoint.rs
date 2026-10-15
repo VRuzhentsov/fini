@@ -112,43 +112,11 @@ impl BluetoothChannel {
             .cloned()
     }
 
-    /// Every iroh connection a peer opens over Bluetooth goes to the gate.
+    /// Every iroh connection a peer opens over Bluetooth goes to the gate,
+    /// through iroh's `Router` (`pairing::Gate`).
     #[cfg(any(feature = "ui-plane", test))]
     async fn serve_iroh_endpoint(state: DeviceConnectionState, endpoint: iroh::Endpoint) {
-        while let Some(incoming) = endpoint.accept().await {
-            let peer_addr = match incoming.remote_addr() {
-                iroh::endpoint::IncomingAddr::Custom(addr) => ble_gatt_iroh::peer_address(&addr).map(|peer| peer.0),
-                _ => None,
-            };
-            let state = state.clone();
-            tokio::spawn(async move {
-                let connection = match incoming.accept() {
-                    Ok(accepting) => match accepting.await {
-                        Ok(connection) => connection,
-                        Err(err) => {
-                            log::warn!("[transport][ble] handshake failed: {err}");
-                            return;
-                        }
-                    },
-                    Err(err) => {
-                        log::warn!("[transport][ble] accept failed: {err}");
-                        return;
-                    }
-                };
-                let is_session = connection.alpn() == SYNC_ALPN;
-                match IrohDataLink::accept(ChannelKind::Bluetooth, connection, peer_addr).await {
-                    Ok(link) if is_session => {
-                        let db_path = state.db_path.clone();
-                        crate::services::communication::pairing::run_session_gate(Box::new(link), state, db_path).await;
-                    }
-                    Ok(link) => {
-                        let db_path = state.db_path.clone();
-                        crate::services::communication::pairing::run_peer_gate(Box::new(link), state, db_path).await;
-                    }
-                    Err(err) => log::warn!("[transport][ble] {err}"),
-                }
-            });
-        }
+        crate::services::communication::pairing::Gate::serve(state, ChannelKind::Bluetooth, endpoint).await;
     }
 
     /// Opens an authenticated link to paired `peer_id` at `address`: an iroh

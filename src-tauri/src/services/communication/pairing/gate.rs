@@ -295,6 +295,84 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
     }
 }
 
+/// The gate as iroh's `ProtocolHandler` for one channel's endpoint: iroh's
+/// `Router` accepts every connection and hands it here once the TLS
+/// handshake proved the peer's key. Registered for both of Fini's ALPNs: a
+/// session (`SYNC_ALPN`) goes to `run_session_gate`, the frames before one
+/// (`PEER_ALPN`) to `run_peer_gate`.
+#[cfg(any(feature = "ui-plane", test))]
+#[derive(Clone)]
+pub struct Gate {
+    state: DeviceConnectionState,
+    kind: ChannelKind,
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+impl std::fmt::Debug for Gate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gate").field("kind", &self.kind).finish()
+    }
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+impl Gate {
+    /// Serves `endpoint` for channel `kind` until the endpoint closes: an
+    /// iroh `Router` with this gate for both ALPNs. The `Router` stops when
+    /// dropped, so this holds it.
+    pub async fn serve(state: DeviceConnectionState, kind: ChannelKind, endpoint: iroh::Endpoint) {
+        use crate::services::communication::channel::iroh_link::{PEER_ALPN, SYNC_ALPN};
+        let gate = Gate { state, kind };
+        let router = iroh::protocol::Router::builder(endpoint.clone())
+            .accept(SYNC_ALPN, gate.clone())
+            .accept(PEER_ALPN, gate)
+            .spawn();
+        endpoint.closed().await;
+        let _ = router.shutdown().await;
+    }
+
+    /// Where the connection's selected path reaches the peer: an IP address
+    /// for Network, a Bluetooth address for Bluetooth.
+    fn peer_addr(&self, connection: &iroh::endpoint::Connection) -> Option<String> {
+        let paths = connection.paths();
+        let path = paths.iter().find(|path| path.is_selected())?;
+        match path.remote_addr() {
+            iroh::TransportAddr::Ip(addr) => Some(addr.ip().to_string()),
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            iroh::TransportAddr::Custom(addr) => ble_gatt_iroh::peer_address(addr).map(|peer| peer.0),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+impl iroh::protocol::ProtocolHandler for Gate {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), iroh::protocol::AcceptError> {
+        use crate::services::communication::channel::iroh_link::{IrohDataLink, SYNC_ALPN};
+        // The test switch: a channel switched off answers nobody.
+        if self.kind == ChannelKind::Network && self.state.network.switched_off() {
+            connection.close(0u32.into(), b"the network is switched off");
+            return Ok(());
+        }
+        let is_session = connection.alpn() == SYNC_ALPN;
+        let peer_addr = self.peer_addr(&connection);
+        let link = match IrohDataLink::accept(self.kind, connection, peer_addr).await {
+            Ok(link) => Box::new(link),
+            Err(err) => {
+                log::warn!("[pairing][gate] {:?}: {err}", self.kind);
+                return Ok(());
+            }
+        };
+        let state = self.state.clone();
+        let db_path = state.db_path.clone();
+        if is_session {
+            run_session_gate(link, state, db_path).await;
+        } else {
+            run_peer_gate(link, state, db_path).await;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod crossed_connection_tests {
     use super::*;

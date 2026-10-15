@@ -48,7 +48,7 @@ pub use commands::{
 pub use commands::e2e_set_radio;
 
 #[cfg(any(feature = "ui-plane", test))]
-pub use gate::{run_peer_gate, run_session_gate};
+pub use gate::{run_peer_gate, Gate};
 
 pub use commands::bluetooth_connect_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]

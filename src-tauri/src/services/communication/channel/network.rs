@@ -17,8 +17,6 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use iroh::endpoint::presets;
-#[cfg(any(feature = "ui-plane", test))]
-use iroh::endpoint::IncomingAddr;
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr};
 
 use crate::services::db::open_db_at_path;
@@ -229,45 +227,11 @@ impl NetworkChannel {
         port
     }
 
+    /// Every connection a peer opens goes to the gate, through iroh's
+    /// `Router` (`pairing::Gate`).
     #[cfg(any(feature = "ui-plane", test))]
-    async fn serve(&self, state: DeviceConnectionState, db_path: PathBuf, endpoint: Endpoint) {
-        while let Some(incoming) = endpoint.accept().await {
-            if self.switched_off() {
-                drop(incoming);
-                continue;
-            }
-            let peer_addr = match incoming.remote_addr() {
-                IncomingAddr::Ip(addr) => Some(addr.ip().to_string()),
-                _ => None,
-            };
-            let state = state.clone();
-            let db_path = db_path.clone();
-            tokio::spawn(async move {
-                let connection = match incoming.accept() {
-                    Ok(accepting) => match accepting.await {
-                        Ok(connection) => connection,
-                        Err(err) => {
-                            log::warn!("[transport][network] handshake failed: {err}");
-                            return;
-                        }
-                    },
-                    Err(err) => {
-                        log::warn!("[transport][network] accept failed: {err}");
-                        return;
-                    }
-                };
-                let is_session = connection.alpn() == SYNC_ALPN;
-                match IrohDataLink::accept(ChannelKind::Network, connection, peer_addr).await {
-                    Ok(link) if is_session => {
-                        crate::services::communication::pairing::run_session_gate(Box::new(link), state, db_path).await;
-                    }
-                    Ok(link) => {
-                        crate::services::communication::pairing::run_peer_gate(Box::new(link), state, db_path).await;
-                    }
-                    Err(err) => log::warn!("[transport][network] {err}"),
-                }
-            });
-        }
+    async fn serve(&self, state: DeviceConnectionState, _db_path: PathBuf, endpoint: Endpoint) {
+        crate::services::communication::pairing::Gate::serve(state, ChannelKind::Network, endpoint).await;
     }
 
     /// Starts the mDNS lookup (`run_discovery`) once per channel. Asking
