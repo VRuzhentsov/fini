@@ -152,6 +152,7 @@ impl NetworkChannel {
             .secret_key(self.secret_key.clone())
             .relay_mode(RelayMode::Disabled)
             .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
+            .transport_config(crate::services::communication::channel::iroh_link::transport_config())
             .clear_ip_transports()
             .bind_addr(SocketAddr::from(([0, 0, 0, 0], port)))
             .map_err(|err| err.to_string())?

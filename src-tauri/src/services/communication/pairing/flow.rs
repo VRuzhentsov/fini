@@ -63,7 +63,9 @@ impl DeviceConnectionState {
         self.close_held_bluetooth_session_to(fingerprint).await;
         let scanner = &self.bluetooth.scanner;
         let started = std::time::Instant::now();
-        let (mut link, address, _guards) = scanner.connect_heard_device(fingerprint).await?;
+        let (mut link, address, _guards) = scanner.connect_heard_device(fingerprint).await.inspect_err(|err| {
+            log::info!("[pairing][ble] identify failed after {:?}: {err}", started.elapsed());
+        })?;
         let hello = PeerFrame::IdentifyDevice {
             device_id: self.identity.device_id.clone(),
             hostname: self.identity.hostname.clone(),

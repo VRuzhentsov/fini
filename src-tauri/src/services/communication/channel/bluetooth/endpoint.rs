@@ -97,6 +97,7 @@ impl BluetoothChannel {
                     .secret_key(state.secret_key.clone())
                     .relay_mode(iroh::RelayMode::Disabled)
                     .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
+                    .transport_config(crate::services::communication::channel::iroh_link::transport_config())
                     .clear_ip_transports()
                     .add_custom_transport(Arc::new(transport.clone()))
                     .address_lookup(transport.address_lookup())

@@ -28,6 +28,20 @@ pub const SYNC_ALPN: &[u8] = b"fini/sync/4";
 /// stream before the first real frame. Not a message; `recv` skips it.
 const STREAM_START: [u8; 4] = [0, 0, 0, 0];
 
+/// How long a connection may hear nothing before it ends. A held session
+/// is green only while its connection lives, so this is how long a peer
+/// whose radio went away (it cannot send a close) still shows green. iroh's
+/// keep-alive is every 5 s, so 15 s is three missed heartbeats -- the same
+/// as iroh's own path idle timeout. QUIC's default is 30 s.
+const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The QUIC settings of both channels' endpoints.
+pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
+    iroh::endpoint::QuicTransportConfig::builder()
+        .max_idle_timeout(CONNECTION_IDLE_TIMEOUT.try_into().ok())
+        .build()
+}
+
 /// Largest frame accepted from a peer. A full sync batch is far below this;
 /// the cap stops a broken or hostile peer from making this device allocate
 /// without bound.
