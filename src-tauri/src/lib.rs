@@ -518,6 +518,10 @@ pub fn run() {
                 services::communication::sync::commands::subscribe_data_changed(),
                 app_handle.clone(),
             ));
+            // Sync runs from app start, not from the frontend's first tick:
+            // held connections come up while the frontend still loads.
+            dc_state.space_sync.start_keeper_once(&dc_state);
+            dc_state.space_sync.wake();
             app.manage(dc_state);
             Ok(())
         })

@@ -63,6 +63,11 @@ pub struct SpaceSync {
     /// (`note_channel_order`); Network first until then.
     channel_order: Mutex<HashMap<String, [ChannelKind; 2]>>,
     keeper_started: Once,
+    /// Set by the first tick the frontend asks for (`commands::
+    /// space_sync_tick`). On Android the Activity context that the
+    /// Bluetooth adapter and the foreground service need exists only from
+    /// then on; ticks before it serve Network alone.
+    frontend_ticked: std::sync::atomic::AtomicBool,
 }
 
 impl Default for SpaceSync {
@@ -73,6 +78,7 @@ impl Default for SpaceSync {
             sent_at: Mutex::new(HashMap::new()),
             channel_order: Mutex::new(HashMap::new()),
             keeper_started: Once::new(),
+            frontend_ticked: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -93,6 +99,18 @@ impl SpaceSync {
             tokio::time::sleep(delay).await;
             wake.notify_one();
         });
+    }
+
+    /// The frontend asked for a tick: on Android the Activity is up.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(super) fn note_frontend_tick(&self) {
+        self.frontend_ticked.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether a tick may use what needs the Android Activity (the Bluetooth
+    /// channel, the foreground service). Always true off Android.
+    pub(super) fn activity_ready(&self) -> bool {
+        cfg!(not(target_os = "android")) || self.frontend_ticked.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(super) fn note_tick_ran(&self) {
@@ -134,10 +152,11 @@ impl SpaceSync {
     /// periodic second ticker there only contended with the app for the
     /// SQLite write lock (21 keeper ticks, 21 `database is locked`).
     ///
-    /// Started from the first tick, not from `.setup()`: on Android that
-    /// first tick is the earliest point the Bluetooth peripheral can start
-    /// (`BluetoothChannel::start_peripheral_once`).
-    pub(super) fn start_keeper_once(&self, state: &DeviceConnectionState) {
+    /// Started when the app starts (`lib.rs` setup), so held connections
+    /// come up without waiting for the frontend to load -- that took about
+    /// 25 s on a phone with the dev frontend. What needs the Android
+    /// Activity waits for the frontend's first tick (`activity_ready`).
+    pub(crate) fn start_keeper_once(&self, state: &DeviceConnectionState) {
         self.keeper_started.call_once(|| {
             let state = state.clone();
             tauri::async_runtime::spawn(async move {

@@ -25,7 +25,6 @@ use crate::services::db::utc_now;
 use crate::services::db::AppDbConnection;
 use crate::services::communication::pairing::{CustomSpaceDescriptor, DeviceConnectionState};
 use crate::services::quest::QuestService;
-#[cfg(test)]
 use crate::services::communication::channel::ChannelKind;
 
 const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
@@ -1225,11 +1224,16 @@ pub fn space_sync_tick_impl(
     device_connection.space_sync.note_channel_order(&mut conn, &peer_ids);
 
     // Keep this device reachable and its held connections up: on Android the
-    // Bluetooth peripheral starts from the first tick, whether to advertise
-    // follows the channels and setups as they are now (ADR-0008 D8), and the
-    // Network channel connects to each paired device it hears.
-    for channel in device_connection.channels() {
-        channel.keep_serving(device_connection);
+    // Bluetooth peripheral starts from the first tick that may use the
+    // Activity, whether to advertise follows the channels and setups as they
+    // are now (ADR-0008 D8), and both channels connect to each paired device
+    // they can reach. Before the Activity is up, Network alone.
+    let activity_ready = device_connection.space_sync.activity_ready();
+    for kind in [ChannelKind::Network, ChannelKind::Bluetooth] {
+        if kind == ChannelKind::Bluetooth && !activity_ready {
+            continue;
+        }
+        device_connection.channel(kind).keep_serving(device_connection);
     }
 
     // A no-op on every call after the first (`SpaceSync::start_keeper_once`).
@@ -1242,7 +1246,9 @@ pub fn space_sync_tick_impl(
     // and the persistent notification is both the price Android charges for
     // that and honest disclosure that Fini is holding a device connection.
     #[cfg(target_os = "android")]
-    start_sync_service_once();
+    if activity_ready {
+        start_sync_service_once();
+    }
 
     let ticked_at = utc_now();
     let mut transferred_by_peer: std::collections::HashMap<String, (usize, usize, usize)> =
@@ -1470,6 +1476,8 @@ pub fn space_sync_tick(
     db: State<AppDbConnection>,
     device_connection: State<DeviceConnectionState>,
 ) -> Result<SpaceSyncTickResult, String> {
+    // A call from the frontend: on Android the Activity is up from here on.
+    device_connection.space_sync.note_frontend_tick();
     let mut conn = db.0.lock().unwrap();
     space_sync_tick_impl(&mut conn, &device_connection)
 }
