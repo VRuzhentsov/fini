@@ -84,18 +84,10 @@ pub trait ChannelService: Send + Sync {
     #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self, _state: &DeviceConnectionState) {}
 
-    /// Run the status search while `active`: someone is looking at the
-    /// channel rows, so presence must stay current (ADR-0008 D12, D13).
-    /// Delivery and setup searches are asked for by `request_exchange` and
-    /// the setup flow; each channel merges all of them into one search of
-    /// its own kind (D18). A no-op for a channel whose presence signal is
-    /// always heard, like Network's mDNS lookup.
-    #[cfg(any(feature = "ui-plane", test))]
-    fn watch_presence(&self, _state: &DeviceConnectionState, _active: bool) {}
-
-    /// Whether the peer was seen on this channel within its channel timeout
-    /// (ADR-0008 D9) -- green on the row.
-    fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
+    /// Whether this channel holds a live, TLS-proven connection with a
+    /// session to the peer right now -- green on the row (2026-10-13: green
+    /// is a live connection, not a device heard).
+    fn is_green(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool;
 
     /// A link to a paired device for the frames before a session
     /// (`PEER_ALPN`), such as a channel setup's `AddChannel`: this channel

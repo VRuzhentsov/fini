@@ -80,7 +80,7 @@ pub mod bluetooth {
             Err("Bluetooth is not available on this platform".to_string())
         }
 
-        fn is_present(&self, _state: &DeviceConnectionState, _peer_device_id: &str) -> bool {
+        fn is_green(&self, _state: &DeviceConnectionState, _peer_device_id: &str) -> bool {
             false
         }
 

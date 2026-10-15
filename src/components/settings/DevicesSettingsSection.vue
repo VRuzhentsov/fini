@@ -59,7 +59,6 @@ function refreshAllChannelStatuses() {
 }
 
 onMounted(() => {
-  void deviceStore.watchPresence(true);
   refreshAllChannelStatuses();
   livePollTimer = setInterval(refreshAllChannelStatuses, LIVE_POLL_INTERVAL_MS);
 });
@@ -69,7 +68,6 @@ onUnmounted(() => {
     clearInterval(livePollTimer);
     livePollTimer = null;
   }
-  void deviceStore.watchPresence(false);
 });
 
 // Someone asking to pair surfaces here, on the devices page, rather than

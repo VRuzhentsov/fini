@@ -661,23 +661,6 @@ export const useDeviceStore = defineStore("device", () => {
     return statuses;
   }
 
-  // The Device page is open (or closed): presence is searched for only while
-  // someone is looking (ADR-0008 D12).
-  // Several surfaces can want presence at once (the devices overview, a
-  // Device page); the search runs while any of them does.
-  let presenceWatchers = 0;
-
-  async function watchPresence(active: boolean): Promise<void> {
-    const before = presenceWatchers;
-    presenceWatchers = Math.max(0, presenceWatchers + (active ? 1 : -1));
-    if ((before > 0) === (presenceWatchers > 0)) return;
-    try {
-      await invoke("device_connection_watch_presence", { active: presenceWatchers > 0 });
-    } catch (error) {
-      console.warn("[device-connection] failed to toggle presence search", error);
-    }
-  }
-
   async function runSpaceSyncTick() {
     const peerIds = pairedDevices.value.map((p) => p.peer_device_id);
     for (const peerId of peerIds) {
@@ -1511,7 +1494,6 @@ export const useDeviceStore = defineStore("device", () => {
     beginChannelSetup,
     channelSetupStatus,
     endChannelSetup,
-    watchPresence,
     isSyncingPeer,
     runSpaceSyncTick,
     enterAddMode,

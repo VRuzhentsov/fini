@@ -254,31 +254,31 @@ impl Transport for BleTransport {
     }
 }
 
-/// The Bluetooth half of ADR-0008 D10/D12: presence, search and exchanges.
+/// The Bluetooth half of the held connections (2026-10-13: green is a live
+/// connection):
 ///
-/// - **Presence**: a paired peer whose advertisement was heard within
-///   `BLUETOOTH_CHANNEL_TIMEOUT` is present (green).
-/// - **Search** is one coordinator (`search`, ADR-0008 D13) serving every
+/// - **Green**: a held session with the peer (`is_green`).
+/// - **Search** is one coordinator (`Scanner`, ADR-0008 D13) serving every
 ///   purpose with a single scan:
-///   - status, while the Device page is open, keeps presence current;
-///   - delivery, when there is work for a peer, searches up to
-///     `SEARCH_WINDOW` and connects as soon as it is heard; a peer not found
-///     is tried again after `DELIVERY_RETRY` steps, until it appears;
-///   - setup, while the setup dialog is open, says hello to the peer.
-/// - **Exchange**: connect, authenticate, push and acknowledge, then close
-///   once idle (`session::run_session`).
+///   - delivery: a paired device with Bluetooth on and no session is
+///     searched for up to `SEARCH_WINDOW` and connected to as soon as it is
+///     heard; a device not found is tried again after `DELIVERY_RETRY`
+///     steps, until it appears;
+///   - setup, while the setup dialog is open, finds the peer for the hello.
+/// - **Session**: the held link goes to `SpaceSync::hold_session`.
 ///
-/// Nothing here runs when there is no reason to: no work, no open page, no
-/// setup -- the radio only advertises and listens for connections.
+/// Nothing scans when there is no reason to: every session held, no setup
+/// -- the radio only advertises and listens for connections.
 const SEARCH_WINDOW: Duration = Duration::from_secs(60);
 
-/// Per-candidate cap for one dial + authentication inside a delivery search:
-/// an advertiser that accepts the connection and never answers must not
-/// hold the whole window.
+/// Per-candidate cap for one connect inside a delivery search: an
+/// advertiser that accepts the connection and never finishes the handshake
+/// must not hold the whole window.
 const CONNECT_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long one status-search window listens while the Device page is open.
-const STATUS_SEARCH_WINDOW: Duration = Duration::from_secs(20);
+/// How long one scan window listens before the wanted devices are read
+/// again.
+const SCAN_WINDOW: Duration = Duration::from_secs(20);
 
 #[async_trait]
 impl ChannelService for BluetoothChannel {
@@ -347,18 +347,9 @@ impl ChannelService for BluetoothChannel {
         self.delivery.forget_delivery_misses(peer_device_id);
     }
 
-    /// Turn the status search on while the Device page is open, off when it
-    /// closes. Green is never computed in the background (ADR-0008 D12);
-    /// the search coordinator merges it with any delivery or setup search
-    /// running.
-    #[cfg(any(feature = "ui-plane", test))]
-    fn watch_presence(&self, state: &DeviceConnectionState, active: bool) {
-        self.scanner.set_status(active.then(|| state.db_path.clone()));
-    }
-
     /// Green means a live connection: a held session with the peer, not
     /// only an advertisement heard.
-    fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+    fn is_green(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
         state.has_session_on(peer_device_id, ChannelKind::Bluetooth)
     }
 

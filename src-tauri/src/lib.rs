@@ -32,7 +32,6 @@ use services::communication::pairing::{
     device_connection_session_channel, device_connection_set_channel_enabled,
     device_connection_set_primary_channel,
     device_connection_unlink_channel,
-    device_connection_watch_presence,
     device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
     DeviceConnectionState,
 };
@@ -570,7 +569,6 @@ pub fn run() {
             device_connection_set_primary_channel,
             device_connection_unlink_channel,
             device_connection_probe_bluetooth_adapter,
-            device_connection_watch_presence,
             device_connection_begin_channel_setup,
             device_connection_channel_setup_status,
             device_connection_end_channel_setup,

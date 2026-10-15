@@ -422,7 +422,7 @@ fn peer_reachable_now(
     use crate::services::communication::pairing::{channels, ChannelKind};
     [ChannelKind::Network, ChannelKind::Bluetooth].into_iter().any(|kind| {
         channels::is_enabled(conn, peer_device_id, kind)
-            && device_connection.channel(kind).is_present(device_connection, peer_device_id)
+            && device_connection.channel(kind).is_green(device_connection, peer_device_id)
     })
 }
 

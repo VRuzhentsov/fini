@@ -28,7 +28,6 @@
 //! `ConnectGuard`, and the scan does not resume until every guard is dropped.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Once};
 use std::time::{Duration, Instant};
@@ -38,16 +37,15 @@ use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 #[cfg(any(feature = "ui-plane", test))]
 use super::{connect, DataLink, ADD_MODE_FLAG_BYTE};
 use super::{
-    advertised_fingerprint, datagram_config, fingerprint_of, open_db_at_path, BluetoothAdapter,
-    FINGERPRINT_LEN, FINI_MANUFACTURER_ID, STATUS_SEARCH_WINDOW,
+    advertised_fingerprint, datagram_config, fingerprint_of, BluetoothAdapter, FINGERPRINT_LEN,
+    FINI_MANUFACTURER_ID, SCAN_WINDOW,
 };
-
-/// How long a heard advertisement keeps a paired device present: three
-/// status-search windows, so one missed window does not flicker the row
-/// (ADR-0008 D12).
-const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
-use crate::services::communication::pairing::ChannelKind;
 use crate::services::communication::sync::space_sync::SpaceSync;
+
+/// How long a heard advertisement counts as current: a device heard within
+/// it is reached by one connection to that address, not a search
+/// (`last_heard_address`).
+const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long an address whose dial just failed is not handed off again.
 ///
@@ -127,9 +125,6 @@ struct Request {
 struct Requests {
     next_id: u64,
     searches: Vec<Request>,
-    /// Set while the Device page is open: every paired peer with Bluetooth
-    /// on is wanted, for presence. The database the peers are read from.
-    status: Option<PathBuf>,
 }
 
 pub struct Scanner {
@@ -380,19 +375,10 @@ impl Scanner {
         found
     }
 
-    /// Turn the status search on while the Device page is open, off when it
-    /// closes (ADR-0008 D12).
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn set_status(self: &Arc<Self>, db_path: Option<PathBuf>) {
-        self.requests.lock().unwrap().status = db_path;
-        self.start_once();
-        self.changed.notify_one();
-    }
-
     /// Add Device opened or closed. While it is open, the scan runs without
     /// a stop, records every Fini device it hears (`AvailableDevices`), and
-    /// serves only setup searches: status and delivery searches wait, so
-    /// that the radio stays on the scan the person is watching.
+    /// serves only setup searches: delivery searches wait, so that the radio
+    /// stays on the scan the person is watching.
     #[cfg(any(feature = "ui-plane", test))]
     pub fn set_add_device_mode(self: &Arc<Self>, on: bool) {
         if on {
@@ -415,29 +401,13 @@ impl Scanner {
     /// The peers the next scan listens for, by advertised fingerprint.
     fn wanted(&self) -> HashMap<[u8; FINGERPRINT_LEN], String> {
         let adding = self.in_add_device_mode();
-        let (peers, status) = {
-            let requests = self.requests.lock().unwrap();
-            let peers: Vec<String> = requests
-                .searches
-                .iter()
-                .filter(|request| !adding || request.purpose != Purpose::Delivery)
-                .map(|request| request.peer.clone())
-                .collect();
-            (peers, requests.status.clone().filter(|_| !adding))
-        };
-        let mut wanted: HashMap<[u8; FINGERPRINT_LEN], String> =
-            peers.into_iter().map(|peer| (fingerprint_of(&peer), peer)).collect();
-        if let Some(db_path) = status {
-            let on = tokio::task::block_in_place(|| {
-                let mut conn = open_db_at_path(&db_path);
-                crate::services::communication::pairing::channels::peers_with_channel_enabled(
-                    &mut conn,
-                    ChannelKind::Bluetooth,
-                )
-            });
-            wanted.extend(on.into_iter().map(|peer| (fingerprint_of(&peer), peer)));
-        }
-        wanted
+        let requests = self.requests.lock().unwrap();
+        requests
+            .searches
+            .iter()
+            .filter(|request| !adding || request.purpose != Purpose::Delivery)
+            .map(|request| (fingerprint_of(&request.peer), request.peer.clone()))
+            .collect()
     }
 
     /// Hand `address` to every search waiting for `peer`. True if any was.
@@ -481,14 +451,8 @@ impl Scanner {
 
             let mut wanted = self.wanted();
             if !self.scan_wanted(&wanted) {
-                // With the page open, a channel set up meanwhile joins the
-                // next window; otherwise only a new search can change
-                // anything.
-                if self.requests.lock().unwrap().status.is_some() {
-                    let _ = tokio::time::timeout(STATUS_SEARCH_WINDOW, self.changed.notified()).await;
-                } else {
-                    self.changed.notified().await;
-                }
+                // Only a new search, or Add Device, changes anything.
+                self.changed.notified().await;
                 continue;
             }
 
@@ -511,9 +475,8 @@ impl Scanner {
             };
             let running = self.start_running_scan();
             log::info!(
-                "[transport][ble] shared scan window started for {} device(s), status search {}, add device {}",
+                "[transport][ble] shared scan window started for {} device(s), add device {}",
                 wanted.len(),
-                if self.requests.lock().unwrap().status.is_some() { "on" } else { "off" },
                 if self.in_add_device_mode() { "on" } else { "off" }
             );
 
@@ -525,7 +488,7 @@ impl Scanner {
             let window = if self.in_add_device_mode() && cfg!(target_os = "linux") {
                 ADD_DEVICE_SCAN_WINDOW
             } else {
-                STATUS_SEARCH_WINDOW
+                SCAN_WINDOW
             };
             let deadline = tokio::time::Instant::now() + window;
             loop {

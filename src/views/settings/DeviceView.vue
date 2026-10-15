@@ -96,7 +96,6 @@ onMounted(() => {
   void spaceStore.fetchSpaces();
   void deviceStore.runSpaceSyncTick();
   void loadDeviceState();
-  void deviceStore.watchPresence(true);
 
   livePollTimer = setInterval(() => {
     if (!deviceId.value) return;
@@ -110,7 +109,6 @@ onUnmounted(() => {
     clearInterval(livePollTimer);
     livePollTimer = null;
   }
-  void deviceStore.watchPresence(false);
 });
 
 watch(deviceId, () => {

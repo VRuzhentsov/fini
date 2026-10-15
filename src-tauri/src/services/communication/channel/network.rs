@@ -478,7 +478,7 @@ impl NetworkChannel {
 #[async_trait::async_trait]
 impl ChannelService for NetworkChannel {
     /// Every platform Fini runs on has a network stack. Whether a *peer* is
-    /// reachable over it is `is_present`'s question, not this one.
+    /// reachable over it is `is_green`'s question, not this one.
     #[cfg(any(feature = "ui-plane", test))]
     fn available(&self) -> bool {
         true
@@ -502,7 +502,7 @@ impl ChannelService for NetworkChannel {
 
     /// Green means a live connection: a held session with the peer
     /// (`session::idle_after`), not only an mDNS record.
-    fn is_present(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+    fn is_green(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
         state.has_session_on(peer_device_id, ChannelKind::Network)
     }
 

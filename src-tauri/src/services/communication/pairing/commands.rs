@@ -1218,7 +1218,7 @@ pub fn device_connection_channel_statuses_impl(
             let primary = channel.is_some_and(|channel| channel.is_primary);
             let service = state.channel(kind);
             // An exchange running right now is presence too.
-            let present = service.is_present(state, &peer_device_id) || state.has_session_on(&peer_device_id, kind);
+            let present = service.is_green(state, &peer_device_id) || state.has_session_on(&peer_device_id, kind);
             // Outranks whatever the channel itself reports: a radio that is
             // off is worth saying only while there is a pair that could use
             // it once it comes back.
@@ -1243,8 +1243,6 @@ pub fn device_connection_channel_statuses(
     device_connection_channel_statuses_impl(&mut conn, &state, peer_device_id)
 }
 
-/// The Device page is open (or closed): run the status search while it is,
-/// so green is current; never in the background (ADR-0008 D12).
 /// The test switches of the radios (debug builds only). `bluetooth` and
 /// `network` each set one channel to on or off; a missing value leaves that
 /// channel as it is. Off makes the channel look gone to Fini and ends its
@@ -1277,14 +1275,6 @@ pub async fn e2e_set_radio(
         }
     }
     Ok(())
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, active: bool) {
-    for service in state.channels() {
-        service.watch_presence(state.inner(), active);
-    }
 }
 
 /// Every paired peer eligible for a Bluetooth dial attempt right now: the
