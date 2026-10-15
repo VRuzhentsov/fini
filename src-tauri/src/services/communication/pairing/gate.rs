@@ -22,16 +22,15 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use diesel::prelude::*;
-use tokio::sync::mpsc;
 
 use crate::schema::paired_devices;
 use crate::services::db::open_db_at_path;
 use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
 use crate::services::communication::sync::session::{
-    run_session, CLOSE_CHANNEL_OFF, CLOSE_CROSSED, CLOSE_NOT_PAIRED, CLOSE_SESSION_ACTIVE,
+    CLOSE_CHANNEL_OFF, CLOSE_CROSSED, CLOSE_NOT_PAIRED, CLOSE_SESSION_ACTIVE,
 };
-use crate::services::communication::sync::types::{PeerFrame, SessionCommand};
+use crate::services::communication::sync::types::PeerFrame;
 
 /// How long a new connection waits for the held session it replaces to
 /// release its slot.
@@ -281,26 +280,19 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
         }
     }
 
-    let (tx, rx) = mpsc::channel::<SessionCommand>(64);
-    if !state.try_claim_session(&device_id, kind, tx) {
+    let accepted = state
+        .space_sync
+        .hold_session(&state, link, &device_id, kind, || {
+            log::info!("[space_sync][gate] {kind:?} session with {device_id} accepted");
+        })
+        .await;
+    if let Err(mut link) = accepted {
         // If this fires repeatedly for a peer with no other live session on
         // this channel, the claim is stale: a slot never released by a
         // session that ended without `release_session`.
         log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: a session is already active");
         link.close(CLOSE_SESSION_ACTIVE, "a session is already active on this channel");
-        return;
     }
-
-    log::info!("[space_sync][gate] {kind:?} session with {device_id} accepted");
-    run_session(
-        link,
-        rx,
-        state,
-        db_path,
-        device_id,
-        crate::services::communication::sync::session::idle_after(kind),
-    )
-    .await;
 }
 
 #[cfg(test)]

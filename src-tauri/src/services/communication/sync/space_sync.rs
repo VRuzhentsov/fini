@@ -2,8 +2,14 @@
 //!
 //! One object per `DeviceConnectionState`. It owns when sync runs (the
 //! wake signal, the keeper, the time of the last tick), how often one
-//! event is sent again, and which channel an exchange goes over. What it
-//! does on each run is `commands::space_sync_tick_impl`.
+//! event is sent again, the sessions on the links the channels hold
+//! (`hold_session`), and which green channel a frame goes over
+//! (`channel_order_for`). What it does on each run is
+//! `commands::space_sync_tick_impl`.
+//!
+//! Work for a device without a green channel waits: the channels connect
+//! by themselves (`ChannelService::keep_serving`), and a session coming up
+//! wakes sync (`DeviceConnectionState::try_claim_session`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Once};
@@ -11,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use diesel::sqlite::SqliteConnection;
 
+use crate::services::communication::channel::DataLink;
 use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
 
 /// The longest an idle, fully-connected pair may go without a tick on
@@ -51,6 +58,10 @@ pub struct SpaceSync {
     /// devices, and each delivery is independent. In memory only: resend
     /// pacing matters only within one process.
     sent_at: Mutex<HashMap<(String, String), Instant>>,
+    /// Per paired device, the channels in the order a frame goes over them:
+    /// the primary first (ADR-0007). Read from the database on each tick
+    /// (`note_channel_order`); Network first until then.
+    channel_order: Mutex<HashMap<String, [ChannelKind; 2]>>,
     keeper_started: Once,
 }
 
@@ -60,6 +71,7 @@ impl Default for SpaceSync {
             wake: Arc::new(tokio::sync::Notify::new()),
             last_tick_at: Mutex::new(None),
             sent_at: Mutex::new(HashMap::new()),
+            channel_order: Mutex::new(HashMap::new()),
             keeper_started: Once::new(),
         }
     }
@@ -171,35 +183,60 @@ impl SpaceSync {
         });
     }
 
-    /// Starts an exchange with each device that has work and none running
-    /// (ADR-0008 D10). The primary channel (ADR-0007) is tried first, then
-    /// the other; without a primary, Network first. A channel is taken when
-    /// the device is present on it and it is not failing; if neither is,
-    /// Bluetooth's delivery search looks for the device (D12). A channel
-    /// that is not `On` for the pair is never used.
-    pub(super) fn request_exchanges(
+    /// Runs the sync session on a held link to `peer_device_id` over `kind`.
+    /// The channels and the gate hand every live, TLS-proven link here; they
+    /// do not know what a session sends. At most one session per (device,
+    /// channel): `Err(link)` gives the link back when one already runs, so
+    /// the caller can refuse it. `on_held` runs once the session is claimed,
+    /// before it starts. Returns the close code the peer ended the link
+    /// with, if it did (`session::refused_by_peer`).
+    pub(crate) async fn hold_session(
         &self,
-        conn: &mut SqliteConnection,
         state: &DeviceConnectionState,
-        peers_with_work: &std::collections::HashSet<String>,
-    ) {
-        for peer_device_id in peers_with_work {
-            if state.has_session(peer_device_id) {
-                continue;
-            }
-            let order = Self::channel_order(channels::primary_kind(conn, peer_device_id));
-            let reachable_now = order.into_iter().find(|&kind| {
-                let channel = state.channel(kind);
-                channels::is_enabled(conn, peer_device_id, kind)
-                    && channel.is_present(state, peer_device_id)
-                    && !channel.recently_failed(peer_device_id)
-            });
-            if let Some(kind) = reachable_now {
-                state.channel(kind).request_exchange(state, peer_device_id);
-            } else if channels::is_enabled(conn, peer_device_id, ChannelKind::Bluetooth) {
-                state.channel(ChannelKind::Bluetooth).request_exchange(state, peer_device_id);
-            }
+        link: Box<dyn DataLink>,
+        peer_device_id: &str,
+        kind: ChannelKind,
+        on_held: impl FnOnce(),
+    ) -> Result<Option<u32>, Box<dyn DataLink>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        if !state.try_claim_session(peer_device_id, kind, tx) {
+            return Err(link);
         }
+        on_held();
+        Ok(super::session::run_session(
+            link,
+            rx,
+            state.clone(),
+            state.db_path.clone(),
+            peer_device_id.to_string(),
+            super::session::idle_after(kind),
+        )
+        .await)
+    }
+
+    /// Reads, for each paired device, which channel a frame goes over first
+    /// (the primary, ADR-0007). Called on each tick, so a changed primary
+    /// takes effect on the next one.
+    pub(super) fn note_channel_order(&self, conn: &mut SqliteConnection, peer_device_ids: &[String]) {
+        let orders: Vec<(String, [ChannelKind; 2])> = peer_device_ids
+            .iter()
+            .map(|peer| (peer.clone(), Self::channel_order(channels::primary_kind(conn, peer))))
+            .collect();
+        if let Ok(mut order) = self.channel_order.lock() {
+            order.clear();
+            order.extend(orders);
+        }
+    }
+
+    /// The channels a frame for `peer_device_id` goes over, in order:
+    /// `DeviceConnectionState::push_to_peer` uses the first one with a
+    /// session.
+    pub(crate) fn channel_order_for(&self, peer_device_id: &str) -> [ChannelKind; 2] {
+        self.channel_order
+            .lock()
+            .ok()
+            .and_then(|order| order.get(peer_device_id).copied())
+            .unwrap_or_else(|| Self::channel_order(None))
     }
 
     /// Which channels to try, in order: the primary first (ADR-0007),

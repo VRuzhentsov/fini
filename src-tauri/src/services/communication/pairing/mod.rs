@@ -139,13 +139,16 @@ pub struct DeviceConnectionState {
     lifecycle_tx: LifecycleBus,
 }
 
-/// Hands a frame to the running exchange with this peer, if there is one.
+/// Hands a frame to the running exchange with this peer, if there is one:
+/// over the first channel in `order` that has one (the primary first,
+/// `SpaceSync::channel_order_for`).
 fn forward_to_running_exchange(
     runtime: &DiscoveryRuntime,
     peer_device_id: &str,
     msg: PeerFrame,
+    order: [ChannelKind; 2],
 ) -> bool {
-    [ChannelKind::Network, ChannelKind::Bluetooth]
+    order
         .into_iter()
         .filter_map(|kind| runtime.peer_sessions.get(&(peer_device_id.to_string(), kind)))
         .next()
@@ -559,10 +562,11 @@ impl DeviceConnectionState {
     /// `false` when none is running; see `queue_for_peer` for frames that
     /// must still arrive.
     pub fn push_to_peer(&self, peer_device_id: &str, msg: PeerFrame) -> bool {
+        let order = self.space_sync.channel_order_for(peer_device_id);
         let Ok(guard) = self.runtime.lock() else {
             return false;
         };
-        forward_to_running_exchange(&guard, peer_device_id, msg)
+        forward_to_running_exchange(&guard, peer_device_id, msg, order)
     }
 
     /// Sends a frame now if an exchange is running, otherwise keeps it for
@@ -573,12 +577,13 @@ impl DeviceConnectionState {
         // Send-or-queue under one lock, so an exchange cannot be claimed
         // between the two and miss the frame. Frames already waiting go
         // first, so this one waits behind them.
+        let order = self.space_sync.channel_order_for(peer_device_id);
         let sent = {
             let Ok(mut guard) = self.runtime.lock() else {
                 return;
             };
             let waiting = guard.pending_frames.get(peer_device_id).is_some_and(|q| !q.is_empty());
-            let sent = !waiting && forward_to_running_exchange(&guard, peer_device_id, msg.clone());
+            let sent = !waiting && forward_to_running_exchange(&guard, peer_device_id, msg.clone(), order);
             if !sent {
                 guard
                     .pending_frames

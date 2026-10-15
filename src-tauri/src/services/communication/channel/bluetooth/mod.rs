@@ -342,10 +342,6 @@ impl ChannelService for BluetoothChannel {
         }
     }
 
-    fn request_exchange(&self, state: &DeviceConnectionState, peer_device_id: &str) {
-        self.start_exchange(state, peer_device_id);
-    }
-
     #[cfg(any(feature = "ui-plane", test))]
     fn forget_failures(&self, peer_device_id: &str) {
         self.delivery.forget_delivery_misses(peer_device_id);
@@ -706,7 +702,6 @@ impl BluetoothChannel {
         &self, state: &DeviceConnectionState, peer_id: &str, link: Box<dyn DataLink>, address: &str,
     ) {
         self.delivery.forget_delivery_misses(peer_id);
-        log::info!("[transport][ble] exchange with {peer_id} via {address}");
         let db_path = state.db_path.clone();
         // The switch could have been turned off during the search.
         if !is_still_bluetooth_eligible(&db_path, peer_id) {
@@ -714,23 +709,16 @@ impl BluetoothChannel {
         }
         // Diagnostics only: nothing dials a stored address.
         note_observed_bluetooth_address(&db_path, peer_id, address);
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        if state.try_claim_session(peer_id, ChannelKind::Bluetooth, tx) {
-            self.scanner.note_connected(peer_id);
-            log::info!("[transport][ble] holding a session with {peer_id}");
-            let close_code = session::run_session(
-                link,
-                rx,
-                state.clone(),
-                db_path,
-                peer_id.to_string(),
-                session::idle_after(ChannelKind::Bluetooth),
-            )
+        let held = state
+            .space_sync
+            .hold_session(state, link, peer_id, ChannelKind::Bluetooth, || {
+                self.scanner.note_connected(peer_id);
+                log::info!("[transport][ble] holding a session with {peer_id} via {address}");
+            })
             .await;
-            // Refused by the peer's gate: the next delivery waits its turn.
-            if session::refused_by_peer(close_code) {
-                self.delivery.note_delivery_missed(peer_id, &state.space_sync);
-            }
+        // Refused by the peer's gate: the next connection waits its turn.
+        if matches!(held, Ok(close_code) if session::refused_by_peer(close_code)) {
+            self.delivery.note_delivery_missed(peer_id, &state.space_sync);
         }
     }
 

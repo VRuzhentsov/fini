@@ -458,29 +458,20 @@ impl NetworkChannel {
                 return false;
             }
         };
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        if state.try_claim_session(peer_id, ChannelKind::Network, tx) {
-            // Held, not connecting; for `CROSSING_WINDOW` a connection from
-            // the peer is still a crossing (`connecting`).
-            self.connected_at.lock().unwrap().insert(peer_id.to_string(), Instant::now());
-            self.in_flight.lock().unwrap().remove(peer_id);
-            log::info!("[transport][network] exchange with {peer_id}");
-            let close_code = session::run_session(
-                link,
-                rx,
-                state.clone(),
-                db_path,
-                peer_id.to_string(),
-                session::idle_after(ChannelKind::Network),
-            )
+        let held = state
+            .space_sync
+            .hold_session(state, link, peer_id, ChannelKind::Network, || {
+                // Held, not connecting; for `CROSSING_WINDOW` a connection
+                // from the peer is still a crossing (`connecting`).
+                self.connected_at.lock().unwrap().insert(peer_id.to_string(), Instant::now());
+                self.in_flight.lock().unwrap().remove(peer_id);
+                log::info!("[transport][network] holding a session with {peer_id}");
+            })
             .await;
-            // Refused by the peer's gate: a failed attempt, so the next one
-            // waits `FAILURE_COOLDOWN` instead of connecting again at once.
-            if session::refused_by_peer(close_code) {
-                return false;
-            }
-        }
-        true
+        // Refused by the peer's gate: a failed attempt, so the next one
+        // waits `FAILURE_COOLDOWN` instead of connecting again at once. A
+        // session already running here (its own connection won) is none.
+        !matches!(held, Ok(close_code) if session::refused_by_peer(close_code))
     }
 }
 
@@ -507,10 +498,6 @@ impl ChannelService for NetworkChannel {
             let db_path = state.db_path.clone();
             state.network.clone().run_server(state, db_path).await
         });
-    }
-
-    fn request_exchange(&self, state: &DeviceConnectionState, peer_device_id: &str) {
-        self.start_exchange(state, peer_device_id);
     }
 
     /// Green means a live connection: a held session with the peer
@@ -566,10 +553,6 @@ impl ChannelService for NetworkChannel {
                 .unwrap()
                 .get(peer_device_id)
                 .is_some_and(|at| at.elapsed() < session::CROSSING_WINDOW)
-    }
-
-    fn recently_failed(&self, peer_device_id: &str) -> bool {
-        NetworkChannel::recently_failed(self, peer_device_id)
     }
 
     #[cfg(any(feature = "ui-plane", test))]

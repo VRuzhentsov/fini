@@ -71,8 +71,6 @@ pub mod bluetooth {
             true
         }
 
-        fn request_exchange(&self, _state: &DeviceConnectionState, _peer_device_id: &str) {}
-
         /// Nothing to find: pause, so a setup that asks again does not spin.
         #[cfg(any(feature = "ui-plane", test))]
         async fn connect_plain(

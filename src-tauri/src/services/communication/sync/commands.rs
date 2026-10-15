@@ -1222,6 +1222,7 @@ pub fn space_sync_tick_impl(
         .select(paired_devices::peer_device_id)
         .load(&mut *conn)
         .map_err(|e| e.to_string())?;
+    device_connection.space_sync.note_channel_order(&mut conn, &peer_ids);
 
     // Keep this device reachable and its held connections up: on Android the
     // Bluetooth peripheral starts from the first tick, whether to advertise
@@ -1258,16 +1259,15 @@ pub fn space_sync_tick_impl(
 
     let mut sent_events_total = 0usize;
 
-    // ADR-0008 D10: a peer with anything waiting for it gets an exchange.
-    let mut peers_with_work: std::collections::HashSet<String> = std::collections::HashSet::new();
-
+    // Work for a device without a green channel waits in the outbox: the
+    // channels hold their connections by themselves (`keep_serving` above),
+    // and a session coming up wakes the next tick.
     for peer_device_id in &peer_ids {
         let mapped = list_mappings_for_peer(&mut conn, &peer_device_id)?;
         let pending = load_unacked_events_for_peer(&mut conn, &peer_device_id, &mapped)?;
         if pending.is_empty() {
             continue;
         }
-        peers_with_work.insert(peer_device_id.clone());
 
         let mut sent_events = 0usize;
         for event in pending.iter() {
@@ -1318,7 +1318,6 @@ pub fn space_sync_tick_impl(
             continue;
         }
         if !device_connection.has_session(peer_device_id) {
-            peers_with_work.insert(peer_device_id.clone());
             continue;
         }
         let mut all_taken = true;
@@ -1437,17 +1436,6 @@ pub fn space_sync_tick_impl(
         )
         .collect();
     peers.sort_by(|a, b| a.peer_device_id.cmp(&b.peer_device_id));
-
-    for peer_device_id in &peer_ids {
-        if device_connection.has_queued_frames(peer_device_id) {
-            peers_with_work.insert(peer_device_id.clone());
-        }
-    }
-    // Frames kept across restarts (ADR-0008 D14) need an exchange too.
-    peers_with_work.extend(super::control_outbox::peers_waiting(&mut conn));
-    device_connection
-        .space_sync
-        .request_exchanges(&mut conn, device_connection, &peers_with_work);
 
     let _ = cleanup_old_tombstones(&mut conn);
 

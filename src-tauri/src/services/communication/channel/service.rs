@@ -84,11 +84,6 @@ pub trait ChannelService: Send + Sync {
     #[cfg(any(feature = "ui-plane", test))]
     fn start_serving(&self, _state: &DeviceConnectionState) {}
 
-    /// Start an exchange with this peer unless one is running (ADR-0008
-    /// D10): straight away when the peer is present, otherwise through this
-    /// channel's delivery search (D12). Called when there is work for it.
-    fn request_exchange(&self, state: &DeviceConnectionState, peer_device_id: &str);
-
     /// Run the status search while `active`: someone is looking at the
     /// channel rows, so presence must stay current (ADR-0008 D12, D13).
     /// Delivery and setup searches are asked for by `request_exchange` and
@@ -115,12 +110,6 @@ pub trait ChannelService: Send + Sync {
     /// now -- for the gate to settle two connections that cross.
     #[cfg(any(feature = "ui-plane", test))]
     fn connecting(&self, _peer_device_id: &str) -> bool {
-        false
-    }
-
-    /// Whether the last exchange with this peer over this channel failed
-    /// recently, so another channel should carry the work meanwhile.
-    fn recently_failed(&self, _peer_device_id: &str) -> bool {
         false
     }
 

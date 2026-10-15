@@ -135,15 +135,6 @@ pub fn waiting(conn: &mut SqliteConnection, peer_device_id: &str) -> Vec<(i32, P
         .collect()
 }
 
-/// Peers with frames waiting: each needs an exchange.
-pub fn peers_waiting(conn: &mut SqliteConnection) -> Vec<String> {
-    peer_control_outbox::table
-        .select(peer_control_outbox::peer_device_id)
-        .distinct()
-        .load::<String>(conn)
-        .unwrap_or_default()
-}
-
 /// The exchange wrote this frame to the link.
 pub fn sent(conn: &mut SqliteConnection, id: i32) {
     let _ = diesel::delete(peer_control_outbox::table.find(id)).execute(conn);
