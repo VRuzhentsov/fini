@@ -9,7 +9,7 @@ behind these terms.
 changed.** "Transport" was retired as a separate concept: it is now simply
 the older word for **channel**, the connection a pair configured, and the
 two are one thing. Read
-[`src-tauri/src/services/communication/README.md`](src-tauri/src/services/communication/README.md)
+[`docs/architecture/communication.md`](docs/architecture/communication.md)
 for the current layering and [`docs/glossary.md`](docs/glossary.md) for what
 each word means today — including `DataLink (Connection)`, which is what the
 `Link` entry below has since been renamed to. The entries are kept because

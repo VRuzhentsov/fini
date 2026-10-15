@@ -30,7 +30,7 @@ Before implementation, debugging, QA, Android, design-to-code, release, or docum
 
 1. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`.
 2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
-3. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, `docs/adr/`, and targeted source files.
+3. Read only the context needed for the task: `AGENTS.md`, the relevant page in `docs/architecture/`, the relevant folder `README.md` and companion `.md` specs where they still exist (they move to `docs/` when touched; see `fini-documentation`), `docs/adr/`, and targeted source files.
 4. Choose any specialized skill from the routing table below before doing the domain-specific work.
 5. Pick the smallest useful verification command before editing so the success standard is clear.
 
@@ -78,6 +78,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Create or improve skills | `skill-creator` |
 | Planning, scoping, or decision-tree clarification before implementation | `grill-me`, plus the relevant domain skill |
 | Create, start, or draft tickets | `fini-create-ticket`, `start-ticket`, or `ticket-markdown` |
+| Add, move, or change docs, specs, READMEs, ADRs, the glossary, or architecture pages | `fini-documentation` |
 
 When no specialized skill fits, continue with this skill's project workflow.
 

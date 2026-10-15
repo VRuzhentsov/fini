@@ -28,7 +28,7 @@ linked decision record in hand, and expect a review to ask why.
 
 ### `src/services/communication/` — how two devices reach each other
 
-Start at [its `README.md`](src/services/communication/README.md) before
+Start at [`docs/architecture/communication.md`](../docs/architecture/communication.md) before
 changing anything under `pairing/`, `channel/` or `sync/`. It is where
 `Channel`, `PeerSession`, `DataLink` and `PeerFrame` are told apart — four
 words that sound interchangeable and are not, and getting them confused is

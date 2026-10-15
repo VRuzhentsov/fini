@@ -100,6 +100,32 @@ at all, and routinely does. A stranger dials in, sends `PairStart`, gets an
 answer, and the pipe closes. That is the ordinary pairing path, and it needs
 a working pipe *before* anyone is authenticated.
 
+The identity comes from the TLS handshake: iroh proves the key of each side,
+and the gate finds the paired device whose pinned key it is. There is no
+auth message. A session runs only on the ALPN `fini/sync/<version>`.
+
+### Green
+
+**A channel is green for a device while it holds a live connection with a
+session to that device** (`ChannelService::is_green`). A device that was only
+heard — an mDNS record, a Bluetooth advertisement — is not green. When the
+connection ends, the channel turns grey and connects again by itself.
+
+### Gate
+
+**The rules for who may connect** (`pairing/gate.rs`), in one place for all
+channels. iroh's `Router` gives each new connection to the gate (`Gate`, an
+iroh `ProtocolHandler`). The gate refuses with a QUIC close code; see
+`docs/architecture/communication.md`.
+
+### SpaceSync
+
+**The object that carries the changes of mapped spaces to paired devices,
+and the feature itself** (`sync/space_sync.rs`). It runs the sessions on the
+links that the channels hold, and sends each change over the first green
+channel of the pair (the primary first). Work for a device with no green
+channel waits.
+
 ### How they read together
 
 ```
@@ -113,8 +139,8 @@ session      ...carrying an authenticated conversation      (live, identified)
 
 ### PeerFrame
 
-**One message two devices send each other:** `PairStart`, `Auth`,
-`SyncEvent`, `Ack`, `Ping`. The application protocol, identical over every
+**One message two devices send each other:** `PairStart`, `SyncEvent`,
+`Ack`, `SpaceMappingUpdate`. The application protocol, identical over every
 channel — one copy of it, which is the whole reason `DataLink` exists.
 
 ### Messages that find and pair devices
