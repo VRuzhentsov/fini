@@ -58,7 +58,7 @@ impl BluetoothChannel {
             let started = tokio::time::Instant::now();
             loop {
                 let attempt =
-                    tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr.clone(), ALPN)).await;
+                    tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr.clone(), PEER_ALPN)).await;
                 match attempt {
                     Ok(Ok(connection)) => {
                         let link =
@@ -96,7 +96,7 @@ impl BluetoothChannel {
                 let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
                     .secret_key(state.secret_key.clone())
                     .relay_mode(iroh::RelayMode::Disabled)
-                    .alpns(vec![ALPN.to_vec()])
+                    .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
                     .clear_ip_transports()
                     .add_custom_transport(Arc::new(transport.clone()))
                     .address_lookup(transport.address_lookup())
@@ -134,7 +134,12 @@ impl BluetoothChannel {
                         return;
                     }
                 };
+                let is_session = connection.alpn() == SYNC_ALPN;
                 match IrohDataLink::accept(ChannelKind::Bluetooth, connection, peer_addr).await {
+                    Ok(link) if is_session => {
+                        let db_path = state.db_path.clone();
+                        crate::services::communication::pairing::run_session_gate(Box::new(link), state, db_path).await;
+                    }
                     Ok(link) => {
                         let db_path = state.db_path.clone();
                         crate::services::communication::pairing::run_peer_gate(Box::new(link), state, db_path).await;
@@ -149,8 +154,9 @@ impl BluetoothChannel {
     /// connection over Bluetooth to the key pinned for the pair, which TLS
     /// proves (ADR-0009 D8). A device at that address holding another key
     /// fails the handshake, so this also confirms the candidate is the peer.
+    /// `alpn`: `SYNC_ALPN` for a session, `PEER_ALPN` for `AddChannel`.
     pub async fn connect_session(
-        &self, state: &DeviceConnectionState, peer_id: &str, address: &str,
+        &self, state: &DeviceConnectionState, peer_id: &str, address: &str, alpn: &[u8],
     ) -> Result<Box<dyn DataLink>, String> {
         let pinned = tokio::task::block_in_place(|| {
             crate::services::communication::pairing::pinned_key(&mut open_db_at_path(&state.db_path), peer_id)
@@ -166,7 +172,7 @@ impl BluetoothChannel {
             peer_key,
             [iroh::TransportAddr::Custom(ble_gatt_iroh::custom_addr(&peer))],
         );
-        let connection = tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr, ALPN))
+        let connection = tokio::time::timeout(SESSION_CONNECT_TIMEOUT, endpoint.connect(addr, alpn))
             .await
             .map_err(|_| format!("bluetooth connect to {address} timed out"))?
             .map_err(|err| format!("bluetooth connect to {address} failed: {err}"))?;

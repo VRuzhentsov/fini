@@ -116,9 +116,9 @@ pub(crate) async fn local_bluetooth_address() -> Option<String> {
 ///
 /// Shared by both Phase 1 mechanisms of ADR 0002: `session::run_session`'s
 /// inbound `BluetoothAddressUpdate` handler (self-report) and
-/// `channel::bluetooth`'s scan-and-auth discovery. Both already have remote
-/// confirmation before calling this -- an authenticated `PeerFrame`
-/// channel, or a live `AuthOk` from the discovered address -- so recording
+/// `channel::bluetooth`'s scan-and-connect discovery. Both already have remote
+/// confirmation before calling this -- a session whose TLS handshake proved
+/// the pinned key, from the discovered address -- so recording
 /// what they learned is safe.
 ///
 /// What it must not do is decide enablement. It used to, based on a live
@@ -1298,7 +1298,7 @@ pub fn device_connection_watch_presence(state: State<DeviceConnectionState>, act
 /// ADR-0006: this used to also require a stored address and a live OS bond,
 /// and to return the address to dial. It returns peer ids alone now, because
 /// there is no address to dial *to* — the dialer finds the peer by scanning
-/// for Fini's service UUID and proves who answered with the `Auth` frame.
+/// for Fini's service UUID, and the TLS handshake proves who answered.
 
 pub fn bluetooth_connect_candidates(conn: &mut SqliteConnection) -> Vec<String> {
     channels::peers_with_channel_enabled(conn, ChannelKind::Bluetooth)

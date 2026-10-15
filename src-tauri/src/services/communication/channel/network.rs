@@ -24,7 +24,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAd
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::DeviceConnectionState;
 use crate::services::communication::sync::session;
-use crate::services::communication::channel::iroh_link::{IrohDataLink, ALPN};
+use crate::services::communication::channel::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
 use crate::services::communication::channel::service::ChannelService;
 use crate::services::communication::channel::{send_frame, ChannelKind, DataLink};
 #[cfg(any(feature = "ui-plane", test))]
@@ -42,6 +42,13 @@ const REBIND_INTERVAL: Duration = Duration::from_secs(5);
 /// wait this long before the next, so a peer that cannot take an exchange
 /// does not turn every wake into another connection.
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// How long after this device's own connection to a peer became a session a
+/// connection from that peer counts as a crossing (both connected at the
+/// same moment; the smaller device id's connection is kept). Later, it is a
+/// peer that restarted, and replaces the session.
+#[cfg(any(feature = "ui-plane", test))]
+const CROSSING_WINDOW: Duration = Duration::from_secs(3);
 
 /// The mDNS service name for Fini's Network channel. Only Fini endpoints use
 /// it, so other iroh apps on the network are not heard.
@@ -64,6 +71,10 @@ pub struct NetworkChannel {
     discovery_started: AtomicBool,
     /// Peers with an exchange attempt in flight -- one at a time per peer.
     in_flight: Mutex<HashSet<String>>,
+    /// When this device's own connection to each peer became a session. For
+    /// `CROSSING_WINDOW` after that, a connection from the peer is a crossing,
+    /// not a restart (`connecting`).
+    connected_at: Mutex<HashMap<String, Instant>>,
     /// Until when each peer whose last attempt failed is left alone.
     cooldown: Mutex<HashMap<String, Instant>>,
     /// The test switch, for debug builds only. Off makes the network look
@@ -83,6 +94,7 @@ impl NetworkChannel {
             serves: AtomicBool::new(false),
             discovery_started: AtomicBool::new(false),
             in_flight: Mutex::default(),
+            connected_at: Mutex::default(),
             cooldown: Mutex::default(),
             #[cfg(feature = "devtools")]
             switched_off: AtomicBool::new(false),
@@ -146,7 +158,7 @@ impl NetworkChannel {
         Endpoint::builder(presets::Minimal)
             .secret_key(self.secret_key.clone())
             .relay_mode(RelayMode::Disabled)
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(vec![PEER_ALPN.to_vec(), SYNC_ALPN.to_vec()])
             .clear_ip_transports()
             .bind_addr(SocketAddr::from(([0, 0, 0, 0], port)))
             .map_err(|err| err.to_string())?
@@ -155,12 +167,15 @@ impl NetworkChannel {
             .map_err(|err| format!("binding the network endpoint failed: {err}"))
     }
 
-    /// Connects to the device holding `peer_key` at `ip:port`.
-    pub async fn connect(&self, peer_key: &str, ip: IpAddr, port: u16) -> Result<Box<dyn DataLink>, String> {
-        Ok(Box::new(self.connect_link(peer_key, ip, port).await?))
+    /// Connects to the device holding `peer_key` at `ip:port`, for `alpn`:
+    /// `SYNC_ALPN` for a session, `PEER_ALPN` for the frames before one.
+    pub async fn connect(
+        &self, peer_key: &str, ip: IpAddr, port: u16, alpn: &[u8],
+    ) -> Result<Box<dyn DataLink>, String> {
+        Ok(Box::new(self.connect_link(peer_key, ip, port, alpn).await?))
     }
 
-    async fn connect_link(&self, peer_key: &str, ip: IpAddr, port: u16) -> Result<IrohDataLink, String> {
+    async fn connect_link(&self, peer_key: &str, ip: IpAddr, port: u16, alpn: &[u8]) -> Result<IrohDataLink, String> {
         if self.switched_off() {
             return Err("the test switch set the network to off".to_string());
         }
@@ -169,7 +184,7 @@ impl NetworkChannel {
             .parse()
             .map_err(|err| format!("invalid peer key '{peer_key}': {err}"))?;
         let addr = EndpointAddr::from_parts(id, [TransportAddr::Ip(SocketAddr::new(ip, port))]);
-        let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(addr, ALPN))
+        let connection = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(addr, alpn))
             .await
             .map_err(|_| format!("connect to {ip}:{port} timed out"))?
             .map_err(|err| format!("connect to {ip}:{port} failed: {err}"))?;
@@ -179,7 +194,7 @@ impl NetworkChannel {
     /// Sends one pre-auth frame (a pair request, accept or completion) and
     /// lets the connection close once the peer has it.
     pub async fn send_one_frame(&self, peer_key: &str, ip: IpAddr, port: u16, frame: &PeerFrame) -> Result<(), String> {
-        let mut link = self.connect_link(peer_key, ip, port).await?;
+        let mut link = self.connect_link(peer_key, ip, port, PEER_ALPN).await?;
         send_frame(&mut link, frame).await?;
         link.finish().await;
         Ok(())
@@ -247,7 +262,11 @@ impl NetworkChannel {
                         return;
                     }
                 };
+                let is_session = connection.alpn() == SYNC_ALPN;
                 match IrohDataLink::accept(ChannelKind::Network, connection, peer_addr).await {
+                    Ok(link) if is_session => {
+                        crate::services::communication::pairing::run_session_gate(Box::new(link), state, db_path).await;
+                    }
                     Ok(link) => {
                         crate::services::communication::pairing::run_peer_gate(Box::new(link), state, db_path).await;
                     }
@@ -436,44 +455,36 @@ impl NetworkChannel {
             return false;
         };
         log::info!("[transport][network] connecting to {peer_id} at {target_addr}:{ws_port}");
-        let mut link = match self.connect(&peer_key, target_addr, ws_port).await {
+        // TLS proves the peer holds the pinned key; the peer's gate may still
+        // refuse, by closing the connection with a code (`run_session_gate`).
+        let link = match self.connect(&peer_key, target_addr, ws_port, SYNC_ALPN).await {
             Ok(link) => link,
             Err(err) => {
                 log::warn!("[transport][network] connect to {peer_id} failed: {err}");
                 return false;
             }
         };
-        let peer_protocol_version =
-            match session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id).await {
-                Ok(version) => version,
-                // An exchange with the peer is already running (its own dial,
-                // or the one that won a crossing): the work goes through that,
-                // and this was no failure.
-                Err(err) if session::refused_for_running_exchange(&err) => {
-                    log::info!("[transport][network] {peer_id}: an exchange is already running ({err})");
-                    return true;
-                }
-                Err(err) => {
-                    log::warn!("[transport][network] {peer_id} refused the exchange: {err}");
-                    return false;
-                }
-            };
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         if state.try_claim_session(peer_id, ChannelKind::Network, tx) {
-            // The session is held, not connecting: a new connection from the
-            // peer (its app restarted) must not be refused as crossed.
+            // Held, not connecting; for `CROSSING_WINDOW` a connection from
+            // the peer is still a crossing (`connecting`).
+            self.connected_at.lock().unwrap().insert(peer_id.to_string(), Instant::now());
             self.in_flight.lock().unwrap().remove(peer_id);
             log::info!("[transport][network] exchange with {peer_id}");
-            session::run_session(
+            let close_code = session::run_session(
                 link,
                 rx,
                 state.clone(),
                 db_path,
                 peer_id.to_string(),
-                peer_protocol_version,
                 session::idle_after(ChannelKind::Network),
             )
             .await;
+            // Refused by the peer's gate: a failed attempt, so the next one
+            // waits `FAILURE_COOLDOWN` instead of connecting again at once.
+            if session::refused_by_peer(close_code) {
+                return false;
+            }
         }
         true
     }
@@ -544,8 +555,16 @@ impl ChannelService for NetworkChannel {
     }
 
     #[cfg(any(feature = "ui-plane", test))]
+    /// This device's own connection is being made, or became a session
+    /// within `CROSSING_WINDOW`.
     fn connecting(&self, peer_device_id: &str) -> bool {
         self.in_flight.lock().unwrap().contains(peer_device_id)
+            || self
+                .connected_at
+                .lock()
+                .unwrap()
+                .get(peer_device_id)
+                .is_some_and(|at| at.elapsed() < CROSSING_WINDOW)
     }
 
     fn recently_failed(&self, peer_device_id: &str) -> bool {
@@ -588,7 +607,7 @@ impl NetworkChannel {
             // ADR-0009 D8: a pair from before keys existed is paired again.
             return false;
         };
-        let Ok(mut link) = self.connect(&peer_key, ip, port).await else {
+        let Ok(mut link) = self.connect(&peer_key, ip, port, PEER_ALPN).await else {
             return false;
         };
         let hello = PeerFrame::AddChannel {

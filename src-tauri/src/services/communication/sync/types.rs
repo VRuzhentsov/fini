@@ -34,40 +34,18 @@ pub enum SessionCommand {
 
 pub type SessionSender = mpsc::Sender<SessionCommand>;
 
-/// A message of the transport-neutral Fini peer protocol: pairing handshake
-/// plus authenticated sync. Carried by whichever `Transport`/`DataLink` is
-/// currently selected for a peer (see `crate::services::communication::channel`).
-/// Bump whenever a new `PeerFrame` variant is introduced that must not be
-/// *proactively* sent to a peer that might not understand it yet (unlike a
-/// frame sent only in reply to something the peer itself sent first, which
-/// proves they're already on a compatible build). `PeerFrame::Unknown`
-/// alone only protects an updated build's own deserialization of frames
-/// *it* receives -- it does nothing for an older, already-installed peer
-/// receiving a frame kind its own `PeerFrame` enum predates. `Auth`/
-/// `AuthOk` exchange this once per session so both sides know whether the
-/// other actually supports version-gated frames before sending one; an
-/// older peer's `Auth`/`AuthOk` simply omits the field (`#[serde(default)]`
-/// -> `0`), which reads as "supports nothing past the original protocol."
-pub const PROTOCOL_VERSION: u32 = 4;
-
-
+/// A message of the Fini peer protocol: the frames before a session
+/// (pairing, adding a channel, identifying a device; `PEER_ALPN`) and the
+/// frames of a sync session (`SYNC_ALPN`). Carried by whichever `DataLink`
+/// is selected for a peer (see `crate::services::communication::channel`).
+///
+/// A new session frame that an older peer must not receive changes the
+/// version in `SYNC_ALPN`: two builds on different versions then share no
+/// ALPN and do not connect. `PeerFrame::Unknown` only protects a build's
+/// own decoding of frames it does not know.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PeerFrame {
-    #[serde(rename = "auth")]
-    Auth {
-        device_id: String,
-        peer_device_id: String,
-        #[serde(default)]
-        protocol_version: u32,
-    },
-    #[serde(rename = "auth_ok")]
-    AuthOk {
-        #[serde(default)]
-        protocol_version: u32,
-    },
-    #[serde(rename = "auth_fail")]
-    AuthFail { reason: String },
     /// Starts pairing: a device in Add Device asks another to pair.
     #[serde(rename = "pair_start")]
     PairStart(PairRequestPayload),
@@ -178,10 +156,6 @@ mod tests {
     /// wire type and nothing else: a payload can carry quest data.
     #[test]
     fn wire_type_names_the_frame_without_its_payload() {
-        let frame = PeerFrame::AuthFail {
-            reason: "private detail".to_string(),
-        };
-        assert_eq!(frame.wire_type(), "auth_fail");
         let identify = PeerFrame::IdentifyDevice {
             device_id: "d".to_string(),
             hostname: "h".to_string(),

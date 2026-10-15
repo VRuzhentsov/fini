@@ -48,7 +48,7 @@ pub use commands::{
 pub use commands::e2e_set_radio;
 
 #[cfg(any(feature = "ui-plane", test))]
-pub use gate::run_peer_gate;
+pub use gate::{run_peer_gate, run_session_gate};
 
 pub use commands::bluetooth_connect_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -161,6 +161,18 @@ pub(crate) fn pinned_key(conn: &mut diesel::SqliteConnection, device_id: &str) -
         .first::<Option<String>>(conn)
         .ok()
         .flatten()
+}
+
+/// The paired device whose pinned key is `key`: who is on the other end of
+/// a connection whose TLS handshake proved `key` (ADR-0009 D8).
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) fn paired_device_for_key(conn: &mut diesel::SqliteConnection, key: &str) -> Option<String> {
+    use diesel::prelude::*;
+    crate::schema::paired_devices::table
+        .filter(crate::schema::paired_devices::endpoint_id.eq(key))
+        .select(crate::schema::paired_devices::peer_device_id)
+        .first::<String>(conn)
+        .ok()
 }
 
 fn env_port(name: &str, fallback: u16) -> u16 {

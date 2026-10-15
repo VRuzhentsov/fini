@@ -3,9 +3,10 @@
 //! the link reports as `peer_key` so the gate can check it against the pair.
 //!
 //! Frames are length-prefixed (u32, big-endian) on one bidirectional stream.
-//! The dialer opens the stream and always speaks first, which is what makes
-//! the stream visible to the acceptor. Liveness is QUIC's own keep-alive and
-//! idle timeout, iroh's defaults; there is no ping frame.
+//! The dialer opens the stream and writes an empty frame first
+//! (`STREAM_START`), which is what makes the stream visible to the
+//! acceptor; `recv` skips it. Liveness is QUIC's own keep-alive and idle
+//! timeout, iroh's defaults; there is no ping frame.
 
 use async_trait::async_trait;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -13,8 +14,19 @@ use std::time::Duration;
 
 use super::{ChannelKind, DataLink};
 
-/// The ALPN every Fini endpoint speaks.
-pub const ALPN: &[u8] = b"fini/peer/1";
+/// The ALPN of the frames that come before a session: pairing, adding a
+/// channel, identifying a device.
+pub const PEER_ALPN: &[u8] = b"fini/peer/1";
+
+/// The ALPN of a sync session. Its last part is the protocol version: a
+/// device on another version shares no ALPN with this one, and the TLS
+/// handshake fails. Who the peer is, is the key the handshake proved; there
+/// is no auth frame (2026-10-13: TLS only).
+pub const SYNC_ALPN: &[u8] = b"fini/sync/4";
+
+/// An empty frame: the dialer's first write, so that the acceptor sees the
+/// stream before the first real frame. Not a message; `recv` skips it.
+const STREAM_START: [u8; 4] = [0, 0, 0, 0];
 
 /// Largest frame accepted from a peer. A full sync batch is far below this;
 /// the cap stops a broken or hostile peer from making this device allocate
@@ -23,7 +35,7 @@ const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 /// How long a closing link waits for the peer to take what was sent last.
 /// Dropping a QUIC connection discards data still in flight, which would
-/// lose the last frame of a reply (an `AuthFail`, an `AddChannelAccept`).
+/// lose the last frame of a reply (an `AddChannelAccept`).
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct IrohDataLink {
@@ -62,8 +74,11 @@ impl IrohDataLink {
         connection: Connection,
         peer_addr: Option<String>,
     ) -> Result<Self, String> {
-        let (send, recv) = connection
+        let (mut send, recv) = connection
             .open_bi()
+            .await
+            .map_err(|err| format!("opening a stream failed: {err}"))?;
+        send.write_all(&STREAM_START)
             .await
             .map_err(|err| format!("opening a stream failed: {err}"))?;
         Ok(Self::new(kind, connection, send, recv, peer_addr))
@@ -92,8 +107,12 @@ impl IrohDataLink {
         }
     }
 
-    /// The next whole frame already in the buffer, if any.
+    /// The next whole frame already in the buffer, if any. Skips the
+    /// dialer's `STREAM_START`.
     fn take_frame(&mut self) -> Option<Result<Vec<u8>, String>> {
+        while self.buffer.starts_with(&STREAM_START) {
+            self.buffer.drain(..STREAM_START.len());
+        }
         let header: [u8; 4] = self.buffer.get(..4)?.try_into().ok()?;
         let len = u32::from_be_bytes(header) as usize;
         if len > MAX_FRAME_LEN {
@@ -122,6 +141,27 @@ impl DataLink for IrohDataLink {
 
     fn peer_key(&self) -> Option<String> {
         Some(self.peer_key.clone())
+    }
+
+    #[cfg(any(feature = "ui-plane", test))]
+    fn close(&mut self, code: u32, reason: &str) {
+        if let Some(connection) = self.connection.take() {
+            connection.close(iroh::endpoint::VarInt::from_u32(code), reason.as_bytes());
+        }
+        self.send = None;
+    }
+
+    fn close_reason(&self) -> Option<String> {
+        self.connection.as_ref()?.close_reason().map(|reason| reason.to_string())
+    }
+
+    fn close_code(&self) -> Option<u32> {
+        match self.connection.as_ref()?.close_reason()? {
+            iroh::endpoint::ConnectionError::ApplicationClosed(close) => {
+                u32::try_from(close.error_code.into_inner()).ok()
+            }
+            _ => None,
+        }
     }
 
     async fn send(&mut self, payload: Vec<u8>) -> Result<(), String> {

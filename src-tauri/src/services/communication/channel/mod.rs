@@ -145,8 +145,8 @@ impl ChannelKind {
 }
 
 /// An untrusted candidate peer surfaced by a transport's discovery step.
-/// Never confers trust by itself — only a successful `PeerFrame::Auth`
-/// handshake over a dialed `DataLink` does. Not yet consumed by a runtime
+/// Never confers trust by itself — only a TLS handshake that proves the
+/// pinned key does. Not yet consumed by a runtime
 /// registry (see `Transport` doc comment) — reserved for the real
 /// Bluetooth adapter's discovery step (PR B), which unlike `tcp_ws`
 /// (backed by the existing presence worker) and `sim` (statically
@@ -181,6 +181,23 @@ pub trait DataLink: Send {
     /// proved one (ADR-0009 D8). The gate checks it against the key pinned
     /// for the pair. `None` for links without one.
     fn peer_key(&self) -> Option<String> {
+        None
+    }
+
+    /// Ends the link with an application close `code` the peer can read
+    /// (`close_reason`): how the gate refuses a session. Links without
+    /// close codes just end.
+    #[cfg(any(feature = "ui-plane", test))]
+    fn close(&mut self, _code: u32, _reason: &str) {}
+
+    /// Why the peer closed the link, when the link knows: for the logs.
+    fn close_reason(&self) -> Option<String> {
+        None
+    }
+
+    /// The application close code the peer closed the link with, if any
+    /// (`pairing::gate::CLOSE_*`).
+    fn close_code(&self) -> Option<u32> {
         None
     }
 }

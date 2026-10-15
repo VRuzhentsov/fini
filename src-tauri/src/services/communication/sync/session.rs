@@ -17,7 +17,7 @@ use crate::services::communication::pairing::{
     IncomingSyncAck,
 };
 use crate::services::communication::sync::outbox::load_events_for_space;
-use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
+use crate::services::communication::sync::types::{PeerFrame, SessionCommand};
 use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 
 // ADR-0006 deleted `check_bluetooth_bond` from here. It required the
@@ -29,49 +29,28 @@ use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 // the other is something the product never creates.
 //
 // What it was reaching for -- "is the thing that just connected really this
-// peer" -- is answered one layer up by the `Auth` frame, which
-// `specs/device-connect/README.md` already names as the trust boundary.
+// peer" -- is answered by the TLS handshake against the key pinned for the
+// pair (`pairing::run_session_gate`).
 
-/// Why an auth is refused while an exchange with that peer already runs on
-/// the channel.
-pub(crate) const SESSION_ACTIVE_REASON: &str = "session already active on this channel";
-/// Why an auth is refused when both devices connected to each other at the
-/// same time and this device's connection is the one kept.
-pub(crate) const CROSSED_CONNECT_REASON: &str = "crossed connections: the other device's connection is kept";
+/// QUIC close codes of a session the peer's gate refused
+/// (`pairing::run_session_gate`), which the connecting side reads as its
+/// close reason. There is no refusal frame (2026-10-13: TLS only).
+pub(crate) const CLOSE_NOT_PAIRED: u32 = 1;
+pub(crate) const CLOSE_CHANNEL_OFF: u32 = 2;
+/// Both devices connected at once; the smaller device id's connection is
+/// kept.
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) const CLOSE_CROSSED: u32 = 3;
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) const CLOSE_SESSION_ACTIVE: u32 = 4;
 
-/// Whether a refused auth only means an exchange with the peer is (or is
-/// about to be) running already.
-pub(crate) fn refused_for_running_exchange(error: &str) -> bool {
-    error.contains(SESSION_ACTIVE_REASON) || error.contains(CROSSED_CONNECT_REASON)
-}
-
-/// Client-side auth handshake: send `Auth`, await `AuthOk`/`AuthFail`.
-/// Shared by every adapter's dial path. Returns the peer's reported
-/// `PROTOCOL_VERSION` (`0` for a peer running a build from before that
-/// field existed) so the caller's `run_session` knows which proactive
-/// frames are safe to send -- see `PROTOCOL_VERSION`'s doc comment.
-pub async fn perform_client_auth(
-    link: &mut dyn DataLink,
-    my_device_id: &str,
-    peer_device_id: &str,
-) -> Result<u32, String> {
-    send_frame(
-        link,
-        &PeerFrame::Auth {
-            device_id: my_device_id.to_string(),
-            peer_device_id: peer_device_id.to_string(),
-            protocol_version: PROTOCOL_VERSION,
-        },
-    )
-    .await?;
-
-    match recv_frame(link).await {
-        Some(Ok(PeerFrame::AuthOk { protocol_version })) => Ok(protocol_version),
-        Some(Ok(PeerFrame::AuthFail { reason })) => Err(format!("auth rejected: {reason}")),
-        Some(Ok(_)) => Err("unexpected reply to auth".to_string()),
-        Some(Err(err)) => Err(err),
-        None => Err("connection closed before auth reply".to_string()),
-    }
+/// Whether a session the peer closed with `close_code` was refused by its
+/// gate as not wanted (not paired there, or the channel is off there): the
+/// connecting side counts that as a failed attempt and waits before it
+/// tries again. A crossing or an active session is no failure: the peer's
+/// own session carries the work.
+pub(crate) fn refused_by_peer(close_code: Option<u32>) -> bool {
+    matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF))
 }
 
 /// How long an exchange stays open with nothing moving in either direction
@@ -116,16 +95,17 @@ async fn send_kept_frames(link: &mut dyn DataLink, db_path: &PathBuf, peer_devic
 /// closes once nothing has moved for `idle_after`, or only when the link
 /// fails if `idle_after` is `None` (see `idle_after()`). `rx` is the mailbox
 /// of the exchange already registered with `try_claim_session`; this
-/// function only releases it.
+/// function only releases it. Returns the close code the peer closed the
+/// link with, if it did (`pairing::gate::refused_by_peer`).
 pub async fn run_session(
     mut link: Box<dyn DataLink>,
     mut rx: mpsc::Receiver<SessionCommand>,
     state: DeviceConnectionState,
     db_path: PathBuf,
     peer_device_id: String,
-    peer_protocol_version: u32,
     idle_after: Option<Duration>,
-) {
+) -> Option<u32> {
+    let mut close_code = None;
     let closes_when_idle = idle_after.is_some();
     // Only read while `closes_when_idle`; a held session never waits on it.
     let idle_after = idle_after.unwrap_or(Duration::from_secs(3600));
@@ -133,7 +113,7 @@ pub async fn run_session(
 
     // Our own Bluetooth address, for the peer's diagnostics, once per
     // Network exchange -- see `PeerFrame::BluetoothAddressUpdate`.
-    if link.kind() == ChannelKind::Network && peer_protocol_version >= 1 {
+    if link.kind() == ChannelKind::Network {
         if let Some(address) = crate::services::communication::pairing::local_bluetooth_address().await {
             let _ = send_frame(link.as_mut(), &PeerFrame::BluetoothAddressUpdate { address }).await;
         }
@@ -166,7 +146,9 @@ pub async fn run_session(
                         break;
                     }
                     None => {
-                        log::info!("[exchange] {peer_device_id} {kind:?}: peer closed the link");
+                        let why = link.close_reason().unwrap_or_default();
+                        log::info!("[exchange] {peer_device_id} {kind:?}: peer closed the link {why}");
+                        close_code = link.close_code();
                         break;
                     }
                 };
@@ -212,6 +194,7 @@ pub async fn run_session(
     if !closes_when_idle {
         state.space_sync.wake_after(HELD_SESSION_RECONNECT);
     }
+    close_code
 }
 
 /// How soon after a held session ends the channel tries to connect again.
@@ -386,12 +369,9 @@ async fn handle_inbound(
                 eprintln!("[space-sync] persist bluetooth self-report failed: {last_err}");
             });
         }
-        // Pre-auth only (handled earlier in run_peer_gate's first-frame
-        // dispatch) or sent by this side -- never expected inbound here.
-        PeerFrame::Auth { .. }
-        | PeerFrame::AuthOk { .. }
-        | PeerFrame::AuthFail { .. }
-        | PeerFrame::PairStart(_)
+        // Frames before a session (`PEER_ALPN`, handled by run_peer_gate) --
+        // never expected inbound here.
+        PeerFrame::PairStart(_)
         | PeerFrame::PairAccept(_)
         | PeerFrame::PairComplete(_)
         | PeerFrame::IdentifyDevice { .. }

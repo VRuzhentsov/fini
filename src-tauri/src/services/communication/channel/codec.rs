@@ -43,16 +43,16 @@ mod tests {
 
     #[test]
     fn round_trips_a_peer_frame() {
-        let frame = PeerFrame::AuthOk { protocol_version: 1 };
+        let frame = PeerFrame::Ack { event_id: "e1".to_string() };
         let bytes = encode_frame(&frame).expect("encode");
         let decoded = decode_frame(&bytes).expect("decode");
-        assert!(matches!(decoded, PeerFrame::AuthOk { protocol_version: 1 }));
+        assert!(matches!(decoded, PeerFrame::Ack { event_id } if event_id == "e1"));
     }
 
     #[test]
     fn envelope_carries_version_and_none_scheme() {
         let bytes =
-            encode_frame(&PeerFrame::AuthOk { protocol_version: 1 }).expect("encode");
+            encode_frame(&PeerFrame::Ack { event_id: "e1".to_string() }).expect("encode");
         let envelope: FrameEnvelope = serde_json::from_slice(&bytes).expect("parse envelope");
         assert_eq!(envelope.v, ENVELOPE_VERSION);
         assert_eq!(envelope.enc, EncScheme::None);
@@ -84,7 +84,7 @@ mod tests {
         let envelope = FrameEnvelope {
             v: 99,
             enc: EncScheme::None,
-            payload: serde_json::to_vec(&PeerFrame::AuthOk { protocol_version: 1 }).unwrap(),
+            payload: serde_json::to_vec(&PeerFrame::Ack { event_id: "e1".to_string() }).unwrap(),
         };
         let bytes = serde_json::to_vec(&envelope).unwrap();
         let err = decode_frame(&bytes).expect_err("should reject");

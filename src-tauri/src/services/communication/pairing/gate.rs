@@ -1,9 +1,11 @@
 //! The inbound gate: who is allowed to open a session, and on which channel.
 //!
-//! This is the first thing an accepted `DataLink` meets. It answers the
-//! pre-auth pairing frames, checks an `Auth` frame against `paired_devices`
-//! and the pair's channel switches, claims the per-(peer, channel) session
-//! slot, and only then hands the link to `sync::session::run_session`.
+//! This is the first thing an accepted `DataLink` meets. `run_peer_gate`
+//! answers the frames before a session (pairing, adding a channel,
+//! identifying a device). `run_session_gate` finds the paired device by the
+//! key the TLS handshake proved, checks the pair's channel switch, claims the
+//! per-(peer, channel) session slot, and only then hands the link to
+//! `sync::session::run_session`.
 //!
 //! It lives in `pairing` because that is what it decides. It used to sit in
 //! `sync::session`, where roughly a hundred and ninety lines of
@@ -27,9 +29,9 @@ use crate::services::db::open_db_at_path;
 use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
 use crate::services::communication::sync::session::{
-    run_session, CROSSED_CONNECT_REASON, SESSION_ACTIVE_REASON,
+    run_session, CLOSE_CHANNEL_OFF, CLOSE_CROSSED, CLOSE_NOT_PAIRED, CLOSE_SESSION_ACTIVE,
 };
-use crate::services::communication::sync::types::{PeerFrame, SessionCommand, PROTOCOL_VERSION};
+use crate::services::communication::sync::types::{PeerFrame, SessionCommand};
 
 /// How long a new connection waits for the held session it replaces to
 /// release its slot.
@@ -104,16 +106,13 @@ fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) 
     })
 }
 
-/// Server-side gate: read the first frame off a freshly accepted `DataLink` and
-/// dispatch it. Pre-auth pairing messages (`PairStart`/`PairAccept`/
+/// Server-side gate for the frames before a session (`PEER_ALPN`, and every
+/// plain Bluetooth link): read the first frame off a freshly accepted
+/// `DataLink` and dispatch it. Pairing messages (`PairStart`/`PairAccept`/
 /// `PairComplete`) are handled and the link is then closed — discovery and
 /// pairing metadata are untrusted regardless of which channel carried
-/// them. An `Auth` frame is checked against `paired_devices`; on success the
-/// per-(peer, channel) session slot is claimed via `try_claim_session`
-/// before `AuthOk` is sent and the session loop starts -- refused only if a
-/// session is already claimed on this *same* channel for this peer, not
-/// because a session already exists on the other one. Transport-neutral:
-/// call this from every adapter's accept loop.
+/// them. Sessions come through `run_session_gate`. Transport-neutral: call
+/// this from every adapter's accept loop.
 ///
 /// `ui-plane`/`test` only: gated the same way the original `ws_server`
 /// listener was — `cli-plane` dials out for sync (see the adapters'
@@ -128,7 +127,7 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
         return;
     };
 
-    let (device_id, peer_device_id, peer_protocol_version) = match frame {
+    match frame {
         PeerFrame::PairStart(payload) => {
             let key = link_key.or_else(|| payload.from_endpoint_id.clone());
             let request_id = payload.request_id.clone();
@@ -231,132 +230,63 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
             }
             return;
         }
-        PeerFrame::Auth {
-            device_id,
-            peer_device_id,
-            protocol_version,
-        } => (device_id, peer_device_id, protocol_version),
         other => {
             log::warn!(
-                "[space_sync][gate] {kind:?} link from {from_addr}: expected auth first, got `{}`",
+                "[pairing][gate] {kind:?} link from {from_addr}: unexpected first frame `{}`",
                 other.wire_type()
             );
-            let _ = send_frame(
-                link.as_mut(),
-                &PeerFrame::AuthFail {
-                    reason: "expected auth first".into(),
-                },
-            )
-            .await;
-            return;
         }
+    }
+}
+
+/// Server-side gate for a sync session (`SYNC_ALPN`). There is no auth
+/// frame: the TLS handshake proved the peer's key, and the paired device is
+/// the one that key is pinned for (ADR-0009 D8). A refusal closes the
+/// connection with a code (`CLOSE_*`). Accepted, the per-(peer, channel)
+/// session slot is claimed and the session runs.
+#[cfg(any(feature = "ui-plane", test))]
+pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionState, db_path: PathBuf) {
+    let kind = link.kind();
+    let from_addr = link.peer_addr().unwrap_or_default();
+    let device_id = link.peer_key().and_then(|key| {
+        tokio::task::block_in_place(|| super::paired_device_for_key(&mut open_db_at_path(&db_path), &key))
+    });
+    let Some(device_id) = device_id else {
+        log::warn!("[space_sync][gate] {kind:?} session from {from_addr} refused: its key is pinned for no pair");
+        link.close(CLOSE_NOT_PAIRED, "not paired; pair the devices again");
+        return;
     };
+    log::info!("[space_sync][gate] {kind:?} session from {device_id} via {from_addr}");
 
-    log::info!("[space_sync][gate] {kind:?} auth attempt from {device_id} via {from_addr}");
-
-    if peer_device_id != state.identity.device_id {
-        log::warn!(
-            "[space_sync][gate] {kind:?} auth from {device_id} rejected: wrong target device \
-             ({peer_device_id}, expected {})",
-            state.identity.device_id
-        );
-        let _ = send_frame(
-            link.as_mut(),
-            &PeerFrame::AuthFail {
-                reason: "wrong target device".into(),
-            },
-        )
-        .await;
+    // Checked here too, not only on the connecting side: a peer whose own
+    // copy of this channel is still on keeps connecting, and the switch here
+    // must hold. Fails closed: no such channel, or an unreadable row, is off.
+    if !check_channel_enabled(&db_path, &device_id, kind) {
+        log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: the channel is off for this pair");
+        link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
         return;
     }
 
-    if !check_paired(&db_path, &device_id) {
-        log::warn!("[space_sync][gate] {kind:?} auth from {device_id} rejected: unknown device (not paired)");
-        let _ = send_frame(
-            link.as_mut(),
-            &PeerFrame::AuthFail {
-                reason: "unknown device".into(),
-            },
-        )
-        .await;
-        return;
-    }
-
-    if !key_matches(&db_path, &device_id, link_key.as_deref()) {
-        log::warn!(
-            "[space_sync][gate] {kind:?} auth from {device_id} rejected: its key is not the one pinned for the pair"
-        );
-        let _ = send_frame(
-            link.as_mut(),
-            &PeerFrame::AuthFail {
-                reason: "key does not match the pair; pair the devices again".into(),
-            },
-        )
-        .await;
-        return;
-    }
-
-    // Sim stands in for Bluetooth's role in tests, so it is deliberately not
-    // gated here -- only the real network channel is.
-    if kind == ChannelKind::Network && !check_channel_enabled(&db_path, &device_id, ChannelKind::Network) {
-        log::warn!(
-            "[space_sync][gate] network auth from {device_id} rejected: network disabled for this pair"
-        );
-        let _ = send_frame(
-            link.as_mut(),
-            &PeerFrame::AuthFail {
-                reason: "network disabled for this pair".into(),
-            },
-        )
-        .await;
-        return;
-    }
-
-    if kind == ChannelKind::Bluetooth {
-        if !check_channel_enabled(&db_path, &device_id, ChannelKind::Bluetooth) {
-            log::warn!(
-                "[space_sync][gate] bluetooth auth from {device_id} rejected: bluetooth disabled for this pair"
-            );
-            let _ = send_frame(
-                link.as_mut(),
-                &PeerFrame::AuthFail {
-                    reason: "bluetooth disabled for this pair".into(),
-                },
-            )
-            .await;
-            return;
-        }
-        // ADR-0006 removed a second check here: the connecting link's
-        // observed address had to match a stored one that was also currently
-        // OS-bonded. It was never a trust check -- the `Auth` frame above is
-        // and remains the trust boundary -- and it rejected exactly the
-        // connections this channel now depends on, since a peer that
-        // advertises under a rotating address never matches a stored one.
-    }
-
-    // Both devices dialed each other at once. Were both links kept and
-    // then each dropped for the other, neither exchange would survive; the
-    // dial from the smaller device id wins on both sides.
+    // Both devices connected to each other at once. Were both connections
+    // kept and then each dropped for the other, neither session would
+    // survive; the connection from the smaller device id is kept on both
+    // sides.
     if yields_to_own_connection(&state.identity.device_id, &device_id, state.channel(kind).connecting(&device_id)) {
-        log::info!("[space_sync][gate] {kind:?} auth from {device_id} refused: this device's connection is kept");
-        let _ = send_frame(
-            link.as_mut(),
-            &PeerFrame::AuthFail {
-                reason: CROSSED_CONNECT_REASON.into(),
-            },
-        )
-        .await;
+        log::info!("[space_sync][gate] {kind:?} session from {device_id} refused: this device's connection is kept");
+        link.close(CLOSE_CROSSED, "crossed connections: the other device's connection is kept");
         return;
     }
 
-    // A held session ends only when its connection drops. A peer that
-    // connects again while one is held has restarted, and its old
-    // connection is dead: close the old session, and wait until it has
-    // released its slot, so that its release cannot free the new claim.
-    #[cfg(any(feature = "ui-plane", test))]
-    if crate::services::communication::sync::session::idle_after(kind).is_none()
-        && state.close_session_on(&device_id, kind)
-    {
+    // The old session goes, and this connection replaces it, when:
+    // - this device's own connection to the peer is the other half of a
+    //   crossing and lost it above (the peer has the smaller id); or
+    // - the session is held: it ends only when its connection drops, so a
+    //   peer that connects again has restarted, and the old connection is
+    //   dead.
+    // Wait until the old session has released its slot, so that its release
+    // cannot free the new claim.
+    let held = crate::services::communication::sync::session::idle_after(kind).is_none();
+    if (held || state.channel(kind).connecting(&device_id)) && state.close_session_on(&device_id, kind) {
         log::info!("[space_sync][gate] {kind:?} {device_id} connected again; closing its held session");
         let until = tokio::time::Instant::now() + HELD_SESSION_RELEASE_WAIT;
         while state.has_session_on(&device_id, kind) && tokio::time::Instant::now() < until {
@@ -366,48 +296,21 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
 
     let (tx, rx) = mpsc::channel::<SessionCommand>(64);
     if !state.try_claim_session(&device_id, kind, tx) {
-        // If this fires repeatedly for a peer that has no other live session
-        // on this channel (check `device_connection_debug_status` / the
-        // sibling session logs), the claim is stale -- a slot never released
-        // by a prior session that ended without going through
-        // `release_session` (e.g. a panic in `run_session`'s inbound-frame
-        // handling). That's a "stuck connecting forever" shape from the
-        // gate's own side, not just the dial loop's.
-        log::warn!(
-            "[space_sync][gate] {kind:?} auth from {device_id} rejected: session already active on this channel"
-        );
-        let _ = send_frame(
-            link.as_mut(),
-            &PeerFrame::AuthFail {
-                reason: SESSION_ACTIVE_REASON.into(),
-            },
-        )
-        .await;
+        // If this fires repeatedly for a peer with no other live session on
+        // this channel, the claim is stale: a slot never released by a
+        // session that ended without `release_session`.
+        log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: a session is already active");
+        link.close(CLOSE_SESSION_ACTIVE, "a session is already active on this channel");
         return;
     }
 
-    if send_frame(
-        link.as_mut(),
-        &PeerFrame::AuthOk {
-            protocol_version: PROTOCOL_VERSION,
-        },
-    )
-    .await
-    .is_err()
-    {
-        log::warn!("[space_sync][gate] {kind:?} auth OK for {device_id} but AuthOk send failed; releasing claim");
-        state.release_session(&device_id, kind);
-        return;
-    }
-
-    log::info!("[space_sync][gate] {kind:?} auth OK for {device_id}; starting exchange");
+    log::info!("[space_sync][gate] {kind:?} session with {device_id} accepted");
     run_session(
         link,
         rx,
         state,
         db_path,
         device_id,
-        peer_protocol_version,
         crate::services::communication::sync::session::idle_after(kind),
     )
     .await;
@@ -416,7 +319,6 @@ pub async fn run_peer_gate(mut link: Box<dyn DataLink>, state: DeviceConnectionS
 #[cfg(test)]
 mod crossed_connection_tests {
     use super::*;
-    use crate::services::communication::sync::session::refused_for_running_exchange;
 
     /// Both sides apply the same rule, so exactly one of two crossed dials
     /// survives: the one from the smaller device id.
@@ -428,8 +330,5 @@ mod crossed_connection_tests {
         assert!(a_refuses_b, "a's own connection is kept, so it refuses b's");
         assert!(!b_refuses_a, "b accepts a's connection");
         assert!(!yields_to_own_connection("a", "b", false), "no crossing, nothing refused");
-        assert!(refused_for_running_exchange(&format!("auth rejected: {CROSSED_CONNECT_REASON}")));
-        assert!(refused_for_running_exchange(&format!("auth rejected: {SESSION_ACTIVE_REASON}")));
-        assert!(!refused_for_running_exchange("auth rejected: unknown device"));
     }
 }

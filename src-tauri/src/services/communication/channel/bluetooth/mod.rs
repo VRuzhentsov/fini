@@ -3,7 +3,7 @@
 //!
 //! Two kinds of link share one GATT service (ADR-0009 D2, D3, D8):
 //!
-//! - **Sessions** (`Auth`, `AddChannel`) are iroh connections over
+//! - **Sessions** (`SYNC_ALPN`) and `AddChannel` (`PEER_ALPN`) are iroh connections over
 //!   `ble-gatt-iroh`, to the key pinned for the pair, which TLS proves
 //!   (`BluetoothChannel::connect_session`, `BluetoothChannel::iroh_endpoint`).
 //! - **Pre-pairing frames** (discovery, pair request/accept/complete) go over
@@ -50,7 +50,7 @@ use crate::services::communication::sync::space_sync::SpaceSync;
 use crate::services::communication::sync::types::PeerFrame;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::communication::channel::{recv_frame, send_frame};
-use crate::services::communication::channel::iroh_link::{IrohDataLink, ALPN};
+use crate::services::communication::channel::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
 use crate::services::communication::channel::service::ChannelService;
 use crate::services::communication::channel::{BoxConnectFuture, DataLink, Transport, ChannelKind};
 #[cfg(any(feature = "ui-plane", test))]
@@ -187,10 +187,10 @@ fn datagram_config() -> DatagramConfig {
 /// other. FNV-1a is a fixed, published algorithm, so the value is stable
 /// for as long as the `device_id` is.
 ///
-/// Not a security boundary and not meant to be one: `Auth` is
-/// (`specs/device-connect/README.md`), and this only decides which
-/// advertiser is worth dialling. A collision costs one wasted dial that
-/// `Auth` then rejects.
+/// Not a security boundary and not meant to be one: the TLS handshake
+/// against the pinned key is, and this only decides which advertiser is
+/// worth dialling. A collision costs one wasted dial that the handshake
+/// then fails.
 ///
 /// ADR-0006 records the privacy limit this carries: a stable value
 /// broadcast continuously is trackable, which is why the rotating,
@@ -627,14 +627,11 @@ impl BluetoothChannel {
 
         if let Some(address) = self.scanner.last_heard_address(peer_id) {
             let guard = self.scanner.acquire_connect().await;
-            match self.connect_and_auth(state, peer_id, &address).await {
-                Ok((link, version)) => {
+            match self.connect_for_session(state, peer_id, &address).await {
+                Ok(link) => {
                     drop(guard);
-                    return self.run_exchange(state, peer_id, link, version, &address).await;
+                    return self.run_exchange(state, peer_id, link, &address).await;
                 }
-                // An exchange with the peer already runs (its own dial, or
-                // the one that won a crossing): the work goes through that.
-                Err(err) if session::refused_for_running_exchange(&err) => return,
                 Err(err) => last_error = Some(err),
             }
         }
@@ -654,50 +651,47 @@ impl BluetoothChannel {
                 self.delivery.note_delivery_missed(peer_id, &state.space_sync);
                 return;
             };
-            match self.connect_and_auth(state, peer_id, &found.address).await {
-                Ok((link, version)) => {
+            match self.connect_for_session(state, peer_id, &found.address).await {
+                Ok(link) => {
                     let address = found.address.clone();
                     drop(found);
-                    return self.run_exchange(state, peer_id, link, version, &address).await;
+                    return self.run_exchange(state, peer_id, link, &address).await;
                 }
-                Err(err) if session::refused_for_running_exchange(&err) => return,
                 Err(err) => last_error = Some(err),
             }
         }
     }
 
-    /// Dial `address` and authenticate as talking to `peer_id`, bounded so
-    /// an advertiser that accepts the connection and never answers cannot
-    /// hold the search. One real `connect()` was measured at ~28s.
-    async fn connect_and_auth(
+    /// Connect a session to `peer_id` at `address`, bounded so an
+    /// advertiser that accepts the connection and never finishes the
+    /// handshake cannot hold the search. One real `connect()` was measured
+    /// at ~28s. TLS proves the peer; its gate may still refuse by closing
+    /// the connection (`run_session_gate`).
+    async fn connect_for_session(
         &self, state: &DeviceConnectionState, peer_id: &str, address: &str,
-    ) -> Result<(Box<dyn DataLink>, u32), String> {
-        let attempt = tokio::time::timeout(CONNECT_CANDIDATE_TIMEOUT, async {
-            let mut link = self.connect_session(state, peer_id, address).await?;
-            let version =
-                session::perform_client_auth(link.as_mut(), &state.identity.device_id, peer_id).await?;
-            Ok::<_, String>((link, version))
-        })
+    ) -> Result<Box<dyn DataLink>, String> {
+        let attempt = tokio::time::timeout(
+            CONNECT_CANDIDATE_TIMEOUT,
+            self.connect_session(state, peer_id, address, SYNC_ALPN),
+        )
         .await;
         match attempt {
-            Ok(Ok(connected)) => Ok(connected),
+            Ok(Ok(link)) => Ok(link),
             Ok(Err(err)) => {
                 log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
-                if !session::refused_for_running_exchange(&err) {
-                    self.scanner.note_connect_failed(address);
-                }
+                self.scanner.note_connect_failed(address);
                 Err(err)
             }
             Err(_elapsed) => {
-                log::info!("[transport][ble] candidate {address} did not finish connect+auth in time");
+                log::info!("[transport][ble] candidate {address} did not finish the connect in time");
                 self.scanner.note_connect_failed(address);
-                Err("connect+auth timed out".to_string())
+                Err("connect timed out".to_string())
             }
         }
     }
 
     async fn run_exchange(
-        &self, state: &DeviceConnectionState, peer_id: &str, link: Box<dyn DataLink>, version: u32, address: &str,
+        &self, state: &DeviceConnectionState, peer_id: &str, link: Box<dyn DataLink>, address: &str,
     ) {
         self.delivery.forget_delivery_misses(peer_id);
         log::info!("[transport][ble] exchange with {peer_id} via {address}");
@@ -710,16 +704,19 @@ impl BluetoothChannel {
         note_observed_bluetooth_address(&db_path, peer_id, address);
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         if state.try_claim_session(peer_id, ChannelKind::Bluetooth, tx) {
-            session::run_session(
+            let close_code = session::run_session(
                 link,
                 rx,
                 state.clone(),
                 db_path,
                 peer_id.to_string(),
-                version,
                 session::idle_after(ChannelKind::Bluetooth),
             )
             .await;
+            // Refused by the peer's gate: the next delivery waits its turn.
+            if session::refused_by_peer(close_code) {
+                self.delivery.note_delivery_missed(peer_id, &state.space_sync);
+            }
         }
     }
 
@@ -869,7 +866,7 @@ impl BluetoothChannel {
     /// which it does only while it is running its own setup search for us
     /// (D2).
     async fn send_request(&self, state: &DeviceConnectionState, address: &str, peer_id: &str) -> Option<()> {
-        let mut link = self.connect_session(state, peer_id, address).await.ok()?;
+        let mut link = self.connect_session(state, peer_id, address, PEER_ALPN).await.ok()?;
         send_frame(
             link.as_mut(),
             &PeerFrame::AddChannel {
