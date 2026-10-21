@@ -10,6 +10,7 @@ These specs are the implementation contract for the main `fini` repo.
 - `space-sync/` - pair-scoped space mapping, bootstrap sync, sync sessions, and sync status
 - `space/` - local space model and space management behavior
 - `backup/` - portable zip import/export for quests and spaces
+- `theme/` - theme token schema, CSS variable mapping, and per-device theme preference behavior
 
 ## Convention
 
@@ -32,3 +33,4 @@ Keep docs in the `fini` repo when they are load-bearing for implementation and s
 - `specs/space-sync/README.md`
 - `specs/space/README.md`
 - `specs/backup/README.md`
+- `specs/theme/README.md`
