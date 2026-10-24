@@ -525,6 +525,17 @@ pub fn run() {
             app.manage(dc_state);
             Ok(())
         })
+        // The webview starts to load: on Android the Activity is up, so
+        // Bluetooth and the foreground service may start now, not when the
+        // frontend mounts.
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                if let Some(dc_state) = webview.try_state::<DeviceConnectionState>() {
+                    dc_state.space_sync.note_activity_up();
+                    dc_state.space_sync.wake();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_spaces,
             backup_export,

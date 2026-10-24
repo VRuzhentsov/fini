@@ -63,11 +63,12 @@ pub struct SpaceSync {
     /// (`note_channel_order`); Network first until then.
     channel_order: Mutex<HashMap<String, [ChannelKind; 2]>>,
     keeper_started: Once,
-    /// Set by the first tick the frontend asks for (`commands::
-    /// space_sync_tick`). On Android the Activity context that the
-    /// Bluetooth adapter and the foreground service need exists only from
-    /// then on; ticks before it serve Network alone.
-    frontend_ticked: std::sync::atomic::AtomicBool,
+    /// Set when the webview starts to load its page (`lib.rs`
+    /// `on_page_load`), or by the frontend's first tick if that comes
+    /// first. On Android the Activity context that the Bluetooth adapter
+    /// and the foreground service need exists only from then on; ticks
+    /// before it serve Network alone.
+    activity_up: std::sync::atomic::AtomicBool,
 }
 
 impl Default for SpaceSync {
@@ -78,7 +79,7 @@ impl Default for SpaceSync {
             sent_at: Mutex::new(HashMap::new()),
             channel_order: Mutex::new(HashMap::new()),
             keeper_started: Once::new(),
-            frontend_ticked: std::sync::atomic::AtomicBool::new(false),
+            activity_up: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -101,16 +102,18 @@ impl SpaceSync {
         });
     }
 
-    /// The frontend asked for a tick: on Android the Activity is up.
+    /// The webview started to load its page, or the frontend asked for a
+    /// tick: on Android the Activity is up. The frontend itself can mount
+    /// much later (about 45 s on a phone with the dev frontend).
     #[cfg(any(feature = "ui-plane", test))]
-    pub(super) fn note_frontend_tick(&self) {
-        self.frontend_ticked.store(true, std::sync::atomic::Ordering::SeqCst);
+    pub(crate) fn note_activity_up(&self) {
+        self.activity_up.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether a tick may use what needs the Android Activity (the Bluetooth
     /// channel, the foreground service). Always true off Android.
     pub(super) fn activity_ready(&self) -> bool {
-        cfg!(not(target_os = "android")) || self.frontend_ticked.load(std::sync::atomic::Ordering::SeqCst)
+        cfg!(not(target_os = "android")) || self.activity_up.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(super) fn note_tick_ran(&self) {
@@ -155,7 +158,7 @@ impl SpaceSync {
     /// Started when the app starts (`lib.rs` setup), so held connections
     /// come up without waiting for the frontend to load -- that took about
     /// 25 s on a phone with the dev frontend. What needs the Android
-    /// Activity waits for the frontend's first tick (`activity_ready`).
+    /// Activity waits until the webview starts to load (`activity_ready`).
     pub(crate) fn start_keeper_once(&self, state: &DeviceConnectionState) {
         self.keeper_started.call_once(|| {
             let state = state.clone();
