@@ -25,6 +25,60 @@ familiar synonym elsewhere in the industry, documentation writes it as
 other vocabulary lands in the right place; it is not a second name. After
 the first mention, and everywhere in code, only the first word is used.
 
+**Elsewhere line.** Each term ends with an *Elsewhere* line: the nearest
+equivalent in other systems or designs, and how it is different. A reader
+who knows the other design then knows where the term fits.
+
+## Code design words
+
+The roles from [`code-design.md`](architecture/code-design.md).
+
+### Service
+
+**An object that does one job and owns the state of that job**, for example
+a channel or SpaceSync. Other parts call it through its interface. It does
+the work; it is not a place where data is stored.
+
+*Elsewhere:* a service in Spring, NestJS and Android; a manager in older
+designs.
+
+### Repository
+
+**The only object that reads and writes one kind of stored data**, for
+example the pairs or the outbox. A service gets data from a repository, not
+from the database.
+
+*Elsewhere:* a repository in DDD and Android; a DAO (data access object); a
+store in the Matrix SDK; a registry in Home Assistant.
+
+### Model
+
+**The data of one thing, with no behavior that uses other parts**, for
+example `Device` or `Quest`. A repository reads and writes models.
+
+*Elsewhere:* an entity in DDD and in JPA; a record or a row.
+
+### Command
+
+**A request from the UI to do one thing**, with a name and arguments: a
+Tauri command, for example `device_connection_unpair`. It has no state. It
+calls one method of a service and gives back one answer. Only the webview
+calls Tauri commands (the UI, and the e2e tests through the devtools
+bridge). The CLI and background tasks call the services directly.
+
+*Elsewhere:* a controller action in MVC; an endpoint in a web API; a remote
+procedure call (RPC). It is not PubSub: a command has one receiver and an
+answer, and an event has many subscribers and no answer.
+
+### Event
+
+**A message that tells that a state changed**, for example a connection is
+up. A service publishes it on the event bus. Each part that needs it
+subscribes. The publisher does not know the subscribers.
+
+*Elsewhere:* an event in PubSub, Syncthing's `lib/events`, Home Assistant's
+event bus; a signal in Qt.
+
 ## Two devices reaching each other
 
 These five are the ones most often confused, because several of them sound

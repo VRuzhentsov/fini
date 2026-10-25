@@ -53,6 +53,8 @@ code tree, and update the links to it. Do not start new docs next to code.
 - A new document file needs the approval of the project owner first: give
   its name and its job.
 - A new term in the glossary needs the approval of the project owner first.
+  Give each term an *Elsewhere* line: the nearest equivalent in other
+  systems or designs.
 - Changes to an ADR happen only while you discuss a plan with the project
   owner.
 

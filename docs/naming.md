@@ -154,6 +154,16 @@ is a technical noun of the Fini protocol.
 New files and new terms need the approval of the project owner before you
 make them.
 
+### Type names tell the role
+
+- The name of a type ends with its role from
+  [`code-design.md`](architecture/code-design.md): `…Service`,
+  `…Repository`, `…Event`.
+- A model is one noun, with no role word: `Device`, `Quest`.
+- An interface is the role or the general noun: `Service`, `Scanner`. Each
+  implementation adds the word that makes it different: `BluetoothService`,
+  `NetworkScanner`.
+
 ### Module layout
 
 `services/communication/` holds the three parts of how two devices reach each

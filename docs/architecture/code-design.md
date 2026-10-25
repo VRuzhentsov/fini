@@ -17,10 +17,9 @@ has a defect.
 - Do not write a free function for behavior that reads or changes the state of
   an object. A free function is only for a pure conversion of values that no
   object owns.
-- Give an object the things that it needs: in its constructor, or as an
-  argument of the call. Do not let an object find them itself (dependency
-  injection). An object that the state owns gets the state as an argument, and
-  does not keep a copy of it.
+- Give an object the things that it needs by DI (see Patterns). An object
+  that the state owns gets the state as an argument, and does not keep a
+  copy of it.
 
 ## Interfaces
 
@@ -35,6 +34,29 @@ has a defect.
   callers do not change for that platform.
 - Callers use the interface, not the type of one implementation, when the
   behavior is the same for all.
+
+## Patterns
+
+Build the app from these five patterns. Each part is one of them, and each
+is used through an interface.
+
+- **RPC (commands):** the UI calls the backend through Tauri commands. A
+  command calls one method of a service and gives back one answer. It has
+  no state and no logic of its own.
+- **Service:** an object that does one job and owns the state of that job
+  (a channel, a scanner, SpaceSync). Other parts call it through its
+  interface.
+- **Repository:** the only object that reads and writes one kind of stored
+  data (the pairs, the channels of a pair, the outbox). A service gets data
+  from a repository, and does not use the database directly.
+- **PubSub (event bus):** a service publishes an event when its state
+  changes (a device heard, a connection up, a connection down). Other
+  services subscribe to the events they need. The publisher does not know
+  its subscribers.
+- **DI (dependency injection):** an object gets its services and
+  repositories in its constructor, as interfaces. The app start makes the
+  objects and connects them. A test gives other implementations of the
+  same interfaces.
 
 ## One answer for one question
 
