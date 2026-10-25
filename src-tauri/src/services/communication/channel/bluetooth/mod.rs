@@ -742,6 +742,9 @@ impl BluetoothChannel {
         if matches!(held, Ok(close_code) if session::refused_by_peer(close_code)) {
             self.delivery.note_refused(peer_id, &state.space_sync);
         }
+        if held.is_ok() {
+            self.close_links_after_session(state, peer_id);
+        }
     }
 
     /// Recompute whether to advertise, from the stored channels and the

@@ -170,6 +170,34 @@ impl BluetoothChannel {
         transport.close_links(&peer_key);
     }
 
+    /// A Bluetooth session with `peer_id` ended: close its BLE links, unless
+    /// a newer session with the peer is held by then, or a Bluetooth setup
+    /// with it is open (its connect may be on the same link: closing it then
+    /// stopped the setup). A session that the peer's side dropped left the
+    /// link up here, and iroh kept writing into it while the peer had moved
+    /// to a new address.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) fn close_links_after_session(&self, state: &DeviceConnectionState, peer_id: &str) {
+        let peer_key = tokio::task::block_in_place(|| {
+            crate::services::communication::pairing::pinned_key(&mut open_db_at_path(&state.db_path), peer_id)
+        })
+        .and_then(|key| key.parse::<iroh::EndpointId>().ok());
+        let Some(peer_key) = peer_key else {
+            return;
+        };
+        let state = state.clone();
+        let peer_id = peer_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(LINK_CLOSE_DELAY).await;
+            if state.has_session_on(&peer_id, ChannelKind::Bluetooth)
+                || state.channel_setup(&peer_id, ChannelKind::Bluetooth).is_some()
+            {
+                return;
+            }
+            state.bluetooth.close_links_to(peer_key, Duration::ZERO).await;
+        });
+    }
+
     /// Like `close_links_to`, for a link the peer opened from `address`,
     /// which this device never connected to.
     #[cfg(any(feature = "ui-plane", test))]

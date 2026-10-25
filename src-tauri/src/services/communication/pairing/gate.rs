@@ -252,7 +252,7 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
     let Some(device_id) = device_id else {
         log::warn!("[space_sync][gate] {kind:?} session from {from_addr} refused: its key is pinned for no pair");
         link.close(CLOSE_NOT_PAIRED, "not paired; pair the devices again");
-        close_refused_bluetooth_link(&state, kind, from_addr);
+        close_refused_bluetooth_link(&state, kind, from_addr, None);
         return;
     };
     log::info!("[space_sync][gate] {kind:?} session from {device_id} via {from_addr}");
@@ -265,14 +265,14 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
         Some(false) => {
             log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: the channel is off for this pair");
             link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
-            close_refused_bluetooth_link(&state, kind, from_addr);
+            close_refused_bluetooth_link(&state, kind, from_addr, Some(&device_id));
             return;
         }
         // Removed here, or never added: the peer removes its row.
         None => {
             log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: no such channel for this pair");
             link.close(CLOSE_NO_CHANNEL, "no such channel for this pair");
-            close_refused_bluetooth_link(&state, kind, from_addr);
+            close_refused_bluetooth_link(&state, kind, from_addr, Some(&device_id));
             return;
         }
     }
@@ -310,6 +310,9 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
             log::info!("[space_sync][gate] {kind:?} session with {device_id} accepted");
         })
         .await;
+    if accepted.is_ok() && kind == ChannelKind::Bluetooth {
+        state.bluetooth.close_links_after_session(&state, &device_id);
+    }
     if let Err(mut link) = accepted {
         // If this fires repeatedly for a peer with no other live session on
         // this channel, the claim is stale: a slot never released by a
@@ -319,22 +322,28 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
     }
 }
 
-/// A Bluetooth session the gate refused (not paired, or the channel is off)
-/// leaves its BLE link up until it is idle, and iroh sent this device's own
-/// next connection to the peer into that link instead of connecting: the
-/// connect timed out. No session to the peer is kept on this channel then,
-/// so the link to `address` is closed, once the refusal has reached the peer.
+/// A Bluetooth session the gate refused (not paired, or the channel is off
+/// or missing) leaves its BLE link up until it is idle, and iroh sent this
+/// device's own next connection to the peer into that link instead of
+/// connecting: the connect timed out. No session to the peer is kept on this
+/// channel then, so the link to `address` is closed, once the refusal has
+/// reached the peer -- unless a Bluetooth setup with `device_id` is open:
+/// its connect can share the link.
 #[cfg(any(feature = "ui-plane", test))]
-fn close_refused_bluetooth_link(state: &DeviceConnectionState, kind: ChannelKind, address: String) {
+fn close_refused_bluetooth_link(
+    state: &DeviceConnectionState, kind: ChannelKind, address: String, device_id: Option<&str>,
+) {
     if kind != ChannelKind::Bluetooth || address.is_empty() {
         return;
     }
     let state = state.clone();
+    let device_id = device_id.map(str::to_string);
     tauri::async_runtime::spawn(async move {
-        state
-            .bluetooth
-            .close_link_at(address, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
-            .await;
+        tokio::time::sleep(crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY).await;
+        if device_id.is_some_and(|id| state.channel_setup(&id, ChannelKind::Bluetooth).is_some()) {
+            return;
+        }
+        state.bluetooth.close_link_at(address, Duration::ZERO).await;
     });
 }
 
