@@ -142,7 +142,7 @@ it (`DataLink::close_code`).
 | 2 | the channel is off here | waits, then tries again |
 | 3 | crossing: the other device's connection is kept | nothing: that connection carries the work |
 | 4 | a session runs already | nothing |
-| 5 | the pair has no such channel here: it was removed, or it is not set up | removes its own row of the channel, unless a setup with the device is open there |
+| 5 (`CLOSE_CHANNEL_MISSING`) | the channel of the pair is missing here: it was removed, or its setup is open | removes its own row of the channel, unless a setup with the device is open there |
 
 Code 5 gives the same answer for "removed" and for "not set up", so it tells
 nothing about the past. After a rejection with code 1, 2 or 5, the next

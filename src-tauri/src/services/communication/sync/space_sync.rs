@@ -236,7 +236,7 @@ impl SpaceSync {
         .await;
         // The peer has no such channel. While a setup with it is open here,
         // that is the setup not done there yet, and the row stays.
-        if close_code == Some(super::session::CLOSE_NO_CHANNEL) && !state.has_channel_setup(peer_device_id, kind) {
+        if close_code == Some(super::session::CLOSE_CHANNEL_MISSING) && !state.has_channel_setup(peer_device_id, kind) {
             super::session::remove_channel_the_peer_has_not(state, peer_device_id, kind);
         }
         Ok(close_code)

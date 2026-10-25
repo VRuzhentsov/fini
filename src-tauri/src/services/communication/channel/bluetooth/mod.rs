@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use crate::services::db::open_db_at_path;
 use crate::services::communication::pairing::{
-    bluetooth_connect_candidates, note_observed_bluetooth_address as store_observed_bluetooth_address,
+    note_observed_bluetooth_address as store_observed_bluetooth_address,
     DeviceConnectionState, DeviceIdentity,
 };
 use crate::services::communication::sync::session;
@@ -316,6 +316,10 @@ const SCAN_WINDOW: Duration = Duration::from_secs(20);
 
 #[async_trait]
 impl ChannelService for BluetoothChannel {
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Bluetooth
+    }
+
     /// Linux and Android: the only builds with a Bluetooth channel.
     #[cfg(any(feature = "ui-plane", test))]
     fn available(&self) -> bool {
@@ -661,8 +665,7 @@ impl BluetoothChannel {
     /// `SEARCH_WINDOW` connects the moment the peer is heard. Then
     /// authenticate and run the exchange to its idle end.
     async fn exchange_with(&self, state: &DeviceConnectionState, peer_id: &str) {
-        let db_path = state.db_path.clone();
-        if !is_still_bluetooth_eligible(&db_path, peer_id) {
+        if !self.is_on(state, peer_id) {
             return;
         }
         // Just paired over Bluetooth: the pairing's BLE link is still up, so
@@ -693,6 +696,12 @@ impl BluetoothChannel {
         }
 
         loop {
+            // The pair or the channel can go while the search runs. A search
+            // that went on dialled a device that was not paired any more, and
+            // its connect stopped the Add Device scan until it timed out.
+            if !self.is_on(state, peer_id) {
+                return;
+            }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let found = if remaining.is_zero() {
                 None
@@ -707,6 +716,9 @@ impl BluetoothChannel {
                 self.delivery.note_delivery_missed(peer_id, &state.space_sync);
                 return;
             };
+            if !self.is_on(state, peer_id) {
+                return;
+            }
             match self.connect_for_session(state, peer_id, &found.address).await {
                 Ok(link) => {
                     let address = found.address.clone();
@@ -723,14 +735,24 @@ impl BluetoothChannel {
     /// handshake cannot hold the search. One real `connect()` was measured
     /// at ~28s. TLS proves the peer; its gate may still refuse by closing
     /// the connection (`run_session_gate`).
+    ///
+    /// The connect also stops when the pair or the channel goes while it
+    /// runs: a connect that went on to its timeout after an unpair stopped
+    /// the Add Device scan for up to 20 s.
     async fn connect_for_session(
         &self, state: &DeviceConnectionState, peer_id: &str, address: &str,
     ) -> Result<Box<dyn DataLink>, String> {
-        let attempt = tokio::time::timeout(
+        let connect = tokio::time::timeout(
             CONNECT_CANDIDATE_TIMEOUT,
             self.connect_session(state, peer_id, address, SYNC_ALPN),
-        )
-        .await;
+        );
+        let attempt = tokio::select! {
+            attempt = connect => attempt,
+            () = self.wait_until_off(state, peer_id) => {
+                log::info!("[transport][ble] stopped the connect to {address}: {peer_id} has no Bluetooth channel any more");
+                return Err("the pair or the channel is gone".to_string());
+            }
+        };
         match attempt {
             Ok(Ok(link)) => Ok(link),
             Ok(Err(err)) => {
@@ -746,13 +768,21 @@ impl BluetoothChannel {
         }
     }
 
+    /// Returns when the pair with `peer_id` has no Bluetooth channel that is
+    /// on: the pair was removed, or the channel was switched off or removed.
+    async fn wait_until_off(&self, state: &DeviceConnectionState, peer_id: &str) {
+        while self.is_on(state, peer_id) {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
     async fn run_exchange(
         &self, state: &DeviceConnectionState, peer_id: &str, link: Box<dyn DataLink>, address: &str,
     ) {
         self.delivery.forget_delivery_misses(peer_id);
         let db_path = state.db_path.clone();
         // The switch could have been turned off during the search.
-        if !is_still_bluetooth_eligible(&db_path, peer_id) {
+        if !self.is_on(state, peer_id) {
             return;
         }
         // Diagnostics only: nothing dials a stored address.
@@ -793,18 +823,6 @@ impl BluetoothChannel {
             || advertiser.in_add_mode();
         advertiser.set_wanted(wanted);
     }
-}
-
-/// Re-reads `paired_devices` for the current, live answer to "is this peer
-/// still a valid Bluetooth dial target" — which since ADR-0006 means only
-/// "is Bluetooth still enabled for this pair". `block_in_place` around the
-/// blocking DB open, matching `sync::session::check_paired`'s existing
-/// pattern for the same kind of call from inside an async loop.
-fn is_still_bluetooth_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = open_db_at_path(db_path);
-        bluetooth_connect_candidates(&mut conn).iter().any(|candidate_id| candidate_id == peer_id)
-    })
 }
 
 fn note_observed_bluetooth_address(db_path: &std::path::Path, peer_id: &str, address: &str) {

@@ -50,7 +50,6 @@ pub use commands::e2e_set_radio;
 #[cfg(any(feature = "ui-plane", test))]
 pub use gate::{run_peer_gate, Gate};
 
-pub use commands::bluetooth_connect_candidates;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use commands::note_observed_bluetooth_address;
 // ADR-0006: `bluetooth_address_is_os_paired` is no longer re-exported. The

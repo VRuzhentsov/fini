@@ -28,7 +28,7 @@ use crate::services::db::open_db_at_path;
 use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
 use crate::services::communication::pairing::{ChannelKind, DeviceConnectionState};
 use crate::services::communication::sync::session::{
-    CLOSE_CHANNEL_OFF, CLOSE_CROSSED, CLOSE_NOT_PAIRED, CLOSE_NO_CHANNEL, CLOSE_SESSION_ACTIVE,
+    CLOSE_CHANNEL_OFF, CLOSE_CROSSED, CLOSE_NOT_PAIRED, CLOSE_CHANNEL_MISSING, CLOSE_SESSION_ACTIVE,
 };
 use crate::services::communication::sync::types::PeerFrame;
 
@@ -96,8 +96,9 @@ fn check_channel_initialized(db_path: &PathBuf, device_id: &str, kind: ChannelKi
 /// seconds later, with the row showing "Off" over a live session -- precisely
 /// the lie the redesign exists to remove.
 ///
-/// `Some(true)`: the channel is on here. `Some(false)`: it is off. `None`: this
-/// pair has no such channel here, so the peer removes its own (`CLOSE_NO_CHANNEL`).
+/// `Some(true)`: the channel is on here. `Some(false)`: it is off. `None`: the pair
+/// has no row for this channel here, so the peer removes its own row
+/// (`CLOSE_CHANNEL_MISSING`).
 ///
 /// Fails closed: an unreadable row reads as off, never as missing, so a read
 /// error can not make the peer remove its channel.
@@ -275,8 +276,8 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
         // Removed here, or not set up yet: the peer removes its row, unless
         // it has a setup with this device open (`hold_session`).
         None => {
-            log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: no such channel for this pair");
-            link.close(CLOSE_NO_CHANNEL, "no such channel for this pair");
+            log::warn!("[space_sync][gate] {kind:?} session from {device_id} rejected: the channel is missing for this pair");
+            link.close(CLOSE_CHANNEL_MISSING, "the channel is missing for this pair");
             if kind == ChannelKind::Bluetooth {
                 state.bluetooth.close_rejected_link(&state, from_addr, Some(&device_id));
             }

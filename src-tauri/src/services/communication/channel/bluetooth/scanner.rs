@@ -71,6 +71,11 @@ const FAILED_CONNECT_COOLDOWN: Duration = Duration::from_secs(10);
 const ADD_DEVICE_SCAN_WINDOW: Duration = Duration::from_secs(4);
 const ADD_DEVICE_SCAN_PAUSE: Duration = Duration::from_secs(1);
 
+/// How long the identify step tries its connect again
+/// (`connect_heard_device`).
+#[cfg(any(feature = "ui-plane", test))]
+const IDENTIFY_TRY_AGAIN_TIME: Duration = Duration::from_secs(5);
+
 /// Pause after the radio refused a scan, so a broken adapter is not hammered.
 const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
 
@@ -571,21 +576,34 @@ impl Scanner {
     /// the address, and guards that keep any scan paused until dropped.
     /// The connection is never cut short: ble-gatt gives it its own 20 s,
     /// and an abandoned connect makes BlueZ crash (two crashes in the spike).
+    ///
+    /// When a connect ends with an error, it is tried again, to the newest
+    /// heard address, until `IDENTIFY_TRY_AGAIN_TIME` after the first try.
+    /// Right after a pair is removed, the release of the old link made BlueZ
+    /// cancel the first connect (`le-connection-abort-by-local`), and the
+    /// pairing stopped.
     pub async fn connect_heard_device(
         &self, fingerprint: [u8; FINGERPRINT_LEN],
     ) -> Result<(Box<dyn DataLink>, String, impl Sized + '_), String> {
-        let address = self
-            .available
-            .heard_address(fingerprint)
-            .ok_or_else(|| "that device is not heard any more -- open Add Device on it again".to_string())?;
+        let device_gone = || "that device is not heard any more -- open Add Device on it again".to_string();
         // A search for a paired device may start a scan; holding a connect
         // guard keeps it paused until the caller is done.
         let probe = self.candidate_probe().await;
         let connect_guard = self.acquire_connect().await;
-        let link = connect(&address)
-            .await
-            .map_err(|err| format!("the device did not answer ({err}) -- make sure Add Device is open on it"))?;
-        Ok((link, address, (probe, connect_guard)))
+        let started = Instant::now();
+        loop {
+            let address = self.available.heard_address(fingerprint).ok_or_else(device_gone)?;
+            match connect(&address).await {
+                Ok(link) => return Ok((link, address, (probe, connect_guard))),
+                Err(err) if started.elapsed() < IDENTIFY_TRY_AGAIN_TIME => {
+                    log::info!("[transport][ble] connect to {address} ended with an error ({err}); trying again");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                Err(err) => {
+                    return Err(format!("the device did not answer ({err}) -- make sure Add Device is open on it"))
+                }
+            }
+        }
     }
 }
 

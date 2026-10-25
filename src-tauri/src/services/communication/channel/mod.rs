@@ -69,6 +69,10 @@ pub mod bluetooth {
 
     #[async_trait::async_trait]
     impl ChannelService for BluetoothChannel {
+        fn kind(&self) -> crate::services::communication::pairing::ChannelKind {
+            crate::services::communication::pairing::ChannelKind::Bluetooth
+        }
+
         #[cfg(any(feature = "ui-plane", test))]
         fn available(&self) -> bool {
             false

@@ -41,6 +41,20 @@ use crate::services::communication::pairing::ChannelProblem;
 /// itself alive.
 #[async_trait]
 pub trait ChannelService: Send + Sync {
+    /// The kind of this channel.
+    fn kind(&self) -> ChannelKind;
+
+    /// Whether the pair with `peer_device_id` has this channel and it is on
+    /// now: the stored state of the pair's channel, read from the database
+    /// each time. A removed pair, a removed channel, and a channel that is
+    /// off all give `false`.
+    fn is_on(&self, state: &DeviceConnectionState, peer_device_id: &str) -> bool {
+        tokio::task::block_in_place(|| {
+            let mut conn = crate::services::db::open_db_at_path(&state.db_path);
+            crate::services::communication::pairing::channels::is_enabled(&mut conn, peer_device_id, self.kind())
+        })
+    }
+
     /// Whether this channel can work on this device *at all* — a platform
     /// fact, not a per-pair one. False means no build of this app on this OS
     /// can use it, so the Device page must never offer it as something a

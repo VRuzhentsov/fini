@@ -46,7 +46,7 @@ pub(crate) const CLOSE_SESSION_ACTIVE: u32 = 4;
 /// The pair is there, but the peer has no such channel for it: it was
 /// removed there, or never added. The same answer for both, so it says
 /// nothing about the past. The connecting side removes its own row.
-pub(crate) const CLOSE_NO_CHANNEL: u32 = 5;
+pub(crate) const CLOSE_CHANNEL_MISSING: u32 = 5;
 
 /// Whether a session the peer closed with `close_code` was refused by its
 /// gate as not wanted (not paired there, or the channel is off or missing
@@ -54,12 +54,12 @@ pub(crate) const CLOSE_NO_CHANNEL: u32 = 5;
 /// before it tries again. A crossing or an active session is no failure: the
 /// peer's own session carries the work.
 pub(crate) fn refused_by_peer(close_code: Option<u32>) -> bool {
-    matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF | CLOSE_NO_CHANNEL))
+    matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF | CLOSE_CHANNEL_MISSING))
 }
 
 /// The peer has no `kind` channel for this pair any more (ADR-0008 D14):
 /// remove ours too. From its `ChannelUnlinked` frame, or from its gate's
-/// `CLOSE_NO_CHANNEL`.
+/// `CLOSE_CHANNEL_MISSING`.
 pub(crate) fn remove_channel_the_peer_has_not(
     state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind,
 ) {

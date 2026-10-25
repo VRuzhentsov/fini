@@ -1,6 +1,6 @@
 ---
 name: fini-documentation
-description: "How Fini writes documentation: where each kind of doc lives (docs/), the STE writing rules, one place per topic, mermaid for diagrams, and approval for new doc files. Use before adding, moving, or changing any doc, spec, README, ADR, glossary entry, or architecture page in the Fini repo."
+description: "How Fini writes documentation: where each kind of doc lives (docs/), the STE writing rules, one place per topic, ASCII trees for architecture (mermaid only for complex algorithms), and approval for new doc files. Use before adding, moving, or changing any doc, spec, README, ADR, glossary entry, or architecture page in the Fini repo."
 ---
 
 # Fini Documentation
@@ -35,8 +35,18 @@ code tree, and update the links to it. Do not start new docs next to code.
   yet" section, not between the facts.
 - Name code by its real names (types, functions, files), so that a reader can
   find it.
-- Use mermaid for diagrams. Keep to the number of new diagrams that the plan
-  or the person gives.
+- Keep docs simple and quick to read. Write only the critical, high-level
+  architecture: the parts, what each part owns, and how the parts connect.
+  The docs must be sufficient to write the code again to that architecture.
+  Leave out what a developer or an agent knows already.
+- Put the explanation in the docs, and keep code comments short. A comment
+  can link to the doc section.
+- Write each sentence so that it has only one meaning. This is the reason
+  that Fini uses STE.
+- Show architecture as an ASCII tree, with each part below the part that
+  holds it. A tree is quick to read.
+- Add a mermaid diagram only for a complex algorithm that a tree cannot
+  show. Keep to the number of new diagrams that the plan or the person gives.
 
 ## Approval
 

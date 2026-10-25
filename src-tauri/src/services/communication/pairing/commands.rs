@@ -1301,20 +1301,6 @@ pub async fn e2e_set_radio(
     Ok(())
 }
 
-/// Every paired peer eligible for a Bluetooth dial attempt right now: the
-/// ones whose Bluetooth channel is set up and on. Used by
-/// `channel::bluetooth::spawn_dial_loop` — unlike `tcp_ws`/`sim` there is no
-/// presence worker or static port list to draw candidates from.
-///
-/// ADR-0006: this used to also require a stored address and a live OS bond,
-/// and to return the address to dial. It returns peer ids alone now, because
-/// there is no address to dial *to* — the dialer finds the peer by scanning
-/// for Fini's service UUID, and the TLS handshake proves who answered.
-
-pub fn bluetooth_connect_candidates(conn: &mut SqliteConnection) -> Vec<String> {
-    channels::peers_with_channel_enabled(conn, ChannelKind::Bluetooth)
-}
-
 /// Records the link-layer address a peer was actually reached at, purely so
 /// hardware logs and the Device view can show it. ADR-0006: nothing dials
 /// this value any more, and nothing gates on it — a peer that advertises

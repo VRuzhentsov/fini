@@ -142,7 +142,12 @@ Fini started to use STE in October 2026. During the change to STE:
 ## Names in code
 
 Make each name from approved words and glossary terms, after the check
-above. Keep the words of the language (Rust, TypeScript, and Vue keywords)
+above.
+
+Give a name the positive form: name the state that is, not the state that is
+not. Use words such as "not", "no", "non" and "un" in a name only when no
+positive word gives the meaning. Write comments and log messages in the
+positive form too, where you can. Keep the words of the language (Rust, TypeScript, and Vue keywords)
 and the names from libraries that Fini uses as they are. A wire message name
 is a technical noun of the Fini protocol.
 

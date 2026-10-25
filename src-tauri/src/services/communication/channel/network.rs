@@ -395,7 +395,7 @@ impl NetworkChannel {
     /// could not be started at all.
     async fn exchange_with(&self, state: &DeviceConnectionState, peer_id: &str) -> bool {
         let db_path = state.db_path.clone();
-        if !is_still_network_eligible(&db_path, peer_id) {
+        if !self.is_on(state, peer_id) {
             return true;
         }
         let Some((addr, ws_port)) = state.network_presence_address(peer_id) else {
@@ -441,6 +441,10 @@ impl NetworkChannel {
 
 #[async_trait::async_trait]
 impl ChannelService for NetworkChannel {
+    fn kind(&self) -> ChannelKind {
+        ChannelKind::Network
+    }
+
     /// Every platform Fini runs on has a network stack. Whether a *peer* is
     /// reachable over it is `is_green`'s question, not this one.
     #[cfg(any(feature = "ui-plane", test))]
@@ -564,18 +568,6 @@ fn parse_user_data(data: &str) -> Option<(bool, String, String)> {
 
 fn is_cooling_down(cooldown: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
     cooldown.get(peer_id).is_some_and(|until| now < *until)
-}
-
-/// Whether the Network channel is still switched on for this pair.
-fn is_still_network_eligible(db_path: &std::path::Path, peer_id: &str) -> bool {
-    tokio::task::block_in_place(|| {
-        let mut conn = open_db_at_path(db_path);
-        crate::services::communication::pairing::channels::is_enabled(
-            &mut conn,
-            peer_id,
-            crate::services::communication::pairing::ChannelKind::Network,
-        )
-    })
 }
 
 #[cfg(test)]
