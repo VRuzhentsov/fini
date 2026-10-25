@@ -776,7 +776,7 @@ pub fn device_connection_save_paired_device_impl(
     // below spells out: an existing row here means an asymmetric re-pair, the
     // other side having reset and paired again over the network while this
     // side kept its row. Configuring only on a fresh insert left that pair
-    // with Network off or absent, so `check_channel_enabled` rejected the
+    // with Network off or absent, so the gate's channel check rejected the
     // auth while the dialog had just said pairing was complete. Completing a
     // pairing over a channel is a deliberate enough act to set that channel
     // up, which is exactly what the Bluetooth side already assumes.
@@ -936,6 +936,21 @@ pub fn device_connection_set_channel_enabled_impl(
     } else {
         // An exchange running on the channel ends now: off means off.
         state.close_session_on(&peer_device_id, kind);
+        // And its BLE link with it, not when it is idle.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if kind == ChannelKind::Bluetooth {
+            if let Some(peer_key) = crate::services::communication::pairing::pinned_key(&mut *conn, &peer_device_id)
+                .and_then(|key| key.parse::<iroh::EndpointId>().ok())
+            {
+                let state = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    state
+                        .bluetooth
+                        .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                        .await;
+                });
+            }
+        }
     }
     // Switching on makes waiting work deliverable, and either way whether
     // this device should advertise may have changed (ADR-0008 D8); the
@@ -1546,7 +1561,7 @@ mod tests {
     /// The asymmetric re-pair: this side kept its row while the other side
     /// reset and paired again over the network. Configuring Network only on a
     /// fresh insert left the channel off or absent here, so the dialog said
-    /// pairing was complete and `check_channel_enabled` then rejected every
+    /// pairing was complete and the gate's channel check then rejected every
     /// auth -- a pair that looks set up and cannot talk.
     ///
     /// The Bluetooth side has always treated a completed handshake as

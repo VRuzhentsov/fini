@@ -43,14 +43,41 @@ pub(crate) const CLOSE_CHANNEL_OFF: u32 = 2;
 pub(crate) const CLOSE_CROSSED: u32 = 3;
 #[cfg(any(feature = "ui-plane", test))]
 pub(crate) const CLOSE_SESSION_ACTIVE: u32 = 4;
+/// The pair is there, but the peer has no such channel for it: it was
+/// removed there, or never added. The same answer for both, so it says
+/// nothing about the past. The connecting side removes its own row.
+pub(crate) const CLOSE_NO_CHANNEL: u32 = 5;
 
 /// Whether a session the peer closed with `close_code` was refused by its
-/// gate as not wanted (not paired there, or the channel is off there): the
-/// connecting side counts that as a failed attempt and waits before it
-/// tries again. A crossing or an active session is no failure: the peer's
-/// own session carries the work.
+/// gate as not wanted (not paired there, or the channel is off or missing
+/// there): the connecting side counts that as a failed attempt and waits
+/// before it tries again. A crossing or an active session is no failure: the
+/// peer's own session carries the work.
 pub(crate) fn refused_by_peer(close_code: Option<u32>) -> bool {
-    matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF))
+    matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF | CLOSE_NO_CHANNEL))
+}
+
+/// The peer has no `kind` channel for this pair any more (ADR-0008 D14):
+/// remove ours too. From its `ChannelUnlinked` frame, or from its gate's
+/// `CLOSE_NO_CHANNEL`.
+pub(crate) fn remove_channel_the_peer_has_not(
+    state: &DeviceConnectionState, peer_device_id: &str, kind: ChannelKind,
+) {
+    let removed = tokio::task::block_in_place(|| {
+        let mut conn = open_db_at_path(&state.db_path);
+        channels::remove_unlinked_by_peer(&mut conn, peer_device_id, kind)
+    });
+    match removed {
+        Ok(()) => {
+            log::info!("[session] {peer_device_id}: peer has no {kind:?} channel; removed it here");
+            // Whether this device should still advertise, and which
+            // channel carries waiting work, may have changed.
+            state.space_sync.wake();
+        }
+        Err(err) => {
+            log::warn!("[session] {peer_device_id}: could not remove {kind:?}: {err}");
+        }
+    }
 }
 
 
@@ -312,23 +339,7 @@ async fn handle_inbound(
         // ADR-0008 D14: the peer unlinked this channel, so the pair is
         // broken for it -- remove our side too.
         PeerFrame::ChannelUnlinked { kind } => {
-            let db = db_path.clone();
-            let peer = peer_device_id.to_string();
-            let removed = tokio::task::block_in_place(|| {
-                let mut conn = open_db_at_path(&db);
-                channels::remove_unlinked_by_peer(&mut conn, &peer, kind)
-            });
-            match removed {
-                Ok(()) => {
-                    log::info!("[session] {peer_device_id}: peer unlinked {kind:?}; removed it here");
-                    // Whether this device should still advertise, and which
-                    // channel carries waiting work, may have changed.
-                    state.space_sync.wake();
-                }
-                Err(err) => {
-                    log::warn!("[session] {peer_device_id}: could not remove unlinked {kind:?}: {err}");
-                }
-            }
+            remove_channel_the_peer_has_not(state, peer_device_id, kind);
         }
         PeerFrame::BluetoothAddressUpdate { address } => {
             let Some(address) = crate::services::communication::pairing::normalize_bluetooth_address(&address)

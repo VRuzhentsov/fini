@@ -395,7 +395,7 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           <form method="dialog">
             <button class="btn btn-ghost btn-sm">Cancel</button>
           </form>
-          <button class="btn btn-error btn-sm" @click="void confirmUnpair()">Unlink</button>
+          <button class="btn btn-error btn-sm" data-testid="unlink-device-confirm" @click="void confirmUnpair()">Unlink</button>
         </div>
       </div>
       <form method="dialog" class="modal-backdrop">

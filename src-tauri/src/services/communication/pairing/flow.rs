@@ -122,6 +122,17 @@ impl DeviceConnectionState {
         while self.has_session_on(&peer, ChannelKind::Bluetooth) && tokio::time::Instant::now() < until {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        // Its BLE link too: while it is up, the identify connect to the
+        // device's new address is aborted.
+        let peer_key = tokio::task::block_in_place(|| {
+            super::pinned_key(&mut crate::services::db::open_db_at_path(&self.db_path), &peer)
+        })
+        .and_then(|key| key.parse::<iroh::EndpointId>().ok());
+        if let Some(peer_key) = peer_key {
+            self.bluetooth
+                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                .await;
+        }
     }
 
     /// A `PairStart` from this device to `to_device_id`.

@@ -23,6 +23,11 @@ const FIRST_DATAGRAM_TIMEOUT: Duration = Duration::from_secs(15);
 /// connect alone was measured at up to ~28 s on hardware.
 const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a BLE link stays after Fini closed the iroh connection on it, so
+/// that the close and its code reach the peer first (`close_links_to`).
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) const LINK_CLOSE_DELAY: Duration = Duration::from_secs(1);
+
 impl BluetoothChannel {
     /// Opens an iroh connection to `peer_key` for a pairing step --
     /// `address` is only where to reach it first (ADR-0009 D2/D7: Bluetooth
@@ -147,6 +152,34 @@ impl BluetoothChannel {
             .map_err(|err| format!("bluetooth connect to {address} failed: {err}"))?;
         let link = IrohDataLink::open(ChannelKind::Bluetooth, connection, Some(address.to_string())).await?;
         Ok(Box::new(link))
+    }
+
+    /// After `after`, closes the BLE links to `peer_key`: at its current
+    /// address and at the addresses it had before. A BLE link outlives the
+    /// iroh connection on it until it is idle (about 25 s), and while a link
+    /// to a phone's old address is up, BlueZ aborts every connect to its new
+    /// one (`le-connection-abort-by-local`). Android changes the address when
+    /// it leaves Add Device, so the first session after a pairing failed so.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) async fn close_links_to(&self, peer_key: iroh::EndpointId, after: Duration) {
+        let Some((_, transport)) = self.endpoint.get().cloned() else {
+            return;
+        };
+        tokio::time::sleep(after).await;
+        log::info!("[transport][ble] closing the links to {peer_key}");
+        transport.close_links(&peer_key);
+    }
+
+    /// Like `close_links_to`, for a link the peer opened from `address`,
+    /// which this device never connected to.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) async fn close_link_at(&self, address: String, after: Duration) {
+        let Some((_, transport)) = self.endpoint.get().cloned() else {
+            return;
+        };
+        tokio::time::sleep(after).await;
+        log::info!("[transport][ble] closing the link to {address}");
+        transport.close_link(&PeerAddress(address));
     }
 
     /// Routes a channel a central opened by its first datagram: a QUIC

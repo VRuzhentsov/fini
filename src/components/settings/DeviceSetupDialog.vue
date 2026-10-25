@@ -425,6 +425,7 @@ async function confirmChannelSetup() {
       v-if="open"
       class="fixed inset-0 z-[1200] flex items-end justify-center p-3 sm:items-center sm:p-4"
       data-testid="pair-device-dialog"
+      :data-pair-step="step"
     >
       <button
         type="button"
@@ -728,7 +729,7 @@ async function confirmChannelSetup() {
         </template>
           <template v-else-if="step === 'paired'">
             <span class="flex-1" />
-            <button class="btn btn-primary btn-sm" @click="emit('close')">Done</button>
+            <button class="btn btn-primary btn-sm" data-testid="pair-done" @click="emit('close')">Done</button>
           </template>
         </div>
       </div>

@@ -225,7 +225,7 @@ impl SpaceSync {
             return Err(link);
         }
         on_held();
-        Ok(super::session::run_session(
+        let close_code = super::session::run_session(
             link,
             rx,
             state.clone(),
@@ -233,7 +233,11 @@ impl SpaceSync {
             peer_device_id.to_string(),
             super::session::idle_after(kind),
         )
-        .await)
+        .await;
+        if close_code == Some(super::session::CLOSE_NO_CHANNEL) {
+            super::session::remove_channel_the_peer_has_not(state, peer_device_id, kind);
+        }
+        Ok(close_code)
     }
 
     /// Reads, for each paired device, which channel a frame goes over first

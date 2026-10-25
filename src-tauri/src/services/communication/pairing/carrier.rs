@@ -159,6 +159,7 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>)
         // scan from probing the peer -- a second connection to the same
         // device -- until it is over.
         let _leg = state.bluetooth.scanner.begin_pairing_step();
+        let peer_key = link.peer_key().and_then(|key| key.parse::<iroh::EndpointId>().ok());
         let listen_for = Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 30);
         let _ = tokio::time::timeout(listen_for, async {
             while let Some(Ok(frame)) = recv_frame(link.as_mut()).await {
@@ -179,7 +180,16 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>)
             }
         })
         .await;
+        drop(link);
         log::info!("[pairing][ble] request link closed");
+        // The phone leaves Add Device with a new address; the BLE link to
+        // its old one must not outlive the pairing.
+        if let Some(peer_key) = peer_key {
+            state
+                .bluetooth
+                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                .await;
+        }
     });
 }
 

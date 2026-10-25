@@ -26,9 +26,9 @@ use diesel::prelude::*;
 use crate::schema::paired_devices;
 use crate::services::db::open_db_at_path;
 use crate::services::communication::channel::{recv_frame, send_frame, DataLink};
-use crate::services::communication::pairing::{channels, ChannelKind, DeviceConnectionState};
+use crate::services::communication::pairing::{ChannelKind, DeviceConnectionState};
 use crate::services::communication::sync::session::{
-    CLOSE_CHANNEL_OFF, CLOSE_CROSSED, CLOSE_NOT_PAIRED, CLOSE_SESSION_ACTIVE,
+    CLOSE_CHANNEL_OFF, CLOSE_CROSSED, CLOSE_NOT_PAIRED, CLOSE_NO_CHANNEL, CLOSE_SESSION_ACTIVE,
 };
 use crate::services::communication::sync::types::PeerFrame;
 
@@ -96,12 +96,24 @@ fn check_channel_initialized(db_path: &PathBuf, device_id: &str, kind: ChannelKi
 /// seconds later, with the row showing "Off" over a live session -- precisely
 /// the lie the redesign exists to remove.
 ///
-/// Fails closed: a pair with no such channel configured, or an unreadable
-/// row, must not be treated as enabled.
-fn check_channel_enabled(db_path: &PathBuf, device_id: &str, kind: ChannelKind) -> bool {
+/// `Some(true)`: the channel is on here. `Some(false)`: it is off. `None`: this
+/// pair has no such channel here, so the peer removes its own (`CLOSE_NO_CHANNEL`).
+///
+/// Fails closed: an unreadable row reads as off, never as missing, so a read
+/// error can not make the peer remove its channel.
+fn channel_on_here(db_path: &PathBuf, device_id: &str, kind: ChannelKind) -> Option<bool> {
+    use crate::schema::channels::dsl;
     tokio::task::block_in_place(|| {
         let mut conn = open_db_at_path(db_path);
-        channels::is_enabled(&mut conn, device_id, kind)
+        dsl::channels
+            .find((device_id, kind.code()))
+            .select(dsl::enabled)
+            .first::<bool>(&mut conn)
+            .optional()
+            .unwrap_or_else(|err| {
+                log::warn!("[space_sync][gate] reading the {kind:?} channel of {device_id} failed: {err}");
+                Some(false)
+            })
     })
 }
 
@@ -240,6 +252,7 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
     let Some(device_id) = device_id else {
         log::warn!("[space_sync][gate] {kind:?} session from {from_addr} refused: its key is pinned for no pair");
         link.close(CLOSE_NOT_PAIRED, "not paired; pair the devices again");
+        close_refused_bluetooth_link(&state, kind, from_addr);
         return;
     };
     log::info!("[space_sync][gate] {kind:?} session from {device_id} via {from_addr}");
@@ -247,10 +260,21 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
     // Checked here too, not only on the connecting side: a peer whose own
     // copy of this channel is still on keeps connecting, and the switch here
     // must hold. Fails closed: no such channel, or an unreadable row, is off.
-    if !check_channel_enabled(&db_path, &device_id, kind) {
-        log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: the channel is off for this pair");
-        link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
-        return;
+    match channel_on_here(&db_path, &device_id, kind) {
+        Some(true) => {}
+        Some(false) => {
+            log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: the channel is off for this pair");
+            link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
+            close_refused_bluetooth_link(&state, kind, from_addr);
+            return;
+        }
+        // Removed here, or never added: the peer removes its row.
+        None => {
+            log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: no such channel for this pair");
+            link.close(CLOSE_NO_CHANNEL, "no such channel for this pair");
+            close_refused_bluetooth_link(&state, kind, from_addr);
+            return;
+        }
     }
 
     // Both devices connected to each other at once. Were both connections
@@ -293,6 +317,25 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
         log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: a session is already active");
         link.close(CLOSE_SESSION_ACTIVE, "a session is already active on this channel");
     }
+}
+
+/// A Bluetooth session the gate refused (not paired, or the channel is off)
+/// leaves its BLE link up until it is idle, and iroh sent this device's own
+/// next connection to the peer into that link instead of connecting: the
+/// connect timed out. No session to the peer is kept on this channel then,
+/// so the link to `address` is closed, once the refusal has reached the peer.
+#[cfg(any(feature = "ui-plane", test))]
+fn close_refused_bluetooth_link(state: &DeviceConnectionState, kind: ChannelKind, address: String) {
+    if kind != ChannelKind::Bluetooth || address.is_empty() {
+        return;
+    }
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        state
+            .bluetooth
+            .close_link_at(address, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+            .await;
+    });
 }
 
 /// The gate as iroh's `ProtocolHandler` for one channel's endpoint: iroh's

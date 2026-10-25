@@ -62,6 +62,8 @@ pub use adapter::BluetoothAdapter;
 pub use data_link::*;
 
 pub use advertiser::Advertiser;
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) use endpoint::LINK_CLOSE_DELAY;
 pub use scanner::Scanner;
 #[cfg(any(feature = "ui-plane", test))]
 pub use scanner::AvailableDevice;
