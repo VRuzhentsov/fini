@@ -46,6 +46,9 @@ battery. Earlier decisions on timers, ticks and refresh intervals are open to
 revision wherever they conflict with this. Active phases (pairing, adding a
 channel, search) may spend more; the steady state may not.
 
+D1–D4 are superseded by [ADR-0011](0011-adding-a-channel-is-pairing-over-it.md):
+adding a channel is pairing over it.
+
 **D1 — Init is a hello exchange in both directions.** A (pair, Bluetooth)
 channel becomes `initialized` on a device once that device has received an
 ack to its own hello AND has acked the peer's hello. No extra message is
