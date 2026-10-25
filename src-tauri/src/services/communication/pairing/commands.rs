@@ -1354,7 +1354,25 @@ pub fn device_connection_unpair(
     peer_device_id: String,
 ) -> Result<(), String> {
     let mut conn = db.0.lock().unwrap();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let peer_key = crate::services::communication::pairing::pinned_key(&mut *conn, &peer_device_id)
+        .and_then(|key| key.parse::<iroh::EndpointId>().ok());
     device_connection_unpair_impl(&mut conn, peer_device_id.clone())?;
+    // The sessions with the device end now. Left to time out, their iroh
+    // connections kept dialling the device while it searched in Add Device,
+    // and each short link made its advertisement restart.
+    state.close_session_on(&peer_device_id, ChannelKind::Network);
+    state.close_session_on(&peer_device_id, ChannelKind::Bluetooth);
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if let Some(peer_key) = peer_key {
+        let state = state.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            state
+                .bluetooth
+                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                .await;
+        });
+    }
     // Its channels went with it, which can leave nobody to advertise for.
     state.space_sync.wake();
     // Failed attempts with the old pair must not delay a new one. Held by
