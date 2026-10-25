@@ -15,28 +15,28 @@ use services::backup::{backup_apply_import, backup_export, backup_preflight_impo
 #[cfg(feature = "ui-plane")]
 use services::db::{app_data_dir, try_open_db, AppDbConnection};
 #[cfg(feature = "ui-plane")]
-use services::communication::pairing::{
-    device_connection_consume_space_mapping_updates, device_connection_debug_status,
-    device_connection_bluetooth_available_devices, device_connection_identify_bluetooth_device,
-    device_connection_discovery_snapshot,
-    device_connection_enter_add_mode, device_connection_begin_channel_setup,
-    device_connection_channel_setup_status, device_connection_end_channel_setup,
-    device_connection_get_identity, device_connection_get_paired_devices,
-    device_connection_leave_add_mode, device_connection_pair_accept_request,
-    device_connection_pair_acknowledge_request, device_connection_pair_complete_request,
-    device_connection_pair_incoming_requests, device_connection_pair_outgoing_completions,
-    device_connection_pair_outgoing_updates, device_connection_presence_snapshot,
-    device_connection_save_paired_device,
-    device_connection_send_pair_request, device_connection_send_pair_request_bluetooth,
-    device_connection_probe_bluetooth_adapter,
-    device_connection_session_channel, device_connection_set_channel_enabled,
-    device_connection_set_primary_channel,
-    device_connection_unlink_channel,
-    device_connection_channel_statuses, device_connection_unpair, device_connection_update_last_seen,
-    DeviceConnectionState,
-};
+mod commands;
+#[cfg(feature = "ui-plane")]
+use commands::channel_commands::channel_probe_bluetooth;
 #[cfg(all(feature = "ui-plane", feature = "devtools"))]
-use services::communication::pairing::e2e_set_radio;
+use commands::channel_commands::channel_set_test_switch;
+#[cfg(feature = "ui-plane")]
+use commands::device_commands::{
+    device_available_devices, device_begin_channel_setup, device_channel_setup_status, device_channel_statuses,
+    device_debug_status, device_end_channel_setup, device_enter_add_mode, device_get_identity,
+    device_identify_bluetooth_device, device_leave_add_mode, device_pair_accept_request,
+    device_pair_acknowledge_request, device_pair_complete_request, device_pair_incoming_requests,
+    device_pair_outgoing_completions, device_pair_outgoing_updates, device_paired_devices,
+    device_save_paired_device, device_send_pair_request, device_send_pair_request_bluetooth,
+    device_set_channel_enabled, device_set_primary_channel, device_unlink_channel, device_unpair,
+    device_update_last_seen,
+};
+#[cfg(feature = "ui-plane")]
+use commands::space_sync_commands::{
+    space_sync_apply_remote_mappings, space_sync_list_mappings, space_sync_queue_summary,
+    space_sync_resolve_custom_space_mapping, space_sync_session_channel, space_sync_status,
+    space_sync_take_mapping_updates, space_sync_tick, space_sync_update_mappings,
+};
 #[cfg(feature = "ui-plane")]
 use services::notification::{
     dispatch_action, setup_notifications, SchedulerState, FOREGROUND_FIRE_EVENT, TAP_EVENT,
@@ -66,13 +66,13 @@ use services::settings::{self, ThemeMode};
 #[cfg(feature = "ui-plane")]
 use services::space::{create_space, delete_space, get_spaces, update_space};
 #[cfg(feature = "ui-plane")]
-use services::communication::sync::{
-    space_sync_apply_remote_mappings, space_sync_list_mappings,
-    space_sync_queue_summary,
-    space_sync_resolve_custom_space_mapping, space_sync_status,
-    space_sync_tick,
-    space_sync_update_mappings,
-};
+use services::bluetooth_channel_service::BluetoothChannelService;
+#[cfg(feature = "ui-plane")]
+use services::device_service::DeviceService;
+#[cfg(feature = "ui-plane")]
+use services::network_channel_service::NetworkChannelService;
+#[cfg(feature = "ui-plane")]
+use services::space_sync_service::SpaceSyncService;
 #[cfg(feature = "ui-plane")]
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(all(
@@ -207,80 +207,19 @@ fn sync_native_theme(app: AppHandle, theme: String) {
     settings::apply_native_theme(&app, &theme);
 }
 
-/// Payload for `SESSION_CHANGED_EVENT` — ADR-0003 Phase 2. `established`
-/// distinguishes the two `LifecycleEvent` variants; `kind` is the
-/// `ChannelKind` the event carries — the same Network/Bluetooth the row on
-/// the Device page shows, since there is only one such type now. The
-/// frontend doesn't need to interpret it, it's just enough for the listener
-/// to log or filter on if it ever wants to.
+/// The Tauri event that carries every `Event` of the event bus to the UI
+/// (ADR-0010 D9).
 #[cfg(feature = "ui-plane")]
-#[derive(Clone, serde::Serialize)]
-struct SessionChangedEvent {
-    peer_device_id: String,
-    kind: services::communication::channel::ChannelKind,
-    established: bool,
-}
+const FINI_EVENT: &str = "fini-event";
 
+/// Forwards each event of the bus to the UI. A subscriber that lagged
+/// misses some events; the stores read the state again on the next one.
 #[cfg(feature = "ui-plane")]
-const SESSION_CHANGED_EVENT: &str = "device-connection://session-changed";
-
-/// Forwards `DeviceConnectionState::subscribe_lifecycle()` to the frontend
-/// as they happen, so a session's connect/disconnect reaches the UI faster
-/// than the next `TRANSPORT_STATUS_POLL_INTERVAL_MS` poll (`device.ts`
-/// still polls too — this is a latency improvement, not the sole source of
-/// truth, so a missed/dropped event here self-heals within that poll
-/// window instead of staying wrong indefinitely). See ADR-0003 Phase 2.
-#[cfg(feature = "ui-plane")]
-async fn forward_session_lifecycle_events(
-    mut events: tokio::sync::broadcast::Receiver<services::communication::channel::selection::LifecycleEvent>,
-    app: AppHandle,
-) {
-    use services::communication::channel::selection::LifecycleEvent;
-
-    loop {
-        let event = match events.recv().await {
-            Ok(event) => event,
-            // Lagged: some events were dropped, but the receiver is still
-            // live -- keep forwarding what arrives next rather than giving
-            // up on the whole subscription. `device.ts`'s poll fallback
-            // covers whatever this specific gap missed.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-        };
-        let payload = match event {
-            LifecycleEvent::SessionEstablished { peer_device_id, kind } => {
-                SessionChangedEvent { peer_device_id, kind, established: true }
-            }
-            LifecycleEvent::SessionEnded { peer_device_id, kind } => {
-                SessionChangedEvent { peer_device_id, kind, established: false }
-            }
-        };
-        let _ = app.emit(SESSION_CHANGED_EVENT, payload);
-    }
-}
-
-#[cfg(feature = "ui-plane")]
-const SYNC_CHANGED_EVENT: &str = "space-sync://changed";
-
-/// Forwards "a peer's change was applied locally" to the frontend, so the UI
-/// re-reads on the change itself rather than on a timer (issue #171).
-///
-/// Same shape as `forward_session_lifecycle_events` above, and same
-/// reasoning about lag: a dropped notification costs one late refresh, which
-/// `device.ts`'s slow safety poll picks up.
-///
-/// Carries no payload. What changed is already in SQLite, and the frontend
-/// re-reads it through the same commands it uses everywhere else; inventing
-/// a delta shape here would be a second source of truth for no gain.
-#[cfg(feature = "ui-plane")]
-async fn forward_sync_changed_events(
-    mut events: tokio::sync::broadcast::Receiver<()>,
-    app: AppHandle,
-) {
+async fn forward_events_to_ui(mut events: tokio::sync::broadcast::Receiver<models::Event>, app: AppHandle) {
     loop {
         match events.recv().await {
-            Ok(()) => {
-                let _ = app.emit(SYNC_CHANGED_EVENT, ());
+            Ok(event) => {
+                let _ = app.emit(FINI_EVENT, event);
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -501,28 +440,38 @@ pub fn run() {
 
             resume_watcher::spawn(&app_handle);
 
+            // The composition root (ADR-0010 D5, D15): the identity first,
+            // then the channels, then the services that use them, and the
+            // channels' link handlers last.
+            use services::channel_service::{ChannelService, LinkHandlers};
             let data_dir = app_data_dir(&app_handle);
-            let dc_state = DeviceConnectionState::from_app_data_dir(&data_dir);
-            // Each channel starts its own discovery and its own accept loop.
-            // A channel that cannot run on this platform declines from inside
-            // itself, so this stays one line however many channels exist.
-            for channel in dc_state.channels() {
-                channel.start_discovery(&dc_state);
-                channel.start_serving(&dc_state);
-            }
-            tauri::async_runtime::spawn(forward_session_lifecycle_events(
-                dc_state.subscribe_lifecycle(),
-                app_handle.clone(),
-            ));
-            tauri::async_runtime::spawn(forward_sync_changed_events(
-                services::communication::sync::commands::subscribe_data_changed(),
-                app_handle.clone(),
-            ));
+            let db_path = data_dir.join("fini.db");
+            let identity = models::Identity::load_or_create(&data_dir, &db_path)?;
+            let bus = std::sync::Arc::new(services::event_bus_service::EventBusService::default());
+            let network = NetworkChannelService::new(identity.clone(), db_path.clone(), bus.clone());
+            let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
+            let space_sync =
+                SpaceSyncService::new(identity.clone(), db_path.clone(), bus.clone(), network.clone(), bluetooth.clone());
+            let devices = DeviceService::new(identity, db_path, bus.clone(), network.clone(), bluetooth.clone());
+            let handlers = LinkHandlers { peer: devices.clone(), session: space_sync.clone() };
+            network.set_link_handlers(handlers.clone());
+            bluetooth.set_link_handlers(handlers);
+
+            tauri::async_runtime::spawn(forward_events_to_ui(bus.subscribe(), app_handle.clone()));
+            network.clone().start_discovery();
+            network.clone().start_serving();
+            bluetooth.clone().start_discovery();
+            bluetooth.clone().start_serving();
+            devices.start();
             // Sync runs from app start, not from the frontend's first tick:
             // held connections come up while the frontend still loads.
-            dc_state.space_sync.start_keeper_once(&dc_state);
-            dc_state.space_sync.wake();
-            app.manage(dc_state);
+            space_sync.start();
+            space_sync.wake();
+            app.manage(bus);
+            app.manage(network);
+            app.manage(bluetooth);
+            app.manage(space_sync);
+            app.manage(devices);
             Ok(())
         })
         // The webview starts to load: on Android the Activity is up, so
@@ -530,9 +479,9 @@ pub fn run() {
         // frontend mounts.
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
-                if let Some(dc_state) = webview.try_state::<DeviceConnectionState>() {
-                    dc_state.space_sync.record_activity_up();
-                    dc_state.space_sync.wake();
+                if let Some(space_sync) = webview.try_state::<std::sync::Arc<SpaceSyncService>>() {
+                    space_sync.record_activity_up();
+                    space_sync.wake();
                 }
             }
         })
@@ -564,40 +513,38 @@ pub fn run() {
             update_reminder,
             delete_reminder,
             cancel_quest_notifications,
-            device_connection_get_identity,
-            device_connection_enter_add_mode,
-            device_connection_leave_add_mode,
-            device_connection_discovery_snapshot,
-            device_connection_presence_snapshot,
-            device_connection_send_pair_request,
-            device_connection_pair_incoming_requests,
-            device_connection_pair_outgoing_updates,
-            device_connection_pair_outgoing_completions,
-            device_connection_pair_accept_request,
-            device_connection_pair_complete_request,
-            device_connection_pair_acknowledge_request,
-            device_connection_debug_status,
-            device_connection_get_paired_devices,
-            device_connection_save_paired_device,
-            device_connection_session_channel,
-            device_connection_set_channel_enabled,
-            device_connection_set_primary_channel,
-            device_connection_unlink_channel,
-            device_connection_probe_bluetooth_adapter,
-            device_connection_begin_channel_setup,
-            device_connection_channel_setup_status,
-            device_connection_end_channel_setup,
-            device_connection_send_pair_request_bluetooth,
-            device_connection_bluetooth_available_devices,
-            device_connection_identify_bluetooth_device,
-            device_connection_channel_statuses,
-            device_connection_unpair,
-            device_connection_update_last_seen,
-            device_connection_consume_space_mapping_updates,
+            device_get_identity,
+            device_enter_add_mode,
+            device_leave_add_mode,
+            device_available_devices,
+            device_identify_bluetooth_device,
+            device_send_pair_request,
+            device_send_pair_request_bluetooth,
+            device_pair_incoming_requests,
+            device_pair_outgoing_updates,
+            device_pair_outgoing_completions,
+            device_pair_accept_request,
+            device_pair_complete_request,
+            device_pair_acknowledge_request,
+            device_debug_status,
+            device_paired_devices,
+            device_save_paired_device,
+            device_unpair,
+            device_update_last_seen,
+            device_channel_statuses,
+            device_set_channel_enabled,
+            device_unlink_channel,
+            device_set_primary_channel,
+            device_begin_channel_setup,
+            device_channel_setup_status,
+            device_end_channel_setup,
+            channel_probe_bluetooth,
             space_sync_list_mappings,
             space_sync_update_mappings,
             space_sync_apply_remote_mappings,
             space_sync_resolve_custom_space_mapping,
+            space_sync_take_mapping_updates,
+            space_sync_session_channel,
             space_sync_tick,
             space_sync_status,
             space_sync_queue_summary,
@@ -618,7 +565,7 @@ pub fn run() {
             #[cfg(feature = "devtools")]
             e2e_dispatch_notification_action,
             #[cfg(feature = "devtools")]
-            e2e_set_radio,
+            channel_set_test_switch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -10,7 +10,7 @@ use crate::schema::paired_devices;
 #[derive(Debug, Queryable, Selectable, Serialize, Deserialize, Clone)]
 #[diesel(table_name = paired_devices)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub struct PairedDevice {
+pub struct Device {
     pub peer_device_id: String,
     pub display_name: String,
     pub paired_at: String,
@@ -22,7 +22,7 @@ pub struct PairedDevice {
 
 #[derive(Deserialize, Insertable)]
 #[diesel(table_name = paired_devices)]
-pub struct CreatePairedDeviceInput {
+pub struct CreateDeviceInput {
     pub peer_device_id: String,
     pub display_name: String,
     pub paired_at: String,
