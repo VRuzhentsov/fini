@@ -41,8 +41,7 @@ Build the app from these five patterns. Each part is one of them, and each
 is used through an interface.
 
 - **RPC (commands):** the UI calls the backend through Tauri commands. A
-  command calls one method of a service and gives back one answer. It has
-  no state and no logic of its own.
+  command gives back one answer.
 - **Service:** an object that does one job and owns the state of that job
   (a channel, a scanner, SpaceSync). Other parts call it through its
   interface.

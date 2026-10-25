@@ -36,8 +36,9 @@ interface. They are defined in
 interface is the general noun, and each implementation adds the word that
 makes it different ([`naming.md`](../naming.md)).
 
-**D3 — Role folders.** `src-tauri/src/` keeps `models/`, `repositories/`
-and `services/` next to each other. Communication moves into them.
+**D3 — Role folders.** `src-tauri/src/` has `commands/`, `models/`,
+`repositories/` and `services/` next to each other. The folder is the
+role. Communication moves into them.
 
 **D4 — One `DeviceService`, no flow objects.** Pairing (Add Device),
 channel setup and unlink are methods of one `DeviceService`, so that other
@@ -58,7 +59,7 @@ key that TLS proved. The `Gate` object goes. iroh-blobs and iroh-gossip
 use the same form.
 
 **D7 — Flat service files.** A service is one file in `services/`, named
-`<name>_service.rs`. Its helper objects stay in the same file (the
+`<name>.service.rs`. Its helper objects stay in the same file (the
 Bluetooth scanner and advertiser, the SpaceSync session). A folder is
 considered only when a service needs more than one file.
 
@@ -127,4 +128,17 @@ the identity inside `DeviceService` was rejected: the channel services need
 the key to start, and `DeviceService` needs the channel services, which
 makes a loop.
 
-## Open
+**D16 — One Pinia store for each backend service.** Each backend service
+has one store, named `<name>.store.ts` (`device.store.ts`,
+`channel.store.ts`, `space-sync.store.ts`). A store calls the commands of
+its service and applies the events of its service. Components use stores
+only. A reader goes from a screen to a store to a service.
+
+**D17 — Commands are grouped by service.** The commands of a service are
+in one file, `<name>.commands.rs`, and their names start with the name of
+the service. File names carry the role, as [`naming.md`](../naming.md)
+tells.
+
+**D18 — The bus is a service, an event is a model.** The bus is
+`EventBusService` in `services/event-bus.service.rs`; the `Event` enum is
+in `models/event.rs`. No new role folder.

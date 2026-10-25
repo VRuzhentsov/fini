@@ -154,7 +154,7 @@ is a technical noun of the Fini protocol.
 New files and new terms need the approval of the project owner before you
 make them.
 
-### Type names tell the role
+### Names tell the role
 
 - The name of a type ends with its role from
   [`code-design.md`](architecture/code-design.md): `…Service`,
@@ -163,6 +163,12 @@ make them.
 - An interface is the role or the general noun: `Service`, `Scanner`. Each
   implementation adds the word that makes it different: `BluetoothService`,
   `NetworkScanner`.
+- A file name is `<name>.<role>.<extension>`: `device.service.rs`,
+  `device.repository.rs`, `device.commands.rs`, `device.store.ts`. A model
+  file is the noun only: `device.rs`. In Rust, the module of such a file is
+  declared with `#[path]`.
+- A Tauri command name starts with the name of its service:
+  `device_unlink`.
 
 ### Module layout
 

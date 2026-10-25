@@ -61,8 +61,8 @@ example `Device` or `Quest`. A repository reads and writes models.
 ### Command
 
 **A request from the UI to do one thing**, with a name and arguments: a
-Tauri command, for example `device_connection_unpair`. It has no state. It
-calls one method of a service and gives back one answer. Only the webview
+Tauri command, for example `device_connection_unpair`. It gives back one
+answer. Only the webview
 calls Tauri commands (the UI, and the e2e tests through the devtools
 bridge). The CLI and background tasks call the services directly.
 
