@@ -54,6 +54,17 @@ pub mod bluetooth {
         ) -> Self {
             Self
         }
+
+        /// No Bluetooth links on this platform to close.
+        #[cfg(any(feature = "ui-plane", test))]
+        pub(crate) fn close_links_after_session(&self, _state: &DeviceConnectionState, _peer_id: &str) {}
+
+        /// No Bluetooth links on this platform to close.
+        #[cfg(any(feature = "ui-plane", test))]
+        pub(crate) fn close_rejected_link(
+            &self, _state: &DeviceConnectionState, _address: String, _device_id: Option<&str>,
+        ) {
+        }
     }
 
     #[async_trait::async_trait]

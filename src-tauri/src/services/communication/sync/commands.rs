@@ -1477,7 +1477,7 @@ pub fn space_sync_tick(
     device_connection: State<DeviceConnectionState>,
 ) -> Result<SpaceSyncTickResult, String> {
     // A call from the frontend: on Android the Activity is up from here on.
-    device_connection.space_sync.note_activity_up();
+    device_connection.space_sync.record_activity_up();
     let mut conn = db.0.lock().unwrap();
     space_sync_tick_impl(&mut conn, &device_connection)
 }

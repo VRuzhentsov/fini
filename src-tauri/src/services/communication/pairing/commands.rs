@@ -193,6 +193,10 @@ pub fn device_connection_enter_add_mode_impl(
     #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
     if bluetooth {
         state.bluetooth.scanner.set_add_device_mode(true);
+        // Advertise now, not on the keeper's next tick: with no channel on,
+        // the advertiser is off, and only this tells it to start.
+        drop(guard);
+        state.bluetooth.refresh_advertising(state);
     }
     state.space_sync.wake();
     // Opening Add Device is a genuine user action, the right point to
@@ -238,7 +242,12 @@ pub fn device_connection_leave_add_mode_impl(state: &DeviceConnectionState) -> R
     #[cfg(any(target_os = "linux", target_os = "android"))]
     state.bluetooth.advertiser.set_add_mode(false);
     #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
-    state.bluetooth.scanner.set_add_device_mode(false);
+    {
+        state.bluetooth.scanner.set_add_device_mode(false);
+        // Stop advertising now if nothing else wants it.
+        drop(guard);
+        state.bluetooth.refresh_advertising(state);
+    }
     state.space_sync.wake();
     Ok(())
 }
@@ -946,7 +955,7 @@ pub fn device_connection_set_channel_enabled_impl(
                 tauri::async_runtime::spawn(async move {
                     state
                         .bluetooth
-                        .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                        .close_links_to(peer_key, crate::services::communication::channel::bluetooth::TIME_BEFORE_LINK_CLOSE)
                         .await;
                 });
             }
@@ -1359,7 +1368,7 @@ pub fn device_connection_unpair(
         .and_then(|key| key.parse::<iroh::EndpointId>().ok());
     device_connection_unpair_impl(&mut conn, peer_device_id.clone())?;
     // The sessions with the device end now. Left to time out, their iroh
-    // connections kept dialling the device while it searched in Add Device,
+    // connections kept connecting to the device while it searched in Add Device,
     // and each short link made its advertisement restart.
     state.close_session_on(&peer_device_id, ChannelKind::Network);
     state.close_session_on(&peer_device_id, ChannelKind::Bluetooth);
@@ -1369,7 +1378,7 @@ pub fn device_connection_unpair(
         tauri::async_runtime::spawn(async move {
             state
                 .bluetooth
-                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::TIME_BEFORE_LINK_CLOSE)
                 .await;
         });
     }

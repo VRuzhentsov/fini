@@ -934,7 +934,7 @@ impl DataLink for AsBluetooth {
 /// enablement, so a peer that still had this pair's Bluetooth enabled on
 /// their end could dial in and connect even after the local user disabled
 /// Bluetooth for the pair. `bluetooth_enabled` defaults to `false`
-/// (`specs/device-connect/README.md`: "disabled by default for every Fini
+/// (`docs/architecture/communication.md`: "disabled by default for every Fini
 /// pair"), so a freshly paired, never-enabled device is exactly that case.
 #[tokio::test(flavor = "multi_thread")]
 async fn bluetooth_gate_rejects_paired_device_with_bluetooth_disabled() {
@@ -1023,7 +1023,7 @@ async fn bluetooth_gate_accepts_paired_device_with_bluetooth_enabled() {
 /// which is not OS-bonded, used to be rejected. It is now **accepted**: the
 /// address a peer connects from is meaningless when Android rotates it, and
 /// identity comes from the `Auth` frame, which
-/// `specs/device-connect/README.md` already names as the trust boundary.
+/// `docs/architecture/communication.md` already names as the trust boundary.
 /// Rejecting this case is exactly what made the transport unable to connect
 /// at all.
 #[tokio::test(flavor = "multi_thread")]

@@ -1,4 +1,4 @@
-//! The pairing handshake (`specs/device-connect/README.md`): request,
+//! The pairing handshake (`docs/architecture/communication.md`, "Pairing"): request,
 //! accept, complete, acknowledge. Transport-neutral: each frame goes out
 //! through the `PairingCarrier` for the channel the request came on.
 //!
@@ -130,7 +130,7 @@ impl DeviceConnectionState {
         .and_then(|key| key.parse::<iroh::EndpointId>().ok());
         if let Some(peer_key) = peer_key {
             self.bluetooth
-                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::TIME_BEFORE_LINK_CLOSE)
                 .await;
         }
     }

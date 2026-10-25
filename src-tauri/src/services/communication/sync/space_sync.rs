@@ -106,7 +106,7 @@ impl SpaceSync {
     /// tick: on Android the Activity is up. The frontend itself can mount
     /// much later (about 45 s on a phone with the dev frontend).
     #[cfg(any(feature = "ui-plane", test))]
-    pub(crate) fn note_activity_up(&self) {
+    pub(crate) fn record_activity_up(&self) {
         self.activity_up.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -234,7 +234,9 @@ impl SpaceSync {
             super::session::idle_after(kind),
         )
         .await;
-        if close_code == Some(super::session::CLOSE_NO_CHANNEL) {
+        // The peer has no such channel. While a setup with it is open here,
+        // that is the setup not done there yet, and the row stays.
+        if close_code == Some(super::session::CLOSE_NO_CHANNEL) && !state.has_channel_setup(peer_device_id, kind) {
             super::session::remove_channel_the_peer_has_not(state, peer_device_id, kind);
         }
         Ok(close_code)

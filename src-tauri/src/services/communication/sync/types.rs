@@ -88,14 +88,14 @@ pub enum PeerFrame {
     /// `to_device_id` -- this is how the sender learns them before
     /// `PairStart`. Untrusted, the same as `PairStart`/`PairAccept`/
     /// `PairComplete`: Fini's own pairing handshake is the trust boundary
-    /// (`specs/device-connect/README.md`).
+    /// (`docs/architecture/communication.md`).
     ///
     /// Carries the sender's own identity too, so the receiver learns of
     /// the sender on the same connection.
     #[serde(rename = "identify_device")]
     IdentifyDevice { device_id: String, hostname: String, endpoint_id: String },
     /// Reply to `IdentifyDevice`, sent only if the receiver is in Add Device
-    /// itself -- `specs/device-connect/README.md`: "Only devices in
+    /// itself -- `docs/architecture/communication.md`: "Only devices in
     /// add-mode are pairing candidates." `endpoint_id` is the replier's
     /// iroh key: a pairing step to it connects by that key (ADR-0009).
     #[serde(rename = "device_identified")]

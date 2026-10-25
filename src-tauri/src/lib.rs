@@ -531,7 +531,7 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 if let Some(dc_state) = webview.try_state::<DeviceConnectionState>() {
-                    dc_state.space_sync.note_activity_up();
+                    dc_state.space_sync.record_activity_up();
                     dc_state.space_sync.wake();
                 }
             }

@@ -252,7 +252,9 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
     let Some(device_id) = device_id else {
         log::warn!("[space_sync][gate] {kind:?} session from {from_addr} refused: its key is pinned for no pair");
         link.close(CLOSE_NOT_PAIRED, "not paired; pair the devices again");
-        close_refused_bluetooth_link(&state, kind, from_addr, None);
+        if kind == ChannelKind::Bluetooth {
+            state.bluetooth.close_rejected_link(&state, from_addr, None);
+        }
         return;
     };
     log::info!("[space_sync][gate] {kind:?} session from {device_id} via {from_addr}");
@@ -265,21 +267,19 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
         Some(false) => {
             log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: the channel is off for this pair");
             link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
-            close_refused_bluetooth_link(&state, kind, from_addr, Some(&device_id));
+            if kind == ChannelKind::Bluetooth {
+                state.bluetooth.close_rejected_link(&state, from_addr, Some(&device_id));
+            }
             return;
         }
-        // Not set up yet: a setup with the peer is open here, and the row
-        // comes with its OK. "Off" -- not now -- so the peer keeps its row.
-        None if state.channel_setup(&device_id, kind).is_some() => {
-            log::info!("[space_sync][gate] {kind:?} session from {device_id} refused: the channel is being set up");
-            link.close(CLOSE_CHANNEL_OFF, "the channel is being set up");
-            return;
-        }
-        // Removed here, or never added: the peer removes its row.
+        // Removed here, or not set up yet: the peer removes its row, unless
+        // it has a setup with this device open (`hold_session`).
         None => {
             log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: no such channel for this pair");
             link.close(CLOSE_NO_CHANNEL, "no such channel for this pair");
-            close_refused_bluetooth_link(&state, kind, from_addr, Some(&device_id));
+            if kind == ChannelKind::Bluetooth {
+                state.bluetooth.close_rejected_link(&state, from_addr, Some(&device_id));
+            }
             return;
         }
     }
@@ -327,31 +327,6 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
         log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: a session is already active");
         link.close(CLOSE_SESSION_ACTIVE, "a session is already active on this channel");
     }
-}
-
-/// A Bluetooth session the gate refused (not paired, or the channel is off
-/// or missing) leaves its BLE link up until it is idle, and iroh sent this
-/// device's own next connection to the peer into that link instead of
-/// connecting: the connect timed out. No session to the peer is kept on this
-/// channel then, so the link to `address` is closed, once the refusal has
-/// reached the peer -- unless a Bluetooth setup with `device_id` is open:
-/// its connect can share the link.
-#[cfg(any(feature = "ui-plane", test))]
-fn close_refused_bluetooth_link(
-    state: &DeviceConnectionState, kind: ChannelKind, address: String, device_id: Option<&str>,
-) {
-    if kind != ChannelKind::Bluetooth || address.is_empty() {
-        return;
-    }
-    let state = state.clone();
-    let device_id = device_id.map(str::to_string);
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY).await;
-        if device_id.is_some_and(|id| state.channel_setup(&id, ChannelKind::Bluetooth).is_some()) {
-            return;
-        }
-        state.bluetooth.close_link_at(address, Duration::ZERO).await;
-    });
 }
 
 /// The gate as iroh's `ProtocolHandler` for one channel's endpoint: iroh's

@@ -490,7 +490,7 @@ impl DeviceConnectionState {
     }
 
     /// Whether this device is currently discoverable for pairing —
-    /// `specs/device-connect/README.md`: "Only devices in add-mode are
+    /// `docs/architecture/communication.md`: "Only devices in add-mode are
     /// pairing candidates." Used by `session::run_peer_gate`'s
     /// `IdentifyDevice` handling (ADR 0002 Phase 3) to decide whether to
     /// reply at all, the BLE-scan equivalent of the existing check
@@ -851,6 +851,20 @@ impl DeviceConnectionState {
     pub fn channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> Option<ChannelSetup> {
         let guard = self.runtime.lock().ok()?;
         guard.channel_setups.get(&(peer_device_id.to_string(), kind)).copied()
+    }
+
+    /// Whether a setup of this peer's channel is open on this device. Only
+    /// the apps set channels up, so it is never open in other builds.
+    pub fn has_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
+        #[cfg(any(feature = "ui-plane", test))]
+        {
+            self.channel_setup(peer_device_id, kind).is_some()
+        }
+        #[cfg(not(any(feature = "ui-plane", test)))]
+        {
+            let _ = (peer_device_id, kind);
+            false
+        }
     }
 
     /// Record one half of an init. A no-op when no setup search is running

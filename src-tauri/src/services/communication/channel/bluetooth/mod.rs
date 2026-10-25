@@ -63,7 +63,7 @@ pub use data_link::*;
 
 pub use advertiser::Advertiser;
 #[cfg(any(feature = "ui-plane", test))]
-pub(crate) use endpoint::LINK_CLOSE_DELAY;
+pub(crate) use endpoint::TIME_BEFORE_LINK_CLOSE;
 pub use scanner::Scanner;
 #[cfg(any(feature = "ui-plane", test))]
 pub use scanner::AvailableDevice;
@@ -118,32 +118,32 @@ fn next_delivery_search(misses: usize, now: std::time::Instant) -> std::time::In
     now + DELIVERY_RETRY[misses.saturating_sub(1).min(DELIVERY_RETRY.len() - 1)]
 }
 
-/// After the peer's gate refuses a session (its channel is off for this
-/// pair), the next connection waits this long, even while the peer is heard.
+/// After the peer's gate rejects a session (its channel is off for this
+/// pair), the next connection waits this long, also while the peer is heard.
 /// The same wait as Network's `FAILURE_COOLDOWN`. The peer connects by
 /// itself when it switches the channel on.
-const REFUSED_COOLDOWN: Duration = Duration::from_secs(30);
+const REJECTED_WAIT_TIME: Duration = Duration::from_secs(30);
 
 /// Per paired device: how many delivery searches in a row found nothing,
-/// and when the next one is due; and until when a refusal holds the next
+/// and when the next one is due; and until when a rejection stops the next
 /// connection. In memory only, as ADR-0008 decided: a started app tries at
 /// once.
 #[derive(Default)]
 pub struct DeliverySchedule {
     schedule: std::sync::Mutex<std::collections::HashMap<String, (usize, std::time::Instant)>>,
-    refused_until: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    rejected_until: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl DeliverySchedule {
     /// Whether a delivery search for this device is due. A device that
-    /// refused a session recently is not. A device heard recently is
+    /// rejected a session recently is not. A device heard recently is
     /// otherwise always due: it is reached by one connection.
     pub fn delivery_due(&self, scanner: &Scanner, peer_id: &str) -> bool {
-        let refused = self
-            .refused_until
+        let rejected = self
+            .rejected_until
             .lock()
-            .is_ok_and(|refused| refused.get(peer_id).is_some_and(|until| std::time::Instant::now() < *until));
-        if refused {
+            .is_ok_and(|rejected| rejected.get(peer_id).is_some_and(|until| std::time::Instant::now() < *until));
+        if rejected {
             return false;
         }
         if scanner.heard_recently(peer_id) {
@@ -172,13 +172,13 @@ impl DeliverySchedule {
         space_sync.wake_after(next.saturating_duration_since(now));
     }
 
-    /// The peer's gate refused a session: the next connection waits
-    /// `REFUSED_COOLDOWN`.
-    pub fn note_refused(&self, peer_id: &str, space_sync: &SpaceSync) {
-        if let Ok(mut refused) = self.refused_until.lock() {
-            refused.insert(peer_id.to_string(), std::time::Instant::now() + REFUSED_COOLDOWN);
+    /// The peer's gate rejected a session: the next connection waits
+    /// `REJECTED_WAIT_TIME`.
+    pub fn record_rejected(&self, peer_id: &str, space_sync: &SpaceSync) {
+        if let Ok(mut rejected) = self.rejected_until.lock() {
+            rejected.insert(peer_id.to_string(), std::time::Instant::now() + REJECTED_WAIT_TIME);
         }
-        space_sync.wake_after(REFUSED_COOLDOWN);
+        space_sync.wake_after(REJECTED_WAIT_TIME);
     }
 
     /// The device was reached, or see `ChannelService::forget_failures`: the
@@ -187,8 +187,8 @@ impl DeliverySchedule {
         if let Ok(mut schedule) = self.schedule.lock() {
             schedule.remove(peer_id);
         }
-        if let Ok(mut refused) = self.refused_until.lock() {
-            refused.remove(peer_id);
+        if let Ok(mut rejected) = self.rejected_until.lock() {
+            rejected.remove(peer_id);
         }
     }
 }
@@ -667,7 +667,7 @@ impl BluetoothChannel {
         }
         // Just paired over Bluetooth: the pairing's BLE link is still up, so
         // the session goes over it, with no search and no new connect.
-        if let Some(address) = self.take_pairing_link(peer_id) {
+        if let Some(address) = self.remove_pairing_link(peer_id) {
             let guard = self.scanner.acquire_connect().await;
             match self.connect_for_session(state, peer_id, &address).await {
                 Ok(link) => {
@@ -764,10 +764,10 @@ impl BluetoothChannel {
                 log::info!("[transport][ble] holding a session with {peer_id} via {address}");
             })
             .await;
-        // Refused by the peer's gate: the next connection waits
-        // `REFUSED_COOLDOWN`, though the peer is still heard.
+        // Rejected by the peer's gate: the next connection waits
+        // `REJECTED_WAIT_TIME`, though the peer is still heard.
         if matches!(held, Ok(close_code) if session::refused_by_peer(close_code)) {
-            self.delivery.note_refused(peer_id, &state.space_sync);
+            self.delivery.record_rejected(peer_id, &state.space_sync);
         }
         if held.is_ok() {
             self.close_links_after_session(state, peer_id);

@@ -26,12 +26,12 @@ const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a BLE link stays after Fini closed the iroh connection on it, so
 /// that the close and its code reach the peer first (`close_links_to`).
 #[cfg(any(feature = "ui-plane", test))]
-pub(crate) const LINK_CLOSE_DELAY: Duration = Duration::from_secs(1);
+pub(crate) const TIME_BEFORE_LINK_CLOSE: Duration = Duration::from_secs(1);
 
 /// How long a pairing's BLE link waits for the first session to use it
 /// (`keep_pairing_link`).
 #[cfg(any(feature = "ui-plane", test))]
-const PAIRING_LINK_KEEP: Duration = Duration::from_secs(15);
+const PAIRING_LINK_KEEP_TIME: Duration = Duration::from_secs(15);
 
 impl BluetoothChannel {
     /// Opens an iroh connection to `peer_key` for a pairing step --
@@ -193,7 +193,7 @@ impl BluetoothChannel {
         let state = state.clone();
         let peer_id = peer_id.to_string();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(LINK_CLOSE_DELAY).await;
+            tokio::time::sleep(TIME_BEFORE_LINK_CLOSE).await;
             if state.has_session_on(&peer_id, ChannelKind::Bluetooth)
                 || state.channel_setup(&peer_id, ChannelKind::Bluetooth).is_some()
             {
@@ -204,8 +204,8 @@ impl BluetoothChannel {
     }
 
     /// A pairing with `peer_id` finished on the BLE link to `address`: keep the
-    /// link for the first session (`take_pairing_link`). Not used within
-    /// `PAIRING_LINK_KEEP`, it is closed: a link left up blocks the connect
+    /// link for the first session (`remove_pairing_link`). Not used in
+    /// `PAIRING_LINK_KEEP_TIME`, it is closed: a link left up blocks the connect
     /// to the peer's new address.
     #[cfg(any(feature = "ui-plane", test))]
     pub(crate) fn keep_pairing_link(
@@ -214,13 +214,17 @@ impl BluetoothChannel {
         if let Ok(mut links) = self.pairing_links.lock() {
             links.insert(peer_id.to_string(), address.to_string());
         }
+        // A new pair: rejected sessions and misses from before it (the other
+        // device rejected them while it was not paired yet) must not stop its
+        // first session.
+        self.delivery.forget_delivery_misses(peer_id);
         log::info!("[transport][ble] keeping the pairing link to {address} for the first session");
         state.space_sync.wake();
         let state = state.clone();
         let peer_id = peer_id.to_string();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(PAIRING_LINK_KEEP).await;
-            let unused = state.bluetooth.take_pairing_link(&peer_id).is_some();
+            tokio::time::sleep(PAIRING_LINK_KEEP_TIME).await;
+            let unused = state.bluetooth.remove_pairing_link(&peer_id).is_some();
             if unused && !state.has_session_on(&peer_id, ChannelKind::Bluetooth) {
                 state.bluetooth.close_links_to(peer_key, Duration::ZERO).await;
             }
@@ -234,8 +238,31 @@ impl BluetoothChannel {
 
     /// The address of the pairing link kept for `peer_id`'s first session,
     /// once: a later session searches as usual.
-    pub(crate) fn take_pairing_link(&self, peer_id: &str) -> Option<String> {
+    pub(crate) fn remove_pairing_link(&self, peer_id: &str) -> Option<String> {
         self.pairing_links.lock().ok()?.remove(peer_id)
+    }
+
+    /// The gate rejected a Bluetooth session from `address` (not paired, or
+    /// the channel is off or missing). Its BLE link stayed up until idle, and
+    /// iroh sent this device's own next connection to the peer into it
+    /// instead of connecting: the connect timed out. No session to the peer is
+    /// kept on this channel then, so the link is closed after the rejection
+    /// gets to the peer -- unless a setup with `device_id` is open: its
+    /// connect can use the same link.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) fn close_rejected_link(&self, state: &DeviceConnectionState, address: String, device_id: Option<&str>) {
+        if address.is_empty() {
+            return;
+        }
+        let state = state.clone();
+        let device_id = device_id.map(str::to_string);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(TIME_BEFORE_LINK_CLOSE).await;
+            if device_id.is_some_and(|id| state.has_channel_setup(&id, ChannelKind::Bluetooth)) {
+                return;
+            }
+            state.bluetooth.close_link_at(address, Duration::ZERO).await;
+        });
     }
 
     /// Like `close_links_to`, for a link the peer opened from `address`,

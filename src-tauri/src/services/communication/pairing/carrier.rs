@@ -196,7 +196,7 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>,
             // its old one must not outlive the pairing.
             state
                 .bluetooth
-                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
+                .close_links_to(peer_key, crate::services::communication::channel::bluetooth::TIME_BEFORE_LINK_CLOSE)
                 .await;
         }
     });

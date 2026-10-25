@@ -42,10 +42,15 @@ use super::{
 };
 use crate::services::communication::sync::space_sync::SpaceSync;
 
-/// How long a heard advertisement counts as current: a device heard within
-/// it is reached by one connection to that address, not a search
-/// (`last_heard_address`).
+/// How long a heard advertisement counts as current (`heard_recently`).
 const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a heard address gets a connect without a search first
+/// (`last_heard_address`). An Android phone takes a new address each time it
+/// advertises again (Add Device, a channel setup): an address heard 30 s
+/// ago got a connect that waited until the 15 s timeout, while a search finds the
+/// new one in 1-3 s.
+const LAST_HEARD_CONNECT_TIME: Duration = Duration::from_secs(5);
 
 /// How long an address whose dial just failed is not handed off again.
 ///
@@ -225,19 +230,24 @@ impl Scanner {
         }
     }
 
-    /// Where `peer_id` was last heard advertising, if within the channel
-    /// timeout: a present device is reached by one connection, not a search.
+    /// Where `peer_id` was last heard advertising, if in
+    /// `LAST_HEARD_CONNECT_TIME`: a device heard just now is reached by one
+    /// connection, not a search.
     pub fn last_heard_address(&self, peer_id: &str) -> Option<String> {
-        let heard = self.paired_heard.lock().ok()?;
-        heard
-            .get(peer_id)
-            .filter(|(at, _)| at.elapsed() < BLUETOOTH_CHANNEL_TIMEOUT)
-            .map(|(_, address)| address.clone())
+        self.heard_in(peer_id, LAST_HEARD_CONNECT_TIME)
     }
 
     /// Whether `peer_id` advertised within the channel timeout (ADR-0008 D9).
     pub fn heard_recently(&self, peer_id: &str) -> bool {
-        self.last_heard_address(peer_id).is_some()
+        self.heard_in(peer_id, BLUETOOTH_CHANNEL_TIMEOUT).is_some()
+    }
+
+    fn heard_in(&self, peer_id: &str, window: Duration) -> Option<String> {
+        let heard = self.paired_heard.lock().ok()?;
+        heard
+            .get(peer_id)
+            .filter(|(at, _)| at.elapsed() < window)
+            .map(|(_, address)| address.clone())
     }
 
     pub fn begin_pairing_step(&self) -> PairingStep {
