@@ -16,8 +16,7 @@ All documents are in `docs/`:
 | Architecture: how a part of the app works | `docs/architecture/<part>.md` (for example `communication.md`) |
 | Decision records | `docs/adr/` — written only together with the project owner, while a plan is discussed |
 | What a word means | `docs/glossary.md` |
-| How names are written | `docs/naming.md` |
-| The writing standard | `docs/ste.md` |
+| How Fini writes: STE, the check of each word, how names are formed | `docs/naming.md` |
 | Plans of past work | `docs/plans/` |
 
 A README or a companion spec next to the code is an older form. When you
@@ -26,7 +25,7 @@ code tree, and update the links to it. Do not start new docs next to code.
 
 ## How to write
 
-- Write in STE (ASD-STE100): read `docs/ste.md` first. Use short sentences,
+- Write in STE (ASD-STE100): read `docs/naming.md` first. Use short sentences,
   one instruction in each sentence, the active voice, and approved words. A
   technical noun or verb that is not in the STE dictionary must be in
   `docs/glossary.md`.

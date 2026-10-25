@@ -24,4 +24,4 @@ Local space model, built-in spaces, and Settings-based space management.
 
 ## Related Feature
 
-- `specs/space-sync/README.md`
+- `docs/architecture/communication.md` (spaces that a pair syncs)

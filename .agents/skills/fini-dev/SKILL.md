@@ -44,18 +44,6 @@ For any planning stage, load `grill-me` before finalizing the plan. Treat planni
 
 Use `grill-me` as an overlay, not a replacement for domain skills. First gather evidence from the repo, specs, ADRs, or source files when evidence can answer the question; ask the user only for decisions evidence cannot resolve. Ask one question at a time, include the recommended answer, and stop when remaining questions are non-blocking or explicitly deferred.
 
-## Use STE
-
-Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, comments, log messages, docs, screen text, commit messages, PR text, agent instructions, and what you write to the user.
-
-1. Read `docs/ste.md` before you write any of these.
-2. For each new name, do the check in `docs/ste.md`, "Check a name before you write it". Look up each word in the STE dictionary.
-3. Use a technical noun or verb only when it is a term in `docs/glossary.md`.
-4. When no approved word or glossary term gives the meaning, ask the user for a new glossary term first.
-5. Before you commit, read your diff for the words in the glossary's "Words deliberately not used" list, and replace them.
-
-`fini-code-style` holds the same rule for code.
-
 ## Skill Routing
 
 Load the specialized skill when its condition applies:
@@ -210,25 +198,19 @@ Do not invent generic targets such as `make test`, `make lint`, or `make check` 
 
 ## Naming
 
-Two files, and they answer different questions. `docs/glossary.md` is what the words **mean** — channel, DataLink, session, primary — and is where you go to choose *which* word. `docs/naming.md` is how names are **formed** — plurals, casing per language, `data-*` hooks, command prefixes — and is where you go to write it down. Read the relevant one before naming a new table, module, type, command or DOM hook, and before renaming one. Either file wins over what the code currently says. Load `fini-code-style` alongside them for the repo-wide rules that are not about names.
+Two files. `docs/glossary.md` is what the words **mean**: go there to choose *which* word. `docs/naming.md` is how Fini **writes**: STE, the dictionary check for each word, and how names are formed. Read the relevant one before you name or rename a table, module, type, command or DOM hook. Either file wins over what the code says now. Load `fini-code-style` with them for the rules that are not about names.
 
 ## Use STE
 
-Fini writes in ASD-STE100 Simplified Technical English (STE). Read `docs/ste.md` before you write any of these:
+Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, comments, log messages, docs, screen text, commit messages, PR text, agent instructions, and what you write to the user.
 
-- A name in code: file, module, type, function, command, or field.
-- A document, a specification, or an instruction for an agent.
-- A comment in code.
-- A text on a screen of the app.
-- A pull request title or description, or a commit message.
-
-Do these steps:
-
-1. Look up each word in `~/.cache/agents/ste/ste.txt` (the local copy of the standard; `docs/ste.md` tells how to get it) and in `docs/glossary.md`.
-2. Use an approved word, or a technical noun or verb from `docs/glossary.md`.
-3. When no approved word gives the meaning, tell the user the new term. Give the term, its one meaning, and why no approved word fits. Add it to the glossary only after you get the approval of the user.
-4. Before you make a new file, tell the user its name and its job. Make it only after you get approval.
-5. Talk to the user in STE too. Tell the meaning of each term before you use it.
+1. Read `docs/naming.md` before you write any of these.
+2. For each new name, comment and log message, do the check in `docs/naming.md`, "Check a name before you write it". Look up each word in the STE dictionary.
+3. Use a technical noun or verb only when it is a term in `docs/glossary.md`.
+4. When no approved word or glossary term gives the meaning, tell the user the new term: the term, its one meaning, and why no approved word fits. Add it to the glossary only after you get the approval of the user.
+5. Before you make a new file, tell the user its name and its job. Make it only after you get approval.
+6. Before you commit, read your diff for the words in the glossary's "Words deliberately not used" list, and replace them.
+7. Talk to the user in STE too. Tell the meaning of each term before you use it.
 
 During the change to STE, change the names, comments, and text of each file that you change. Leave other files as they are.
 

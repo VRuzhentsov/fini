@@ -3,11 +3,11 @@
 What Fini's words mean. When a word here conflicts with what the code says,
 this file wins and the code is wrong.
 
-For *how* names are formed — plurals, casing, command prefixes — see
-[`naming.md`](naming.md). This file is about meaning, that one is about
-spelling.
+For *how* Fini writes — STE, the dictionary check, and how names are
+formed — see [`naming.md`](naming.md). This file is about meaning, that one
+is about writing.
 
-**STE company glossary.** Fini writes in STE (see [`ste.md`](ste.md)). This
+**STE company glossary.** Fini writes in STE (see [`naming.md`](naming.md)). This
 file is the company glossary that STE rules 1.5 to 1.13 refer to: the list
 of Fini's technical nouns and technical verbs. A technical term that is not
 in this file is not approved. Add a term only after you get the approval
@@ -103,6 +103,18 @@ a working pipe *before* anyone is authenticated.
 The identity comes from the TLS handshake: iroh proves the key of each side,
 and the gate finds the paired device whose pinned key it is. There is no
 auth message. A session runs only on the ALPN `fini/sync/<version>`.
+
+A device has at most one session with a paired device on each channel kind
+(`DeviceConnectionState::try_claim_session`). A session stays on the channel
+that it started on until it ends; it does not move to a different channel.
+
+### Secure channel
+
+**The encryption seam between the `PeerFrame` codec and a `DataLink`**
+(`channel/encryption.rs`, `SecureChannel`). `PlaintextChannel` gives the bytes
+through without a change, and it is the only implementation. The frame
+envelope records the scheme (`enc`), so a real encryption scheme can be added
+later without a change that breaks the wire format.
 
 ### Link
 
@@ -280,6 +292,10 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **delay** (noun) | not an approved noun; Fini uses *time* |
 | **cooldown** | not in the STE dictionary; Fini uses *wait time* |
 | **window** (a time) | not in the STE dictionary; Fini uses *time* |
+| **Peer Protocol** | the older name for the frames between two devices; Fini says *`PeerFrame`* and *session* |
+| **Connection Manager** | an informal name for the session claim and the channel order; no object has this name |
+| **sticky handoff**, **transport selection** | older names for the rule of one session for each channel (see *Session*) and for the channel order (see *Primary*) |
+| **`Auth`**, **`AuthOk`**, **`AuthFail`** | removed frames; the TLS handshake proves the key (see *Session*) |
 
 ### Radio
 

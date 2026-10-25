@@ -2,7 +2,7 @@
 
 How much battery Fini may use on a phone, why, and how we measure it.
 
-Written in STE (`docs/ste.md`). Every Fini feature that runs in the
+Written in STE (`docs/naming.md`). Every Fini feature that runs in the
 background must keep to this budget. A change that can increase power use
 adds a row to "Measurements" before it merges.
 
