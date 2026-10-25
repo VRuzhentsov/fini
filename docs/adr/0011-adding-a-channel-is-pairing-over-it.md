@@ -35,15 +35,22 @@ separate init exchange for each transport.
 ## Decisions
 
 **D1 — Adding a channel to a paired device is pairing over that channel.**
-The dialog for a known device runs the pairing exchange of a new device,
-over the channel that the person chose: `PairStart`, `PairAccept`, the code,
-`PairComplete`. The list in the dialog shows only that device.
+Both people open the dialog for the channel (Add on the row). Both devices
+are then in Add Device mode for that channel: they advertise and scan, as
+for a new device. The list on each device shows only the other device. The
+person on one device taps it; the other device shows the request, with
+Accept and Decline. The frames are the pairing frames: `PairStart`, the
+accept, `PairComplete`. It works with no Wi-Fi.
 
-**D2 — The correct code writes the row.** When the person types the correct
-code, both devices write the row of that channel as `On`
-(`save_paired_device`, for the channel the pairing ran on). The device row,
-its key and its spaces are kept. There is no OK button. Closing the dialog
-before the code writes nothing.
+**D2 — iroh's TLS proves the device; Accept writes the row.** The request
+runs on a link of the chosen channel, and TLS on that link proves the key of
+the peer. When that key is the key pinned for the pair, no code is shown:
+Accept is the consent. Both devices then write the row of that channel as
+`On` (`save_paired_device`, for the channel the pairing ran on). The device
+row, its key and its spaces are kept. There is no OK button. Closing the
+dialog before Accept writes nothing. When the key is not the pinned one (for
+example, the app was installed again), the device is not known: pairing with
+the code runs, as for a new device.
 
 **D3 — The pairing link carries the first session.** The link that the
 pairing ran on stays up for the first session (`keep_pairing_link`), so the
@@ -58,6 +65,8 @@ switch (D15), unlink (D14), and the row colours (D19).
 
 - One code path for "pair" and "add a channel", proven by the
   `bluetooth-pair-from-zero` spec.
-- Adding a channel takes one step more than before: the code. Both people
-  agree to the channel explicitly.
+- Both people agree to the channel explicitly: one taps the device, the
+  other accepts. The pinned key replaces the code.
 - No wire message is added.
+- Both devices must have the dialog open: a device with no dialog open does
+  not advertise for the request.
