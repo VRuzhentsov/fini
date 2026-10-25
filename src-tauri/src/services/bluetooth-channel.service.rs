@@ -2813,12 +2813,16 @@ impl Scanner {
                                     let add_device_flag = payload
                                         .and_then(|payload| payload.first())
                                         .is_some_and(|flags| flags & ADD_MODE_FLAG_BYTE != 0);
-                                    self.available.record_heard(
+                                    // The UI reads the list again only when
+                                    // it changes (ADR-0010 D9).
+                                    if self.available.record_heard(
                                         fingerprint,
                                         &candidate.address.0,
                                         candidate.name.clone(),
                                         add_device_flag,
-                                    );
+                                    ) {
+                                        self.bus.publish(Event::AvailableDevicesChanged);
+                                    }
                                 }
                             }
                             let Some(peer) = advertised.and_then(|fp| wanted.get(&fp)) else {
@@ -2957,15 +2961,22 @@ impl AvailableDevices {
     }
 
     /// Records one advertisement: the newest address of that device wins.
+    /// Returns true when the Add Device list changed: the device came into
+    /// it, left it, or got its name.
     pub fn record_heard(
         &self, fingerprint: [u8; FINGERPRINT_LEN], address: &str, name: Option<String>, add_device_flag: bool,
-    ) {
-        let Ok(mut heard) = self.heard.lock() else { return };
-        let name = name.or_else(|| heard.get(&fingerprint).and_then(|known| known.name.clone()));
+    ) -> bool {
+        let Ok(mut heard) = self.heard.lock() else { return false };
+        let known = heard.get(&fingerprint);
+        let listed_before = known.is_some_and(|known| known.add_device_flag && known.at.elapsed() < HEARD_FRESH);
+        let name_before = known.and_then(|known| known.name.clone());
+        let name = name.or_else(|| name_before.clone());
+        let changed = listed_before != add_device_flag || (add_device_flag && name != name_before);
         heard.insert(
             fingerprint,
             HeardDevice { address: address.to_string(), name, add_device_flag, at: Instant::now() },
         );
+        changed
     }
 
     /// The devices for the Add Device list: heard with the Add Device flag

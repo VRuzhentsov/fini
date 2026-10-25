@@ -383,10 +383,13 @@ impl SpaceSyncService {
         match event {
             // A pair or a channel changed: a session on a channel that is
             // not on any more ends, a kept frame (`ChannelUnlinked`) goes,
-            // and the channel order may be different.
+            // and the channel order may be different. A channel that is on
+            // now needs its session: the tick starts it. A new pair's first
+            // session must not wait for some other event.
             Event::PairedDevicesChanged | Event::ChannelsChanged { .. } => {
                 self.close_sessions_without_channel();
                 self.outbox_kept();
+                self.wake();
             }
             Event::DeviceHeard { .. } | Event::ConnectChanged { .. } => self.wake(),
             _ => {}
