@@ -1521,3 +1521,266 @@ impl ChannelSetup {
         self.sent_request_accepted && self.accepted_peer_request
     }
 }
+
+#[cfg(test)]
+mod pair_tests {
+    use super::*;
+    use crate::models::Channel;
+    use crate::schema::paired_devices;
+    use diesel::prelude::*;
+    use uuid::Uuid;
+
+    struct Fixture {
+        service: Arc<DeviceService>,
+        conn: SqliteConnection,
+        db_path: PathBuf,
+        app_dir: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_dir_all(&self.app_dir);
+        }
+    }
+
+    /// A service on a temporary database. The Network channel listens on a
+    /// free port, so that the test does not meet a running app.
+    fn fixture(label: &str) -> Fixture {
+        let db_path = std::env::temp_dir().join(format!("fini-test-device-{label}-{}.db", Uuid::new_v4()));
+        let app_dir = std::env::temp_dir().join(format!("fini-test-app-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let mut conn = open_db_at_path(&db_path);
+        let identity = DeviceRepository::new(&mut conn).load_or_create_identity(&app_dir).unwrap();
+        let bus = Arc::new(EventBusService::default());
+        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), db_path.clone(), bus.clone(), 0));
+        let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
+        let service = DeviceService::new(identity, db_path.clone(), bus, network, bluetooth);
+        Fixture { service, conn, db_path, app_dir }
+    }
+
+    /// The fixture with one paired device, `peer-a`.
+    fn paired_peer(label: &str) -> Fixture {
+        let mut fixture = fixture(label);
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut fixture.conn)
+            .unwrap();
+        fixture
+    }
+
+    fn channel(conn: &mut SqliteConnection, peer_device_id: &str, kind: ChannelKind) -> Option<Channel> {
+        ChannelRepository::new(conn).find(peer_device_id, kind)
+    }
+
+    fn save(fixture: &mut Fixture, peer_device_id: &str, address: Option<&str>, via_bluetooth: bool) {
+        fixture
+            .service
+            .save_paired_device(&mut fixture.conn, peer_device_id, "Peer", address.map(str::to_string), via_bluetooth, None, None)
+            .unwrap();
+    }
+
+    /// Regression test: `run_command_with_timeout` must end a command that
+    /// outlives its deadline, not only stop waiting on it.
+    #[tokio::test]
+    async fn run_command_with_timeout_returns_promptly_on_a_hung_command() {
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30");
+        let started = std::time::Instant::now();
+        let result = run_command_with_timeout(command, Duration::from_millis(200)).await;
+        assert!(result.is_none());
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    }
+
+    /// The key a pair is saved with is the one that came with that pairing.
+    /// A later frame that claims the same device id -- here a `PairStart`
+    /// after the `PairComplete` -- must not replace it, or its sender could
+    /// pass as the peer.
+    #[test]
+    fn saving_a_pair_pins_the_key_from_its_own_pairing() {
+        let fixture = fixture("pin-key");
+        let me = fixture.service.identity.device_id.clone();
+        fixture.service.receive_pair_complete(
+            PairCompletePayload {
+                protocol: DISCOVERY_PROTOCOL.to_string(),
+                kind: "pair_complete".to_string(),
+                request_id: "req-1".to_string(),
+                from_device_id: "peer-b".to_string(),
+                from_hostname: "beta".to_string(),
+                to_device_id: me.clone(),
+                paired_at: "2026-01-01T00:00:00Z".to_string(),
+                bluetooth_address: None,
+                key_material: None,
+                from_endpoint_id: None,
+            },
+            "10.0.0.2".to_string(),
+            Some("legitimate-key".to_string()),
+            false,
+        );
+        fixture.service.receive_pair_request(
+            PairRequestPayload {
+                protocol: DISCOVERY_PROTOCOL.to_string(),
+                kind: "pair_start".to_string(),
+                request_id: "req-attacker".to_string(),
+                from_device_id: "peer-b".to_string(),
+                from_hostname: "beta".to_string(),
+                from_discovery_port: None,
+                from_ws_port: None,
+                to_device_id: me,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                expires_at: "2026-01-01T00:01:00Z".to_string(),
+                from_endpoint_id: None,
+            },
+            "10.0.0.66".to_string(),
+            Some("attacker-key".to_string()),
+            false,
+        );
+
+        assert_eq!(fixture.service.pairing_key("req-1", "peer-b").as_deref(), Some("legitimate-key"));
+        // A key goes only to the device its pairing was with.
+        assert_eq!(fixture.service.pairing_key("req-1", "peer-c"), None);
+        assert_eq!(fixture.service.pairing_key("req-attacker", "peer-b"), None);
+    }
+
+    /// A new pair's channels follow how it was set up (ADR-0007): pairing
+    /// over Bluetooth sets up Bluetooth and nothing else.
+    #[test]
+    fn a_bluetooth_pairing_sets_up_only_bluetooth() {
+        let mut fixture = fixture("bluetooth-pairing");
+        save(&mut fixture, "peer-new", Some("aa:bb:cc:dd:ee:ff"), true);
+
+        let bluetooth = channel(&mut fixture.conn, "peer-new", ChannelKind::Bluetooth).expect("the Bluetooth channel");
+        assert!(bluetooth.enabled);
+        assert_eq!(bluetooth.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert!(channel(&mut fixture.conn, "peer-new", ChannelKind::Network).is_none());
+    }
+
+    /// One side kept its row while the other reset and paired again over
+    /// the network: Network must be on again here, or the pair looks set up
+    /// and cannot talk.
+    #[test]
+    fn pairing_again_over_the_network_switches_network_on_again() {
+        let mut fixture = fixture("network-repair");
+        save(&mut fixture, "peer-old", None, false);
+        ChannelRepository::new(&mut fixture.conn).set_enabled("peer-old", ChannelKind::Network, false).unwrap();
+
+        save(&mut fixture, "peer-old", None, false);
+        assert!(ChannelRepository::new(&mut fixture.conn).is_enabled("peer-old", ChannelKind::Network));
+    }
+
+    /// A Bluetooth address sent with a Network pairing is no proof that
+    /// Bluetooth works between the two: no Bluetooth channel is set up.
+    #[test]
+    fn a_network_pairing_does_not_set_up_bluetooth() {
+        let mut fixture = fixture("network-pairing");
+        save(&mut fixture, "peer-network", Some("aa:bb:cc:dd:ee:ff"), false);
+
+        assert!(channel(&mut fixture.conn, "peer-network", ChannelKind::Network).expect("Network").enabled);
+        let bluetooth = channel(&mut fixture.conn, "peer-network", ChannelKind::Bluetooth);
+        assert!(bluetooth.as_ref().is_none_or(|row| !row.enabled), "no Bluetooth channel is on: {bluetooth:?}");
+    }
+
+    /// A pairing again over Bluetooth can land on a channel that this
+    /// device switched off. A whole pairing is a deliberate act: the channel
+    /// is on again.
+    #[test]
+    fn a_bluetooth_pairing_switches_an_off_channel_on_again() {
+        let mut fixture = paired_peer("bluetooth-repair");
+        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, false, None).unwrap();
+
+        save(&mut fixture, "peer-a", Some("aa:bb:cc:dd:ee:ff"), true);
+        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the Bluetooth row");
+        assert!(row.enabled);
+        assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+    }
+
+    /// ADR-0006: switching Bluetooth on needs neither a stored address nor
+    /// an OS bond.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_a_channel_on_needs_neither_an_address_nor_a_bond() {
+        let mut fixture = paired_peer("switch-on");
+        // ADR-0008 D15: the channel exists (set up by an init), switched off.
+        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, false, None).unwrap();
+        crate::services::bluetooth_channel_service::BluetoothAdapter::pin_reachable_on_this_thread();
+
+        fixture.service.set_channel_enabled("peer-a", ChannelKind::Bluetooth, true).await.unwrap();
+        assert!(ChannelRepository::new(&mut fixture.conn).is_enabled("peer-a", ChannelKind::Bluetooth));
+    }
+
+    /// Switching a channel off is not forgetting it (ADR-0007): what it
+    /// learned is kept. Forgetting is a separate act -- unlink.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_a_channel_off_keeps_what_it_learned() {
+        let mut fixture = paired_peer("switch-off");
+        ChannelRepository::new(&mut fixture.conn)
+            .configure("peer-a", ChannelKind::Bluetooth, true, Some("AA:BB:CC:DD:EE:FF"))
+            .unwrap();
+
+        fixture.service.set_channel_enabled("peer-a", ChannelKind::Bluetooth, false).await.unwrap();
+        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the row stays");
+        assert!(!row.enabled);
+        assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+    }
+
+    /// Unlink is the deliberate second act: a channel that is on is not
+    /// forgotten, and the refusal says what to do.
+    #[test]
+    fn unlink_refuses_while_the_channel_is_still_on() {
+        let mut fixture = paired_peer("unlink-on");
+        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, true, None).unwrap();
+
+        let err = fixture.service.unlink_channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).unwrap_err();
+        assert!(err.contains("Turn the channel off first"), "got: {err}");
+        assert!(channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).is_some());
+    }
+
+    /// Once it is off, unlinking forgets it; the page offers to set it up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unlink_forgets_a_switched_off_channel() {
+        let mut fixture = paired_peer("unlink-off");
+        ChannelRepository::new(&mut fixture.conn)
+            .configure("peer-a", ChannelKind::Bluetooth, false, Some("AA:BB:CC:DD:EE:FF"))
+            .unwrap();
+
+        fixture.service.unlink_channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).unwrap();
+        assert!(channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).is_none());
+        let rows = fixture.service.channel_statuses(&mut fixture.conn, "peer-a", |_| false).unwrap();
+        let row = rows.iter().find(|row| row.kind == ChannelKind::Bluetooth).expect("a Bluetooth row");
+        assert_eq!(row.state, ChannelState::None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unpair_removes_the_pair_and_its_channels() {
+        let mut fixture = paired_peer("unpair");
+        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, true, None).unwrap();
+
+        fixture.service.unpair(&mut fixture.conn, "peer-a").unwrap();
+        assert!(!DeviceRepository::new(&mut fixture.conn).is_paired("peer-a"));
+        assert!(
+            channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).is_none(),
+            "its channels go with it -- ON DELETE CASCADE"
+        );
+    }
+
+    /// Unpair, then pair again: nothing is kept from the removed pair, and
+    /// the new pairing sets up its channel as usual.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unpair_then_pair_again_over_bluetooth_starts_clean() {
+        let mut fixture = paired_peer("unpair-repair");
+        ChannelRepository::new(&mut fixture.conn)
+            .configure("peer-a", ChannelKind::Bluetooth, true, Some("AA:BB:CC:DD:EE:FF"))
+            .unwrap();
+        fixture.service.unpair(&mut fixture.conn, "peer-a").unwrap();
+
+        save(&mut fixture, "peer-a", Some("11:22:33:44:55:66"), true);
+        let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the new Bluetooth row");
+        assert!(row.enabled);
+        assert_eq!(row.address.as_deref(), Some("11:22:33:44:55:66"));
+    }
+}
