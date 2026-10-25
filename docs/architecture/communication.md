@@ -8,11 +8,22 @@ How two paired devices find each other, connect, and sync. The code is in
 
 ## The standard
 
-Two devices find each other within 10 seconds under good conditions. This
-applies to Bluetooth and to Network, to a new pair (Add Device) and to a new
-channel for a pair. The clock starts when the second device opens its dialog.
-Good conditions: the devices are near each other, Bluetooth is on, Wi-Fi is
-as it is. A device that is slower under these conditions has a defect in Fini.
+Two devices find each other within 10 seconds under good conditions:
+
+- **Start:** the search runs on the two devices. That is, the second device
+  opens its dialog.
+- **Stop:** each device shows the other in its list of devices that it can
+  connect to. For a new pair, this is the Add Device list. For a new channel,
+  this is the setup dialog of the channel, where OK becomes available.
+
+This applies to Bluetooth and to Network, to a new pair (Add Device) and to a
+new channel for a pair. Good conditions: the devices are near each other,
+Bluetooth is on, Wi-Fi is as it is. A device that is slower under these
+conditions has a defect in Fini.
+
+The steps after the stop are not in the standard: the pair request, the
+code, and the time until the channel is green. These steps must also be
+fast, but they have no fixed limit.
 
 ## The modules
 
