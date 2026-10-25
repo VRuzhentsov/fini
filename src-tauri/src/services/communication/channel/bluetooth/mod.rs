@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 #[cfg(target_os = "linux")]
-use ble_gatt::drivers::linux::LinuxBackend;
+use ble_gatt::drivers::linux::LinuxDriver;
 use ble_gatt::datagram::{self, DatagramChannel, DatagramConfig};
 use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, ServiceUuid};
 use uuid::Uuid;
@@ -417,7 +417,7 @@ impl ChannelService for BluetoothChannel {
 impl BluetoothChannel {
     /// Starts the Bluetooth peripheral acceptor loop exactly once.
     /// Android-only: on Linux `start_serving` spawns `run_server` at
-    /// startup, which is safe there since `LinuxBackend::new()` has no
+    /// startup, which is safe there since `LinuxDriver::new()` has no
     /// Android-context ordering requirement. On Android that same eager
     /// spawn would race `tao`'s own context bring-up, so the first call
     /// instead comes from `space_sync_tick_impl` — a `#[tauri::command]`,
@@ -590,9 +590,18 @@ impl BluetoothChannel {
                         });
                     }
                     _ = add_mode_rx.changed() => {
-                        log::info!("[transport][ble] add-mode changed; re-advertising");
-                        restarting_for_add_mode_change = true;
-                        break;
+                        // Only the advertisement changes: the GATT server, and
+                        // with it the links of connected centrals, stays. A
+                        // new server dropped the link the first session after
+                        // a pairing runs on.
+                        match datagram::update_advertisement(&adapter, &advertiser.advertised_config()).await {
+                            Ok(()) => log::info!("[transport][ble] add-mode changed; advertisement updated"),
+                            Err(err) => {
+                                log::info!("[transport][ble] add-mode changed; re-advertising ({err})");
+                                restarting_for_add_mode_change = true;
+                                break;
+                            }
+                        }
                     }
                     _ = advertising_wanted.changed() => {
                         if !*advertising_wanted.borrow() {

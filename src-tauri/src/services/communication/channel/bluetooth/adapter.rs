@@ -46,7 +46,7 @@ impl BluetoothAdapter {
     // rest of the process's life, even after the adapter comes back —
     // `get_or_try_init` instead leaves the cell empty on error, so the
     // next call genuinely retries construction.
-    // Bounded: `LinuxBackend::new()` opens a D-Bus system-bus session and
+    // Bounded: `LinuxDriver::new()` opens a D-Bus system-bus session and
     // talks to BlueZ over it. On a machine with no `bluetoothd` running at
     // all (headless CI containers, minimal installs) there's nothing wrong
     // locally, but D-Bus's own service-activation/name-owner-wait semantics
@@ -63,7 +63,7 @@ impl BluetoothAdapter {
                 if let Ok(endpoint) = std::env::var("FINI_BLE_MOCK_BROKER") {
                     return Ok(Adapter::new(self.switched(mock_driver(&endpoint).await?)).await);
                 }
-                match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, LinuxBackend::new()).await {
+                match tokio::time::timeout(ADAPTER_INIT_TIMEOUT, LinuxDriver::new()).await {
                     Ok(Ok(driver)) => Ok(Adapter::new(self.switched(Arc::new(driver))).await),
                     Ok(Err(err)) => Err(err.to_string()),
                     Err(_) => Err(format!(
@@ -87,7 +87,7 @@ impl BluetoothAdapter {
             .get_or_try_init(|| async {
                 let adapter = crate::services::ble_plugin::adapter().await?;
                 #[cfg(feature = "devtools")]
-                return Ok(Adapter::new(self.switched(adapter.backend())).await);
+                return Ok(Adapter::new(self.switched(adapter.driver())).await);
                 #[cfg(not(feature = "devtools"))]
                 Ok(adapter)
             })
@@ -98,14 +98,14 @@ impl BluetoothAdapter {
     /// The driver as the adapter gets it. In a build without `devtools` this
     /// is the platform driver itself.
     #[cfg(all(target_os = "linux", not(feature = "devtools")))]
-    fn switched(&self, driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
+    fn switched(&self, driver: Arc<dyn ble_gatt::Driver>) -> Arc<dyn ble_gatt::Driver> {
         driver
     }
 
     /// The driver as the adapter gets it. In a `devtools` build the driver is
     /// behind the test switch (`set_switch`).
     #[cfg(feature = "devtools")]
-    fn switched(&self, driver: Arc<dyn ble_gatt::Backend>) -> Arc<dyn ble_gatt::Backend> {
+    fn switched(&self, driver: Arc<dyn ble_gatt::Driver>) -> Arc<dyn ble_gatt::Driver> {
         let switch = test_switch::RadioSwitch::new(driver);
         let _ = self.switch.set(switch.clone());
         Arc::new(test_switch::SwitchedDriver(switch))
@@ -234,7 +234,7 @@ impl BluetoothAdapter {
     }
 }
 
-/// The `actors-ble` e2e lane's radio: a `MockBackend` talking to a
+/// The `actors-ble` e2e lane's radio: a `MockDriver` talking to a
 /// cross-process broker instead of BlueZ, so two real `fini-app` processes
 /// can prove this file's dial/peripheral/session-claim code path without
 /// hardware. See `specs/e2e/actors/helpers/ble-sync.ts` and ble-gatt's
@@ -244,8 +244,8 @@ impl BluetoothAdapter {
 /// env var must be true for a process to ever reach this branch -- an env
 /// var alone can never redirect a shipped binary onto a socket.
 #[cfg(all(target_os = "linux", feature = "devtools"))]
-async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Backend>, String> {
-    use ble_gatt::drivers::mock::{MockBackend, MockNetwork};
+async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Driver>, String> {
+    use ble_gatt::drivers::mock::{MockDriver, MockNetwork};
     use ble_gatt::CapabilityReport;
 
     // Reuses the existing "fake local adapter address" escape hatch
@@ -257,11 +257,11 @@ async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Backend>, Strin
     let network = MockNetwork::remote(endpoint)
         .await
         .map_err(|err| format!("ble mock broker connect to {endpoint} failed: {err}"))?;
-    Ok(Arc::new(MockBackend::new(
+    Ok(Arc::new(MockDriver::new(
         PeerAddress(address),
         network,
         CapabilityReport { central: true, peripheral: true },
-    )) as Arc<dyn ble_gatt::Backend>)
+    )) as Arc<dyn ble_gatt::Driver>)
 }
 
 /// A test switch over the Bluetooth driver, for debug builds only. It
@@ -274,7 +274,7 @@ mod test_switch {
 
     use async_trait::async_trait;
     use ble_gatt::{
-        Backend, BleError, BoxStream, CapabilityReport, CharacteristicUuid, ConnectionPriority,
+        BleError, BoxStream, Driver, CapabilityReport, CharacteristicUuid, ConnectionPriority,
         DiscoveredPeer, GattConnection, GattEvent, GattServiceSpec, PeerAddress, RadioStatus, Role,
         ServiceUuid, WriteType,
     };
@@ -286,7 +286,7 @@ mod test_switch {
     }
 
     pub(super) struct RadioSwitch {
-        driver: Arc<dyn Backend>,
+        driver: Arc<dyn Driver>,
         off: AtomicBool,
         /// The events the switch adds: `RadioChanged`, and `Disconnected`
         /// for each link that it closes.
@@ -296,7 +296,7 @@ mod test_switch {
     }
 
     impl RadioSwitch {
-        pub(super) fn new(driver: Arc<dyn Backend>) -> Arc<Self> {
+        pub(super) fn new(driver: Arc<dyn Driver>) -> Arc<Self> {
             let switch = Arc::new(Self {
                 driver: driver.clone(),
                 off: AtomicBool::new(false),
@@ -358,7 +358,7 @@ mod test_switch {
     pub(super) struct SwitchedDriver(pub(super) Arc<RadioSwitch>);
 
     #[async_trait]
-    impl Backend for SwitchedDriver {
+    impl Driver for SwitchedDriver {
         async fn capabilities(&self) -> CapabilityReport {
             self.0.driver.capabilities().await
         }
@@ -385,6 +385,13 @@ mod test_switch {
                 return Err(switched_off());
             }
             self.0.driver.advertise(service).await
+        }
+
+        async fn update_advertisement(&self, service: GattServiceSpec) -> ble_gatt::Result<()> {
+            if self.0.is_off() {
+                return Err(switched_off());
+            }
+            self.0.driver.update_advertisement(service).await
         }
 
         async fn stop_advertising(&self) -> ble_gatt::Result<()> {

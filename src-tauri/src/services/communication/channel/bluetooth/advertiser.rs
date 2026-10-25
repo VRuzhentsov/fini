@@ -57,7 +57,7 @@ pub struct Advertiser {
     /// peripheral loop so a toggle can trigger a fresh advertisement
     /// carrying (or dropping) the add-mode flag without restarting the whole
     /// peripheral task -- Android's `start_peripheral_once` is deliberately a
-    /// one-time start (ADR-0002 in ble-gatt: constructing `AndroidBackend`
+    /// one-time start (ADR-0002 in ble-gatt: constructing `AndroidDriver`
     /// outside a genuine post-startup call panics), so the *outer* task can
     /// never be torn down and re-spawned to pick up a config change; only the
     /// inner advertise/accept loop can be.
