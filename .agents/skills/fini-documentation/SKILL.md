@@ -14,6 +14,7 @@ All documents are in `docs/`:
 | Kind | Place |
 |---|---|
 | Architecture: how a part of the app works | `docs/architecture/<part>.md` (for example `communication.md`) |
+| How code is shaped, in all parts of the app | `docs/architecture/code-design.md` |
 | Decision records | `docs/adr/` — written only together with the project owner, while a plan is discussed |
 | What a word means | `docs/glossary.md` |
 | How Fini writes: STE, the check of each word, how names are formed | `docs/naming.md` |

@@ -246,9 +246,9 @@ Use this loop for implementation and fixes:
 
 1. Establish evidence for the current behavior: code path, spec, failing output, test result, log, or reproducible step.
 2. Trace write path, persisted data, and read path when data behavior is involved.
-3. Search for existing utilities and constants before writing new ones (see Code Reuse above).
+3. Shape the change as `docs/architecture/code-design.md` says: find the object that owns the data and the interface it implements, search for code that does the job already (see Code Reuse above), and put the change there.
 4. Make the smallest scoped change that addresses the root cause or requested behavior.
-5. Avoid broad refactors, compatibility layers, or new abstractions unless they prevent a concrete defect.
+5. Avoid broad refactors and compatibility layers unless they prevent a concrete defect. Putting a behavior on the existing interface or object that owns it is not a broad refactor: do it. Remove the code that your change makes unused.
 6. Preserve user or other-agent changes in the worktree.
 7. Update companion docs/specs when behavior or structure changes.
 8. Verify with the smallest useful check, then escalate only as needed.

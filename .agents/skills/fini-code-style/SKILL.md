@@ -11,6 +11,13 @@ Kept terse on purpose: this file grows over time. Each rule stays one short para
 
 ## Rules
 
+**Shape the code as `docs/architecture/code-design.md` says.** Read it before
+you write or change code, and do its steps in "Before you write code" for each
+change. Objects own their state and behavior; a behavior that every
+implementation has goes on the interface; use and change the code that does
+the job already; remove what your change makes unused. Read your diff for
+these rules before you report the work.
+
 **Check every word of a new name in the STE dictionary before you write it.**
 Do the steps in `docs/naming.md`, "Check a name before you write it", for each
 new file, type, function, method, field, constant, command and test hook, and
