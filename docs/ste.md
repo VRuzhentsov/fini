@@ -30,11 +30,8 @@ contain a copy. Each person gets a copy:
 
 1. Fill in the form on the
    [ASD download page](https://www.asd-europe.org/standards-specifications/simplified-technical-english/download-asd-ste-100).
-2. Put the PDF in `~/.cache/agents/ste/asd-ste100-current.pdf`.
-3. For word searches, make a text copy:
-   `pdftotext -layout asd-ste100-current.pdf ste.txt` in the same folder.
-
-Agents look up words in `~/.cache/agents/ste/ste.txt`.
+2. Keep the PDF on your computer, outside the repository.
+3. For word searches, make a text copy of the PDF.
 
 ## What STE applies to in Fini
 
@@ -88,22 +85,16 @@ The dictionary shows each word as an entry. The case of the entry tells you
 the status of the word:
 
 - **UPPERCASE entry: an approved word.** Use it only as the part of speech
-  and with the meaning that the entry gives. Example: `CONNECT (v)`,
-  `REJECT (v)`, `RECORD (v)`, `REMOVE (v)`, `TIME (n)`, `IN (prep)`.
+  and with the meaning that the entry gives.
 - **Lowercase entry: a word that is not approved.** The second column gives
-  the approved words to use in its place. Example: `note (v)` gives RECORD,
-  `take (v)` gives REMOVE or READ, `within (prep)` gives IN.
+  the approved words to use in its place.
 - **No entry: the word is not in the dictionary.** It is not approved.
-  Examples: "dial", "refuse", "cooldown", "window" (as a time).
 
-A word can be approved as one part of speech and not as another. Example:
-CLOSE is an approved verb, but "close" as an adjective is not approved.
+A word can be approved as one part of speech and not as another. Look at
+the part of speech in the entry, not only at the word.
 
-To look up a word, use this command. Put the word in the place of `word`:
-
-```sh
-grep -E "^(WORD|word) \(" ~/.cache/agents/ste/ste.txt
-```
+Search the text copy of the dictionary for the entry that starts with the
+word, in uppercase and in lowercase.
 
 ## Check a name before you write it
 
@@ -111,29 +102,16 @@ Do this check for each new name: a file, a module, a type, a function, a
 method, a field, a constant, a command, and a test hook. Do it before you
 write the name in the code.
 
-1. Divide the name into its words. Example: `LAST_HEARD_CONNECT_TIME` is
-   "last", "heard", "connect", "time".
+1. Divide the name into its words.
 2. Look up each word in the dictionary.
 3. Keep a word that has an uppercase entry with the part of speech that the
    name uses.
 4. Keep a word that is a term in `docs/glossary.md`.
-5. Keep a word of the language or of a library that Fini uses. Examples:
-   `async`, `Option`, `EndpointId`, `close_link`.
+5. Keep a word of the language or of a library that Fini uses.
 6. Replace each other word with the approved word from its entry.
 7. If no approved word gives the meaning, stop. Ask the project owner for a
    new glossary term (see "Which words to use").
 8. Do the same check for each new comment and each log message.
-
-Examples of names that this check changed:
-
-| Not approved | Approved |
-|---|---|
-| `LAST_HEARD_DIAL_WINDOW` | `LAST_HEARD_CONNECT_TIME` |
-| `note_refused` | `record_rejected` |
-| `REFUSED_COOLDOWN` | `REJECTED_WAIT_TIME` |
-| `take_pairing_link` | `remove_pairing_link` |
-| `heard_within` | `heard_in` |
-| `LINK_CLOSE_DELAY` | `TIME_BEFORE_LINK_CLOSE` |
 
 ## How to write sentences
 

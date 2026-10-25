@@ -277,9 +277,9 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **refuse**, **refusal** | not in the STE dictionary; Fini uses *reject*, *rejection* |
 | **take** | not an approved verb; Fini uses *remove* (or *read*, *get*) |
 | **within** | not an approved preposition; Fini uses *in* |
-| **delay** (noun) | not an approved noun; Fini uses *time* (`TIME_BEFORE_LINK_CLOSE`) |
-| **cooldown** | not in the STE dictionary; Fini uses *wait time* (`REJECTED_WAIT_TIME`) |
-| **window** (a time) | not in the STE dictionary; Fini uses *time* (`LAST_HEARD_CONNECT_TIME`) |
+| **delay** (noun) | not an approved noun; Fini uses *time* |
+| **cooldown** | not in the STE dictionary; Fini uses *wait time* |
+| **window** (a time) | not in the STE dictionary; Fini uses *time* |
 
 ### Radio
 

@@ -49,7 +49,7 @@ Use `grill-me` as an overlay, not a replacement for domain skills. First gather 
 Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, comments, log messages, docs, screen text, commit messages, PR text, agent instructions, and what you write to the user.
 
 1. Read `docs/ste.md` before you write any of these.
-2. For each new name, do the check in `docs/ste.md`, "Check a name before you write it". Look up each word in `~/.cache/agents/ste/ste.txt`.
+2. For each new name, do the check in `docs/ste.md`, "Check a name before you write it". Look up each word in the STE dictionary.
 3. Use a technical noun or verb only when it is a term in `docs/glossary.md`.
 4. When no approved word or glossary term gives the meaning, ask the user for a new glossary term first.
 5. Before you commit, read your diff for the words in the glossary's "Words deliberately not used" list, and replace them.
