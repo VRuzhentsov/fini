@@ -1957,6 +1957,1061 @@ pub(super) fn partition_remote_mapped_spaces(
 
     Ok((resolved, unresolved))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::CreateSyncOutboxEntry;
+    use crate::schema::{pair_space_mappings, paired_devices, quests, quest_series};
+    use crate::services::db::open_db_at_path;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    fn temp_db_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("fini-test-cmd-{label}-{}.db", Uuid::new_v4()))
+    }
+
+    fn test_quest(id: &str, title: &str, updated_at: &str) -> Quest {
+        Quest {
+            id: id.to_string(),
+            space_id: "1".to_string(),
+            title: title.to_string(),
+            description: None,
+            status: "active".to_string(),
+            energy: crate::models::ENERGY_MEDIUM,
+            priority: crate::models::PRIORITY_MEDIUM,
+            due: None,
+            due_time: None,
+            repeat_rule: None,
+            completed_at: None,
+            order_rank: 1000.0,
+            focus_enter_count: 0,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: updated_at.to_string(),
+            series_id: None,
+            period_key: None,
+            is_checklist: false,
+            checklist_base: None,
+        }
+    }
+
+    fn test_envelope(
+        event_id: &str,
+        origin_device_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        op_type: &str,
+        payload: Option<String>,
+        updated_at: &str,
+    ) -> SyncEventEnvelope {
+        SyncEventEnvelope {
+            event_id: event_id.to_string(),
+            correlation_id: Uuid::new_v4().to_string(),
+            origin_device_id: origin_device_id.to_string(),
+            entity_type: entity_type.to_string(),
+            entity_id: entity_id.to_string(),
+            space_id: "1".to_string(),
+            op_type: op_type.to_string(),
+            payload,
+            updated_at: updated_at.to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn quest_payload(quest: &Quest) -> String {
+        serde_json::to_string(quest).unwrap()
+    }
+
+    fn test_series(id: &str, title: &str, updated_at: &str) -> QuestSeries {
+        QuestSeries {
+            id: id.to_string(),
+            space_id: "1".to_string(),
+            title: title.to_string(),
+            description: None,
+            repeat_rule: r#"{"preset":"daily"}"#.to_string(),
+            priority: crate::models::PRIORITY_MEDIUM,
+            energy: crate::models::ENERGY_MEDIUM,
+            active: true,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: updated_at.to_string(),
+            is_checklist: false,
+        }
+    }
+
+    fn insert_outbox_entry_for_space(
+        conn: &mut SqliteConnection,
+        origin_device_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        space_id: &str,
+        updated_at: &str,
+        payload: Option<String>,
+    ) -> String {
+        let event_id = Uuid::new_v4().to_string();
+        let entry = CreateSyncOutboxEntry {
+            event_id: event_id.clone(),
+            correlation_id: Uuid::new_v4().to_string(),
+            origin_device_id: origin_device_id.to_string(),
+            entity_type: entity_type.to_string(),
+            entity_id: entity_id.to_string(),
+            space_id: space_id.to_string(),
+            op_type: "upsert".to_string(),
+            payload,
+            updated_at: updated_at.to_string(),
+        };
+        diesel::insert_into(sync_outbox::table)
+            .values(&entry)
+            .execute(conn)
+            .unwrap();
+        event_id
+    }
+
+    fn insert_outbox_entry(
+        conn: &mut SqliteConnection,
+        origin_device_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        updated_at: &str,
+        payload: Option<String>,
+    ) {
+        let _ = insert_outbox_entry_for_space(
+            conn,
+            origin_device_id,
+            entity_type,
+            entity_id,
+            "1",
+            updated_at,
+            payload,
+        );
+    }
+
+    #[test]
+    fn apply_sync_event_deduplicates_by_event_id() {
+        let db_path = temp_db_path("dedup");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let quest = test_quest("q1", "Test", "2026-03-01T00:00:00Z");
+        let event = test_envelope(
+            "evt-1",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&quest)),
+            "2026-03-01T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+        assert!(!apply_sync_event(&mut conn, &event).unwrap());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_persists_synced_series_checklist_flag() {
+        let db_path = temp_db_path("series-checklist-flag");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist_template =
+            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: true,
+            }]);
+        let mut remote_series = test_series("series-checklist", "Pack", "2026-03-02T00:00:00Z");
+        remote_series.description = Some(checklist_template.clone());
+        remote_series.is_checklist = true;
+
+        let event = test_envelope(
+            "evt-series-checklist",
+            "dev-remote",
+            "quest_series",
+            &remote_series.id,
+            "upsert",
+            Some(serde_json::to_string(&remote_series).unwrap()),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: QuestSeries = quest_series::table
+            .find(&remote_series.id)
+            .select(QuestSeries::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(
+            stored.is_checklist,
+            "synced recurring checklist series must not fall back to the DB default prose flag"
+        );
+        assert_eq!(
+            stored.description.as_deref(),
+            Some(checklist_template.as_str())
+        );
+
+        remote_series.is_checklist = false;
+        remote_series.updated_at = "2026-03-03T00:00:00Z".to_string();
+        let update_event = test_envelope(
+            "evt-series-prose",
+            "dev-remote",
+            "quest_series",
+            &remote_series.id,
+            "upsert",
+            Some(serde_json::to_string(&remote_series).unwrap()),
+            "2026-03-03T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &update_event).unwrap());
+
+        let updated_is_checklist: bool = quest_series::table
+            .find(&remote_series.id)
+            .select(quest_series::is_checklist)
+            .first(&mut conn)
+            .unwrap();
+        assert!(
+            !updated_is_checklist,
+            "synced quest_series upserts must also update checklist mode changes"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_preserves_checklist_activity_rows() {
+        let db_path = temp_db_path("checklist-activity-sync");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let mut quest = test_quest("q-activity", "Packed", "2026-03-01T00:00:00Z");
+        quest.is_checklist = true;
+        insert_local_quest_row(&mut conn, &quest);
+
+        let activity = ChecklistActivity {
+            id: "activity-1".to_string(),
+            quest_id: quest.id.clone(),
+            kind: "completed_snapshot".to_string(),
+            detail: "Checklist at completion: 1/2 checked".to_string(),
+            created_at: "2026-03-01T01:00:00Z".to_string(),
+            origin_device_id: Some("dev-remote".to_string()),
+        };
+        let event = test_envelope(
+            "evt-activity",
+            "dev-remote",
+            "checklist_activity",
+            &activity.id,
+            "upsert",
+            Some(serde_json::to_string(&activity).unwrap()),
+            "2026-03-01T01:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: ChecklistActivity = checklist_activity::table
+            .find(&activity.id)
+            .select(ChecklistActivity::as_select())
+            .first(&mut conn)
+            .expect("synced activity should be stored");
+        assert_eq!(stored.quest_id, quest.id);
+        assert_eq!(stored.kind, "completed_snapshot");
+        assert_eq!(stored.detail, "Checklist at completion: 1/2 checked");
+        assert_eq!(stored.origin_device_id.as_deref(), Some("dev-remote"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_respects_conflict_resolution() {
+        let db_path = temp_db_path("conflict");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let local_quest = test_quest("q1", "Local", "2026-03-02T00:00:00Z");
+        insert_outbox_entry(
+            &mut conn,
+            "dev-local",
+            "quest",
+            "q1",
+            "2026-03-02T00:00:00Z",
+            Some(quest_payload(&local_quest)),
+        );
+
+        // Incoming older event should lose
+        let old_quest = test_quest("q1", "Remote Old", "2026-03-01T00:00:00Z");
+        let old_event = test_envelope(
+            "evt-old",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&old_quest)),
+            "2026-03-01T00:00:00Z",
+        );
+        assert!(
+            !apply_sync_event(&mut conn, &old_event).unwrap(),
+            "older incoming event should be rejected"
+        );
+
+        // Incoming newer event should win
+        let new_quest = test_quest("q1", "Remote New", "2026-03-03T00:00:00Z");
+        let new_event = test_envelope(
+            "evt-new",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&new_quest)),
+            "2026-03-03T00:00:00Z",
+        );
+        assert!(
+            apply_sync_event(&mut conn, &new_event).unwrap(),
+            "newer incoming event should be applied"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// Inserts a real local `quests` row (not just an outbox entry) so the checklist merge path,
+    /// which reads the row directly, has something to merge against.
+    fn insert_local_quest_row(conn: &mut SqliteConnection, quest: &Quest) {
+        diesel::insert_into(quests::table)
+            .values((
+                quests::id.eq(&quest.id),
+                quests::space_id.eq(&quest.space_id),
+                quests::title.eq(&quest.title),
+                quests::description.eq(&quest.description),
+                quests::status.eq(&quest.status),
+                quests::energy.eq(&quest.energy),
+                quests::priority.eq(quest.priority),
+                quests::due.eq(&quest.due),
+                quests::due_time.eq(&quest.due_time),
+                quests::repeat_rule.eq(&quest.repeat_rule),
+                quests::completed_at.eq(&quest.completed_at),
+                quests::order_rank.eq(quest.order_rank),
+                quests::focus_enter_count.eq(quest.focus_enter_count),
+                quests::created_at.eq(&quest.created_at),
+                quests::updated_at.eq(&quest.updated_at),
+                quests::series_id.eq(&quest.series_id),
+                quests::period_key.eq(&quest.period_key),
+                quests::is_checklist.eq(quest.is_checklist),
+                quests::checklist_base.eq(&quest.checklist_base),
+            ))
+            .execute(conn)
+            .unwrap();
+    }
+
+    /// Issue #128's core guarantee: independent packing actions on two different checklist items,
+    /// made on two devices from the same base, must both survive a sync exchange — even though
+    /// the enclosing quest sync event necessarily has to pick ONE winner for non-checklist fields
+    /// under whole-entity LWW.
+    #[test]
+    fn apply_sync_event_merges_independent_checklist_items_when_whole_entity_wins() {
+        let db_path = temp_db_path("checklist-merge-win");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        // Local device packed headphones (item a1) after the shared base.
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
+
+        let mut local_quest = test_quest("q1", "Go to office", "2026-03-01T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(local_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        // Remote device independently packed the key fob (item a2) after the same base, and its
+        // event is newer, so it wins the whole-entity comparison.
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
+        let mut remote_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(remote_checklist);
+        let event = test_envelope(
+            "evt-remote",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let merged: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        let items = crate::services::checklist::parse(merged.description.as_deref().unwrap());
+        assert!(
+            items.iter().find(|it| it.id == "a1").unwrap().checked,
+            "local's independent pack of item a1 must survive"
+        );
+        assert!(
+            items.iter().find(|it| it.id == "a2").unwrap().checked,
+            "remote's independent pack of item a2 must survive"
+        );
+        assert_eq!(
+            merged.checklist_base.as_deref(),
+            Some(base_checklist.as_str()),
+            "merging local-only content must not advance the shared checklist base before the peer adopts it"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_preserves_local_checklist_mode_for_legacy_payloads() {
+        let db_path = temp_db_path("legacy-checklist-mode");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist =
+            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            }]);
+
+        let mut local_quest = test_quest("q-legacy", "Pack", "2026-03-01T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(checklist.clone());
+        local_quest.checklist_base = Some(checklist.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let mut remote_quest = test_quest("q-legacy", "Pack for office", "2026-03-02T00:00:00Z");
+        remote_quest.description = Some(checklist.clone());
+        let mut legacy_payload = serde_json::to_value(&remote_quest).unwrap();
+        legacy_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("is_checklist");
+        let event = test_envelope(
+            "evt-legacy-checklist",
+            "dev-remote",
+            "quest",
+            "q-legacy",
+            "upsert",
+            Some(serde_json::to_string(&legacy_payload).unwrap()),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let after: Quest = quests::table
+            .find("q-legacy")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(after.title, "Pack for office");
+        assert_eq!(after.description.as_deref(), Some(checklist.as_str()));
+        assert!(
+            after.is_checklist,
+            "legacy payloads without is_checklist must not demote locally-known checklists"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_seeds_checklist_base_for_new_synced_checklist() {
+        let db_path = temp_db_path("synced-checklist-base");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+
+        let mut remote_quest = test_quest("q-synced-checklist", "Pack", "2026-03-02T00:00:00Z");
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(checklist.clone());
+        let event = test_envelope(
+            "evt-synced-checklist",
+            "dev-remote",
+            "quest",
+            "q-synced-checklist",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: Quest = quests::table
+            .find("q-synced-checklist")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(stored.is_checklist);
+        assert_eq!(stored.description.as_deref(), Some(checklist.as_str()));
+        assert_eq!(
+            stored.checklist_base.as_deref(),
+            Some(checklist.as_str()),
+            "a first synced checklist insert must establish the shared base for later negative edits"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_seeds_checklist_base_when_existing_row_adopts_checklist_mode() {
+        let db_path = temp_db_path("synced-checklist-conversion-base");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+
+        let mut local_quest = test_quest("q-converted-checklist", "Pack", "2026-03-01T00:00:00Z");
+        local_quest.description = Some(checklist.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let mut remote_quest = local_quest.clone();
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(checklist.clone());
+        remote_quest.updated_at = "2026-03-02T00:00:00Z".to_string();
+        let event = test_envelope(
+            "evt-synced-checklist-conversion",
+            "dev-remote",
+            "quest",
+            "q-converted-checklist",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: Quest = quests::table
+            .find("q-converted-checklist")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert!(stored.is_checklist);
+        assert_eq!(stored.description.as_deref(), Some(checklist.as_str()));
+        assert_eq!(
+            stored.checklist_base.as_deref(),
+            Some(checklist.as_str()),
+            "a synced conversion to checklist mode must seed the shared base for later negative edits"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// Same guarantee, but for the case where the incoming event LOSES the whole-entity LWW
+    /// comparison (e.g. it's older) — the checklist merge must still apply, because #128 forbids
+    /// letting whole-quest LWW silently discard an independent packing action.
+    #[test]
+    fn apply_sync_event_merges_checklist_even_when_whole_entity_event_loses() {
+        let db_path = temp_db_path("checklist-merge-lose");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
+
+        // Local's last-known event is newer than the incoming one, so the incoming event loses
+        // the whole-entity comparison (title etc. must NOT be adopted from it).
+        insert_outbox_entry(
+            &mut conn,
+            "dev-local",
+            "quest",
+            "q1",
+            "2026-03-05T00:00:00Z",
+            None,
+        );
+        let mut local_quest = test_quest("q1", "Go to office", "2026-03-05T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(local_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
+        let mut remote_quest = test_quest("q1", "Stale remote title", "2026-03-01T00:00:00Z");
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(remote_checklist);
+        let event = test_envelope(
+            "evt-remote-old",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-01T00:00:00Z",
+        );
+
+        assert!(
+            !apply_sync_event(&mut conn, &event).unwrap(),
+            "the whole-entity event itself should report as not applied (it lost LWW)"
+        );
+
+        let after: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(
+            after.title, "Go to office",
+            "losing event must not overwrite other fields"
+        );
+        let items = crate::services::checklist::parse(after.description.as_deref().unwrap());
+        assert!(
+            items.iter().find(|it| it.id == "a1").unwrap().checked,
+            "local's own pack of item a1 must remain"
+        );
+        assert!(
+            items.iter().find(|it| it.id == "a2").unwrap().checked,
+            "remote's independent pack of item a2 must still merge in, despite losing whole-entity LWW"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_emits_convergence_event_when_checklist_base_advances_only() {
+        let db_path = temp_db_path("checklist-base-ack");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
+            .expect("seed local device id");
+
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        let adopted_checklist =
+            crate::services::checklist::set_checked(&base_checklist, "a1", true);
+
+        let mut local_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(adopted_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist);
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let mut incoming_quest = test_quest("q1", "Go to office", "2026-03-02T00:00:00Z");
+        incoming_quest.is_checklist = true;
+        incoming_quest.description = Some(adopted_checklist.clone());
+        let event = test_envelope(
+            "evt-clean-adoption",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&incoming_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let after: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(
+            after.description.as_deref(),
+            Some(adopted_checklist.as_str())
+        );
+        assert_eq!(
+            after.checklist_base.as_deref(),
+            Some(adopted_checklist.as_str())
+        );
+
+        let emitted: Vec<(String, String, String, Option<String>)> = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest"))
+            .filter(sync_outbox::entity_id.eq("q1"))
+            .select((
+                sync_outbox::origin_device_id,
+                sync_outbox::op_type,
+                sync_outbox::space_id,
+                sync_outbox::payload,
+            ))
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].0, "dev-local");
+        assert_eq!(emitted[0].1, "upsert");
+        assert_eq!(emitted[0].2, "1");
+        let payload: Quest = serde_json::from_str(emitted[0].3.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            payload.description.as_deref(),
+            Some(adopted_checklist.as_str())
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_convergence_payload_keeps_winning_quest_metadata() {
+        let db_path = temp_db_path("checklist-convergence-winning-metadata");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string(), "2".to_string()]).unwrap();
+        crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
+            .expect("seed local device id");
+
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
+
+        let mut local_quest = test_quest("q1", "Local stale title", "2026-03-01T00:00:00Z");
+        local_quest.is_checklist = true;
+        local_quest.description = Some(local_checklist.clone());
+        local_quest.checklist_base = Some(base_checklist.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
+        let mut remote_quest = test_quest("q1", "Remote winning title", "2026-03-02T00:00:00Z");
+        remote_quest.space_id = "2".to_string();
+        remote_quest.status = "completed".to_string();
+        remote_quest.completed_at = Some("2026-03-02T00:00:00Z".to_string());
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(remote_checklist);
+        let event = test_envelope(
+            "evt-winning-metadata",
+            "dev-remote",
+            "quest",
+            "q1",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-02T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let stored: Quest = quests::table
+            .find("q1")
+            .select(Quest::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(stored.title, "Remote winning title");
+        assert_eq!(stored.space_id, "2");
+        assert_eq!(stored.status, "completed");
+
+        let (emitted_space_id, emitted_payload): (String, Option<String>) = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest"))
+            .filter(sync_outbox::entity_id.eq("q1"))
+            .select((sync_outbox::space_id, sync_outbox::payload))
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(emitted_space_id, "2");
+        let emitted: Quest = serde_json::from_str(
+            emitted_payload
+                .as_deref()
+                .expect("convergence payload should be present"),
+        )
+        .unwrap();
+        assert_eq!(emitted.title, "Remote winning title");
+        assert_eq!(emitted.space_id, "2");
+        assert_eq!(emitted.status, "completed");
+        assert_eq!(
+            emitted.completed_at.as_deref(),
+            Some("2026-03-02T00:00:00Z")
+        );
+
+        let emitted_items =
+            crate::services::checklist::parse(emitted.description.as_deref().unwrap());
+        assert!(
+            emitted_items
+                .iter()
+                .find(|it| it.id == "a1")
+                .unwrap()
+                .checked
+        );
+        assert!(
+            emitted_items
+                .iter()
+                .find(|it| it.id == "a2")
+                .unwrap()
+                .checked
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_convergence_uses_current_space_when_whole_entity_loses() {
+        let db_path = temp_db_path("checklist-convergence-current-space");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string(), "2".to_string()]).unwrap();
+        crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local")
+            .expect("seed local device id");
+
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            crate::services::checklist::ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        let local_checklist = crate::services::checklist::set_checked(&base_checklist, "a1", true);
+
+        insert_outbox_entry_for_space(
+            &mut conn,
+            "dev-local",
+            "quest",
+            "q-current-space",
+            "2",
+            "2026-03-05T00:00:00Z",
+            None,
+        );
+        let mut local_quest =
+            test_quest("q-current-space", "Moved locally", "2026-03-05T00:00:00Z");
+        local_quest.space_id = "2".to_string();
+        local_quest.is_checklist = true;
+        local_quest.description = Some(local_checklist);
+        local_quest.checklist_base = Some(base_checklist.clone());
+        insert_local_quest_row(&mut conn, &local_quest);
+
+        let remote_checklist = crate::services::checklist::set_checked(&base_checklist, "a2", true);
+        let mut remote_quest = test_quest(
+            "q-current-space",
+            "Remote old-space edit",
+            "2026-03-01T00:00:00Z",
+        );
+        remote_quest.space_id = "1".to_string();
+        remote_quest.is_checklist = true;
+        remote_quest.description = Some(remote_checklist);
+        let event = test_envelope(
+            "evt-old-space-checklist-edit",
+            "dev-remote",
+            "quest",
+            "q-current-space",
+            "upsert",
+            Some(quest_payload(&remote_quest)),
+            "2026-03-01T00:00:00Z",
+        );
+
+        assert!(
+            !apply_sync_event(&mut conn, &event).unwrap(),
+            "the old-space whole-quest event should lose to the newer local move"
+        );
+
+        let emitted: (String, Option<String>) = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest"))
+            .filter(sync_outbox::entity_id.eq("q-current-space"))
+            .filter(sync_outbox::payload.is_not_null())
+            .select((sync_outbox::space_id, sync_outbox::payload))
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(
+            emitted.0, "2",
+            "convergence event must be routable through the quest's current space"
+        );
+        let payload: Quest = serde_json::from_str(emitted.1.as_deref().unwrap()).unwrap();
+        assert_eq!(payload.space_id, "2");
+        let items = crate::services::checklist::parse(payload.description.as_deref().unwrap());
+        assert!(items.iter().find(|it| it.id == "a1").unwrap().checked);
+        assert!(items.iter().find(|it| it.id == "a2").unwrap().checked);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn apply_sync_event_updates_last_synced_for_origin_peer_space() {
+        let db_path = temp_db_path("apply-sync-event-updates-last-synced");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("dev-remote"),
+                paired_devices::display_name.eq("Remote"),
+                paired_devices::paired_at.eq("2026-03-03T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        diesel::insert_into(pair_space_mappings::table)
+            .values((
+                pair_space_mappings::peer_device_id.eq("dev-remote"),
+                pair_space_mappings::space_id.eq("1"),
+                pair_space_mappings::enabled_at.eq("2026-03-03T00:00:00Z"),
+                pair_space_mappings::last_synced_at.eq(Option::<String>::None),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        let quest = test_quest("q-sync", "Remote Quest", "2026-03-03T00:00:00Z");
+        let event = test_envelope(
+            "evt-sync",
+            "dev-remote",
+            "quest",
+            "q-sync",
+            "upsert",
+            Some(quest_payload(&quest)),
+            "2026-03-03T00:00:00Z",
+        );
+
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let last_synced: Option<String> = pair_space_mappings::table
+            .filter(pair_space_mappings::peer_device_id.eq("dev-remote"))
+            .filter(pair_space_mappings::space_id.eq("1"))
+            .select(pair_space_mappings::last_synced_at)
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(last_synced.as_deref(), Some("2026-03-03T00:00:00Z"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn delete_entity_creates_tombstone_and_removes_row() {
+        let db_path = temp_db_path("delete-tombstone");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+
+        let quest = test_quest("q-del", "To Delete", "2026-03-01T00:00:00Z");
+        let upsert = test_envelope(
+            "evt-create",
+            "dev-remote",
+            "quest",
+            "q-del",
+            "upsert",
+            Some(quest_payload(&quest)),
+            "2026-03-01T00:00:00Z",
+        );
+        apply_sync_event(&mut conn, &upsert).unwrap();
+
+        let count: i64 = quests::table
+            .filter(quests::id.eq("q-del"))
+            .count()
+            .get_result(&mut conn)
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let del = test_envelope(
+            "evt-del",
+            "dev-remote",
+            "quest",
+            "q-del",
+            "delete",
+            None,
+            "2026-03-02T00:00:00Z",
+        );
+        apply_sync_event(&mut conn, &del).unwrap();
+
+        let count: i64 = quests::table
+            .filter(quests::id.eq("q-del"))
+            .count()
+            .get_result(&mut conn)
+            .unwrap();
+        assert_eq!(count, 0);
+
+        let tombstone_count: i64 = tombstones::table
+            .filter(tombstones::entity_id.eq("q-del"))
+            .count()
+            .get_result(&mut conn)
+            .unwrap();
+        assert_eq!(tombstone_count, 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn cleanup_old_tombstones_removes_expired() {
+        let db_path = temp_db_path("tombstone-cleanup");
+        let mut conn = open_db_at_path(&db_path);
+
+        let old_date = (chrono::Utc::now() - chrono::Duration::days(31))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        diesel::insert_into(tombstones::table)
+            .values((
+                tombstones::entity_type.eq("quest"),
+                tombstones::entity_id.eq("old-q"),
+                tombstones::space_id.eq("1"),
+                tombstones::deleted_at.eq(&old_date),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        diesel::insert_into(tombstones::table)
+            .values((
+                tombstones::entity_type.eq("quest"),
+                tombstones::entity_id.eq("recent-q"),
+                tombstones::space_id.eq("1"),
+                tombstones::deleted_at.eq(utc_now()),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+
+        assert_eq!(cleanup_old_tombstones(&mut conn).unwrap(), 1);
+
+        let remaining: i64 = tombstones::table.count().get_result(&mut conn).unwrap();
+        assert_eq!(remaining, 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+}
 }
 
 // ---- What the sessions receive, waiting for a tick ----
@@ -1983,3 +3038,207 @@ pub struct IncomingSyncAck {
     pub acked_at: String,
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{pair_space_mappings, paired_devices, quests};
+    use uuid::Uuid;
+
+    struct Fixture {
+        service: Arc<SpaceSyncService>,
+        conn: SqliteConnection,
+        db_path: PathBuf,
+        app_dir: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_dir_all(&self.app_dir);
+        }
+    }
+
+    /// A service on a temporary database with one paired device, `peer-a`.
+    /// The Network channel listens on a free port, so that the test does
+    /// not meet a running app.
+    fn paired_peer(label: &str) -> Fixture {
+        let db_path = std::env::temp_dir().join(format!("fini-test-space-sync-{label}-{}.db", Uuid::new_v4()));
+        let app_dir = std::env::temp_dir().join(format!("fini-test-app-{label}-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let mut conn = open_db_at_path(&db_path);
+        diesel::insert_into(paired_devices::table)
+            .values((
+                paired_devices::peer_device_id.eq("peer-a"),
+                paired_devices::display_name.eq("Peer A"),
+                paired_devices::paired_at.eq("2026-04-07T00:00:00Z"),
+                paired_devices::last_seen_at.eq(Option::<String>::None),
+                paired_devices::pair_state.eq("paired"),
+            ))
+            .execute(&mut conn)
+            .unwrap();
+        let identity = DeviceRepository::new(&mut conn).load_or_create_identity(&app_dir).unwrap();
+        let bus = Arc::new(EventBusService::default());
+        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), db_path.clone(), bus.clone(), 0));
+        let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
+        let service = SpaceSyncService::new(identity, db_path.clone(), bus, network, bluetooth);
+        Fixture { service, conn, db_path, app_dir }
+    }
+
+    /// The peer is reachable over Network for as long as the returned
+    /// receiver lives.
+    fn reachable(fixture: &mut Fixture) -> mpsc::Receiver<SessionCommand> {
+        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Network, true, None).unwrap();
+        let (tx, rx) = mpsc::channel(16);
+        assert!(fixture.service.try_claim_session("peer-a", ChannelKind::Network, tx));
+        rx
+    }
+
+    fn map_space(conn: &mut SqliteConnection, space_id: &str, last_synced_at: Option<&str>) {
+        diesel::insert_into(pair_space_mappings::table)
+            .values((
+                pair_space_mappings::peer_device_id.eq("peer-a"),
+                pair_space_mappings::space_id.eq(space_id),
+                pair_space_mappings::enabled_at.eq("2026-04-07T00:00:00Z"),
+                pair_space_mappings::last_synced_at.eq(last_synced_at),
+            ))
+            .execute(conn)
+            .unwrap();
+    }
+
+    /// ADR-0007: the person's primary channel is tried first; without one,
+    /// Network first.
+    #[test]
+    fn the_primary_channel_is_tried_first() {
+        let channel_order = SpaceSyncService::channel_order;
+        assert_eq!(channel_order(None), [ChannelKind::Network, ChannelKind::Bluetooth]);
+        assert_eq!(channel_order(Some(ChannelKind::Network)), [ChannelKind::Network, ChannelKind::Bluetooth]);
+        assert_eq!(channel_order(Some(ChannelKind::Bluetooth)), [ChannelKind::Bluetooth, ChannelKind::Network]);
+    }
+
+    #[test]
+    fn the_status_gives_the_last_sync_of_each_space() {
+        let mut fixture = paired_peer("status-last-synced-by-space");
+        map_space(&mut fixture.conn, "1", Some("2026-04-07T10:01:00Z"));
+        map_space(&mut fixture.conn, "2", Some("2026-04-07T10:06:00Z"));
+
+        let status = fixture.service.status(&mut fixture.conn, Some("peer-a".to_string())).unwrap();
+
+        assert_eq!(status.last_synced_at, Some("2026-04-07T10:06:00Z".to_string()));
+        assert_eq!(status.last_synced_at_by_space.get("1"), Some(&Some("2026-04-07T10:01:00Z".to_string())));
+        assert_eq!(status.last_synced_at_by_space.get("2"), Some(&Some("2026-04-07T10:06:00Z".to_string())));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_incoming_change_waits_until_its_space_is_synced() {
+        let mut fixture = paired_peer("tick-gated-incoming");
+        let quest = crate::models::Quest {
+            id: "q-gated".to_string(),
+            space_id: "1".to_string(),
+            title: "Blocked until approval".to_string(),
+            description: None,
+            status: "active".to_string(),
+            energy: crate::models::ENERGY_MEDIUM,
+            priority: crate::models::PRIORITY_MEDIUM,
+            due: None,
+            due_time: None,
+            repeat_rule: None,
+            completed_at: None,
+            order_rank: 1000.0,
+            focus_enter_count: 0,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-04-11T20:00:00Z".to_string(),
+            series_id: None,
+            period_key: None,
+            is_checklist: false,
+            checklist_base: None,
+        };
+        let event = SyncEventEnvelope {
+            event_id: "evt-gated".to_string(),
+            correlation_id: Uuid::new_v4().to_string(),
+            origin_device_id: "peer-a".to_string(),
+            entity_type: "quest".to_string(),
+            entity_id: "q-gated".to_string(),
+            space_id: "1".to_string(),
+            op_type: "upsert".to_string(),
+            payload: Some(serde_json::to_string(&quest).unwrap()),
+            updated_at: "2026-04-11T20:00:00Z".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        fixture.service.sessions.lock().unwrap().incoming_sync_events.insert(event.event_id.clone(), event);
+        let quest_count = |conn: &mut SqliteConnection| -> i64 {
+            quests::table.filter(quests::id.eq("q-gated")).count().get_result(conn).unwrap()
+        };
+
+        assert_eq!(fixture.service.tick().unwrap().applied_events, 0);
+        assert_eq!(quest_count(&mut fixture.conn), 0);
+
+        map_space(&mut fixture.conn, "1", None);
+        assert_eq!(fixture.service.tick().unwrap().applied_events, 1);
+        assert_eq!(quest_count(&mut fixture.conn), 1);
+    }
+
+    /// A sync request needs the other person at their device: with the peer
+    /// out of reach it is refused and nothing is changed, rather than a space
+    /// marked synced here that the peer never hears of.
+    #[test]
+    fn a_sync_request_to_an_unreachable_peer_changes_nothing() {
+        let mut fixture = paired_peer("sync-request-unreachable");
+        let err = fixture
+            .service
+            .update_mappings(&mut fixture.conn, "peer-a", vec!["1".into()])
+            .expect_err("refused while the peer is out of reach");
+        assert_eq!(err, PEER_NOT_REACHABLE);
+        assert!(fixture.service.list_mappings(&mut fixture.conn, "peer-a").unwrap().is_empty());
+        assert!(!fixture.service.has_queued_frames("peer-a"));
+    }
+
+    /// ADR-0008 D14: ending a space's sync is one-sided, so the peer hears of
+    /// it however long it is away -- kept in the database, not in memory --
+    /// and needs no peer in reach to do.
+    #[test]
+    fn ending_a_sync_is_kept_until_the_peer_hears_of_it() {
+        let mut fixture = paired_peer("sync-end-kept");
+        let session = reachable(&mut fixture);
+        fixture.service.update_mappings(&mut fixture.conn, "peer-a", vec!["1".into()]).unwrap();
+        drop(session);
+        fixture.service.release_session("peer-a", ChannelKind::Network);
+
+        fixture.service.update_mappings(&mut fixture.conn, "peer-a", vec![]).unwrap();
+        let kept = OutboxRepository::new(&mut fixture.conn).waiting("peer-a");
+        assert!(
+            matches!(kept.as_slice(), [(_, PeerFrame::SpaceSyncEnd { space_id, .. })] if space_id == "1"),
+            "the end is kept: {kept:?}"
+        );
+    }
+
+    /// Synced again before the peer heard it had ended: the end no longer
+    /// holds, and arriving late it would undo the new sync.
+    #[test]
+    fn syncing_a_space_again_drops_its_undelivered_end() {
+        let mut fixture = paired_peer("sync-end-superseded");
+        let _session = reachable(&mut fixture);
+        fixture.service.update_mappings(&mut fixture.conn, "peer-a", vec!["1".into()]).unwrap();
+        fixture.service.update_mappings(&mut fixture.conn, "peer-a", vec![]).unwrap();
+        assert_eq!(OutboxRepository::new(&mut fixture.conn).waiting("peer-a").len(), 1);
+
+        fixture.service.update_mappings(&mut fixture.conn, "peer-a", vec!["1".into()]).unwrap();
+        assert!(OutboxRepository::new(&mut fixture.conn).waiting("peer-a").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tick_does_not_send_the_mapping_again_when_a_session_starts() {
+        let mut fixture = paired_peer("tick-does-not-replay-mapping-snapshot");
+        map_space(&mut fixture.conn, "1", None);
+        let (tx, mut rx) = mpsc::channel(4);
+        assert!(fixture.service.try_claim_session("peer-a", ChannelKind::Network, tx));
+
+        assert_eq!(fixture.service.tick().unwrap().sent_events, 0);
+        while let Ok(sent) = rx.try_recv() {
+            assert!(
+                !matches!(sent, SessionCommand::Forward(PeerFrame::SpaceMappingUpdate { .. })),
+                "the mapping must not be sent again"
+            );
+        }
+    }
+}
