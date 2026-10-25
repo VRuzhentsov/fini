@@ -211,6 +211,5 @@ decisions as they were made, so they stay as they are.
   sides: one name for each field.
 - **DOM hooks**: `data-testid` and `data-*` attributes are kebab-case. They
   give the name of the item, not its position.
-- **Tauri commands**: `snake_case`, with the prefix of the part that owns them
-  (`space_sync_*`, `device_connection_*`). The prefix `device_connection_*` is
-  older than `communication/pairing/`. It is not renamed yet.
+- **Tauri commands**: `snake_case`, with the name of their service as the
+  prefix (`device_*`, `channel_*`, `space_sync_*`).

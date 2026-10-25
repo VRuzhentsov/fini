@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed. Written during the grilling session of 2026-10-25. Nothing in it
-is implemented yet.
+Accepted. Written during the grilling session of 2026-10-25. The
+communication part of the app is built to it.
 
 ## Context
 

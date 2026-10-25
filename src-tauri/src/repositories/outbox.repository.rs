@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::models::{ChannelKind, CreateSyncAck, CreateSyncOutboxEntry, CreateSyncSeen, SyncOutboxEntry};
 use crate::schema::{peer_control_outbox, sync_acks, sync_outbox, sync_seen};
-use crate::models::peer_frame::{PeerFrame, SyncEventEnvelope};
+use crate::services::channel_service::{PeerFrame, SyncEventEnvelope};
 use crate::services::db::{sync_timestamp, utc_now};
 
 const CHANNEL_UNLINKED: &str = "channel_unlinked";

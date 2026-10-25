@@ -13,7 +13,7 @@ mod utils;
 #[cfg(feature = "ui-plane")]
 use services::backup::{backup_apply_import, backup_export, backup_preflight_import};
 #[cfg(feature = "ui-plane")]
-use services::db::{app_data_dir, try_open_db, AppDbConnection};
+use services::db::{app_data_dir, try_open_db, try_open_db_at_path, AppDbConnection};
 #[cfg(feature = "ui-plane")]
 mod commands;
 #[cfg(feature = "ui-plane")]
@@ -446,7 +446,8 @@ pub fn run() {
             use services::channel_service::{ChannelService, LinkHandlers};
             let data_dir = app_data_dir(&app_handle);
             let db_path = data_dir.join("fini.db");
-            let identity = models::Identity::load_or_create(&data_dir, &db_path)?;
+            let identity =
+                repositories::DeviceRepository::new(&mut try_open_db_at_path(&db_path)?).load_or_create_identity(&data_dir)?;
             let bus = std::sync::Arc::new(services::event_bus_service::EventBusService::default());
             let network = NetworkChannelService::new(identity.clone(), db_path.clone(), bus.clone());
             let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());

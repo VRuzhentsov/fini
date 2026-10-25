@@ -23,13 +23,14 @@ use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::models::peer_frame::{CustomSpaceDescriptor, PeerFrame, SyncEventEnvelope};
-use crate::models::pairing::{IncomingSpaceMappingUpdate, IncomingSpaceSyncEnd, IncomingSyncAck};
 use crate::models::{Event, Identity};
 use crate::repositories::{ChannelRepository, DeviceRepository, OutboxRepository, SpaceMappingRepository};
 use crate::schema::{spaces, sync_acks, sync_outbox, sync_seen, tombstones};
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
-use crate::services::channel_service::{recv_frame, send_frame, ChannelKind, ChannelService, DataLink, SessionHandler};
+use crate::services::channel_service::{
+    recv_frame, send_frame, ChannelKind, ChannelService, CustomSpaceDescriptor, DataLink, PeerFrame, SessionHandler,
+    SyncEventEnvelope,
+};
 use crate::services::db::{open_db_at_path, utc_now};
 use crate::services::event_bus_service::EventBusService;
 use crate::services::network_channel_service::NetworkChannelService;
@@ -1389,7 +1390,7 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 
 use super::UnresolvedCustomSpace;
-use crate::models::peer_frame::{CustomSpaceDescriptor, SyncEventEnvelope};
+use crate::services::channel_service::{CustomSpaceDescriptor, SyncEventEnvelope};
 use crate::models::{ChecklistActivity, FocusHistoryEntry, Quest, QuestSeries, Space};
 use crate::repositories::{OutboxRepository, SpaceMappingRepository};
 use crate::schema::{checklist_activity, focus_history, spaces, sync_outbox, tombstones};
@@ -1957,3 +1958,28 @@ pub(super) fn partition_remote_mapped_spaces(
     Ok((resolved, unresolved))
 }
 }
+
+// ---- What the sessions receive, waiting for a tick ----
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingSpaceMappingUpdate {
+    pub from_device_id: String,
+    pub mapped_space_ids: Vec<String>,
+    pub custom_spaces: Vec<CustomSpaceDescriptor>,
+    pub sent_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingSpaceSyncEnd {
+    pub from_device_id: String,
+    pub space_id: String,
+    pub ended_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IncomingSyncAck {
+    pub from_device_id: String,
+    pub event_id: String,
+    pub acked_at: String,
+}
+

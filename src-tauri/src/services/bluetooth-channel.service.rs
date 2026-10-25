@@ -38,11 +38,12 @@ use ble_gatt::datagram::{self, DatagramChannel, DatagramConfig};
 use ble_gatt::{Adapter, CharacteristicUuid, PeerAddress, ServiceUuid};
 use uuid::Uuid;
 
-use crate::models::channel::ChannelProblem;
 use crate::models::{Event, Identity};
 use crate::repositories::{ChannelRepository, DeviceRepository};
 use crate::services::channel_service::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
-use crate::services::channel_service::{ChannelKind, ChannelService, DataLink, LinkHandlerSlot, LinkHandlers};
+use crate::services::channel_service::{
+    ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlerSlot, LinkHandlers,
+};
 use crate::services::db::open_db_at_path;
 use crate::services::event_bus_service::EventBusService;
 use crate::services::space_sync_service::rejected_by_peer;

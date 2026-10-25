@@ -27,3 +27,18 @@ pub struct CreateDeviceInput {
     pub display_name: String,
     pub paired_at: String,
 }
+
+/// This device: its id, its name and its iroh key (ADR-0010 D15), stored in
+/// the settings rows `device.id`, `device.name` and `device.secret_key`
+/// (`DeviceRepository::load_or_create_identity`). The app start reads it
+/// first and gives it to the services as values.
+#[derive(Debug, Clone, Serialize)]
+pub struct Identity {
+    pub device_id: String,
+    pub hostname: String,
+    /// The public half of this device's iroh key, hex (ADR-0009 D8).
+    pub endpoint_id: String,
+    /// This device's iroh key. Its public half is `endpoint_id`.
+    #[serde(skip)]
+    pub secret_key: iroh::SecretKey,
+}

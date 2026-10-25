@@ -18,14 +18,12 @@ use std::time::{Duration, Instant};
 use iroh::endpoint::presets;
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, TransportAddr};
 
-use crate::models::channel::ChannelProblem;
-use crate::models::pairing::DiscoveredDevice;
-use crate::models::peer_frame::PeerFrame;
 use crate::models::{Event, Identity};
 use crate::repositories::{ChannelRepository, DeviceRepository};
 use crate::services::channel_service::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_ALPN};
 use crate::services::channel_service::{
-    send_frame, ChannelKind, ChannelService, DataLink, LinkHandlerSlot, LinkHandlers,
+    send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice, LinkHandlerSlot,
+    LinkHandlers, PeerFrame,
 };
 use crate::services::db::{open_db_at_path, utc_now};
 use crate::services::event_bus_service::EventBusService;

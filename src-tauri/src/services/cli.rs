@@ -12,7 +12,7 @@ use crate::models::{
 use crate::services::backup;
 use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
 use crate::services::db::{db_default_path, try_open_db_at_path};
-use crate::models::pairing::{DevicePairRequestAckInput, DevicePairRequestInput};
+use crate::services::device_service::{DevicePairRequestAckInput, DevicePairRequestInput};
 use crate::repositories::OutboxRepository;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{ChannelService, LinkHandlers};
@@ -633,7 +633,9 @@ impl CliContext {
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let identity = crate::models::Identity::load_or_create(&app_data_dir, &db_path).map_err(CliError::runtime)?;
+        let identity = crate::repositories::DeviceRepository::new(&mut open_cli_db_at_path(&db_path)?)
+            .load_or_create_identity(&app_data_dir)
+            .map_err(CliError::runtime)?;
         let bus = std::sync::Arc::new(EventBusService::default());
         let network = NetworkChannelService::new(identity.clone(), db_path.clone(), bus.clone());
         let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());

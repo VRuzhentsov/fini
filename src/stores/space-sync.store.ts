@@ -1,8 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { FiniEventType, onFiniEvent } from "../utils/fini-event";
-import { useDeviceStore } from "./device.store";
+import { FiniEventType, onFiniEvent, useDeviceStore } from "./device.store";
 
 // The store of SpaceSyncService (ADR-0010 D16): the spaces each pair syncs,
 // how far the sync is, and the requests to sync a space.

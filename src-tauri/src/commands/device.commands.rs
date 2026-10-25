@@ -5,14 +5,15 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::models::channel::{ChannelKind, ChannelStatus};
-use crate::models::pairing::{
-    ChannelSetup, DeviceConnectionDebugStatus, DevicePairRequestAckInput, DevicePairRequestBluetoothInput,
-    DevicePairRequestInput, DiscoveredDevice, IncomingPairRequest, PairCodeUpdate, PairCompletionUpdate,
-};
+use crate::models::channel::ChannelKind;
 use crate::models::{Device, Identity};
+use crate::services::channel_service::DiscoveredDevice;
 use crate::services::db::AppDbConnection;
-use crate::services::device_service::DeviceService;
+use crate::services::device_service::{
+    ChannelSetup, ChannelStatus, DeviceConnectionDebugStatus, DevicePairRequestAckInput,
+    DevicePairRequestBluetoothInput, DevicePairRequestInput, DeviceService, IncomingPairRequest, PairCodeUpdate,
+    PairCompletionUpdate,
+};
 use crate::services::space_sync_service::SpaceSyncService;
 
 type Devices<'a> = State<'a, Arc<DeviceService>>;

@@ -21,36 +21,35 @@ but have no fixed limit.
 
 ## The parts
 
-Each part is below the part that holds it. Paths are from
-`src-tauri/src/services/communication/`.
+The architecture of the app is in [ADR-0010](../adr/0010-app-architecture.md).
+Each part uses only the parts above it in this tree. The app start builds
+them in this order (`lib.rs`) and registers each one with `app.manage`.
+Paths are from `src-tauri/src/`.
 
 ```
-Fini app
-└── DeviceConnectionState      pairing/mod.rs
-    │                            the identity, the channels, the session
-    │                            slots, SpaceSync
-    ├── pairing                pairing/
-    │   ├── flow               flow.rs: IdentifyDevice, PairStart,
-    │   │                        PairAccept, PairComplete
-    │   ├── setup              setup.rs: AddChannel, AddChannelAccept
-    │   ├── Gate               gate.rs: iroh ProtocolHandler, the rules
-    │   │                        for who may connect
-    │   └── BluetoothCarrier   carrier.rs: the links of Bluetooth pair
-    │                            requests
-    ├── channel                channel/: one ChannelService for each kind
-    │   ├── NetworkChannel     network.rs: iroh endpoint over IP,
-    │   │                        iroh mDNS lookup
-    │   └── BluetoothChannel   bluetooth/mod.rs, endpoint.rs: iroh endpoint
-    │       │                    over ble-gatt-iroh, the delivery schedule
-    │       ├── Scanner        scanner.rs: the one scan, the devices heard
-    │       ├── Advertiser     advertiser.rs: what this device advertises
-    │       └── BluetoothAdapter
-    │                            adapter.rs: one adapter for each process
-    └── SpaceSync              sync/space_sync.rs: when sync runs, the
-        │                        sessions, the channel order
-        └── run_session        sync/session.rs: one session for each
-                                 device and channel kind
+app start (composition root)    lib.rs
+├── Identity                    models/device.rs: id, name, iroh key
+├── EventBusService             services/event-bus.service.rs
+├── channels                    services/channel.service.rs: the
+│   │                             ChannelService interface, DataLink
+│   ├── NetworkChannelService   services/network-channel.service.rs:
+│   │                             iroh over IP, iroh mDNS lookup
+│   └── BluetoothChannelService services/bluetooth-channel.service.rs:
+│                                 iroh over ble-gatt-iroh, scanner,
+│                                 advertiser
+├── SpaceSyncService            services/space-sync.service.rs: sessions,
+│                                 sync, takes fini/sync/4 links
+├── DeviceService               services/device.service.rs: pairing, Add
+│                                 Device, channel setup, takes fini/peer/1
+│                                 links
+└── link handlers               set on each channel last
 ```
+
+The repositories (`repositories/`) read and write the stored data:
+`DeviceRepository`, `ChannelRepository`, `SpaceMappingRepository`,
+`OutboxRepository`. `SpaceSyncService` and `DeviceService` hear each other
+only through the event bus. The UI gets every event as the Tauri event
+`fini-event`; its stores are `device.store.ts` and `space-sync.store.ts`.
 
 The screens: `SettingsView.vue` (devices, pair requests),
 `DeviceSetupDialog.vue` (Add Device, channel setup), `DeviceView.vue` (one
@@ -90,7 +89,8 @@ A channel is a pipe. It holds one live connection to each paired device that
 has the channel on. It does not know what goes through the connection.
 
 - **Green** is a live iroh connection that TLS proved, with a session on it
-  (`ChannelService::is_green`). A device that was only heard is not green.
+  (`SpaceSyncService::has_session_on`). A device that was only heard is not
+  green.
 - Each channel connects by itself to each paired device that has the channel
   on and has no session (`ChannelService::keep_serving`).
 - `ChannelService::is_on` tells if the channel is on for a device. A
@@ -99,22 +99,23 @@ has the channel on. It does not know what goes through the connection.
 
 ## Who is on the other end
 
-iroh's TLS handshake proves the key of each side. The Gate finds the paired
-device by that key (`pairing::paired_device_for_key`). There is no auth frame.
+iroh's TLS handshake proves the key of each side. The service that takes
+the connection finds the paired device by that key
+(`DeviceRepository::find_by_key`). There is no auth frame.
 
-| ALPN | Carries |
-|---|---|
-| `fini/sync/4` (`SYNC_ALPN`) | a sync session; the last part is the protocol version |
-| `fini/peer/1` (`PEER_ALPN`) | the frames before a session: pairing, `AddChannel`, `IdentifyDevice` |
+| ALPN | Carries | Taken by |
+|---|---|---|
+| `fini/sync/4` (`SYNC_ALPN`) | a sync session; the last part is the protocol version | `SpaceSyncService` |
+| `fini/peer/1` (`PEER_ALPN`) | the frames before a session: pairing, `AddChannel`, `IdentifyDevice` | `DeviceService` |
 
 Before pairing there is no pinned key. Over Bluetooth, the identify step and
 the pair request use a plain link (`BleDataLink`) or an iroh connection to
 the key in the advertisement.
 
-### Refusals
+### Rejections
 
-The Gate refuses a session with a QUIC close code. The connecting side reads
-it (`DataLink::close_code`).
+`SpaceSyncService` rejects a session with a QUIC close code. The connecting
+side reads it (`DataLink::close_code`).
 
 | Code | Meaning | The connecting side |
 |---|---|---|
@@ -122,35 +123,37 @@ it (`DataLink::close_code`).
 | 2 | the channel is off here | waits, then tries again |
 | 3 | crossing: the other connection is kept | does nothing |
 | 4 | a session runs already | does nothing |
-| 5 (`CLOSE_CHANNEL_MISSING`) | the pair has no row for this channel here | removes its own row, if no setup with the device is open |
+| 5 (`CLOSE_CHANNEL_MISSING`) | the pair has no row for this channel here | publishes `ChannelMissingAtPeer`; `DeviceService` removes its own row, if no setup with the device is open |
 
 After code 1, 2 or 5, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
-(Network: `FAILURE_COOLDOWN`). The Gate then closes the Bluetooth link.
+(Network: `FAILURE_COOLDOWN`). The rejecting side then closes the Bluetooth
+link.
 
 ### Crossing
 
 The two devices can connect to each other at the same time. Each device keeps
 the connection that the device with the smaller id started. A device's own
 connection counts for 3 s after its session starts
-(`session::CROSSING_WINDOW`). A connection from the peer after that time
-means the peer started again: the new session replaces the old one.
+(`CROSSING_WINDOW`). A connection from the peer after that time means the
+peer started again: the new session replaces the old one.
 
 ## SpaceSync
 
-`SpaceSync` sends the changes of mapped spaces.
+`SpaceSyncService` sends the changes of mapped spaces.
 
-- A local change, a frame received, or a new session wakes it (`wake`).
+- A local change, a frame received, a new session, or an event of a
+  channel (`DeviceHeard`, `ConnectChanged`) wakes it.
 - The keeper runs a tick when woken. On Android, the Bluetooth parts wait
-  for the Activity (`activity_ready`).
-- Each live link goes to `hold_session`.
-- A frame goes over the first green channel, the primary first
-  (`channel_order_for`).
+  for the Activity.
+- A frame goes over the first green channel, the primary first.
 - Work for a device with no green channel stays in the outbox. SpaceSync
   does not connect and does not try again: a new session wakes it.
+- A pair or a channel that changes (`PairedDevicesChanged`,
+  `ChannelsChanged`) ends the sessions whose channel is not on any more.
 
-A session (`run_session`) owns its link. The session slot keeps a sender
-(`SessionCommand`) to the session's task, not the link, so that two writers
-cannot mix the fragments of two frames.
+A session owns its link. The session slot keeps a sender (`SessionCommand`)
+to the session's task, not the link, so that two writers cannot mix the
+fragments of two frames.
 
 ## Spaces that a pair syncs
 

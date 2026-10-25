@@ -6,11 +6,10 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::models::channel::ChannelKind;
-use crate::models::pairing::IncomingSpaceMappingUpdate;
-use crate::models::peer_frame::CustomSpaceDescriptor;
+use crate::services::channel_service::CustomSpaceDescriptor;
 use crate::services::db::AppDbConnection;
 use crate::services::space_sync_service::{
-    SpaceMappingApplyResult, SpaceResolutionMode, SpaceSyncService, SpaceSyncStatus, SpaceSyncTickResult,
+    IncomingSpaceMappingUpdate, SpaceMappingApplyResult, SpaceResolutionMode, SpaceSyncService, SpaceSyncStatus, SpaceSyncTickResult,
     SyncQueueSummary,
 };
 

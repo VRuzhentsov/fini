@@ -155,17 +155,17 @@ answer, and the pipe closes. That is the ordinary pairing path, and it needs
 a working pipe *before* anyone is authenticated.
 
 The identity comes from the TLS handshake: iroh proves the key of each side,
-and the gate finds the paired device whose pinned key it is. There is no
-auth message. A session runs only on the ALPN `fini/sync/<version>`.
+and `SpaceSyncService` finds the paired device whose pinned key it is. There
+is no auth message. A session runs only on the ALPN `fini/sync/<version>`.
 
 A device has at most one session with a paired device on each channel kind
-(`DeviceConnectionState::try_claim_session`). A session stays on the channel
-that it started on until it ends; it does not move to a different channel.
+(`SpaceSyncService`). A session stays on the channel that it started on until
+it ends; it does not move to a different channel.
 
 ### Secure channel
 
 **The encryption seam between the `PeerFrame` codec and a `DataLink`**
-(`channel/encryption.rs`, `SecureChannel`). `PlaintextChannel` gives the bytes
+(`services/channel.service.rs`, `SecureChannel`). `PlaintextChannel` gives the bytes
 through without a change, and it is the only implementation. The frame
 envelope records the scheme (`enc`), so a real encryption scheme can be added
 later without a change that breaks the wire format.
@@ -189,24 +189,20 @@ the channel on. A setup is open from Add until OK or Close.
 ### Green
 
 **A channel is green for a device while it holds a live connection with a
-session to that device** (`ChannelService::is_green`). A device that was only
-heard — an mDNS record, a Bluetooth advertisement — is not green. When the
-connection ends, the channel turns grey and connects again by itself.
-
-### Gate
-
-**The rules for who may connect** (`pairing/gate.rs`), in one place for all
-channels. iroh's `Router` gives each new connection to the gate (`Gate`, an
-iroh `ProtocolHandler`). The gate refuses with a QUIC close code; see
-`docs/architecture/communication.md`.
+session to that device** (`SpaceSyncService::has_session_on`). A device that
+was only heard — an mDNS record, a Bluetooth advertisement — is not green.
+When the connection ends, the channel turns grey and connects again by
+itself.
 
 ### SpaceSync
 
-**The object that carries the changes of mapped spaces to paired devices,
-and the feature itself** (`sync/space_sync.rs`). It runs the sessions on the
+**The service that carries the changes of mapped spaces to paired devices,
+and the feature itself** (`SpaceSyncService`). It runs the sessions on the
 links that the channels hold, and sends each change over the first green
 channel of the pair (the primary first). Work for a device with no green
 channel waits.
+
+*Elsewhere:* the sync engine in Syncthing (`lib/model`).
 
 ### How they read together
 
@@ -348,6 +344,8 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **window** (a time) | not in the STE dictionary; Fini uses *time* |
 | **Peer Protocol** | the older name for the frames between two devices; Fini says *`PeerFrame`* and *session* |
 | **Connection Manager** | an informal name for the session claim and the channel order; no object has this name |
+| **gate** (`Gate`) | more than one meaning; the service that owns a protocol takes its connections (ADR-0010 D6) |
+| **`DeviceConnectionState`** | read as a state or an enum; the services are built and registered one by one (ADR-0010 D5) |
 | **sticky handoff**, **transport selection** | older names for the rule of one session for each channel (see *Session*) and for the channel order (see *Primary*) |
 | **`Auth`**, **`AuthOk`**, **`AuthFail`** | removed frames; the TLS handshake proves the key (see *Session*) |
 
