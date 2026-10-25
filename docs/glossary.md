@@ -104,6 +104,22 @@ The identity comes from the TLS handshake: iroh proves the key of each side,
 and the gate finds the paired device whose pinned key it is. There is no
 auth message. A session runs only on the ALPN `fini/sync/<version>`.
 
+### Link
+
+**The radio connection between the Bluetooth chips of two devices** (a BLE
+link). One link carries one `DataLink`, or the iroh connection of a session.
+The link and the iroh connection on it can end at different times: Fini
+closes the link itself when it does not need it (`close_links_to`). Two chips
+can hold only one link between them. ble-gatt uses the same word
+(`BleGattTransport::close_link`).
+
+### Setup
+
+**The steps that add a channel to a pair** (`ChannelSetup`,
+`DeviceSetupDialog.vue`). The person presses Add on the channel row on the
+two devices. The devices find each other and send `AddChannel`. OK switches
+the channel on. A setup is open from Add until OK or Close.
+
 ### Green
 
 **A channel is green for a device while it holds a live connection with a
@@ -257,6 +273,13 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **lease** (scan lease) | jargon; Fini uses *scan lock* |
 | **hello** (`Hello`, `DiscoveryHello`) | not an approved word; the messages are `AddChannel` and `IdentifyDevice` |
 | **request** (`PairRequest`) | not an approved noun; the message is `PairStart` |
+| **note** (verb) | not an approved verb; Fini uses *record* |
+| **refuse**, **refusal** | not in the STE dictionary; Fini uses *reject*, *rejection* |
+| **take** | not an approved verb; Fini uses *remove* (or *read*, *get*) |
+| **within** | not an approved preposition; Fini uses *in* |
+| **delay** (noun) | not an approved noun; Fini uses *time* (`TIME_BEFORE_LINK_CLOSE`) |
+| **cooldown** | not in the STE dictionary; Fini uses *wait time* (`REJECTED_WAIT_TIME`) |
+| **window** (a time) | not in the STE dictionary; Fini uses *time* (`LAST_HEARD_CONNECT_TIME`) |
 
 ### Radio
 
@@ -279,7 +302,7 @@ product.
 
 ## Known gaps
 
-`LinkState`/`LinkEvent` (ADR-0005) keep the bare word `link`. They are the
-state machine for whether a pair *has* a `DataLink` on a channel and what is
-being done about it — a different thing from the pipe itself, and renamed
-only if that turns out to confuse someone.
+`LinkState`/`LinkEvent` (ADR-0005) use the word `link` for a different
+thing than the term **Link** above: the state machine for whether a pair
+*has* a `DataLink` on a channel and what is being done about it. They are
+renamed only if that turns out to confuse someone.

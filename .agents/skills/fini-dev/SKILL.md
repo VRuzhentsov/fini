@@ -44,6 +44,18 @@ For any planning stage, load `grill-me` before finalizing the plan. Treat planni
 
 Use `grill-me` as an overlay, not a replacement for domain skills. First gather evidence from the repo, specs, ADRs, or source files when evidence can answer the question; ask the user only for decisions evidence cannot resolve. Ask one question at a time, include the recommended answer, and stop when remaining questions are non-blocking or explicitly deferred.
 
+## Use STE
+
+Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, comments, log messages, docs, screen text, commit messages, PR text, agent instructions, and what you write to the user.
+
+1. Read `docs/ste.md` before you write any of these.
+2. For each new name, do the check in `docs/ste.md`, "Check a name before you write it". Look up each word in `~/.cache/agents/ste/ste.txt`.
+3. Use a technical noun or verb only when it is a term in `docs/glossary.md`.
+4. When no approved word or glossary term gives the meaning, ask the user for a new glossary term first.
+5. Before you commit, read your diff for the words in the glossary's "Words deliberately not used" list, and replace them.
+
+`fini-code-style` holds the same rule for code.
+
 ## Skill Routing
 
 Load the specialized skill when its condition applies:

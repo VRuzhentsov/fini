@@ -11,6 +11,16 @@ Kept terse on purpose: this file grows over time. Each rule stays one short para
 
 ## Rules
 
+**Check every word of a new name in the STE dictionary before you write it.**
+Do the steps in `docs/ste.md`, "Check a name before you write it", for each
+new file, type, function, method, field, constant, command and test hook, and
+for each new comment and log message. Look up a word with
+`grep -E "^(WORD|word) \(" ~/.cache/agents/ste/ste.txt`: an uppercase entry
+is approved, a lowercase entry gives the approved word to use in its place,
+and no entry means not approved. Keep glossary terms and the names of the
+language and of libraries. Before you report the work, read your diff once
+more for the words in the glossary's "Words deliberately not used" list.
+
 **Names come from `docs/glossary.md` and `docs/naming.md`.** The glossary
 holds the vocabulary — channel (transport), channel kind, DataLink, session,
 primary — and settles *which* word. `naming.md` holds how names are formed —

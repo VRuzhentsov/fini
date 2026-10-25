@@ -82,6 +82,59 @@ When you need a word that is not approved:
 4. Add the term to `docs/glossary.md` only after you get the approval of
    the project owner.
 
+## Look up a word
+
+The dictionary shows each word as an entry. The case of the entry tells you
+the status of the word:
+
+- **UPPERCASE entry: an approved word.** Use it only as the part of speech
+  and with the meaning that the entry gives. Example: `CONNECT (v)`,
+  `REJECT (v)`, `RECORD (v)`, `REMOVE (v)`, `TIME (n)`, `IN (prep)`.
+- **Lowercase entry: a word that is not approved.** The second column gives
+  the approved words to use in its place. Example: `note (v)` gives RECORD,
+  `take (v)` gives REMOVE or READ, `within (prep)` gives IN.
+- **No entry: the word is not in the dictionary.** It is not approved.
+  Examples: "dial", "refuse", "cooldown", "window" (as a time).
+
+A word can be approved as one part of speech and not as another. Example:
+CLOSE is an approved verb, but "close" as an adjective is not approved.
+
+To look up a word, use this command. Put the word in the place of `word`:
+
+```sh
+grep -E "^(WORD|word) \(" ~/.cache/agents/ste/ste.txt
+```
+
+## Check a name before you write it
+
+Do this check for each new name: a file, a module, a type, a function, a
+method, a field, a constant, a command, and a test hook. Do it before you
+write the name in the code.
+
+1. Divide the name into its words. Example: `LAST_HEARD_CONNECT_TIME` is
+   "last", "heard", "connect", "time".
+2. Look up each word in the dictionary.
+3. Keep a word that has an uppercase entry with the part of speech that the
+   name uses.
+4. Keep a word that is a term in `docs/glossary.md`.
+5. Keep a word of the language or of a library that Fini uses. Examples:
+   `async`, `Option`, `EndpointId`, `close_link`.
+6. Replace each other word with the approved word from its entry.
+7. If no approved word gives the meaning, stop. Ask the project owner for a
+   new glossary term (see "Which words to use").
+8. Do the same check for each new comment and each log message.
+
+Examples of names that this check changed:
+
+| Not approved | Approved |
+|---|---|
+| `LAST_HEARD_DIAL_WINDOW` | `LAST_HEARD_CONNECT_TIME` |
+| `note_refused` | `record_rejected` |
+| `REFUSED_COOLDOWN` | `REJECTED_WAIT_TIME` |
+| `take_pairing_link` | `remove_pairing_link` |
+| `heard_within` | `heard_in` |
+| `LINK_CLOSE_DELAY` | `TIME_BEFORE_LINK_CLOSE` |
+
 ## How to write sentences
 
 - Write procedures (steps to do) in sentences of 20 words or fewer
@@ -98,7 +151,8 @@ When you need a word that is not approved:
 ## Names in code
 
 - Make names from approved words and glossary terms. Example:
-  `identify_device`, `AvailableDevice`, `scan_lock`.
+  `identify_device`, `AvailableDevice`, `scan_lock`. Do the check in
+  "Check a name before you write it" for each new name.
 - Keep the language's own words as they are: Rust, TypeScript, and Vue
   keywords, and names from libraries that Fini uses.
 - A wire message name is a technical noun of the Fini protocol. Example:

@@ -10,6 +10,15 @@ reach for this one when writing it down.
 When a rule here conflicts with what the code currently says, this file wins
 and the code is wrong.
 
+## Words
+
+Each word in a name is an approved STE word or a term in
+[`glossary.md`](glossary.md). Before you write a new name, do the check in
+[`ste.md`, "Check a name before you write it"](ste.md#check-a-name-before-you-write-it).
+The check looks up each word in the dictionary and gives the approved word
+to use in place of a word that is not approved. This file then tells you how
+to write the name: its case, its plural, its prefix.
+
 ## Module layout
 
 `services/communication/` holds the three things two devices do to reach
