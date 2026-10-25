@@ -1,13 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPinia, setActivePinia } from "pinia";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device.store";
+import { useSpaceSyncStore } from "../../stores/space-sync.store";
 import { ChannelColor, ChannelKind, ChannelProblem, ChannelState } from "../../utils/channel";
 
 jest.mock("@tauri-apps/api/core", () => ({
   invoke: jest.fn(),
 }));
 
-describe("device store sync status", () => {
+describe("space-sync store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     (invoke as unknown as jest.Mock).mockReset();
@@ -29,7 +30,7 @@ describe("device store sync status", () => {
       tombstone_count: 0,
     });
 
-    const store = useDeviceStore();
+    const store = useSpaceSyncStore();
     await store.refreshSpaceSyncStatus("peer-1");
 
     expect(store.getLastSyncedAt("peer-1")).toBe("2026-04-07T13:20:00Z");
@@ -49,7 +50,7 @@ describe("device store sync status", () => {
       ])
       .mockResolvedValueOnce(["1"]);
 
-    const store = useDeviceStore();
+    const store = useSpaceSyncStore();
     await store.loadMappedSpaces("peer-1");
 
     expect(store.getPendingSpaceSyncRequest("peer-1")).toEqual({
@@ -95,7 +96,7 @@ describe("device store sync status", () => {
         ticked_at: "2026-04-11T20:00:10Z",
       });
 
-    const store = useDeviceStore();
+    const store = useSpaceSyncStore();
     await store.loadMappedSpaces("peer-1");
     await store.approvePendingSpaceSyncRequest("peer-1");
 
@@ -123,7 +124,7 @@ describe("device store sync status", () => {
       ])
       .mockResolvedValueOnce([]);
 
-    const store = useDeviceStore();
+    const store = useSpaceSyncStore();
     await store.loadMappedSpaces("peer-1");
 
     expect(store.getPendingSpaceSyncRequest("peer-1")).toBeNull();
@@ -164,7 +165,7 @@ describe("device store sync status", () => {
         ticked_at: "2026-04-11T20:00:10Z",
       });
 
-    const store = useDeviceStore();
+    const store = useSpaceSyncStore();
     await store.loadMappedSpaces("peer-1");
 
     const approvalPromise = store.approvePendingSpaceSyncRequest("peer-1");
@@ -196,7 +197,7 @@ describe("device store sync status", () => {
       .mockResolvedValueOnce(["1"])
       .mockResolvedValueOnce(["1"]);
 
-    const store = useDeviceStore();
+    const store = useSpaceSyncStore();
 
     await store.loadMappedSpaces("peer-1");
     await store.loadMappedSpaces("peer-1");
@@ -223,7 +224,7 @@ describe("device store channel rows (ADR-0008)", () => {
     const store = useDeviceStore();
     await store.refreshChannelStatuses("peer-1");
 
-    expect(invoke).toHaveBeenCalledWith("device_connection_channel_statuses", {
+    expect(invoke).toHaveBeenCalledWith("device_channel_statuses", {
       peerDeviceId: "peer-1",
     });
     expect(store.getChannelStatuses("peer-1")).toEqual(rows);
@@ -258,20 +259,20 @@ describe("device store channel rows (ADR-0008)", () => {
       acceptedPeerRequest: true,
       initialized: true,
     });
-    const status = await store.channelSetupStatus("peer-1", ChannelKind.Bluetooth);
+    const status = await store.refreshChannelSetup("peer-1", ChannelKind.Bluetooth);
     await store.endChannelSetup("peer-1", ChannelKind.Bluetooth, true);
 
     expect(status?.initialized).toBe(true);
-    expect(invoke).toHaveBeenCalledWith("device_connection_begin_channel_setup", {
+    expect(invoke).toHaveBeenCalledWith("device_begin_channel_setup", {
       peerDeviceId: "peer-1",
       kind: ChannelKind.Bluetooth,
     });
-    expect(invoke).toHaveBeenCalledWith("device_connection_channel_setup_status", {
+    expect(invoke).toHaveBeenCalledWith("device_channel_setup_status", {
       peerDeviceId: "peer-1",
       kind: ChannelKind.Bluetooth,
     });
     expect(invoke).toHaveBeenCalledWith(
-      "device_connection_end_channel_setup",
+      "device_end_channel_setup",
       expect.objectContaining({ peerDeviceId: "peer-1", kind: ChannelKind.Bluetooth, switchOn: true }),
     );
   });
@@ -293,7 +294,7 @@ describe("device store primary channel (ADR-0007)", () => {
     const store = useDeviceStore();
     await store.setPrimaryChannel("peer-1", ChannelKind.Bluetooth);
 
-    expect(invoke).toHaveBeenCalledWith("device_connection_set_primary_channel", {
+    expect(invoke).toHaveBeenCalledWith("device_set_primary_channel", {
       peerDeviceId: "peer-1",
       primary: ChannelKind.Bluetooth,
     });

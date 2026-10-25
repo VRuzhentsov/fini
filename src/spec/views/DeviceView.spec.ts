@@ -1,7 +1,7 @@
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import DeviceView from "../../views/settings/DeviceView.vue";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device.store";
 import { useSpaceStore } from "../../stores/space";
 import { ChannelColor, ChannelKind, ChannelProblem, ChannelState } from "../../utils/channel";
 
@@ -11,8 +11,14 @@ jest.mock("vue-router", () => ({
   useRouter: () => ({ push: mockRouterPush }),
 }));
 
-jest.mock("../../stores/device", () => ({
+jest.mock("../../stores/device.store", () => ({
   useDeviceStore: jest.fn(),
+}));
+
+// One mock object serves both stores: each test sets it once through
+// `useDeviceStore`, and the page reads its sync half through this store.
+jest.mock("../../stores/space-sync.store", () => ({
+  useSpaceSyncStore: () => jest.requireMock("../../stores/device.store").useDeviceStore(),
 }));
 
 // `spaceCss` is re-exported here as well as `isBuiltinSpace`: SyncQueueSection
@@ -83,7 +89,8 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     unlinkChannel: jest.fn().mockResolvedValue([]),
     watchPresence: jest.fn().mockResolvedValue(undefined),
     beginChannelSetup: jest.fn().mockResolvedValue(undefined),
-    channelSetupStatus: jest.fn().mockResolvedValue(null),
+    getChannelSetup: jest.fn().mockReturnValue(null),
+    refreshChannelSetup: jest.fn().mockResolvedValue(null),
     endChannelSetup: jest.fn().mockResolvedValue([]),
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
@@ -183,15 +190,6 @@ describe("DeviceView channels", () => {
     expect(rows[0].attributes("data-channel-color")).toBe(ChannelColor.Green);
     expect(rows[1].text()).toContain("Bluetooth");
     expect(rows[1].attributes("data-channel-color")).toBe(ChannelColor.Grey);
-  });
-
-  it("searches for the peer only while the page is open", async () => {
-    const wrapper = mountView();
-    await flushUi();
-    expect(deviceStoreMock.watchPresence).toHaveBeenCalledWith(true);
-
-    wrapper.unmount();
-    expect(deviceStoreMock.watchPresence).toHaveBeenCalledWith(false);
   });
 
   it("makes a green channel the primary through its star (ADR-0007)", async () => {

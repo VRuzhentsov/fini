@@ -1,16 +1,16 @@
 import { mount } from "@vue/test-utils";
-import { nextTick } from "vue";
+import { nextTick, reactive } from "vue";
 import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device.store";
 import { ChannelKind } from "../../utils/channel";
 
-jest.mock("../../stores/device", () => ({
+jest.mock("../../stores/device.store", () => ({
   useDeviceStore: jest.fn(),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function storeMock(overrides: Record<string, unknown> = {}): any {
-  return {
+  return reactive({
     outgoingRequest: null,
     incomingRequests: [],
     discoveredDevices: [],
@@ -26,10 +26,15 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     submitPairCode: jest.fn().mockResolvedValue(true),
     cancelOutgoingRequest: jest.fn(),
     beginChannelSetup: jest.fn().mockResolvedValue(undefined),
-    channelSetupStatus: jest.fn().mockResolvedValue(null),
+    // The setup state as the store keeps it from the backend's events; the
+    // dialog reads it through `getChannelSetup`.
+    setup: null,
+    getChannelSetup(this: { setup: unknown }) {
+      return this.setup;
+    },
     endChannelSetup: jest.fn().mockResolvedValue([]),
     ...overrides,
-  };
+  });
 }
 
 function mountDialog(props: Record<string, unknown> = {}) {
@@ -299,7 +304,7 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
     await flushUi();
     expect(wrapper.find('[data-testid="setup-ok"]').attributes("disabled")).toBeDefined();
 
-    store.channelSetupStatus.mockResolvedValue({
+    store.setup = ({
       sentRequestAccepted: true,
       acceptedPeerRequest: true,
       initialized: true,
@@ -317,7 +322,7 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
 
   it("lets OK be pressed again when writing the channel failed", async () => {
     const store = storeMock({
-      channelSetupStatus: jest.fn().mockResolvedValue({
+      setup: ({
         sentRequestAccepted: true,
         acceptedPeerRequest: true,
         initialized: true,
@@ -372,7 +377,7 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
         status: "awaiting_code",
         sender_code: "482915",
       },
-      channelSetupStatus: jest.fn().mockResolvedValue({
+      setup: ({
         sentRequestAccepted: true,
         acceptedPeerRequest: true,
         initialized: true,
@@ -457,7 +462,5 @@ describe("DeviceSetupDialog, known device (ADR-0008 D20)", () => {
 
     expect(store.endChannelSetup).toHaveBeenCalledTimes(2);
     expect(store.endChannelSetup).toHaveBeenLastCalledWith("peer-1", ChannelKind.Bluetooth, false);
-    jest.advanceTimersByTime(5_000);
-    expect(store.channelSetupStatus).not.toHaveBeenCalled();
   });
 });

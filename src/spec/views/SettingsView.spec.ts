@@ -3,7 +3,7 @@ import { nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import SettingsView from "../../views/settings/SettingsView.vue";
 import { useSpaceStore } from "../../stores/space";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device.store";
 
 interface MockSpace {
   id: string;
@@ -47,7 +47,7 @@ jest.mock("../../stores/space", () => ({
   isBuiltinSpace: (id: string) => ["1", "2", "3"].includes(id),
 }));
 
-jest.mock("../../stores/device", () => ({
+jest.mock("../../stores/device.store", () => ({
   useDeviceStore: jest.fn(),
 }));
 
