@@ -61,6 +61,12 @@ pub fn device_available_devices(devices: Devices) -> Vec<DiscoveredDevice> {
     devices.available_devices()
 }
 
+/// Every device the Network channel heard recently, paired or not.
+#[tauri::command]
+pub fn device_heard_devices(devices: Devices) -> Vec<DiscoveredDevice> {
+    devices.heard_devices()
+}
+
 #[tauri::command]
 pub async fn device_identify_bluetooth_device(devices: Devices<'_>, device_id: String) -> Result<DiscoveredDevice, String> {
     devices.identify_bluetooth_device(&device_id).await

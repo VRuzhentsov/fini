@@ -250,7 +250,6 @@ impl DeviceService {
     }
 
     /// Every device the Network channel heard recently.
-    #[cfg(any(feature = "cli-plane", test))]
     pub fn heard_devices(&self) -> Vec<DiscoveredDevice> {
         self.network.heard_devices()
     }

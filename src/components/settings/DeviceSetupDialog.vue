@@ -13,7 +13,7 @@ import {
   useDeviceStore,
   type ChannelSetupStatus,
   type DiscoveredDevice,
-} from "../../stores/device";
+} from "../../stores/device.store";
 import { ChannelKind } from "../../utils/channel";
 import { channelName } from "../../utils/channelStatusCodes";
 
@@ -125,11 +125,12 @@ const renderLists = computed(() => ({
       : [],
 }));
 
-// The known-device branch's own progress, polled while the dialog is open.
-const setupStatus = ref<ChannelSetupStatus | null>(null);
+// The known-device branch's own progress: the store follows the backend's
+// events for it.
+const setupStatus = computed<ChannelSetupStatus | null>(() =>
+  props.peerDeviceId && props.kind ? deviceStore.getChannelSetup(props.peerDeviceId, props.kind) : null,
+);
 const setupError = ref<string | null>(null);
-let setupPoll: ReturnType<typeof setInterval> | null = null;
-const SETUP_POLL_MS = 1_000;
 // Set once OK or close ended the setup, so unmounting does not end it twice.
 let setupFinished = false;
 
@@ -260,7 +261,6 @@ function stopAddMode() {
 // each other instead (ADR-0008 D2), and this polls how far it got.
 async function startChannelSetup() {
   setupFinished = false;
-  setupStatus.value = null;
   setupError.value = null;
   if (!props.peerDeviceId || !props.kind) return;
   const peerDeviceId = props.peerDeviceId;
@@ -276,21 +276,6 @@ async function startChannelSetup() {
   // the search that has just started instead of leaving it running.
   if (setupFinished) {
     await deviceStore.endChannelSetup(peerDeviceId, kind, false);
-    return;
-  }
-  stopSetupPoll();
-  setupPoll = setInterval(() => void pollChannelSetup(), SETUP_POLL_MS);
-}
-
-async function pollChannelSetup() {
-  if (!props.peerDeviceId || !props.kind) return;
-  setupStatus.value = await deviceStore.channelSetupStatus(props.peerDeviceId, props.kind);
-}
-
-function stopSetupPoll() {
-  if (setupPoll) {
-    clearInterval(setupPoll);
-    setupPoll = null;
   }
 }
 
@@ -299,7 +284,6 @@ function stopSetupPoll() {
 // `false` when writing the channel failed: the backend keeps the completed
 // init, so OK can be pressed again.
 async function finishChannelSetup(switchOn: boolean): Promise<boolean> {
-  stopSetupPoll();
   if (setupFinished) return true;
   setupFinished = true;
   if (!props.peerDeviceId || !props.kind || setupError.value) return true;
@@ -357,7 +341,6 @@ function stopClock() {
 onUnmounted(() => {
   if (props.open) end();
   else stopClock();
-  stopSetupPoll();
 });
 
 function pickChannel(kind: ChannelKind) {

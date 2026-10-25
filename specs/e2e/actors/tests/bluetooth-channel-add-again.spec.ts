@@ -43,8 +43,8 @@ test('Bluetooth removed and added again on a pair', async ({ actorA, actorB }) =
   );
   test.setTimeout(10 * 60_000);
 
-  const identityA = await actorA.invoke<Identity>('device_connection_get_identity');
-  const identityB = await actorB.invoke<Identity>('device_connection_get_identity');
+  const identityA = await actorA.invoke<Identity>('device_get_identity');
+  const identityB = await actorB.invoke<Identity>('device_get_identity');
   const pageA = new DevicePage(actorA.page, STEP_TIMEOUT_MS);
   const pageB = new DevicePage(actorB.page, STEP_TIMEOUT_MS);
   await Promise.all([pageA.open(identityB.device_id), pageB.open(identityA.device_id)]);

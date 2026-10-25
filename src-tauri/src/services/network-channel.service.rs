@@ -425,7 +425,6 @@ impl NetworkChannelService {
     }
 
     /// Every device the mDNS lookup heard recently, in Add Device or not.
-    #[cfg(any(feature = "cli-plane", test))]
     pub fn heard_devices(&self) -> Vec<DiscoveredDevice> {
         self.heard
             .lock()

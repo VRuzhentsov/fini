@@ -27,7 +27,7 @@ import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/c
  * harness already put in each actor's environment (`FINI_LOCAL_BLUETOOTH_
  * ADDRESS`), not a second source of truth for it. Tests never need to
  * compute an address themselves; they only need to hand the *other*
- * actor's known address to `device_connection_save_paired_device`.
+ * actor's known address to `device_save_paired_device`.
  */
 function fakeBluetoothAddress(index: number): string {
   return `AA:BB:CC:00:00:${(index + 1).toString(16).padStart(2, '0').toUpperCase()}`;
@@ -54,7 +54,7 @@ export async function ensureBlePairedActors(
     return [a, b];
   }
 
-  await a.actor.invoke('device_connection_save_paired_device', {
+  await a.actor.invoke('device_save_paired_device', {
     peerDeviceId: b.identity.device_id,
     displayName: b.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(1),
@@ -63,7 +63,7 @@ export async function ensureBlePairedActors(
     // Bluetooth session is refused.
     endpointId: b.identity.endpoint_id,
   });
-  await b.actor.invoke('device_connection_save_paired_device', {
+  await b.actor.invoke('device_save_paired_device', {
     peerDeviceId: a.identity.device_id,
     displayName: a.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(0),
@@ -113,7 +113,7 @@ async function ensureBluetoothEnabledForPeer(
   actor: SyncedActor,
   peerDeviceId: string,
 ): Promise<void> {
-  const paired = await actor.actor.invoke<PairedDeviceRow[]>('device_connection_get_paired_devices');
+  const paired = await actor.actor.invoke<PairedDeviceRow[]>('device_paired_devices');
   expect(
     paired.some((entry) => entry.peer_device_id === peerDeviceId),
     `${actor.actor.slug} should already be paired with ${peerDeviceId}`,
@@ -123,7 +123,7 @@ async function ensureBluetoothEnabledForPeer(
   // over the network has no Bluetooth row at all, so asking the paired row
   // whether Bluetooth is on can only ever answer "no".
   const statuses = await actor.actor.invoke<ChannelStatusRow[]>(
-    'device_connection_channel_statuses',
+    'device_channel_statuses',
     { peerDeviceId },
   );
   const bluetooth = statuses.find((status) => status.kind === ChannelKind.Bluetooth);
@@ -139,7 +139,7 @@ async function ensureBluetoothEnabledForPeer(
   ).toBe(ChannelState.Off);
 
   const after = await actor.actor.invoke<ChannelStatusRow[]>(
-    'device_connection_set_channel_enabled',
+    'device_set_channel_enabled',
     { peerDeviceId, kind: ChannelKind.Bluetooth, enabled: true },
   );
   expect(
@@ -168,12 +168,12 @@ export async function expectNetworkChannelUnavailable(
   // nothing at all, so assert exactly that -- it is the stronger claim, and
   // weakening it for both lanes would quietly stop proving the flag works.
   if (actor.kind === 'spawned' || peerDeviceId === undefined) {
-    const presence = await actor.invoke<unknown[]>('device_connection_presence_snapshot');
+    const presence = await actor.invoke<unknown[]>('device_heard_devices');
     expect(presence, `${actor.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
     return;
   }
 
-  const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', { peerDeviceId });
+  const statuses = await actor.invoke<ChannelStatusRow[]>('device_channel_statuses', { peerDeviceId });
   const network = statuses.find((status) => status.kind === ChannelKind.Network);
   expect(
     network?.state,
@@ -193,7 +193,7 @@ export async function waitForGreenChannel(
 ): Promise<void> {
   await pollUntil(`${actor.slug} bluetooth transport reports green`, async () => {
     await actor.invoke('space_sync_tick');
-    const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', {
+    const statuses = await actor.invoke<ChannelStatusRow[]>('device_channel_statuses', {
       peerDeviceId,
     });
     const bluetooth = statuses.find((status) => status.kind === ChannelKind.Bluetooth);

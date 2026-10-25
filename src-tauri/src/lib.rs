@@ -22,7 +22,7 @@ use commands::channel_commands::channel_probe_bluetooth;
 use commands::channel_commands::channel_set_test_switch;
 #[cfg(feature = "ui-plane")]
 use commands::device_commands::{
-    device_available_devices, device_begin_channel_setup, device_channel_setup_status, device_channel_statuses,
+    device_available_devices, device_begin_channel_setup, device_heard_devices, device_channel_setup_status, device_channel_statuses,
     device_debug_status, device_end_channel_setup, device_enter_add_mode, device_get_identity,
     device_identify_bluetooth_device, device_leave_add_mode, device_pair_accept_request,
     device_pair_acknowledge_request, device_pair_complete_request, device_pair_incoming_requests,
@@ -517,6 +517,7 @@ pub fn run() {
             device_enter_add_mode,
             device_leave_add_mode,
             device_available_devices,
+            device_heard_devices,
             device_identify_bluetooth_device,
             device_send_pair_request,
             device_send_pair_request_bluetooth,

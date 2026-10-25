@@ -50,7 +50,7 @@ interface ChannelStatus {
 async function waitForGreen(actor: E2EActor, peerDeviceId: string): Promise<void> {
   const deadline = Date.now() + STEP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const statuses = await actor.invoke<ChannelStatus[]>('device_connection_channel_statuses', { peerDeviceId });
+    const statuses = await actor.invoke<ChannelStatus[]>('device_channel_statuses', { peerDeviceId });
     if (statuses.find((status) => status.kind === ChannelKind.Bluetooth)?.color === ChannelColor.Green) return;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -59,7 +59,7 @@ async function waitForGreen(actor: E2EActor, peerDeviceId: string): Promise<void
 
 /** Removes the pair on `actor`'s side through its device page, if it has one. */
 async function unpairIfPaired(actor: E2EActor, peer: Identity): Promise<void> {
-  const paired = await actor.invoke<PairedDevice[]>('device_connection_get_paired_devices');
+  const paired = await actor.invoke<PairedDevice[]>('device_paired_devices');
   if (!paired.some((device) => device.peer_device_id === peer.device_id)) return;
   const page = new DevicePage(actor.page, STEP_TIMEOUT_MS);
   await page.open(peer.device_id);
@@ -73,8 +73,8 @@ test('a new pair over Bluetooth, from zero to green', async ({ actorA, actorB })
   );
   test.setTimeout(10 * 60_000);
 
-  const identityA = await actorA.invoke<Identity>('device_connection_get_identity');
-  const identityB = await actorB.invoke<Identity>('device_connection_get_identity');
+  const identityA = await actorA.invoke<Identity>('device_get_identity');
+  const identityB = await actorB.invoke<Identity>('device_get_identity');
   await unpairIfPaired(actorA, identityB);
   await unpairIfPaired(actorB, identityA);
 

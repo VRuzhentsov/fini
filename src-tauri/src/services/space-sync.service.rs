@@ -1070,6 +1070,9 @@ impl SpaceSyncService {
 
         // Only when a peer's change landed here: the UI re-reads then, and
         // an idle pair makes no work for anyone.
+        if sent_events_total > 0 || received_acks > 0 {
+            self.bus.publish(Event::SyncQueueChanged);
+        }
         if applied_events > 0 {
             self.bus.publish(Event::SpaceDataChanged);
             // Applying can write changes of its own (a checklist merge that

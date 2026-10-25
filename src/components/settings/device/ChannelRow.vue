@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { StarIcon as StarSolid } from "@heroicons/vue/24/solid";
 import { StarIcon as StarOutline, InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./ChannelIcon.vue";
-import type { DeviceChannelStatus } from "../../../stores/device";
+import type { DeviceChannelStatus } from "../../../stores/device.store";
 import { ChannelColor, ChannelState } from "../../../utils/channel";
 import { channelName, channelProblemText } from "../../../utils/channelStatusCodes";
 

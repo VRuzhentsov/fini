@@ -36,6 +36,9 @@ pub enum Event {
     SpaceDataChanged,
     /// A paired device asked to sync a space, or ended the sync of one.
     SpaceMappingRequestsChanged,
+    /// Changes went to a paired device, or it acked changes: the sync queue
+    /// and the time of the last sync changed.
+    SyncQueueChanged,
     /// A channel heard a paired device: a connection to it can start now.
     #[serde(rename_all = "camelCase")]
     DeviceHeard { peer_device_id: String, kind: ChannelKind },

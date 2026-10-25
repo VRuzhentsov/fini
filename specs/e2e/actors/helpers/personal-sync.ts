@@ -130,7 +130,7 @@ export async function waitForChannelGreen(
 ): Promise<void> {
   await pollUntil(`${actor.slug} ${kind} channel green`, async () => {
     await actor.invoke('space_sync_tick');
-    const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', {
+    const statuses = await actor.invoke<ChannelStatusRow[]>('device_channel_statuses', {
       peerDeviceId,
     });
     return statuses.some((status) => status.kind === kind && status.color === ChannelColor.Green) || false;

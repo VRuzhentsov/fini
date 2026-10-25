@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronLeftIcon } from "@heroicons/vue/24/outline";
 import SettingsListGroup from "../../components/settings/SettingsListGroup.vue";
@@ -7,7 +7,8 @@ import SettingsListItem from "../../components/settings/SettingsListItem.vue";
 import ChannelRow from "../../components/settings/device/ChannelRow.vue";
 import SyncQueueSection from "../../components/settings/device/SyncQueueSection.vue";
 import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device.store";
+import { useSpaceSyncStore } from "../../stores/space-sync.store";
 import { ChannelColor, type ChannelKind } from "../../utils/channel";
 import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
@@ -15,6 +16,7 @@ import { shortUuid } from "../../utils/shortUuid";
 const route = useRoute();
 const router = useRouter();
 const deviceStore = useDeviceStore();
+const spaceSyncStore = useSpaceSyncStore();
 const spaceStore = useSpaceStore();
 
 const unpairDialog = ref<HTMLDialogElement | null>(null);
@@ -35,7 +37,7 @@ const peerName = computed(() => device.value?.display_name ?? "That device");
 const channelStatuses = computed(() =>
   deviceId.value ? deviceStore.getChannelStatuses(deviceId.value) : [],
 );
-const syncQueue = computed(() => (deviceId.value ? deviceStore.getSyncQueue(deviceId.value) : null));
+const syncQueue = computed(() => (deviceId.value ? spaceSyncStore.getSyncQueue(deviceId.value) : null));
 
 // The template's render contract, per fini-frontend.
 const renderFlags = computed(() => ({
@@ -49,18 +51,18 @@ const anyChannelConnected = computed(() =>
 );
 
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() =>
-  deviceId.value ? deviceStore.getLastSyncedAtBySpace(deviceId.value) : {},
+  deviceId.value ? spaceSyncStore.getLastSyncedAtBySpace(deviceId.value) : {},
 );
 
 const savedMappedSelection = computed(() =>
-  deviceId.value ? deviceStore.getMappedSpaceIds(deviceId.value) : [],
+  deviceId.value ? spaceSyncStore.getMappedSpaceIds(deviceId.value) : [],
 );
 const unresolvedCustomSpaces = computed(() =>
-  deviceId.value ? deviceStore.getUnresolvedCustomSpaces(deviceId.value) : [],
+  deviceId.value ? spaceSyncStore.getUnresolvedCustomSpaces(deviceId.value) : [],
 );
 const hasMappingChanges = computed(() => {
   if (!deviceId.value) return false;
-  const saved = [...deviceStore.getMappedSpaceIds(deviceId.value)].sort();
+  const saved = [...spaceSyncStore.getMappedSpaceIds(deviceId.value)].sort();
   const current = [...mappedSelection.value].sort();
   return saved.join(",") !== current.join(",");
 });
@@ -85,30 +87,12 @@ const mappedSpaceNames = computed(() =>
   ),
 );
 
-// While this page is open the backend searches for the peer so green is
-// current (ADR-0008 D12), and the rows are re-read from it; neither runs in
-// the background.
-const LIVE_POLL_INTERVAL_MS = 5_000;
-let livePollTimer: ReturnType<typeof setInterval> | null = null;
-
+// The rows and the sync queue follow the backend's events through the
+// stores; this page reads them once when it opens.
 onMounted(() => {
-  void deviceStore.hydrate();
   void spaceStore.fetchSpaces();
-  void deviceStore.runSpaceSyncTick();
+  void spaceSyncStore.runSpaceSyncTick();
   void loadDeviceState();
-
-  livePollTimer = setInterval(() => {
-    if (!deviceId.value) return;
-    void deviceStore.refreshChannelStatuses(deviceId.value);
-    void deviceStore.refreshSyncQueue(deviceId.value);
-  }, LIVE_POLL_INTERVAL_MS);
-});
-
-onUnmounted(() => {
-  if (livePollTimer) {
-    clearInterval(livePollTimer);
-    livePollTimer = null;
-  }
 });
 
 watch(deviceId, () => {
@@ -134,10 +118,10 @@ async function loadDeviceState() {
   }
 
   try {
-    mappedSelection.value = await deviceStore.loadMappedSpaces(deviceId.value);
-    await deviceStore.refreshSpaceSyncStatus(deviceId.value);
+    mappedSelection.value = await spaceSyncStore.loadMappedSpaces(deviceId.value);
+    await spaceSyncStore.refreshSpaceSyncStatus(deviceId.value);
     await deviceStore.refreshChannelStatuses(deviceId.value);
-    await deviceStore.refreshSyncQueue(deviceId.value);
+    await spaceSyncStore.refreshSyncQueue(deviceId.value);
     mappingsDirty.value = false;
   } catch (error) {
     mappingError.value = String(error);
@@ -158,7 +142,7 @@ async function saveMappings() {
   savingMappings.value = true;
   mappingError.value = null;
   try {
-    mappedSelection.value = await deviceStore.saveMappedSpaces(deviceId.value, [
+    mappedSelection.value = await spaceSyncStore.saveMappedSpaces(deviceId.value, [
       ...new Set(mappedSelection.value),
     ]);
     mappingsDirty.value = false;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/vue/24/outline";
-import type { SyncQueueEntry, SyncQueueSummary } from "../../../stores/device";
+import type { SyncQueueEntry, SyncQueueSummary } from "../../../stores/space-sync.store";
 import { spaceCss } from "../../../stores/space";
 import { relativeTime } from "../../../utils/timestamp";
 
