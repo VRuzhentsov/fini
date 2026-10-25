@@ -750,6 +750,10 @@ impl BluetoothChannelService {
             attempt = connect => attempt,
             () = self.wait_until_off(peer_id) => {
                 log::info!("[transport][ble] stopped the connect to {address}: {peer_id} has no Bluetooth channel any more");
+                // The dial runs in ble-gatt-iroh's own task: dropping the
+                // connect does not stop it, and BlueZ stays busy (no scan, no
+                // advertising) until its own timeout. Closing the link does.
+                self.close_link_at(address.to_string(), Duration::ZERO).await;
                 return Err("the pair or the channel is gone".to_string());
             }
         };
@@ -763,6 +767,8 @@ impl BluetoothChannelService {
             Err(_elapsed) => {
                 log::info!("[transport][ble] candidate {address} did not finish the connect in time");
                 self.scanner.note_connect_failed(address);
+                // As above: stop the dial that still runs.
+                self.close_link_at(address.to_string(), Duration::ZERO).await;
                 Err("connect timed out".to_string())
             }
         }

@@ -526,7 +526,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=12645c8#12645c89ce47d0c2dc309eaa7c1a9f07c4a27c09"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=72415d8#72415d849df59803edf7124c6534147c395fa81f"
 dependencies = [
  "async-trait",
  "bluer",
@@ -548,7 +548,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt-iroh"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=12645c8#12645c89ce47d0c2dc309eaa7c1a9f07c4a27c09"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=72415d8#72415d849df59803edf7124c6534147c395fa81f"
 dependencies = [
  "ble-gatt",
  "iroh",
@@ -6921,7 +6921,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=12645c8#12645c89ce47d0c2dc309eaa7c1a9f07c4a27c09"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=72415d8#72415d849df59803edf7124c6534147c395fa81f"
 dependencies = [
  "async-trait",
  "ble-gatt",
