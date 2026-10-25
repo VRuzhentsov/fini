@@ -268,6 +268,13 @@ pub async fn run_session_gate(mut link: Box<dyn DataLink>, state: DeviceConnecti
             close_refused_bluetooth_link(&state, kind, from_addr, Some(&device_id));
             return;
         }
+        // Not set up yet: a setup with the peer is open here, and the row
+        // comes with its OK. "Off" -- not now -- so the peer keeps its row.
+        None if state.channel_setup(&device_id, kind).is_some() => {
+            log::info!("[space_sync][gate] {kind:?} session from {device_id} refused: the channel is being set up");
+            link.close(CLOSE_CHANNEL_OFF, "the channel is being set up");
+            return;
+        }
         // Removed here, or never added: the peer removes its row.
         None => {
             log::warn!("[space_sync][gate] {kind:?} session from {device_id} refused: no such channel for this pair");

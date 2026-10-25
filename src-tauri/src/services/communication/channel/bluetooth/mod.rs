@@ -86,6 +86,9 @@ pub struct BluetoothChannel {
     /// The iroh endpoint and its `ble-gatt-iroh` transport, built on first
     /// use (`iroh_endpoint`).
     endpoint: tokio::sync::OnceCell<(iroh::Endpoint, ble_gatt_iroh::BleGattTransport)>,
+    /// Per paired device, the address of the BLE link a pairing just used and
+    /// left up: the first session goes over it (`keep_pairing_link`).
+    pairing_links: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl BluetoothChannel {
@@ -95,6 +98,7 @@ impl BluetoothChannel {
             advertiser: Arc::new(Advertiser::new(identity)),
             delivery: DeliverySchedule::default(),
             endpoint: tokio::sync::OnceCell::new(),
+            pairing_links: std::sync::Mutex::default(),
         }
     }
 }
@@ -626,8 +630,9 @@ impl BluetoothChannel {
         if state.has_session_on(peer_id, ChannelKind::Bluetooth) || !self.delivery.delivery_due(&self.scanner, peer_id) {
             return;
         }
-        // While a device is being added, the adapter belongs to that search.
-        if self.advertiser.in_add_mode() {
+        // While a device is being added, the adapter belongs to that search --
+        // except for the device just paired over a link that is still up.
+        if self.advertiser.in_add_mode() && !self.has_pairing_link(peer_id) {
             return;
         }
         if !self.scanner.begin_exchange(peer_id) {
@@ -650,6 +655,19 @@ impl BluetoothChannel {
         let db_path = state.db_path.clone();
         if !is_still_bluetooth_eligible(&db_path, peer_id) {
             return;
+        }
+        // Just paired over Bluetooth: the pairing's BLE link is still up, so
+        // the session goes over it, with no search and no new connect.
+        if let Some(address) = self.take_pairing_link(peer_id) {
+            let guard = self.scanner.acquire_connect().await;
+            match self.connect_for_session(state, peer_id, &address).await {
+                Ok(link) => {
+                    drop(guard);
+                    log::info!("[transport][ble] first session with {peer_id} over the pairing link");
+                    return self.run_exchange(state, peer_id, link, &address).await;
+                }
+                Err(err) => log::info!("[transport][ble] the pairing link to {address} is gone: {err}"),
+            }
         }
         let deadline = tokio::time::Instant::now() + SEARCH_WINDOW;
         let mut last_error = None;

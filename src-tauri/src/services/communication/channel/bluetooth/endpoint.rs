@@ -28,6 +28,11 @@ const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(any(feature = "ui-plane", test))]
 pub(crate) const LINK_CLOSE_DELAY: Duration = Duration::from_secs(1);
 
+/// How long a pairing's BLE link waits for the first session to use it
+/// (`keep_pairing_link`).
+#[cfg(any(feature = "ui-plane", test))]
+const PAIRING_LINK_KEEP: Duration = Duration::from_secs(15);
+
 impl BluetoothChannel {
     /// Opens an iroh connection to `peer_key` for a pairing step --
     /// `address` is only where to reach it first (ADR-0009 D2/D7: Bluetooth
@@ -196,6 +201,41 @@ impl BluetoothChannel {
             }
             state.bluetooth.close_links_to(peer_key, Duration::ZERO).await;
         });
+    }
+
+    /// A pairing with `peer_id` finished on the BLE link to `address`: keep the
+    /// link for the first session (`take_pairing_link`). Not used within
+    /// `PAIRING_LINK_KEEP`, it is closed: a link left up blocks the connect
+    /// to the peer's new address.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub(crate) fn keep_pairing_link(
+        &self, state: &DeviceConnectionState, peer_id: &str, address: &str, peer_key: iroh::EndpointId,
+    ) {
+        if let Ok(mut links) = self.pairing_links.lock() {
+            links.insert(peer_id.to_string(), address.to_string());
+        }
+        log::info!("[transport][ble] keeping the pairing link to {address} for the first session");
+        state.space_sync.wake();
+        let state = state.clone();
+        let peer_id = peer_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(PAIRING_LINK_KEEP).await;
+            let unused = state.bluetooth.take_pairing_link(&peer_id).is_some();
+            if unused && !state.has_session_on(&peer_id, ChannelKind::Bluetooth) {
+                state.bluetooth.close_links_to(peer_key, Duration::ZERO).await;
+            }
+        });
+    }
+
+    /// Whether a pairing link is kept for `peer_id`'s first session.
+    pub(crate) fn has_pairing_link(&self, peer_id: &str) -> bool {
+        self.pairing_links.lock().is_ok_and(|links| links.contains_key(peer_id))
+    }
+
+    /// The address of the pairing link kept for `peer_id`'s first session,
+    /// once: a later session searches as usual.
+    pub(crate) fn take_pairing_link(&self, peer_id: &str) -> Option<String> {
+        self.pairing_links.lock().ok()?.remove(peer_id)
     }
 
     /// Like `close_links_to`, for a link the peer opened from `address`,

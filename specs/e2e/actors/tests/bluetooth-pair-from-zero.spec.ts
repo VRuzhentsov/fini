@@ -41,6 +41,22 @@ function note(step: string, startedAt: number): number {
   return ms;
 }
 
+interface ChannelStatus {
+  kind: ChannelKind;
+  color: ChannelColor;
+}
+
+/** Waits until `actor`'s Bluetooth channel with `peerDeviceId` is green. */
+async function waitForGreen(actor: E2EActor, peerDeviceId: string): Promise<void> {
+  const deadline = Date.now() + STEP_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const statuses = await actor.invoke<ChannelStatus[]>('device_connection_channel_statuses', { peerDeviceId });
+    if (statuses.find((status) => status.kind === ChannelKind.Bluetooth)?.color === ChannelColor.Green) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`${actor.slug} Bluetooth with ${peerDeviceId} not green in ${STEP_TIMEOUT_MS} ms`);
+}
+
 /** Removes the pair on `actor`'s side through its device page, if it has one. */
 async function unpairIfPaired(actor: E2EActor, peer: Identity): Promise<void> {
   const paired = await actor.invoke<PairedDevice[]>('device_connection_get_paired_devices');
@@ -88,6 +104,15 @@ test('a new pair over Bluetooth, from zero to green', async ({ actorA, actorB })
   await dialogB.typeCode(code);
   await Promise.all([dialogA.waitForPaired(), dialogB.waitForPaired()]);
   note('code -> Paired on both', codeTyped);
+
+  // The first session runs over the pairing's link, so the channel turns
+  // green while the dialogs still show Paired. Read from the backend: the
+  // row is behind the dialog.
+  const paired = Date.now();
+  await Promise.all([
+    waitForGreen(actorA, identityB.device_id).then(() => note(`Paired -> ${actorA.slug} green`, paired)),
+    waitForGreen(actorB, identityA.device_id).then(() => note(`Paired -> ${actorB.slug} green`, paired)),
+  ]);
 
   await Promise.all([dialogA.done(), dialogB.done()]);
   const done = Date.now();

@@ -137,7 +137,7 @@ impl BluetoothCarrier {
             send_pair_frame(link.as_mut(), &msg).await?;
             Ok::<_, String>(link)
         })?;
-        listen_for_answers(state.clone(), link);
+        listen_for_answers(state.clone(), link, to_device_id.to_string(), address.to_string());
         Ok(())
     }
 }
@@ -152,7 +152,7 @@ async fn send_pair_frame(link: &mut dyn DataLink, msg: &PeerFrame) -> Result<(),
 
 /// Reads the accept and the complete that come back on a request's link.
 #[cfg(all(any(target_os = "linux", target_os = "android"), any(feature = "ui-plane", test)))]
-fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>) {
+fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>, to_device_id: String, address: String) {
     use crate::services::communication::channel::recv_frame;
     tauri::async_runtime::spawn(async move {
         // The whole exchange runs on this one link, so keep the add-mode
@@ -161,6 +161,7 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>)
         let _leg = state.bluetooth.scanner.begin_pairing_step();
         let peer_key = link.peer_key().and_then(|key| key.parse::<iroh::EndpointId>().ok());
         let listen_for = Duration::from_secs(PAIR_REQUEST_TTL_SECS as u64 + 30);
+        let mut completed = false;
         let _ = tokio::time::timeout(listen_for, async {
             while let Some(Ok(frame)) = recv_frame(link.as_mut()).await {
                 match frame {
@@ -173,6 +174,7 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>)
                         let from_addr = link.peer_addr().unwrap_or_default();
                         let key = link.peer_key().or_else(|| payload.from_endpoint_id.clone());
                         let _ = state.receive_ws_pair_complete(payload, from_addr, key, true);
+                        completed = true;
                         break;
                     }
                     _ => log::warn!("[pairing][ble] unexpected frame on the request's link"),
@@ -182,9 +184,16 @@ fn listen_for_answers(state: DeviceConnectionState, mut link: Box<dyn DataLink>)
         .await;
         drop(link);
         log::info!("[pairing][ble] request link closed");
-        // The phone leaves Add Device with a new address; the BLE link to
-        // its old one must not outlive the pairing.
-        if let Some(peer_key) = peer_key {
+        let Some(peer_key) = peer_key else {
+            return;
+        };
+        if completed {
+            // The first session goes over this pairing's BLE link, which is
+            // still up: no search and no new connect (`exchange_with`).
+            state.bluetooth.keep_pairing_link(&state, &to_device_id, &address, peer_key);
+        } else {
+            // The phone leaves Add Device with a new address; the BLE link to
+            // its old one must not outlive the pairing.
             state
                 .bluetooth
                 .close_links_to(peer_key, crate::services::communication::channel::bluetooth::LINK_CLOSE_DELAY)
