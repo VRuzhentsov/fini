@@ -61,7 +61,7 @@ example `Device` or `Quest`. A repository reads and writes models.
 ### Command
 
 **A request from the UI to do one thing**, with a name and arguments: a
-Tauri command, for example `device_connection_unpair`. It gives back one
+Tauri command, for example `device_unpair`. It gives back one
 answer. Only the webview
 calls Tauri commands (the UI, and the e2e tests through the devtools
 bridge). The CLI and background tasks call the services directly.
@@ -181,10 +181,12 @@ can hold only one link between them. ble-gatt uses the same word
 
 ### Setup
 
-**The steps that add a channel to a pair** (`ChannelSetup`,
-`DeviceSetupDialog.vue`). The person presses Add on the channel row on the
-two devices. The devices find each other and send `AddChannel`. OK switches
-the channel on. A setup is open from Add until OK or Close.
+**The steps that add a channel to a pair** (`DeviceSetupDialog.vue`). It
+is pairing over that channel
+([ADR-0011](adr/0011-a-channel-is-a-switch-on-each-device.md)). The person
+presses Add on the channel row on the two devices, taps the other device on
+one of them, and accepts on the other. TLS proves the pinned key, so there
+is no code. Accept writes the channel row on the two devices.
 
 ### Green
 
@@ -229,11 +231,9 @@ Each message name is a technical noun of the Fini protocol.
 |---|---|---|
 | `IdentifyDevice` | A device in Add Device mode | "This is my identity. Tell me yours." |
 | `DeviceIdentified` | The device that received `IdentifyDevice` | "This is my identity." |
-| `AddChannel` | A device that adds a channel to a pair | "I add this channel to our pair." |
-| `AddChannelAccept` | The other device of the pair | "I add this channel too." |
-| `PairStart` | The device on which the person pushes Pair | "Pair with me." |
+| `PairStart` | The device on which the person pushes Pair (or Add, for a new channel) | "Pair with me." |
 | `PairAccept` | The other device | "I accept the pair." |
-| `PairComplete` | The first device | "The code agrees. The pair is complete." |
+| `PairComplete` | The other device | "The code agrees (for a paired device: the person accepted). The pair is complete." |
 
 ## Finding and connecting to a device
 
@@ -333,7 +333,7 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **dial** | not an approved word; Fini uses *connect* |
 | **leg** (`PairingLeg`) | jargon; Fini uses *pairing step* |
 | **lease** (scan lease) | jargon; Fini uses *scan lock* |
-| **hello** (`Hello`, `DiscoveryHello`) | not an approved word; the messages are `AddChannel` and `IdentifyDevice` |
+| **hello** (`Hello`, `DiscoveryHello`) | not an approved word; the message is `IdentifyDevice` |
 | **request** (`PairRequest`) | not an approved noun; the message is `PairStart` |
 | **note** (verb) | not an approved verb; Fini uses *record* |
 | **refuse**, **refusal** | not in the STE dictionary; Fini uses *reject*, *rejection* |

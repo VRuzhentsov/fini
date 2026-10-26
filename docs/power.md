@@ -44,7 +44,7 @@ rule.
 | Partial wake locks with the screen off | None held by Fini code. Bluetooth links are held by the Android Bluetooth service, not by a Fini wake lock |
 | One held Bluetooth link to a paired device | 10 mAh or less per day on the reference phone |
 | Bluetooth scans with the screen off | Only scans with a hardware filter on Fini's service UUID. No scan loop in Fini code |
-| Bluetooth scans without a filter | Only while a person has a Fini screen open that needs them (Add Device, channel setup) |
+| Bluetooth scans without a filter | Only while a person has a Fini screen open that needs them (Add Device, adding a channel) |
 | Network channel | One kept-alive iroh connection per paired device. No polling |
 
 Reference phone: Pixel 6 Pro, Android beta, the user's daily phone with

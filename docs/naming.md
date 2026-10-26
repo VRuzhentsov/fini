@@ -172,19 +172,17 @@ make them.
 
 ### Module layout
 
-`services/communication/` holds the three parts of how two devices reach each
-other:
-
-| Module | Owns |
-|---|---|
-| `pairing` | the trust between two devices, and the channels that a pair has |
-| `channel` | the connections: the connection code, the framing, and the encryption seam |
-| `sync` | the application protocol on a channel, and the outbox |
+The code is in role folders (ADR-0010 D3): `commands/`, `models/`,
+`repositories/`, `services/`. A file has the name of its class and a dotted
+role suffix: `device.service.rs`, `channel.repository.rs`,
+`device.commands.rs`, `device.store.ts`. How two devices reach each other is
+in [`docs/architecture/communication.md`](architecture/communication.md).
 
 Give a module the name of the concept that it owns, not the name of the trait
 that it exports.
 
-ADRs 0001 to 0006 are older than this layout. They refer to the old paths
+ADRs 0001 to 0009 are older than this layout. They refer to old paths such as
+`services/communication/{pairing,channel,sync}/` and
 `services/{transport,space_sync,device_connection}/`. They are records of the
 decisions as they were made, so they stay as they are.
 

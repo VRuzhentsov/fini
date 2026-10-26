@@ -1,8 +1,8 @@
 # Communication
 
-How two devices pair, connect, and sync their spaces. The code is in
-`src-tauri/src/services/communication/`. The words are in
-[`docs/glossary.md`](../glossary.md).
+How two devices pair, connect, and sync their spaces. The code is in the
+services, repositories and commands of `src-tauri/src/` (see "The parts").
+The words are in [`docs/glossary.md`](../glossary.md).
 
 ## The standard
 
@@ -10,8 +10,8 @@ Two devices find each other within 10 seconds under good conditions. This
 applies to Bluetooth and Network, to a new pair and to a new channel.
 
 - **Start:** the second device opens its dialog.
-- **Stop:** each device shows the other in its list: the Add Device list for
-  a new pair, or OK available in the setup dialog for a new channel.
+- **Stop:** each device shows the other in its Add Device list. For a new
+  channel, it is the list of the dialog that Add on the channel row opens.
 - **Good conditions:** the devices are near each other, Bluetooth is on,
   Wi-Fi is as it is.
 
@@ -40,8 +40,8 @@ app start (composition root)    lib.rs
 ├── SpaceSyncService            services/space-sync.service.rs: sessions,
 │                                 sync, takes fini/sync/4 links
 ├── DeviceService               services/device.service.rs: pairing, Add
-│                                 Device, channel setup, takes fini/peer/1
-│                                 links
+│                                 Device, adding a channel, takes
+│                                 fini/peer/1 links
 └── link handlers               set on each channel last
 ```
 
@@ -52,7 +52,7 @@ only through the event bus. The UI gets every event as the Tauri event
 `fini-event`; its stores are `device.store.ts` and `space-sync.store.ts`.
 
 The screens: `SettingsView.vue` (devices, pair requests),
-`DeviceSetupDialog.vue` (Add Device, channel setup), `DeviceView.vue` (one
+`DeviceSetupDialog.vue` (Add Device, adding a channel), `DeviceView.vue` (one
 paired device: channels, spaces, sync queue, Unlink), and
 `IncomingSpaceResolutionDialog.vue` (a request to sync a space).
 
@@ -75,8 +75,14 @@ system (ADR-0006).
 
 - After a pair over Bluetooth, the first session uses the link of the
   pairing.
-- A second channel for a pair is a setup: the person presses Add on the
-  channel row on the two devices. A setup has no code.
+- A second channel for a pair is pairing over that channel
+  ([ADR-0011](../adr/0011-a-channel-is-a-switch-on-each-device.md)). The
+  person presses Add on the channel row on the two devices. The list shows
+  only the other device. The person taps it on one device and accepts on the
+  other. TLS on the link proves the pinned key, so there is no code
+  (`IncomingPairRequest::known`). Accept writes the channel row `On` on the
+  two devices, and the first session uses the link of the request. A key that
+  is not the pinned one gets the code, as a new device.
 - Unlink removes the pair on that device, ends its sessions, and closes its
   Bluetooth links.
 - The identity of a device is `device.id` (a UUID that does not change) and
@@ -106,7 +112,7 @@ the connection finds the paired device by that key
 | ALPN | Carries | Taken by |
 |---|---|---|
 | `fini/sync/4` (`SYNC_ALPN`) | a sync session; the last part is the protocol version | `SpaceSyncService` |
-| `fini/peer/1` (`PEER_ALPN`) | the frames before a session: pairing, `AddChannel`, `IdentifyDevice` | `DeviceService` |
+| `fini/peer/1` (`PEER_ALPN`) | the frames before a session: pairing, `IdentifyDevice` | `DeviceService` |
 
 Before pairing there is no pinned key. Over Bluetooth, the identify step and
 the pair request use a plain link (`BleDataLink`) or an iroh connection to
@@ -123,7 +129,7 @@ side reads it (`DataLink::close_code`).
 | 2 | the channel is off here | waits, then tries again |
 | 3 | crossing: the other connection is kept | does nothing |
 | 4 | a session runs already | does nothing |
-| 5 (`CLOSE_CHANNEL_MISSING`) | the pair has no row for this channel here | publishes `ChannelMissingAtPeer`; `DeviceService` removes its own row, if no setup with the device is open |
+| 5 (`CLOSE_CHANNEL_MISSING`) | the pair has no row for this channel here | publishes `ChannelMissingAtPeer`; `DeviceService` removes its own row |
 
 After code 1, 2 or 5, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
 (Network: `FAILURE_COOLDOWN`). The rejecting side then closes the Bluetooth
@@ -149,7 +155,8 @@ peer started again: the new session replaces the old one.
 - Work for a device with no green channel stays in the outbox. SpaceSync
   does not connect and does not try again: a new session wakes it.
 - A pair or a channel that changes (`PairedDevicesChanged`,
-  `ChannelsChanged`) ends the sessions whose channel is not on any more.
+  `ChannelsChanged`) ends the sessions whose channel is not on any more, and
+  wakes the keeper: a channel that is on now gets its session.
 
 A session owns its link. The session slot keeps a sender (`SessionCommand`)
 to the session's task, not the link, so that two writers cannot mix the
@@ -179,7 +186,5 @@ A pair syncs only the spaces that the two devices map.
   power while idle. This needs a ble-gatt change.
 - Android should reconnect from the background scan that the Bluetooth chip
   filters. This needs a ble-gatt change.
-- A Bluetooth channel setup just after the channel was removed is near the
-  10 s limit.
 - SpaceSync reads the outbox one event at a time. Issue #196 is about a
   change mark for each device and space.
