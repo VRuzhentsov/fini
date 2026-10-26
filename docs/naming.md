@@ -168,7 +168,7 @@ make them.
   file is the noun only: `device.rs`. In Rust, the module of such a file is
   declared with `#[path]`.
 - A Tauri command name starts with the name of its service:
-  `device_unlink`.
+  `device_unpair`.
 
 ### Module layout
 

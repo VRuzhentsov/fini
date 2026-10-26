@@ -11,7 +11,6 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -187,11 +186,6 @@ pub trait ChannelService: Send + Sync {
     /// called on each SpaceSync tick.
     fn keep_serving(self: Arc<Self>) {}
 
-    /// A link to a paired device for the frames before a session
-    /// (`PEER_ALPN`), such as `AddChannel`: finds the device, for up to
-    /// `within`, and connects to the key pinned for the pair.
-    async fn connect_plain(&self, peer_device_id: &str, within: Duration) -> Result<Box<dyn DataLink>, String>;
-
     /// Whether this device connects to the peer on this channel now: to
     /// settle two connections that cross.
     fn connecting(&self, _peer_device_id: &str) -> bool {
@@ -213,10 +207,6 @@ pub trait ChannelService: Send + Sync {
     fn available_devices(&self) -> Vec<DiscoveredDevice> {
         Vec::new()
     }
-
-    /// Whether a setup of this channel is open on this device: then it must
-    /// be reachable (ADR-0008 D8).
-    fn set_setup_open(&self, _open: bool) {}
 }
 
 /// iroh's `ProtocolHandler` for one ALPN of a channel's endpoint: iroh's
@@ -504,7 +494,7 @@ const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 /// How long a closing link waits for the peer to take what was sent last.
 /// Dropping a QUIC connection discards data still in flight, which would
-/// lose the last frame of a reply (an `AddChannelAccept`).
+/// lose the last frame of a reply (a `PairComplete`).
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct IrohDataLink {
@@ -819,19 +809,6 @@ pub enum PeerFrame {
     /// Device itself.
     #[serde(rename = "device_identified")]
     DeviceIdentified { device_id: String, hostname: String, endpoint_id: String },
-    /// One half of a channel's init (ADR-0008 D1, D2), sent by a device that
-    /// runs a setup for a paired device. Answered with `AddChannelAccept`
-    /// only while the receiver runs its own setup for the sender on this
-    /// channel, or the channel exists there.
-    #[serde(rename = "add_channel")]
-    AddChannel { device_id: String },
-    /// Reply to `AddChannel`; carries the replier's own device id.
-    #[serde(rename = "add_channel_accept")]
-    AddChannelAccept { device_id: String },
-    /// "I unlinked this channel on my side" (ADR-0008 D14). The receiver
-    /// removes its own row for it.
-    #[serde(rename = "channel_unlinked")]
-    ChannelUnlinked { kind: ChannelKind },
     /// Any `type` tag this build does not know: skipped, so that a newer
     /// peer's frame does not end the session.
     #[serde(other)]

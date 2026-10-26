@@ -89,6 +89,10 @@ pub struct NetworkChannelService {
     /// Whether Add Device is open on this device: published with the mDNS
     /// record.
     add_device_mode: AtomicBool,
+    /// Whether some pair has Network on here. With none, and Add Device
+    /// closed, the mDNS lookup does not run: nobody finds this device on
+    /// the network (ADR-0011 D3).
+    any_pair_on: AtomicBool,
     /// The devices the mDNS lookup heard, by device id.
     heard: Mutex<HashMap<String, HeardDevice>>,
     /// Peers with a connect in flight -- one at a time for each peer.
@@ -128,6 +132,7 @@ impl NetworkChannelService {
             discovery_started: AtomicBool::new(false),
             discovery_stopped: AtomicBool::new(false),
             add_device_mode: AtomicBool::new(false),
+            any_pair_on: AtomicBool::new(false),
             heard: Mutex::default(),
             in_flight: Mutex::default(),
             connected_at: Mutex::default(),
@@ -296,8 +301,14 @@ impl NetworkChannelService {
                 }
             }
         };
+        let any_pair_on = tokio::task::block_in_place(|| {
+            !ChannelRepository::new(&mut open_db_at_path(&self.db_path))
+                .peers_with_channel_enabled(ChannelKind::Network)
+                .is_empty()
+        });
+        self.set_any_pair_on(any_pair_on);
         loop {
-            while self.switched_off() {
+            while self.switched_off() || !self.wants_lookup() {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
             let mdns = match MdnsAddressLookup::builder().service_name(MDNS_SERVICE_NAME).build(endpoint.id()) {
@@ -354,7 +365,7 @@ impl NetworkChannelService {
                         None => break,
                     },
                     _ = tick.tick() => {
-                        if self.switched_off() {
+                        if self.switched_off() || !self.wants_lookup() {
                             break;
                         }
                         // Add Device opened or closed: publish the new flag.
@@ -370,6 +381,18 @@ impl NetworkChannelService {
             lookup.clear();
             log::info!("[transport][network] mDNS lookup stopped");
         }
+    }
+
+    /// Some pair has Network on here, or not. The device service tells it
+    /// when a switch or a pair changes.
+    pub fn set_any_pair_on(&self, on: bool) {
+        self.any_pair_on.store(on, Ordering::SeqCst);
+    }
+
+    /// Whether the mDNS lookup runs: for a pair with Network on, or for Add
+    /// Device (ADR-0011 D3).
+    fn wants_lookup(&self) -> bool {
+        self.any_pair_on.load(Ordering::SeqCst) || self.add_device_mode.load(Ordering::SeqCst)
     }
 
     /// Records a device that the mDNS lookup heard. A device that arrives
@@ -604,19 +627,6 @@ impl ChannelService for NetworkChannelService {
         }
     }
 
-    /// A connection to where the mDNS lookup last heard the peer. The
-    /// lookup finds the peer, so `within` is not needed: a peer not heard
-    /// is an error at once.
-    async fn connect_plain(&self, peer_device_id: &str, _within: Duration) -> Result<Box<dyn DataLink>, String> {
-        let (addr, _) = self
-            .heard_address(peer_device_id)
-            .ok_or_else(|| format!("{peer_device_id} is not heard on the network"))?;
-        let peer_key = self
-            .pinned_key(peer_device_id)
-            // ADR-0009 D8: a pair from before keys existed is paired again.
-            .ok_or_else(|| format!("{peer_device_id} has no key pinned; pair the devices again"))?;
-        self.connect(&peer_key, addr.ip(), addr.port(), PEER_ALPN).await
-    }
 
     /// This device's own connection is being made, or became a session in
     /// the last `CROSSING_WINDOW`.

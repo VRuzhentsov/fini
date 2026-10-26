@@ -43,18 +43,14 @@ pub const CLOSE_CHANNEL_OFF: u32 = 2;
 /// kept.
 pub const CLOSE_CROSSED: u32 = 3;
 pub const CLOSE_SESSION_ACTIVE: u32 = 4;
-/// The pair is there, but the peer has no row for this channel: removed
-/// there, or not set up yet. The connecting side removes its own row,
-/// unless a setup of the channel is open there.
-pub const CLOSE_CHANNEL_MISSING: u32 = 5;
 
 /// Whether the peer closed a session with `close_code` because it did not
-/// want it (not paired there, or the channel is off or missing there): the
+/// want it (not paired there, or the channel is off there): the
 /// connecting side counts that as a failed attempt and waits before it
 /// tries again. A crossing or an active session is no failure: the peer's
 /// own session carries the work.
 pub fn rejected_by_peer(close_code: Option<u32>) -> bool {
-    matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF | CLOSE_CHANNEL_MISSING))
+    matches!(close_code, Some(CLOSE_NOT_PAIRED | CLOSE_CHANNEL_OFF))
 }
 
 /// How long after this device's own connection to a peer became a session
@@ -382,8 +378,8 @@ impl SpaceSyncService {
     fn on_event(&self, event: Event) {
         match event {
             // A pair or a channel changed: a session on a channel that is
-            // not on any more ends, a kept frame (`ChannelUnlinked`) goes,
-            // and the channel order may be different. A channel that is on
+            // not on any more ends, a kept frame goes, and the channel order
+            // may be different. A channel that is on
             // now needs its session: the tick starts it. A new pair's first
             // session must not wait for some other event.
             Event::PairedDevicesChanged | Event::ChannelsChanged { .. } => {
@@ -606,12 +602,6 @@ impl SpaceSyncService {
         }
         on_held();
         let close_code = self.run_session(link, rx, peer_device_id).await;
-        // The peer has no row for this channel. Removed there, or its setup
-        // not done there yet; the device service decides, because it knows
-        // whether a setup is open here.
-        if close_code == Some(CLOSE_CHANNEL_MISSING) {
-            self.bus.publish(Event::ChannelMissingAtPeer { peer_device_id: peer_device_id.to_string(), kind });
-        }
         Ok(close_code)
     }
 
@@ -763,17 +753,6 @@ impl SpaceSyncService {
                     let _ = SpaceMappingRepository::new(conn).set_last_synced(peer_device_id, &space_id, &completed_at);
                 });
             }
-            // ADR-0008 D14: the peer unlinked this channel: remove ours too.
-            PeerFrame::ChannelUnlinked { kind } => {
-                let removed = self.with_conn(|conn| ChannelRepository::new(conn).remove(peer_device_id, kind));
-                match removed {
-                    Ok(()) => {
-                        log::info!("[session] {peer_device_id}: the peer unlinked {kind:?}; removed it here");
-                        self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
-                    }
-                    Err(err) => log::warn!("[session] {peer_device_id}: removing {kind:?} failed: {err}"),
-                }
-            }
             PeerFrame::BluetoothAddressUpdate { address } => {
                 let Some(address) = crate::services::device_service::normalize_bluetooth_address(&address) else {
                     return;
@@ -789,8 +768,6 @@ impl SpaceSyncService {
             | PeerFrame::PairComplete(_)
             | PeerFrame::IdentifyDevice { .. }
             | PeerFrame::DeviceIdentified { .. }
-            | PeerFrame::AddChannel { .. }
-            | PeerFrame::AddChannelAccept { .. }
             // A frame type this build does not know: skipped, so that the
             // session keeps running.
             | PeerFrame::Unknown => {}
@@ -816,28 +793,17 @@ impl SpaceSyncService {
         };
         log::info!("[space_sync][accept] {kind:?} session from {device_id} via {from_addr}");
 
-        // Checked here too, not only on the connecting side: a peer whose
-        // own copy of this channel is still on keeps connecting. An
-        // unreadable row reads as off, never as missing.
-        let channel = self.with_conn(|conn| ChannelRepository::new(conn).find(&device_id, kind));
-        match channel {
-            Some(channel) if channel.enabled => {}
-            Some(_) => {
-                log::warn!("[space_sync][accept] {kind:?} session from {device_id} rejected: the channel is off for this pair");
-                link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
-                if kind == ChannelKind::Bluetooth {
-                    self.bluetooth.close_rejected_link(from_addr, Some(&device_id));
-                }
-                return;
+        // ADR-0011 D3: a session needs the channel On here too. A peer whose
+        // own switch is on keeps connecting. A missing or unreadable row is
+        // Off.
+        let on = self.with_conn(|conn| ChannelRepository::new(conn).find(&device_id, kind)).is_some_and(|channel| channel.enabled);
+        if !on {
+            log::warn!("[space_sync][accept] {kind:?} session from {device_id} rejected: the channel is off for this pair");
+            link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
+            if kind == ChannelKind::Bluetooth {
+                self.bluetooth.close_rejected_link(from_addr, Some(&device_id));
             }
-            None => {
-                log::warn!("[space_sync][accept] {kind:?} session from {device_id} rejected: the channel is missing for this pair");
-                link.close(CLOSE_CHANNEL_MISSING, "the channel is missing for this pair");
-                if kind == ChannelKind::Bluetooth {
-                    self.bluetooth.close_rejected_link(from_addr, Some(&device_id));
-                }
-                return;
-            }
+            return;
         }
 
         // Both devices connected at once: the connection from the smaller

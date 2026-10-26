@@ -1,6 +1,5 @@
 import type { TauriPage } from '@srsholmes/tauri-playwright';
 import { ChannelColor, type ChannelKind } from '../../../src/utils/channel.ts';
-import { ChannelSetupDialog } from './channel-setup-dialog.ts';
 import { waitForSelector } from './wait.ts';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -35,7 +34,7 @@ export class DevicePage {
   }
 }
 
-/** One channel row on a device page: its colour, its switch, Unlink and Add. */
+/** One channel row on a device page: its colour, and its switch. */
 export class ChannelRow {
   constructor(
     private readonly page: TauriPage,
@@ -57,41 +56,18 @@ export class ChannelRow {
     await waitForSelector(this.page,`${this.row}[data-channel-color="${color}"]`, timeoutMs);
   }
 
-  /** Switches the channel off, if it is on; returns when Unlink is offered. */
+  /** Switches the channel off, if it is on; returns when the row is off. */
   async switchOff(): Promise<void> {
     if ((await this.color()) !== ChannelColor.Off) {
       await this.page.click(`${this.row} [data-testid="channel-switch"]`);
     }
-    await waitForSelector(this.page,`${this.row} [data-testid="unlink-channel"]`, this.timeoutMs);
+    await this.waitForColor(ChannelColor.Off);
   }
 
-  /**
-   * Presses Unlink; returns when the row offers Add. The page drops a press
-   * while the row's switch is still settling, so the press is made again
-   * until Add shows.
-   */
-  async unlink(): Promise<void> {
-    const add = `${this.row} [data-testid="add-channel"]`;
-    const unlink = `${this.row} [data-testid="unlink-channel"]`;
-    const deadline = Date.now() + this.timeoutMs;
-    while ((await this.page.count(add)) === 0) {
-      if (Date.now() > deadline) throw new Error(`${this.kind} row never offered Add after Unlink`);
-      if ((await this.page.count(unlink)) > 0 && (await this.page.isEnabled(unlink))) {
-        await this.page.click(unlink);
-      }
-      await waitForSelector(this.page,add, 1_000).catch(() => undefined);
+  /** Switches the channel on, if it is off (ADR-0011 D1). */
+  async switchOn(): Promise<void> {
+    if ((await this.color()) === ChannelColor.Off) {
+      await this.page.click(`${this.row} [data-testid="channel-switch"]`);
     }
-  }
-
-  /** Presses Add; the channel's setup dialog opens. */
-  async add(): Promise<ChannelSetupDialog> {
-    await this.page.click(`${this.row} [data-testid="add-channel"]`);
-    await waitForSelector(this.page,'[data-testid="pair-device-dialog"]', this.timeoutMs);
-    return new ChannelSetupDialog(this.page, this.timeoutMs);
-  }
-
-  /** Waits until the row offers Add: the channel is not set up on this device. */
-  async waitForAdd(timeoutMs = this.timeoutMs): Promise<void> {
-    await waitForSelector(this.page,`${this.row} [data-testid="add-channel"]`, timeoutMs);
   }
 }

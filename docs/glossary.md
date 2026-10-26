@@ -179,14 +179,6 @@ closes the link itself when it does not need it (`close_links_to`). Two chips
 can hold only one link between them. ble-gatt uses the same word
 (`BleGattTransport::close_link`).
 
-### Setup
-
-**The steps that add a channel to a pair** (`DeviceSetupDialog.vue`). It
-is pairing over that channel
-([ADR-0011](adr/0011-a-channel-is-a-switch-on-each-device.md)). The person
-presses Add on the channel row on the two devices, taps the other device on
-one of them, and accepts on the other. TLS proves the pinned key, so there
-is no code. Accept writes the channel row on the two devices.
 
 ### Green
 
@@ -231,9 +223,9 @@ Each message name is a technical noun of the Fini protocol.
 |---|---|---|
 | `IdentifyDevice` | A device in Add Device mode | "This is my identity. Tell me yours." |
 | `DeviceIdentified` | The device that received `IdentifyDevice` | "This is my identity." |
-| `PairStart` | The device on which the person pushes Pair (or Add, for a new channel) | "Pair with me." |
+| `PairStart` | The device on which the person pushes Pair | "Pair with me." |
 | `PairAccept` | The other device | "I accept the pair." |
-| `PairComplete` | The other device | "The code agrees (for a paired device: the person accepted). The pair is complete." |
+| `PairComplete` | The other device | "The code agrees. The pair is complete." |
 
 ## Finding and connecting to a device
 
@@ -345,6 +337,7 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **Peer Protocol** | the older name for the frames between two devices; Fini says *`PeerFrame`* and *session* |
 | **Connection Manager** | an informal name for the session claim and the channel order; no object has this name |
 | **gate** (`Gate`) | more than one meaning; the service that owns a protocol takes its connections (ADR-0010 D6) |
+| **setup** (`ChannelSetup`), **unlink** (of a channel) | there is no setup and no unlink: a channel is a switch on each device (ADR-0011) |
 | **`DeviceConnectionState`** | read as a state or an enum; the services are built and registered one by one (ADR-0010 D5) |
 | **sticky handoff**, **transport selection** | older names for the rule of one session for each channel (see *Session*) and for the channel order (see *Primary*) |
 | **`Auth`**, **`AuthOk`**, **`AuthFail`** | removed frames; the TLS handshake proves the key (see *Session*) |

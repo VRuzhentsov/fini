@@ -3,16 +3,14 @@ import { DevicePage } from '../../components/device-page.ts';
 import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
 
 /**
- * Bluetooth removed and added again on a pair, the way a person does it on
- * the second device (actorB): switch Bluetooth off, Unlink, Add. The first
- * device (actorA) follows the removal by itself and offers Add: its next
- * session connect gets `CLOSE_NO_CHANNEL` from actorB, which advertises
- * again for the setup. The person presses Add there too, and OK on both
- * turns the row green.
+ * Bluetooth switched off and on again on a pair (ADR-0011): a channel is a
+ * switch on each device. The second device (actorB) switches Bluetooth off;
+ * it refuses the session, and the first device's row (actorA), still on,
+ * turns grey. actorB switches it on again, and the row turns green on both.
  *
- * The 10 s standard (`docs/architecture/communication.md`) is asserted for
- * the search: from the moment both setup dialogs are open until OK is
- * available on both. The other steps' times are recorded as annotations.
+ * The 10 s standard (`docs/architecture/communication.md`) is asserted from
+ * the moment actorB switches on until each row is green. The other steps'
+ * times are recorded as annotations.
  *
  * Starts from a pair that has Bluetooth on (run `bluetooth-pair-from-zero`
  * first, or pair by hand). Needs two real radios; run as in that spec.
@@ -20,12 +18,8 @@ import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
 
 const DISCOVERY_STANDARD_MS = 10_000;
 const STEP_TIMEOUT_MS = 120_000;
-/**
- * How long the first device may take to follow the removal: its next session
- * connect, which waits out the refusal at switch-off (30 s).
- */
+/** How long the first device may take to see the session end. */
 const FOLLOW_TIMEOUT_MS = 60_000;
-
 interface Identity {
   device_id: string;
 }
@@ -36,7 +30,7 @@ function note(step: string, startedAt: number): number {
   return ms;
 }
 
-test('Bluetooth removed and added again on a pair', async ({ actorA, actorB }) => {
+test('Bluetooth switched off and on again on a pair', async ({ actorA, actorB }) => {
   test.skip(
     actorA.kind !== 'external' || actorB.kind !== 'external',
     'needs two radios: run against real devices as external actors',
@@ -52,26 +46,20 @@ test('Bluetooth removed and added again on a pair', async ({ actorA, actorB }) =
   const rowB = pageB.channel(ChannelKind.Bluetooth);
   await rowB.waitForColor(ChannelColor.Green);
 
+  // ADR-0011 D3: with the switch off on actorB, actorB refuses the session,
+  // and actorA's row, still on, turns grey.
   await rowB.switchOff();
-  const removed = Date.now();
-  await rowB.unlink();
-  const setupB = await rowB.add();
-  await rowA.waitForAdd(FOLLOW_TIMEOUT_MS);
-  note(`${actorA.slug} follows the removal`, removed);
+  const switchedOff = Date.now();
+  await rowA.waitForColor(ChannelColor.Grey, FOLLOW_TIMEOUT_MS);
+  note(`${actorA.slug} grey after the switch-off`, switchedOff);
 
-  const setupA = await rowA.add();
-  const searching = Date.now();
-  const [readyB, readyA] = await Promise.all([
-    setupB.waitForOk(STEP_TIMEOUT_MS).then(() => note(`${actorB.slug} OK available`, searching)),
-    setupA.waitForOk(STEP_TIMEOUT_MS).then(() => note(`${actorA.slug} OK available`, searching)),
+  // The clock starts when the second device switches on.
+  await rowB.switchOn();
+  const switchedOn = Date.now();
+  const [greenA, greenB] = await Promise.all([
+    rowA.waitForColor(ChannelColor.Green, STEP_TIMEOUT_MS).then(() => note(`${actorA.slug} green`, switchedOn)),
+    rowB.waitForColor(ChannelColor.Green, STEP_TIMEOUT_MS).then(() => note(`${actorB.slug} green`, switchedOn)),
   ]);
-  expect(readyA, `${actorA.slug} finds ${actorB.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
-  expect(readyB, `${actorB.slug} finds ${actorA.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
-
-  await Promise.all([setupB.ok(), setupA.ok()]);
-  const ok = Date.now();
-  await Promise.all([
-    rowA.waitForColor(ChannelColor.Green).then(() => note(`OK -> ${actorA.slug} green`, ok)),
-    rowB.waitForColor(ChannelColor.Green).then(() => note(`OK -> ${actorB.slug} green`, ok)),
-  ]);
+  expect(greenA, `${actorA.slug} green within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
+  expect(greenB, `${actorB.slug} green within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
 });

@@ -1,6 +1,6 @@
 //! The device service (ADR-0010 D4): the paired devices and how a pair is
-//! made, changed and removed -- Add Device and pairing, the setup of a
-//! channel, the channel switches, unlink.
+//! made, changed and removed -- Add Device and pairing, and the channel
+//! switches (ADR-0011).
 //!
 //! It takes the links of the frames before a session (`PeerLinkHandler`,
 //! ALPN `fini/peer/1`, and every plain Bluetooth link). It uses the channel
@@ -16,12 +16,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use diesel::sqlite::SqliteConnection;
-use diesel::Connection;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::models::{Device, Event, Identity};
-use crate::repositories::{ChannelRepository, DeviceRepository, OutboxRepository};
+use crate::repositories::{ChannelRepository, DeviceRepository};
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{
     recv_frame, send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice,
@@ -37,20 +36,6 @@ pub const DISCOVERY_PROTOCOL: &str = "fini-device-sync-v1";
 pub const DISCOVERY_PORT: u16 = 45_454;
 /// How long a pair request waits for an answer.
 pub const PAIR_REQUEST_TTL_SECS: i64 = 60;
-
-/// How long one search for the peer may take before the `AddChannel` is
-/// tried again (ADR-0008 D12).
-#[cfg(not(test))]
-const SETUP_SEARCH: Duration = Duration::from_secs(60);
-#[cfg(test)]
-const SETUP_SEARCH: Duration = Duration::from_millis(200);
-
-/// The wait after an `AddChannel` that found no peer or got no accept, so
-/// that it is not sent again in a tight loop.
-const SETUP_RETRY: Duration = Duration::from_secs(2);
-
-/// How long the peer may take to accept an `AddChannel` once it has it.
-const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long the identify step waits for the answer once the link is open.
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -110,9 +95,6 @@ struct PairingState {
     /// The peer's key for each pairing this device completed or saw
     /// completed, by request id: `(peer device id, key)` (ADR-0009 D8).
     pairing_keys: HashMap<String, (String, String)>,
-    /// The channel setups open on this device, and how far each init got
-    /// (ADR-0008 D1, D2).
-    channel_setups: HashMap<(String, ChannelKind), ChannelSetup>,
 }
 
 impl PairingState {
@@ -174,37 +156,6 @@ impl DeviceService {
         match kind {
             ChannelKind::Network => self.network.clone(),
             ChannelKind::Bluetooth => self.bluetooth.clone(),
-        }
-    }
-
-    /// Removes the row of a channel that the peer has no row for, unless a
-    /// setup of it is open here: then the setup is not done there yet.
-    pub fn start(&self) {
-        let service = self.arc();
-        tauri::async_runtime::spawn(async move {
-            let mut events = service.bus.subscribe();
-            loop {
-                match events.recv().await {
-                    Ok(Event::ChannelMissingAtPeer { peer_device_id, kind }) => {
-                        service.remove_channel_missing_at_peer(&peer_device_id, kind)
-                    }
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
-    }
-
-    fn remove_channel_missing_at_peer(&self, peer_device_id: &str, kind: ChannelKind) {
-        if self.has_channel_setup(peer_device_id, kind) {
-            return;
-        }
-        match self.with_conn(|conn| ChannelRepository::new(conn).remove(peer_device_id, kind)) {
-            Ok(()) => {
-                log::info!("[session] {peer_device_id}: peer has no {kind:?} channel; removed it here");
-                self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
-            }
-            Err(err) => log::warn!("[session] {peer_device_id}: removing {kind:?} failed: {err}"),
         }
     }
 
@@ -822,18 +773,26 @@ impl DeviceService {
         let endpoint_id = request_id.and_then(|request_id| self.pairing_key(&request_id, peer_device_id)).or(endpoint_id);
         let device = DeviceRepository::new(conn).save(peer_device_id, display_name, endpoint_id.as_deref())?;
         let address = bluetooth_address.as_deref().and_then(normalize_bluetooth_address);
+        // ADR-0011 D2: the channel of the pairing is On, the other one Off.
+        // Pairing again keeps the switch of the other one as it is.
         let mut channels = ChannelRepository::new(conn);
         if via_bluetooth {
             channels.configure(peer_device_id, ChannelKind::Bluetooth, true, address.as_deref())?;
+            if channels.find(peer_device_id, ChannelKind::Network).is_none() {
+                channels.configure(peer_device_id, ChannelKind::Network, false, None)?;
+            }
         } else {
             channels.configure(peer_device_id, ChannelKind::Network, true, None)?;
             // A Network pairing that carries an address is no proof that
-            // Bluetooth works between the two: record it only.
-            if let Some(address) = address.as_deref() {
+            // Bluetooth works between the two: the address is kept only.
+            if channels.find(peer_device_id, ChannelKind::Bluetooth).is_none() {
+                channels.configure(peer_device_id, ChannelKind::Bluetooth, false, address.as_deref())?;
+            } else if let Some(address) = address.as_deref() {
                 channels.note_address(peer_device_id, ChannelKind::Bluetooth, address);
             }
         }
         self.bus.publish(Event::PairedDevicesChanged);
+        self.refresh_network_lookup(conn);
         self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
         Ok(device)
     }
@@ -858,8 +817,16 @@ impl DeviceService {
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = peer_key;
+        self.refresh_network_lookup(conn);
         self.bluetooth.refresh_advertising();
         Ok(())
+    }
+
+    /// Tells the Network channel whether some pair has Network on: with none,
+    /// its mDNS lookup does not run (ADR-0011 D3).
+    fn refresh_network_lookup(&self, conn: &mut SqliteConnection) {
+        let on = !ChannelRepository::new(conn).peers_with_channel_enabled(ChannelKind::Network).is_empty();
+        self.network.set_any_pair_on(on);
     }
 
     pub fn update_last_seen(&self, conn: &mut SqliteConnection, peer_device_id: &str, last_seen_at: &str) -> Result<(), String> {
@@ -887,10 +854,10 @@ impl DeviceService {
             .into_iter()
             .map(|kind| {
                 let channel = ChannelRepository::new(conn).find(peer_device_id, kind);
+                // A pair from before ADR-0011 can have no row: that is Off.
                 let state = match &channel {
-                    None => ChannelState::None,
                     Some(channel) if channel.enabled => ChannelState::On,
-                    Some(_) => ChannelState::Off,
+                    _ => ChannelState::Off,
                 };
                 let primary = channel.is_some_and(|channel| channel.is_primary);
                 let problem = if pair_key_missing { Some(ChannelProblem::PairKeyMissing) } else { self.channel(kind).problem() };
@@ -899,10 +866,11 @@ impl DeviceService {
             .collect())
     }
 
-    /// The switch on a channel row. Off: the row is off, the primary is
-    /// released, and the session on the channel ends (SpaceSync hears the
-    /// change). On: a channel that exists, and that works on this device
-    /// (ADR-0008 D6, D15); earlier failures are forgotten.
+    /// The switch on a channel row (ADR-0011 D1). Off: the row is off, the
+    /// primary is released, and the session on the channel ends (SpaceSync
+    /// hears the change). On: a channel that works on this device (ADR-0008
+    /// D6); a pair from before ADR-0011 with no row gets one. Earlier
+    /// failures are forgotten.
     pub async fn set_channel_enabled(&self, peer_device_id: &str, kind: ChannelKind, enabled: bool) -> Result<(), String> {
         if !self.with_conn(|conn| DeviceRepository::new(conn).is_paired(peer_device_id)) {
             return Err("paired device not found".to_string());
@@ -917,9 +885,6 @@ impl DeviceService {
                 }
             }
         }
-        if self.with_conn(|conn| ChannelRepository::new(conn).find(peer_device_id, kind)).is_none() {
-            return Err("Set the channel up first".to_string());
-        }
         let channel = self.channel(kind);
         // A radio remembered as off may be on again: ask it now.
         if enabled && !channel.usable() {
@@ -928,7 +893,7 @@ impl DeviceService {
         if enabled && !channel.usable() {
             return Err(format!("{kind:?} is unavailable on this device"));
         }
-        self.with_conn(|conn| ChannelRepository::new(conn).set_enabled(peer_device_id, kind, enabled))?;
+        self.with_conn(|conn| ChannelRepository::new(conn).configure(peer_device_id, kind, enabled, None))?;
         if enabled {
             channel.forget_failures(peer_device_id);
         } else {
@@ -944,25 +909,7 @@ impl DeviceService {
                 }
             }
         }
-        self.bluetooth.refresh_advertising();
-        self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
-        Ok(())
-    }
-
-    /// Forgets a channel: "Unlink" on the Device page (ADR-0008 D14). The
-    /// pair keeps its trust, its spaces and its other channel. Rejected
-    /// while the channel is on. The peer hears of it through the outbox,
-    /// written with the unlink itself.
-    pub fn unlink_channel(&self, conn: &mut SqliteConnection, peer_device_id: &str, kind: ChannelKind) -> Result<(), String> {
-        let mut rejected = None;
-        conn.transaction::<_, diesel::result::Error, _>(|conn| {
-            if let Err(reason) = ChannelRepository::new(conn).unlink(peer_device_id, kind) {
-                rejected = Some(reason);
-                return Err(diesel::result::Error::RollbackTransaction);
-            }
-            OutboxRepository::keep_in(conn, peer_device_id, &PeerFrame::ChannelUnlinked { kind })
-        })
-        .map_err(|err| rejected.take().unwrap_or_else(|| err.to_string()))?;
+        self.with_conn(|conn| self.refresh_network_lookup(conn));
         self.bluetooth.refresh_advertising();
         self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
         Ok(())
@@ -982,182 +929,6 @@ impl DeviceService {
         ChannelRepository::new(conn).set_primary(peer_device_id, primary)?;
         self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
         Ok(())
-    }
-
-    // ---- Channel setup (ADR-0008 D1-D4) ----
-    //
-    // Both people open the setup dialog, and each device runs a setup: it
-    // sends `AddChannel` to the peer on that channel and accepts the peer's
-    // `AddChannel`. The init is complete on a device once both halves
-    // happened there. Then the person can press OK, which switches the
-    // channel on for this device alone.
-
-    /// Starts a setup of this channel with the peer, or keeps the one that
-    /// runs.
-    pub async fn begin_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> Result<(), String> {
-        if kind == ChannelKind::Bluetooth {
-            // An explicit click: the moment Android lets us ask for the
-            // Nearby Devices permission. The answer comes later, so wait.
-            #[cfg(target_os = "android")]
-            {
-                crate::services::ble_plugin::request_permission();
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-                while !crate::services::ble_plugin::permission_granted() {
-                    if tokio::time::Instant::now() >= deadline {
-                        return Err("Bluetooth permission was not granted".to_string());
-                    }
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-            }
-            let channel = self.channel(kind);
-            if !channel.available() || !channel.probe().await {
-                return Err("Bluetooth is unavailable on this device".to_string());
-            }
-        }
-        let (already_running, attempt) = {
-            static NEXT_ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-            let mut state = self.lock()?;
-            let key = (peer_device_id.to_string(), kind);
-            let already_running = state.channel_setups.contains_key(&key);
-            let attempt = state
-                .channel_setups
-                .entry(key)
-                .or_insert_with(|| ChannelSetup {
-                    attempt: NEXT_ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                    ..ChannelSetup::default()
-                })
-                .attempt;
-            (already_running, attempt)
-        };
-        // The peer must reach this device while it searches (ADR-0008 D8).
-        self.channel(kind).set_setup_open(true);
-        self.bus.publish(Event::ChannelSetupChanged { peer_device_id: peer_device_id.to_string(), kind });
-        if !already_running {
-            let service = self.arc();
-            let peer_device_id = peer_device_id.to_string();
-            tauri::async_runtime::spawn(async move { service.run_channel_setup(&peer_device_id, kind, attempt).await });
-        }
-        Ok(())
-    }
-
-    /// The setup of this channel with the peer, if one is open.
-    pub fn channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> Option<ChannelSetup> {
-        self.state.lock().ok()?.channel_setups.get(&(peer_device_id.to_string(), kind)).copied()
-    }
-
-    pub fn has_channel_setup(&self, peer_device_id: &str, kind: ChannelKind) -> bool {
-        self.channel_setup(peer_device_id, kind).is_some()
-    }
-
-    fn any_channel_setup(&self, kind: ChannelKind) -> bool {
-        self.state.lock().is_ok_and(|state| state.channel_setups.keys().any(|(_, k)| *k == kind))
-    }
-
-    /// Records one half of an init, while `attempt` is the setup that runs.
-    fn record_setup_half(&self, peer_device_id: &str, kind: ChannelKind, attempt: Option<u64>, update: impl FnOnce(&mut ChannelSetup)) {
-        let changed = match self.state.lock() {
-            Ok(mut state) => match state.channel_setups.get_mut(&(peer_device_id.to_string(), kind)) {
-                Some(setup) if attempt.is_none_or(|attempt| setup.attempt == attempt) => {
-                    update(setup);
-                    true
-                }
-                _ => false,
-            },
-            Err(_) => false,
-        };
-        if changed {
-            self.bus.publish(Event::ChannelSetupChanged { peer_device_id: peer_device_id.to_string(), kind });
-        }
-    }
-
-    /// Ends the setup: OK (`switch_on`) or the dialog closed. If the init
-    /// completed, the channel is made `On` for OK and `Off` for a close
-    /// (ADR-0008 D15); otherwise nothing is written. A close never switches
-    /// off a channel that exists.
-    pub fn end_channel_setup(&self, conn: &mut SqliteConnection, peer_device_id: &str, kind: ChannelKind, switch_on: bool) -> Result<(), String> {
-        let setup = self.channel_setup(peer_device_id, kind);
-        let initialized = setup.is_some_and(|setup| setup.initialized());
-        if initialized && (switch_on || ChannelRepository::new(conn).find(peer_device_id, kind).is_none()) {
-            ChannelRepository::new(conn).configure(peer_device_id, kind, switch_on, None)?;
-        }
-        if let Ok(mut state) = self.state.lock() {
-            state.channel_setups.remove(&(peer_device_id.to_string(), kind));
-        }
-        if kind == ChannelKind::Bluetooth {
-            self.bluetooth.set_peer_request_accepted(peer_device_id, false);
-            if initialized {
-                self.bluetooth.keep_answering_after_setup();
-            }
-        }
-        self.channel(kind).set_setup_open(self.any_channel_setup(kind));
-        self.bus.publish(Event::ChannelSetupChanged { peer_device_id: peer_device_id.to_string(), kind });
-        self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
-        Ok(())
-    }
-
-    /// Sends `AddChannel` until the peer accepts it or this setup ends.
-    async fn run_channel_setup(&self, peer_device_id: &str, kind: ChannelKind, attempt: u64) {
-        // While a Bluetooth setup runs, the Add Device scan stands aside:
-        // its connects to the same phone fail the setup's own.
-        #[cfg(any(target_os = "linux", target_os = "android"))]
-        let _clear_of_scan = (kind == ChannelKind::Bluetooth).then(|| self.bluetooth.scanner.begin_pairing_step());
-        let channel = self.channel(kind);
-        loop {
-            match self.channel_setup(peer_device_id, kind) {
-                Some(setup) if setup.attempt == attempt && !setup.sent_request_accepted => {}
-                // Accepted: the setup stays open until it ends.
-                Some(setup) if setup.attempt == attempt => {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue;
-                }
-                _ => return,
-            }
-            log::info!("[setup] {kind:?} AddChannel to {peer_device_id}: connecting");
-            let accepted = match channel.connect_plain(peer_device_id, SETUP_SEARCH).await {
-                Ok(mut link) => {
-                    let accepted = self.request_channel(link.as_mut(), peer_device_id).await;
-                    log::info!("[setup] {kind:?} AddChannel to {peer_device_id}: accepted={accepted}");
-                    accepted
-                }
-                Err(err) => {
-                    log::info!("[setup] {kind:?} AddChannel to {peer_device_id}: {err}");
-                    false
-                }
-            };
-            if accepted {
-                self.record_setup_half(peer_device_id, kind, Some(attempt), |setup| setup.sent_request_accepted = true);
-                continue;
-            }
-            tokio::time::sleep(SETUP_RETRY).await;
-        }
-    }
-
-    /// Sends this device's `AddChannel` on `link`. `true` if the device
-    /// there is `peer_device_id` and accepted it (ADR-0008 D2).
-    async fn request_channel(&self, link: &mut dyn DataLink, peer_device_id: &str) -> bool {
-        let request = PeerFrame::AddChannel { device_id: self.identity.device_id.clone() };
-        if send_frame(link, &request).await.is_err() {
-            return false;
-        }
-        matches!(
-            tokio::time::timeout(ACCEPT_TIMEOUT, recv_frame(link)).await,
-            Ok(Some(Ok(PeerFrame::AddChannelAccept { device_id }))) if device_id == peer_device_id
-        )
-    }
-
-    /// Accepts the peer's `AddChannel` on `link`, and records that this
-    /// half of the init happened here.
-    async fn accept_channel_request(&self, link: &mut dyn DataLink, peer_device_id: &str, kind: ChannelKind) {
-        let accept = PeerFrame::AddChannelAccept { device_id: self.identity.device_id.clone() };
-        if send_frame(link, &accept).await.is_ok() {
-            self.record_setup_half(peer_device_id, kind, None, |setup| setup.accepted_peer_request = true);
-            if kind == ChannelKind::Bluetooth {
-                self.bluetooth.set_peer_request_accepted(peer_device_id, true);
-            }
-        }
-        // Keep the link open a short time, so that the accept is read
-        // before the stream closes.
-        let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
     }
 }
 
@@ -1209,26 +980,6 @@ impl PeerLinkHandler for DeviceService {
             PeerFrame::PairComplete(payload) => {
                 let key = link_key.or_else(|| payload.from_endpoint_id.clone());
                 self.receive_pair_complete(payload, from_addr, key, kind == ChannelKind::Bluetooth);
-            }
-            // ADR-0008 D1, D2: half of a channel's init. Accepted while a
-            // setup of this channel with the peer is open here, and later
-            // while the channel it made exists: an accept lost on the way
-            // means the peer still asks after this side finished.
-            PeerFrame::AddChannel { device_id } => {
-                let setup_open = self.has_channel_setup(&device_id, kind);
-                let (paired, key_matches, channel_exists) = self.with_conn(|conn| {
-                    let mut devices = DeviceRepository::new(conn);
-                    let paired = devices.is_paired(&device_id);
-                    let key_matches = devices.key_matches(&device_id, link_key.as_deref());
-                    let channel_exists = ChannelRepository::new(conn).find(&device_id, kind).is_some();
-                    (paired, key_matches, channel_exists)
-                });
-                log::info!(
-                    "[setup] {kind:?} AddChannel from {device_id}: paired={paired} key={key_matches} setup_open={setup_open} channel={channel_exists}"
-                );
-                if paired && key_matches && (setup_open || channel_exists) {
-                    self.accept_channel_request(link.as_mut(), &device_id, kind).await;
-                }
             }
             // Answered only in Add Device: outside it this device is not a
             // pairing candidate.
@@ -1426,11 +1177,10 @@ pub struct DevicePairRequestAckInput {
 }
 
 
-/// A channel's stored state (ADR-0008 D15). `None` is the absence of a row.
+/// The switch of a channel on this device (ADR-0011 D1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelState {
-    None,
     Off,
     On,
 }
@@ -1443,7 +1193,6 @@ pub enum ChannelColor {
     Grey,
     Orange,
     Off,
-    None,
 }
 
 /// One channel row on the Device page.
@@ -1464,7 +1213,6 @@ impl ChannelStatus {
     /// connection: the person can only act on the problem.
     pub fn new(kind: ChannelKind, state: ChannelState, green: bool, problem: Option<ChannelProblem>, primary: bool) -> Self {
         let (color, problem) = match state {
-            ChannelState::None => (ChannelColor::None, None),
             ChannelState::Off => (ChannelColor::Off, None),
             ChannelState::On => match problem {
                 Some(problem) => (ChannelColor::Orange, Some(problem)),
@@ -1484,7 +1232,6 @@ mod channel_status_tests {
     fn each_state_maps_to_exactly_one_row() {
         let problem = Some(ChannelProblem::BluetoothUnavailable);
         let cases = [
-            (ChannelState::None, true, problem, ChannelColor::None, None),
             (ChannelState::Off, true, problem, ChannelColor::Off, None),
             (ChannelState::On, true, None, ChannelColor::Green, None),
             (ChannelState::On, false, None, ChannelColor::Grey, None),
@@ -1495,30 +1242,6 @@ mod channel_status_tests {
             let row = ChannelStatus::new(ChannelKind::Bluetooth, state, green, reported, false);
             assert_eq!((row.color, row.problem), (color, shown), "{state:?}, green={green}, problem={reported:?}");
         }
-    }
-}
-
-
-/// One channel's init in progress (ADR-0008 D1). Complete once both halves
-/// are true: the peer accepted this device's `AddChannel`, and this device
-/// accepted the peer's.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChannelSetup {
-    /// Which setup this is. A setup closed and opened again for the same
-    /// channel is a new attempt, and what the old one's task still brings
-    /// back must not count for it.
-    #[serde(skip)]
-    pub attempt: u64,
-    /// The peer accepted this device's `AddChannel`.
-    pub sent_request_accepted: bool,
-    /// This device accepted the peer's `AddChannel`.
-    pub accepted_peer_request: bool,
-}
-
-impl ChannelSetup {
-    pub fn initialized(&self) -> bool {
-        self.sent_request_accepted && self.accepted_peer_request
     }
 }
 
@@ -1648,17 +1371,17 @@ mod pair_tests {
         assert_eq!(fixture.service.pairing_key("req-attacker", "peer-b"), None);
     }
 
-    /// A new pair's channels follow how it was set up (ADR-0007): pairing
-    /// over Bluetooth sets up Bluetooth and nothing else.
+    /// A new pair has the channel of its pairing On and the other one Off
+    /// (ADR-0011 D2).
     #[test]
-    fn a_bluetooth_pairing_sets_up_only_bluetooth() {
+    fn a_bluetooth_pairing_switches_on_only_bluetooth() {
         let mut fixture = fixture("bluetooth-pairing");
         save(&mut fixture, "peer-new", Some("aa:bb:cc:dd:ee:ff"), true);
 
         let bluetooth = channel(&mut fixture.conn, "peer-new", ChannelKind::Bluetooth).expect("the Bluetooth channel");
         assert!(bluetooth.enabled);
         assert_eq!(bluetooth.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert!(channel(&mut fixture.conn, "peer-new", ChannelKind::Network).is_none());
+        assert!(!channel(&mut fixture.conn, "peer-new", ChannelKind::Network).expect("the Network channel").enabled);
     }
 
     /// One side kept its row while the other reset and paired again over
@@ -1714,7 +1437,7 @@ mod pair_tests {
     }
 
     /// Switching a channel off is not forgetting it (ADR-0007): what it
-    /// learned is kept. Forgetting is a separate act -- unlink.
+    /// learned is kept (ADR-0007).
     #[tokio::test(flavor = "multi_thread")]
     async fn switching_a_channel_off_keeps_what_it_learned() {
         let mut fixture = paired_peer("switch-off");
@@ -1726,33 +1449,6 @@ mod pair_tests {
         let row = channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).expect("the row stays");
         assert!(!row.enabled);
         assert_eq!(row.address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-    }
-
-    /// Unlink is the deliberate second act: a channel that is on is not
-    /// forgotten, and the refusal says what to do.
-    #[test]
-    fn unlink_refuses_while_the_channel_is_still_on() {
-        let mut fixture = paired_peer("unlink-on");
-        ChannelRepository::new(&mut fixture.conn).configure("peer-a", ChannelKind::Bluetooth, true, None).unwrap();
-
-        let err = fixture.service.unlink_channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).unwrap_err();
-        assert!(err.contains("Turn the channel off first"), "got: {err}");
-        assert!(channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).is_some());
-    }
-
-    /// Once it is off, unlinking forgets it; the page offers to set it up.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn unlink_forgets_a_switched_off_channel() {
-        let mut fixture = paired_peer("unlink-off");
-        ChannelRepository::new(&mut fixture.conn)
-            .configure("peer-a", ChannelKind::Bluetooth, false, Some("AA:BB:CC:DD:EE:FF"))
-            .unwrap();
-
-        fixture.service.unlink_channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).unwrap();
-        assert!(channel(&mut fixture.conn, "peer-a", ChannelKind::Bluetooth).is_none());
-        let rows = fixture.service.channel_statuses(&mut fixture.conn, "peer-a", |_| false).unwrap();
-        let row = rows.iter().find(|row| row.kind == ChannelKind::Bluetooth).expect("a Bluetooth row");
-        assert_eq!(row.state, ChannelState::None);
     }
 
     #[tokio::test(flavor = "multi_thread")]

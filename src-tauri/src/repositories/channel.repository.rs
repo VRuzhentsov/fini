@@ -63,9 +63,6 @@ impl<'a> ChannelRepository<'a> {
             return Ok(());
         }
 
-        // Set up again: an unlink of the old channel that has not reached
-        // the peer yet would delete this one when it arrives.
-        crate::repositories::OutboxRepository::new(self.conn).drop_channel_unlinked(device_id, kind)?;
         diesel::insert_into(channels::table)
             .values(&NewChannel {
                 device_id: device_id.to_string(),
@@ -141,28 +138,6 @@ impl<'a> ChannelRepository<'a> {
         .execute(&mut *self.conn);
     }
 
-    /// Forget a channel: the pair keeps its trust and its spaces (ADR-0008
-    /// D14). Rejected while it is on, so unlinking is always a second act
-    /// after switching off.
-    pub fn unlink(&mut self, device_id: &str, kind: ChannelKind) -> Result<(), String> {
-        let Some(channel) = self.find(device_id, kind) else {
-            return Ok(());
-        };
-        if channel.enabled {
-            return Err("Turn the channel off first".to_string());
-        }
-        self.remove(device_id, kind)
-    }
-
-    /// Remove this channel row, whatever its switch says: the peer removed
-    /// the channel on its side.
-    pub fn remove(&mut self, device_id: &str, kind: ChannelKind) -> Result<(), String> {
-        diesel::delete(channels::table.find((device_id, kind.code())))
-            .execute(&mut *self.conn)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
     /// Every pair with this channel configured and on.
     pub fn peers_with_channel_enabled(&mut self, kind: ChannelKind) -> Vec<String> {
         channels::table
@@ -171,35 +146,5 @@ impl<'a> ChannelRepository<'a> {
             .select(channels::device_id)
             .load(&mut *self.conn)
             .unwrap_or_default()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::services::db::open_db_at_path;
-
-    /// ADR-0008 D14: unlinking removes the row, and only once the channel is
-    /// off.
-    #[test]
-    fn unlink_deletes_the_channel_once_it_is_off() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let mut conn = open_db_at_path(&dir.path().join("fini.db"));
-        diesel::sql_query(
-            "INSERT INTO paired_devices (peer_device_id, display_name, paired_at) \
-             VALUES ('peer', 'Peer', '2026-01-01T00:00:00Z')",
-        )
-        .execute(&mut conn)
-        .expect("seed pair");
-
-        let mut channels = ChannelRepository::new(&mut conn);
-        channels.configure("peer", ChannelKind::Bluetooth, true, None).expect("configure");
-        assert!(
-            channels.unlink("peer", ChannelKind::Bluetooth).is_err(),
-            "an On channel is switched off before it can be unlinked"
-        );
-        channels.set_enabled("peer", ChannelKind::Bluetooth, false).expect("switch off");
-        channels.unlink("peer", ChannelKind::Bluetooth).expect("unlink");
-        assert!(channels.find("peer", ChannelKind::Bluetooth).is_none());
     }
 }

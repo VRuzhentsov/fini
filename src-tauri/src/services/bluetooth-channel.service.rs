@@ -69,12 +69,6 @@ pub struct BluetoothChannelService {
     /// This object, for the tasks it starts.
     me: Weak<BluetoothChannelService>,
     handlers: LinkHandlerSlot,
-    /// Whether a Bluetooth setup is open on this device: then it advertises
-    /// (ADR-0008 D8), and the links of the peer are kept.
-    setup_open: std::sync::atomic::AtomicBool,
-    /// The devices whose `AddChannel` an open setup accepted
-    /// (`wait_for_turn_to_connect`).
-    peer_requests_accepted: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The one Bluetooth scan, the turns on the radio, and what the scan
     /// heard: the devices available for Add Device and the paired devices.
     pub(crate) scanner: Arc<Scanner>,
@@ -104,8 +98,6 @@ impl BluetoothChannelService {
             bus,
             me: me.clone(),
             handlers: LinkHandlerSlot::default(),
-            setup_open: std::sync::atomic::AtomicBool::new(false),
-            peer_requests_accepted: std::sync::Mutex::default(),
         })
     }
 
@@ -127,11 +119,6 @@ impl BluetoothChannelService {
     /// The iroh key pinned for the pair, if any.
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
         tokio::task::block_in_place(|| DeviceRepository::new(&mut open_db_at_path(&self.db_path)).pinned_key(peer_id))
-    }
-
-    /// Whether a Bluetooth setup is open on this device.
-    pub fn setup_open(&self) -> bool {
-        self.setup_open.load(Ordering::SeqCst)
     }
 }
 
@@ -361,11 +348,6 @@ impl ChannelService for BluetoothChannelService {
         self.refresh_advertising();
     }
 
-    fn set_setup_open(&self, open: bool) {
-        self.setup_open.store(open, Ordering::SeqCst);
-        self.refresh_advertising();
-    }
-
     /// Linux and Android: the only builds with a Bluetooth channel.
     fn available(&self) -> bool {
         true
@@ -412,17 +394,6 @@ impl ChannelService for BluetoothChannelService {
 
     fn forget_failures(&self, peer_device_id: &str) {
         self.delivery.forget_delivery_misses(peer_device_id);
-    }
-
-    /// A search of up to `within`, and a connection the moment the peer is
-    /// heard. A search the radio refused pauses `SETUP_ROUND_FAILURE_PAUSE`
-    /// before it returns, so a broken radio is not hammered.
-    async fn connect_plain(&self, peer_device_id: &str, within: Duration) -> Result<Box<dyn DataLink>, String> {
-        let result = self.find_and_connect_plain(peer_device_id, within).await;
-        if BluetoothAdapter::this_device().is_unavailable() {
-            tokio::time::sleep(SETUP_ROUND_FAILURE_PAUSE).await;
-        }
-        result
     }
 
     fn connecting(&self, peer_device_id: &str) -> bool {
@@ -831,120 +802,8 @@ impl BluetoothChannelService {
         });
         let advertiser = &self.advertiser;
         let wanted =
-            any_channel_on || self.setup_open() || advertiser.answering_after_setup() || advertiser.in_add_mode();
+            any_channel_on || advertiser.in_add_mode();
         advertiser.set_wanted(wanted);
-    }
-
-    /// A Bluetooth setup finished: keep advertising a short time, so that
-    /// the peer's late `AddChannel` is answered, then work it out again.
-    pub fn keep_answering_after_setup(&self) {
-        self.advertiser.keep_answering_after_setup();
-        let bluetooth = self.arc();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(advertiser::ANSWER_AFTER_SETUP + Duration::from_secs(1)).await;
-            bluetooth.refresh_advertising();
-        });
-    }
-}
-
-// ---- Channel setup ----
-
-/// Pause after a Bluetooth round fails outright (scan refused, adapter
-/// gone), so a broken radio is not hammered.
-#[cfg(not(test))]
-const SETUP_ROUND_FAILURE_PAUSE: Duration = Duration::from_secs(5);
-#[cfg(test)]
-const SETUP_ROUND_FAILURE_PAUSE: Duration = Duration::from_millis(200);
-
-/// How long the device with the higher id waits, in a Bluetooth setup, for the
-/// other device's hello to reach it before dialling anyway. See
-/// `BluetoothChannel::find_and_send_request`.
-#[cfg(not(test))]
-const HIGHER_ID_PATIENCE: Duration = Duration::from_secs(3);
-#[cfg(test)]
-const HIGHER_ID_PATIENCE: Duration = Duration::from_millis(1_500);
-
-/// `find_and_send_request`'s cap for one dial + hello + ack.
-///
-/// Against a real phone the dial alone takes 1-2s, and `BleDataLink::send`
-/// retries a `GattBusy` rejection for up to ~1.4s on top; 4s was once too
-/// short and dropped every attempt mid-connect:
-///
-/// ```text
-/// 02:05:13  connect: dialling 52:E1:52:02:7D:37
-/// 02:05:17  connect: abandoned before completing (connect guard dropped)
-/// ```
-///
-/// 15s leaves a 60s setup round room for four candidates -- more than a
-/// room ever holds.
-const FIND_PEER_CANDIDATE_TIMEOUT: Duration = Duration::from_secs(15);
-
-impl BluetoothChannelService {
-    /// One Bluetooth setup search for `peer_id` (ADR-0008 D12): asks the
-    /// scanner for the peer for up to `timeout`, and connects the moment it
-    /// is heard.
-    async fn find_and_connect_plain(&self, peer_id: &str, timeout: Duration) -> Result<Box<dyn DataLink>, String> {
-        let scanner = &self.scanner;
-        let Some(found) = scanner.find(peer_id, Purpose::Setup, timeout).await else {
-            if BluetoothAdapter::this_device().is_unavailable() {
-                return Err("bluetooth adapter unavailable".to_string());
-            }
-            return Err(format!("{peer_id} not heard within {timeout:?}"));
-        };
-        // Both devices search for each other, and each dials the other the
-        // moment it hears it. Two dials crossing fail each other: a device
-        // that is itself mid-connect is not connectable, so the other's dial
-        // hangs until BlueZ aborts it ("le-connection-abort-by-local" after
-        // 8-12 s), and the retry crosses again. Measured on a laptop and a
-        // Pixel, this was most of the 40-120 s a setup took. So the device
-        // with the higher id lets the other dial first, and dials back once
-        // the other's hello has reached it.
-        self.wait_for_turn_to_connect(peer_id).await;
-        // A candidate probe already dialling is let finish, not cancelled;
-        // this dial must not overlap one to the same peer.
-        let _probe = scanner.candidate_probe().await;
-        // Bounded: a candidate that accepts the connection and never
-        // finishes the handshake must not hold the round open.
-        let connected = tokio::time::timeout(
-            FIND_PEER_CANDIDATE_TIMEOUT,
-            self.connect_session(peer_id, &found.address, PEER_ALPN),
-        )
-        .await
-        .map_err(|_| format!("connect to {} timed out", found.address))
-        .and_then(|result| result);
-        if connected.is_err() {
-            scanner.note_connect_failed(&found.address);
-        }
-        connected
-    }
-
-    /// In a Bluetooth setup the device with the lower id dials first; the
-    /// one with the higher id waits until the other's hello has reached it
-    /// (or `HIGHER_ID_PATIENCE` runs out) before dialling back.
-    pub(crate) async fn wait_for_turn_to_connect(&self, peer_id: &str) {
-        if self.identity.device_id.as_str() <= peer_id {
-            return;
-        }
-        let patience = tokio::time::Instant::now() + HIGHER_ID_PATIENCE;
-        while tokio::time::Instant::now() < patience && !self.peer_request_accepted(peer_id) {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-
-    /// The setup with `peer_id` accepted the peer's `AddChannel`, or the
-    /// setup ended (`false`): the device with the higher id connects then.
-    pub fn set_peer_request_accepted(&self, peer_id: &str, accepted: bool) {
-        if let Ok(mut peers) = self.peer_requests_accepted.lock() {
-            if accepted {
-                peers.insert(peer_id.to_string());
-            } else {
-                peers.remove(peer_id);
-            }
-        }
-    }
-
-    fn peer_request_accepted(&self, peer_id: &str) -> bool {
-        self.peer_requests_accepted.lock().is_ok_and(|peers| peers.contains(peer_id))
     }
 }
 
@@ -1668,21 +1527,12 @@ mod advertiser {
 //! process each advertise their own identity and add-mode.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex as StdMutex;
-use std::time::Duration;
-use std::time::Instant;
 
 use tokio::sync::watch;
 
 use super::{datagram_config, fingerprint_of, ADD_MODE_FLAG_BYTE, FINGERPRINT_LEN, FINI_MANUFACTURER_ID};
 use ble_gatt::datagram::DatagramConfig;
 use crate::models::Identity;
-
-/// How long this device stays reachable after a Bluetooth init completes
-/// here. Its accept of the peer's `AddChannel` can be lost when the link
-/// drops, so the peer may still search; the accept is still given
-/// (ADR-0008 D2), but only if the peer can find this device.
-pub(super) const ANSWER_AFTER_SETUP: Duration = Duration::from_secs(120);
 
 /// The longest name the scan response carries on every platform: Android
 /// fits 13 bytes next to the service UUID, Linux 29. Cut here, so both show
@@ -1725,7 +1575,6 @@ pub struct Advertiser {
     /// Bluetooth channel on, is setting one up, or is being paired. Otherwise
     /// the radio stays quiet -- there is nobody it should be reachable by.
     wanted: watch::Sender<bool>,
-    answer_after_setup_until: StdMutex<Option<Instant>>,
     /// One peripheral acceptor, enforced where the loop actually runs rather
     /// than at each call site.
     ///
@@ -1745,7 +1594,6 @@ impl Advertiser {
             short_name: short_name(&identity.hostname),
             add_mode: watch::channel(false).0,
             wanted: watch::channel(false).0,
-            answer_after_setup_until: StdMutex::new(None),
             peripheral_running: AtomicBool::new(false),
         }
     }
@@ -1795,22 +1643,6 @@ impl Advertiser {
             *current = wanted;
             changed
         });
-    }
-
-    pub fn answering_after_setup(&self) -> bool {
-        self.answer_after_setup_until
-            .lock()
-            .ok()
-            .and_then(|until| *until)
-            .is_some_and(|until| Instant::now() < until)
-    }
-
-    /// A Bluetooth init completed here: keep advertising for
-    /// `ANSWER_AFTER_SETUP`.
-    pub fn keep_answering_after_setup(&self) {
-        if let Ok(mut until) = self.answer_after_setup_until.lock() {
-            *until = Some(Instant::now() + ANSWER_AFTER_SETUP);
-        }
     }
 
     /// Takes the peripheral role; false if an acceptor already runs.
@@ -1898,15 +1730,6 @@ mod tests {
             Some(0),
             "must stop signalling add-mode once it is left again"
         );
-    }
-
-    /// After a Bluetooth init completes here the device stays reachable a
-    /// while, so a peer that missed its ack can still find it and ask again.
-    #[test]
-    fn a_finished_bluetooth_setup_keeps_advertising_a_while() {
-        let advertiser = Advertiser::new(&identity("test-device"));
-        advertiser.keep_answering_after_setup();
-        assert!(advertiser.answering_after_setup());
     }
 }
 }
@@ -2204,7 +2027,7 @@ impl BluetoothChannelService {
         let peer_id = peer_id.to_string();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(TIME_BEFORE_LINK_CLOSE).await;
-            if bluetooth.has_session(&peer_id) || bluetooth.setup_open() {
+            if bluetooth.has_session(&peer_id) || bluetooth.advertiser.in_add_mode() {
                 return;
             }
             bluetooth.close_links_to(peer_key, Duration::ZERO).await;
@@ -2262,7 +2085,7 @@ impl BluetoothChannelService {
         let bluetooth = self.arc();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(TIME_BEFORE_LINK_CLOSE).await;
-            if known_device && bluetooth.setup_open() {
+            if known_device && bluetooth.advertiser.in_add_mode() {
                 return;
             }
             bluetooth.close_link_at(address, Duration::ZERO).await;
@@ -2388,13 +2211,11 @@ const IDENTIFY_TRY_AGAIN_TIME: Duration = Duration::from_secs(5);
 /// Pause after the radio refused a scan, so a broken adapter is not hammered.
 const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
 
-/// Why a search runs (ADR-0008 D12). The coordinator treats delivery and
-/// setup alike -- hand the peer's address over -- and keeps the purpose for
-/// the log.
+/// Why a search runs (ADR-0008 D12). The coordinator hands the peer's
+/// address over and keeps the purpose for the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
     Delivery,
-    Setup,
 }
 
 /// A peer heard by a delivery or setup search. Scanning stays paused while
@@ -3083,7 +2904,7 @@ mod tests {
         });
         let second = tokio::spawn({
             let radio = radio.clone();
-            async move { radio.find("coord-merge-b", Purpose::Setup, Duration::from_secs(5)).await }
+            async move { radio.find("coord-merge-b", Purpose::Delivery, Duration::from_secs(5)).await }
         });
         while !(searching(&radio, "coord-merge-a") && searching(&radio, "coord-merge-b")) {
             tokio::task::yield_now().await;
@@ -3108,7 +2929,7 @@ mod tests {
         });
         let setup = tokio::spawn({
             let radio = radio.clone();
-            async move { radio.find("coord-both", Purpose::Setup, Duration::from_secs(5)).await }
+            async move { radio.find("coord-both", Purpose::Delivery, Duration::from_secs(5)).await }
         });
         while radio.requests.lock().unwrap().searches.iter().filter(|r| r.peer == "coord-both").count() < 2 {
             tokio::task::yield_now().await;

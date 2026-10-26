@@ -9,9 +9,10 @@ The words are in [`docs/glossary.md`](../glossary.md).
 Two devices find each other within 10 seconds under good conditions. This
 applies to Bluetooth and Network, to a new pair and to a new channel.
 
-- **Start:** the second device opens its dialog.
-- **Stop:** each device shows the other in its Add Device list. For a new
-  channel, it is the list of the dialog that Add on the channel row opens.
+- **Start:** for a new pair, the second device opens Add Device. For a new
+  channel, the second device switches it on.
+- **Stop:** for a new pair, each device shows the other in its Add Device
+  list. For a new channel, the row is green on each device.
 - **Good conditions:** the devices are near each other, Bluetooth is on,
   Wi-Fi is as it is.
 
@@ -40,7 +41,7 @@ app start (composition root)    lib.rs
 ├── SpaceSyncService            services/space-sync.service.rs: sessions,
 │                                 sync, takes fini/sync/4 links
 ├── DeviceService               services/device.service.rs: pairing, Add
-│                                 Device, adding a channel, takes
+│                                 Device, the channel switches, takes
 │                                 fini/peer/1 links
 └── link handlers               set on each channel last
 ```
@@ -52,8 +53,8 @@ only through the event bus. The UI gets every event as the Tauri event
 `fini-event`; its stores are `device.store.ts` and `space-sync.store.ts`.
 
 The screens: `SettingsView.vue` (devices, pair requests),
-`DeviceSetupDialog.vue` (Add Device, adding a channel), `DeviceView.vue` (one
-paired device: channels, spaces, sync queue, Unlink), and
+`DeviceSetupDialog.vue` (Add Device), `DeviceView.vue` (one
+paired device: channel switches, spaces, sync queue, Unlink), and
 `IncomingSpaceResolutionDialog.vue` (a request to sync a space).
 
 ## Pairing
@@ -75,16 +76,13 @@ system (ADR-0006).
 
 - After a pair over Bluetooth, the first session uses the link of the
   pairing.
-- A second channel for a pair is pairing over that channel
-  ([ADR-0011](../adr/0011-a-channel-is-a-switch-on-each-device.md)). The
-  person presses Add on the channel row on the two devices. The list shows
-  only the other device. The person taps it on one device and accepts on the
-  other. TLS on the link proves the pinned key, so there is no code
-  (`IncomingPairRequest::known`). Accept writes the channel row `On` on the
-  two devices, and the first session uses the link of the request. A key that
-  is not the pinned one gets the code, as a new device.
-- Unlink removes the pair on that device, ends its sessions, and closes its
-  Bluetooth links.
+- A pair has the two channels, each with a switch on each device
+  ([ADR-0011](../adr/0011-a-channel-is-a-switch-on-each-device.md)). A new
+  pair has the channel of its pairing `On` and the other one `Off`. There is
+  no Add and no unlink for a channel: the person switches it on or off on
+  each device.
+- "Unlink <device>" on the Device page removes the pair on that device, ends
+  its sessions, and closes its Bluetooth links.
 - The identity of a device is `device.id` (a UUID that does not change) and
   `device.name`. A paired device keeps the name it had at the time of
   pairing (`display_name`). The screens show no UUIDs.
@@ -102,6 +100,12 @@ has the channel on. It does not know what goes through the connection.
 - `ChannelService::is_on` tells if the channel is on for a device. A
   Bluetooth connect stops when the channel goes off during it.
 - A connection that hears nothing for 15 s ends: the channel turns grey.
+- A session needs the channel on on the two devices. A device that has the
+  channel off for every pair is not reachable on it: Bluetooth does not
+  advertise (`refresh_advertising`), and Network does not run its mDNS
+  lookup (`NetworkChannelService::set_any_pair_on`), unless Add Device is
+  open. A device that has the channel on for another pair stays reachable,
+  and its gate refuses the session (code 2).
 
 ## Who is on the other end
 
@@ -126,12 +130,11 @@ side reads it (`DataLink::close_code`).
 | Code | Meaning | The connecting side |
 |---|---|---|
 | 1 | no pair has this key | waits, then tries again |
-| 2 | the channel is off here | waits, then tries again |
+| 2 | the channel is off here (a missing row is off) | waits, then tries again; its row is grey |
 | 3 | crossing: the other connection is kept | does nothing |
 | 4 | a session runs already | does nothing |
-| 5 (`CLOSE_CHANNEL_MISSING`) | the pair has no row for this channel here | publishes `ChannelMissingAtPeer`; `DeviceService` removes its own row |
 
-After code 1, 2 or 5, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
+After code 1 or 2, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
 (Network: `FAILURE_COOLDOWN`). The rejecting side then closes the Bluetooth
 link.
 

@@ -10,7 +10,7 @@ use crate::models::{Device, Identity};
 use crate::services::channel_service::DiscoveredDevice;
 use crate::services::db::AppDbConnection;
 use crate::services::device_service::{
-    ChannelSetup, ChannelStatus, DeviceConnectionDebugStatus, DevicePairRequestAckInput,
+    ChannelStatus, DeviceConnectionDebugStatus, DevicePairRequestAckInput,
     DevicePairRequestBluetoothInput, DevicePairRequestInput, DeviceService, IncomingPairRequest, PairCodeUpdate,
     PairCompletionUpdate,
 };
@@ -195,21 +195,6 @@ pub async fn device_set_channel_enabled(
 }
 
 #[tauri::command]
-pub fn device_unlink_channel(
-    db: State<AppDbConnection>,
-    devices: Devices,
-    space_sync: SpaceSync,
-    peer_device_id: String,
-    kind: ChannelKind,
-) -> Result<Vec<ChannelStatus>, String> {
-    {
-        let mut conn = db.0.lock().map_err(|e| e.to_string())?;
-        devices.unlink_channel(&mut conn, &peer_device_id, kind)?;
-    }
-    statuses(&db, &devices, &space_sync, &peer_device_id)
-}
-
-#[tauri::command]
 pub fn device_set_primary_channel(
     db: State<AppDbConnection>,
     devices: Devices,
@@ -224,48 +209,3 @@ pub fn device_set_primary_channel(
     statuses(&db, &devices, &space_sync, &peer_device_id)
 }
 
-/// Where a channel's init stands on this device (ADR-0008 D1).
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChannelSetupStatus {
-    pub sent_request_accepted: bool,
-    pub accepted_peer_request: bool,
-    /// Both halves done: OK can be pressed (D4).
-    pub initialized: bool,
-}
-
-impl From<ChannelSetup> for ChannelSetupStatus {
-    fn from(setup: ChannelSetup) -> Self {
-        Self {
-            sent_request_accepted: setup.sent_request_accepted,
-            accepted_peer_request: setup.accepted_peer_request,
-            initialized: setup.initialized(),
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn device_begin_channel_setup(devices: Devices<'_>, peer_device_id: String, kind: ChannelKind) -> Result<(), String> {
-    devices.begin_channel_setup(&peer_device_id, kind).await
-}
-
-#[tauri::command]
-pub fn device_channel_setup_status(devices: Devices, peer_device_id: String, kind: ChannelKind) -> Option<ChannelSetupStatus> {
-    devices.channel_setup(&peer_device_id, kind).map(ChannelSetupStatus::from)
-}
-
-#[tauri::command]
-pub fn device_end_channel_setup(
-    db: State<AppDbConnection>,
-    devices: Devices,
-    space_sync: SpaceSync,
-    peer_device_id: String,
-    kind: ChannelKind,
-    switch_on: bool,
-) -> Result<Vec<ChannelStatus>, String> {
-    {
-        let mut conn = db.0.lock().map_err(|e| e.to_string())?;
-        devices.end_channel_setup(&mut conn, &peer_device_id, kind, switch_on)?;
-    }
-    statuses(&db, &devices, &space_sync, &peer_device_id)
-}

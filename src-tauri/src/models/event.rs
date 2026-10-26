@@ -22,10 +22,6 @@ pub enum Event {
     /// or the primary changed.
     #[serde(rename_all = "camelCase")]
     ChannelsChanged { peer_device_id: String },
-    /// The setup of one channel changed: started, a half of its init done,
-    /// or ended.
-    #[serde(rename_all = "camelCase")]
-    ChannelSetupChanged { peer_device_id: String, kind: ChannelKind },
     /// The paired devices changed: a pair was made or removed.
     PairedDevicesChanged,
     /// The devices that Add Device can list changed.
@@ -46,9 +42,4 @@ pub enum Event {
     /// after that ended: the work for it can go another way, or try again.
     #[serde(rename_all = "camelCase")]
     ConnectChanged { peer_device_id: String, kind: ChannelKind },
-    /// The peer rejected a session because it has no row for this channel
-    /// (`CLOSE_CHANNEL_MISSING`). The device removes its own row, unless a
-    /// setup of this channel is open.
-    #[serde(rename_all = "camelCase")]
-    ChannelMissingAtPeer { peer_device_id: String, kind: ChannelKind },
 }

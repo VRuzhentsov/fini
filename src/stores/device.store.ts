@@ -30,14 +30,6 @@ export interface DeviceChannelStatus {
   primary: boolean;
 }
 
-// Where a channel's init stands during a setup (ADR-0008 D1).
-export interface ChannelSetupStatus {
-  sentRequestAccepted: boolean;
-  acceptedPeerRequest: boolean;
-  // Both halves done: OK can be pressed (D4).
-  initialized: boolean;
-}
-
 export interface DiscoveredDevice {
   device_id: string;
   hostname: string;
@@ -143,10 +135,6 @@ function randomId(): string {
   return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
-function setupKey(peerDeviceId: string, kind: ChannelKind): string {
-  return `${peerDeviceId}:${kind}`;
-}
-
 
 // The events of the backend's event bus (ADR-0010 D8, D9), as the Tauri
 // event `fini-event`. Each event tells that one thing changed; a store
@@ -157,7 +145,6 @@ export const FINI_EVENT = "fini-event";
 export const FiniEventType = {
   SessionChanged: "session-changed",
   ChannelsChanged: "channels-changed",
-  ChannelSetupChanged: "channel-setup-changed",
   PairedDevicesChanged: "paired-devices-changed",
   AvailableDevicesChanged: "available-devices-changed",
   PairRequestsChanged: "pair-requests-changed",
@@ -166,7 +153,6 @@ export const FiniEventType = {
   SyncQueueChanged: "sync-queue-changed",
   DeviceHeard: "device-heard",
   ConnectChanged: "connect-changed",
-  ChannelMissingAtPeer: "channel-missing-at-peer",
 } as const;
 
 export type FiniEventType = (typeof FiniEventType)[keyof typeof FiniEventType];
@@ -204,7 +190,6 @@ export const useDeviceStore = defineStore("device", () => {
   const debugStatus = ref<DeviceConnectionDebugStatus | null>(null);
   const pairCompletedAt = ref<string | null>(null);
   const channelStatusesByPeer = ref<Record<string, DeviceChannelStatus[]>>({});
-  const channelSetupByKey = ref<Record<string, ChannelSetupStatus | null>>({});
   const incomingExpectedCode = ref<Record<string, string>>({});
   const incomingAttemptCount = ref<Record<string, number>>({});
   const incomingCooldownUntil = ref<Record<string, string | null>>({});
@@ -310,40 +295,6 @@ export const useDeviceStore = defineStore("device", () => {
   // The star on a channel row (ADR-0007). `null` clears the choice.
   async function setPrimaryChannel(peerDeviceId: string, kind: ChannelKind | null): Promise<DeviceChannelStatus[]> {
     const statuses = await invoke<DeviceChannelStatus[]>("device_set_primary_channel", { peerDeviceId, primary: kind });
-    channelStatusesByPeer.value[peerDeviceId] = statuses;
-    return statuses;
-  }
-
-  // "Unlink" on the Device page. The backend rejects it while the channel
-  // is on.
-  async function unlinkChannel(peerDeviceId: string, kind: ChannelKind): Promise<DeviceChannelStatus[]> {
-    const statuses = await invoke<DeviceChannelStatus[]>("device_unlink_channel", { peerDeviceId, kind });
-    channelStatusesByPeer.value[peerDeviceId] = statuses;
-    return statuses;
-  }
-
-  // ADR-0008 D2: starts the setup of a paired device's channel. Rejects
-  // when Bluetooth does not work on this device (D6).
-  async function beginChannelSetup(peerDeviceId: string, kind: ChannelKind): Promise<void> {
-    await invoke("device_begin_channel_setup", { peerDeviceId, kind });
-    await refreshChannelSetup(peerDeviceId, kind);
-  }
-
-  // How far the channel's init got; null when no setup is open.
-  function getChannelSetup(peerDeviceId: string, kind: ChannelKind): ChannelSetupStatus | null {
-    return channelSetupByKey.value[setupKey(peerDeviceId, kind)] ?? null;
-  }
-
-  async function refreshChannelSetup(peerDeviceId: string, kind: ChannelKind): Promise<ChannelSetupStatus | null> {
-    const status = await invoke<ChannelSetupStatus | null>("device_channel_setup_status", { peerDeviceId, kind });
-    channelSetupByKey.value = { ...channelSetupByKey.value, [setupKey(peerDeviceId, kind)]: status };
-    return status;
-  }
-
-  // OK (`switchOn`) or the dialog closed. The backend writes the channel
-  // only if its init completed (ADR-0008 D15).
-  async function endChannelSetup(peerDeviceId: string, kind: ChannelKind, switchOn: boolean): Promise<DeviceChannelStatus[]> {
-    const statuses = await invoke<DeviceChannelStatus[]>("device_end_channel_setup", { peerDeviceId, kind, switchOn });
     channelStatusesByPeer.value[peerDeviceId] = statuses;
     return statuses;
   }
@@ -483,8 +434,6 @@ export const useDeviceStore = defineStore("device", () => {
         case FiniEventType.ChannelsChanged:
           if (event.peerDeviceId) void refreshChannelStatuses(event.peerDeviceId);
           break;
-        case FiniEventType.ChannelSetupChanged:
-          if (event.peerDeviceId && event.kind) void refreshChannelSetup(event.peerDeviceId, event.kind as ChannelKind);
           break;
         case FiniEventType.PairedDevicesChanged:
           void loadPairedDevices().then(refreshAllChannelStatuses);
@@ -764,11 +713,6 @@ export const useDeviceStore = defineStore("device", () => {
     refreshAllChannelStatuses,
     setChannelEnabled,
     setPrimaryChannel,
-    unlinkChannel,
-    beginChannelSetup,
-    getChannelSetup,
-    refreshChannelSetup,
-    endChannelSetup,
     enterAddMode,
     leaveAddMode,
     requestPair,

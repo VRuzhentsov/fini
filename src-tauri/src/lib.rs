@@ -22,13 +22,13 @@ use commands::channel_commands::channel_probe_bluetooth;
 use commands::channel_commands::channel_set_test_switch;
 #[cfg(feature = "ui-plane")]
 use commands::device_commands::{
-    device_available_devices, device_begin_channel_setup, device_heard_devices, device_channel_setup_status, device_channel_statuses,
-    device_debug_status, device_end_channel_setup, device_enter_add_mode, device_get_identity,
+    device_available_devices, device_heard_devices, device_channel_statuses,
+    device_debug_status, device_enter_add_mode, device_get_identity,
     device_identify_bluetooth_device, device_leave_add_mode, device_pair_accept_request,
     device_pair_acknowledge_request, device_pair_complete_request, device_pair_incoming_requests,
     device_pair_outgoing_completions, device_pair_outgoing_updates, device_paired_devices,
     device_save_paired_device, device_send_pair_request, device_send_pair_request_bluetooth,
-    device_set_channel_enabled, device_set_primary_channel, device_unlink_channel, device_unpair,
+    device_set_channel_enabled, device_set_primary_channel, device_unpair,
     device_update_last_seen,
 };
 #[cfg(feature = "ui-plane")]
@@ -463,7 +463,6 @@ pub fn run() {
             network.clone().start_serving();
             bluetooth.clone().start_discovery();
             bluetooth.clone().start_serving();
-            devices.start();
             // Sync runs from app start, not from the frontend's first tick:
             // held connections come up while the frontend still loads.
             space_sync.start();
@@ -535,11 +534,7 @@ pub fn run() {
             device_update_last_seen,
             device_channel_statuses,
             device_set_channel_enabled,
-            device_unlink_channel,
             device_set_primary_channel,
-            device_begin_channel_setup,
-            device_channel_setup_status,
-            device_end_channel_setup,
             channel_probe_bluetooth,
             space_sync_list_mappings,
             space_sync_update_mappings,

@@ -10,12 +10,11 @@ use diesel::prelude::*;
 use diesel::SqliteConnection;
 use uuid::Uuid;
 
-use crate::models::{ChannelKind, CreateSyncAck, CreateSyncOutboxEntry, CreateSyncSeen, SyncOutboxEntry};
+use crate::models::{CreateSyncAck, CreateSyncOutboxEntry, CreateSyncSeen, SyncOutboxEntry};
 use crate::schema::{peer_control_outbox, sync_acks, sync_outbox, sync_seen};
 use crate::services::channel_service::{PeerFrame, SyncEventEnvelope};
 use crate::services::db::{sync_timestamp, utc_now};
 
-const CHANNEL_UNLINKED: &str = "channel_unlinked";
 const SPACE_SYNC_END: &str = "space_sync_end";
 
 pub struct OutboxRepository<'a> {
@@ -41,7 +40,6 @@ fn envelope(row: SyncOutboxEntry) -> SyncEventEnvelope {
 /// a frame that no longer holds. `None` for frames the outbox does not keep.
 fn kept_as(frame: &PeerFrame) -> Option<(&'static str, String)> {
     match frame {
-        PeerFrame::ChannelUnlinked { kind } => Some((CHANNEL_UNLINKED, kind.code().to_string())),
         PeerFrame::SpaceSyncEnd { space_id, .. } => Some((SPACE_SYNC_END, space_id.clone())),
         _ => None,
     }
@@ -245,14 +243,6 @@ impl<'a> OutboxRepository<'a> {
                 .filter(peer_control_outbox::subject.eq(subject)),
         )
         .execute(conn)
-    }
-
-    /// The channel was set up again: an unlink of it that has not gone yet
-    /// no longer holds, and delivered late it would delete the new channel.
-    pub fn drop_channel_unlinked(&mut self, peer_device_id: &str, kind: ChannelKind) -> Result<(), String> {
-        Self::remove_about(self.conn, peer_device_id, CHANNEL_UNLINKED, kind.code())
-            .map(|_| ())
-            .map_err(|e| e.to_string())
     }
 
     /// The space is synced again: its end has not gone yet, so the peer

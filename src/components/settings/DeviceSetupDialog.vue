@@ -9,22 +9,14 @@ import {
   InformationCircleIcon,
 } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./device/ChannelIcon.vue";
-import {
-  useDeviceStore,
-  type ChannelSetupStatus,
-  type DiscoveredDevice,
-} from "../../stores/device.store";
+import { useDeviceStore, type DiscoveredDevice } from "../../stores/device.store";
 import { ChannelKind } from "../../utils/channel";
 import { channelName } from "../../utils/channelStatusCodes";
 
-// The one setup dialog (ADR-0008 D20), for every way two devices come to
-// share a channel:
-//
-// - a new device (never paired, or paired again after unpairing): choose a
-//   channel, pick the device, confirm with the code ceremony;
-// - a known device getting a channel (added, or re-added after unlink):
-//   both devices search and say hello to each other; once both hellos are
-//   acknowledged the channel's init is complete and OK switches it on.
+// The Add Device dialog: a new device (never paired, or paired again after
+// unpairing). Choose a channel, pick the device, confirm with the code
+// ceremony. A paired device gets a channel by its switch on the Device page,
+// not here (ADR-0011).
 //
 // Explanations live behind ⓘ, never as text in the dialog, and there is no
 // "nobody found" dead end: the search simply keeps going while it is open.
@@ -45,10 +37,6 @@ const props = defineProps<{
   // two devices asking at once, "Open request" on the older row answered
   // the wrong person -- and the older one could not be accepted at all.
   requestId?: string | null;
-  // Set for a known device: the channel being set up with it.
-  peerDeviceId?: string | null;
-  peerName?: string;
-  kind?: ChannelKind | null;
 }>();
 const emit = defineEmits<{ close: [] }>();
 
@@ -86,25 +74,15 @@ const incoming = computed(() => {
 // Bluetooth. Two devices on one LAN is the common case, so the dialog would
 // have reported "nobody found" while the BLE scan was looking straight at
 // the peer.
-const knownDevice = computed(() => Boolean(props.peerDeviceId && props.kind));
-
-// A new device: the list keeps devices that are paired on this side too, so
-// that a pair deleted on the other side only can be made again ("Pair
-// again"). A known device: the ordinary list, the known peer has its own row.
-const candidates = computed<DiscoveredDevice[]>(() => {
-  if (!channel.value) return [];
-  return knownDevice.value
-    ? deviceStore.discoveredByChannel[channel.value]
-    : deviceStore.discoveredWithPairedByChannel[channel.value];
-});
+//
+// The list keeps devices that are paired on this side too, so that a pair
+// deleted on the other side only can be made again ("Pair again").
+const candidates = computed<DiscoveredDevice[]>(() =>
+  channel.value ? deviceStore.discoveredWithPairedByChannel[channel.value] : [],
+);
 
 const pairedHereIds = computed(() => new Set(deviceStore.pairedDevices.map((device) => device.peer_device_id)));
 
-// The known-device list (ADR-0008 D20 steps 2-3): the known peer is marked
-// and preselected at the top, and every other device in range can still be
-// picked. Picking one -- or the known peer showing up as a device to pair
-// with, because automatic confirmation cannot work with it -- goes through
-// the code ceremony.
 const renderLists = computed(() => ({
   // The rows of the Add Device list; a device paired on this side says so
   // and offers "Pair again".
@@ -112,33 +90,9 @@ const renderLists = computed(() => ({
     const pairedHere = pairedHereIds.value.has(device.device_id);
     return { device, pairedHere, pairLabel: pairedHere ? "Pair again" : "Pair" };
   }),
-  otherCandidates: knownDevice.value
-    ? candidates.value.filter((device) => device.device_id !== props.peerDeviceId)
-    : candidates.value,
-  // Read from the list that keeps paired devices: the known peer is paired,
-  // so the ordinary candidate list never contains it.
-  knownPeerAsCandidate:
-    knownDevice.value && props.kind
-      ? deviceStore.discoveredWithPairedByChannel[props.kind].filter(
-          (device) => device.device_id === props.peerDeviceId,
-        )
-      : [],
 }));
 
-// The known-device branch's own progress: the store follows the backend's
-// events for it.
-const setupStatus = computed<ChannelSetupStatus | null>(() =>
-  props.peerDeviceId && props.kind ? deviceStore.getChannelSetup(props.peerDeviceId, props.kind) : null,
-);
-const setupError = ref<string | null>(null);
-// Set once OK or close ended the setup, so unmounting does not end it twice.
-let setupFinished = false;
-
 const step = computed(() => {
-  // A code ceremony under way -- the known peer's fallback, or another
-  // device picked from the list -- keeps the screen until it ends, even if
-  // the automatic path completes meanwhile: OK would otherwise set up the
-  // original peer and abandon the ceremony the person is in.
   if (deviceStore.pairCompletedAt) return "paired";
   if (incoming.value) {
     return acceptedRequestId.value === incoming.value.request_id ? "entercode" : "incoming";
@@ -163,13 +117,6 @@ const step = computed(() => {
     if (request.status === "pending" || request.status === "awaiting_code") return "sent";
   }
 
-  // Known device, automatic path (ADR-0008 D20 step 4): the hello exchange.
-  if (knownDevice.value) {
-    if (setupError.value) return "setupFailed";
-    if (setupStatus.value?.initialized) return "setupReady";
-    if (setupStatus.value?.sentRequestAccepted || setupStatus.value?.acceptedPeerRequest) return "setupFound";
-    return "setupSearching";
-  }
   if (!channel.value) return "channel";
   return "looking";
 });
@@ -181,17 +128,10 @@ function channelChoiceHint(kind: ChannelKind): string {
   return kind === ChannelKind.Network ? "Same network" : "Nearby, no network";
 }
 
-const title = computed(() =>
-  knownDevice.value && props.kind ? `Add ${channelName(props.kind)}` : "Add device",
-);
-
 // What ⓘ in the header explains for the step on screen, or null when there
 // is nothing to add. The dialog itself carries no explanatory text.
 const hint = computed<string | null>(() => {
   switch (step.value) {
-    case "setupSearching":
-    case "setupFound":
-      return `Open Add ${props.kind ? channelName(props.kind) : ""} on ${props.peerName ?? "the other device"} too — OK becomes available once both devices have found each other.`;
     case "looking":
       return "Open Add device on the other device too — it appears here once it is also looking.";
     case "declined":
@@ -207,14 +147,8 @@ const hint = computed<string | null>(() => {
   }
 });
 
-// The known-device steps' render contract, per fini-frontend.
 const renderFlags = computed(() => ({
   hintInfo: hint.value !== null,
-  setupSearch: step.value === "setupSearching" || step.value === "setupFound",
-  setupReady: step.value === "setupReady",
-  setupFailed: step.value === "setupFailed",
-  setupFooter: ["setupSearching", "setupFound", "setupReady", "setupFailed"].includes(step.value),
-  otherCandidates: renderLists.value.otherCandidates.length > 0,
 }));
 
 function secondsLeft(iso: string): number {
@@ -223,17 +157,6 @@ function secondsLeft(iso: string): number {
 }
 
 const digits = computed(() => codeInput.value.replace(/\D/g, "").slice(0, 6));
-
-// Entering add mode is what makes this device discoverable to the other
-// one, so it has to happen exactly once per opening -- and it must survive
-// being mounted already-open. The parent can flip its flag during its own
-// setup, before this component exists, and a plain `watch` on the prop
-// would never see that transition: the nearby list would sit empty forever.
-// Adding a known device's Network channel has no use for the Bluetooth
-// half of add mode.
-const addModeUsesBluetooth = computed(
-  () => !(knownDevice.value && props.kind === ChannelKind.Network),
-);
 
 function resetDialog() {
   channel.value = null;
@@ -257,59 +180,11 @@ function stopAddMode() {
   void deviceStore.leaveAddMode();
 }
 
-// A known device needs no add mode: both devices run a setup search for
-// each other instead (ADR-0008 D2), and this polls how far it got.
-async function startChannelSetup() {
-  setupFinished = false;
-  setupError.value = null;
-  if (!props.peerDeviceId || !props.kind) return;
-  const peerDeviceId = props.peerDeviceId;
-  const kind = props.kind;
-  try {
-    await deviceStore.beginChannelSetup(peerDeviceId, kind);
-  } catch (error) {
-    if (!setupFinished) setupError.value = String(error);
-    return;
-  }
-  // Closed while the begin was still waiting on the radio or a permission
-  // prompt: the end already ran, before the backend search existed, so end
-  // the search that has just started instead of leaving it running.
-  if (setupFinished) {
-    await deviceStore.endChannelSetup(peerDeviceId, kind, false);
-  }
-}
-
-// OK switches the channel on; closing leaves it Off if the init completed
-// and writes nothing otherwise (ADR-0008 D15) -- the backend decides.
-// `false` when writing the channel failed: the backend keeps the completed
-// init, so OK can be pressed again.
-async function finishChannelSetup(switchOn: boolean): Promise<boolean> {
-  if (setupFinished) return true;
-  setupFinished = true;
-  if (!props.peerDeviceId || !props.kind || setupError.value) return true;
-  try {
-    await deviceStore.endChannelSetup(props.peerDeviceId, props.kind, switchOn);
-    return true;
-  } catch (error) {
-    console.warn("[device-setup] finishing the channel setup failed", error);
-    setupFinished = false;
-    return false;
-  }
-}
-
-// A known device runs both: the setup search for the automatic path, and
-// add mode so the list and the code fallback work (ADR-0008 D20).
 function begin() {
   resetDialog();
-  if (knownDevice.value) {
-    channel.value = props.kind ?? null;
-    startAddMode(addModeUsesBluetooth.value);
-    void startChannelSetup();
-  }
 }
 
 function end() {
-  if (knownDevice.value) void finishChannelSetup(false);
   stopAddMode();
 }
 
@@ -348,15 +223,10 @@ function pickChannel(kind: ChannelKind) {
   startAddMode(kind === ChannelKind.Bluetooth);
 }
 
-// Back to the start. A known device keeps its channel: the row's Add set it.
-// A new device goes back to the channel choice, so its add mode ends here and
-// starts again for the next channel picked.
+// Back to the channel choice: add mode ends here and starts again for the
+// next channel picked.
 function startOver() {
   deviceStore.cancelOutgoingRequest();
-  if (knownDevice.value) {
-    channel.value = props.kind ?? null;
-    return;
-  }
   stopAddMode();
   channel.value = null;
 }
@@ -392,10 +262,6 @@ function close() {
   deviceStore.cancelOutgoingRequest();
   emit("close");
 }
-
-async function confirmChannelSetup() {
-  if (await finishChannelSetup(true)) emit("close");
-}
 </script>
 
 <template>
@@ -419,7 +285,7 @@ async function confirmChannelSetup() {
       ></button>
       <div class="relative w-full max-w-[428px] overflow-hidden rounded-xl bg-base-100 shadow-2xl">
         <div class="flex items-center gap-2 p-3">
-        <h3 class="flex-1 text-sm font-semibold">{{ title }}</h3>
+        <h3 class="flex-1 text-sm font-semibold">Add device</h3>
         <div v-if="renderFlags.hintInfo" class="dropdown dropdown-end">
           <button
             type="button"
@@ -444,67 +310,8 @@ async function confirmChannelSetup() {
       </div>
 
       <div class="flex flex-col gap-3 px-3 pb-3">
-        <!-- Known device: both devices search for each other (ADR-0008 D1). -->
-        <template v-if="renderFlags.setupSearch || renderFlags.setupReady">
-          <div
-            class="flex items-center gap-2.5 rounded-lg bg-base-200 px-2 py-2"
-            data-testid="setup-peer-row"
-            :data-setup-step="step"
-          >
-            <!-- Searching pulses; found (one direction done) turns amber; ready
-                 is green. The search takes tens of seconds on a real radio, and
-                 a still grey dot reads as a frozen screen. -->
-            <span
-              class="size-2.5 shrink-0 rounded-full"
-              :class="
-                renderFlags.setupReady
-                  ? 'bg-success'
-                  : step === 'setupFound'
-                    ? 'animate-pulse bg-warning'
-                    : 'animate-pulse bg-[var(--fg-5)]'
-              "
-            />
-            <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ peerName }}</span>
-            <span v-if="renderFlags.setupSearch" class="loading loading-dots loading-xs opacity-60" />
-            <CheckIcon v-if="renderFlags.setupReady" class="size-4 text-success" />
-            <button
-              v-for="device in renderLists.knownPeerAsCandidate"
-              :key="device.device_id"
-              class="btn btn-ghost btn-xs"
-              data-testid="setup-pair-with-code"
-              @click="void requestPair(device)"
-            >Pair with code</button>
-          </div>
-          <ul v-if="renderFlags.otherCandidates" class="flex list-none flex-col overflow-hidden rounded-lg">
-            <li
-              v-for="device in renderLists.otherCandidates"
-              :key="device.device_id"
-              class="flex items-center gap-2.5 border-b border-base-200 bg-base-100 px-2 py-2 last:border-b-0"
-              data-testid="nearby-device-row"
-              :data-device-id="device.device_id"
-            >
-              <span class="size-2.5 shrink-0 rounded-full bg-success" />
-              <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ device.hostname }}</span>
-              <button
-                class="btn btn-primary btn-xs"
-                data-testid="request-pair"
-                @click="void requestPair(device)"
-              >Pair</button>
-            </li>
-          </ul>
-        </template>
-
-        <template v-else-if="renderFlags.setupFailed">
-          <div class="flex flex-col items-center gap-3 py-2 text-center" data-testid="setup-failed">
-            <span class="grid size-13 place-items-center rounded-full bg-base-200 p-3 text-error">
-              <ExclamationCircleIcon class="size-6" />
-            </span>
-            <h4 class="text-[15px] font-semibold">{{ setupError }}</h4>
-          </div>
-        </template>
-
         <!-- 1. The channel, chosen rather than inferred. -->
-        <template v-else-if="step === 'channel'">
+        <template v-if="step === 'channel'">
           <button
             v-for="kind in CHANNEL_CHOICES"
             :key="kind"
@@ -661,17 +468,7 @@ async function confirmChannelSetup() {
       </div>
 
       <div class="flex items-center gap-2 border-t border-base-200 p-3">
-        <template v-if="renderFlags.setupFooter">
-          <button class="btn btn-ghost btn-sm" data-testid="setup-close" @click="close()">Close</button>
-          <span class="flex-1" />
-          <button
-            class="btn btn-primary btn-sm"
-            data-testid="setup-ok"
-            :disabled="!renderFlags.setupReady"
-            @click="void confirmChannelSetup()"
-          >OK</button>
-        </template>
-        <template v-else-if="step === 'looking'">
+        <template v-if="step === 'looking'">
           <button class="btn btn-ghost btn-sm" @click="channel = null">Back</button>
           <span class="flex-1" />
           <span class="inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--fg-4)]">

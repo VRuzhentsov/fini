@@ -72,10 +72,6 @@ pub mod bluetooth_channel_service {
 
         pub fn refresh_advertising(&self) {}
 
-        pub fn keep_answering_after_setup(&self) {}
-
-        pub fn set_peer_request_accepted(&self, _peer_id: &str, _accepted: bool) {}
-
         pub fn close_rejected_link(&self, _address: String, _device_id: Option<&str>) {}
 
         pub fn close_links_after_session(&self, _peer_id: &str) {}
@@ -102,14 +98,6 @@ pub mod bluetooth_channel_service {
         #[cfg(any(feature = "ui-plane", test))]
         async fn probe(&self) -> bool {
             true
-        }
-
-        /// Nothing to find: a pause, so that a setup that asks again does
-        /// not spin.
-        #[cfg(any(feature = "ui-plane", test))]
-        async fn connect_plain(&self, _peer_device_id: &str, _within: std::time::Duration) -> Result<Box<dyn DataLink>, String> {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            Err("Bluetooth is not available on this platform".to_string())
         }
 
         #[cfg(any(feature = "ui-plane", test))]

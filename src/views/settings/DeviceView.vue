@@ -6,7 +6,6 @@ import SettingsListGroup from "../../components/settings/SettingsListGroup.vue";
 import SettingsListItem from "../../components/settings/SettingsListItem.vue";
 import ChannelRow from "../../components/settings/device/ChannelRow.vue";
 import SyncQueueSection from "../../components/settings/device/SyncQueueSection.vue";
-import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
 import { useDeviceStore } from "../../stores/device.store";
 import { useSpaceSyncStore } from "../../stores/space-sync.store";
 import { ChannelColor, type ChannelKind } from "../../utils/channel";
@@ -20,8 +19,6 @@ const spaceSyncStore = useSpaceSyncStore();
 const spaceStore = useSpaceStore();
 
 const unpairDialog = ref<HTMLDialogElement | null>(null);
-// The channel being added with the setup dialog, or null when it is closed.
-const channelBeingAdded = ref<ChannelKind | null>(null);
 const mappedSelection = ref<string[]>([]);
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
@@ -38,11 +35,6 @@ const channelStatuses = computed(() =>
   deviceId.value ? deviceStore.getChannelStatuses(deviceId.value) : [],
 );
 const syncQueue = computed(() => (deviceId.value ? spaceSyncStore.getSyncQueue(deviceId.value) : null));
-
-// The template's render contract, per fini-frontend.
-const renderFlags = computed(() => ({
-  channelSetupDialog: device.value !== null && device.value !== undefined && channelBeingAdded.value !== null,
-}));
 
 // Drives the sync queue's "sending now" vs "nothing can reach it" line:
 // a green channel is one data can go over (ADR-0008 D9).
@@ -98,7 +90,6 @@ onMounted(() => {
 watch(deviceId, () => {
   mappingsDirty.value = false;
   channelError.value = null;
-  channelBeingAdded.value = null;
   void loadDeviceState();
 });
 
@@ -184,32 +175,6 @@ async function pinChannel(kind: ChannelKind) {
   }
 }
 
-// "Add" on a channel that does not exist yet opens the setup dialog.
-function addChannel(kind: ChannelKind) {
-  channelBeingAdded.value = kind;
-}
-
-async function closeChannelSetup() {
-  channelBeingAdded.value = null;
-  if (deviceId.value) await deviceStore.refreshChannelStatuses(deviceId.value);
-}
-
-// Forgetting a channel, as opposed to switching it off. The backend
-// refuses while it is still on, and the row's own control is disabled
-// until then -- this catch is for the race, not the ordinary path.
-async function unlinkChannel(kind: ChannelKind) {
-  if (!deviceId.value || busyChannel.value) return;
-  busyChannel.value = kind;
-  channelError.value = null;
-  try {
-    await deviceStore.unlinkChannel(deviceId.value, kind);
-  } catch (error) {
-    channelError.value = String(error);
-  } finally {
-    busyChannel.value = null;
-  }
-}
-
 function openUnpairDialog() {
   unpairDialog.value?.showModal();
 }
@@ -251,8 +216,6 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
             :status="status"
             :busy="busyChannel === status.kind"
             @toggle="(next) => toggleChannel(status.kind, next)"
-            @add="addChannel(status.kind)"
-            @unlink="unlinkChannel(status.kind)"
             @pin="pinChannel(status.kind)"
           />
         </ul>
@@ -348,15 +311,6 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
       <p class="text-sm opacity-70">Device not found.</p>
       <router-link to="/settings" class="btn btn-sm mt-2">Back to settings</router-link>
     </section>
-
-    <DeviceSetupDialog
-      v-if="renderFlags.channelSetupDialog"
-      :open="true"
-      :peer-device-id="device?.peer_device_id ?? null"
-      :peer-name="peerName"
-      :kind="channelBeingAdded"
-      @close="closeChannelSetup"
-    />
 
     <dialog ref="unpairDialog" class="modal" data-testid="unlink-dialog">
       <div class="modal-box">
