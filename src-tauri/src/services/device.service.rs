@@ -334,7 +334,7 @@ impl DeviceService {
     /// adding it again could never connect.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     async fn close_held_bluetooth_session_to(&self, fingerprint: [u8; crate::services::bluetooth_channel_service::FINGERPRINT_LEN]) {
-        use crate::services::bluetooth_channel_service::{fingerprint_of, TIME_BEFORE_LINK_CLOSE};
+        use crate::services::bluetooth_channel_service::fingerprint_of;
         let paired = self.with_conn(|conn| DeviceRepository::new(conn).ids());
         let Some(peer) =
             paired.into_iter().find(|peer| fingerprint_of(peer) == fingerprint && self.bluetooth.has_session(peer))
@@ -348,7 +348,7 @@ impl DeviceService {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         if let Some(peer_key) = self.pinned_key(&peer).and_then(|key| key.parse::<iroh::EndpointId>().ok()) {
-            self.bluetooth.close_links_to(peer_key, TIME_BEFORE_LINK_CLOSE).await;
+            self.bluetooth.close_links_to(peer_key);
         }
     }
 
@@ -484,10 +484,7 @@ impl DeviceService {
             } else {
                 // The phone leaves Add Device with a new address; the BLE
                 // link to its old one must not outlive the pairing.
-                service
-                    .bluetooth
-                    .close_links_to(peer_key, crate::services::bluetooth_channel_service::TIME_BEFORE_LINK_CLOSE)
-                    .await;
+                service.bluetooth.close_links_to(peer_key);
             }
         });
     }
@@ -808,12 +805,7 @@ impl DeviceService {
         self.bluetooth.forget_failures(peer_device_id);
         #[cfg(any(target_os = "linux", target_os = "android"))]
         if let Some(peer_key) = peer_key.and_then(|key| key.parse::<iroh::EndpointId>().ok()) {
-            let bluetooth = self.bluetooth.clone();
-            tauri::async_runtime::spawn(async move {
-                bluetooth
-                    .close_links_to(peer_key, crate::services::bluetooth_channel_service::TIME_BEFORE_LINK_CLOSE)
-                    .await;
-            });
+            self.bluetooth.close_links_to(peer_key);
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = peer_key;
@@ -900,12 +892,7 @@ impl DeviceService {
             #[cfg(any(target_os = "linux", target_os = "android"))]
             if kind == ChannelKind::Bluetooth {
                 if let Some(peer_key) = self.pinned_key(peer_device_id).and_then(|key| key.parse::<iroh::EndpointId>().ok()) {
-                    let bluetooth = self.bluetooth.clone();
-                    tauri::async_runtime::spawn(async move {
-                        bluetooth
-                            .close_links_to(peer_key, crate::services::bluetooth_channel_service::TIME_BEFORE_LINK_CLOSE)
-                            .await;
-                    });
+                    self.bluetooth.close_links_to(peer_key);
                 }
             }
         }

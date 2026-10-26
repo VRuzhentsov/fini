@@ -53,7 +53,6 @@ pub use adapter::BluetoothAdapter;
 pub use data_link::*;
 
 pub use advertiser::Advertiser;
-pub(crate) use endpoint::TIME_BEFORE_LINK_CLOSE;
 pub use scanner::Scanner;
 pub use scanner::AvailableDevice;
 
@@ -622,6 +621,13 @@ impl BluetoothChannelService {
         if self.advertiser.in_add_mode() && !self.has_pairing_link(peer_id) {
             return;
         }
+        // Only the device with the smaller id connects; the other one
+        // advertises and accepts. When the two connected at once, BlueZ
+        // aborted one connect, and the crossing rule refused the other one.
+        // The first session after a pairing goes over the pairing link.
+        if self.identity.device_id.as_str() > peer_id && !self.has_pairing_link(peer_id) {
+            return;
+        }
         if !self.scanner.begin_exchange(peer_id) {
             return;
         }
@@ -724,7 +730,7 @@ impl BluetoothChannelService {
                 // The dial runs in ble-gatt-iroh's own task: dropping the
                 // connect does not stop it, and BlueZ stays busy (no scan, no
                 // advertising) until its own timeout. Closing the link does.
-                self.close_link_at(address.to_string(), Duration::ZERO).await;
+                self.close_link_at(address.to_string());
                 return Err("the pair or the channel is gone".to_string());
             }
         };
@@ -739,7 +745,7 @@ impl BluetoothChannelService {
                 log::info!("[transport][ble] candidate {address} did not finish the connect in time");
                 self.scanner.note_connect_failed(address);
                 // As above: stop the dial that still runs.
-                self.close_link_at(address.to_string(), Duration::ZERO).await;
+                self.close_link_at(address.to_string());
                 Err("connect timed out".to_string())
             }
         }
@@ -1870,10 +1876,6 @@ const FIRST_DATAGRAM_TIMEOUT: Duration = Duration::from_secs(15);
 /// connect alone was measured at up to ~28 s on hardware.
 const SESSION_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a BLE link stays after Fini closed the iroh connection on it, so
-/// that the close and its code reach the peer first (`close_links_to`).
-pub(crate) const TIME_BEFORE_LINK_CLOSE: Duration = Duration::from_secs(1);
-
 /// How long a pairing's BLE link waits for the first session to use it
 /// (`keep_pairing_link`).
 const PAIRING_LINK_KEEP_TIME: Duration = Duration::from_secs(15);
@@ -1998,17 +2000,16 @@ impl BluetoothChannelService {
         Ok(Box::new(link))
     }
 
-    /// After `after`, closes the BLE links to `peer_key`: at its current
-    /// address and at the addresses it had before. A BLE link outlives the
-    /// iroh connection on it until it is idle (about 25 s), and while a link
-    /// to a phone's old address is up, BlueZ aborts every connect to its new
-    /// one (`le-connection-abort-by-local`). Android changes the address when
-    /// it leaves Add Device, so the first session after a pairing failed so.
-    pub(crate) async fn close_links_to(&self, peer_key: iroh::EndpointId, after: Duration) {
+    /// Closes the BLE links to `peer_key`: at its current address and at the
+    /// addresses it had before. A BLE link outlives the iroh connection on
+    /// it until it is idle (about 25 s), and while a link to a phone's old
+    /// address is up, BlueZ aborts every connect to its new one
+    /// (`le-connection-abort-by-local`). Android changes the address when it
+    /// leaves Add Device, so the first session after a pairing failed so.
+    pub(crate) fn close_links_to(&self, peer_key: iroh::EndpointId) {
         let Some((_, transport)) = self.endpoint.get().cloned() else {
             return;
         };
-        tokio::time::sleep(after).await;
         log::info!("[transport][ble] closing the links to {peer_key}");
         transport.close_links(&peer_key);
     }
@@ -2023,15 +2024,10 @@ impl BluetoothChannelService {
         let Some(peer_key) = self.pinned_key(peer_id).and_then(|key| key.parse::<iroh::EndpointId>().ok()) else {
             return;
         };
-        let bluetooth = self.arc();
-        let peer_id = peer_id.to_string();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(TIME_BEFORE_LINK_CLOSE).await;
-            if bluetooth.has_session(&peer_id) || bluetooth.advertiser.in_add_mode() {
-                return;
-            }
-            bluetooth.close_links_to(peer_key, Duration::ZERO).await;
-        });
+        if self.has_session(peer_id) || self.advertiser.in_add_mode() {
+            return;
+        }
+        self.close_links_to(peer_key);
     }
 
     /// A pairing with `peer_id` finished on the BLE link to `address`: keep the
@@ -2054,7 +2050,7 @@ impl BluetoothChannelService {
             tokio::time::sleep(PAIRING_LINK_KEEP_TIME).await;
             let unused = bluetooth.remove_pairing_link(&peer_id).is_some();
             if unused && !bluetooth.has_session(&peer_id) {
-                bluetooth.close_links_to(peer_key, Duration::ZERO).await;
+                bluetooth.close_links_to(peer_key);
             }
         });
     }
@@ -2074,31 +2070,21 @@ impl BluetoothChannelService {
     /// the channel is off or missing). Its BLE link stayed up until idle, and
     /// iroh sent this device's own next connection to the peer into it
     /// instead of connecting: the connect timed out. No session to the peer is
-    /// kept on this channel then, so the link is closed after the rejection
-    /// gets to the peer -- unless a setup with `device_id` is open: its
-    /// connect can use the same link.
+    /// kept on this channel then, so the link is closed -- unless a setup
+    /// with `device_id` is open: its connect can use the same link.
     pub(crate) fn close_rejected_link(&self, address: String, device_id: Option<&str>) {
-        if address.is_empty() {
+        if address.is_empty() || (device_id.is_some() && self.advertiser.in_add_mode()) {
             return;
         }
-        let known_device = device_id.is_some();
-        let bluetooth = self.arc();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(TIME_BEFORE_LINK_CLOSE).await;
-            if known_device && bluetooth.advertiser.in_add_mode() {
-                return;
-            }
-            bluetooth.close_link_at(address, Duration::ZERO).await;
-        });
+        self.close_link_at(address);
     }
 
     /// Like `close_links_to`, for a link the peer opened from `address`,
     /// which this device never connected to.
-    pub(crate) async fn close_link_at(&self, address: String, after: Duration) {
+    pub(crate) fn close_link_at(&self, address: String) {
         let Some((_, transport)) = self.endpoint.get().cloned() else {
             return;
         };
-        tokio::time::sleep(after).await;
         log::info!("[transport][ble] closing the link to {address}");
         transport.close_link(&PeerAddress(address));
     }

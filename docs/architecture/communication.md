@@ -96,7 +96,10 @@ has the channel on. It does not know what goes through the connection.
   (`SpaceSyncService::has_session_on`). A device that was only heard is not
   green.
 - Each channel connects by itself to each paired device that has the channel
-  on and has no session (`ChannelService::keep_serving`).
+  on and has no session (`ChannelService::keep_serving`). On Bluetooth, only
+  the device with the smaller id connects; the other one advertises and
+  accepts (`BluetoothChannelService::start_exchange`). The first session
+  after a pairing goes over the pairing link.
 - `ChannelService::is_on` tells if the channel is on for a device. A
   Bluetooth connect stops when the channel goes off during it.
 - A connection that hears nothing for 15 s ends: the channel turns grey.
@@ -140,7 +143,8 @@ link.
 
 ### Crossing
 
-The two devices can connect to each other at the same time. Each device keeps
+On Network, the two devices can connect to each other at the same time. (On
+Bluetooth only one of them connects.) Each device keeps
 the connection that the device with the smaller id started. A device's own
 connection counts for 3 s after its session starts
 (`CROSSING_WINDOW`). A connection from the peer after that time means the
