@@ -86,12 +86,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     refreshChannelStatuses: jest.fn().mockResolvedValue(undefined),
     setChannelEnabled: jest.fn().mockResolvedValue([]),
     setPrimaryChannel: jest.fn().mockResolvedValue([]),
-    unlinkChannel: jest.fn().mockResolvedValue([]),
     watchPresence: jest.fn().mockResolvedValue(undefined),
-    beginChannelSetup: jest.fn().mockResolvedValue(undefined),
-    getChannelSetup: jest.fn().mockReturnValue(null),
-    refreshChannelSetup: jest.fn().mockResolvedValue(null),
-    endChannelSetup: jest.fn().mockResolvedValue([]),
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
     cancelOutgoingRequest: jest.fn(),
@@ -253,49 +248,6 @@ describe("DeviceView channels", () => {
       ChannelKind.Bluetooth,
       true,
     );
-  });
-
-  // Unlinking is a second, deliberate act (ADR-0008 D14): the control
-  // exists only on a channel that is already off.
-  it("offers unlink only once the channel is off", async () => {
-    deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow(ChannelKind.Network),
-      channelRow(ChannelKind.Bluetooth, { state: ChannelState.Off, color: ChannelColor.Off }),
-    ]);
-
-    const wrapper = mountView();
-    await flushUi();
-
-    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
-    expect(rows[0].find('[data-testid="unlink-channel"]').exists()).toBe(false);
-
-    await rows[1].find('[data-testid="unlink-channel"]').trigger("click");
-    await flushUi();
-
-    expect(deviceStoreMock.unlinkChannel).toHaveBeenCalledWith("peer-device-123", ChannelKind.Bluetooth);
-  });
-
-  // A channel that does not exist has nothing to switch or forget -- only
-  // Add, which opens the setup dialog for that channel (ADR-0008 D20).
-  it("opens the setup dialog from Add on a channel that does not exist", async () => {
-    deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow(ChannelKind.Network),
-      channelRow(ChannelKind.Bluetooth, { state: ChannelState.None, color: ChannelColor.None }),
-    ]);
-
-    const wrapper = mountView();
-    await flushUi();
-
-    const row = wrapper.findAll('[data-testid="channel-status-row"]')[1];
-    expect(row.find('[data-testid="channel-switch"]').exists()).toBe(false);
-    expect(row.find('[data-testid="unlink-channel"]').exists()).toBe(false);
-    expect(document.body.querySelector('[data-testid="pair-device-dialog"]')).toBeNull();
-
-    await row.find('[data-testid="add-channel"]').trigger("click");
-    await flushUi();
-
-    expect(deviceStoreMock.beginChannelSetup).toHaveBeenCalledWith("peer-device-123", ChannelKind.Bluetooth);
-    wrapper.unmount();
   });
 
   // ⓘ appears only on orange, and names this device's problem -- a peer

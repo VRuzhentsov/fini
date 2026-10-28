@@ -219,7 +219,7 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
             @pin="pinChannel(status.kind)"
           />
         </ul>
-        <p v-if="channelError" class="mt-2 text-xs text-error">{{ channelError }}</p>
+        <p v-if="channelError" class="mt-2 text-xs text-error" data-testid="channel-error">{{ channelError }}</p>
       </section>
 
       <section class="rounded-xl bg-base-200 p-3">

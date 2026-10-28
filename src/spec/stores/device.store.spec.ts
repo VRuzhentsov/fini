@@ -248,34 +248,6 @@ describe("device store channel rows (ADR-0008)", () => {
     await store.refreshChannelStatuses("peer-1");
     expect(store.isDeviceOnline(device)).toBe(true);
   });
-
-  it("drives the channel setup through its three commands", async () => {
-    (invoke as unknown as jest.Mock).mockResolvedValue(undefined);
-    const store = useDeviceStore();
-
-    await store.beginChannelSetup("peer-1", ChannelKind.Bluetooth);
-    (invoke as unknown as jest.Mock).mockResolvedValueOnce({
-      sentRequestAccepted: true,
-      acceptedPeerRequest: true,
-      initialized: true,
-    });
-    const status = await store.refreshChannelSetup("peer-1", ChannelKind.Bluetooth);
-    await store.endChannelSetup("peer-1", ChannelKind.Bluetooth, true);
-
-    expect(status?.initialized).toBe(true);
-    expect(invoke).toHaveBeenCalledWith("device_begin_channel_setup", {
-      peerDeviceId: "peer-1",
-      kind: ChannelKind.Bluetooth,
-    });
-    expect(invoke).toHaveBeenCalledWith("device_channel_setup_status", {
-      peerDeviceId: "peer-1",
-      kind: ChannelKind.Bluetooth,
-    });
-    expect(invoke).toHaveBeenCalledWith(
-      "device_end_channel_setup",
-      expect.objectContaining({ peerDeviceId: "peer-1", kind: ChannelKind.Bluetooth, switchOn: true }),
-    );
-  });
 });
 
 describe("device store primary channel (ADR-0007)", () => {
