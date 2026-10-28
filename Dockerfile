@@ -199,6 +199,50 @@ ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
 
 CMD ["sh", "./scripts/e2e-runner.sh"]
 
+# Virtual phones for the android-ble e2e lane (ADR-0012 D8): Playwright, adb
+# and the phone tools in one image, so a local run and CI run the same thing.
+# The repo is mounted at run time; nothing of the project is copied in.
+# During the spike (ADR-0012 D1) the image has both phone tools.
+#
+#   npm run test:e2e:android-ble
+# trixie: cuttlefish-base needs libc6 >= 2.39.
+FROM debian:trixie-slim AS android-phones-runner
+
+ARG ANDROID_CMDLINE_TOOLS=11076708
+ARG ANDROID_SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
+
+ENV ANDROID_HOME=/opt/android-sdk \
+    FINI_E2E_CONTAINER_RUNNER=1 \
+    TZ=UTC
+ENV PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
+      ca-certificates curl gnupg unzip openjdk-21-jre-headless \
+      libpulse0 libnss3 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libgl1 libdrm2 libgbm1; \
+    curl -fsSL https://us-apt.pkg.dev/doc/repo-signing-key.gpg -o /etc/apt/trusted.gpg.d/artifact-registry.asc; \
+    chmod a+r /etc/apt/trusted.gpg.d/artifact-registry.asc; \
+    echo "deb https://us-apt.pkg.dev/projects/android-cuttlefish-artifacts android-cuttlefish main" > /etc/apt/sources.list.d/artifact-registry.list; \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash -; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends nodejs cuttlefish-base cuttlefish-user
+
+RUN set -eux; \
+    mkdir -p "$ANDROID_HOME/cmdline-tools"; \
+    curl -fsSL -o /tmp/cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS}_latest.zip"; \
+    unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"; \
+    mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"; \
+    rm /tmp/cmdline-tools.zip; \
+    yes | sdkmanager --licenses > /dev/null; \
+    sdkmanager --install platform-tools emulator "$ANDROID_SYSTEM_IMAGE" > /dev/null; \
+    echo no | avdmanager create avd -n fini-e2e -k "$ANDROID_SYSTEM_IMAGE" -d pixel_6
+
+WORKDIR /work
+
 # Local Android build environment: JDK 17 plus Node, for hosts whose system JDK
 # is too new for the Gradle version this project pins -- Gradle's bundled Kotlin
 # DSL compiler fails to parse some newer JDK version strings before it ever
