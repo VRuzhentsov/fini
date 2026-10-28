@@ -735,10 +735,10 @@ android-dev: android-connect
 android-build: android-require-build-image
 	$(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 
-# Deliberately NOT containerised: this is the CI lane (ci.yml), where
-# setup-java already provides the right JDK and podman is the wrong tool.
-android-build-emulator-e2e:
-	npm run tauri android build -- --features ui-plane --ci --debug --apk --target x86_64
+# Local shortcut for the npm script that CI calls directly. Locally it runs in
+# the JDK 17 build container; CI gets the JDK from setup-java.
+android-build-emulator-e2e: android-require-build-image
+	$(ANDROID_BUILD_RUN) npm run build:android:e2e
 
 # Runs the same smoke assertions CI runs on the emulator (app process starts,
 # `fini.reminders` notification channel registers), but against whatever
