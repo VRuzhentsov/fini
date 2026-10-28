@@ -142,6 +142,11 @@ fn next_delivery_search(misses: usize, now: std::time::Instant) -> std::time::In
 /// itself when it switches the channel on.
 const REJECTED_WAIT_TIME: Duration = Duration::from_secs(30);
 
+/// After a delivery search heard the peer but no connect to it finished,
+/// the next search waits this long. Short: each connect is bounded by its
+/// own timeout, so the retries do not run in a tight loop.
+const FAILED_CONNECT_WAIT_TIME: Duration = Duration::from_secs(2);
+
 /// Per paired device: how many delivery searches in a row found nothing,
 /// and when the next one is due; and until when a rejection stops the next
 /// connection. In memory only, as ADR-0008 decided: a started app tries at
@@ -202,6 +207,12 @@ impl DeliverySchedule {
             Err(_) => return,
         };
         self.publish_due_after(peer_id, next.saturating_duration_since(now));
+    }
+
+    /// The peer was heard, but no connect to it finished: the next search
+    /// is due after `FAILED_CONNECT_WAIT_TIME`, and it is not a miss.
+    pub fn retry_after_failed_connect(&self, peer_id: &str) {
+        self.publish_due_after(peer_id, FAILED_CONNECT_WAIT_TIME);
     }
 
     /// The peer rejected a session: the next connection waits
@@ -524,9 +535,20 @@ impl BluetoothChannelService {
             // earlier would tear down the live link.
             let live_centrals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let (central_gone_tx, mut central_gone_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            // Not wanted any more, but a link is still live: its session
+            // ends with CLOSE_CHANNEL_OFF first, and ble-gatt-iroh closes the
+            // link once that close went out. Stopping the server before that
+            // cut the link, and the other device went grey only at its idle
+            // timeout.
+            let mut stopping = false;
             loop {
                 tokio::select! {
                     Some(()) = central_gone_rx.recv() => {
+                        if stopping && live_centrals.load(Ordering::SeqCst) == 0 {
+                            log::info!("[transport][ble] last link closed; stopping advertising");
+                            restarting_for_add_mode_change = true;
+                            break;
+                        }
                         // Linux only. Android keeps advertising, and
                         // registering the advertisement again gives the phone
                         // a new private address: the address the other device
@@ -581,12 +603,27 @@ impl BluetoothChannelService {
                         }
                     }
                     _ = advertising_wanted.changed() => {
-                        if !*advertising_wanted.borrow() {
-                            log::info!("[transport][ble] nothing to be reachable for; stopping advertising");
-                            restarting_for_add_mode_change = true;
-                            break;
+                        let wanted = *advertising_wanted.borrow();
+                        stopping = !wanted;
+                        if !wanted {
+                            let live = live_centrals.load(Ordering::SeqCst);
+                            if live == 0 {
+                                log::info!("[transport][ble] nothing to be reachable for; stopping advertising");
+                                restarting_for_add_mode_change = true;
+                                break;
+                            }
+                            log::info!("[transport][ble] nothing to be reachable for; stopping advertising once {live} live links close");
                         }
                     }
+                }
+            }
+            if !*advertising_wanted.borrow() {
+                // Dropping `incoming` only stops new channels: the GATT
+                // server went on advertising and accepting centrals, and
+                // nothing served them, so their connects timed out.
+                drop(incoming);
+                if let Err(err) = datagram::stop_serving(&adapter).await {
+                    log::error!("[transport][ble] stopping the GATT server failed: {err}");
                 }
             }
             if restarting_for_add_mode_change {
@@ -689,10 +726,19 @@ impl BluetoothChannelService {
             };
             let Some(found) = found else {
                 match last_error {
-                    Some(err) => log::info!("[transport][ble] {peer_id} refused the exchange: {err}"),
-                    None => log::info!("[transport][ble] {peer_id} not heard within the search window"),
+                    // The peer was heard, but no connect to it finished. That
+                    // is not an absent peer: waiting `DELIVERY_RETRY` after it
+                    // kept the devices grey for 60 s more. A refusal by the
+                    // peer is not here: `run_exchange` records it.
+                    Some(err) => {
+                        log::info!("[transport][ble] no connect to {peer_id} finished: {err}");
+                        self.delivery.retry_after_failed_connect(peer_id);
+                    }
+                    None => {
+                        log::info!("[transport][ble] {peer_id} not heard within the search window");
+                        self.delivery.note_delivery_missed(peer_id);
+                    }
                 }
-                self.delivery.note_delivery_missed(peer_id);
                 return;
             };
             if !self.is_on(peer_id) {
@@ -739,6 +785,10 @@ impl BluetoothChannelService {
             Ok(Err(err)) => {
                 log::info!("[transport][ble] candidate {address} is not {peer_id}: {err}");
                 self.scanner.note_connect_failed(address);
+                // A connect that failed left its BLE link up, and while it
+                // was up BlueZ aborted the connects to the peer's next
+                // address (`le-connection-abort-by-local`).
+                self.close_link_at(address.to_string());
                 Err(err)
             }
             Err(_elapsed) => {
@@ -793,8 +843,13 @@ impl BluetoothChannelService {
         if matches!(held, Ok(close_code) if rejected_by_peer(close_code)) {
             self.delivery.record_rejected(peer_id);
         }
-        if held.is_ok() {
-            self.close_links_after_session(peer_id);
+        // The peer closed the session: its close is here, and QUIC sends
+        // nothing more while it drains, so the link can go now. Left up, it
+        // stayed for the drain (33 s measured), and the next connect ran on
+        // it and timed out. A session this side ended keeps its link:
+        // ble-gatt-iroh closes it once the close went out.
+        if matches!(held, Ok(Some(_))) {
+            self.close_link_at(address.to_string());
         }
     }
 
@@ -1943,8 +1998,14 @@ impl BluetoothChannelService {
         self.endpoint
             .get_or_try_init(|| async {
                 let adapter = BluetoothAdapter::this_device().adapter().await?;
+                // Writes without response: several go out in each connection
+                // event, not one write and its response. QUIC sends again
+                // what the peer drops; a plain link has no such recovery, so
+                // it keeps the default.
+                let mut dial_config = datagram_config();
+                dial_config.write_type = ble_gatt::WriteType::WithoutResponse;
                 let transport = ble_gatt_iroh::BleGattTransport::builder()
-                    .dialer(ble_gatt_iroh::dial_with(adapter, datagram_config()))
+                    .dialer(ble_gatt_iroh::dial_with(adapter, dial_config))
                     .build();
                 let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
                     .secret_key(self.identity.secret_key.clone())
@@ -1953,6 +2014,10 @@ impl BluetoothChannelService {
                     .transport_config(crate::services::channel_service::iroh_link::transport_config())
                     .clear_ip_transports()
                     .add_custom_transport(Arc::new(transport.clone()))
+                    // The transport learns which device each link carries, in
+                    // either role, so `close_links` also reaches a link the
+                    // peer dialled.
+                    .hooks(transport.hooks())
                     .address_lookup(transport.address_lookup())
                     .bind()
                     .await
@@ -2012,22 +2077,6 @@ impl BluetoothChannelService {
         };
         log::info!("[transport][ble] closing the links to {peer_key}");
         transport.close_links(&peer_key);
-    }
-
-    /// A Bluetooth session with `peer_id` ended: close its BLE links, unless
-    /// a newer session with the peer is held by then, or a Bluetooth setup
-    /// with it is open (its connect may be on the same link: closing it then
-    /// stopped the setup). A session that the peer's side dropped left the
-    /// link up here, and iroh kept writing into it while the peer had moved
-    /// to a new address.
-    pub(crate) fn close_links_after_session(&self, peer_id: &str) {
-        let Some(peer_key) = self.pinned_key(peer_id).and_then(|key| key.parse::<iroh::EndpointId>().ok()) else {
-            return;
-        };
-        if self.has_session(peer_id) || self.advertiser.in_add_mode() {
-            return;
-        }
-        self.close_links_to(peer_key);
     }
 
     /// A pairing with `peer_id` finished on the BLE link to `address`: keep the

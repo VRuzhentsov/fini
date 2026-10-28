@@ -43,6 +43,11 @@ pub const CLOSE_CHANNEL_OFF: u32 = 2;
 /// kept.
 pub const CLOSE_CROSSED: u32 = 3;
 pub const CLOSE_SESSION_ACTIVE: u32 = 4;
+/// A session this device ended because its channel was switched off here:
+/// QUIC's normal close, as iroh's own examples say "bye". Not a refusal:
+/// the peer finds this device again the normal way once it advertises
+/// again, as after a link lost out of range.
+pub const CLOSE_BYE: u32 = 0;
 
 /// Whether the peer closed a session with `close_code` because it did not
 /// want it (not paired there, or the channel is off there): the
@@ -664,6 +669,11 @@ impl SpaceSyncService {
                         }
                         SessionCommand::Close => {
                             log::info!("[exchange] {peer_device_id} {kind:?}: asked to close");
+                            // Switched off here: the peer sees the end at
+                            // once, in place of waiting for its idle timeout.
+                            if !self.with_conn(|conn| ChannelRepository::new(conn).is_enabled(peer_device_id, kind)) {
+                                link.close(CLOSE_BYE, "bye");
+                            }
                             break;
                         }
                     }
@@ -835,7 +845,8 @@ impl SpaceSyncService {
             )
             .await;
         match held {
-            Ok(_) if kind == ChannelKind::Bluetooth => self.bluetooth.close_links_after_session(&device_id),
+            // The BLE link closes in ble-gatt-iroh once no iroh connection
+            // is left on it, after the close frame went out.
             Ok(_) => {}
             Err(mut link) => {
                 log::warn!("[space_sync][accept] {kind:?} session from {device_id} rejected: a session is already active");

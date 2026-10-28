@@ -526,7 +526,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=684fd1f#684fd1fd9205a226e4b72f3a43df57cf8f366d1b"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=2ffb75e#2ffb75ea2993fcbfa48d83ef0f178cfcd43d1c83"
 dependencies = [
  "async-trait",
  "bluer",
@@ -548,7 +548,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt-iroh"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=684fd1f#684fd1fd9205a226e4b72f3a43df57cf8f366d1b"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=2ffb75e#2ffb75ea2993fcbfa48d83ef0f178cfcd43d1c83"
 dependencies = [
  "ble-gatt",
  "iroh",
@@ -6921,7 +6921,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=684fd1f#684fd1fd9205a226e4b72f3a43df57cf8f366d1b"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=2ffb75e#2ffb75ea2993fcbfa48d83ef0f178cfcd43d1c83"
 dependencies = [
  "async-trait",
  "ble-gatt",
@@ -8268,7 +8268,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

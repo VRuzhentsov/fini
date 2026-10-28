@@ -886,15 +886,11 @@ impl DeviceService {
             return Err(format!("{kind:?} is unavailable on this device"));
         }
         self.with_conn(|conn| ChannelRepository::new(conn).configure(peer_device_id, kind, enabled, None))?;
+        // Off: SpaceSync ends the session with CLOSE_CHANNEL_OFF, and
+        // ble-gatt-iroh closes the BLE link once that close went out.
+        // Closing the link here first dropped the close frame.
         if enabled {
             channel.forget_failures(peer_device_id);
-        } else {
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            if kind == ChannelKind::Bluetooth {
-                if let Some(peer_key) = self.pinned_key(peer_device_id).and_then(|key| key.parse::<iroh::EndpointId>().ok()) {
-                    self.bluetooth.close_links_to(peer_key);
-                }
-            }
         }
         self.with_conn(|conn| self.refresh_network_lookup(conn));
         self.bluetooth.refresh_advertising();
