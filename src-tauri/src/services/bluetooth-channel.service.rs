@@ -1802,28 +1802,40 @@ mod data_link {
 use super::*;
 
 pub struct BleDataLink {
-    channel: DatagramChannel,
+    /// `None` once the channel went to the iroh transport.
+    channel: Option<DatagramChannel>,
     peer_addr: String,
     /// A datagram already read off the channel (to route it, see
     /// `route_inbound`), returned by the first `recv`.
     pending: Option<Vec<u8>>,
+    /// Takes the channel when a QUIC Initial arrives on it: the identifying
+    /// side starts its pairing connection on the identify link, in place of
+    /// a second BLE connection.
+    session: Option<ble_gatt_iroh::BleGattTransport>,
 }
 
 impl BleDataLink {
     pub(super) fn new(channel: DatagramChannel) -> Self {
         let peer_addr = channel.peer().0.clone();
         Self {
-            channel,
+            channel: Some(channel),
             peer_addr,
             pending: None,
+            session: None,
         }
     }
 
-    pub(super) fn after(channel: DatagramChannel, first: Vec<u8>) -> Self {
+    pub(super) fn after(channel: DatagramChannel, first: Vec<u8>, session: Option<ble_gatt_iroh::BleGattTransport>) -> Self {
         Self {
             pending: Some(first),
+            session,
             ..Self::new(channel)
         }
+    }
+
+    /// The channel, for the iroh transport (`keep_identify_link`).
+    pub(super) fn into_channel(mut self) -> Option<DatagramChannel> {
+        self.channel.take()
     }
 }
 
@@ -1863,9 +1875,12 @@ impl DataLink for BleDataLink {
             Duration::from_millis(600),
         ];
 
+        let Some(channel) = self.channel.as_mut() else {
+            return Err("the link went to the iroh transport".to_string());
+        };
         let mut attempt = 0;
         loop {
-            match self.channel.send(payload.clone()).await {
+            match channel.send(payload.clone()).await {
                 Ok(()) => return Ok(()),
                 Err(ble_gatt::BleError::GattBusy(err)) if attempt < SEND_RETRY_DELAYS.len() => {
                     log::warn!(
@@ -1886,23 +1901,33 @@ impl DataLink for BleDataLink {
         if let Some(first) = self.pending.take() {
             return Some(Ok(first));
         }
-        match self.channel.recv().await? {
-            Ok(bytes) => Some(Ok(bytes)),
-            Err(err) => Some(Err(err.to_string())),
+        let bytes = match self.channel.as_mut()?.recv().await? {
+            Ok(bytes) => bytes,
+            Err(err) => return Some(Err(err.to_string())),
+        };
+        // The identifying side's pairing connection: the channel goes to
+        // iroh, and this link ends here.
+        if ble_gatt_iroh::is_quic_initial(&bytes) {
+            if let (Some(session), Some(channel)) = (self.session.as_ref(), self.channel.take()) {
+                log::info!("[transport][ble] {}: the pairing connection goes on the identify link", self.peer_addr);
+                session.attach_after(channel, bytes);
+                return None;
+            }
         }
+        Some(Ok(bytes))
     }
 }
 
 /// Central role: connect to a peer's Bluetooth address over a plain link,
 /// for Fini's own pre-pairing frames (identify, pair request/accept/
 /// complete). Sessions use `BluetoothChannel::connect_session`.
-pub async fn connect(address: &str) -> Result<Box<dyn DataLink>, String> {
+pub async fn connect(address: &str) -> Result<BleDataLink, String> {
     let adapter = BluetoothAdapter::this_device().adapter().await?;
     let peer = PeerAddress(address.to_string());
     let channel = datagram::connect(&adapter, &peer, &datagram_config())
         .await
         .map_err(|err| format!("ble connect to {address} failed: {err}"))?;
-    Ok(Box::new(BleDataLink::new(channel)))
+    Ok(BleDataLink::new(channel))
 }
 }
 
@@ -2130,6 +2155,26 @@ impl BluetoothChannelService {
 
     /// Like `close_links_to`, for a link the peer opened from `address`,
     /// which this device never connected to.
+    /// An identify step answered with the peer's key: its plain link goes to
+    /// the iroh transport, so that the pairing connection that follows runs
+    /// on it. A second BLE connection cost about 5 s (pair-1: 2 s waiting
+    /// for the first link to go, then connect and subscribe again).
+    pub(crate) async fn keep_identify_link(&self, link: BleDataLink, endpoint_id: &str) {
+        let Ok(peer_key) = endpoint_id.parse::<iroh::EndpointId>() else {
+            return;
+        };
+        let Ok((_, transport)) = self.iroh_endpoint().await else {
+            return;
+        };
+        let address = PeerAddress(link.peer_addr().unwrap_or_default());
+        let Some(channel) = link.into_channel() else {
+            return;
+        };
+        log::info!("[transport][ble] keeping the identify link to {} for the pairing connection", address.0);
+        transport.set_peer_address(peer_key, address);
+        transport.attach(channel);
+    }
+
     pub(crate) fn close_link_at(&self, address: String) {
         let Some((_, transport)) = self.endpoint.get().cloned() else {
             return;
@@ -2156,7 +2201,8 @@ impl BluetoothChannelService {
                 }
             }
         } else {
-            let link: Box<dyn DataLink> = Box::new(BleDataLink::after(channel, first));
+            let session = self.iroh_endpoint().await.ok().map(|(_, transport)| transport);
+            let link: Box<dyn DataLink> = Box::new(BleDataLink::after(channel, first, session));
             let handlers = self.handlers.get().cloned()?;
             Some(tokio::spawn(async move { handlers.peer.accept(link).await }))
         }
@@ -2201,7 +2247,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{oneshot, watch, Mutex, MutexGuard, Notify};
 
-use super::{connect, DataLink, ADD_MODE_FLAG_BYTE};
+use super::{connect, ADD_MODE_FLAG_BYTE};
 use super::{
     advertised_fingerprint, datagram_config, fingerprint_of, BluetoothAdapter, FINGERPRINT_LEN,
     FINI_MANUFACTURER_ID, SCAN_WINDOW,
@@ -2741,7 +2787,7 @@ impl Scanner {
     /// pairing stopped.
     pub async fn connect_heard_device(
         &self, fingerprint: [u8; FINGERPRINT_LEN],
-    ) -> Result<(Box<dyn DataLink>, String, impl Sized + '_), String> {
+    ) -> Result<(super::BleDataLink, String, impl Sized + '_), String> {
         let device_gone = || "that device is not heard any more -- open Add Device on it again".to_string();
         // A search for a paired device may start a scan; holding a connect
         // guard keeps it paused until the caller is done.

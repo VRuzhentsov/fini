@@ -312,14 +312,16 @@ impl DeviceService {
             hostname: self.identity.hostname.clone(),
             endpoint_id: self.identity.endpoint_id.clone(),
         };
-        send_frame(link.as_mut(), &identify).await?;
-        let reply = tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(link.as_mut())).await;
+        send_frame(&mut link, &identify).await?;
+        let reply = tokio::time::timeout(IDENTIFY_ANSWER_TIMEOUT, recv_frame(&mut link)).await;
         log::info!("[pairing][ble] identify {address} took {:?}", started.elapsed());
         match reply {
             Ok(Some(Ok(PeerFrame::DeviceIdentified { device_id, hostname, endpoint_id }))) => {
                 if device_id == self.identity.device_id {
                     return Err("that is this device".to_string());
                 }
+                // The pairing connection that follows runs on this link.
+                self.bluetooth.keep_identify_link(link, &endpoint_id).await;
                 let device = crate::services::bluetooth_channel_service::AvailableDevice { address, device_id, hostname };
                 scanner.available.record_identified(&device, endpoint_id);
                 Ok(device)
@@ -978,8 +980,9 @@ impl PeerLinkHandler for DeviceService {
                     )
                     .await;
                     // Keep the link until the identifying side closes it, so
-                    // that the answer is read.
-                    let _ = tokio::time::timeout(Duration::from_secs(1), link.recv()).await;
+                    // that the answer is read, or until its pairing
+                    // connection takes the link (`BleDataLink::recv`).
+                    let _ = tokio::time::timeout(Duration::from_secs(3), link.recv()).await;
                 }
             }
             other => log::warn!("[pairing][accept] {kind:?} link from {from_addr}: unexpected first frame `{}`", other.wire_type()),
