@@ -109,6 +109,12 @@ has the channel on. It does not know what goes through the connection.
   lookup (`NetworkChannelService::set_any_pair_on`), unless Add Device is
   open. A device that has the channel on for another pair stays reachable,
   and its gate refuses the session (code 2).
+- A channel switched off ends its session with a bye (code 0). The other
+  device turns grey at once. It does not wait: it finds the device again in
+  the usual way when that device advertises again, as after a link that
+  was lost out of range.
+- Bluetooth stops its GATT server only when the last live link is closed,
+  so that the bye goes out before the link stops.
 
 ## Who is on the other end
 
@@ -121,25 +127,37 @@ the connection finds the paired device by that key
 | `fini/sync/4` (`SYNC_ALPN`) | a sync session; the last part is the protocol version | `SpaceSyncService` |
 | `fini/peer/1` (`PEER_ALPN`) | the frames before a session: pairing, `IdentifyDevice` | `DeviceService` |
 
-Before pairing there is no pinned key. Over Bluetooth, the identify step and
-the pair request use a plain link (`BleDataLink`) or an iroh connection to
-the key in the advertisement.
+Before pairing there is no pinned key. Over Bluetooth, the identify step
+uses a plain link (`BleDataLink`) and gets the key. The pair request then
+uses an iroh connection on that same BLE link (`keep_identify_link`): the
+accepting side gives the link to iroh when the first QUIC packet comes
+(`BleDataLink::recv`). A device whose key is known already skips the
+identify step.
 
-### Rejections
+### Close codes
 
-`SpaceSyncService` rejects a session with a QUIC close code. The connecting
-side reads it (`DataLink::close_code`).
+`SpaceSyncService` ends or rejects a session with a QUIC close code. The
+other side reads it (`DataLink::close_code`).
 
-| Code | Meaning | The connecting side |
+| Code | Meaning | The other side |
 |---|---|---|
+| 0 | bye: the channel was switched off here (`CLOSE_BYE`) | its row is grey; it finds this device again in the usual way |
 | 1 | no pair has this key | waits, then tries again |
 | 2 | the channel is off here (a missing row is off) | waits, then tries again; its row is grey |
 | 3 | crossing: the other connection is kept | does nothing |
 | 4 | a session runs already | does nothing |
 
 After code 1 or 2, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
-(Network: `FAILURE_COOLDOWN`). The rejecting side then closes the Bluetooth
-link.
+(Network: `FAILURE_COOLDOWN`).
+
+### Bluetooth links after a session
+
+- The side that closed the session keeps the BLE link until its close went
+  out. ble-gatt-iroh then closes the link (transport hooks).
+- The side that receives the close closes the BLE link at once
+  (`run_exchange`). QUIC sends nothing more after a close, and a link kept
+  up for the drain (33 s measured) made the next connect fail.
+- A connect that fails closes its link, and tries again after 2 s.
 
 ### Crossing
 
