@@ -1122,6 +1122,13 @@ impl BluetoothAdapter {
                     self.note_unreachable();
                     return false;
                 };
+                // Android's scan start limit is used, so scans started a
+                // short time ago: a probe scan now would only be refused, and
+                // would push the Scanner's next scan out too.
+                if !scanner.scan_start_wait().is_zero() {
+                    return !self.is_unavailable();
+                }
+                scanner.note_scan_started();
                 return match adapter.central().scan(datagram_config().service).await {
                     Ok(stream) => {
                         drop(stream);
@@ -2240,7 +2247,7 @@ mod scanner {
 //! `connect_by_advertisement`'s history). A handed-off address carries a
 //! `ConnectGuard`, and the scan does not resume until every guard is dropped.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Once};
 use std::time::{Duration, Instant};
@@ -2291,6 +2298,14 @@ const IDENTIFY_TRY_AGAIN_TIME: Duration = Duration::from_secs(5);
 
 /// Pause after the radio refused a scan, so a broken adapter is not hammered.
 const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
+
+/// Android lets an app start at most `ANDROID_SCAN_STARTS` scans in
+/// `ANDROID_SCAN_START_PERIOD`. A start above that is refused ("App is
+/// scanning too frequently") and Fini gets no error: the scan only hears
+/// nothing. On virtual phones, a refused start after an unpair kept Add
+/// Device empty for a full `SCAN_WINDOW` (listing 20-30 s).
+const ANDROID_SCAN_STARTS: usize = 5;
+const ANDROID_SCAN_START_PERIOD: Duration = Duration::from_secs(30);
 
 /// Why a search runs (ADR-0008 D12). The coordinator hands the peer's
 /// address over and keeps the purpose for the log.
@@ -2385,6 +2400,9 @@ pub struct Scanner {
     changed: Notify,
     started: Once,
     failed_connects: StdMutex<HashMap<String, Instant>>,
+    /// When the last scans started, for Android's limit; see
+    /// `ANDROID_SCAN_STARTS`.
+    scan_starts: StdMutex<VecDeque<Instant>>,
     /// When each paired device was last heard advertising, and at which
     /// address. Written only on a fingerprint match, so "heard" means "heard
     /// advertising as this device".
@@ -2419,6 +2437,7 @@ impl Scanner {
             changed: Notify::new(),
             started: Once::new(),
             failed_connects: StdMutex::new(HashMap::new()),
+            scan_starts: StdMutex::new(VecDeque::new()),
             paired_heard: StdMutex::new(HashMap::new()),
             add_device_mode: AtomicBool::new(false),
             available: AvailableDevices::default(),
@@ -2651,6 +2670,30 @@ impl Scanner {
         self.failed_connects.lock().unwrap().insert(address.to_string(), Instant::now());
     }
 
+    /// How long until Android accepts one more scan start; zero when it
+    /// accepts one now, and always zero on other platforms.
+    pub(crate) fn scan_start_wait(&self) -> Duration {
+        if !cfg!(target_os = "android") {
+            return Duration::ZERO;
+        }
+        let mut starts = self.scan_starts.lock().unwrap();
+        while starts.front().is_some_and(|at| at.elapsed() >= ANDROID_SCAN_START_PERIOD) {
+            starts.pop_front();
+        }
+        match starts.front() {
+            Some(oldest) if starts.len() >= ANDROID_SCAN_STARTS => {
+                // Android counts in its own clock: a small margin keeps the
+                // start out of its period.
+                ANDROID_SCAN_START_PERIOD.saturating_sub(oldest.elapsed()) + Duration::from_millis(500)
+            }
+            _ => Duration::ZERO,
+        }
+    }
+
+    pub(crate) fn note_scan_started(&self) {
+        self.scan_starts.lock().unwrap().push_back(Instant::now());
+    }
+
     fn connect_recently_failed(&self, address: &str) -> bool {
         let mut failed = self.failed_connects.lock().unwrap();
         failed.retain(|_, at| at.elapsed() < FAILED_CONNECT_COOLDOWN);
@@ -2678,7 +2721,17 @@ impl Scanner {
                 let _ = tokio::time::timeout(SCAN_FAILURE_PAUSE, self.changed.notified()).await;
                 continue;
             };
+            let wait = self.scan_start_wait();
+            if !wait.is_zero() {
+                log::info!(
+                    "[transport][ble] Android's scan start limit is used; next scan in {:.1} s",
+                    wait.as_secs_f32()
+                );
+                tokio::time::sleep(wait).await;
+                continue;
+            }
             let scan = self.scan_lock().await;
+            self.note_scan_started();
             let mut discovered = match adapter.central().scan(datagram_config().service).await {
                 Ok(discovered) => discovered,
                 Err(err) => {

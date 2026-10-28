@@ -43,9 +43,11 @@ pub fn ensure_bridged() -> Result<(), String> {
 fn load_app_class<'a>(
     env: &mut JNIEnv<'a>, context: &JObject, binary_name: &str,
 ) -> Result<jni::objects::JClass<'a>, String> {
-    let context_class = env.get_object_class(context).map_err(|err| err.to_string())?;
+    // `Context.getClassLoader()`, not the class's own loader: the context is
+    // the Application, and `android.app.Application`'s class loader is the
+    // boot loader, which cannot find app classes.
     let class_loader = env
-        .call_method(&context_class, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+        .call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
         .and_then(|v| v.l())
         .map_err(|err| format!("getClassLoader failed: {err}"))?;
     let name = env.new_string(binary_name).map_err(|err| err.to_string())?;

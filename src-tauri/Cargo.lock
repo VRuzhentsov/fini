@@ -526,7 +526,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=2ffb75e#2ffb75ea2993fcbfa48d83ef0f178cfcd43d1c83"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=4adef4f#4adef4fd444bdb673264a27faad6282fc98464b3"
 dependencies = [
  "async-trait",
  "bluer",
@@ -548,7 +548,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt-iroh"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=2ffb75e#2ffb75ea2993fcbfa48d83ef0f178cfcd43d1c83"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=4adef4f#4adef4fd444bdb673264a27faad6282fc98464b3"
 dependencies = [
  "ble-gatt",
  "iroh",
@@ -6921,10 +6921,11 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=2ffb75e#2ffb75ea2993fcbfa48d83ef0f178cfcd43d1c83"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=4adef4f#4adef4fd444bdb673264a27faad6282fc98464b3"
 dependencies = [
  "async-trait",
  "ble-gatt",
+ "jni 0.21.1",
  "log",
  "ndk-context",
  "serde",
@@ -8268,7 +8269,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
