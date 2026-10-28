@@ -109,8 +109,10 @@ export async function pairActorsViaUi(
 
   // The channel is an explicit choice now, asked before discovery runs --
   // it is no longer inferred from whichever radio found the peer first.
-  // Both sides pick Network: the actors harness has no radio.
+  // Both sides pick Network: the actors harness has no radio. A device is
+  // in Add Device mode, and so can be found, only once its channel is chosen.
   await requesterPage.click('[data-testid="pair-channel-network"]');
+  await accepterPage.click('[data-testid="pair-channel-network"]');
 
   const targetSelector = nearbyDeviceRequestSelector(accepter.identity.hostname);
   await requesterPage.waitForSelector(targetSelector, timeoutMs);

@@ -880,15 +880,18 @@ impl DeviceService {
             }
         }
         let channel = self.channel(kind);
-        // A radio remembered as off may be on again: ask it now.
-        if enabled && !channel.usable() {
+        // Ask the radio now: one remembered as off may be on again, and one
+        // that nothing has used yet may be off. Asked only when it was
+        // remembered as off, a missing adapter switched the channel on, and
+        // the row turned orange later.
+        if enabled {
             channel.probe().await;
         }
         if enabled && !channel.usable() {
             return Err(format!("{kind:?} is unavailable on this device"));
         }
         self.with_conn(|conn| ChannelRepository::new(conn).configure(peer_device_id, kind, enabled, None))?;
-        // Off: SpaceSync ends the session with CLOSE_CHANNEL_OFF, and
+        // Off: SpaceSync ends the session with CLOSE_BYE, and
         // ble-gatt-iroh closes the BLE link once that close went out.
         // Closing the link here first dropped the close frame.
         if enabled {
