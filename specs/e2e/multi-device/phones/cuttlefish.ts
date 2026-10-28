@@ -4,7 +4,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { PhoneBootError, type PhoneTool } from './phone-tool';
+import { PhoneBootError, type PhoneTool } from './phone-tool.ts';
 
 const run = promisify(execFile);
 

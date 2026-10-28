@@ -11,8 +11,8 @@ FINI_E2E_CI_RUN_ID ?= pr-gate
 FINI_SCRATCH_DIR ?= $(CURDIR)/tmp
 FINI_E2E_CI_RUN_DIR ?= $(FINI_SCRATCH_DIR)/fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
-FINI_E2E_CI_ACTORS ?= actor-a,actor-b
-FINI_E2E_CI_ACTOR_WAIT_SECS ?= 180
+FINI_E2E_CI_TEST_DEVICES ?= a=desktop-process,b=desktop-process
+FINI_E2E_CI_TEST_DEVICE_WAIT_SECS ?= 180
 FINI_DEV_RUNNER_IMAGE ?= fini-dev-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
@@ -246,10 +246,10 @@ pr-gate-e2e-run:
 	$(CONTAINER_ENGINE) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true; \
 	$(CONTAINER_ENGINE) run --rm \
 	  --name "fini-$(FINI_E2E_CI_RUN_ID)-runner" \
-	  -e FINI_E2E_ACTORS="$(FINI_E2E_CI_ACTORS)" \
+	  -e FINI_E2E_TEST_DEVICES="$(FINI_E2E_CI_TEST_DEVICES)" \
 	  -e FINI_E2E_CI_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
 	  -e FINI_E2E_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
-	  -e FINI_E2E_CI_ACTOR_WAIT_SECS="$(FINI_E2E_CI_ACTOR_WAIT_SECS)" \
+	  -e FINI_E2E_TEST_DEVICE_WAIT_SECS="$(FINI_E2E_CI_TEST_DEVICE_WAIT_SECS)" \
 	  -e FINI_E2E_LANES="$(FINI_E2E_LANES)" \
 	  -e FINI_E2E_KEEP="$(FINI_E2E_KEEP)" \
 	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
@@ -257,8 +257,8 @@ pr-gate-e2e-run:
 
 pr-gate-e2e-artifacts:
 	@set -eu; \
-	run_root="$(FINI_E2E_CI_RESULTS_DIR)/fini-e2e-runs/$(FINI_E2E_CI_RUN_ID)/actors"; \
-	printf '\n===== actor logs =====\n'; \
+	run_root="$(FINI_E2E_CI_RESULTS_DIR)/fini-e2e-runs/$(FINI_E2E_CI_RUN_ID)/test-devices"; \
+	printf '\n===== test device logs =====\n'; \
 	if [ -d "$$run_root" ]; then \
 	  for log_path in "$$run_root"/*.log; do \
 	    [ -f "$$log_path" ] || continue; \
@@ -266,7 +266,7 @@ pr-gate-e2e-artifacts:
 	    tail -n 200 "$$log_path" || true; \
 	  done; \
 	else \
-	  printf 'No actor log directory found: %s\n' "$$run_root"; \
+	  printf 'No test device log directory found: %s\n' "$$run_root"; \
 	fi
 
 pr-gate-e2e-cleanup:
@@ -313,8 +313,8 @@ e2e-headed:
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path ble-mock-broker/Cargo.toml; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project multi-device; \
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project multi-device-ble-mock
 
 # "Fini Debug": a genuinely separate desktop application that lives beside the
 # production "Fini" install instead of replacing it -- the desktop counterpart
@@ -487,10 +487,9 @@ e2e-devices:
 	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices}"; \
 	mkdir -p "$$run_root"; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_ACTORS="desktop,$(E2E_PHONE_ACTOR)" \
-	FINI_E2E_EXTERNAL_ACTORS="desktop=$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="desktop=tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=tcp:$(E2E_PHONE_PORT)" \
 	TZ=UTC \
-	npx playwright test --config specs/e2e/playwright.config.ts --project actors $(if $(E2E_DEVICES_SPEC),-g "$(E2E_DEVICES_SPEC)",)
+	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device $(if $(E2E_DEVICES_SPEC),-g "$(E2E_DEVICES_SPEC)",)
 
 # The BLE lane against real hardware: the same peer-sync-over-ble spec the
 # mock-radio lane runs, but driving the two already-running debug apps instead
@@ -517,18 +516,15 @@ e2e-devices-ble:
 	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices-ble}"; \
 	mkdir -p "$$run_root"; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_ACTORS="desktop,$(E2E_PHONE_ACTOR)" \
-	FINI_E2E_EXTERNAL_ACTORS="desktop=$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="desktop=tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=tcp:$(E2E_PHONE_PORT)" \
 	TZ=UTC \
-	npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
+	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device-ble-mock
 
-E2E_PHONE_ACTOR ?= phone
+E2E_PHONE_SLUG ?= phone
 E2E_PHONE_PORT ?= 9223
-# Matched against the *test title* by Playwright's `-g`, not the filename.
-# "external actor" appears only in `external-actor-smoke.spec.ts`'s name, so
-# it selected nothing and the documented plain `make e2e-phone` ran an empty
-# suite that still exited green.
-E2E_PHONE_SPEC ?= both actors answer the same invoke surface
+# Playwright's `-g` matches the test title, not the file name. A value that
+# matches no title runs an empty suite that still exits green.
+E2E_PHONE_SPEC ?= both test devices answer the same invoke surface
 e2e-phone:
 	@set -eu; \
 	adb get-state >/dev/null 2>&1 || (echo "No adb device. Connect the phone and run 'make android-devices'." && exit 1); \
@@ -546,10 +542,9 @@ e2e-phone:
 	trap - EXIT INT TERM; \
 	adb forward tcp:$(E2E_PHONE_PORT) tcp:$(E2E_PHONE_PORT) >/dev/null; \
 	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 \
-	FINI_E2E_ACTORS="actor-a,$(E2E_PHONE_ACTOR)" \
-	FINI_E2E_EXTERNAL_ACTORS="$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="a=desktop-process,$(E2E_PHONE_SLUG)=tcp:$(E2E_PHONE_PORT)" \
 	FINI_APP_BINARY="$$app_bin_path" TZ=UTC \
-	npx playwright test --config specs/e2e/playwright.config.ts --project actors -g "$(E2E_PHONE_SPEC)"
+	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device -g "$(E2E_PHONE_SPEC)"
 
 # Build/update the published headless runtime image locally.
 runtime-image:

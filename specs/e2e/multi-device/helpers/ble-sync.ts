@@ -1,17 +1,17 @@
-import { expect } from '../fixtures.ts';
-import type { E2EActor } from '../fixtures.ts';
+import { expect } from '../test-device.ts';
+import type { TestDevice } from '../test-device.ts';
 import { pollUntil } from './dom.ts';
-import { waitForActorsReady, type SyncedActor } from './device-sync.ts';
+import { waitForTestDevicesReady, type SyncedTestDevice } from './device-sync.ts';
 import { openDeviceDetailsFromSettings } from './personal-sync.ts';
 import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/channel.ts';
 
 /**
- * Readiness + pairing for the BLE-transport actor suite
- * (`FINI_E2E_TRANSPORT=ble`). Actors are spawned with
+ * Readiness + pairing for the BLE-transport testDevice suite
+ * (`FINI_E2E_TRANSPORT=ble`). TestDevices are spawned with
  * `FINI_DISCOVERY_DISABLED=1`, so there is nothing to discover by design and
- * the normal `ensureSyncedActors` UI-pair flow doesn't apply. What is
+ * the normal `ensureSyncedTestDevices` UI-pair flow doesn't apply. What is
  * underneath is the real thing: these
- * actors dial the real `ble.rs` code path (dial loop, peripheral accept,
+ * testDevices dial the real `ble.rs` code path (dial loop, peripheral accept,
  * session claim) against a cross-process mock radio instead of a plain TCP
  * stand-in, and pairing is marked `viaBluetooth: true` so the Bluetooth
  * channel is switched on for the pair -- which is what
@@ -21,40 +21,40 @@ import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/c
  */
 
 /**
- * Every actor's fake address is deterministic from its index alone (see
+ * Every testDevice's fake address is deterministic from its index alone (see
  * `fixtures.ts`'s `fakeBluetoothAddress`) -- duplicated here rather than
  * exported/imported so this helper stays a pure consumer of what the
- * harness already put in each actor's environment (`FINI_LOCAL_BLUETOOTH_
+ * harness already put in each testDevice's environment (`FINI_LOCAL_BLUETOOTH_
  * ADDRESS`), not a second source of truth for it. Tests never need to
  * compute an address themselves; they only need to hand the *other*
- * actor's known address to `device_save_paired_device`.
+ * testDevice's known address to `device_save_paired_device`.
  */
 function fakeBluetoothAddress(index: number): string {
   return `AA:BB:CC:00:00:${(index + 1).toString(16).padStart(2, '0').toUpperCase()}`;
 }
 
-export async function ensureBlePairedActors(
-  actors: E2EActor[],
+export async function ensureBlePairedTestDevices(
+  testDevices: TestDevice[],
   timeoutMs = 60_000,
-): Promise<SyncedActor[]> {
-  if (actors.length !== 2) {
-    throw new Error(`ensureBlePairedActors expects exactly two actors, got ${actors.length}`);
+): Promise<SyncedTestDevice[]> {
+  if (testDevices.length !== 2) {
+    throw new Error(`ensureBlePairedTestDevices expects exactly two testDevices, got ${testDevices.length}`);
   }
 
-  const [a, b] = await waitForActorsReady(actors, timeoutMs);
+  const [a, b] = await waitForTestDevicesReady(testDevices, timeoutMs);
 
-  // External actors are real apps on real devices carrying a real pairing.
+  // External testDevices are real apps on real devices carrying a real pairing.
   // Seeding a fake address over that would overwrite the thing the run
   // depends on, so the hardware path asserts the pairing rather than
   // manufacturing it -- and only ensures the per-pair Bluetooth toggle is on,
   // which since ADR-0006 costs one boolean and no bond.
-  if (a.actor.kind === 'external' || b.actor.kind === 'external') {
+  if (a.testDevice.kind !== 'desktop-process' || b.testDevice.kind !== 'desktop-process') {
     await ensureBluetoothEnabledForPeer(a, b.identity.device_id);
     await ensureBluetoothEnabledForPeer(b, a.identity.device_id);
     return [a, b];
   }
 
-  await a.actor.invoke('device_save_paired_device', {
+  await a.testDevice.invoke('device_save_paired_device', {
     peerDeviceId: b.identity.device_id,
     displayName: b.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(1),
@@ -63,7 +63,7 @@ export async function ensureBlePairedActors(
     // Bluetooth session is refused.
     endpointId: b.identity.endpoint_id,
   });
-  await b.actor.invoke('device_save_paired_device', {
+  await b.testDevice.invoke('device_save_paired_device', {
     peerDeviceId: a.identity.device_id,
     displayName: a.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(0),
@@ -110,19 +110,19 @@ interface ChannelStatusRow {
  * have one that means anything.
  */
 async function ensureBluetoothEnabledForPeer(
-  actor: SyncedActor,
+  testDevice: SyncedTestDevice,
   peerDeviceId: string,
 ): Promise<void> {
-  const paired = await actor.actor.invoke<PairedDeviceRow[]>('device_paired_devices');
+  const paired = await testDevice.testDevice.invoke<PairedDeviceRow[]>('device_paired_devices');
   expect(
     paired.some((entry) => entry.peer_device_id === peerDeviceId),
-    `${actor.actor.slug} should already be paired with ${peerDeviceId}`,
+    `${testDevice.testDevice.slug} should already be paired with ${peerDeviceId}`,
   ).toBe(true);
 
   // The switch lives in `channels` now, not on the paired row: a pair made
   // over the network has no Bluetooth row at all, so asking the paired row
   // whether Bluetooth is on can only ever answer "no".
-  const statuses = await actor.actor.invoke<ChannelStatusRow[]>(
+  const statuses = await testDevice.testDevice.invoke<ChannelStatusRow[]>(
     'device_channel_statuses',
     { peerDeviceId },
   );
@@ -135,16 +135,16 @@ async function ensureBluetoothEnabledForPeer(
   // being.
   expect(
     bluetooth?.state,
-    `${actor.actor.slug} has no Bluetooth channel with ${peerDeviceId} -- set it up in the app first`,
+    `${testDevice.testDevice.slug} has no Bluetooth channel with ${peerDeviceId} -- set it up in the app first`,
   ).toBe(ChannelState.Off);
 
-  const after = await actor.actor.invoke<ChannelStatusRow[]>(
+  const after = await testDevice.testDevice.invoke<ChannelStatusRow[]>(
     'device_set_channel_enabled',
     { peerDeviceId, kind: ChannelKind.Bluetooth, enabled: true },
   );
   expect(
     after.find((status) => status.kind === ChannelKind.Bluetooth)?.state,
-    `${actor.actor.slug} should have Bluetooth on for ${peerDeviceId}`,
+    `${testDevice.testDevice.slug} should have Bluetooth on for ${peerDeviceId}`,
   ).toBe(ChannelState.On);
 }
 
@@ -153,31 +153,31 @@ async function ensureBluetoothEnabledForPeer(
  * Bluetooth result is not one the network quietly produced.
  *
  * Two shapes, because the two lanes rule the network out in different ways.
- * Spawned actors are launched with `FINI_DISCOVERY_DISABLED=1`, so they see no
+ * Spawned testDevices are launched with `FINI_DISCOVERY_DISABLED=1`, so they see no
  * presence at all and the global assertion is the strongest one available.
- * External actors are real apps that cannot be relaunched with that flag, and
+ * External testDevices are real apps that cannot be relaunched with that flag, and
  * may well hear each other over Wi-Fi: there, what must hold is that this pair
  * has no Network channel switched on, so no session can run over it whatever
  * the network can reach.
  */
 export async function expectNetworkChannelUnavailable(
-  actor: E2EActor,
+  testDevice: TestDevice,
   peerDeviceId?: string,
 ): Promise<void> {
-  // A spawned actor was launched with FINI_DISCOVERY_DISABLED=1 and can see
+  // A spawned testDevice was launched with FINI_DISCOVERY_DISABLED=1 and can see
   // nothing at all, so assert exactly that -- it is the stronger claim, and
   // weakening it for both lanes would quietly stop proving the flag works.
-  if (actor.kind === 'spawned' || peerDeviceId === undefined) {
-    const presence = await actor.invoke<unknown[]>('device_heard_devices');
-    expect(presence, `${actor.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
+  if (testDevice.kind === 'desktop-process' || peerDeviceId === undefined) {
+    const presence = await testDevice.invoke<unknown[]>('device_heard_devices');
+    expect(presence, `${testDevice.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
     return;
   }
 
-  const statuses = await actor.invoke<ChannelStatusRow[]>('device_channel_statuses', { peerDeviceId });
+  const statuses = await testDevice.invoke<ChannelStatusRow[]>('device_channel_statuses', { peerDeviceId });
   const network = statuses.find((status) => status.kind === ChannelKind.Network);
   expect(
     network?.state,
-    `${actor.slug} has the Network channel on with ${peerDeviceId} -- ` +
+    `${testDevice.slug} has the Network channel on with ${peerDeviceId} -- ` +
       'this lane needs a pair whose only channel is Bluetooth',
   ).not.toBe(ChannelState.On);
 }
@@ -187,13 +187,13 @@ export async function expectNetworkChannelUnavailable(
  * this channel within its timeout, or an exchange with it is open.
  */
 export async function waitForGreenChannel(
-  actor: E2EActor,
+  testDevice: TestDevice,
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  await pollUntil(`${actor.slug} bluetooth transport reports green`, async () => {
-    await actor.invoke('space_sync_tick');
-    const statuses = await actor.invoke<ChannelStatusRow[]>('device_channel_statuses', {
+  await pollUntil(`${testDevice.slug} bluetooth transport reports green`, async () => {
+    await testDevice.invoke('space_sync_tick');
+    const statuses = await testDevice.invoke<ChannelStatusRow[]>('device_channel_statuses', {
       peerDeviceId,
     });
     const bluetooth = statuses.find((status) => status.kind === ChannelKind.Bluetooth);
@@ -210,7 +210,7 @@ export async function waitForGreenChannel(
  * that no amount of waiting in the test will clear.
  */
 export async function waitForBluetoothRowConnectedInUi(
-  actor: E2EActor,
+  testDevice: TestDevice,
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
@@ -219,19 +219,19 @@ export async function waitForBluetoothRowConnectedInUi(
   // Opened once and left open: the open page is what runs the status search
   // (ADR-0008 D12), and it re-reads its rows every few seconds. Re-opening it
   // on every poll restarted the search each time, too briefly to hear anyone.
-  await openDeviceDetailsFromSettings(actor, peerDeviceId);
-  await pollUntil(`${actor.slug} bluetooth row is green in the UI`, async () => {
-    await actor.invoke('space_sync_tick');
+  await openDeviceDetailsFromSettings(testDevice, peerDeviceId);
+  await pollUntil(`${testDevice.slug} bluetooth row is green in the UI`, async () => {
+    await testDevice.invoke('space_sync_tick');
 
-    const row = actor.page.locator(selector);
+    const row = testDevice.page.locator(selector);
     const color = (await row.count()) > 0 ? ((await row.getAttribute('data-channel-color')) ?? '') : '';
     if (color === '') {
-      await openDeviceDetailsFromSettings(actor, peerDeviceId);
+      await openDeviceDetailsFromSettings(testDevice, peerDeviceId);
       return false;
     }
 
     if (color === ChannelColor.Orange) {
-      throw new Error(`${actor.slug} bluetooth row reports a problem on this device`);
+      throw new Error(`${testDevice.slug} bluetooth row reports a problem on this device`);
     }
 
     return color === ChannelColor.Green ? color : false;

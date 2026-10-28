@@ -1,7 +1,7 @@
-import { test, expect } from '../fixtures.ts';
-import type { E2EActor } from '../fixtures.ts';
+import { test, expect } from '../test-device.ts';
+import type { TestDevice } from '../test-device.ts';
 import {
-  ensureBlePairedActors,
+  ensureBlePairedTestDevices,
   expectNetworkChannelUnavailable,
   waitForBluetoothRowConnectedInUi,
   waitForGreenChannel,
@@ -46,55 +46,55 @@ interface Quest {
  * "the same entity converged."
  */
 test('happy-path-BLE: both sides go green over BLE alone, and a single quest converges both ways', async ({
-  actorA,
-  actorB,
+  testDeviceA,
+  testDeviceB,
 }) => {
-  const [syncedA, syncedB] = await ensureBlePairedActors([actorA, actorB]);
+  const [syncedA, syncedB] = await ensureBlePairedTestDevices([testDeviceA, testDeviceB]);
 
-  // Peer-scoped, so the same spec covers both lanes: spawned actors see no
+  // Peer-scoped, so the same spec covers both lanes: spawned testDevices see no
   // presence at all, while on hardware this pair has no Network channel on.
-  await expectNetworkChannelUnavailable(actorA, syncedB.identity.device_id);
-  await expectNetworkChannelUnavailable(actorB, syncedA.identity.device_id);
+  await expectNetworkChannelUnavailable(testDeviceA, syncedB.identity.device_id);
+  await expectNetworkChannelUnavailable(testDeviceB, syncedA.identity.device_id);
 
   // Green on both, first as the Device page draws it -- opening the page is
   // what runs the status search that hears the peer (ADR-0008 D12) -- then
   // as the backend reports it. An idle pair holds no session, so presence,
   // not a session, is what green means (D9).
-  await waitForBluetoothRowConnectedInUi(actorA, syncedB.identity.device_id);
-  await waitForBluetoothRowConnectedInUi(actorB, syncedA.identity.device_id);
-  await waitForGreenChannel(actorA, syncedB.identity.device_id);
-  await waitForGreenChannel(actorB, syncedA.identity.device_id);
+  await waitForBluetoothRowConnectedInUi(testDeviceA, syncedB.identity.device_id);
+  await waitForBluetoothRowConnectedInUi(testDeviceB, syncedA.identity.device_id);
+  await waitForGreenChannel(testDeviceA, syncedB.identity.device_id);
+  await waitForGreenChannel(testDeviceB, syncedA.identity.device_id);
 
   // Saving the mapping is the first work, and it opens the first exchange --
   // over Bluetooth, the only channel these two can use.
   await ensurePersonalSpaceSync(
-    actorA,
+    testDeviceA,
     syncedB.identity.device_id,
-    actorB,
+    testDeviceB,
     syncedA.identity.device_id,
     ChannelKind.Bluetooth,
   );
-  await expectNoIncomingSpaceSyncDialog(actorA);
-  await expectNoIncomingSpaceSyncDialog(actorB);
+  await expectNoIncomingSpaceSyncDialog(testDeviceA);
+  await expectNoIncomingSpaceSyncDialog(testDeviceB);
 
   // `ensurePersonalSpaceSync` only proves the mapping was recorded/approved
   // locally, not that a full sync round-trip has happened -- matches
   // `zz-personal-space-live-quest-sync.spec.ts`'s own use of this same call
   // as an extra readiness gate before creating anything, so a quest created
   // immediately after approval doesn't race the very first backfill tick.
-  await waitForPersonalLastSyncedLabel(actorB, syncedA.identity.device_id);
+  await waitForPersonalLastSyncedLabel(testDeviceB, syncedA.identity.device_id);
   await sleep(1_100);
 
   const originalTitle = `BLE sync ${Date.now()}`;
   const editedTitle = `${originalTitle} (edited on B)`;
 
-  const createdOnA = await createQuestViaChat(actorA, originalTitle);
-  const questOnB = await waitForQuestConverged(actorA, actorB, originalTitle);
+  const createdOnA = await createQuestViaChat(testDeviceA, originalTitle);
+  const questOnB = await waitForQuestConverged(testDeviceA, testDeviceB, originalTitle);
   expect(questOnB.id, 'the synced quest must be the same entity, not a new one').toBe(createdOnA.id);
 
-  await actorB.invoke('update_quest', { id: questOnB.id, input: { title: editedTitle } });
+  await testDeviceB.invoke('update_quest', { id: questOnB.id, input: { title: editedTitle } });
 
-  const questOnA = await waitForQuestConverged(actorB, actorA, editedTitle);
+  const questOnA = await waitForQuestConverged(testDeviceB, testDeviceA, editedTitle);
   expect(questOnA.id, 'the edit must land on the same entity, not create a second quest').toBe(createdOnA.id);
 });
 
@@ -102,22 +102,22 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function openFocus(actor: E2EActor): Promise<void> {
-  await actor.page.click('nav.nav a[href="#/main"]');
-  await actor.page.waitForSelector('[data-testid="chat-input"]', TIMEOUT_MS);
+async function openFocus(testDevice: TestDevice): Promise<void> {
+  await testDevice.page.click('nav.nav a[href="#/main"]');
+  await testDevice.page.waitForSelector('[data-testid="chat-input"]', TIMEOUT_MS);
 }
 
 /** Creates a quest through the real chat-input UI, then confirms it landed locally via `get_quests`. */
-async function createQuestViaChat(actor: E2EActor, title: string): Promise<Quest> {
-  await openFocus(actor);
-  await actor.page.fill('[data-testid="chat-input"]', title);
-  await actor.page.click('[data-testid="chat-submit"]');
+async function createQuestViaChat(testDevice: TestDevice, title: string): Promise<Quest> {
+  await openFocus(testDevice);
+  await testDevice.page.fill('[data-testid="chat-input"]', title);
+  await testDevice.page.click('[data-testid="chat-submit"]');
 
-  return findQuestByTitle(actor, title);
+  return findQuestByTitle(testDevice, title);
 }
 
-/** Ticks both actors and polls the receiver's own `get_quests` until the given title lands there. */
-async function waitForQuestConverged(sender: E2EActor, receiver: E2EActor, title: string): Promise<Quest> {
+/** Ticks both testDevices and polls the receiver's own `get_quests` until the given title lands there. */
+async function waitForQuestConverged(sender: TestDevice, receiver: TestDevice, title: string): Promise<Quest> {
   return pollUntil(`${receiver.slug} converges on quest titled "${title}"`, async () => {
     await sender.invoke('space_sync_tick');
     await receiver.invoke('space_sync_tick');
@@ -126,9 +126,9 @@ async function waitForQuestConverged(sender: E2EActor, receiver: E2EActor, title
   }, TIMEOUT_MS, 1_000);
 }
 
-async function findQuestByTitle(actor: E2EActor, title: string): Promise<Quest> {
-  return pollUntil(`${actor.slug} finds quest titled "${title}" via get_quests`, async () => {
-    const quests = await actor.invoke<Quest[]>('get_quests');
+async function findQuestByTitle(testDevice: TestDevice, title: string): Promise<Quest> {
+  return pollUntil(`${testDevice.slug} finds quest titled "${title}" via get_quests`, async () => {
+    const quests = await testDevice.invoke<Quest[]>('get_quests');
     return quests.find((quest) => quest.title === title) ?? false;
   }, TIMEOUT_MS, 1_000);
 }

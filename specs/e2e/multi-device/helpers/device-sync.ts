@@ -1,5 +1,5 @@
-import { expect } from '../fixtures.ts';
-import type { E2EActor } from '../fixtures.ts';
+import { expect } from '../test-device.ts';
+import type { TestDevice } from '../test-device.ts';
 import { allTextContents, pollUntil, waitForText } from './dom.ts';
 
 interface DeviceIdentity {
@@ -30,12 +30,12 @@ interface PairCodeUpdate {
   accepted_at: string;
 }
 
-export interface SyncedActor {
-  actor: E2EActor;
+export interface SyncedTestDevice {
+  testDevice: TestDevice;
   identity: DeviceIdentity;
 }
 
-export interface EnsureSyncedActorsOptions {
+export interface EnsureSyncedTestDevicesOptions {
   pairViaUi?: boolean;
   timeoutMs?: number;
   syncTicks?: number;
@@ -43,73 +43,73 @@ export interface EnsureSyncedActorsOptions {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-export async function ensureSyncedActors(
-  actors: E2EActor[],
-  options: EnsureSyncedActorsOptions = {},
-): Promise<SyncedActor[]> {
-  if (actors.length < 2) {
-    throw new Error(`ensureSyncedActors requires at least two actors, got ${actors.length}`);
+export async function ensureSyncedTestDevices(
+  testDevices: TestDevice[],
+  options: EnsureSyncedTestDevicesOptions = {},
+): Promise<SyncedTestDevice[]> {
+  if (testDevices.length < 2) {
+    throw new Error(`ensureSyncedTestDevices requires at least two testDevices, got ${testDevices.length}`);
   }
 
   const pairViaUi = options.pairViaUi ?? true;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const syncTicks = options.syncTicks ?? 3;
-  const syncedActors = await waitForActorsReady(actors, timeoutMs);
+  const syncedTestDevices = await waitForTestDevicesReady(testDevices, timeoutMs);
 
   if (pairViaUi) {
-    for (let i = 0; i < syncedActors.length; i += 1) {
-      for (let j = i + 1; j < syncedActors.length; j += 1) {
-        const left = syncedActors[i];
-        const right = syncedActors[j];
-        if (!(await areActorsPaired(left.actor, right.identity.device_id))) {
-          await pairActorsViaUi(left, right, timeoutMs);
+    for (let i = 0; i < syncedTestDevices.length; i += 1) {
+      for (let j = i + 1; j < syncedTestDevices.length; j += 1) {
+        const left = syncedTestDevices[i];
+        const right = syncedTestDevices[j];
+        if (!(await areTestDevicesPaired(left.testDevice, right.identity.device_id))) {
+          await pairTestDevicesViaUi(left, right, timeoutMs);
         }
       }
     }
   }
 
-  await waitForPairedDevices(syncedActors, timeoutMs);
-  await waitForPresence(syncedActors, timeoutMs);
-  await driveSyncReadiness(syncedActors, syncTicks);
-  await waitForPairedDeviceNames(syncedActors, timeoutMs);
+  await waitForPairedDevices(syncedTestDevices, timeoutMs);
+  await waitForPresence(syncedTestDevices, timeoutMs);
+  await driveSyncReadiness(syncedTestDevices, syncTicks);
+  await waitForPairedDeviceNames(syncedTestDevices, timeoutMs);
 
-  return syncedActors;
+  return syncedTestDevices;
 }
 
-export async function waitForActorsReady(
-  actors: E2EActor[],
+export async function waitForTestDevicesReady(
+  testDevices: TestDevice[],
   timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<SyncedActor[]> {
-  const syncedActors: SyncedActor[] = [];
+): Promise<SyncedTestDevice[]> {
+  const syncedTestDevices: SyncedTestDevice[] = [];
 
-  for (const actor of actors) {
-    await actor.page.waitForSelector('nav.nav', timeoutMs);
-    const identity = await actor.invoke<DeviceIdentity>('device_get_identity');
-    expect(identity.device_id, `${actor.slug} should have a device id`).toBeTruthy();
-    expect(identity.hostname, `${actor.slug} should have a hostname`).toBeTruthy();
-    syncedActors.push({ actor, identity });
+  for (const testDevice of testDevices) {
+    await testDevice.page.waitForSelector('nav.nav', timeoutMs);
+    const identity = await testDevice.invoke<DeviceIdentity>('device_get_identity');
+    expect(identity.device_id, `${testDevice.slug} should have a device id`).toBeTruthy();
+    expect(identity.hostname, `${testDevice.slug} should have a hostname`).toBeTruthy();
+    syncedTestDevices.push({ testDevice, identity });
   }
 
-  const ids = new Set(syncedActors.map((item) => item.identity.device_id));
-  expect(ids.size, 'actor device ids should be unique').toBe(syncedActors.length);
+  const ids = new Set(syncedTestDevices.map((item) => item.identity.device_id));
+  expect(ids.size, 'testDevice device ids should be unique').toBe(syncedTestDevices.length);
 
-  return syncedActors;
+  return syncedTestDevices;
 }
 
-export async function pairActorsViaUi(
-  requester: SyncedActor,
-  accepter: SyncedActor,
+export async function pairTestDevicesViaUi(
+  requester: SyncedTestDevice,
+  accepter: SyncedTestDevice,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<void> {
-  await openAddDevice(requester.actor, timeoutMs);
-  await openAddDevice(accepter.actor, timeoutMs);
+  await openAddDevice(requester.testDevice, timeoutMs);
+  await openAddDevice(accepter.testDevice, timeoutMs);
 
-  const requesterPage = requester.actor.page;
-  const accepterPage = accepter.actor.page;
+  const requesterPage = requester.testDevice.page;
+  const accepterPage = accepter.testDevice.page;
 
   // The channel is an explicit choice now, asked before discovery runs --
   // it is no longer inferred from whichever radio found the peer first.
-  // Both sides pick Network: the actors harness has no radio. A device is
+  // Both sides pick Network: the testDevices harness has no radio. A device is
   // in Add Device mode, and so can be found, only once its channel is chosen.
   await requesterPage.click('[data-testid="pair-channel-network"]');
   await accepterPage.click('[data-testid="pair-channel-network"]');
@@ -125,24 +125,24 @@ export async function pairActorsViaUi(
   await accepterPage.waitForSelector(incomingSelector, timeoutMs);
   await accepterPage.click(incomingSelector);
 
-  const code = await pollUntil(`${requester.actor.slug} outgoing pair code`, async () => {
-    const updates = await requester.actor.invoke<PairCodeUpdate[]>('device_pair_outgoing_updates');
+  const code = await pollUntil(`${requester.testDevice.slug} outgoing pair code`, async () => {
+    const updates = await requester.testDevice.invoke<PairCodeUpdate[]>('device_pair_outgoing_updates');
     const latest = updates[0];
     if (!latest?.code) {
       return false;
     }
     return latest.code.trim();
   }, timeoutMs);
-  expect(code, `pair code for ${requester.actor.slug} -> ${accepter.actor.slug}`).toMatch(/^\d{6}$/);
+  expect(code, `pair code for ${requester.testDevice.slug} -> ${accepter.testDevice.slug}`).toMatch(/^\d{6}$/);
 
   await accepterPage.fill('[data-testid="pair-code-input"]', code);
   await accepterPage.click('[data-testid="pair-code-submit"]');
 
-  await pollUntil(`${requester.actor.slug} paired with ${accepter.actor.slug}`, async () => {
-    return (await areActorsPaired(requester.actor, accepter.identity.device_id)) || false;
+  await pollUntil(`${requester.testDevice.slug} paired with ${accepter.testDevice.slug}`, async () => {
+    return (await areTestDevicesPaired(requester.testDevice, accepter.identity.device_id)) || false;
   }, timeoutMs);
-  await pollUntil(`${accepter.actor.slug} paired with ${requester.actor.slug}`, async () => {
-    return (await areActorsPaired(accepter.actor, requester.identity.device_id)) || false;
+  await pollUntil(`${accepter.testDevice.slug} paired with ${requester.testDevice.slug}`, async () => {
+    return (await areTestDevicesPaired(accepter.testDevice, requester.identity.device_id)) || false;
   }, timeoutMs);
 
   // Dismiss the dialog on both sides before leaving: it stays mounted with
@@ -161,7 +161,7 @@ export async function pairActorsViaUi(
 // -- the footer's own dismiss changes label ("Cancel", "Close", "Done") as
 // the flow progresses, so keying off it would make this depend on which
 // step pairing happened to end on.
-async function closePairDialog(page: E2EActor['page'], timeoutMs: number): Promise<void> {
+async function closePairDialog(page: TestDevice['page'], timeoutMs: number): Promise<void> {
   const selector = '[data-testid="pair-dialog-backdrop"]';
   await page.waitForSelector(selector, timeoutMs);
   await page.click(selector);
@@ -174,30 +174,30 @@ async function closePairDialog(page: E2EActor['page'], timeoutMs: number): Promi
 // Driven by clicking the row a person clicks. There is no route to navigate
 // to any more, and that is the point: the only way in is the one the product
 // actually offers, so this cannot pass while the button is broken.
-async function openAddDevice(actor: E2EActor, timeoutMs: number): Promise<void> {
-  await actor.page.waitForSelector('nav.nav a[href="#/settings"]', timeoutMs);
-  await actor.page.click('nav.nav a[href="#/settings"]');
-  await actor.page.waitForSelector('[data-testid="add-device-link"]', timeoutMs);
-  await actor.page.click('[data-testid="add-device-link"]');
-  await actor.page.waitForSelector('[data-testid="pair-device-dialog"]', timeoutMs);
+async function openAddDevice(testDevice: TestDevice, timeoutMs: number): Promise<void> {
+  await testDevice.page.waitForSelector('nav.nav a[href="#/settings"]', timeoutMs);
+  await testDevice.page.click('nav.nav a[href="#/settings"]');
+  await testDevice.page.waitForSelector('[data-testid="add-device-link"]', timeoutMs);
+  await testDevice.page.click('[data-testid="add-device-link"]');
+  await testDevice.page.waitForSelector('[data-testid="pair-device-dialog"]', timeoutMs);
 }
 
-async function areActorsPaired(actor: E2EActor, peerDeviceId: string): Promise<boolean> {
-  const paired = await actor.invoke<PairedDevice[]>('device_paired_devices');
+async function areTestDevicesPaired(testDevice: TestDevice, peerDeviceId: string): Promise<boolean> {
+  const paired = await testDevice.invoke<PairedDevice[]>('device_paired_devices');
   return paired.some((device) => device.peer_device_id === peerDeviceId);
 }
 
 async function waitForPairedDevices(
-  syncedActors: SyncedActor[],
+  syncedTestDevices: SyncedTestDevice[],
   timeoutMs: number,
 ): Promise<void> {
-  for (const current of syncedActors) {
-    const peerIds = syncedActors
+  for (const current of syncedTestDevices) {
+    const peerIds = syncedTestDevices
       .filter((candidate) => candidate.identity.device_id !== current.identity.device_id)
       .map((candidate) => candidate.identity.device_id);
 
-    await pollUntil(`${current.actor.slug} paired devices`, async () => {
-      const paired = await current.actor.invoke<PairedDevice[]>('device_paired_devices');
+    await pollUntil(`${current.testDevice.slug} paired devices`, async () => {
+      const paired = await current.testDevice.invoke<PairedDevice[]>('device_paired_devices');
       const pairedIds = new Set(paired.map((device) => device.peer_device_id));
       return peerIds.every((peerId) => pairedIds.has(peerId));
     }, timeoutMs);
@@ -205,55 +205,55 @@ async function waitForPairedDevices(
 }
 
 async function waitForPresence(
-  syncedActors: SyncedActor[],
+  syncedTestDevices: SyncedTestDevice[],
   timeoutMs: number,
 ): Promise<void> {
-  for (const current of syncedActors) {
-    const peerIds = syncedActors
+  for (const current of syncedTestDevices) {
+    const peerIds = syncedTestDevices
       .filter((candidate) => candidate.identity.device_id !== current.identity.device_id)
       .map((candidate) => candidate.identity.device_id);
 
-    await pollUntil(`${current.actor.slug} presence`, async () => {
-      const present = await current.actor.invoke<DiscoveredDevice[]>('device_heard_devices');
+    await pollUntil(`${current.testDevice.slug} presence`, async () => {
+      const present = await current.testDevice.invoke<DiscoveredDevice[]>('device_heard_devices');
       const presentIds = new Set(present.map((device) => device.device_id));
       return peerIds.every((peerId) => presentIds.has(peerId));
     }, timeoutMs);
   }
 }
 
-async function driveSyncReadiness(syncedActors: SyncedActor[], syncTicks: number): Promise<void> {
+async function driveSyncReadiness(syncedTestDevices: SyncedTestDevice[], syncTicks: number): Promise<void> {
   for (let tick = 0; tick < syncTicks; tick += 1) {
-    for (const synced of syncedActors) {
-      await synced.actor.invoke<SyncTickResult>('space_sync_tick');
+    for (const synced of syncedTestDevices) {
+      await synced.testDevice.invoke<SyncTickResult>('space_sync_tick');
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 
 async function waitForPairedDeviceNames(
-  syncedActors: SyncedActor[],
+  syncedTestDevices: SyncedTestDevice[],
   timeoutMs: number,
 ): Promise<void> {
-  for (const current of syncedActors) {
-    await current.actor.page.click('nav.nav a[href="#/settings"]');
-    await current.actor.page.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
+  for (const current of syncedTestDevices) {
+    await current.testDevice.page.click('nav.nav a[href="#/settings"]');
+    await current.testDevice.page.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
 
-    for (const peer of syncedActors) {
+    for (const peer of syncedTestDevices) {
       if (peer.identity.device_id === current.identity.device_id) {
         continue;
       }
       await waitForText(
-        current.actor.page,
+        current.testDevice.page,
         '[data-testid="paired-device-name"]',
         peer.identity.hostname,
         timeoutMs,
       );
     }
 
-    const names = await allTextContents(current.actor.page, '[data-testid="paired-device-name"]');
-    for (const peer of syncedActors) {
+    const names = await allTextContents(current.testDevice.page, '[data-testid="paired-device-name"]');
+    for (const peer of syncedTestDevices) {
       if (peer.identity.device_id !== current.identity.device_id) {
-        expect(names, `${current.actor.slug} paired device names`).toContain(peer.identity.hostname);
+        expect(names, `${current.testDevice.slug} paired device names`).toContain(peer.identity.hostname);
       }
     }
   }

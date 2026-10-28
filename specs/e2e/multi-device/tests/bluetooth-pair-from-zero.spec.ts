@@ -1,5 +1,5 @@
-import { expect, test } from '../fixtures.ts';
-import type { E2EActor } from '../fixtures.ts';
+import { expect, test } from '../test-device.ts';
+import type { TestDevice } from '../test-device.ts';
 import { AddDeviceDialog } from '../../components/add-device-dialog.ts';
 import { DevicePage } from '../../components/device-page.ts';
 import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
@@ -14,13 +14,13 @@ import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
  * The other steps have no fixed limit; their times are recorded as test
  * annotations, so a run shows how long a person waits at each step.
  *
- * Needs two real radios: run against devices as external actors, e.g. the
+ * Needs two real radios: run against devices as external testDevices, e.g. the
  * desktop and phone dev apps (`make desktop-debug-dev`, `make android-dev`
  * and `adb forward tcp:9223 tcp:9223`):
  *   FINI_E2E_ACTORS=desktop,phone \
  *   FINI_E2E_EXTERNAL_ACTORS=desktop=9224,phone=9223 \
  *   npx playwright test --config specs/e2e/playwright.config.ts \
- *     --project actors bluetooth-pair-from-zero
+ *     --project testDevices bluetooth-pair-from-zero
  */
 
 const DISCOVERY_STANDARD_MS = 10_000;
@@ -46,55 +46,55 @@ interface ChannelStatus {
   color: ChannelColor;
 }
 
-/** Waits until `actor`'s Bluetooth channel with `peerDeviceId` is green. */
-async function waitForGreen(actor: E2EActor, peerDeviceId: string): Promise<void> {
+/** Waits until `testDevice`'s Bluetooth channel with `peerDeviceId` is green. */
+async function waitForGreen(testDevice: TestDevice, peerDeviceId: string): Promise<void> {
   const deadline = Date.now() + STEP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const statuses = await actor.invoke<ChannelStatus[]>('device_channel_statuses', { peerDeviceId });
+    const statuses = await testDevice.invoke<ChannelStatus[]>('device_channel_statuses', { peerDeviceId });
     if (statuses.find((status) => status.kind === ChannelKind.Bluetooth)?.color === ChannelColor.Green) return;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`${actor.slug} Bluetooth with ${peerDeviceId} not green in ${STEP_TIMEOUT_MS} ms`);
+  throw new Error(`${testDevice.slug} Bluetooth with ${peerDeviceId} not green in ${STEP_TIMEOUT_MS} ms`);
 }
 
-/** Removes the pair on `actor`'s side through its device page, if it has one. */
-async function unpairIfPaired(actor: E2EActor, peer: Identity): Promise<void> {
-  const paired = await actor.invoke<PairedDevice[]>('device_paired_devices');
+/** Removes the pair on `testDevice`'s side through its device page, if it has one. */
+async function unpairIfPaired(testDevice: TestDevice, peer: Identity): Promise<void> {
+  const paired = await testDevice.invoke<PairedDevice[]>('device_paired_devices');
   if (!paired.some((device) => device.peer_device_id === peer.device_id)) return;
-  const page = new DevicePage(actor.page, STEP_TIMEOUT_MS);
+  const page = new DevicePage(testDevice.page, STEP_TIMEOUT_MS);
   await page.open(peer.device_id);
   await page.unlinkDevice();
 }
 
-test('a new pair over Bluetooth, from zero to green', async ({ actorA, actorB }) => {
+test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, testDeviceB }) => {
   test.skip(
-    actorA.kind !== 'external' || actorB.kind !== 'external',
-    'needs two radios: run against real devices as external actors',
+    testDeviceA.kind === 'desktop-process' || testDeviceB.kind === 'desktop-process',
+    'needs two radios: run on virtual phones or physical devices',
   );
   test.setTimeout(10 * 60_000);
 
-  const identityA = await actorA.invoke<Identity>('device_get_identity');
-  const identityB = await actorB.invoke<Identity>('device_get_identity');
-  await unpairIfPaired(actorA, identityB);
-  await unpairIfPaired(actorB, identityA);
+  const identityA = await testDeviceA.invoke<Identity>('device_get_identity');
+  const identityB = await testDeviceB.invoke<Identity>('device_get_identity');
+  await unpairIfPaired(testDeviceA, identityB);
+  await unpairIfPaired(testDeviceB, identityA);
 
-  const dialogA = new AddDeviceDialog(actorA.page, STEP_TIMEOUT_MS);
-  const dialogB = new AddDeviceDialog(actorB.page, STEP_TIMEOUT_MS);
+  const dialogA = new AddDeviceDialog(testDeviceA.page, STEP_TIMEOUT_MS);
+  const dialogB = new AddDeviceDialog(testDeviceB.page, STEP_TIMEOUT_MS);
   await dialogA.openSearch(ChannelKind.Bluetooth);
   await dialogB.openSearch(ChannelKind.Bluetooth);
 
   const searching = Date.now();
   const [listedByA, listedByB] = await Promise.all([
-    dialogA.waitForDevice(identityB.hostname).then(() => note(`${actorA.slug} lists ${actorB.slug}`, searching)),
-    dialogB.waitForDevice(identityA.hostname).then(() => note(`${actorB.slug} lists ${actorA.slug}`, searching)),
+    dialogA.waitForDevice(identityB.hostname).then(() => note(`${testDeviceA.slug} lists ${testDeviceB.slug}`, searching)),
+    dialogB.waitForDevice(identityA.hostname).then(() => note(`${testDeviceB.slug} lists ${testDeviceA.slug}`, searching)),
   ]);
-  expect(listedByA, `${actorA.slug} lists ${actorB.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
-  expect(listedByB, `${actorB.slug} lists ${actorA.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
+  expect(listedByA, `${testDeviceA.slug} lists ${testDeviceB.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
+  expect(listedByB, `${testDeviceB.slug} lists ${testDeviceA.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
 
   const pairPressed = Date.now();
   await dialogA.pair(identityB.hostname);
   await dialogB.waitForRequest();
-  note(`Pair -> request on ${actorB.slug}`, pairPressed);
+  note(`Pair -> request on ${testDeviceB.slug}`, pairPressed);
 
   await dialogB.accept();
   const code = await dialogA.code();
@@ -110,17 +110,17 @@ test('a new pair over Bluetooth, from zero to green', async ({ actorA, actorB })
   // row is behind the dialog.
   const paired = Date.now();
   await Promise.all([
-    waitForGreen(actorA, identityB.device_id).then(() => note(`Paired -> ${actorA.slug} green`, paired)),
-    waitForGreen(actorB, identityA.device_id).then(() => note(`Paired -> ${actorB.slug} green`, paired)),
+    waitForGreen(testDeviceA, identityB.device_id).then(() => note(`Paired -> ${testDeviceA.slug} green`, paired)),
+    waitForGreen(testDeviceB, identityA.device_id).then(() => note(`Paired -> ${testDeviceB.slug} green`, paired)),
   ]);
 
   await Promise.all([dialogA.done(), dialogB.done()]);
   const done = Date.now();
-  const pageA = new DevicePage(actorA.page, STEP_TIMEOUT_MS);
-  const pageB = new DevicePage(actorB.page, STEP_TIMEOUT_MS);
+  const pageA = new DevicePage(testDeviceA.page, STEP_TIMEOUT_MS);
+  const pageB = new DevicePage(testDeviceB.page, STEP_TIMEOUT_MS);
   await Promise.all([pageA.open(identityB.device_id), pageB.open(identityA.device_id)]);
   await Promise.all([
-    pageA.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => note(`Done -> ${actorA.slug} green`, done)),
-    pageB.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => note(`Done -> ${actorB.slug} green`, done)),
+    pageA.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => note(`Done -> ${testDeviceA.slug} green`, done)),
+    pageB.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => note(`Done -> ${testDeviceB.slug} green`, done)),
   ]);
 });

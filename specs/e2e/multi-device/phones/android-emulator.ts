@@ -4,7 +4,7 @@
 
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { PhoneBootError, type PhoneTool } from './phone-tool';
+import { PhoneBootError, type PhoneTool } from './phone-tool.ts';
 
 const run = promisify(execFile);
 
@@ -17,7 +17,9 @@ export class AndroidEmulator implements PhoneTool {
 
   constructor(
     private readonly avd = process.env.FINI_E2E_AVD ?? 'fini-e2e',
-    private readonly gpu = process.env.FINI_E2E_EMULATOR_GPU ?? 'swiftshader_indirect',
+    // swiftshader_indirect stops the emulator after about 30 s on some hosts
+    // (Bazzite); angle_indirect works there and in the container.
+    private readonly gpu = process.env.FINI_E2E_EMULATOR_GPU ?? 'angle_indirect',
     private readonly emulatorBinary = `${process.env.ANDROID_HOME ?? ''}/emulator/emulator`,
   ) {}
 
