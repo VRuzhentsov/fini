@@ -116,6 +116,38 @@ has the channel on. It does not know what goes through the connection.
 - Bluetooth stops its GATT server only when the last live link is closed,
   so that the bye goes out before the link stops.
 
+### States of a channel
+
+One channel of one pair, as one device sees it. The colour is the colour of
+the row on the Device page. On Network the two devices connect; on
+Bluetooth only the device with the smaller id connects, and the other one
+accepts.
+
+```mermaid
+stateDiagram-v2
+    state "Off (empty circle)" as Off
+    state "Searching (grey)" as Searching
+    state "Connecting (grey)" as Connecting
+    state "Green: a session" as Green
+    state "Refused (grey)" as Refused
+
+    [*] --> Off
+    Off --> Searching: switched on here
+    Searching --> Connecting: the peer is heard (or it connects to this device)
+    Connecting --> Green: TLS proves the key, the gate accepts
+    Connecting --> Searching: the connect fails (link closed, again after 2 s)
+    Connecting --> Refused: close code 1 or 2
+    Refused --> Searching: after REJECTED_WAIT_TIME (30 s)
+    Green --> Searching: the link is lost, 15 s of silence, or a bye (code 0) from the peer
+    Searching --> Off: switched off here
+    Connecting --> Off: switched off here
+    Refused --> Off: switched off here
+    Green --> Off: switched off here (bye, code 0, to the peer)
+```
+
+A crossing (code 3) or a session that runs already (code 4) changes
+nothing: the other connection carries the session.
+
 ## Who is on the other end
 
 iroh's TLS handshake proves the key of each side. The service that takes
