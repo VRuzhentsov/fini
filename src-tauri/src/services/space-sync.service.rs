@@ -991,6 +991,9 @@ impl SpaceSyncService {
             events
         };
         let mut applied_events = 0usize;
+        // Also an event that lost: its checklist merge can write a
+        // convergence event of its own.
+        let mut handled_events = 0usize;
         let mut deferred = Vec::new();
         for event in incoming {
             if !SpaceMappingRepository::new(conn).is_active(&event.origin_device_id, &event.space_id).unwrap_or(false) {
@@ -999,6 +1002,7 @@ impl SpaceSyncService {
             }
             match apply::apply_sync_event(conn, &event) {
                 Ok(applied) => {
+                    handled_events += 1;
                     if applied {
                         applied_events += 1;
                         transferred_by_peer.entry(event.origin_device_id.clone()).or_insert((0, 0, 0)).1 += 1;
@@ -1057,8 +1061,10 @@ impl SpaceSyncService {
         }
         if applied_events > 0 {
             self.bus.publish(Event::SpaceDataChanged);
-            // Applying can write changes of its own (a checklist merge that
-            // converged); the next tick sends them.
+        }
+        // Applying can write changes of its own (a checklist merge that
+        // converged, also for an event that lost); the next tick sends them.
+        if handled_events > 0 {
             self.wake();
         }
 
