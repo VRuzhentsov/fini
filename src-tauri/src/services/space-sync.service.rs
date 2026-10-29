@@ -1127,6 +1127,9 @@ impl SpaceSyncService {
                 log::warn!("[space-sync] telling the peer of a mapping request failed: {err}");
             }
         }
+        // A mapping change is sync work: the desktop keeper ticks only when
+        // woken, and a held session sees no other event.
+        self.wake();
         Ok(mapped)
     }
 
@@ -1148,6 +1151,7 @@ impl SpaceSyncService {
             }
         }
         let mapped_space_ids = apply::apply_mappings(conn, peer_device_id, desired)?;
+        self.wake();
         Ok(SpaceMappingApplyResult { mapped_space_ids, unresolved_custom_spaces })
     }
 
@@ -1190,6 +1194,7 @@ impl SpaceSyncService {
         if let Err(err) = self.send_mapping_update(conn, peer_device_id, &mapped_space_ids, &custom_spaces) {
             log::warn!("[space-sync] telling the peer of a mapping resolve failed: {err}");
         }
+        self.wake();
         Ok(SpaceMappingApplyResult { mapped_space_ids, unresolved_custom_spaces: Vec::new() })
     }
 

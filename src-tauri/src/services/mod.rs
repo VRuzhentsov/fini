@@ -48,9 +48,8 @@ pub mod bluetooth_channel_service {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    use crate::models::channel::ChannelProblem;
     use crate::models::Identity;
-    use crate::services::channel_service::{ChannelKind, ChannelService, DataLink, LinkHandlers};
+    use crate::services::channel_service::{ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlers};
     use crate::services::event_bus_service::EventBusService;
 
     pub struct BluetoothChannelService {
