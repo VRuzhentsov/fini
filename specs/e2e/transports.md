@@ -10,10 +10,11 @@ different things at different layers. This table is the honest mapping.
 | Layer | What it proves | Runs on |
 |---|---|---|
 | Rust integration tests (`services::transport::tests`) | Transport-neutral: per-(peer, transport) session claiming, auth-gate rejects un-authed inbound, both transports connect and prove liveness independently via ping/ack, primary-transport selection, no duplicated/lost events. Runtime-agnostic — identical Rust runs on every OS, so this is the proof that holds for android-linux, android-android, linux-linux, and windows-android alike; there is no "android-ness" at the protocol layer. | Every PR, GitHub-hosted (`make pr-gate-be-unit`) |
-| Playwright `actors` project, `transport-selection.spec.ts` | Real app binaries, real network transport: paired actors with network available claim the Network channel (QUIC over iroh) as primary. | Every PR, GitHub-hosted (`make pr-gate-e2e`) |
-| Playwright `actors-ble` project, `peer-sync-over-ble.spec.ts` | Real app binaries, network disabled, drive the actual `ble.rs` code path (dial loop, peripheral advertise/accept, session claim, GATT central/peripheral roles with real asymmetric fragment budgets) against a cross-process **mock radio** (`ble-gatt`'s `mock-broker` feature — a standalone broker process two `fini-app`s connect to, injected via `FINI_BLE_MOCK_BROKER` behind `devtools`). Connect → both sides report `state: "configured", code: null` ("green," the exact liveness signal the "Still connecting…" bug got wrong) → a single quest converges both ways. Not a radio/RF proof (see below) — it is a real protocol/session/liveness/UI proof, on the real Bluetooth code path. | Every PR, GitHub-hosted (`make pr-gate-e2e`, chained in `scripts/e2e-runner.sh`) |
-| Playwright `actors` project, `bluetooth-pair-from-zero.spec.ts` | Real devices as external actors (`FINI_E2E_EXTERNAL_ACTORS`): a new pair over Bluetooth the way a person makes it (Add device → Bluetooth on both, Pair, Accept, the code, Done) until the Bluetooth row is green on both. Asserts the 10 s standard for the listing; records each step's time as an annotation. | Local only, against a desktop and a phone (run command in the spec header) |
-| Playwright `actors` project, `bluetooth-channel-add-again.spec.ts` | Real devices as external actors: on a pair with Bluetooth on, the second actor switches Bluetooth off (the first actor's row turns grey) and on again; asserts that both rows are green within the 10 s standard (ADR-0011: a channel is a switch on each device). Swap the actor order (`FINI_E2E_ACTORS=phone,desktop`) to switch the other device. | Local only, against a desktop and a phone (same run command as `bluetooth-pair-from-zero.spec.ts`) |
+| Playwright `multi-device` project, `transport-selection.spec.ts` | Real app binaries, real network transport: paired test devices with network available claim the Network channel (QUIC over iroh) as primary. | Every PR, GitHub-hosted (`make pr-gate-e2e`) |
+| Playwright `multi-device-ble-mock` project, `peer-sync-over-ble.spec.ts` | Real app binaries, network disabled, drive the actual `ble.rs` code path (dial loop, peripheral advertise/accept, session claim, GATT central/peripheral roles with real asymmetric fragment budgets) against a cross-process **mock radio** (`ble-gatt`'s `mock-broker` feature — a standalone broker process two `fini-app`s connect to, injected via `FINI_BLE_MOCK_BROKER` behind `devtools`). Connect → both sides report `state: "configured", code: null` ("green," the exact liveness signal the "Still connecting…" bug got wrong) → a single quest converges both ways. Not a radio/RF proof (see below) — it is a real protocol/session/liveness/UI proof, on the real Bluetooth code path. | Every PR, GitHub-hosted (`make pr-gate-e2e`, chained in `scripts/e2e-runner.sh`) |
+| Playwright `android-ble` project, `bluetooth-pair-from-zero.spec.ts` | Two virtual Android phones on one virtual Bluetooth medium (ADR-0012): the real Android Bluetooth stack, GATT and the Fini APK. A new pair over Bluetooth the way a person makes it (Add device → Bluetooth on both, Pair, Accept, the code, Done) until the Bluetooth row is green on both. Asserts the 10 s standard for the listing; records the time of each step as an annotation. The phones start only for this project. Not a radio/RF proof. | Local in the `android-phones-runner` podman image (`npm run test:e2e:android-ble`). CI job: not done yet |
+| The same spec on physical devices | `FINI_E2E_TEST_DEVICES=a=tcp:9224,b=tcp:9223`: the same flow on a desktop and a phone with real radios. | Local only, against a desktop and a phone (run command in the spec header) |
+| Playwright `multi-device` project, `bluetooth-channel-add-again.spec.ts` | Physical devices: on a pair with Bluetooth on, the second test device switches Bluetooth off (the row of the first one turns grey) and on again; asserts that both rows are green in the 10 s standard (ADR-0011: a channel is a switch on each device). Swap the order in `FINI_E2E_TEST_DEVICES` to switch the other device. | Local only, against a desktop and a phone |
 | `android-emulator-e2e` CI job | Single Android emulator: app boots, notification channel exists. Not a cross-device sync test. | Every PR, GitHub-hosted |
 | Real Bluetooth, real second device | The topologies as literally described in the ticket — real RF, real radio contention, real adapter behavior (e.g. the `CONNECTION_PRIORITY_HIGH` class of bug). Not something a mock radio can prove regardless of how faithfully it models the GATT protocol. | Local only (`make e2e-bt-local`, PR B) — no device lab, no self-hosted runner |
 
@@ -21,15 +22,15 @@ different things at different layers. This table is the honest mapping.
 
 - GitHub-hosted runners have no Bluetooth radio. There is no way to run a
   real BLE/RFCOMM link between two processes on the same runner, let alone
-  across two runners. `actors-ble`'s mock broker closes the protocol/session/
+  across two runners. The mock broker of `multi-device-ble-mock` closes the protocol/session/
   liveness/UI gap this left (see the row above) but is explicit about not
   claiming to close the radio gap — no virtual Bluetooth controller
   available on GitHub-hosted CI (Bumble, `btvirt`, the Android emulator's
   netsim) reproduces real RF contention either, so that bug class stays a
   hardware problem regardless of which mock backs the protocol layer.
-- The Android emulator needs KVM, only available on Linux GitHub-hosted
-  runners; running two emulators in one job to sync with each other is
-  possible but heavy and flaky, and still wouldn't have a real radio.
+- Virtual phones need KVM, which only Linux GitHub-hosted runners have. Two
+  virtual phones share a virtual Bluetooth medium (`android-ble`, ADR-0012),
+  which proves the Android Bluetooth stack and GATT, but not a real radio.
 - Windows GitHub-hosted runners have no Android emulator support at all, so
   windows-android has no real-hardware path on GitHub-hosted CI regardless
   of transport work. It is out of scope for this PR (the ticket itself
