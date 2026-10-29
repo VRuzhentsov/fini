@@ -900,6 +900,9 @@ impl DeviceService {
         self.with_conn(|conn| self.refresh_network_lookup(conn));
         self.bluetooth.refresh_advertising();
         self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
+        if enabled && kind == ChannelKind::Bluetooth {
+            self.bluetooth.connect_once_after_switch_on(peer_device_id);
+        }
         Ok(())
     }
 

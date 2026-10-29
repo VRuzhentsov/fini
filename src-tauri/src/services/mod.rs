@@ -72,6 +72,10 @@ pub mod bluetooth_channel_service {
 
         pub fn refresh_advertising(&self) {}
 
+        pub fn connect_once_after_switch_on(&self, _peer_id: &str) {}
+
+        pub fn note_refused(&self, _peer_id: &str) {}
+
         pub fn close_rejected_link(&self, _address: String, _device_id: Option<&str>) {}
 
         pub fn close_links_after_session(&self, _peer_id: &str) {}

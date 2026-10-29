@@ -82,6 +82,12 @@ pub struct BluetoothChannelService {
     /// Per paired device, the address of the BLE link a pairing just used and
     /// left up: the first session goes over it (`keep_pairing_link`).
     pairing_links: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// Paired devices this device connects to once, though its id is the
+    /// bigger one (`connect_once_after_switch_on`).
+    connect_once: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// When this device last refused each paired device's session because
+    /// the channel was off here (`note_refused`).
+    refused_at: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl BluetoothChannelService {
@@ -92,6 +98,8 @@ impl BluetoothChannelService {
             delivery: DeliverySchedule::new(bus.clone()),
             endpoint: tokio::sync::OnceCell::new(),
             pairing_links: std::sync::Mutex::default(),
+            connect_once: std::sync::Mutex::default(),
+            refused_at: std::sync::Mutex::default(),
             identity,
             db_path,
             bus,
@@ -662,7 +670,10 @@ impl BluetoothChannelService {
         // advertises and accepts. When the two connected at once, BlueZ
         // aborted one connect, and the crossing rule refused the other one.
         // The first session after a pairing goes over the pairing link.
-        if self.identity.device_id.as_str() > peer_id && !self.has_pairing_link(peer_id) {
+        if self.identity.device_id.as_str() > peer_id
+            && !self.has_pairing_link(peer_id)
+            && !self.take_connect_once(peer_id)
+        {
             return;
         }
         if !self.scanner.begin_exchange(peer_id) {
@@ -674,6 +685,40 @@ impl BluetoothChannelService {
             bluetooth.exchange_with(&peer_id).await;
             bluetooth.scanner.end_exchange(&peer_id);
         });
+    }
+
+    /// The channel with `peer_id` was switched on here. When this device has
+    /// the bigger id and refused the peer's session less than
+    /// `REJECTED_WAIT_TIME` ago, it connects once itself: the peer waits that
+    /// long before it connects again. Measured: a switch-on 3 s after a
+    /// refusal went green after 32 s. Without a refusal the peer connects by
+    /// itself, and a connect from here too crossed it and cost 7 s.
+    pub fn connect_once_after_switch_on(&self, peer_id: &str) {
+        let refused_recently = self
+            .refused_at
+            .lock()
+            .ok()
+            .and_then(|mut refused| refused.remove(peer_id))
+            .is_some_and(|at| at.elapsed() < REJECTED_WAIT_TIME);
+        if !refused_recently || self.identity.device_id.as_str() < peer_id {
+            return;
+        }
+        log::info!("[transport][ble] {peer_id} was refused a short time ago; connecting to it once");
+        if let Ok(mut once) = self.connect_once.lock() {
+            once.insert(peer_id.to_string());
+        }
+        self.start_exchange(peer_id);
+    }
+
+    /// This device refused `peer_id`'s session: the channel is off here.
+    pub fn note_refused(&self, peer_id: &str) {
+        if let Ok(mut refused) = self.refused_at.lock() {
+            refused.insert(peer_id.to_string(), std::time::Instant::now());
+        }
+    }
+
+    fn take_connect_once(&self, peer_id: &str) -> bool {
+        self.connect_once.lock().is_ok_and(|mut once| once.remove(peer_id))
     }
 
     /// One delivery (ADR-0008 D8, D12): a present peer is one dial to where

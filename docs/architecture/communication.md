@@ -138,6 +138,7 @@ stateDiagram-v2
     Connecting --> Searching: the connect fails (link closed, again after 2 s)
     Connecting --> Refused: close code 1 or 2
     Refused --> Searching: after REJECTED_WAIT_TIME (30 s)
+    Refused --> Connecting: the peer switched on, and connects to this device once
     Green --> Searching: the link is lost, 15 s of silence, or a bye (code 0) from the peer
     Searching --> Off: switched off here
     Connecting --> Off: switched off here
@@ -181,6 +182,12 @@ other side reads it (`DataLink::close_code`).
 
 After code 1 or 2, the next Bluetooth connect waits `REJECTED_WAIT_TIME`
 (Network: `FAILURE_COOLDOWN`).
+
+On Bluetooth, the device with the bigger id does not connect. When it
+refused a device with code 2 less than `REJECTED_WAIT_TIME` ago and the
+channel is then switched on here, it connects to that device once
+(`BluetoothChannelService::connect_once_after_switch_on`). Without this, the
+other device stayed grey until its wait ended (32 s measured).
 
 ### Bluetooth links after a session
 

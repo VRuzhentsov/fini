@@ -811,6 +811,7 @@ impl SpaceSyncService {
             log::warn!("[space_sync][accept] {kind:?} session from {device_id} rejected: the channel is off for this pair");
             link.close(CLOSE_CHANNEL_OFF, "the channel is off for this pair");
             if kind == ChannelKind::Bluetooth {
+                self.bluetooth.note_refused(&device_id);
                 self.bluetooth.close_rejected_link(from_addr, Some(&device_id));
             }
             return;
