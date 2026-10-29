@@ -142,7 +142,7 @@ and one of the implementations is exactly that.
 ### Session
 
 **An authenticated conversation with a known device**, running on top of one
-`DataLink`. Where `PeerSession` appears, it is this.
+`DataLink`.
 
 The difference from a `DataLink` is **identity, not connectivity**. A
 `DataLink` is already connected when it exists — the TCP handshake or the
@@ -360,10 +360,3 @@ fakes the radio underneath `ble`, so the dial loop, the peripheral accept,
 the session claim and the GATT roles above it are all the real code. That is
 a better proof than a stand-in channel was, and it costs nothing in the
 product.
-
-## Known gaps
-
-`LinkState`/`LinkEvent` (ADR-0005) use the word `link` for a different
-thing than the term **Link** above: the state machine for whether a pair
-*has* a `DataLink` on a channel and what is being done about it. They are
-renamed only if that turns out to confuse someone.

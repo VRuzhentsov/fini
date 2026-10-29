@@ -115,6 +115,10 @@ has the channel on. It does not know what goes through the connection.
   was lost out of range.
 - Bluetooth stops its GATT server only when the last live link is closed,
   so that the bye goes out before the link stops.
+- Android lets an app start 5 scans in 30 s, and a scan above that hears
+  nothing without an error. The scanner counts its starts and waits for a
+  free one (`ANDROID_SCAN_STARTS`). The Bluetooth check that runs when a
+  person switches a channel on uses no scan while the limit is used.
 
 ### States of a channel
 

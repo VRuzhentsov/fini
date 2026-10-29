@@ -64,8 +64,8 @@ To make the running apps (desktop and phone, HMR) do something, use one of these
 
 Components:
 
-- A component is a class around one part of the screen, made from a `TauriPage`: `AddDeviceDialog`, `DevicePage`, `ChannelRow`, `ChannelSetupDialog`. It knows nothing about actors.
-- One method is one action that a person does (`openSearch(channel)`, `pair(hostname)`, `unlink()`), and it returns when the screen shows the result. Wait with Playwright (`waitForSelector`, `waitForFunction`) on a `data-*` hook, for example `[data-pair-step="looking"]`.
+- A component is a class around one part of the screen, made from a `TauriPage`: `AddDeviceDialog`, `DevicePage`, `ChannelRow`. It knows nothing about actors.
+- One method is one action that a person does (`openSearch(channel)`, `pair(hostname)`, `unlinkDevice()`), and it returns when the screen shows the result. Wait with Playwright (`waitForSelector`, `waitForFunction`) on a `data-*` hook, for example `[data-pair-step="looking"]`.
 - When a step has no hook, add one to the Vue component (`data-testid`, or a `data-*` attribute that names the state; `docs/naming.md`), then wait on it.
 - When a flow needs a part of the screen that has no component, add a component for it in `specs/e2e/components/`, then use it in the spec.
 
