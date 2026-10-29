@@ -10,6 +10,7 @@ import { TestDeviceSet, type TestDeviceKind, type TestDeviceProvider } from './t
 export type { TestDeviceKind };
 
 const PAGE_TIMEOUT_MS = 15_000;
+const READY_TIMEOUT_MS = 180_000;
 
 export class TestDevice {
   readonly slug: string;
@@ -34,6 +35,24 @@ export class TestDevice {
     this.client = await this.provider.connect();
     this.tauriPage = new TauriPage(this.client);
     this.tauriPage.setDefaultTimeout(PAGE_TIMEOUT_MS);
+    // The ping proves only the Rust side of the bridge. A phone that starts
+    // the app from zero shows the page some time later.
+    await this.waitForPage();
+  }
+
+  private async waitForPage(): Promise<void> {
+    const end = Date.now() + READY_TIMEOUT_MS;
+    let lastError: unknown;
+    while (Date.now() < end) {
+      try {
+        if (await this.page.evaluate<boolean>(`Boolean(document.querySelector('nav.nav'))`)) return;
+      } catch (error) {
+        lastError = error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    const reason = lastError instanceof Error ? ` Last error: ${lastError.message}` : '';
+    throw new Error(`Test device "${this.slug}" did not show the app in ${READY_TIMEOUT_MS / 1000} s.${reason}`);
   }
 
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {

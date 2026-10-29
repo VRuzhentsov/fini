@@ -1,5 +1,5 @@
 // A test device that is the Fini debug app on a virtual phone of the phone
-// group (ADR-0012 D2). Playwright `_android` installs the APK and runs the
+// group (ADR-0012 D2). Playwright `_android` finds the phone and runs the
 // shell commands; the app actions go through the devtools bridge on TCP 9223,
 // which `adb forward` makes available on a host port for each phone.
 
@@ -44,16 +44,23 @@ export class AndroidPhoneProvider implements TestDeviceProvider {
     if (!device) throw new Error(`phone ${this.serial} for test device "${this.slug}" is not in adb devices`);
     this.device = device;
 
-    await device.installApk(process.env.FINI_E2E_ANDROID_APK ?? DEFAULT_APK, { args: ['-r', '-g'] });
+    // `adb install`, not `device.installApk`: Playwright streams the APK in one
+    // write, and with the 455 MB debug APK that write fails with EPIPE.
+    await run('adb', ['-s', this.serial, 'install', '-r', '-g', process.env.FINI_E2E_ANDROID_APK ?? DEFAULT_APK], {
+      maxBuffer: 16 * 1024 * 1024,
+    });
     await this.shell(`pm clear ${PACKAGE}`);
     for (const permission of PERMISSIONS) {
       await this.shell(`pm grant ${PACKAGE} android.permission.${permission}`);
     }
     await this.shell('cmd bluetooth_manager enable');
-    // A webview in the background slows its timers, and each `eval` then
-    // times out. Keep the screen on and the app in front.
+    // A webview in the background or behind the lock screen slows its timers,
+    // and each `eval` then times out. Keep the screen on and unlocked, and the
+    // app in front.
     await this.shell('svc power stayon true');
     await this.shell('input keyevent KEYCODE_WAKEUP');
+    await this.shell('locksettings set-disabled true');
+    await this.shell('wm dismiss-keyguard');
     await this.shell('logcat -b all -c');
     await this.shell(`am start -W -n ${ACTIVITY}`);
     await run('adb', ['-s', this.serial, 'forward', `tcp:${this.hostPort}`, `tcp:${APP_BRIDGE_PORT}`]);
