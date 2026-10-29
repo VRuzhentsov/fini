@@ -92,7 +92,6 @@ pub mod bluetooth_channel_service {
 
         fn set_link_handlers(&self, _handlers: LinkHandlers) {}
 
-        #[cfg(any(feature = "ui-plane", test))]
         fn available(&self) -> bool {
             false
         }
@@ -103,7 +102,6 @@ pub mod bluetooth_channel_service {
             true
         }
 
-        #[cfg(any(feature = "ui-plane", test))]
         fn problem(&self) -> Option<ChannelProblem> {
             Some(ChannelProblem::BluetoothNotSupported)
         }
