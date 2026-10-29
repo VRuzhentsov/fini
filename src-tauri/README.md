@@ -65,7 +65,6 @@ See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[Re
 |---|---|---|
 | `get_active_focus` | — | `Quest | null` |
 | `set_focus` | `{ quest_id, trigger }` | `FocusHistory` |
-| `list_focus_history` | `{ limit?, before? }` | `Vec<FocusHistory>` |
 
 The commands of the device, channel and SpaceSync services are in
 `src/commands/<service>.commands.rs`, and each name starts with its service
