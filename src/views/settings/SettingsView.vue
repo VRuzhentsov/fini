@@ -10,7 +10,7 @@ import SettingsListGroup from "../../components/settings/SettingsListGroup.vue";
 import SettingsListItem from "../../components/settings/SettingsListItem.vue";
 import SpacesSettingsSection from "../../components/settings/SpacesSettingsSection.vue";
 import ThemeSelector from "../../components/settings/ThemeSelector.vue";
-import { useDeviceStore, type PairedDevice } from "../../stores/device";
+import { useDeviceStore, type PairedDevice } from "../../stores/device.store";
 import { useSpaceStore } from "../../stores/space";
 
 const spaceStore = useSpaceStore();

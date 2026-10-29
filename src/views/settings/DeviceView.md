@@ -12,7 +12,7 @@ The page exists to answer three questions at a glance, and every section is ther
 - **Has my stuff synced?** — the Sync queue section
 - **If not, why not?** — the ⓘ on an orange channel row
 
-Features: `specs/device-connect/README.md`, `specs/space-sync/README.md`.
+Features: `docs/architecture/communication.md`.
 
 ## Current scope
 

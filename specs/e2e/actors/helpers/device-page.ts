@@ -102,55 +102,24 @@ export async function anyChannelConnected(
   return (await actor.page.locator(`[data-testid="channel-status-row"][data-channel-color="${ChannelColor.Green}"]`).count()) > 0;
 }
 
-/**
- * Press Add on a channel that does not exist yet and return what the setup
- * dialog settles on: `ready` once OK is available, or the failure it shows
- * (ADR-0008 D20). Leaves the dialog open; `closeSetupDialog` ends it.
- */
-export async function addChannelViaDialog(
-  actor: E2EActor,
-  kind: ChannelKind,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<{ ready: boolean; failure: string }> {
-  await actor.page.click(`${channelRowSelector(kind)} [data-testid="add-channel"]`);
-  await actor.page.waitForSelector('[data-testid="pair-device-dialog"]', timeoutMs);
-  return pollUntil(`${actor.slug} ${kind} setup settles`, async () => {
-    const failed = actor.page.getByTestId('setup-failed');
-    if ((await failed.count()) > 0) {
-      return { ready: false, failure: ((await failed.textContent()) ?? '').trim() };
-    }
-    const ok = actor.page.getByTestId('setup-ok');
-    if ((await ok.count()) > 0 && (await ok.isEnabled())) {
-      return { ready: true, failure: '' };
-    }
-    return false;
-  }, timeoutMs, 500);
-}
-
-export async function closeSetupDialog(actor: E2EActor): Promise<void> {
-  await actor.page.click('[data-testid="setup-close"]');
-}
-
-/** OK in the setup dialog: switches the channel on for this device. */
-export async function confirmSetupDialog(actor: E2EActor): Promise<void> {
-  await actor.page.click('[data-testid="setup-ok"]');
-}
-
 interface ChannelStatusRow {
   kind: ChannelKind;
   state: ChannelState;
 }
 
-/** The stored state of a channel with a peer, read from the backend. */
+/**
+ * The stored state of a channel with a peer, read from the backend. A
+ * missing row is off (ADR-0011).
+ */
 export async function channelState(
   actor: E2EActor,
   peerDeviceId: string,
   kind: ChannelKind,
 ): Promise<ChannelState> {
-  const statuses = await actor.invoke<ChannelStatusRow[]>('device_connection_channel_statuses', {
+  const statuses = await actor.invoke<ChannelStatusRow[]>('device_channel_statuses', {
     peerDeviceId,
   });
-  return statuses.find((status) => status.kind === kind)?.state ?? ChannelState.None;
+  return statuses.find((status) => status.kind === kind)?.state ?? ChannelState.Off;
 }
 
 export async function waitForChannelState(
@@ -165,31 +134,3 @@ export async function waitForChannelState(
   }, timeoutMs, 1_000);
 }
 
-/**
- * Unlink a channel the way a person does: switch it off, then press the
- * trash button that the off row offers. A channel that is already On has no
- * unlink button, so the switch comes first.
- */
-export async function unlinkChannel(
-  actor: E2EActor,
-  peerDeviceId: string,
-  kind: ChannelKind,
-): Promise<void> {
-  await openDeviceDetailsFromSettings(actor, peerDeviceId);
-  if ((await channelState(actor, peerDeviceId, kind)) === ChannelState.On) {
-    await toggleChannel(actor, kind);
-    await waitForChannelState(actor, peerDeviceId, kind, ChannelState.Off);
-  }
-  // Pressed until it takes. The page ignores a press while the row's own
-  // switch is still settling (`busyChannel`), so a single click straight
-  // after switching off can be dropped without any error -- seen once in a
-  // 5-cycle run on real devices, where the channel stayed Off for 30s.
-  const unlink = actor.page.locator(`${channelRowSelector(kind)} [data-testid="unlink-channel"]`);
-  await pollUntil(`${actor.slug} ${kind} channel is unlinked`, async () => {
-    if ((await channelState(actor, peerDeviceId, kind)) === ChannelState.None) return true;
-    if ((await unlink.count()) > 0 && (await unlink.isEnabled())) {
-      await unlink.click();
-    }
-    return (await channelState(actor, peerDeviceId, kind)) === ChannelState.None;
-  }, DEFAULT_TIMEOUT_MS, 1_000);
-}

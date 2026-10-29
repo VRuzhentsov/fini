@@ -23,11 +23,11 @@ use crate::services::db::{sync_timestamp, utc_now};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::communication::pairing::DeviceConnectionState;
+use crate::repositories::OutboxRepository;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::reminder;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::communication::sync::outbox::{emit_sync_event, emit_sync_event_at};
+use crate::services::space_sync_service::SpaceSyncService;
 
 // ── Repeat rule ──────────────────────────────────────────────────────────────
 
@@ -489,8 +489,7 @@ fn emit_quest_sync_events(
     let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
 
     if previous_space_id == quest.space_id {
-        emit_sync_event(
-            conn,
+        OutboxRepository::new(conn).emit_sync_event(
             origin_device_id,
             "quest",
             &quest.id,
@@ -506,8 +505,7 @@ fn emit_quest_sync_events(
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string();
 
-    emit_sync_event_at(
-        conn,
+    OutboxRepository::new(conn).emit_sync_event_at(
         origin_device_id,
         "quest",
         &quest.id,
@@ -517,8 +515,7 @@ fn emit_quest_sync_events(
         delete_updated_at,
     )?;
 
-    emit_sync_event_at(
-        conn,
+    OutboxRepository::new(conn).emit_sync_event_at(
         origin_device_id,
         "quest",
         &quest.id,
@@ -565,8 +562,7 @@ fn emit_checklist_activity_sync_events(
 
     for activity in activities {
         let payload = serde_json::to_string(&activity).map_err(|e| e.to_string())?;
-        emit_sync_event(
-            conn,
+        OutboxRepository::new(conn).emit_sync_event(
             origin_device_id,
             "checklist_activity",
             &activity.id,
@@ -948,8 +944,7 @@ impl<'a> QuestService<'a> {
             };
 
             for quest in &series_quests {
-                emit_sync_event(
-                    conn,
+                OutboxRepository::new(conn).emit_sync_event(
                     device_id,
                     "quest",
                     &quest.id,
@@ -964,8 +959,7 @@ impl<'a> QuestService<'a> {
                     .map_err(|_| diesel::result::Error::RollbackTransaction)?;
             }
 
-            emit_sync_event(
-                conn,
+            OutboxRepository::new(conn).emit_sync_event(
                 device_id,
                 "quest_series",
                 series_id,
@@ -1441,7 +1435,7 @@ pub fn get_quests(state: State<AppDbConnection>) -> Result<Vec<Quest>, String> {
 pub fn create_quest(
     app: tauri::AppHandle,
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     input: CreateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
@@ -1449,9 +1443,8 @@ pub fn create_quest(
 
     if let Some(series) = &created.series {
         let series_payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
-        emit_sync_event(
-            &mut conn,
-            &device_connection.identity.device_id,
+        OutboxRepository::new(&mut conn).emit_sync_event(
+            &space_sync.identity().device_id,
             "quest_series",
             &series.id,
             &series.space_id,
@@ -1462,9 +1455,8 @@ pub fn create_quest(
 
     let quest = created.quest;
     let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
-    emit_sync_event(
-        &mut conn,
-        &device_connection.identity.device_id,
+    OutboxRepository::new(&mut conn).emit_sync_event(
+        &space_sync.identity().device_id,
         "quest",
         &quest.id,
         &quest.space_id,
@@ -1481,6 +1473,7 @@ pub fn create_quest(
         }
     }
 
+    space_sync.wake();
     Ok(quest)
 }
 
@@ -1495,10 +1488,10 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
             return;
         }
     };
-    let dc = match app.try_state::<DeviceConnectionState>() {
+    let space_sync = match app.try_state::<std::sync::Arc<SpaceSyncService>>() {
         Some(s) => s,
         None => {
-            eprintln!("[notification] complete: DeviceConnectionState not available");
+            eprintln!("[notification] complete: SpaceSyncService not available");
             return;
         }
     };
@@ -1531,7 +1524,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     match QuestService::new(&mut conn).update_with_origin(
         quest_id,
         input,
-        Some(&dc.identity.device_id),
+        Some(&space_sync.identity().device_id),
     ) {
         Ok(result) => {
             let updated_quest = result.quest;
@@ -1539,10 +1532,11 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
                 eprintln!("[notification] complete: delete_reminder failed: {e}");
             }
             if let Err(e) =
-                emit_quest_sync_events(&mut conn, &dc.identity.device_id, &space_id, &updated_quest)
+                emit_quest_sync_events(&mut conn, &space_sync.identity().device_id, &space_id, &updated_quest)
             {
                 eprintln!("[notification] complete: sync emit failed: {e}");
             }
+            space_sync.wake();
         }
         Err(e) => eprintln!("[notification] complete: update failed for {quest_id}: {e}"),
     }
@@ -1567,7 +1561,7 @@ pub fn set_focus(state: State<AppDbConnection>, id: String) -> Result<Quest, Str
 pub fn update_quest(
     app: tauri::AppHandle,
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     id: String,
     input: UpdateQuestCommandInput,
 ) -> Result<Quest, String> {
@@ -1579,7 +1573,7 @@ pub fn update_quest(
     let update_result = QuestService::new(&mut conn).update_patch_with_origin(
         &id,
         input.into_patch(),
-        Some(&device_connection.identity.device_id),
+        Some(&space_sync.identity().device_id),
     )?;
     let mut quest = update_result.quest;
 
@@ -1610,10 +1604,11 @@ pub fn update_quest(
 
     emit_quest_sync_events(
         &mut conn,
-        &device_connection.identity.device_id,
+        &space_sync.identity().device_id,
         &previous_space_id,
         &quest,
     )?;
+    space_sync.wake();
 
     Ok(quest)
 }
@@ -1623,7 +1618,7 @@ pub fn update_quest(
 pub fn delete_quest(
     app: tauri::AppHandle,
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     id: String,
 ) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
@@ -1635,9 +1630,8 @@ pub fn delete_quest(
         eprintln!("[bridge] delete_reminder on quest delete failed for {id}: {e}");
     }
 
-    emit_sync_event(
-        &mut conn,
-        &device_connection.identity.device_id,
+    OutboxRepository::new(&mut conn).emit_sync_event(
+        &space_sync.identity().device_id,
         "quest",
         &id,
         &quest.space_id,
@@ -1646,6 +1640,7 @@ pub fn delete_quest(
     )?;
 
     QuestService::new(&mut conn).delete(&id)?;
+    space_sync.wake();
     Ok(())
 }
 
@@ -1658,8 +1653,7 @@ fn emit_quest_checklist_sync(
     quest: &Quest,
 ) -> Result<(), String> {
     let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
-    emit_sync_event(
-        conn,
+    OutboxRepository::new(conn).emit_sync_event(
         device_id,
         "quest",
         &quest.id,
@@ -1683,8 +1677,7 @@ fn emit_series_checklist_template_sync(
         .first(&mut *conn)
         .map_err(|e: diesel::result::Error| e.to_string())?;
     let payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
-    emit_sync_event(
-        conn,
+    OutboxRepository::new(conn).emit_sync_event(
         device_id,
         "quest_series",
         series_id,
@@ -1698,15 +1691,16 @@ fn emit_series_checklist_template_sync(
 #[tauri::command]
 pub fn add_checklist_item(
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     text: String,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = device_connection.identity.device_id.clone();
+    let device_id = space_sync.identity().device_id.clone();
     let quest =
         QuestService::new(&mut conn).add_checklist_item(&quest_id, &text, Some(&device_id))?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    space_sync.wake();
     Ok(quest)
 }
 
@@ -1714,15 +1708,16 @@ pub fn add_checklist_item(
 #[tauri::command]
 pub fn toggle_checklist_item(
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     item_id: String,
     checked: bool,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = device_connection.identity.device_id.clone();
+    let device_id = space_sync.identity().device_id.clone();
     let quest = QuestService::new(&mut conn).toggle_checklist_item(&quest_id, &item_id, checked)?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    space_sync.wake();
     Ok(quest)
 }
 
@@ -1730,13 +1725,13 @@ pub fn toggle_checklist_item(
 #[tauri::command]
 pub fn edit_checklist_item(
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     item_id: String,
     text: String,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = device_connection.identity.device_id.clone();
+    let device_id = space_sync.identity().device_id.clone();
     let quest = QuestService::new(&mut conn).edit_checklist_item_text(
         &quest_id,
         &item_id,
@@ -1744,6 +1739,7 @@ pub fn edit_checklist_item(
         Some(&device_id),
     )?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    space_sync.wake();
     Ok(quest)
 }
 
@@ -1751,18 +1747,19 @@ pub fn edit_checklist_item(
 #[tauri::command]
 pub fn remove_checklist_item(
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     item_id: String,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = device_connection.identity.device_id.clone();
+    let device_id = space_sync.identity().device_id.clone();
     let quest = QuestService::new(&mut conn).remove_checklist_item(
         &quest_id,
         &item_id,
         Some(&device_id),
     )?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    space_sync.wake();
     Ok(quest)
 }
 
@@ -1770,14 +1767,15 @@ pub fn remove_checklist_item(
 #[tauri::command]
 pub fn reorder_checklist(
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     ordered_item_ids: Vec<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = device_connection.identity.device_id.clone();
+    let device_id = space_sync.identity().device_id.clone();
     let quest = QuestService::new(&mut conn).reorder_checklist(&quest_id, &ordered_item_ids)?;
     emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
+    space_sync.wake();
     Ok(quest)
 }
 
@@ -1786,14 +1784,14 @@ pub fn reorder_checklist(
 #[tauri::command]
 pub fn update_series_checklist(
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     series_id: String,
     current_occurrence_id: String,
     checklist: String,
     scope: String,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = device_connection.identity.device_id.clone();
+    let device_id = space_sync.identity().device_id.clone();
     let quest = QuestService::new(&mut conn).update_series_checklist(
         &series_id,
         &current_occurrence_id,
@@ -1805,6 +1803,7 @@ pub fn update_series_checklist(
     if scope == "future" {
         emit_series_checklist_template_sync(&mut conn, &device_id, &series_id, &quest.space_id)?;
     }
+    space_sync.wake();
     Ok(quest)
 }
 
@@ -1833,11 +1832,11 @@ pub fn get_series_checklist_template(
 pub fn delete_quest_series(
     app: tauri::AppHandle,
     state: State<AppDbConnection>,
-    device_connection: State<DeviceConnectionState>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
     series_id: String,
 ) -> Result<(), String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let origin_device_id = device_connection.identity.device_id.clone();
+    let origin_device_id = space_sync.identity().device_id.clone();
 
     // Cancel OS notifications before the DB transaction. Reminder cancellation is
     // best-effort: notification cancel is non-transactional and will not be undone
@@ -1852,7 +1851,9 @@ pub fn delete_quest_series(
 
     QuestService::new(&mut conn)
         .delete_series_with_sync(&origin_device_id, &series_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    space_sync.wake();
+    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

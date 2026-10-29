@@ -11,8 +11,8 @@ test('runner controls two isolated actors with distinct identities', async ({ ac
   await expect(await hasIncomingSyncDialog(actorA.page)).toBe(false);
   await expect(await hasIncomingSyncDialog(actorB.page)).toBe(false);
 
-  const identityA = await actorA.invoke<DeviceIdentity>('device_connection_get_identity');
-  const identityB = await actorB.invoke<DeviceIdentity>('device_connection_get_identity');
+  const identityA = await actorA.invoke<DeviceIdentity>('device_get_identity');
+  const identityB = await actorB.invoke<DeviceIdentity>('device_get_identity');
 
   expect(identityA.device_id).toBeTruthy();
   expect(identityB.device_id).toBeTruthy();

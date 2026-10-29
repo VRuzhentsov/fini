@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { PlusIcon, InformationCircleIcon } from "@heroicons/vue/24/outline";
 import SettingsListGroup from "./SettingsListGroup.vue";
 import SettingsListItem from "./SettingsListItem.vue";
 import DeviceSetupDialog from "./DeviceSetupDialog.vue";
-import { useDeviceStore, type PairedDevice } from "../../stores/device";
+import { useDeviceStore, type PairedDevice } from "../../stores/device.store";
 import { channelName, channelProblemText } from "../../utils/channelStatusCodes";
 import { ChannelColor, type ChannelKind } from "../../utils/channel";
 
@@ -47,29 +47,10 @@ function openIncomingRequest(requestId: string) {
   pairDialogOpen.value = true;
 }
 
-// While the overview is visible the backend searches for peers so green is
-// current (ADR-0008 D12), and the rows are re-read from it.
-const LIVE_POLL_INTERVAL_MS = 5_000;
-let livePollTimer: ReturnType<typeof setInterval> | null = null;
-
-function refreshAllChannelStatuses() {
-  for (const device of deviceStore.pairedDevices) {
-    void deviceStore.refreshChannelStatuses(device.peer_device_id);
-  }
-}
-
+// The rows follow the backend's events through the store; the overview
+// reads them once when it opens.
 onMounted(() => {
-  void deviceStore.watchPresence(true);
-  refreshAllChannelStatuses();
-  livePollTimer = setInterval(refreshAllChannelStatuses, LIVE_POLL_INTERVAL_MS);
-});
-
-onUnmounted(() => {
-  if (livePollTimer) {
-    clearInterval(livePollTimer);
-    livePollTimer = null;
-  }
-  void deviceStore.watchPresence(false);
+  void deviceStore.refreshAllChannelStatuses();
 });
 
 // Someone asking to pair surfaces here, on the devices page, rather than

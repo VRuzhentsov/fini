@@ -26,53 +26,15 @@ src-tauri/
 Most of this tree is ordinary. These few are not: change them only with the
 linked decision record in hand, and expect a review to ask why.
 
-### `src/services/communication/` — how two devices reach each other
+### How two devices reach each other
 
-Start at [its `README.md`](src/services/communication/README.md) before
-changing anything under `pairing/`, `channel/` or `sync/`. It is where
-`Channel`, `PeerSession`, `DataLink` and `PeerFrame` are told apart — four
-words that sound interchangeable and are not, and getting them confused is
-how the protocol ends up duplicated per channel. Definitions live in
-[`docs/glossary.md`](../docs/glossary.md).
-
-### `src/services/communication/pairing/link_state.rs` — the link state machine
-
-**Read [ADR-0005](../docs/adr/0005-transport-link-state-machine.md) before
-touching this file.**
-
-It owns what a peer's link on a transport *is*: eight states, twelve events,
-and one pure `apply(state, event, now) -> (state, effects)` that is the only
-place a transition may be decided. Everything a user sees about connectivity —
-the grey/amber/green row, whether a dial happens, whether an incoming
-connection is accepted — is downstream of it.
-
-Its invariant is the whole reason it exists:
-
-> A session exists **iff** the state is `Authenticating`, `Proving`, `Live` or
-> `Fading`.
-
-Every "the row says connected but nothing is" defect in this area's history is
-a violation of that sentence, including the one that motivated the file: a
-Bluetooth session that lapsed to amber stayed claimed for **1h44m**, refusing
-every incoming connection from that same peer, because a lapsed proof only
-recoloured a row — there was no transition to carry an effect.
-
-Three properties are deliberate and easy to erode:
-
-- **It is pure.** No clock reads, no locks, no I/O; `now` is an argument. That
-  is what makes deadlines measured in tens of seconds testable in
-  microseconds, and the deadlines are where the bug lived.
-- **Effects are one variant, not a command channel.** They exist only for what
-  the machine must cause to keep its own invariant true. Dialling is the
-  caller's decision, reported back as an event, so the state never claims an
-  attempt nobody made.
-- **Unhandled `(state, event)` pairs are no-ops on purpose.** Events arrive
-  from concurrent components and can race a transition that already moved past
-  them.
-
-Its tests are part of the design, not a courtesy: a property test walks all 96
-`(state, event)` pairs and asserts the invariant in both directions. Adding a
-state or an event without extending that test defeats the point of the file.
+Read [`docs/architecture/communication.md`](../docs/architecture/communication.md)
+before you change the device, channel or SpaceSync services
+(`src/services/*.service.rs`), their repositories or their commands. The
+words are in [`docs/glossary.md`](../docs/glossary.md). The decisions are
+[ADR-0010](../docs/adr/0010-app-architecture.md) (the architecture) and
+[ADR-0011](../docs/adr/0011-a-channel-is-a-switch-on-each-device.md) (the channels
+of a pair).
 
 ## Data model
 
@@ -103,35 +65,10 @@ See `specs/` at the repo root for domain model specs ([[Quest]], [[Space]], [[Re
 |---|---|---|
 | `get_active_focus` | — | `Quest | null` |
 | `set_focus` | `{ quest_id, trigger }` | `FocusHistory` |
-| `list_focus_history` | `{ limit?, before? }` | `Vec<FocusHistory>` |
 
-### Device connection (UDP control-plane)
-| Command | Input | Returns |
-|---|---|---|
-| `device_connection_get_identity` | — | `{ device_id, hostname }` |
-| `device_connection_enter_add_mode` | — | `()` |
-| `device_connection_leave_add_mode` | — | `()` |
-| `device_connection_discovery_snapshot` | — | `Vec<{ device_id, hostname, addr, ws_port, last_seen_at }>` |
-| `device_connection_presence_snapshot` | — | `Vec<{ device_id, hostname, addr, last_seen_at }>` |
-| `device_connection_send_pair_request` | `{ request_id, to_device_id, to_addr }` | `()` |
-| `device_connection_pair_incoming_requests` | — | `Vec<IncomingPairRequest>` |
-| `device_connection_pair_accept_request` | `{ request_id }` | `PairCodeUpdate` |
-| `device_connection_pair_complete_request` | `{ request_id }` | `()` |
-| `device_connection_pair_acknowledge_request` | `{ request_id }` | `()` |
-| `device_connection_debug_status` | — | debug counters/state |
-
-### Space sync (websocket data-plane)
-| Command | Input | Returns |
-|---|---|---|
-| `space_sync_list_mappings` | `{ peer_device_id }` | `Vec<space_id>` |
-| `space_sync_update_mappings` | `{ peer_device_id, mapped_space_ids }` | mapping state |
-| `space_sync_status` | `{ peer_device_id? }` | sync runtime status |
-
-Notes:
-
-- `space_sync` uses durable outbox + ACK replay.
-- Data events use a generic envelope with `event_id` + `correlation_id`.
-- Hard cut-over naming policy applies (no backward aliases).
+The commands of the device, channel and SpaceSync services are in
+`src/commands/<service>.commands.rs`, and each name starts with its service
+(ADR-0010 D17; see [`docs/naming.md`](../docs/naming.md)).
 
 General notes:
 - Quest ids are UUIDs

@@ -46,6 +46,9 @@ battery. Earlier decisions on timers, ticks and refresh intervals are open to
 revision wherever they conflict with this. Active phases (pairing, adding a
 channel, search) may spend more; the steady state may not.
 
+D1–D4 are superseded by [ADR-0011](0011-a-channel-is-a-switch-on-each-device.md):
+a channel is a switch on each device.
+
 **D1 — Init is a hello exchange in both directions.** A (pair, Bluetooth)
 channel becomes `initialized` on a device once that device has received an
 ack to its own hello AND has acked the peer's hello. No extra message is
@@ -143,6 +146,9 @@ Today's `ChannelService` trait (`channel/service.rs:43`) is the starting
 point, but it is stateless and rebuilt on every call (`service.rs:136-141`),
 and the real search state lives in process-global statics in `ble.rs`; the
 coordinator is where that state moves to.
+
+D14 is superseded by [ADR-0011](0011-a-channel-is-a-switch-on-each-device.md):
+there is no unlink.
 
 **D14 — Unlink is a hard delete, and the peer is told.** Unlinking a channel
 deletes its row; there is no tombstone (`unlinked_at`, migration 24, goes

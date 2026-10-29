@@ -45,6 +45,30 @@ If a behavior fits more than one surface, pick the cheapest to run and the most 
 
 Run unit tests and e2e lanes in a PR's wrap-up stage, after its happy flow has been proven and the PR has left draft (`fini-dev`, "PR Lifecycle"). While a PR is a draft, prove behaviour on the running HMR apps instead.
 
+## Driving the running apps
+
+To make the running apps (desktop and phone, HMR) do something, use one of these two ways. Pick the way for the task:
+
+1. **One manual action at a time** — to do something once: unblock a flow, read a state, see one screen. Send one action with the devtools bridge (`node .agents/skills/fini-android-testing/devtools-bridge.mjs <port> "<js>"`; see `fini-android-testing`), read what the screen shows now, then decide the next action. One call is one action: one click, one read, or one command.
+2. **A Playwright spec built from components** — for a flow with more than one step, a flow to do again, or a flow whose times count. Write the flow in `specs/e2e/` from the components in `specs/e2e/components/`, and run it against the running apps as external actors:
+
+   ```sh
+   FINI_E2E_ACTORS=desktop,phone \
+   FINI_E2E_EXTERNAL_ACTORS=desktop=9224,phone=9223 \
+   PLAYWRIGHT_JSON_OUTPUT_NAME=~/.cache/agents/<workflow>/e2e.json \
+   npx playwright test --config specs/e2e/playwright.config.ts --project=actors \
+     --reporter=list,json specs/e2e/actors/tests/<flow>.spec.ts
+   ```
+
+   Step times go in test annotations (`test.info().annotations`); read them from the JSON report.
+
+Components:
+
+- A component is a class around one part of the screen, made from a `TauriPage`: `AddDeviceDialog`, `DevicePage`, `ChannelRow`. It knows nothing about actors.
+- One method is one action that a person does (`openSearch(channel)`, `pair(hostname)`, `unlinkDevice()`), and it returns when the screen shows the result. Wait with Playwright (`waitForSelector`, `waitForFunction`) on a `data-*` hook, for example `[data-pair-step="looking"]`.
+- When a step has no hook, add one to the Vue component (`data-testid`, or a `data-*` attribute that names the state; `docs/naming.md`), then wait on it.
+- When a flow needs a part of the screen that has no component, add a component for it in `specs/e2e/components/`, then use it in the spec.
+
 ## Running tests
 
 ### Frontend unit

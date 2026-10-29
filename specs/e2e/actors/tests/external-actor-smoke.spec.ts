@@ -23,8 +23,8 @@ import { expect, test } from '../fixtures.ts';
 // desktop plus a phone, or two external devices -- naming a slug would tie it
 // to one of those wirings.
 test('both actors answer the same invoke surface', async ({ actorA, actorB }) => {
-  const identityA = await actorA.invoke<{ device_id: string }>('device_connection_get_identity');
-  const identityB = await actorB.invoke<{ device_id: string }>('device_connection_get_identity');
+  const identityA = await actorA.invoke<{ device_id: string }>('device_get_identity');
+  const identityB = await actorB.invoke<{ device_id: string }>('device_get_identity');
 
   expect(identityA.device_id).toBeTruthy();
   expect(identityB.device_id).toBeTruthy();

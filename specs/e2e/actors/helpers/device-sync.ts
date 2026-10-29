@@ -84,7 +84,7 @@ export async function waitForActorsReady(
 
   for (const actor of actors) {
     await actor.page.waitForSelector('nav.nav', timeoutMs);
-    const identity = await actor.invoke<DeviceIdentity>('device_connection_get_identity');
+    const identity = await actor.invoke<DeviceIdentity>('device_get_identity');
     expect(identity.device_id, `${actor.slug} should have a device id`).toBeTruthy();
     expect(identity.hostname, `${actor.slug} should have a hostname`).toBeTruthy();
     syncedActors.push({ actor, identity });
@@ -109,8 +109,10 @@ export async function pairActorsViaUi(
 
   // The channel is an explicit choice now, asked before discovery runs --
   // it is no longer inferred from whichever radio found the peer first.
-  // Both sides pick Network: the actors harness has no radio.
+  // Both sides pick Network: the actors harness has no radio. A device is
+  // in Add Device mode, and so can be found, only once its channel is chosen.
   await requesterPage.click('[data-testid="pair-channel-network"]');
+  await accepterPage.click('[data-testid="pair-channel-network"]');
 
   const targetSelector = nearbyDeviceRequestSelector(accepter.identity.hostname);
   await requesterPage.waitForSelector(targetSelector, timeoutMs);
@@ -124,7 +126,7 @@ export async function pairActorsViaUi(
   await accepterPage.click(incomingSelector);
 
   const code = await pollUntil(`${requester.actor.slug} outgoing pair code`, async () => {
-    const updates = await requester.actor.invoke<PairCodeUpdate[]>('device_connection_pair_outgoing_updates');
+    const updates = await requester.actor.invoke<PairCodeUpdate[]>('device_pair_outgoing_updates');
     const latest = updates[0];
     if (!latest?.code) {
       return false;
@@ -181,7 +183,7 @@ async function openAddDevice(actor: E2EActor, timeoutMs: number): Promise<void> 
 }
 
 async function areActorsPaired(actor: E2EActor, peerDeviceId: string): Promise<boolean> {
-  const paired = await actor.invoke<PairedDevice[]>('device_connection_get_paired_devices');
+  const paired = await actor.invoke<PairedDevice[]>('device_paired_devices');
   return paired.some((device) => device.peer_device_id === peerDeviceId);
 }
 
@@ -195,7 +197,7 @@ async function waitForPairedDevices(
       .map((candidate) => candidate.identity.device_id);
 
     await pollUntil(`${current.actor.slug} paired devices`, async () => {
-      const paired = await current.actor.invoke<PairedDevice[]>('device_connection_get_paired_devices');
+      const paired = await current.actor.invoke<PairedDevice[]>('device_paired_devices');
       const pairedIds = new Set(paired.map((device) => device.peer_device_id));
       return peerIds.every((peerId) => pairedIds.has(peerId));
     }, timeoutMs);
@@ -212,7 +214,7 @@ async function waitForPresence(
       .map((candidate) => candidate.identity.device_id);
 
     await pollUntil(`${current.actor.slug} presence`, async () => {
-      const present = await current.actor.invoke<DiscoveredDevice[]>('device_connection_presence_snapshot');
+      const present = await current.actor.invoke<DiscoveredDevice[]>('device_heard_devices');
       const presentIds = new Set(present.map((device) => device.device_id));
       return peerIds.every((peerId) => presentIds.has(peerId));
     }, timeoutMs);

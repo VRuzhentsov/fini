@@ -6,9 +6,7 @@ import {
   waitForMappingControlsReady,
 } from '../helpers/personal-sync.ts';
 import {
-  addChannelViaDialog,
   anyChannelConnected,
-  closeSetupDialog,
   deviceDotConnected,
   toggleChannel,
   waitForChannelColor,
@@ -54,7 +52,7 @@ test('turning a channel off stops the traffic, not just the colour of the row', 
   // the test's. Closing our dial loop is only half the switch; refusing the
   // peer's inbound dial is the other half (`check_network_enabled`).
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const transport = await actorA.invoke<string | null>('device_connection_session_channel', {
+    const transport = await actorA.invoke<string | null>('space_sync_session_channel', {
       peerDeviceId: syncedB.identity.device_id,
     });
     expect(
@@ -71,30 +69,30 @@ test('turning a channel off stops the traffic, not just the colour of the row', 
 });
 
 /**
- * A Bluetooth channel cannot be added on a device whose radio is unusable
+ * A Bluetooth channel cannot be switched on on a device whose radio is unusable
  * (ADR-0008 D6). The e2e container runs a D-Bus system bus with no
  * `bluetoothd` on it (see `scripts/e2e-runner.sh`), so the adapter genuinely
  * is not there -- the same condition as Bluetooth switched off on a laptop,
  * arrived at honestly rather than mocked.
  *
- * The dialog must say so about *this* device, and nothing may be written:
- * the row stays `none`, with Add still offered.
+ * The page must say so about *this* device, and nothing may be written:
+ * the switch stays off (ADR-0011).
  */
-test('adding Bluetooth with no usable radio is refused, and blames this device', async ({
+test('switching Bluetooth on with no usable radio is refused, and blames this device', async ({
   actorA,
   actorB,
 }) => {
   const [, syncedB] = await ensureSyncedActors([actorA, actorB], { pairViaUi: true });
 
   await openDeviceDetailsFromSettings(actorA, syncedB.identity.device_id);
-  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Bluetooth, ChannelColor.None);
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Bluetooth, ChannelColor.Off);
 
-  const outcome = await addChannelViaDialog(actorA, ChannelKind.Bluetooth);
-  expect(outcome.ready, 'setup cannot complete without a radio').toBe(false);
-  expect(outcome.failure, 'the failure must name this device').toContain('this device');
+  await toggleChannel(actorA, ChannelKind.Bluetooth);
+  await actorA.page.waitForSelector('[data-testid="channel-error"]', 30_000);
+  const failure = ((await actorA.page.getByTestId('channel-error').textContent()) ?? '').trim();
+  expect(failure, 'the failure must name this device').toContain('this device');
 
-  await closeSetupDialog(actorA);
-  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Bluetooth, ChannelColor.None);
+  await waitForChannelColor(actorA, syncedB.identity.device_id, ChannelKind.Bluetooth, ChannelColor.Off);
 });
 
 /**

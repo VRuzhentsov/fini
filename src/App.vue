@@ -4,7 +4,8 @@ import IncomingSpaceResolutionDialog from "./components/settings/device/Incoming
 import ToastStack from "./components/ToastStack.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import SpacePicker from "./components/SpacePicker.vue";
-import { useDeviceStore } from "./stores/device";
+import { useDeviceStore } from "./stores/device.store";
+import { useSpaceSyncStore } from "./stores/space-sync.store";
 import { useNotificationActions } from "./composables/useNotificationActions";
 
 type StartupRecovery = {
@@ -18,15 +19,17 @@ const props = defineProps<{
 }>();
 
 const deviceStore = useDeviceStore();
+const spaceSyncStore = useSpaceSyncStore();
 
 useNotificationActions();
 
-onMounted(() => {
+onMounted(async () => {
   if (props.startupRecovery) {
     return;
   }
 
-  void deviceStore.hydrate();
+  await deviceStore.hydrate();
+  void spaceSyncStore.start();
 });
 </script>
 

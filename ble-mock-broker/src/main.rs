@@ -23,7 +23,7 @@ async fn main() {
     // Plain eprintln!, not `log::` -- this standalone binary installs no
     // logger, so a `log::` call here would be silently discarded.
     eprintln!("[ble-mock-broker] listening on {listen}");
-    if let Err(err) = ble_gatt::backend::mock::MockNetwork::serve(listener).await {
+    if let Err(err) = ble_gatt::drivers::mock::MockNetwork::serve(listener).await {
         eprintln!("[ble-mock-broker] serve exited: {err}");
         std::process::exit(1);
     }

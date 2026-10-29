@@ -1,9 +1,10 @@
 pub mod channel;
 pub mod checklist_activity;
+pub mod event;
 pub mod focus_history;
 pub mod notification_snooze;
-pub mod pair_space_mapping;
-pub mod paired_device;
+pub mod device;
+pub mod space_mapping;
 pub mod quest;
 pub mod quest_series;
 pub mod reminder;
@@ -13,10 +14,11 @@ pub mod sync;
 
 pub use channel::*;
 pub use checklist_activity::*;
+pub use event::*;
 pub use focus_history::*;
 pub use notification_snooze::*;
-pub use pair_space_mapping::*;
-pub use paired_device::*;
+pub use device::*;
+pub use space_mapping::*;
 pub use quest::*;
 pub use quest_series::*;
 pub use reminder::*;

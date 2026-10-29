@@ -9,9 +9,8 @@ export const ChannelKind = {
 } as const;
 export type ChannelKind = (typeof ChannelKind)[keyof typeof ChannelKind];
 
-// D15: the stored state, per (pair, channel).
+// ADR-0011 D1: the switch of a channel on this device.
 export const ChannelState = {
-  None: "none",
   Off: "off",
   On: "on",
 } as const;
@@ -23,7 +22,6 @@ export const ChannelColor = {
   Grey: "grey",
   Orange: "orange",
   Off: "off",
-  None: "none",
 } as const;
 export type ChannelColor = (typeof ChannelColor)[keyof typeof ChannelColor];
 

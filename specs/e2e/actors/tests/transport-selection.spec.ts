@@ -27,7 +27,7 @@ test('an exchange between paired actors on one network runs over the network cha
 
   const kindOnA = await pollUntil('actor-a has an exchange open', async () => {
     await actorA.invoke('space_sync_tick');
-    const kind = await actorA.invoke<string | null>('device_connection_session_channel', {
+    const kind = await actorA.invoke<string | null>('space_sync_session_channel', {
       peerDeviceId: syncedB.identity.device_id,
     });
     return kind ?? false;

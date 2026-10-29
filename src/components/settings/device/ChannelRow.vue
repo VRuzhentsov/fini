@@ -1,22 +1,21 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { StarIcon as StarSolid } from "@heroicons/vue/24/solid";
-import { StarIcon as StarOutline, InformationCircleIcon, TrashIcon } from "@heroicons/vue/24/outline";
+import { StarIcon as StarOutline, InformationCircleIcon } from "@heroicons/vue/24/outline";
 import ChannelIcon from "./ChannelIcon.vue";
-import type { DeviceChannelStatus } from "../../../stores/device";
+import type { DeviceChannelStatus } from "../../../stores/device.store";
 import { ChannelColor, ChannelState } from "../../../utils/channel";
 import { channelName, channelProblemText } from "../../../utils/channelStatusCodes";
 
-// One channel of a paired device (ADR-0008 D19). The backend decides the
-// colour; this row only draws it:
+// One channel of a paired device (ADR-0008 D19, ADR-0011). The backend
+// decides the colour; this row only draws it:
 //
-// | colour       | state | controls              |
-// |--------------|-------|-----------------------|
-// | green        | on    | star, switch          |
-// | grey         | on    | switch                |
-// | orange       | on    | switch, ⓘ popup       |
-// | empty circle | off   | switch, unlink        |
-// | (no dot)     | none  | Add                   |
+// | colour       | switch | controls              |
+// |--------------|--------|-----------------------|
+// | green        | on     | star, switch          |
+// | grey         | on     | switch                |
+// | orange       | on     | switch, ⓘ popup       |
+// | empty circle | off    | switch                |
 //
 // The star is the person's primary channel (ADR-0007). It stays visible on
 // the channel that holds it whatever the colour -- a setting, not a live
@@ -29,8 +28,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   toggle: [enabled: boolean];
-  add: [];
-  unlink: [];
   pin: [];
 }>();
 
@@ -45,16 +42,11 @@ const DOT_CLASS: Record<ChannelColor, string> = {
   [ChannelColor.Grey]: "bg-[var(--fg-5)]",
   [ChannelColor.Orange]: "bg-warning",
   [ChannelColor.Off]: "border border-[var(--fg-4)] bg-transparent",
-  [ChannelColor.None]: "",
 };
 
 // The template's render contract, per fini-frontend.
 const renderFlags = computed(() => ({
-  dot: props.status.color !== ChannelColor.None,
   problemInfo: problem.value !== null,
-  addButton: props.status.state === ChannelState.None,
-  unlinkButton: props.status.state === ChannelState.Off,
-  channelSwitch: props.status.state !== ChannelState.None,
   star: props.status.primary || canPin.value,
 }));
 
@@ -80,7 +72,6 @@ function handlePin() {
     :data-channel-color="status.color"
   >
     <span
-      v-if="renderFlags.dot"
       class="size-2.5 shrink-0 rounded-full"
       :class="DOT_CLASS[status.color]"
       data-testid="channel-dot"
@@ -123,31 +114,7 @@ function handlePin() {
       </p>
     </div>
 
-    <button
-      v-if="renderFlags.unlinkButton"
-      type="button"
-      class="shrink-0 text-[var(--fg-4)] hover:text-error disabled:cursor-not-allowed disabled:opacity-40"
-      data-testid="unlink-channel"
-      :aria-label="`Unlink ${name}`"
-      :disabled="busy"
-      @click="emit('unlink')"
-    >
-      <TrashIcon class="size-3.5" />
-    </button>
-
-    <button
-      v-if="renderFlags.addButton"
-      type="button"
-      class="btn btn-ghost btn-xs shrink-0"
-      data-testid="add-channel"
-      :disabled="busy"
-      @click="emit('add')"
-    >
-      Add
-    </button>
-
     <input
-      v-if="renderFlags.channelSwitch"
       type="checkbox"
       class="toggle toggle-sm toggle-success shrink-0"
       data-testid="channel-switch"

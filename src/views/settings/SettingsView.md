@@ -29,7 +29,7 @@ Notes:
 
 ### Devices
 
-Device connection entry point. See `specs/device-connect/README.md` and `specs/space-sync/README.md`.
+Device connection entry point. See `docs/architecture/communication.md`.
 
 - `DeviceList` is visible inline on `/settings`
 - Device rows navigate to [[DeviceView]]

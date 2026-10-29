@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ChevronLeftIcon } from "@heroicons/vue/24/outline";
 import SettingsListGroup from "../../components/settings/SettingsListGroup.vue";
 import SettingsListItem from "../../components/settings/SettingsListItem.vue";
 import ChannelRow from "../../components/settings/device/ChannelRow.vue";
 import SyncQueueSection from "../../components/settings/device/SyncQueueSection.vue";
-import DeviceSetupDialog from "../../components/settings/DeviceSetupDialog.vue";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device.store";
+import { useSpaceSyncStore } from "../../stores/space-sync.store";
 import { ChannelColor, type ChannelKind } from "../../utils/channel";
 import { useSpaceStore, isBuiltinSpace } from "../../stores/space";
 import { shortUuid } from "../../utils/shortUuid";
@@ -15,11 +15,10 @@ import { shortUuid } from "../../utils/shortUuid";
 const route = useRoute();
 const router = useRouter();
 const deviceStore = useDeviceStore();
+const spaceSyncStore = useSpaceSyncStore();
 const spaceStore = useSpaceStore();
 
 const unpairDialog = ref<HTMLDialogElement | null>(null);
-// The channel being added with the setup dialog, or null when it is closed.
-const channelBeingAdded = ref<ChannelKind | null>(null);
 const mappedSelection = ref<string[]>([]);
 const mappingsLoaded = ref(false);
 const savingMappings = ref(false);
@@ -35,12 +34,7 @@ const peerName = computed(() => device.value?.display_name ?? "That device");
 const channelStatuses = computed(() =>
   deviceId.value ? deviceStore.getChannelStatuses(deviceId.value) : [],
 );
-const syncQueue = computed(() => (deviceId.value ? deviceStore.getSyncQueue(deviceId.value) : null));
-
-// The template's render contract, per fini-frontend.
-const renderFlags = computed(() => ({
-  channelSetupDialog: device.value !== null && device.value !== undefined && channelBeingAdded.value !== null,
-}));
+const syncQueue = computed(() => (deviceId.value ? spaceSyncStore.getSyncQueue(deviceId.value) : null));
 
 // Drives the sync queue's "sending now" vs "nothing can reach it" line:
 // a green channel is one data can go over (ADR-0008 D9).
@@ -49,18 +43,18 @@ const anyChannelConnected = computed(() =>
 );
 
 const lastSyncedAtBySpace = computed<Record<string, string | null>>(() =>
-  deviceId.value ? deviceStore.getLastSyncedAtBySpace(deviceId.value) : {},
+  deviceId.value ? spaceSyncStore.getLastSyncedAtBySpace(deviceId.value) : {},
 );
 
 const savedMappedSelection = computed(() =>
-  deviceId.value ? deviceStore.getMappedSpaceIds(deviceId.value) : [],
+  deviceId.value ? spaceSyncStore.getMappedSpaceIds(deviceId.value) : [],
 );
 const unresolvedCustomSpaces = computed(() =>
-  deviceId.value ? deviceStore.getUnresolvedCustomSpaces(deviceId.value) : [],
+  deviceId.value ? spaceSyncStore.getUnresolvedCustomSpaces(deviceId.value) : [],
 );
 const hasMappingChanges = computed(() => {
   if (!deviceId.value) return false;
-  const saved = [...deviceStore.getMappedSpaceIds(deviceId.value)].sort();
+  const saved = [...spaceSyncStore.getMappedSpaceIds(deviceId.value)].sort();
   const current = [...mappedSelection.value].sort();
   return saved.join(",") !== current.join(",");
 });
@@ -85,38 +79,17 @@ const mappedSpaceNames = computed(() =>
   ),
 );
 
-// While this page is open the backend searches for the peer so green is
-// current (ADR-0008 D12), and the rows are re-read from it; neither runs in
-// the background.
-const LIVE_POLL_INTERVAL_MS = 5_000;
-let livePollTimer: ReturnType<typeof setInterval> | null = null;
-
+// The rows and the sync queue follow the backend's events through the
+// stores; this page reads them once when it opens.
 onMounted(() => {
-  void deviceStore.hydrate();
   void spaceStore.fetchSpaces();
-  void deviceStore.runSpaceSyncTick();
+  void spaceSyncStore.runSpaceSyncTick();
   void loadDeviceState();
-  void deviceStore.watchPresence(true);
-
-  livePollTimer = setInterval(() => {
-    if (!deviceId.value) return;
-    void deviceStore.refreshChannelStatuses(deviceId.value);
-    void deviceStore.refreshSyncQueue(deviceId.value);
-  }, LIVE_POLL_INTERVAL_MS);
-});
-
-onUnmounted(() => {
-  if (livePollTimer) {
-    clearInterval(livePollTimer);
-    livePollTimer = null;
-  }
-  void deviceStore.watchPresence(false);
 });
 
 watch(deviceId, () => {
   mappingsDirty.value = false;
   channelError.value = null;
-  channelBeingAdded.value = null;
   void loadDeviceState();
 });
 
@@ -136,10 +109,10 @@ async function loadDeviceState() {
   }
 
   try {
-    mappedSelection.value = await deviceStore.loadMappedSpaces(deviceId.value);
-    await deviceStore.refreshSpaceSyncStatus(deviceId.value);
+    mappedSelection.value = await spaceSyncStore.loadMappedSpaces(deviceId.value);
+    await spaceSyncStore.refreshSpaceSyncStatus(deviceId.value);
     await deviceStore.refreshChannelStatuses(deviceId.value);
-    await deviceStore.refreshSyncQueue(deviceId.value);
+    await spaceSyncStore.refreshSyncQueue(deviceId.value);
     mappingsDirty.value = false;
   } catch (error) {
     mappingError.value = String(error);
@@ -160,7 +133,7 @@ async function saveMappings() {
   savingMappings.value = true;
   mappingError.value = null;
   try {
-    mappedSelection.value = await deviceStore.saveMappedSpaces(deviceId.value, [
+    mappedSelection.value = await spaceSyncStore.saveMappedSpaces(deviceId.value, [
       ...new Set(mappedSelection.value),
     ]);
     mappingsDirty.value = false;
@@ -195,32 +168,6 @@ async function pinChannel(kind: ChannelKind) {
   channelError.value = null;
   try {
     await deviceStore.setPrimaryChannel(deviceId.value, kind);
-  } catch (error) {
-    channelError.value = String(error);
-  } finally {
-    busyChannel.value = null;
-  }
-}
-
-// "Add" on a channel that does not exist yet opens the setup dialog.
-function addChannel(kind: ChannelKind) {
-  channelBeingAdded.value = kind;
-}
-
-async function closeChannelSetup() {
-  channelBeingAdded.value = null;
-  if (deviceId.value) await deviceStore.refreshChannelStatuses(deviceId.value);
-}
-
-// Forgetting a channel, as opposed to switching it off. The backend
-// refuses while it is still on, and the row's own control is disabled
-// until then -- this catch is for the race, not the ordinary path.
-async function unlinkChannel(kind: ChannelKind) {
-  if (!deviceId.value || busyChannel.value) return;
-  busyChannel.value = kind;
-  channelError.value = null;
-  try {
-    await deviceStore.unlinkChannel(deviceId.value, kind);
   } catch (error) {
     channelError.value = String(error);
   } finally {
@@ -269,12 +216,10 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
             :status="status"
             :busy="busyChannel === status.kind"
             @toggle="(next) => toggleChannel(status.kind, next)"
-            @add="addChannel(status.kind)"
-            @unlink="unlinkChannel(status.kind)"
             @pin="pinChannel(status.kind)"
           />
         </ul>
-        <p v-if="channelError" class="mt-2 text-xs text-error">{{ channelError }}</p>
+        <p v-if="channelError" class="mt-2 text-xs text-error" data-testid="channel-error">{{ channelError }}</p>
       </section>
 
       <section class="rounded-xl bg-base-200 p-3">
@@ -367,15 +312,6 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
       <router-link to="/settings" class="btn btn-sm mt-2">Back to settings</router-link>
     </section>
 
-    <DeviceSetupDialog
-      v-if="renderFlags.channelSetupDialog"
-      :open="true"
-      :peer-device-id="device?.peer_device_id ?? null"
-      :peer-name="peerName"
-      :kind="channelBeingAdded"
-      @close="closeChannelSetup"
-    />
-
     <dialog ref="unpairDialog" class="modal" data-testid="unlink-dialog">
       <div class="modal-box">
         <h3 class="text-base font-semibold">Unlink {{ device?.display_name }}?</h3>
@@ -397,7 +333,7 @@ function mappedSpaceEndLabel(spaceId: string): string | null {
           <form method="dialog">
             <button class="btn btn-ghost btn-sm">Cancel</button>
           </form>
-          <button class="btn btn-error btn-sm" @click="void confirmUnpair()">Unlink</button>
+          <button class="btn btn-error btn-sm" data-testid="unlink-device-confirm" @click="void confirmUnpair()">Unlink</button>
         </div>
       </div>
       <form method="dialog" class="modal-backdrop">

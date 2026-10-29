@@ -3,6 +3,38 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::channels;
 
+/// Which channel it is: one variant for each channel, and one session slot
+/// for each variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    /// iroh over IP, found by iroh's mDNS lookup.
+    #[default]
+    Network,
+    /// iroh over GATT, via `ble-gatt`.
+    Bluetooth,
+}
+
+impl ChannelKind {
+    /// How this kind is stored: `channels.channel_kind`, seeded into
+    /// `channel_kinds.code`. The same strings serde produces, so the wire
+    /// form and the stored form are the same.
+    pub fn code(self) -> &'static str {
+        match self {
+            ChannelKind::Network => "network",
+            ChannelKind::Bluetooth => "bluetooth",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "network" => Some(ChannelKind::Network),
+            "bluetooth" => Some(ChannelKind::Bluetooth),
+            _ => None,
+        }
+    }
+}
+
 /// One configured channel for one pair. The row existing is what "configured"
 /// means; see `migrations/00000000000023_channels/up.sql`.
 #[derive(Debug, Clone, Queryable, Selectable, Serialize, Deserialize)]
@@ -34,3 +66,4 @@ pub struct NewChannel {
     pub address: Option<String>,
     pub configured_at: String,
 }
+

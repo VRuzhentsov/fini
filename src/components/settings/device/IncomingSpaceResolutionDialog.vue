@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { useDeviceStore } from "../../../stores/device";
+import { useDeviceStore } from "../../../stores/device.store";
+import { useSpaceSyncStore } from "../../../stores/space-sync.store";
 import { useSpaceStore } from "../../../stores/space";
 import { shortUuid } from "../../../utils/shortUuid";
 import MapToExistingDialog from "../../MapToExistingDialog.vue";
@@ -14,6 +15,7 @@ function isEmbeddedSpaceId(spaceId: string): boolean {
 type ResolutionMode = "create_new" | "use_existing";
 
 const deviceStore = useDeviceStore();
+const spaceSyncStore = useSpaceSyncStore();
 const spaceStore = useSpaceStore();
 const saving = ref(false);
 const error = ref<string | null>(null);
@@ -22,10 +24,10 @@ const showMapPicker = ref(false);
 const resolutionModeByRemoteId = ref<Record<string, ResolutionMode>>({});
 const resolutionExistingByRemoteId = ref<Record<string, string>>({});
 
-const pendingRequests = computed(() => deviceStore.listPendingSpaceSyncRequests());
+const pendingRequests = computed(() => spaceSyncStore.listPendingSpaceSyncRequests());
 const unresolvedEntries = computed(() => {
   return deviceStore.pairedDevices.flatMap((device) => {
-    return deviceStore.getUnresolvedCustomSpaces(device.peer_device_id).map((space) => ({
+    return spaceSyncStore.getUnresolvedCustomSpaces(device.peer_device_id).map((space) => ({
       peerDeviceId: device.peer_device_id,
       peerName: device.display_name,
       space,
@@ -208,7 +210,7 @@ async function confirmDialog() {
 
   try {
     if (dialog.kind === "approve") {
-      await deviceStore.approvePendingSpaceSyncRequest(dialog.peerDeviceId, dialog.spaceId);
+      await spaceSyncStore.approvePendingSpaceSyncRequest(dialog.peerDeviceId, dialog.spaceId);
       await spaceStore.fetchSpaces();
       deferredKey.value = null;
       return;
@@ -221,7 +223,7 @@ async function confirmDialog() {
       return;
     }
 
-    await deviceStore.resolveCustomSpaceMapping(
+    await spaceSyncStore.resolveCustomSpaceMapping(
       dialog.peerDeviceId,
       incomingSpace.space_id,
       activeResolutionMode.value,

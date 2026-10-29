@@ -2,24 +2,23 @@
 import { computed, onMounted, onUnmounted, watch } from "vue";
 import { priorityWeight, useQuestStore, type Quest } from "../stores/quest";
 import { useSpaceStore } from "../stores/space";
-import { useDeviceStore } from "../stores/device";
+import { useSpaceSyncStore } from "../stores/space-sync.store";
 import ActiveQuestPanel from "../components/FocusView/ActiveQuestPanel.vue";
 import NewQuestForm from "../components/FocusView/NewQuestForm.vue";
 import QuestList from "../components/QuestsView/QuestList.vue";
 
 const store = useQuestStore();
 const spaceStore = useSpaceStore();
-const deviceStore = useDeviceStore();
+const spaceSyncStore = useSpaceSyncStore();
 
 let focusRefreshTimer: number | null = null;
 
 onMounted(() => {
   void store.fetchQuests();
-  void deviceStore.hydrate();
 });
 
 watch(
-  () => deviceStore.lastAppliedSyncAt,
+  () => spaceSyncStore.lastAppliedSyncAt,
   (next, prev) => {
     if (!next || next === prev) return;
     void store.fetchQuests();

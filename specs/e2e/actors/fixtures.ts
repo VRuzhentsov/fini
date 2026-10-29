@@ -293,7 +293,7 @@ function spawnActorProcess(
             FINI_BLE_MOCK_BROKER: `127.0.0.1:${bleBrokerPort(baseDiscoveryPort, slugs.length)}`,
             // Required by the mock broker: `ble.rs` refuses to start without
             // it. `FINI_BLUETOOTH_PAIRED_ADDRESSES` used to sit beside this,
-            // satisfying an OS-bond check in `bluetooth_dial_candidates`.
+            // satisfying an OS-bond check in `bluetooth_connect_candidates`.
             // ADR-0006 deleted that check, so the variable had no reader left
             // and was only telling the next person a gate existed.
           FINI_LOCAL_BLUETOOTH_ADDRESS: fakeBluetoothAddress(index),

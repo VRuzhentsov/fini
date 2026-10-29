@@ -1,7 +1,7 @@
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import DeviceView from "../../views/settings/DeviceView.vue";
-import { useDeviceStore } from "../../stores/device";
+import { useDeviceStore } from "../../stores/device.store";
 import { useSpaceStore } from "../../stores/space";
 import { ChannelColor, ChannelKind, ChannelProblem, ChannelState } from "../../utils/channel";
 
@@ -11,8 +11,14 @@ jest.mock("vue-router", () => ({
   useRouter: () => ({ push: mockRouterPush }),
 }));
 
-jest.mock("../../stores/device", () => ({
+jest.mock("../../stores/device.store", () => ({
   useDeviceStore: jest.fn(),
+}));
+
+// One mock object serves both stores: each test sets it once through
+// `useDeviceStore`, and the page reads its sync half through this store.
+jest.mock("../../stores/space-sync.store", () => ({
+  useSpaceSyncStore: () => jest.requireMock("../../stores/device.store").useDeviceStore(),
 }));
 
 // `spaceCss` is re-exported here as well as `isBuiltinSpace`: SyncQueueSection
@@ -80,11 +86,7 @@ function storeMock(overrides: Record<string, unknown> = {}): any {
     refreshChannelStatuses: jest.fn().mockResolvedValue(undefined),
     setChannelEnabled: jest.fn().mockResolvedValue([]),
     setPrimaryChannel: jest.fn().mockResolvedValue([]),
-    unlinkChannel: jest.fn().mockResolvedValue([]),
     watchPresence: jest.fn().mockResolvedValue(undefined),
-    beginChannelSetup: jest.fn().mockResolvedValue(undefined),
-    channelSetupStatus: jest.fn().mockResolvedValue(null),
-    endChannelSetup: jest.fn().mockResolvedValue([]),
     enterAddMode: jest.fn().mockResolvedValue(undefined),
     leaveAddMode: jest.fn().mockResolvedValue(undefined),
     cancelOutgoingRequest: jest.fn(),
@@ -185,15 +187,6 @@ describe("DeviceView channels", () => {
     expect(rows[1].attributes("data-channel-color")).toBe(ChannelColor.Grey);
   });
 
-  it("searches for the peer only while the page is open", async () => {
-    const wrapper = mountView();
-    await flushUi();
-    expect(deviceStoreMock.watchPresence).toHaveBeenCalledWith(true);
-
-    wrapper.unmount();
-    expect(deviceStoreMock.watchPresence).toHaveBeenCalledWith(false);
-  });
-
   it("makes a green channel the primary through its star (ADR-0007)", async () => {
     const wrapper = mountView();
     await flushUi();
@@ -255,49 +248,6 @@ describe("DeviceView channels", () => {
       ChannelKind.Bluetooth,
       true,
     );
-  });
-
-  // Unlinking is a second, deliberate act (ADR-0008 D14): the control
-  // exists only on a channel that is already off.
-  it("offers unlink only once the channel is off", async () => {
-    deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow(ChannelKind.Network),
-      channelRow(ChannelKind.Bluetooth, { state: ChannelState.Off, color: ChannelColor.Off }),
-    ]);
-
-    const wrapper = mountView();
-    await flushUi();
-
-    const rows = wrapper.findAll('[data-testid="channel-status-row"]');
-    expect(rows[0].find('[data-testid="unlink-channel"]').exists()).toBe(false);
-
-    await rows[1].find('[data-testid="unlink-channel"]').trigger("click");
-    await flushUi();
-
-    expect(deviceStoreMock.unlinkChannel).toHaveBeenCalledWith("peer-device-123", ChannelKind.Bluetooth);
-  });
-
-  // A channel that does not exist has nothing to switch or forget -- only
-  // Add, which opens the setup dialog for that channel (ADR-0008 D20).
-  it("opens the setup dialog from Add on a channel that does not exist", async () => {
-    deviceStoreMock.getChannelStatuses.mockReturnValue([
-      channelRow(ChannelKind.Network),
-      channelRow(ChannelKind.Bluetooth, { state: ChannelState.None, color: ChannelColor.None }),
-    ]);
-
-    const wrapper = mountView();
-    await flushUi();
-
-    const row = wrapper.findAll('[data-testid="channel-status-row"]')[1];
-    expect(row.find('[data-testid="channel-switch"]').exists()).toBe(false);
-    expect(row.find('[data-testid="unlink-channel"]').exists()).toBe(false);
-    expect(document.body.querySelector('[data-testid="pair-device-dialog"]')).toBeNull();
-
-    await row.find('[data-testid="add-channel"]').trigger("click");
-    await flushUi();
-
-    expect(deviceStoreMock.beginChannelSetup).toHaveBeenCalledWith("peer-device-123", ChannelKind.Bluetooth);
-    wrapper.unmount();
   });
 
   // ⓘ appears only on orange, and names this device's problem -- a peer

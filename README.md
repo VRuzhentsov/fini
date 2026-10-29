@@ -95,8 +95,10 @@ Convention:
 
 Fini is local-first with optional LAN sharing. MVP.1 networking is split into:
 
-- [[DeviceConnection]] for UDP discovery/pairing/presence
-- [[SpaceSync]] for websocket-based per-space replication
+- [[DeviceConnection]] for pairing and channels (Network and Bluetooth, over iroh)
+- [[SpaceSync]] for per-space replication over iroh sessions
+
+How the parts work: [`docs/architecture/communication.md`](docs/architecture/communication.md).
 
 See [[Network]] for transport-level contracts.
 

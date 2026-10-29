@@ -30,7 +30,7 @@ Before implementation, debugging, QA, Android, design-to-code, release, or docum
 
 1. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`.
 2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
-3. Read only the context needed for the task: `AGENTS.md`, the relevant folder `README.md`, companion `.md` specs, `docs/adr/`, and targeted source files.
+3. Read only the context needed for the task: `AGENTS.md`, the relevant page in `docs/architecture/`, the relevant folder `README.md` and companion `.md` specs where they still exist (they move to `docs/` when touched; see `fini-documentation`), `docs/adr/`, and targeted source files.
 4. Choose any specialized skill from the routing table below before doing the domain-specific work.
 5. Pick the smallest useful verification command before editing so the success standard is clear.
 
@@ -78,6 +78,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Create or improve skills | `skill-creator` |
 | Planning, scoping, or decision-tree clarification before implementation | `grill-me`, plus the relevant domain skill |
 | Create, start, or draft tickets | `fini-create-ticket`, `start-ticket`, or `ticket-markdown` |
+| Add, move, or change docs, specs, READMEs, ADRs, the glossary, or architecture pages | `fini-documentation` |
 
 When no specialized skill fits, continue with this skill's project workflow.
 
@@ -197,7 +198,21 @@ Do not invent generic targets such as `make test`, `make lint`, or `make check` 
 
 ## Naming
 
-Two files, and they answer different questions. `docs/glossary.md` is what the words **mean** — channel, DataLink, session, primary — and is where you go to choose *which* word. `docs/naming.md` is how names are **formed** — plurals, casing per language, `data-*` hooks, command prefixes — and is where you go to write it down. Read the relevant one before naming a new table, module, type, command or DOM hook, and before renaming one. Either file wins over what the code currently says. Load `fini-code-style` alongside them for the repo-wide rules that are not about names.
+Two files. `docs/glossary.md` is what the words **mean**: go there to choose *which* word. `docs/naming.md` is how Fini **writes**: STE, the dictionary check for each word, and how names are formed. Read the relevant one before you name or rename a table, module, type, command or DOM hook. Either file wins over what the code says now. Load `fini-code-style` with them for the rules that are not about names.
+
+## Use STE
+
+Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, comments, log messages, docs, screen text, commit messages, PR text, agent instructions, and what you write to the user.
+
+1. Read `docs/naming.md` before you write any of these.
+2. For each new name, comment and log message, do the check in `docs/naming.md`, "Check a name before you write it". Look up each word in the STE dictionary.
+3. Use a technical noun or verb only when it is a term in `docs/glossary.md`.
+4. When no approved word or glossary term gives the meaning, tell the user the new term: the term, its one meaning, and why no approved word fits. Add it to the glossary only after you get the approval of the user.
+5. Before you make a new file, tell the user its name and its job. Make it only after you get approval.
+6. Before you commit, read your diff for the words in the glossary's "Words deliberately not used" list, and replace them.
+7. Talk to the user in STE too. Tell the meaning of each term before you use it.
+
+During the change to STE, change the names, comments, and text of each file that you change. Leave other files as they are.
 
 ## Code Reuse
 
@@ -217,8 +232,11 @@ When writing tests that mock an entire module (`jest.mock`), re-export all named
 A pull request moves through three stages. Use each stage's checks and no others:
 
 1. **Draft: build it.** Keep the PR a draft while the work is in progress. Iterate on the running HMR apps (desktop and phone), and prove behaviour by exercising it there. CI skips drafts (`.github/workflows/ci.yml`), and unit tests and e2e lanes wait for stage 3: tests on code that does not work yet are wasted runs.
+   - Prove each step with a compile check (`cargo check`, `npm run build`) and manual checks through the devtools bridge (`fini-android-testing`): the happy path and the basic edge cases of that step. Commit and push each step that passes.
+   - Leave test files alone during the draft. A test that fails after a planned behaviour change stays failing until stage 3; do not edit its expectation to match the new code, and do not run or fix the suites per step — the next step can change the behaviour again. The only allowed edit is a compile adaptation (a changed function signature), named in the report.
+   - Keep a list of the manual bridge checks you ran; stage 3 turns it into test proposals.
 2. **Gate to leave draft: the happy flow works.** Prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
-3. **Wrap-up: make it mergeable.** Run the unit tests and the relevant e2e lanes (see `fini-test`), fix whatever fails, get CI green, and bring the PR title and description up to date with everything the branch now contains.
+3. **Wrap-up: make it mergeable.** Once the system works as designed: run the unit tests and the relevant e2e lanes (see `fini-test`); for each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides. Then show the user the test cases you propose to add, based on the manual bridge checks from stage 1, and add the ones they choose. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
 
 The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
 
@@ -228,9 +246,9 @@ Use this loop for implementation and fixes:
 
 1. Establish evidence for the current behavior: code path, spec, failing output, test result, log, or reproducible step.
 2. Trace write path, persisted data, and read path when data behavior is involved.
-3. Search for existing utilities and constants before writing new ones (see Code Reuse above).
+3. Shape the change as `docs/architecture/code-design.md` says: find the object that owns the data and the interface it implements, search for code that does the job already (see Code Reuse above), and put the change there.
 4. Make the smallest scoped change that addresses the root cause or requested behavior.
-5. Avoid broad refactors, compatibility layers, or new abstractions unless they prevent a concrete defect.
+5. Avoid broad refactors and compatibility layers unless they prevent a concrete defect. Putting a behavior on the existing interface or object that owns it is not a broad refactor: do it. Remove the code that your change makes unused.
 6. Preserve user or other-agent changes in the worktree.
 7. Update companion docs/specs when behavior or structure changes.
 8. Verify with the smallest useful check, then escalate only as needed.

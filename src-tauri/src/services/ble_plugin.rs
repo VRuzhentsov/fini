@@ -1,15 +1,15 @@
 //! Fini's handle on `tauri-plugin-ble-gatt` on Android.
 //!
-//! The plugin ships ble-gatt's Kotlin bridge, builds the Android backend
+//! The plugin ships ble-gatt's Kotlin bridge, builds the Android driver
 //! after the Activity is up, and asks for the Bluetooth runtime permissions
 //! (ble-gatt ADR-0007 D9). Its API hangs off the `AppHandle`, which the
 //! Bluetooth channel and the permission checks deep in the communication
 //! services do not carry, so `lib.rs` installs the handle here once at
 //! setup.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
-use ble_gatt::Backend;
+use ble_gatt::Adapter;
 use tauri::plugin::PermissionState;
 use tauri::AppHandle;
 use tauri_plugin_ble_gatt::BleGattExt;
@@ -26,9 +26,10 @@ fn app() -> Result<&'static AppHandle, String> {
         .ok_or_else(|| "tauri-plugin-ble-gatt is not installed yet".to_string())
 }
 
-/// The plugin's backend: one for the process, built on first use.
-pub fn backend() -> Result<Arc<dyn Backend>, String> {
-    Ok(app()?.ble_gatt().backend())
+/// The Android Bluetooth adapter that the plugin makes: one for the process,
+/// made at the first use.
+pub async fn adapter() -> Result<Adapter, String> {
+    Ok(app()?.ble_gatt().adapter().await)
 }
 
 /// Whether the Bluetooth runtime permissions are granted. Fails closed: an
