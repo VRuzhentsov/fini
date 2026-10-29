@@ -1376,6 +1376,12 @@ mod test_switch {
             self.0.driver.stop_advertising().await
         }
 
+        // Serving re-advertises this after the radio comes back on, so an
+        // Add Device change made since `advertise` is kept.
+        fn served_service(&self) -> Option<GattServiceSpec> {
+            self.0.driver.served_service()
+        }
+
         async fn notify(&self, characteristic: CharacteristicUuid, value: Vec<u8>) -> ble_gatt::Result<()> {
             if self.0.is_off() {
                 return Err(switched_off());
