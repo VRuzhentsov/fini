@@ -309,6 +309,19 @@ SQL only because `primary` is a keyword.
 
 Unrelated to everything above: the app-update track (stable/beta).
 
+### Occurrence
+
+One date of a repeating quest, computed from the quest's `repeat_rule`
+(ADR-0012). It has no row of its own until a person acts on it. Its key is
+(`quest_id`, `period_key`); `period_key` is its date, `YYYY-MM-DD`.
+
+### Occurrence mark
+
+The stored row of an occurrence that a person closed (completed or
+abandoned) or changed (a tick, a "This day" edit), in `quest_occurrences`.
+Its fields override the quest's fields for that day; an empty field takes
+the quest's value.
+
 ## Words deliberately not used
 
 | Not used | Why |
@@ -323,6 +336,7 @@ Unrelated to everything above: the app-update track (stable/beta).
 | **probe** | not an approved word; Fini uses *identify* |
 | **candidate** (`AddModeCandidate`) | not an approved word; Fini uses *available device* |
 | **dial** | not an approved word; Fini uses *connect* |
+| **series** (`quest_series`) | a repeating quest is one quest (ADR-0012); its dates are *occurrences* |
 | **leg** (`PairingLeg`) | jargon; Fini uses *pairing step* |
 | **lease** (scan lease) | jargon; Fini uses *scan lock* |
 | **hello** (`Hello`, `DiscoveryHello`) | not an approved word; the message is `IdentifyDevice` |
