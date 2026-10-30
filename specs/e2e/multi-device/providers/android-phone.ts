@@ -21,7 +21,11 @@ const DEFAULT_APK = join(REPO_ROOT, 'src-tauri/gen/android/app/build/outputs/apk
 /** The port of the devtools bridge in the app (`DEVTOOLS_ANDROID_TCP_PORT`, src-tauri/src/lib.rs). */
 const APP_BRIDGE_PORT = 9223;
 const FIRST_HOST_PORT = 9223;
-const CONNECT_TIMEOUT_MS = 60_000;
+// The first app start on a phone that has just booted can take minutes.
+const CONNECT_TIMEOUT_MS = 180_000;
+const APP_CHECK_INTERVAL_MS = 30_000;
+const INSTALL_TIMEOUT_MS = 180_000;
+const INSTALL_ATTEMPTS = 3;
 const PERMISSIONS = ['BLUETOOTH_SCAN', 'BLUETOOTH_CONNECT', 'BLUETOOTH_ADVERTISE', 'POST_NOTIFICATIONS'];
 
 export class AndroidPhoneProvider implements TestDeviceProvider {
@@ -40,15 +44,15 @@ export class AndroidPhoneProvider implements TestDeviceProvider {
 
   /** Installs the APK, clears the app data, grants permissions and starts the app in front. */
   async prepare(): Promise<void> {
-    const device = (await _android.devices()).find((item) => item.serial() === this.serial);
+    // omitDriverInstall: by default Playwright installs its own driver app on
+    // each phone. Only `shell` is used here, which works without it.
+    const device = (await _android.devices({ omitDriverInstall: true })).find((item) => item.serial() === this.serial);
     if (!device) throw new Error(`phone ${this.serial} for test device "${this.slug}" is not in adb devices`);
     this.device = device;
 
     // `adb install`, not `device.installApk`: Playwright streams the APK in one
     // write, and with the 455 MB debug APK that write fails with EPIPE.
-    await run('adb', ['-s', this.serial, 'install', '-r', '-g', process.env.FINI_E2E_ANDROID_APK ?? DEFAULT_APK], {
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    await this.install(process.env.FINI_E2E_ANDROID_APK ?? DEFAULT_APK);
     await this.shell(`pm clear ${PACKAGE}`);
     for (const permission of PERMISSIONS) {
       await this.shell(`pm grant ${PACKAGE} android.permission.${permission}`);
@@ -70,11 +74,21 @@ export class AndroidPhoneProvider implements TestDeviceProvider {
     // The bridge listens a short time after the activity starts.
     const end = Date.now() + CONNECT_TIMEOUT_MS;
     let lastError: unknown;
+    let nextAppCheck = Date.now() + APP_CHECK_INTERVAL_MS;
     while (Date.now() < end) {
       try {
         return await connectOverTcp(this.slug, this.hostPort);
       } catch (error) {
         lastError = error;
+        // On an emulator that has just booted, the first app start failed
+        // once in two runs (the bridge never answered, cause not found).
+        // Start the app again when its process is not there.
+        if (Date.now() > nextAppCheck) {
+          nextAppCheck = Date.now() + APP_CHECK_INTERVAL_MS;
+          if ((await this.shell(`pidof ${PACKAGE}`)).trim() === '') {
+            await this.shell(`am start -W -n ${ACTIVITY}`);
+          }
+        }
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       }
     }
@@ -91,6 +105,23 @@ export class AndroidPhoneProvider implements TestDeviceProvider {
     }).catch(() => ({ stdout: '' }));
     writeFileSync(join(logs, `${this.slug}.logcat.txt`), stdout);
     await run('adb', ['-s', this.serial, 'forward', '--remove', `tcp:${this.hostPort}`]).catch(() => undefined);
+  }
+
+  /** An install soon after boot can stop and never end, so each try has a time limit. */
+  private async install(apk: string): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= INSTALL_ATTEMPTS; attempt++) {
+      try {
+        await run('adb', ['-s', this.serial, 'install', '-r', '-g', apk], {
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: INSTALL_TIMEOUT_MS,
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw new Error(`install on ${this.serial} failed ${INSTALL_ATTEMPTS} times: ${String(lastError)}`);
   }
 
   private async shell(command: string): Promise<string> {

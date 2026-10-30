@@ -48,7 +48,10 @@ export class AndroidEmulator implements PhoneTool {
     while (Date.now() < end) {
       const booted = await run('adb', ['-s', serial, 'shell', 'getprop', 'sys.boot_completed'])
         .then(({ stdout }) => stdout.trim() === '1', () => false);
-      if (booted) return;
+      // The package manager answers some time after boot_completed.
+      const packagesReady = booted && await run('adb', ['-s', serial, 'shell', 'pm', 'path', 'android'])
+        .then(({ stdout }) => stdout.includes('package:'), () => false);
+      if (packagesReady) return;
       await new Promise((resolve) => setTimeout(resolve, 2_000));
     }
     throw new PhoneBootError(`${serial} did not boot in ${BOOT_TIMEOUT_MS / 1000} s`);

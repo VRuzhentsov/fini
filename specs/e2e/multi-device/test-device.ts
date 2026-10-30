@@ -32,12 +32,16 @@ export class TestDevice {
 
   async start(): Promise<void> {
     await this.provider.prepare();
-    this.client = await this.provider.connect();
-    this.tauriPage = new TauriPage(this.client);
-    this.tauriPage.setDefaultTimeout(PAGE_TIMEOUT_MS);
+    await this.connect();
     // The ping proves only the Rust side of the bridge. A phone that starts
     // the app from zero shows the page some time later.
     await this.waitForPage();
+  }
+
+  private async connect(): Promise<void> {
+    this.client = await this.provider.connect();
+    this.tauriPage = new TauriPage(this.client);
+    this.tauriPage.setDefaultTimeout(PAGE_TIMEOUT_MS);
   }
 
   private async waitForPage(): Promise<void> {
