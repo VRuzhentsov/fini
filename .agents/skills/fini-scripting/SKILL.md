@@ -13,11 +13,11 @@ This is a foundation skill. It defines how automation is structured; domain-spec
 
 Keep automation predictable and discoverable:
 
-- Makefile is the primary human execution entrypoint for repo workflows.
-- `npm run` owns JavaScript, TypeScript, frontend, package, and JS/TS test scripts.
+- Makefile is the entrypoint for developers on their own computers only (ADR-0012 D9).
+- `npm run` owns JavaScript, TypeScript, frontend, package, and JS/TS test scripts, and every CI step.
 - `cargo xtask` owns non-trivial Rust repo automation.
-- CI may use `make`, `npm run ...`, or `cargo xtask ...` directly when that is clearer and less duplicative.
-- One workflow should have one implementation, reused by local commands and CI when practical.
+- CI calls `npm run ...` (or `cargo xtask ...`) directly. CI never calls `make`.
+- One workflow has one implementation: the npm script. The Make target calls the same script.
 
 ## Command Surface
 
@@ -25,16 +25,15 @@ Use this default hierarchy:
 
 | Surface | Role |
 |---|---|
-| `Makefile` | Human-facing entrypoint, memorable workflow names, guard checks, orchestration across tools |
-| `npm run` | JS/TS/frontend/package scripts, Vite/Tauri package scripts, JS/TS tests |
-| `cargo xtask` | Non-trivial repo automation, file parsing/editing, manifest updates, packaging/release orchestration |
-| CI workflow steps | May call `make`, `npm run ...`, or `cargo xtask ...` directly based on setup/cache clarity |
+| `Makefile` | Local developer shortcuts with memorable names; each recipe calls an npm script or a local-only tool (adb, a dev server) |
+| `npm run` | JS/TS/frontend/package scripts, Vite/Tauri package scripts, JS/TS tests, and the CI gate steps (`gate:*`, `test:e2e:*`, `build:android:e2e`) |
+| `scripts/*.mjs` | The logic behind an npm script that is more than one command (`ci-gate.mjs`, `e2e-android-ble.mjs`, `with-devtools-capability.mjs`) |
+| `cargo xtask` | Non-trivial Rust repo automation, file parsing/editing, manifest updates, packaging/release orchestration |
+| CI workflow steps | One `run: npm run <script>` (or `cargo xtask ...`) for each step; no `make` |
 
-Prefer documenting human commands as `make <target>`.
+Document a command for developers as `make <target>` when a target exists; document the same command for CI as `npm run <script>`.
 
-Use direct `npm run ...` in docs or CI when the task is already a package script and wrapping it in Makefile adds no human-facing value.
-
-Use direct `cargo xtask ...` in CI when a job needs the exact automation command and a Makefile wrapper would obscure cache/setup behavior.
+Playwright runs from npm scripts, not from Make or xtask.
 
 ## Makefile Rules
 
@@ -87,11 +86,11 @@ Prefer Makefile wrappers for human-facing `xtask` workflows.
 
 ## Script Policy
 
-Avoid ad hoc JavaScript, TypeScript, shell, PHP, or Python scripts for repo automation unless the repo deliberately adopts that runner for a clear reason.
+Node scripts in `scripts/*.mjs` are the adopted runner for the logic behind npm scripts and CI steps (ADR-0012 D9): they need no install beyond Node, which every CI job and developer has. Avoid other ad hoc runners (shell, PHP, Python) for repo automation.
 
 If adding a new automation runner, make it explicit in project dependencies and update this skill with when to use it.
 
-Shell in Makefile is acceptable for simple guards and orchestration. Use `xtask` once logic becomes stateful, parser-heavy, or reused across local and CI workflows.
+Shell in Makefile is acceptable for simple local guards. Logic that CI also runs goes into `scripts/*.mjs` (or `xtask` for Rust-side work), never into a Make recipe.
 
 ## Verification
 

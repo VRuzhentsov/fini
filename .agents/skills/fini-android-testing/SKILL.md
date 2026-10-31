@@ -60,8 +60,8 @@ Consequence: any plugin command that calls `PluginManager.startActivityForResult
 
 Beside this file. A thin bridge to a running debug app's devtools socket: it
 connects, evaluates the expression you give it **inside the app's webview**,
-prints the result, and exits. Seconds, not minutes — no actor pool, no test
-runner, no build.
+prints the result, and exits. Seconds, not minutes — no test devices to
+start, no test runner, no build.
 
 ```bash
 # from the repo root, so it resolves the repo's node_modules
@@ -77,13 +77,27 @@ the Tauri bridge. The last expression is the result; wrap in an async IIFE
 when you need `await`.
 
 ```bash
-node ... 9224 "invoke('device_connection_get_paired_devices')"
+node ... 9224 "invoke('device_paired_devices')"
 node ... 9223 "[...document.querySelectorAll('button')].map(b => b.textContent.trim())"
 node ... 9224 "[...document.querySelectorAll('button')].find(b => b.textContent.includes('Pair')).click()"
-node ... 9224 "(async () => { const p = await invoke('device_connection_get_paired_devices');
-   for (const d of p) await invoke('device_connection_unpair', { peerDeviceId: d.peer_device_id });
+node ... 9224 "(async () => { const p = await invoke('device_paired_devices');
+   for (const d of p) await invoke('device_unpair', { peerDeviceId: d.peer_device_id });
    return p.length; })()"
 ```
+
+## Two virtual phones: the `android-ble` lane
+
+For Bluetooth between two Android stacks without hardware, use the e2e lane
+on two virtual phones (ADR-0012), not this skill's physical phone:
+
+```bash
+npm run build:android:e2e          # x86_64 debug APK with devtools (make android-build-emulator-e2e)
+npm run test:e2e:android-ble       # podman image, two emulators on one netsim radio
+```
+
+`fini-test` has the details. The bridge above also works on such a phone:
+the lane forwards phone A to host port 9223 and phone B to 9225 while a test
+runs (inside the container).
 
 **It deliberately has no verbs.** Compose the expression for the task at
 hand rather than adding a named action to the script — the bridge knows
