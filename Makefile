@@ -106,63 +106,19 @@ flatpak-install-local:
 play-store-screenshots:
 	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
 
-pr-gate-fe-unit: require-container
-	$(CONTAINER_ENGINE) build --target fe-unit-test -t fini-fe-unit-test .
+# The gate steps live in scripts/ci-gate.mjs; CI calls them as `npm run
+# gate:*` (ADR-0012 D9). These targets are local shortcuts to the same steps.
+pr-gate-fe-unit:
+	npm run gate:fe-unit
 
 pr-gate-be-cache-key:
-	@set -eu; \
-	cache_inputs() { \
-	  { \
-	    git ls-files -z -- \
-	      Dockerfile \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json; \
-	    git ls-files --others --exclude-standard -z -- \
-	      Dockerfile \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json; \
-	  } | sort -zu; \
-	}; \
-	cache_inputs | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d ' ' -f 1
+	@node scripts/ci-gate.mjs be-cache-key
 
 pr-gate-be-compile:
-	@set -eu; \
-	cache_key="$$(make --no-print-directory pr-gate-be-cache-key)"; \
-	cache_prefix="$(FINI_BE_CACHE_IMAGE_PREFIX)"; \
-	cache_image=""; \
-	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-be-compile-cache:$$cache_key"; fi; \
-	if [ -n "$$cache_image" ] && $(CONTAINER_ENGINE) pull "$$cache_image"; then \
-	  printf 'Using cached backend compile image: %s\n' "$$cache_image"; \
-	  $(CONTAINER_ENGINE) tag "$$cache_image" "$(FINI_BE_COMPILE_IMAGE)"; \
-	  exit 0; \
-	fi; \
-	printf 'Building backend compile image for cache key: %s\n' "$$cache_key"; \
-	if [ -n "$$cache_image" ]; then \
-	  $(CONTAINER_ENGINE) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" -t "$$cache_image" .; \
-	else \
-	  $(CONTAINER_ENGINE) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" .; \
-	fi; \
-	if [ -n "$$cache_image" ] && [ "$(FINI_BE_CACHE_PUSH)" = "1" ]; then \
-	  $(CONTAINER_ENGINE) push "$$cache_image"; \
-	fi
+	npm run gate:be-compile
 
 pr-gate-be-unit:
-	$(MAKE) pr-gate-be-compile
-	$(CONTAINER_ENGINE) build --target be-unit-test --cache-from "$(FINI_BE_COMPILE_IMAGE)" -t "$(FINI_BE_UNIT_IMAGE)" .
+	npm run gate:be-unit
 
 pr-gate-e2e:
 	@set -eu; \
@@ -172,106 +128,19 @@ pr-gate-e2e:
 	$(MAKE) pr-gate-e2e-run
 
 pr-gate-e2e-cache-key:
-	@set -eu; \
-	cache_inputs() { \
-	  { \
-	    git ls-files -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      scripts/e2e-runner.sh \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/devtools-capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	    git ls-files --others --exclude-standard -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      scripts/e2e-runner.sh \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/devtools-capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	  } | sort -zu; \
-	}; \
-	cache_inputs | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d ' ' -f 1
+	@node scripts/ci-gate.mjs e2e-cache-key
 
 pr-gate-e2e-build-dev-runner:
-	@set -eu; \
-	cache_key="$$(make --no-print-directory pr-gate-e2e-cache-key)"; \
-	cache_prefix="$(FINI_E2E_CACHE_IMAGE_PREFIX)"; \
-	cache_image=""; \
-	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-dev-runner-cache:$$cache_key"; fi; \
-	if [ -n "$$cache_image" ] && $(CONTAINER_ENGINE) pull "$$cache_image"; then \
-	  printf 'Using cached dev-runner image: %s\n' "$$cache_image"; \
-	  $(CONTAINER_ENGINE) tag "$$cache_image" "$(FINI_DEV_RUNNER_IMAGE)"; \
-	  exit 0; \
-	fi; \
-	printf 'Building dev-runner image for E2E cache key: %s\n' "$$cache_key"; \
-	if [ -n "$$cache_image" ]; then \
-	  $(CONTAINER_ENGINE) build --target dev-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_DEV_RUNNER_IMAGE)" -t "$$cache_image" .; \
-	else \
-	  $(CONTAINER_ENGINE) build --target dev-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_DEV_RUNNER_IMAGE)" .; \
-	fi; \
-	if [ -n "$$cache_image" ] && [ "$(FINI_E2E_CACHE_PUSH)" = "1" ]; then \
-	  $(CONTAINER_ENGINE) push "$$cache_image"; \
-	fi
+	npm run gate:e2e:build-image
 
 pr-gate-e2e-run:
-	@set -eu; \
-	mkdir -p "$(FINI_E2E_CI_RESULTS_DIR)"; \
-	$(CONTAINER_ENGINE) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true; \
-	$(CONTAINER_ENGINE) run --rm \
-	  --name "fini-$(FINI_E2E_CI_RUN_ID)-runner" \
-	  -e FINI_E2E_TEST_DEVICES="$(FINI_E2E_CI_TEST_DEVICES)" \
-	  -e FINI_E2E_CI_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
-	  -e FINI_E2E_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
-	  -e FINI_E2E_TEST_DEVICE_WAIT_SECS="$(FINI_E2E_CI_TEST_DEVICE_WAIT_SECS)" \
-	  -e FINI_E2E_LANES="$(FINI_E2E_LANES)" \
-	  -e FINI_E2E_KEEP="$(FINI_E2E_KEEP)" \
-	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
-	  "$(FINI_DEV_RUNNER_IMAGE)"
+	npm run gate:e2e:run
 
 pr-gate-e2e-artifacts:
-	@set -eu; \
-	run_root="$(FINI_E2E_CI_RESULTS_DIR)/fini-e2e-runs/$(FINI_E2E_CI_RUN_ID)/test-devices"; \
-	printf '\n===== test device logs =====\n'; \
-	if [ -d "$$run_root" ]; then \
-	  for log_path in "$$run_root"/*.log; do \
-	    [ -f "$$log_path" ] || continue; \
-	    printf '\n--- %s ---\n' "$$log_path"; \
-	    tail -n 200 "$$log_path" || true; \
-	  done; \
-	else \
-	  printf 'No test device log directory found: %s\n' "$$run_root"; \
-	fi
+	npm run gate:e2e:artifacts
 
 pr-gate-e2e-cleanup:
-	@set -eu; \
-	$(CONTAINER_ENGINE) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true
+	npm run gate:e2e:cleanup
 
 # Run the real-app e2e lane locally.
 e2e:

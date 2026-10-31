@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted. Written during the design discussion of 2026-10-28. D1 has a
-spike result to add (see "Spike results").
+Accepted. Written during the design discussion of 2026-10-28. The spike of
+D1 chose the Android Emulator on 2026-10-30 (see "Spike results").
 
 ## Context
 
@@ -47,9 +47,13 @@ git history.
 
 **D2 — The tests drive the app through the Tauri bridge. Device work goes
 through Playwright `_android`.** The app actions use `PluginClient` over TCP
-port 9223 after `adb forward`, as on a physical phone now. `_android` lists
-the phones by serial, installs the APK, and runs `pm grant` through `shell`.
-`_android` has no port forward, so the forward uses one `adb forward` call.
+port 9223 after `adb forward`, as on a physical phone now. `_android` finds
+the phones by serial and runs `pm grant` through `shell`, with
+`omitDriverInstall: true`. Two jobs use the adb command:
+
+- The install. `installApk` sends the 455 MB debug APK in one write, and
+  the write fails with EPIPE.
+- The port forward. `_android` has no port forward.
 
 **D3 — Scope of the first pull request.** The spike, the new fixture, and
 a lane with two phones for Android-to-Android Bluetooth, local and in CI.
@@ -112,4 +116,45 @@ the same npm scripts. The logic of the Make recipes moves to Node scripts in
 
 ## Spike results
 
-Not done yet.
+The spike ran `bluetooth-pair-from-zero` on two phones with each tool, in
+the `android-phones-runner` podman image, on 2026-10-28 to 2026-10-30. The
+results are from the last version of the harness, from a fresh boot of the
+phones.
+
+| | Android Emulator | Cuttlefish |
+|---|---|---|
+| Version | emulator 37.2, API 34 `google_apis` x86_64 | AOSP build 16644040, Android 17 |
+| Container | `/dev/kvm` only | `--privileged`, vsock, vhost-net, tap devices |
+| Boot of two phones | 33 s | less than 1 min |
+| Fresh boot and 5 runs | 170 s and 191 s | 353 s and 406 s |
+| Passed | 10 of 10 | 9 of 10 |
+| Listing time | 0.0 to 0.6 s | 0.0 to 0.4 s |
+
+Fini keeps the Android Emulator (D1): it is faster, it needs less access to
+the host, and it passed all runs. The failed Cuttlefish run was a Fini
+defect (issue #198), not a defect of the tool.
+
+What the spike found:
+
+- Fini defects, now in issue #198 and in the fixes of PR #197:
+  - Android rejects a scan start after five starts in 30 s, with no error to
+    the app. Fini then waited a full scan time (20 s). PR #197 counts the
+    starts. In one app process, the wait for a free start can still be
+    longer than the 10 s standard (11.0 s).
+  - A JNI abort when the Bluetooth driver started after the activity was
+    destroyed. PR #197 fixed it (ble-gatt 4adef4f).
+  - Once, a session from the peer arrived before the pair was stored, and
+    was rejected ("pinned for no pair"). The channel stayed grey.
+- Harness facts:
+  - A webview behind the lock screen or in the background slows its timers,
+    and each `eval` times out. The provider keeps the screen on and
+    unlocked, and the app in front.
+  - The ping proves only the Rust side of the bridge. The provider waits
+    for the page.
+  - `_android.devices()` installs a driver app on each phone unless
+    `omitDriverInstall` is set. On an emulator that had just booted, this
+    stopped the second phone.
+  - `adb forward` accepts a connection also when the app does not listen
+    yet, so each ping has a time limit.
+  - On Bazzite, the emulator stops after approximately 30 s with
+    `-gpu swiftshader_indirect`. `angle_indirect` works.

@@ -9,7 +9,6 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { RUN_ROOT } from '../run-root.ts';
 import { AndroidEmulator } from './android-emulator.ts';
-import { Cuttlefish } from './cuttlefish.ts';
 import type { PhoneTool } from './phone-tool.ts';
 
 const run = promisify(execFile);
@@ -17,7 +16,6 @@ const run = promisify(execFile);
 export const PHONE_GROUP_FILE = join(RUN_ROOT, 'android-phones.json');
 
 interface PhoneGroupState {
-  tool: string;
   serials: string[];
 }
 
@@ -37,17 +35,16 @@ export class PhoneGroup {
     return this.starting;
   }
 
-  static tool(name = process.env.FINI_E2E_PHONE_TOOL ?? 'emulator'): PhoneTool {
-    if (name === 'cuttlefish') return new Cuttlefish();
-    if (name === 'emulator') return new AndroidEmulator();
-    throw new Error(`unknown FINI_E2E_PHONE_TOOL "${name}" (use emulator or cuttlefish)`);
+  /** The Android Emulator, the phone tool that the spike chose (ADR-0012 D1). */
+  static tool(): PhoneTool {
+    return new AndroidEmulator();
   }
 
   /** Stops the phones of the state file, if there is one. */
   static async stopRunning(): Promise<void> {
     const state = readState();
     if (!state) return;
-    await PhoneGroup.tool(state.tool).down(state.serials);
+    await PhoneGroup.tool().down(state.serials);
     rmSync(PHONE_GROUP_FILE, { force: true });
   }
 
@@ -55,10 +52,9 @@ export class PhoneGroup {
     const state = readState();
     if (state && state.serials.length >= count && (await allOnline(state.serials))) return state.serials;
 
-    const tool = PhoneGroup.tool();
-    const serials = await tool.up(count);
+    const serials = await PhoneGroup.tool().up(count);
     mkdirSync(RUN_ROOT, { recursive: true });
-    writeFileSync(PHONE_GROUP_FILE, JSON.stringify({ tool: tool.name, serials } satisfies PhoneGroupState, null, 2));
+    writeFileSync(PHONE_GROUP_FILE, JSON.stringify({ serials } satisfies PhoneGroupState, null, 2));
     return serials;
   }
 }

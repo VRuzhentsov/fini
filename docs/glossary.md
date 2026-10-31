@@ -323,8 +323,8 @@ is not a Fini *device*: a Fini device is a paired peer.
 
 ### Phone tool
 
-**The tool that starts and stops virtual phones** for the e2e tests: AOSP
-Cuttlefish or the Android Emulator (ADR-0012 D1). In code: `PhoneTool`.
+**The tool that starts and stops virtual phones** for the e2e tests: the
+Android Emulator (ADR-0012 D1). In code: `PhoneTool`.
 
 *Elsewhere:* a device provider in Mobly; virtual device management in
 OmniLab ATS.
