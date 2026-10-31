@@ -3,13 +3,17 @@
 // times with `-read-only`.
 
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { mkdirSync, openSync } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { RUN_ROOT } from '../run-root.ts';
 import { PhoneBootError, type PhoneTool } from './phone-tool.ts';
 
 const run = promisify(execFile);
 
 const FIRST_CONSOLE_PORT = 5554;
 const BOOT_TIMEOUT_MS = 180_000;
+const START_INTERVAL_MS = 5_000;
 
 export class AndroidEmulator implements PhoneTool {
   readonly name = 'emulator';
@@ -25,15 +29,20 @@ export class AndroidEmulator implements PhoneTool {
 
   async up(count: number): Promise<string[]> {
     const serials: string[] = [];
+    mkdirSync(RUN_ROOT, { recursive: true });
     for (let i = 0; i < count; i++) {
       const port = FIRST_CONSOLE_PORT + 2 * i;
+      const log = openSync(join(RUN_ROOT, `emulator-${port}.log`), 'w');
       const child = spawn(this.emulatorBinary, [
         '-avd', this.avd, '-read-only', '-port', String(port),
         '-no-window', '-no-audio', '-no-snapshot', '-no-metrics', '-gpu', this.gpu,
-      ], { stdio: 'ignore', detached: true });
+      ], { stdio: ['ignore', log, log], detached: true });
       child.unref();
       this.processes.push(child);
       serials.push(`emulator-${port}`);
+      // Two emulators that start in the same second on one read-only AVD
+      // can stop or not boot.
+      if (i < count - 1) await new Promise((resolve) => setTimeout(resolve, START_INTERVAL_MS));
     }
     await Promise.all(serials.map((serial) => this.waitForBoot(serial)));
     return serials;

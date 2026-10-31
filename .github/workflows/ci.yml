@@ -66,7 +66,9 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Run frontend unit tests
-        run: CONTAINER=docker make pr-gate-fe-unit
+        env:
+          CONTAINER: docker
+        run: npm run gate:fe-unit
 
   # The release's own gate, run here so a green pull request means a green
   # release rather than something close to it.
@@ -320,7 +322,7 @@ jobs:
         run: npm ci
 
       - name: Build x86_64 debug APK
-        run: make android-build-emulator-e2e
+        run: npm run build:android:e2e
 
       - name: Locate debug APK
         shell: bash
@@ -361,3 +363,75 @@ jobs:
           emulator-options: -no-window -no-audio -gpu swiftshader_indirect -no-snapshot -no-metrics
           disable-animations: true
           script: bash scripts/android-e2e-assert.sh
+
+  # Two virtual phones on one virtual Bluetooth medium (ADR-0012). Not a
+  # required check yet (D5): it becomes one after about ten green runs.
+  android-ble-e2e:
+    name: Android BLE E2E
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # See the android-emulator-e2e job: the default `tools` package is gone.
+          packages: platform-tools
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add x86_64 Android Rust target
+        run: rustup target add x86_64-linux-android
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+          shared-key: android-emulator-e2e-rust
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build x86_64 debug APK with devtools
+        run: npm run build:android:e2e
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the android-ble lane
+        # The same command as on a developer's computer (ADR-0012 D8). It
+        # builds the android-phones-runner image and runs Playwright in it.
+        env:
+          FINI_E2E_KEEP: "1"
+        run: npm run test:e2e:android-ble
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ble-e2e-results
+          path: |
+            tmp/fini-e2e-multi-device/
+            specs/e2e/test-results/
+          if-no-files-found: ignore
