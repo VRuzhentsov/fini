@@ -5,7 +5,7 @@ use tauri::{AppHandle, State};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::Space;
 use crate::models::{CreateReminderInput, Quest, Reminder};
-use crate::repositories::reminder::ReminderRepository;
+use crate::repositories::ReminderRepository;
 
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;

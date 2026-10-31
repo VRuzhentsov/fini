@@ -1,14 +1,15 @@
 //! Checklist storage codec for issue #128, refined so the checklist reuses the existing
 //! `description` field instead of a dedicated column. A checklist quest's `description` holds
 //! GitHub-style task-list text (`- [ ] text <!--k=id-->`) instead of prose — the same textarea,
-//! just parsed/rendered differently when `quests.is_checklist` is set. `quest_series.description`
-//! holds the recurring template in the same format, gated by `quest_series.is_checklist`.
-//! `quests.checklist_base` is separate, device-local bookkeeping for the sync merge below — never
-//! the checklist content itself.
+//! just parsed/rendered differently when `quests.is_checklist` is set. For a repeating quest the
+//! quest's `description` is the template, and each touched day keeps its own copy with its ticks
+//! in `quest_occurrences.description` (ADR-0012 D5). `checklist_base` (on a quest and on a day
+//! copy) is separate, device-local bookkeeping for the merge below — never the checklist content
+//! itself.
 //!
 //! The embedded `<!--k=id-->` token gives each line stable identity across edits, which is what
-//! makes the per-item sync merge (`merge_3way`, used by `sync::commands::apply_sync_event`)
-//! and the recurrence scope reconciliation (`reconcile_future_scope`) possible.
+//! makes the per-item merge (`merge_3way`) possible: for sync, and for a template edit that
+//! reaches an open day copy.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -137,36 +138,6 @@ pub fn reorder(src: &str, ordered_ids: &[String]) -> String {
     let mut leftovers: Vec<ChecklistItem> = by_id.into_values().collect();
     result.append(&mut leftovers);
     serialize(&result)
-}
-
-/// "This and future occurrences": the series template changed. Reconcile the *current*
-/// occurrence's checklist against the new template — matched ids keep their `checked` state
-/// (per #128: "preserve checks on unchanged current-occurrence items"), new template items are
-/// added unchecked, and template-removed items are dropped from the occurrence.
-pub fn reconcile_future_scope(
-    current_occurrence_checklist: Option<&str>,
-    new_template_checklist: &str,
-) -> String {
-    let current = parse_opt(current_occurrence_checklist);
-    let checked_by_id: std::collections::HashMap<&str, bool> = current
-        .iter()
-        .map(|it| (it.id.as_str(), it.checked))
-        .collect();
-
-    let reconciled: Vec<ChecklistItem> = parse(new_template_checklist)
-        .into_iter()
-        .map(|template_item| {
-            let checked = checked_by_id
-                .get(template_item.id.as_str())
-                .copied()
-                .unwrap_or(false);
-            ChecklistItem {
-                checked,
-                ..template_item
-            }
-        })
-        .collect();
-    serialize(&reconciled)
 }
 
 /// 3-way merge for the per-item sync path (`sync::commands::apply_sync_event`). `base` is

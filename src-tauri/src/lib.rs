@@ -50,10 +50,9 @@ use services::notification::{
 mod resume_watcher;
 #[cfg(feature = "ui-plane")]
 use services::quest::{
-    add_checklist_item, create_quest, delete_quest, delete_quest_series, edit_checklist_item,
-    get_active_focus, get_checklist_activity, get_quests, get_series_checklist_template,
-    remove_checklist_item, reorder_checklist, set_focus, toggle_checklist_item, update_quest,
-    update_series_checklist,
+    add_checklist_item, complete_quest_through_today, create_quest, delete_quest, edit_checklist_item,
+    get_active_focus, get_checklist_activity, get_quests, remove_checklist_item, reorder_checklist,
+    set_focus, toggle_checklist_item, update_quest,
 };
 #[cfg(feature = "ui-plane")]
 use services::reconciler;
@@ -453,6 +452,10 @@ pub fn run() {
             let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
             let space_sync =
                 SpaceSyncService::new(identity.clone(), db_path.clone(), bus.clone(), network.clone(), bluetooth.clone());
+            // ADR-0012 D11: the quests and occurrence marks that a migration
+            // wrote have no sync events yet; sync sends only what has one.
+            services::quest::QuestService::new(&mut try_open_db_at_path(&db_path)?)
+                .emit_missing_sync_events(&identity.device_id)?;
             let devices = DeviceService::new(identity, db_path, bus.clone(), network.clone(), bluetooth.clone());
             let handlers = LinkHandlers { peer: devices.clone(), session: space_sync.clone() };
             network.set_link_handlers(handlers.clone());
@@ -499,15 +502,13 @@ pub fn run() {
             set_focus,
             update_quest,
             delete_quest,
-            delete_quest_series,
+            complete_quest_through_today,
             add_checklist_item,
             toggle_checklist_item,
             edit_checklist_item,
             remove_checklist_item,
             reorder_checklist,
-            update_series_checklist,
             get_checklist_activity,
-            get_series_checklist_template,
             get_reminders,
             create_reminder,
             update_reminder,

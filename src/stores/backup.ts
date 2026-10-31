@@ -8,7 +8,7 @@ export interface BackupManifest {
   exported_at: string;
   domains: string[];
   spaces: Array<{ id: string; name: string }>;
-  counts: { spaces: number; quest_series: number; quests: number };
+  counts: { spaces: number; quests: number; quest_occurrences: number };
 }
 
 export interface BackupExportResult {
@@ -52,8 +52,8 @@ export interface BackupConflictResolutionInput {
 export interface BackupImportResult {
   imported: boolean;
   spaces: number;
-  quest_series: number;
   quests: number;
+  quest_occurrences: number;
 }
 
 export const useBackupStore = defineStore("backup", () => {

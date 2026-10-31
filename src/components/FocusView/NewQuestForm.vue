@@ -108,8 +108,6 @@ const draftQuest = computed<Quest>(() => ({
   focus_enter_count: 0,
   created_at: "",
   updated_at: "",
-  series_id: null,
-  period_key: null,
   is_checklist: isChecklistMode.value,
 }));
 

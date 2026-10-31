@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{reminders, series_reminder_templates};
+use crate::schema::reminders;
 
 #[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
 #[diesel(table_name = reminders)]
@@ -32,23 +32,4 @@ pub struct UpdateReminderInput {
     pub mm_offset: Option<i64>,
     pub due_at_utc: Option<String>,
     pub scheduled_notification_id: Option<String>,
-}
-
-#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
-#[diesel(table_name = series_reminder_templates)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub struct SeriesReminderTemplate {
-    pub id: String,
-    pub series_id: String,
-    pub kind: String,
-    pub mm_offset: Option<i64>,
-    pub created_at: String,
-}
-
-#[derive(Deserialize, Insertable)]
-#[diesel(table_name = series_reminder_templates)]
-pub struct CreateSeriesReminderTemplateInput {
-    pub series_id: String,
-    pub kind: String,
-    pub mm_offset: Option<i64>,
 }

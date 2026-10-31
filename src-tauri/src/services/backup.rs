@@ -15,8 +15,8 @@ use tauri_plugin_fs::{FilePath, FsExt};
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 
-use crate::models::{ChecklistActivity, Quest, QuestSeries, Space};
-use crate::schema::{checklist_activity, quest_series, quests, spaces};
+use crate::models::{ChecklistActivity, Quest, QuestOccurrence, Space};
+use crate::schema::{checklist_activity, quest_occurrences, quests, spaces};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
@@ -24,7 +24,8 @@ use crate::services::db::AppDbConnection;
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
 const BACKUP_FORMAT: &str = "fini-backup";
-const BACKUP_VERSION: u32 = 2;
+/// 3: a repeating quest is one quest with its occurrence marks (ADR-0012).
+const BACKUP_VERSION: u32 = 3;
 const BUILTIN_SPACE_IDS: [&str; 3] = ["1", "2", "3"];
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -47,8 +48,8 @@ pub struct ManifestSpace {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ManifestCounts {
     pub spaces: usize,
-    pub quest_series: usize,
     pub quests: usize,
+    pub quest_occurrences: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,8 +140,8 @@ pub struct BackupConflictResolutionInput {
 pub struct BackupImportResult {
     pub imported: bool,
     pub spaces: usize,
-    pub quest_series: usize,
     pub quests: usize,
+    pub quest_occurrences: usize,
 }
 
 #[derive(QueryableByName)]
@@ -266,11 +267,6 @@ pub fn export_backup(
         return Err("one or more selected spaces were not found".to_string());
     }
 
-    let selected_series = quest_series::table
-        .filter(quest_series::space_id.eq_any(space_ids))
-        .select(QuestSeries::as_select())
-        .load::<QuestSeries>(conn)
-        .map_err(|e| e.to_string())?;
     let selected_quests = quests::table
         .filter(quests::space_id.eq_any(space_ids))
         .select(Quest::as_select())
@@ -280,6 +276,11 @@ pub fn export_backup(
         .iter()
         .map(|quest| quest.id.clone())
         .collect::<Vec<_>>();
+    let selected_occurrences = quest_occurrences::table
+        .filter(quest_occurrences::quest_id.eq_any(&selected_quest_ids))
+        .select(QuestOccurrence::as_select())
+        .load::<QuestOccurrence>(conn)
+        .map_err(|e| e.to_string())?;
     let selected_checklist_activity = checklist_activity::table
         .filter(checklist_activity::quest_id.eq_any(&selected_quest_ids))
         .select(ChecklistActivity::as_select())
@@ -293,8 +294,8 @@ pub fn export_backup(
         exported_at: utc_now(),
         domains: vec![
             "spaces".to_string(),
-            "quest_series".to_string(),
             "quests".to_string(),
+            "quest_occurrences".to_string(),
         ],
         spaces: selected_spaces
             .iter()
@@ -305,8 +306,8 @@ pub fn export_backup(
             .collect(),
         counts: ManifestCounts {
             spaces: selected_spaces.len(),
-            quest_series: selected_series.len(),
             quests: selected_quests.len(),
+            quest_occurrences: selected_occurrences.len(),
         },
     };
 
@@ -319,11 +320,11 @@ pub fn export_backup(
     for space in &selected_spaces {
         insert_space(&mut backup_conn, space).map_err(|e| e.to_string())?;
     }
-    for series in &selected_series {
-        insert_series(&mut backup_conn, series).map_err(|e| e.to_string())?;
-    }
     for quest in &selected_quests {
         insert_quest(&mut backup_conn, quest).map_err(|e| e.to_string())?;
+    }
+    for occurrence in &selected_occurrences {
+        insert_occurrence(&mut backup_conn, occurrence).map_err(|e| e.to_string())?;
     }
     for activity in &selected_checklist_activity {
         insert_checklist_activity(&mut backup_conn, activity).map_err(|e| e.to_string())?;
@@ -374,8 +375,8 @@ pub fn inspect_backup(path: &Path) -> Result<BackupArchiveInspection, String> {
         validate_manifest(&extracted.manifest)?;
 
         let spaces = load_backup_spaces(&mut backup_conn)?;
-        let quest_series = load_backup_series(&mut backup_conn)?;
         let quests = load_backup_quests(&mut backup_conn)?;
+        let occurrences = load_backup_occurrences(&mut backup_conn)?;
         Ok(BackupArchiveInspection {
             valid: true,
             manifest: extracted.manifest,
@@ -389,8 +390,8 @@ pub fn inspect_backup(path: &Path) -> Result<BackupArchiveInspection, String> {
                     .collect(),
                 counts: ManifestCounts {
                     spaces: spaces.len(),
-                    quest_series: quest_series.len(),
                     quests: quests.len(),
+                    quest_occurrences: occurrences.len(),
                 },
             },
         })
@@ -437,8 +438,8 @@ pub fn apply_import(
         validate_manifest(&extracted.manifest)?;
 
         let backup_spaces = load_backup_spaces(&mut backup_conn)?;
-        let backup_series = load_backup_series(&mut backup_conn)?;
         let backup_quests = load_backup_quests(&mut backup_conn)?;
+        let backup_occurrences = load_backup_occurrences(&mut backup_conn)?;
         let backup_checklist_activity = load_backup_checklist_activity(&mut backup_conn)?;
         let space_map = resolve_space_map(conn, &backup_spaces, mappings)?;
         let backup_space_by_id: HashMap<&str, &Space> = backup_spaces
@@ -467,16 +468,15 @@ pub fn apply_import(
                 }
             }
 
-            for series in &backup_series {
-                let mapped = mapped_series(series, &space_map);
-                let action = conflict_action(&resolution_map, "quest_series", &mapped.id);
-                upsert_series_for_import(tx, &mapped, action)?;
-            }
-
             for quest in &backup_quests {
                 let mapped = mapped_quest(quest, &space_map);
                 let action = conflict_action(&resolution_map, "quest", &mapped.id);
                 upsert_quest_for_import(tx, &mapped, action)?;
+            }
+
+            for occurrence in &backup_occurrences {
+                let action = conflict_action(&resolution_map, "quest_occurrence", &occurrence.sync_id());
+                upsert_occurrence_for_import(tx, occurrence, action)?;
             }
 
             for quest in &backup_quests {
@@ -507,8 +507,8 @@ pub fn apply_import(
     Ok(BackupImportResult {
         imported: true,
         spaces: preflight.manifest.counts.spaces,
-        quest_series: preflight.manifest.counts.quest_series,
         quests: preflight.manifest.counts.quests,
+        quest_occurrences: preflight.manifest.counts.quest_occurrences,
     })
 }
 
@@ -573,19 +573,6 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             item_order INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         );
-        CREATE TABLE quest_series (
-            id TEXT PRIMARY KEY NOT NULL,
-            space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
-            title TEXT NOT NULL,
-            description TEXT,
-            repeat_rule TEXT NOT NULL,
-            priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
-            energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
-            active BOOLEAN NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            is_checklist BOOLEAN NOT NULL DEFAULT 0
-        );
         CREATE TABLE quests (
             id TEXT PRIMARY KEY NOT NULL,
             space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
@@ -602,10 +589,23 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
             focus_enter_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
-            period_key TEXT,
             is_checklist BOOLEAN NOT NULL DEFAULT 0,
             checklist_base TEXT
+        );
+        CREATE TABLE quest_occurrences (
+            quest_id TEXT NOT NULL REFERENCES quests(id) ON DELETE CASCADE,
+            period_key TEXT NOT NULL,
+            status TEXT CHECK (status IN ('completed', 'abandoned')),
+            closed_at TEXT,
+            title TEXT,
+            description TEXT,
+            energy INTEGER CHECK (energy IN (1, 2, 3)),
+            priority INTEGER CHECK (priority IN (1, 2, 3)),
+            due_time TEXT,
+            checklist_base TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (quest_id, period_key)
         );
         CREATE TABLE checklist_activity (
             id TEXT PRIMARY KEY NOT NULL,
@@ -623,12 +623,12 @@ fn create_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
 
 fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
     let rows = diesel::sql_query(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('spaces', 'quest_series', 'quests')",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('spaces', 'quests', 'quest_occurrences')",
     )
     .load::<TableNameRow>(conn)
     .map_err(|e| format!("failed to inspect backup schema: {e}"))?;
     let names: HashSet<String> = rows.into_iter().map(|row| row.name).collect();
-    for required in ["spaces", "quest_series", "quests"] {
+    for required in ["spaces", "quests", "quest_occurrences"] {
         if !names.contains(required) {
             return Err(format!(
                 "backup database is missing required table {required}"
@@ -639,12 +639,6 @@ fn validate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
 }
 
 fn migrate_backup_schema(conn: &mut SqliteConnection) -> Result<(), String> {
-    ensure_backup_column(
-        conn,
-        "quest_series",
-        "is_checklist",
-        "ALTER TABLE quest_series ADD COLUMN is_checklist BOOLEAN NOT NULL DEFAULT 0",
-    )?;
     ensure_backup_column(
         conn,
         "quests",
@@ -785,9 +779,9 @@ fn load_backup_spaces(conn: &mut SqliteConnection) -> Result<Vec<Space>, String>
         .map_err(|e| e.to_string())
 }
 
-fn load_backup_series(conn: &mut SqliteConnection) -> Result<Vec<QuestSeries>, String> {
-    quest_series::table
-        .select(QuestSeries::as_select())
+fn load_backup_occurrences(conn: &mut SqliteConnection) -> Result<Vec<QuestOccurrence>, String> {
+    quest_occurrences::table
+        .select(QuestOccurrence::as_select())
         .load(conn)
         .map_err(|e| e.to_string())
 }
@@ -901,24 +895,26 @@ fn collect_conflicts(
 ) -> Result<Vec<BackupConflict>, String> {
     let mut conflicts = Vec::new();
 
-    for backup in load_backup_series(backup_conn)? {
-        let mapped = mapped_series(&backup, space_map);
-        if let Some(local) = quest_series::table
-            .find(&mapped.id)
-            .select(QuestSeries::as_select())
-            .first::<QuestSeries>(conn)
+    for backup in load_backup_occurrences(backup_conn)? {
+        if let Some(local) = quest_occurrences::table
+            .find((&backup.quest_id, &backup.period_key))
+            .select(QuestOccurrence::as_select())
+            .first::<QuestOccurrence>(conn)
             .optional()
             .map_err(|e| e.to_string())?
         {
-            if series_value(&local)? != series_value(&mapped)? {
+            if occurrence_value(&local)? != occurrence_value(&backup)? {
+                let summary = |mark: &QuestOccurrence| {
+                    format!("{} ({})", mark.period_key, mark.status.as_deref().unwrap_or("open"))
+                };
                 conflicts.push(BackupConflict {
-                    entity_type: "quest_series".to_string(),
-                    id: mapped.id.clone(),
-                    title: mapped.title.clone(),
-                    local_summary: local.title.clone(),
-                    backup_summary: mapped.title.clone(),
-                    local: series_value(&local)?,
-                    backup: series_value(&mapped)?,
+                    entity_type: "quest_occurrence".to_string(),
+                    id: backup.sync_id(),
+                    title: backup.period_key.clone(),
+                    local_summary: summary(&local),
+                    backup_summary: summary(&backup),
+                    local: occurrence_value(&local)?,
+                    backup: occurrence_value(&backup)?,
                 });
             }
         }
@@ -985,24 +981,12 @@ fn insert_space(
         .execute(conn)
 }
 
-fn insert_series(
+fn insert_occurrence(
     conn: &mut SqliteConnection,
-    series: &QuestSeries,
+    occurrence: &QuestOccurrence,
 ) -> Result<usize, diesel::result::Error> {
-    diesel::insert_into(quest_series::table)
-        .values((
-            quest_series::id.eq(&series.id),
-            quest_series::space_id.eq(&series.space_id),
-            quest_series::title.eq(&series.title),
-            quest_series::description.eq(&series.description),
-            quest_series::repeat_rule.eq(&series.repeat_rule),
-            quest_series::priority.eq(series.priority),
-            quest_series::energy.eq(&series.energy),
-            quest_series::active.eq(series.active),
-            quest_series::created_at.eq(&series.created_at),
-            quest_series::updated_at.eq(&series.updated_at),
-            quest_series::is_checklist.eq(series.is_checklist),
-        ))
+    diesel::insert_into(quest_occurrences::table)
+        .values(occurrence)
         .execute(conn)
 }
 
@@ -1027,8 +1011,6 @@ fn insert_quest(
             quests::focus_enter_count.eq(quest.focus_enter_count),
             quests::created_at.eq(&quest.created_at),
             quests::updated_at.eq(&quest.updated_at),
-            quests::series_id.eq(&quest.series_id),
-            quests::period_key.eq(&quest.period_key),
             quests::is_checklist.eq(quest.is_checklist),
             quests::checklist_base.eq(&quest.checklist_base),
         ))
@@ -1076,38 +1058,20 @@ fn delete_checklist_activity_for_quest(
         .execute(conn)
 }
 
-fn upsert_series_for_import(
+fn upsert_occurrence_for_import(
     conn: &mut SqliteConnection,
-    series: &QuestSeries,
+    occurrence: &QuestOccurrence,
     action: ConflictAction,
 ) -> Result<(), diesel::result::Error> {
     if matches!(action, ConflictAction::KeepLocal) {
         return Ok(());
     }
-    let exists = quest_series::table
-        .find(&series.id)
-        .select(quest_series::id)
-        .first::<String>(conn)
-        .optional()?
-        .is_some();
-    if exists {
-        diesel::update(quest_series::table.find(&series.id))
-            .set((
-                quest_series::space_id.eq(&series.space_id),
-                quest_series::title.eq(&series.title),
-                quest_series::description.eq(&series.description),
-                quest_series::repeat_rule.eq(&series.repeat_rule),
-                quest_series::priority.eq(series.priority),
-                quest_series::energy.eq(&series.energy),
-                quest_series::active.eq(series.active),
-                quest_series::created_at.eq(&series.created_at),
-                quest_series::updated_at.eq(&series.updated_at),
-                quest_series::is_checklist.eq(series.is_checklist),
-            ))
-            .execute(conn)?;
-    } else {
-        insert_series(conn, series)?;
-    }
+    diesel::insert_into(quest_occurrences::table)
+        .values(occurrence)
+        .on_conflict((quest_occurrences::quest_id, quest_occurrences::period_key))
+        .do_update()
+        .set(occurrence)
+        .execute(conn)?;
     Ok(())
 }
 
@@ -1150,8 +1114,6 @@ fn upsert_quest_for_import(
                 quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
-                quests::series_id.eq(&quest.series_id),
-                quests::period_key.eq(&quest.period_key),
                 quests::is_checklist.eq(quest.is_checklist),
             ))
             .execute(conn)?;
@@ -1193,25 +1155,6 @@ fn local_space_exists(
         .map(|row| row.is_some())
 }
 
-fn mapped_series(series: &QuestSeries, space_map: &HashMap<String, String>) -> QuestSeries {
-    QuestSeries {
-        id: series.id.clone(),
-        space_id: space_map
-            .get(&series.space_id)
-            .cloned()
-            .unwrap_or_else(|| series.space_id.clone()),
-        title: series.title.clone(),
-        description: series.description.clone(),
-        repeat_rule: series.repeat_rule.clone(),
-        priority: series.priority,
-        energy: series.energy.clone(),
-        active: series.active,
-        created_at: series.created_at.clone(),
-        updated_at: series.updated_at.clone(),
-        is_checklist: series.is_checklist,
-    }
-}
-
 fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
     Quest {
         id: quest.id.clone(),
@@ -1232,15 +1175,13 @@ fn mapped_quest(quest: &Quest, space_map: &HashMap<String, String>) -> Quest {
         focus_enter_count: quest.focus_enter_count,
         created_at: quest.created_at.clone(),
         updated_at: quest.updated_at.clone(),
-        series_id: quest.series_id.clone(),
-        period_key: quest.period_key.clone(),
         is_checklist: quest.is_checklist,
         checklist_base: quest.checklist_base.clone(),
     }
 }
 
-fn series_value(series: &QuestSeries) -> Result<serde_json::Value, String> {
-    serde_json::to_value(series).map_err(|e| e.to_string())
+fn occurrence_value(occurrence: &QuestOccurrence) -> Result<serde_json::Value, String> {
+    serde_json::to_value(occurrence).map_err(|e| e.to_string())
 }
 
 fn quest_value(quest: &Quest) -> Result<serde_json::Value, String> {

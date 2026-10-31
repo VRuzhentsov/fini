@@ -4,7 +4,7 @@
 //! It owns the sync sessions (one for each device and channel kind), when
 //! sync runs (the wake signal, the keeper), and which green channel a frame
 //! goes over (the primary first). It accepts the sync connections that
-//! peers open (`SessionHandler`, ALPN `fini/sync/4`) and holds the ones the
+//! peers open (`SessionHandler`, ALPN `fini/sync/5`) and holds the ones the
 //! channels open.
 //!
 //! Work for a device with no green channel waits in the outbox: the
@@ -1383,7 +1383,7 @@ use diesel::sqlite::SqliteConnection;
 
 use super::UnresolvedCustomSpace;
 use crate::services::channel_service::{CustomSpaceDescriptor, SyncEventEnvelope};
-use crate::models::{ChecklistActivity, FocusHistoryEntry, Quest, QuestSeries, Space};
+use crate::models::{ChecklistActivity, FocusHistoryEntry, Quest, QuestOccurrence, Space};
 use crate::repositories::{OutboxRepository, SpaceMappingRepository};
 use crate::schema::{checklist_activity, focus_history, spaces, sync_outbox, tombstones};
 use crate::services::db::utc_now;
@@ -1571,9 +1571,10 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
     QuestService::new(conn).sync_upsert_quest(quest)
 }
 
-fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Result<(), String> {
-    ensure_spaces_exist(conn, &[series.space_id.clone()])?;
-    QuestService::new(conn).sync_upsert_series(series)
+/// An occurrence mark of a repeating quest (ADR-0012 D11). Its quest comes
+/// first in the outbox, so it exists here already.
+fn upsert_quest_occurrence(conn: &mut SqliteConnection, occurrence: &QuestOccurrence) -> Result<(), String> {
+    QuestService::new(conn).sync_upsert_occurrence(occurrence)
 }
 
 fn upsert_focus_history(
@@ -1623,8 +1624,10 @@ fn delete_entity(conn: &mut SqliteConnection, event: &SyncEventEnvelope) -> Resu
         "quest" => {
             QuestService::new(conn).sync_delete_quest(&event.entity_id)?;
         }
-        "quest_series" => {
-            QuestService::new(conn).sync_delete_series(&event.entity_id)?;
+        "quest_occurrence" => {
+            if let Some((quest_id, period_key)) = event.entity_id.split_once(':') {
+                QuestService::new(conn).sync_delete_occurrence(quest_id, period_key)?;
+            }
         }
         "focus_history" => {
             diesel::delete(focus_history::table.find(&event.entity_id))
@@ -1788,10 +1791,10 @@ pub(super) fn apply_sync_event(
                             serde_json::from_str(payload).map_err(|e| e.to_string())?;
                         upsert_quest(conn, &quest)?;
                     }
-                    "quest_series" => {
-                        let series: QuestSeries =
+                    "quest_occurrence" => {
+                        let occurrence: QuestOccurrence =
                             serde_json::from_str(payload).map_err(|e| e.to_string())?;
-                        upsert_quest_series(conn, &series)?;
+                        upsert_quest_occurrence(conn, &occurrence)?;
                     }
                     "focus_history" => {
                         let focus: FocusHistoryEntry =
@@ -1887,7 +1890,7 @@ pub(super) fn merge_local_space_into_remote_id(
     }
 
     QuestService::new(conn)
-        .sync_move_quests_and_series_between_spaces(local_space_id, remote_space_id)?;
+        .sync_move_quests_between_spaces(local_space_id, remote_space_id)?;
 
     diesel::update(focus_history::table.filter(focus_history::space_id.eq(local_space_id)))
         .set(focus_history::space_id.eq(remote_space_id))

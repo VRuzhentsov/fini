@@ -143,8 +143,6 @@ pub struct Quest {
     pub focus_enter_count: i64,
     pub created_at: String,
     pub updated_at: String,
-    pub series_id: Option<String>,
-    pub period_key: Option<String>,
     /// When true, `description` is authored/rendered as a checklist (task-list text,
     /// `- [ ] text <!--k=id-->` lines) instead of prose — issue #128. There is no separate
     /// checklist content column: the description field itself holds that task-list text, and a
@@ -274,6 +272,14 @@ pub struct UpdateQuestCommandInput {
     pub repeat_rule: QuestFieldPatch<String>,
     pub order_rank: Option<f64>,
     pub is_checklist: Option<bool>,
+    /// A repeating quest only (ADR-0012 D8): `"day"` writes the edit on one
+    /// occurrence, `"all"` (the default) on the quest.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// A repeating quest only: the occurrence the edit is for. Missing means
+    /// its oldest open occurrence.
+    #[serde(default)]
+    pub period_key: Option<String>,
 }
 
 impl UpdateQuestCommandInput {

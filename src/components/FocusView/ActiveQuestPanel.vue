@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useQuestStore, type Quest } from "../../stores/quest";
+import { CheckIcon } from "@heroicons/vue/24/outline";
+import { isRepeating, useQuestStore, type EditScope, type Quest } from "../../stores/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
-import { buildQuestMenu } from "../../composables/buildQuestMenu";
+import { buildQuestMenu, completeThroughTodayItem } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
+import { parseChecklist } from "../../utils/checklist";
 import ChecklistEditor from "../ChecklistEditor.vue";
 import QuestEditor from "../QuestEditor.vue";
 import QuestMetadataButton from "../QuestMetadataButton.vue";
@@ -20,24 +21,22 @@ const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
 const HOLD_MS = 900;
+const MENU_HOLD_MS = 700;
 let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
+let completeHoldTimer: number | null = null;
+/** Set when a hold on Complete opened its menu, so the click that ends the hold completes nothing. */
+let completeHoldOpenedMenu = false;
 
 const renderFlags = computed(() => ({
   checklist: props.quest.is_checklist,
+  // ADR-0012 D7: holding Complete on a repeating quest opens its menu.
+  completeHoldMenu: isRepeating(props.quest),
 }));
 const checklistItems = computed(() => parseChecklist(props.quest.description));
 
 function onToggleChecklistItem(itemId: string, checked: boolean) {
   store.toggleChecklistItem(props.quest.id, itemId, checked);
-}
-
-function onEditChecklistItemText(itemId: string, text: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "edit", payload: { itemId, text } };
-    return;
-  }
-  store.editChecklistItemText(props.quest.id, itemId, text);
 }
 
 // Captures the quest at the moment the scope sheet opens (not just at resolution time): Focus
@@ -51,65 +50,38 @@ type PendingScopeAction =
 
 const pendingScopeAction = ref<PendingScopeAction | null>(null);
 
-function onAddChecklistItem(text: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "add", payload: text };
+/** A checklist edit of a repeating quest asks "This day" / "All days" first (ADR-0012 D8). */
+function editChecklist(action: PendingScopeAction) {
+  if (isRepeating(action.quest)) {
+    pendingScopeAction.value = action;
     return;
   }
-  store.addChecklistItem(props.quest.id, text);
+  void applyChecklistEdit(action, "all");
+}
+
+function onEditChecklistItemText(itemId: string, text: string) {
+  editChecklist({ quest: props.quest, kind: "edit", payload: { itemId, text } });
+}
+
+function onAddChecklistItem(text: string) {
+  editChecklist({ quest: props.quest, kind: "add", payload: text });
 }
 
 function onRemoveChecklistItem(itemId: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "remove", payload: itemId };
-    return;
-  }
-  store.removeChecklistItem(props.quest.id, itemId);
+  editChecklist({ quest: props.quest, kind: "remove", payload: itemId });
 }
 
-async function onScopeChosen(scope: "this" | "future") {
+async function applyChecklistEdit(action: PendingScopeAction, scope: EditScope) {
+  const { quest } = action;
+  if (action.kind === "add") await store.addChecklistItem(quest.id, action.payload, scope);
+  else if (action.kind === "remove") await store.removeChecklistItem(quest.id, action.payload, scope);
+  else await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text, scope);
+}
+
+async function onScopeChosen(scope: EditScope) {
   const action = pendingScopeAction.value;
   pendingScopeAction.value = null;
-  if (!action) return;
-  const { quest } = action;
-
-  if (scope === "this") {
-    if (action.kind === "add") await store.addChecklistItem(quest.id, action.payload);
-    else if (action.kind === "remove") await store.removeChecklistItem(quest.id, action.payload);
-    else await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
-    return;
-  }
-
-  // "This and future occurrences" must diff against the series' own stored template, not this
-  // occurrence's current description — the occurrence may already carry "this occurrence only"
-  // changes that were never promoted, and basing the edit on it would silently promote them.
-  const template = await store.fetchSeriesChecklistTemplate(quest.series_id!);
-  const items = parseChecklist(template);
-
-  if (action.kind === "edit" && !items.some((it) => it.id === action.payload.itemId)) {
-    // The item being renamed was added via "This occurrence" and was never promoted to the
-    // template — pushing the template unchanged would leave the rename un-applied, and the
-    // backend's reconcile would then drop the item entirely (absent from the new template)
-    // instead of renaming it. There's no coherent "future" version of an occurrence-only item,
-    // so fall back to applying the rename to just this occurrence.
-    await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
-    return;
-  }
-
-  const nextItems =
-    action.kind === "add"
-      ? [...items, { id: newChecklistItemId(), text: action.payload, checked: false }]
-      : action.kind === "remove"
-        ? items.filter((it) => it.id !== action.payload)
-        : items.map((it) =>
-            it.id === action.payload.itemId ? { ...it, text: action.payload.text } : it,
-          );
-  await store.updateSeriesChecklist(
-    quest.series_id!,
-    quest.id,
-    serializeChecklist(nextItems),
-    "future",
-  );
+  if (action) await applyChecklistEdit(action, scope);
 }
 
 function onContextMenu(e: MouseEvent) {
@@ -118,8 +90,42 @@ function onContextMenu(e: MouseEvent) {
     updateQuest: (id, patch) => store.updateQuest(id, patch),
     setFocusQuest: (id) => store.setFocusQuest(id),
     deleteQuest: (id) => store.deleteQuest(id),
+    completeThroughToday: (id) => store.completeThroughToday(id),
   });
   contextMenu.open(e, items);
+}
+
+/** The menu of the Complete button (ADR-0012 D7). */
+function openCompleteMenu(e: MouseEvent) {
+  if (!renderFlags.value.completeHoldMenu) return;
+  contextMenu.open(e, [
+    { label: "Complete", icon: CheckIcon, action: () => completeQuest() },
+    ...completeThroughTodayItem(props.quest, (id) => store.completeThroughToday(id)),
+  ]);
+}
+
+function startCompleteHold(event: PointerEvent) {
+  completeHoldOpenedMenu = false;
+  if (!renderFlags.value.completeHoldMenu) return;
+  completeHoldTimer = window.setTimeout(() => {
+    completeHoldTimer = null;
+    completeHoldOpenedMenu = true;
+    openCompleteMenu(event as unknown as MouseEvent);
+  }, MENU_HOLD_MS);
+}
+
+function endCompleteHold() {
+  if (completeHoldTimer === null) return;
+  window.clearTimeout(completeHoldTimer);
+  completeHoldTimer = null;
+}
+
+function onCompleteClick() {
+  if (completeHoldOpenedMenu) {
+    completeHoldOpenedMenu = false;
+    return;
+  }
+  void completeQuest();
 }
 
 function spaceName(): string {
@@ -165,7 +171,7 @@ function startMenuHold(event: PointerEvent) {
     button.classList.add("done");
     onContextMenu(event as unknown as MouseEvent);
     window.setTimeout(() => button.classList.remove("done"), 700);
-  }, 700);
+  }, MENU_HOLD_MS);
 }
 
 function endMenuHold(event: PointerEvent) {
@@ -203,7 +209,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     :space-name="spaceName()"
     is-focus
     :reminder-text="quest.due ? 'Date set' : 'Date'"
-    :is-recurring="!!quest.series_id"
+    :is-recurring="renderFlags.completeHoldMenu"
     @contextmenu="onContextMenu"
     @update="store.updateQuest(quest.id, $event)"
     @complete="completeQuest"
@@ -270,7 +276,13 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
       <button
         class="hold-action complete"
         aria-label="Complete"
-        @click="completeQuest"
+        data-testid="focus-complete"
+        @pointerdown="startCompleteHold"
+        @pointerup="endCompleteHold"
+        @pointerleave="endCompleteHold"
+        @pointercancel="endCompleteHold"
+        @contextmenu.prevent.stop="openCompleteMenu"
+        @click="onCompleteClick"
       >
         <span class="hold-glyph check" />
       </button>

@@ -12,14 +12,16 @@ use crate::models::Space;
 use crate::models::UpdateQuestInput;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::UpdateQuestCommandInput;
-use crate::models::{CreateFocusHistoryInput, CreateSeriesInput, Quest, QuestSeries};
+use crate::models::{CreateFocusHistoryInput, Quest, QuestOccurrence, OCCURRENCE_ABANDONED, OCCURRENCE_COMPLETED};
 use crate::models::{CreateQuestInput, QuestFieldPatch, QuestUpdatePatch};
-use crate::repositories::quest::QuestRepository;
+use crate::repositories::QuestRepository;
 use crate::schema::{checklist_activity, focus_history, settings};
 #[cfg(test)]
-use crate::schema::{quest_series, quests};
+use crate::schema::quests;
 use crate::services::checklist;
-use crate::services::db::{sync_timestamp, utc_now};
+use crate::services::db::utc_now;
+#[cfg(any(feature = "ui-plane", test))]
+use crate::services::db::sync_timestamp;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::AppDbConnection;
 #[cfg(any(feature = "ui-plane", test))]
@@ -141,118 +143,180 @@ fn compute_next_due(
     }
 }
 
-fn is_series_end_reached(rule: &RepeatRule, next_due: &NaiveDate, completed_count: i64) -> bool {
-    match rule.end.as_deref() {
-        Some("on_date") => {
-            if let Some(ref end_date_str) = rule.end_date {
-                if let Ok(end_date) = NaiveDate::parse_from_str(end_date_str, "%Y-%m-%d") {
-                    return *next_due > end_date;
-                }
-            }
-            false
-        }
-        Some("after_n") => {
-            if let Some(max) = rule.end_after {
-                return completed_count >= max;
-            }
-            false
-        }
-        _ => false,
+impl RepeatRule {
+    fn parse(value: Option<&str>) -> Option<Self> {
+        let value = value.filter(|value| !value.is_empty())?;
+        let rule: RepeatRule = serde_json::from_str(value).ok()?;
+        matches!(rule.preset.as_deref(), Some(preset) if preset != "none").then_some(rule)
+    }
+
+    /// The last date the rule allows (`end = "on_date"`), if any.
+    fn end_date(&self) -> Option<NaiveDate> {
+        (self.end.as_deref() == Some("on_date"))
+            .then(|| self.end_date.as_deref())
+            .flatten()
+            .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+    }
+
+    /// How many completed occurrences end the rule (`end = "after_n"`), if any.
+    fn end_after(&self) -> Option<i64> {
+        (self.end.as_deref() == Some("after_n")).then_some(self.end_after).flatten()
     }
 }
 
-/// Ensures a quest is linked to a series. If it has a repeat_rule but no series_id
-/// (pre-migration data), creates the series on-the-fly and links the quest.
-fn ensure_series(
-    conn: &mut SqliteConnection,
-    quest: &Quest,
-) -> Result<Option<(String, RepeatRule)>, String> {
-    let repeat_rule_str = match quest.repeat_rule.as_deref() {
-        Some(r) if !r.is_empty() => r,
-        _ => return Ok(None),
-    };
-
-    let rule: RepeatRule = match serde_json::from_str(repeat_rule_str) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
-    };
-
-    if let Some(ref sid) = quest.series_id {
-        let active = QuestRepository::new(conn).is_series_active(sid)?;
-        if !active {
-            return Ok(None);
-        }
-        return Ok(Some((sid.clone(), rule)));
-    }
-
-    // Quest has repeat_rule but no series — backfill series on-the-fly
-    let series_input = CreateSeriesInput {
-        space_id: quest.space_id.clone(),
-        title: quest.title.clone(),
-        description: quest.description.clone(),
-        repeat_rule: repeat_rule_str.to_string(),
-        priority: quest.priority,
-        energy: quest.energy.clone(),
-        is_checklist: quest.is_checklist,
-    };
-
-    let series = QuestRepository::new(conn).create_series(&series_input)?;
-
-    let period_key = quest
-        .due
-        .as_deref()
-        .unwrap_or(&quest.created_at[..10])
-        .to_string();
-
-    QuestRepository::new(conn).link_to_series(&quest.id, &series.id, &period_key)?;
-
-    Ok(Some((series.id, rule)))
+fn parse_period_key(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
 }
 
-pub fn generate_next_occurrence(
-    conn: &mut SqliteConnection,
-    quest: &Quest,
-) -> Result<Option<Quest>, String> {
-    let (series_id, rule) = match ensure_series(conn, quest)? {
-        Some(pair) => pair,
-        None => return Ok(None),
-    };
+fn period_key_of(date: NaiveDate) -> String {
+    date.format("%Y-%m-%d").to_string()
+}
 
-    let current_due = quest
-        .due
-        .as_deref()
-        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-        .unwrap_or_else(|| Utc::now().date_naive());
+// ── Repeating quests (ADR-0012) ──────────────────────────────────────────────
 
-    // Anchor for the days_of_week+interval week cadence: the earliest occurrence's due date in
-    // the series. Stable across the series' lifetime, unlike the series row's own `created_at`
-    // (which, for a lazily-backfilled series, is completion time — not the first due date).
-    let week_anchor = QuestRepository::new(conn)
-        .min_series_period_key(&series_id)
-        .ok()
-        .flatten()
-        .and_then(|key| NaiveDate::parse_from_str(&key, "%Y-%m-%d").ok())
-        .unwrap_or(current_due);
+/// The longest walk over a rule's dates: about 27 years of a daily quest.
+const MAX_OCCURRENCE_STEPS: usize = 10_000;
 
-    let next_due = match compute_next_due(&current_due, &rule, &week_anchor) {
-        Some(d) => d,
-        None => return Ok(None),
-    };
+/// A repeating quest with its stored occurrence marks. Its occurrences are
+/// computed from the rule (ADR-0012 D2): a date has a row only after a
+/// person closed or changed it.
+pub struct RepeatingQuest<'q> {
+    quest: &'q Quest,
+    rule: RepeatRule,
+    start: NaiveDate,
+    marks: HashMap<&'q str, &'q QuestOccurrence>,
+}
 
-    let completed_count =
-        QuestRepository::new(conn).count_completed_series_occurrences(&series_id)?;
-
-    if is_series_end_reached(&rule, &next_due, completed_count) {
-        QuestRepository::new(conn).deactivate_series(&series_id)?;
-        return Ok(None);
+impl<'q> RepeatingQuest<'q> {
+    /// `None` for a one-time quest (no rule, or a rule that never repeats).
+    pub fn new(quest: &'q Quest, marks: &'q [QuestOccurrence]) -> Option<Self> {
+        let rule = RepeatRule::parse(quest.repeat_rule.as_deref())?;
+        let start = quest
+            .due
+            .as_deref()
+            .and_then(parse_period_key)
+            .or_else(|| parse_period_key(quest.created_at.get(..10)?))?;
+        let marks = marks
+            .iter()
+            .filter(|mark| mark.quest_id == quest.id)
+            .map(|mark| (mark.period_key.as_str(), mark))
+            .collect();
+        Some(Self { quest, rule, start, marks })
     }
 
-    let period_key = next_due.format("%Y-%m-%d").to_string();
-
-    if QuestRepository::new(conn).series_has_occurrence(&series_id, &period_key)? {
-        return Ok(None);
+    pub fn quest(&self) -> &Quest {
+        self.quest
     }
-    QuestRepository::new(conn).create_next_occurrence(quest, &series_id, &period_key)
+
+    /// Every date of the rule from its start, ending at its end date.
+    fn dates(&self) -> impl Iterator<Item = NaiveDate> + '_ {
+        let end = self.rule.end_date();
+        std::iter::successors(Some(self.start), move |date| compute_next_due(date, &self.rule, &self.start))
+            .take(MAX_OCCURRENCE_STEPS)
+            .take_while(move |date| end.is_none_or(|end| *date <= end))
+    }
+
+    fn mark(&self, period_key: &str) -> Option<&QuestOccurrence> {
+        self.marks.get(period_key).copied()
+    }
+
+    fn is_closed(&self, period_key: &str) -> bool {
+        self.mark(period_key).is_some_and(QuestOccurrence::is_closed)
+    }
+
+    fn completed_count(&self) -> i64 {
+        self.marks
+            .values()
+            .filter(|mark| mark.status.as_deref() == Some(OCCURRENCE_COMPLETED))
+            .count() as i64
+    }
+
+    /// How many more occurrences the rule allows (`after_n`), or no limit.
+    fn remaining(&self) -> Option<i64> {
+        self.rule.end_after().map(|max| (max - self.completed_count()).max(0))
+    }
+
+    /// The open occurrences, oldest first.
+    fn open_dates(&self) -> impl Iterator<Item = String> + '_ {
+        let limit = self.remaining().map_or(usize::MAX, |left| left as usize);
+        self.dates()
+            .map(period_key_of)
+            .filter(move |key| !self.is_closed(key))
+            .take(limit)
+    }
+
+    /// The occurrence that Focus and the lists show (ADR-0012 D6).
+    pub fn oldest_open(&self) -> Option<String> {
+        self.open_dates().next()
+    }
+
+    /// The open occurrences dated `today` or before, today's included (D7).
+    pub fn open_through(&self, today: NaiveDate) -> Vec<String> {
+        let today = period_key_of(today);
+        self.open_dates().take_while(|key| *key <= today).collect()
+    }
+
+    /// The first open occurrence dated `day` or later: the one a reminder is
+    /// for (D9).
+    pub fn next_open_from(&self, day: NaiveDate) -> Option<String> {
+        let day = period_key_of(day);
+        self.open_dates().find(|key| *key >= day)
+    }
+
+    /// The closed occurrences, oldest first: the days in History.
+    pub fn closed(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .marks
+            .values()
+            .filter(|mark| mark.is_closed())
+            .map(|mark| mark.period_key.clone())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// The quest as it is on `period_key`: the quest's fields, with the day's
+    /// overrides (D4). Its `due` is the occurrence's date.
+    pub fn resolve(&self, period_key: &str) -> Quest {
+        let mut quest = self.quest.clone();
+        quest.due = Some(period_key.to_string());
+        quest.status = "active".to_string();
+        quest.completed_at = None;
+        if quest.is_checklist {
+            quest.description = quest.description.as_deref().map(checklist::reset_unchecked);
+        }
+        if let Some(mark) = self.mark(period_key) {
+            if let Some(title) = &mark.title {
+                quest.title = title.clone();
+            }
+            if let Some(description) = &mark.description {
+                quest.description = Some(description.clone());
+                quest.checklist_base = mark.checklist_base.clone();
+            }
+            if let Some(energy) = mark.energy {
+                quest.energy = energy;
+            }
+            if let Some(priority) = mark.priority {
+                quest.priority = priority;
+            }
+            if let Some(due_time) = &mark.due_time {
+                quest.due_time = Some(due_time.clone());
+            }
+            if let Some(status) = &mark.status {
+                quest.status = status.clone();
+                quest.completed_at = (status == OCCURRENCE_COMPLETED).then(|| mark.closed_at.clone()).flatten();
+                quest.updated_at = mark.updated_at.clone();
+            }
+        }
+        quest
+    }
+
+    /// The day's stored mark, or a new empty one.
+    fn mark_or_new(&self, period_key: &str) -> QuestOccurrence {
+        self.mark(period_key)
+            .cloned()
+            .unwrap_or_else(|| QuestOccurrence::new(&self.quest.id, period_key, &utc_now()))
+    }
 }
 
 // ── Focus resolution ─────────────────────────────────────────────────────────
@@ -329,17 +393,16 @@ fn resolve_active_fallback(active: Vec<&Quest>) -> Option<Quest> {
         .then_with(|| a.id.cmp(&b.id))
     });
 
-    Some((*fallback[0]).clone())
+    fallback.first().map(|quest| (*quest).clone())
 }
 
 fn resolve_active_quest_at(
     conn: &mut SqliteConnection,
     now: DateTime<Utc>,
 ) -> Result<Option<Quest>, String> {
-    let all_quests = QuestRepository::new(conn).load_all()?;
-    let active_by_id: std::collections::HashMap<&str, &Quest> = all_quests
+    let active_quests = QuestService::new(conn).active_quests()?;
+    let active_by_id: std::collections::HashMap<&str, &Quest> = active_quests
         .iter()
-        .filter(|q| q.status == "active")
         .map(|q| (q.id.as_str(), q))
         .collect();
 
@@ -419,6 +482,8 @@ fn save_active_focus_quest_id(
     Ok(())
 }
 
+/// Counts a Focus enter on the quest (ADR-0012 D9: a repeating quest counts
+/// on the quest, not on a day) and returns `quest` with the new count.
 pub(crate) fn record_focus_enter(
     conn: &mut SqliteConnection,
     quest: &Quest,
@@ -430,12 +495,13 @@ pub(crate) fn record_focus_enter(
         .optional()
         .map_err(|error| error.to_string())?;
 
+    let mut quest = quest.clone();
     if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
-        let quest = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
+        let stored = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
         save_active_focus_quest_id(conn, Some(&quest.id)).map_err(|error| error.to_string())?;
-        return Ok(quest);
+        quest.focus_enter_count = stored.focus_enter_count;
     }
-    QuestRepository::new(conn).get(&quest.id)
+    Ok(quest)
 }
 
 fn resolve_and_record_active_quest(conn: &mut SqliteConnection) -> Result<Option<Quest>, String> {
@@ -479,14 +545,19 @@ pub(crate) fn append_focus_history(
     Ok(())
 }
 
+// ── Sync events ──────────────────────────────────────────────────────────────
+
+/// Emits the stored quest row (never a resolved occurrence view: a repeating
+/// quest syncs as one entity, ADR-0012 D11).
 #[cfg(any(feature = "ui-plane", test))]
 fn emit_quest_sync_events(
     conn: &mut SqliteConnection,
     origin_device_id: &str,
     previous_space_id: &str,
-    quest: &Quest,
+    quest_id: &str,
 ) -> Result<(), String> {
-    let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
+    let quest = QuestRepository::new(conn).get(quest_id)?;
+    let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
 
     if previous_space_id == quest.space_id {
         OutboxRepository::new(conn).emit_sync_event(
@@ -497,7 +568,7 @@ fn emit_quest_sync_events(
             "upsert",
             Some(payload),
         )?;
-        return emit_checklist_activity_sync_events(conn, origin_device_id, quest);
+        return emit_checklist_activity_sync_events(conn, origin_device_id, &quest);
     }
 
     let delete_updated_at = sync_timestamp();
@@ -525,9 +596,53 @@ fn emit_quest_sync_events(
         upsert_updated_at,
     )?;
 
-    emit_checklist_activity_sync_events(conn, origin_device_id, quest)?;
+    emit_checklist_activity_sync_events(conn, origin_device_id, &quest)?;
+
+    // The marks go with their quest to its new space.
+    for occurrence in QuestRepository::new(conn).occurrences(&quest.id)? {
+        emit_occurrence_sync_event(conn, origin_device_id, &quest.space_id, &occurrence)?;
+    }
 
     Ok(())
+}
+
+/// Emits one occurrence mark: the entity `quest_occurrence`, keyed by
+/// (quest_id, period_key) (ADR-0012 D11).
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_occurrence_sync_event(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    space_id: &str,
+    occurrence: &QuestOccurrence,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(occurrence).map_err(|e| e.to_string())?;
+    OutboxRepository::new(conn).emit_sync_event(
+        origin_device_id,
+        "quest_occurrence",
+        &occurrence.sync_id(),
+        space_id,
+        "upsert",
+        Some(payload),
+    )
+}
+
+/// Emits a removed mark (a day opened again with nothing left to keep).
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_occurrence_delete_event(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    space_id: &str,
+    quest_id: &str,
+    period_key: &str,
+) -> Result<(), String> {
+    OutboxRepository::new(conn).emit_sync_event(
+        origin_device_id,
+        "quest_occurrence",
+        &format!("{quest_id}:{period_key}"),
+        space_id,
+        "delete",
+        None,
+    )
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -575,9 +690,30 @@ fn emit_checklist_activity_sync_events(
     Ok(())
 }
 
-pub(crate) struct CreateQuestResult {
-    pub quest: Quest,
-    pub series: Option<QuestSeries>,
+/// Emits what a change wrote: the quest row, and each changed or removed mark.
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_change_sync_events(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    previous_space_id: &str,
+    change: &QuestChange,
+) -> Result<(), String> {
+    if change.quest_row_changed {
+        emit_quest_sync_events(conn, origin_device_id, previous_space_id, &change.quest.id)?;
+    }
+    let space_id = QuestRepository::new(conn).get(&change.quest.id)?.space_id;
+    for occurrence in &change.occurrences {
+        emit_occurrence_sync_event(conn, origin_device_id, &space_id, occurrence)?;
+    }
+    for period_key in &change.removed_occurrences {
+        emit_occurrence_delete_event(conn, origin_device_id, &space_id, &change.quest.id, period_key)?;
+    }
+    if !change.quest_row_changed && !change.occurrences.is_empty() {
+        // Checklist activity of a day is kept on the quest.
+        let quest = QuestRepository::new(conn).get(&change.quest.id)?;
+        emit_checklist_activity_sync_events(conn, origin_device_id, &quest)?;
+    }
+    Ok(())
 }
 
 fn validate_metadata(energy: i64, priority: i64) -> Result<(), String> {
@@ -601,10 +737,39 @@ fn validate_optional_metadata(energy: Option<i64>, priority: Option<i64>) -> Res
     )
 }
 
-pub(crate) struct UpdateQuestResult {
+/// What a quest change wrote, for the callers that sync it and schedule
+/// reminders.
+pub(crate) struct QuestChange {
+    /// The quest as the UI shows it after the change: for a repeating quest,
+    /// its oldest open occurrence (or the day that changed, if that one is
+    /// closed now and nothing is open).
     pub quest: Quest,
+    /// True when the stored quest row changed (sync emits it).
+    pub quest_row_changed: bool,
+    /// The marks the change wrote.
+    pub occurrences: Vec<QuestOccurrence>,
+    /// The days whose marks the change removed.
+    pub removed_occurrences: Vec<String>,
     pub restore_should_focus: bool,
-    pub next_occurrence: Option<Quest>,
+}
+
+/// The edit scope of a repeating quest (ADR-0012 D8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditScope {
+    /// The one occurrence: an override on its mark.
+    Day,
+    /// The quest: every occurrence.
+    All,
+}
+
+impl EditScope {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("all") => Ok(Self::All),
+            Some("day") => Ok(Self::Day),
+            Some(other) => Err(format!("invalid edit scope {other:?}; expected \"day\" or \"all\"")),
+        }
+    }
 }
 
 /// Application boundary for quest lifecycle. Adapters call this, never repositories.
@@ -619,24 +784,79 @@ impl<'a> QuestService<'a> {
         }
     }
 
+    // ---- Reading: the resolved view (ADR-0012 D2, D6) ----
+
+    /// Every quest as the UI lists it: one-time quests as stored; for a
+    /// repeating quest its oldest open occurrence, and each closed day (the
+    /// days in History).
     pub fn list_for_ui(&mut self) -> Result<Vec<Quest>, String> {
-        self.repository.load_all().map(sort_quests_for_list)
+        let quests = self.repository.load_all()?;
+        let marks = self.repository.all_occurrences()?;
+        let mut listed = Vec::with_capacity(quests.len() + marks.len());
+        for quest in &quests {
+            match RepeatingQuest::new(quest, &marks) {
+                Some(repeating) => {
+                    if quest.status == "active" {
+                        if let Some(period_key) = repeating.oldest_open() {
+                            listed.push(repeating.resolve(&period_key));
+                        }
+                    }
+                    for period_key in repeating.closed() {
+                        listed.push(repeating.resolve(&period_key));
+                    }
+                }
+                None => listed.push(quest.clone()),
+            }
+        }
+        Ok(sort_quests_for_list(listed))
     }
 
-    pub fn export_series_for_spaces(
-        &mut self,
-        space_ids: &[String],
-    ) -> Result<Vec<QuestSeries>, String> {
-        self.repository.load_series_for_spaces(space_ids)
+    /// The quests that can have Focus: active one-time quests, and the oldest
+    /// open occurrence of each active repeating quest.
+    pub fn active_quests(&mut self) -> Result<Vec<Quest>, String> {
+        Ok(self
+            .list_for_ui()?
+            .into_iter()
+            .filter(|quest| quest.status == "active")
+            .collect())
+    }
+
+    /// The quest as the UI shows it now (see `list_for_ui`).
+    pub fn resolved(&mut self, id: &str) -> Result<Quest, String> {
+        let quest = self.repository.get(id)?;
+        let marks = self.repository.occurrences(id)?;
+        Ok(match RepeatingQuest::new(&quest, &marks) {
+            Some(repeating) if quest.status == "active" => repeating
+                .oldest_open()
+                .map(|period_key| repeating.resolve(&period_key))
+                .unwrap_or_else(|| quest.clone()),
+            _ => quest.clone(),
+        })
+    }
+
+    /// For a repeating quest: the open occurrence a reminder is for (the
+    /// first one dated today or later, ADR-0012 D9), resolved.
+    pub fn reminder_occurrence(&mut self, id: &str) -> Result<Option<Quest>, String> {
+        let quest = self.repository.get(id)?;
+        let marks = self.repository.occurrences(id)?;
+        let Some(repeating) = RepeatingQuest::new(&quest, &marks) else {
+            return Ok(None);
+        };
+        if quest.status != "active" {
+            return Ok(None);
+        }
+        Ok(repeating
+            .next_open_from(Utc::now().date_naive())
+            .map(|period_key| repeating.resolve(&period_key)))
+    }
+
+    pub fn is_repeating(&mut self, id: &str) -> Result<bool, String> {
+        let quest = self.repository.get(id)?;
+        Ok(RepeatRule::parse(quest.repeat_rule.as_deref()).is_some())
     }
 
     pub fn export_quests_for_spaces(&mut self, space_ids: &[String]) -> Result<Vec<Quest>, String> {
         self.repository.load_for_spaces(space_ids)
-    }
-
-    pub fn export_insert_series(&mut self, series: &QuestSeries) -> Result<(), String> {
-        validate_metadata(series.energy, series.priority)?;
-        self.repository.insert_export_series(series)
     }
 
     pub fn export_insert_quest(&mut self, quest: &Quest) -> Result<(), String> {
@@ -644,14 +864,11 @@ impl<'a> QuestService<'a> {
         self.repository.insert_export_quest(quest)
     }
 
-    pub fn import_load_series(&mut self) -> Result<Vec<QuestSeries>, String> {
-        self.repository.load_all_series()
-    }
-
     pub fn import_load_quests(&mut self) -> Result<Vec<Quest>, String> {
         self.repository.load_all()
     }
 
+    /// The stored quest row.
     pub fn get(&mut self, id: &str) -> Result<Quest, String> {
         self.repository.get(id)
     }
@@ -661,6 +878,8 @@ impl<'a> QuestService<'a> {
         self.repository.load_quest_and_space(id)
     }
 
+    /// Focus on a quest; for a repeating quest on the quest itself, with no
+    /// day row (ADR-0012 D6).
     pub fn set_focus(&mut self, id: &str, trigger: &str) -> Result<Quest, String> {
         let quest = self
             .repository
@@ -668,36 +887,27 @@ impl<'a> QuestService<'a> {
             .ok_or_else(|| "cannot set Focus on non-active quest".to_string())?;
         self.repository.touch(id)?;
         append_focus_history(self.repository.conn, &quest.id, &quest.space_id, trigger)?;
-        record_focus_enter(self.repository.conn, &quest)
+        let resolved = self.resolved(id)?;
+        record_focus_enter(self.repository.conn, &resolved)
     }
 
-    pub fn create(&mut self, input: CreateQuestInput) -> Result<CreateQuestResult, String> {
+    pub fn create(&mut self, input: CreateQuestInput) -> Result<Quest, String> {
         validate_metadata(input.energy, input.priority)?;
-        let repeats = input
-            .repeat_rule
-            .as_deref()
-            .map(|rule| !rule.is_empty())
-            .unwrap_or(false);
-        if repeats {
-            let (quest, series) = self.repository.create_series_and_quest(input)?;
-            Ok(CreateQuestResult {
-                quest,
-                series: Some(series),
-            })
+        let repeats = RepeatRule::parse(input.repeat_rule.as_deref()).is_some();
+        let input = if repeats && input.due.is_none() {
+            // A repeating quest's rule starts at its date (ADR-0012 D2).
+            CreateQuestInput { due: Some(period_key_of(Utc::now().date_naive())), ..input }
         } else {
-            Ok(CreateQuestResult {
-                quest: self.repository.create(input)?,
-                series: None,
-            })
-        }
+            input
+        };
+        let quest = self.repository.create(input)?;
+        self.resolved(&quest.id)
     }
+
+    // ---- Writing ----
 
     #[cfg(any(feature = "ui-plane", test))]
-    pub fn update(
-        &mut self,
-        id: &str,
-        input: UpdateQuestInput,
-    ) -> Result<UpdateQuestResult, String> {
+    pub fn update(&mut self, id: &str, input: UpdateQuestInput) -> Result<QuestChange, String> {
         self.update_with_origin(id, input, None)
     }
 
@@ -707,22 +917,19 @@ impl<'a> QuestService<'a> {
         id: &str,
         input: UpdateQuestInput,
         origin_device_id: Option<&str>,
-    ) -> Result<UpdateQuestResult, String> {
-        validate_optional_metadata(input.energy, input.priority)?;
-        if input.description.is_some() {
-            Self::reject_prose_patch_on_checklist(&self.repository.get(id)?)?;
-        }
-        let requested_status = input.status.clone();
-        let (previous, quest) = self.repository.update(id, input)?;
-        self.finish_update(previous, quest, requested_status, origin_device_id)
+    ) -> Result<QuestChange, String> {
+        let patch = QuestUpdatePatch {
+            input,
+            description: QuestFieldPatch::Unchanged,
+            due: QuestFieldPatch::Unchanged,
+            due_time: QuestFieldPatch::Unchanged,
+            repeat_rule: QuestFieldPatch::Unchanged,
+        };
+        self.update_scoped(id, patch, EditScope::All, None, origin_device_id)
     }
 
-    pub fn update_patch(
-        &mut self,
-        id: &str,
-        patch: QuestUpdatePatch,
-    ) -> Result<UpdateQuestResult, String> {
-        self.update_patch_with_origin(id, patch, None)
+    pub fn update_patch(&mut self, id: &str, patch: QuestUpdatePatch) -> Result<QuestChange, String> {
+        self.update_scoped(id, patch, EditScope::All, None, None)
     }
 
     pub fn update_patch_with_origin(
@@ -730,52 +937,105 @@ impl<'a> QuestService<'a> {
         id: &str,
         patch: QuestUpdatePatch,
         origin_device_id: Option<&str>,
-    ) -> Result<UpdateQuestResult, String> {
+    ) -> Result<QuestChange, String> {
+        self.update_scoped(id, patch, EditScope::All, None, origin_device_id)
+    }
+
+    /// One quest change. For a repeating quest (ADR-0012): Complete or Abandon
+    /// closes one occurrence (`period_key`, or the oldest open); "active" on a
+    /// closed day opens it again; `EditScope::Day` writes the fields as that
+    /// day's overrides; `EditScope::All` edits the quest; clearing the rule
+    /// stops the repeat (D10).
+    pub fn update_scoped(
+        &mut self,
+        id: &str,
+        patch: QuestUpdatePatch,
+        scope: EditScope,
+        period_key: Option<&str>,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
         validate_optional_metadata(patch.input.energy, patch.input.priority)?;
-        if !matches!(patch.description, QuestFieldPatch::Unchanged) {
-            Self::reject_prose_patch_on_checklist(&self.repository.get(id)?)?;
+        let quest = self.repository.get(id)?;
+        if !matches!(patch.description, QuestFieldPatch::Unchanged) || patch.input.description.is_some() {
+            Self::reject_prose_patch_on_checklist(&quest)?;
         }
-        let requested_status = patch.input.status.clone();
-        let (previous, quest) = self.repository.update_patch(id, patch)?;
-        self.finish_update(previous, quest, requested_status, origin_device_id)
+        let marks = self.repository.occurrences(id)?;
+        let Some(repeating) = RepeatingQuest::new(&quest, &marks) else {
+            return self.update_one_time(quest, patch, origin_device_id);
+        };
+
+        let status = patch.input.status.clone();
+        match status.as_deref() {
+            Some(OCCURRENCE_COMPLETED) | Some(OCCURRENCE_ABANDONED) => {
+                let period_key = match period_key {
+                    Some(key) => key.to_string(),
+                    None => repeating.oldest_open().ok_or_else(|| "the quest has no open occurrence".to_string())?,
+                };
+                let closed = self.close_occurrence(&repeating, &period_key, status.as_deref().unwrap(), origin_device_id)?;
+                return self.finish_repeating(id, vec![closed], Vec::new(), false, Some(&period_key));
+            }
+            Some("active") => {
+                if let Some(period_key) = period_key {
+                    return self.reopen_occurrence(&repeating, period_key);
+                }
+            }
+            _ => {}
+        }
+
+        if matches!(patch.repeat_rule, QuestFieldPatch::Clear) {
+            return self.stop_repeat(&repeating, origin_device_id);
+        }
+
+        match scope {
+            EditScope::Day => {
+                let period_key = match period_key {
+                    Some(key) => key.to_string(),
+                    None => repeating.oldest_open().ok_or_else(|| "the quest has no open occurrence".to_string())?,
+                };
+                let mut mark = repeating.mark_or_new(&period_key);
+                if let Some(title) = patch.input.title.clone() {
+                    mark.title = (title != quest.title).then_some(title);
+                }
+                if let Some(energy) = patch.input.energy {
+                    mark.energy = (energy != quest.energy).then_some(energy);
+                }
+                if let Some(priority) = patch.input.priority {
+                    mark.priority = (priority != quest.priority).then_some(priority);
+                }
+                match &patch.due_time {
+                    QuestFieldPatch::Set(time) => mark.due_time = (Some(time) != quest.due_time.as_ref()).then(|| time.clone()),
+                    QuestFieldPatch::Clear => mark.due_time = None,
+                    QuestFieldPatch::Unchanged => {}
+                }
+                if let QuestFieldPatch::Set(description) = &patch.description {
+                    mark.description = Some(description.clone());
+                }
+                mark.updated_at = utc_now();
+                let saved = self.repository.save_occurrence(&mark)?;
+                self.finish_repeating(id, vec![saved], Vec::new(), false, Some(&period_key))
+            }
+            EditScope::All => {
+                let mut patch = patch;
+                // The quest of a repeating series stays active; its days close.
+                patch.input.status = None;
+                let (_, _) = self.repository.update_patch(id, patch)?;
+                self.finish_repeating(id, Vec::new(), Vec::new(), true, None)
+            }
+        }
     }
 
-    /// A checklist quest's `description` IS the checklist text (issue #128) — an explicit
-    /// `--description`/description patch on a checklist quest would silently replace it with
-    /// prose, losing every item's id and checked state. Reject it instead; callers must use the
-    /// checklist item commands (or `checklist-set-template`) to edit a checklist's content.
-    fn reject_prose_patch_on_checklist(quest: &Quest) -> Result<(), String> {
-        if quest.is_checklist {
-            Err("quest is a checklist; use the checklist commands to edit its items instead of --description".to_string())
-        } else {
-            Ok(())
-        }
-    }
-
-    fn finish_update(
+    fn update_one_time(
         &mut self,
         previous: Quest,
-        quest: Quest,
-        requested_status: Option<String>,
+        patch: QuestUpdatePatch,
         origin_device_id: Option<&str>,
-    ) -> Result<UpdateQuestResult, String> {
+    ) -> Result<QuestChange, String> {
+        let (_, quest) = self.repository.update_patch(&previous.id, patch)?;
         let restore_should_focus = previous.status != "active"
             && quest.status == "active"
             && should_set_focus_now_for_restore(quest.due.as_deref(), Utc::now());
-        let next_occurrence = if matches!(
-            requested_status.as_deref(),
-            Some("completed") | Some("abandoned")
-        ) && (quest.repeat_rule.is_some() || quest.series_id.is_some())
-        {
-            generate_next_occurrence(self.repository.conn, &quest).unwrap_or(None)
-        } else {
-            None
-        };
 
-        // Issue #128: the completed-history checklist snapshot is preserved as-is (the
-        // occurrence's description at completion time), but we also record an explicit audit
-        // entry marking the moment of completion — guarded so it only fires on the actual
-        // active -> completed/abandoned transition, not on every subsequent update.
+        // Issue #128: record the completion moment of a checklist.
         if previous.status == "active"
             && matches!(quest.status.as_str(), "completed" | "abandoned")
             && quest.is_checklist
@@ -790,12 +1050,167 @@ impl<'a> QuestService<'a> {
             );
         }
 
-        Ok(UpdateQuestResult {
+        Ok(QuestChange {
             quest,
+            quest_row_changed: true,
+            occurrences: Vec::new(),
+            removed_occurrences: Vec::new(),
             restore_should_focus,
-            next_occurrence,
         })
     }
+
+    /// Writes the closed mark of one day: its status, and for a checklist a
+    /// copy of the day's items as they were (History, D5).
+    fn close_occurrence(
+        &mut self,
+        repeating: &RepeatingQuest<'_>,
+        period_key: &str,
+        status: &str,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestOccurrence, String> {
+        let quest = repeating.quest();
+        let day = repeating.resolve(period_key);
+        let now = utc_now();
+        let mut mark = repeating.mark_or_new(period_key);
+        mark.status = Some(status.to_string());
+        mark.closed_at = Some(now.clone());
+        mark.updated_at = now;
+        if quest.is_checklist && mark.description.is_none() {
+            mark.description = day.description.clone();
+            mark.checklist_base = quest.description.clone();
+        }
+        if quest.is_checklist {
+            let (done, total) = checklist::counts(day.description.as_deref());
+            let _ = log_checklist_activity(
+                self.repository.conn,
+                &quest.id,
+                "completed_snapshot",
+                &format!("Checklist at completion ({period_key}): {done}/{total} checked"),
+                origin_device_id,
+            );
+        }
+        self.repository.save_occurrence(&mark)
+    }
+
+    /// Opens a closed day again. A mark with nothing else to keep goes.
+    fn reopen_occurrence(&mut self, repeating: &RepeatingQuest<'_>, period_key: &str) -> Result<QuestChange, String> {
+        let id = repeating.quest().id.clone();
+        let mut mark = repeating
+            .mark(period_key)
+            .cloned()
+            .ok_or_else(|| format!("{period_key} of this quest is not closed"))?;
+        mark.status = None;
+        mark.closed_at = None;
+        mark.updated_at = utc_now();
+        let keeps_something = mark.title.is_some()
+            || mark.energy.is_some()
+            || mark.priority.is_some()
+            || mark.due_time.is_some()
+            || (mark.description.is_some() && mark.description != repeating.quest().description.as_deref().map(checklist::reset_unchecked));
+        if keeps_something {
+            let saved = self.repository.save_occurrence(&mark)?;
+            self.finish_repeating(&id, vec![saved], Vec::new(), false, None)
+        } else {
+            self.repository.delete_occurrence(&id, period_key)?;
+            self.finish_repeating(&id, Vec::new(), vec![period_key.to_string()], false, None)
+        }
+    }
+
+    /// ADR-0012 D10: with no marks the quest becomes a one-time quest on its
+    /// oldest open date; with marks the rule gets an end at the last closed
+    /// day, and the quest ends.
+    fn stop_repeat(&mut self, repeating: &RepeatingQuest<'_>, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
+        let quest = repeating.quest().clone();
+        let closed = repeating.closed();
+        let input = match closed.last() {
+            None => UpdateQuestInputBuilder::default()
+                .due(repeating.oldest_open())
+                .build(),
+            Some(last_closed) => {
+                let mut rule = repeating.rule.clone();
+                rule.end = Some("on_date".to_string());
+                rule.end_date = Some(last_closed.clone());
+                rule.end_after = None;
+                UpdateQuestInputBuilder::default()
+                    .status("completed")
+                    .repeat_rule(serde_json::to_string(&rule).map_err(|e| e.to_string())?)
+                    .build()
+            }
+        };
+        let clear_rule = closed.is_empty();
+        let patch = QuestUpdatePatch {
+            input,
+            description: QuestFieldPatch::Unchanged,
+            due: QuestFieldPatch::Unchanged,
+            due_time: QuestFieldPatch::Unchanged,
+            repeat_rule: if clear_rule { QuestFieldPatch::Clear } else { QuestFieldPatch::Unchanged },
+        };
+        let _ = origin_device_id;
+        self.repository.update_patch(&quest.id, patch)?;
+        self.finish_repeating(&quest.id, Vec::new(), Vec::new(), true, None)
+    }
+
+    /// "Complete through today" (ADR-0012 D7): closes every open occurrence
+    /// dated today or before, today's included.
+    pub fn complete_through_today(&mut self, id: &str, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
+        let quest = self.repository.get(id)?;
+        let marks = self.repository.occurrences(id)?;
+        let repeating = RepeatingQuest::new(&quest, &marks).ok_or_else(|| "the quest does not repeat".to_string())?;
+        let days = repeating.open_through(Utc::now().date_naive());
+        if days.is_empty() {
+            return Err("no open occurrence is dated today or before".to_string());
+        }
+        let mut closed = Vec::with_capacity(days.len());
+        for period_key in &days {
+            closed.push(self.close_occurrence(&repeating, period_key, OCCURRENCE_COMPLETED, origin_device_id)?);
+        }
+        self.finish_repeating(id, closed, Vec::new(), false, days.last().map(String::as_str))
+    }
+
+    fn finish_repeating(
+        &mut self,
+        id: &str,
+        occurrences: Vec<QuestOccurrence>,
+        removed_occurrences: Vec<String>,
+        quest_row_changed: bool,
+        changed_day: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        let stored = self.repository.get(id)?;
+        let marks = self.repository.occurrences(id)?;
+        // The UI shows the oldest open day; with none left, the day that
+        // changed.
+        let quest = match RepeatingQuest::new(&stored, &marks) {
+            Some(repeating) => {
+                let open = (stored.status == "active").then(|| repeating.oldest_open()).flatten();
+                match (open, changed_day) {
+                    (Some(open), _) => repeating.resolve(&open),
+                    (None, Some(day)) => repeating.resolve(day),
+                    (None, None) => stored.clone(),
+                }
+            }
+            None => stored.clone(),
+        };
+        Ok(QuestChange {
+            quest,
+            quest_row_changed,
+            occurrences,
+            removed_occurrences,
+            restore_should_focus: false,
+        })
+    }
+
+    /// A checklist quest's `description` IS the checklist text (issue #128) — an explicit
+    /// description patch on a checklist quest would silently replace it with prose, losing
+    /// every item's id and checked state. Callers must use the checklist item commands.
+    fn reject_prose_patch_on_checklist(quest: &Quest) -> Result<(), String> {
+        if quest.is_checklist {
+            Err("quest is a checklist; use the checklist commands to edit its items instead of --description".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    // ---- Sync and backup ----
 
     pub fn sync_upsert_quest(&mut self, quest: &Quest) -> Result<(), String> {
         validate_metadata(quest.energy, quest.priority)?;
@@ -808,6 +1223,51 @@ impl<'a> QuestService<'a> {
             None => None,
         };
         self.repository.upsert_external_quest(&persisted)
+    }
+
+    /// A mark from a peer. A day's checklist copy merges with the local copy
+    /// (the 3-way merge, D5); the other fields: the newer edit wins (the
+    /// caller already compared the events).
+    pub fn sync_upsert_occurrence(&mut self, incoming: &QuestOccurrence) -> Result<(), String> {
+        let local = self.repository.find_occurrence(&incoming.quest_id, &incoming.period_key)?;
+        let mut merged = incoming.clone();
+        if let Some(local) = local {
+            merged.checklist_base = local.checklist_base.clone();
+            if let (Some(local_description), Some(incoming_description)) = (&local.description, &incoming.description) {
+                let (description, _) = checklist::merge_3way(local.checklist_base.as_deref(), local_description, incoming_description);
+                merged.description = Some(description);
+            }
+        } else if merged.description.is_some() {
+            merged.checklist_base = merged.description.clone();
+        }
+        self.repository.save_occurrence(&merged).map(|_| ())
+    }
+
+    pub fn sync_delete_occurrence(&mut self, quest_id: &str, period_key: &str) -> Result<(), String> {
+        self.repository.delete_occurrence(quest_id, period_key)
+    }
+
+    /// Emits an upsert for each repeating quest and occurrence mark that has
+    /// no sync event yet (the rows a migration wrote, ADR-0012 D11).
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn emit_missing_sync_events(&mut self, device_id: &str) -> Result<(), String> {
+        let quests = self.repository.load_all()?;
+        let marks = self.repository.all_occurrences()?;
+        let space_by_quest: HashMap<&str, &str> =
+            quests.iter().map(|quest| (quest.id.as_str(), quest.space_id.as_str())).collect();
+        let conn = &mut *self.repository.conn;
+        for quest in quests.iter().filter(|quest| RepeatRule::parse(quest.repeat_rule.as_deref()).is_some()) {
+            if OutboxRepository::new(conn).load_latest_event_for_entity("quest", &quest.id)?.is_none() {
+                emit_quest_sync_events(conn, device_id, &quest.space_id, &quest.id)?;
+            }
+        }
+        for mark in &marks {
+            let Some(space_id) = space_by_quest.get(mark.quest_id.as_str()) else { continue };
+            if OutboxRepository::new(conn).load_latest_event_for_entity("quest_occurrence", &mark.sync_id())?.is_none() {
+                emit_occurrence_sync_event(conn, device_id, space_id, mark)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn sync_quest_is_checklist(&mut self, id: &str) -> Result<bool, String> {
@@ -824,7 +1284,7 @@ impl<'a> QuestService<'a> {
             None => return Ok((incoming_description.map(str::to_string), false)),
             Some(local) => local,
         };
-        let (merged_raw, _had_text_conflict) = crate::services::checklist::merge_3way(
+        let (merged_raw, _had_text_conflict) = checklist::merge_3way(
             local.checklist_base.as_deref(),
             local.description.as_deref().unwrap_or(""),
             incoming_description.unwrap_or(""),
@@ -860,123 +1320,33 @@ impl<'a> QuestService<'a> {
         ))
     }
 
-    pub fn sync_move_quests_and_series_between_spaces(
+    pub fn sync_move_quests_between_spaces(
         &mut self,
         local_space_id: &str,
         remote_space_id: &str,
     ) -> Result<(), String> {
         self.repository
-            .move_quests_and_series_between_spaces(local_space_id, remote_space_id)
-    }
-
-    pub fn sync_upsert_series(&mut self, series: &QuestSeries) -> Result<(), String> {
-        validate_metadata(series.energy, series.priority)?;
-        self.repository.upsert_external_series(series)
+            .move_quests_between_spaces(local_space_id, remote_space_id)
     }
 
     pub fn import_upsert_quest(&mut self, quest: &Quest) -> Result<(), String> {
         self.sync_upsert_quest(quest)
     }
 
-    pub fn import_upsert_series(&mut self, series: &QuestSeries) -> Result<(), String> {
-        self.sync_upsert_series(series)
-    }
-
     pub fn import_find_quest(&mut self, id: &str) -> Result<Option<Quest>, String> {
         self.repository.find_external_quest(id)
-    }
-
-    pub fn import_find_series(&mut self, id: &str) -> Result<Option<QuestSeries>, String> {
-        self.repository.find_external_series(id)
-    }
-
-    pub fn get_series(&mut self, id: &str) -> Result<QuestSeries, String> {
-        self.repository.get_series(id)
     }
 
     pub fn sync_delete_quest(&mut self, id: &str) -> Result<(), String> {
         self.repository.delete_external_quest(id)
     }
 
-    pub fn sync_delete_series(&mut self, id: &str) -> Result<(), String> {
-        self.repository.delete_external_series(id)
-    }
-
+    /// Deletes the quest; for a repeating quest every occurrence and mark.
     pub fn delete(&mut self, id: &str) -> Result<Quest, String> {
         self.repository.delete(id)
     }
 
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn series_quest_ids(&mut self, series_id: &str) -> Result<Vec<String>, String> {
-        self.repository
-            .list_for_series(series_id)
-            .map(|quests| quests.into_iter().map(|quest| quest.id).collect())
-    }
-
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn delete_series_with_sync(
-        &mut self,
-        device_id: &str,
-        series_id: &str,
-    ) -> Result<(), diesel::result::Error> {
-        // Immediate, not deferred: this reads the series and then writes to
-        // it, and a deferred transaction takes a read snapshot on that first
-        // statement. If another connection commits before the write, SQLite
-        // refuses it with `SQLITE_BUSY_SNAPSHOT` -- immediately, because no
-        // amount of waiting can refresh a snapshot. `busy_timeout` does not
-        // apply to it, which is why raising that timeout never helped (see
-        // `db::try_open_db_at_path_once`, and the test beside it).
-        //
-        // Taking the write lock up front makes the timeout apply again: a
-        // second writer waits its turn instead of failing. This loop also
-        // emits a sync event per quest, each waking the keeper, so it is
-        // precisely the long write most likely to have company.
-        self.repository.conn.immediate_transaction(|conn| {
-            let (series_space_id, series_quests) = {
-                let mut repository = QuestRepository::new(conn);
-                let series_space_id = repository
-                    .series_space_id(series_id)
-                    .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-                let series_quests = repository
-                    .list_for_series(series_id)
-                    .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-                (series_space_id, series_quests)
-            };
-
-            for quest in &series_quests {
-                OutboxRepository::new(conn).emit_sync_event(
-                    device_id,
-                    "quest",
-                    &quest.id,
-                    &quest.space_id,
-                    "delete",
-                    None,
-                )
-                .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-
-                QuestRepository::new(conn)
-                    .delete_series_quest(&quest.id)
-                    .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-            }
-
-            OutboxRepository::new(conn).emit_sync_event(
-                device_id,
-                "quest_series",
-                series_id,
-                &series_space_id,
-                "delete",
-                None,
-            )
-            .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-
-            QuestRepository::new(conn)
-                .delete_series(series_id)
-                .map_err(|_| diesel::result::Error::RollbackTransaction)?;
-            Ok(())
-        })
-    }
-
-    // ── Checklist (issue #128) ──────────────────────────────────────────────
+    // ── Checklist (issue #128; repeating quests: ADR-0012 D5) ──────────────────
 
     fn checklist_audit_kind(quest: &Quest, base_kind: &str) -> &'static str {
         // Every edit made after a quest has left "active" status is recorded distinctly so the
@@ -1001,6 +1371,185 @@ impl<'a> QuestService<'a> {
         }
     }
 
+    /// Applies `edit` to a quest's checklist text. One-time quest: its
+    /// description. Repeating quest, `EditScope::Day`: the day copy of
+    /// `period_key` (or the oldest open day). Repeating quest,
+    /// `EditScope::All`: the quest's template, merged into every open day copy.
+    fn edit_checklist(
+        &mut self,
+        quest_id: &str,
+        scope: EditScope,
+        period_key: Option<&str>,
+        edit: impl Fn(&str) -> Result<String, String>,
+    ) -> Result<QuestChange, String> {
+        let quest = self.repository.get(quest_id)?;
+        Self::ensure_checklist_quest(&quest)?;
+        let marks = self.repository.occurrences(quest_id)?;
+        let Some(repeating) = RepeatingQuest::new(&quest, &marks) else {
+            let updated = edit(quest.description.as_deref().unwrap_or(""))?;
+            let quest = self.repository.set_checklist_description(quest_id, &updated)?;
+            return Ok(QuestChange {
+                quest,
+                quest_row_changed: true,
+                occurrences: Vec::new(),
+                removed_occurrences: Vec::new(),
+                restore_should_focus: false,
+            });
+        };
+
+        match scope {
+            EditScope::Day => {
+                let period_key = match period_key {
+                    Some(key) => key.to_string(),
+                    None => repeating.oldest_open().ok_or_else(|| "the quest has no open occurrence".to_string())?,
+                };
+                let day = repeating.resolve(&period_key);
+                let updated = edit(day.description.as_deref().unwrap_or(""))?;
+                let mut mark = repeating.mark_or_new(&period_key);
+                if mark.description.is_none() {
+                    mark.checklist_base = quest.description.clone();
+                }
+                mark.description = Some(updated);
+                mark.updated_at = utc_now();
+                let saved = self.repository.save_occurrence(&mark)?;
+                self.finish_repeating(quest_id, vec![saved], Vec::new(), false, Some(&period_key))
+            }
+            EditScope::All => {
+                let template = quest.description.clone().unwrap_or_default();
+                let updated = edit(&checklist::reset_unchecked(&template))?;
+                self.repository.set_checklist_description(quest_id, &updated)?;
+                // The open day copies take the template edit (D5).
+                let mut merged_days = Vec::new();
+                for mark in marks.iter().filter(|mark| !mark.is_closed()) {
+                    let Some(local) = mark.description.as_deref() else { continue };
+                    let (description, _) = checklist::merge_3way(mark.checklist_base.as_deref(), local, &updated);
+                    let mut mark = mark.clone();
+                    mark.description = Some(description);
+                    mark.checklist_base = Some(updated.clone());
+                    mark.updated_at = utc_now();
+                    merged_days.push(self.repository.save_occurrence(&mark)?);
+                }
+                self.finish_repeating(quest_id, merged_days, Vec::new(), true, None)
+            }
+        }
+    }
+
+    pub fn add_checklist_item(
+        &mut self,
+        quest_id: &str,
+        text: &str,
+        scope: EditScope,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        let change = self.edit_checklist(quest_id, scope, None, |checklist_text| {
+            Ok(checklist::add_item(Some(checklist_text).filter(|text| !text.is_empty()), text))
+        })?;
+        log_checklist_activity(
+            self.repository.conn,
+            quest_id,
+            Self::checklist_audit_kind(&change.quest, "added"),
+            &format!("Added \"{text}\""),
+            origin_device_id,
+        )?;
+        Ok(change)
+    }
+
+    /// A tick is always the day's (D8): it never asks for a scope.
+    pub fn toggle_checklist_item(
+        &mut self,
+        quest_id: &str,
+        item_id: &str,
+        checked: bool,
+        period_key: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        let quest = self.resolved(quest_id)?;
+        if quest.status != "active" && period_key.is_none() {
+            return Err("checklist toggles are only available for active quests".to_string());
+        }
+        // Individual toggles are not written to the audit log by design (#128): the
+        // checklist's own checked state is the record.
+        self.edit_checklist(quest_id, EditScope::Day, period_key, |checklist_text| {
+            if !checklist::parse(checklist_text).iter().any(|it| it.id == item_id) {
+                return Err("checklist item not found".to_string());
+            }
+            Ok(checklist::set_checked(checklist_text, item_id, checked))
+        })
+    }
+
+    pub fn edit_checklist_item_text(
+        &mut self,
+        quest_id: &str,
+        item_id: &str,
+        text: &str,
+        scope: EditScope,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        // A stale/nonexistent item_id must not report a fake rename.
+        let change = self.edit_checklist(quest_id, scope, None, |checklist_text| {
+            if !checklist::parse(checklist_text).iter().any(|it| it.id == item_id) {
+                return Err("checklist item not found".to_string());
+            }
+            Ok(checklist::set_text(checklist_text, item_id, text))
+        })?;
+        log_checklist_activity(
+            self.repository.conn,
+            quest_id,
+            Self::checklist_audit_kind(&change.quest, "edited"),
+            &format!("Renamed item to \"{text}\""),
+            origin_device_id,
+        )?;
+        Ok(change)
+    }
+
+    pub fn remove_checklist_item(
+        &mut self,
+        quest_id: &str,
+        item_id: &str,
+        scope: EditScope,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        let removed_text = std::cell::RefCell::new(None);
+        let change = self.edit_checklist(quest_id, scope, None, |checklist_text| {
+            let text = checklist::parse(checklist_text)
+                .into_iter()
+                .find(|it| it.id == item_id)
+                .map(|it| it.text)
+                .ok_or_else(|| "checklist item not found".to_string())?;
+            *removed_text.borrow_mut() = Some(text);
+            Ok(checklist::remove_item(checklist_text, item_id))
+        })?;
+        let removed_text = removed_text.into_inner().unwrap_or_default();
+        log_checklist_activity(
+            self.repository.conn,
+            quest_id,
+            Self::checklist_audit_kind(&change.quest, "removed"),
+            &format!("Removed \"{removed_text}\""),
+            origin_device_id,
+        )?;
+        Ok(change)
+    }
+
+    /// Replaces the checklist text: the day copy (`EditScope::Day`) or the
+    /// quest's template (`EditScope::All`).
+    pub fn set_checklist(
+        &mut self,
+        quest_id: &str,
+        checklist_text: &str,
+        scope: EditScope,
+        origin_device_id: Option<&str>,
+    ) -> Result<QuestChange, String> {
+        let before = self.resolved(quest_id)?;
+        let change = self.edit_checklist(quest_id, scope, None, |_| Ok(checklist_text.to_string()))?;
+        Self::log_checklist_replacement_activity(
+            self.repository.conn,
+            &before,
+            before.description.as_deref(),
+            Some(checklist_text),
+            origin_device_id,
+        )?;
+        Ok(change)
+    }
+
     fn log_checklist_replacement_activity(
         conn: &mut SqliteConnection,
         quest: &Quest,
@@ -1008,18 +1557,12 @@ impl<'a> QuestService<'a> {
         new_checklist: Option<&str>,
         origin_device_id: Option<&str>,
     ) -> Result<(), String> {
-        use std::collections::HashMap;
-
         let old_items = checklist::parse_opt(old_checklist);
         let new_items = checklist::parse_opt(new_checklist);
-        let old_by_id: HashMap<&str, &checklist::ChecklistItem> = old_items
-            .iter()
-            .map(|item| (item.id.as_str(), item))
-            .collect();
-        let new_by_id: HashMap<&str, &checklist::ChecklistItem> = new_items
-            .iter()
-            .map(|item| (item.id.as_str(), item))
-            .collect();
+        let old_by_id: HashMap<&str, &checklist::ChecklistItem> =
+            old_items.iter().map(|item| (item.id.as_str(), item)).collect();
+        let new_by_id: HashMap<&str, &checklist::ChecklistItem> =
+            new_items.iter().map(|item| (item.id.as_str(), item)).collect();
 
         for item in &new_items {
             match old_by_id.get(item.id.as_str()) {
@@ -1040,7 +1583,6 @@ impl<'a> QuestService<'a> {
                 _ => {}
             }
         }
-
         for item in &old_items {
             if !new_by_id.contains_key(item.id.as_str()) {
                 log_checklist_activity(
@@ -1052,199 +1594,22 @@ impl<'a> QuestService<'a> {
                 )?;
             }
         }
-
         Ok(())
-    }
-
-    pub fn add_checklist_item(
-        &mut self,
-        quest_id: &str,
-        text: &str,
-        origin_device_id: Option<&str>,
-    ) -> Result<Quest, String> {
-        let quest = self.repository.get(quest_id)?;
-        Self::ensure_checklist_quest(&quest)?;
-        let updated_checklist = checklist::add_item(quest.description.as_deref(), text);
-        let updated = self
-            .repository
-            .set_checklist_description(quest_id, &updated_checklist)?;
-        log_checklist_activity(
-            self.repository.conn,
-            quest_id,
-            Self::checklist_audit_kind(&quest, "added"),
-            &format!("Added \"{text}\""),
-            origin_device_id,
-        )?;
-        Ok(updated)
-    }
-
-    pub fn toggle_checklist_item(
-        &mut self,
-        quest_id: &str,
-        item_id: &str,
-        checked: bool,
-    ) -> Result<Quest, String> {
-        let quest = self.repository.get(quest_id)?;
-        Self::ensure_checklist_quest(&quest)?;
-        if quest.status != "active" {
-            return Err("checklist toggles are only available for active quests".to_string());
-        }
-        let checklist_text = quest.description.clone().unwrap_or_default();
-        let items = checklist::parse(&checklist_text);
-        if !items.iter().any(|it| it.id == item_id) {
-            return Err("checklist item not found".to_string());
-        }
-        let updated_checklist = checklist::set_checked(&checklist_text, item_id, checked);
-        // Individual check/uncheck toggles are not written to the audit log by design (#128's
-        // audit requirement targets add/remove/edit and completion, not every toggle) — the
-        // checklist's own checked state is itself the record of what was packed.
-        self.repository
-            .set_checklist_description(quest_id, &updated_checklist)
-    }
-
-    pub fn edit_checklist_item_text(
-        &mut self,
-        quest_id: &str,
-        item_id: &str,
-        text: &str,
-        origin_device_id: Option<&str>,
-    ) -> Result<Quest, String> {
-        let quest = self.repository.get(quest_id)?;
-        Self::ensure_checklist_quest(&quest)?;
-        let checklist_text = quest.description.clone().unwrap_or_default();
-        // A stale/nonexistent item_id (e.g. another device already removed it) must not report
-        // a fake rename: checklist::set_text no-ops on a missing id, so without this check we'd
-        // persist a no-op write and log a "Renamed item" activity for a change that never happened.
-        if !checklist::parse(&checklist_text)
-            .iter()
-            .any(|it| it.id == item_id)
-        {
-            return Err("checklist item not found".to_string());
-        }
-        let updated_checklist = checklist::set_text(&checklist_text, item_id, text);
-        let updated = self
-            .repository
-            .set_checklist_description(quest_id, &updated_checklist)?;
-        log_checklist_activity(
-            self.repository.conn,
-            quest_id,
-            Self::checklist_audit_kind(&quest, "edited"),
-            &format!("Renamed item to \"{text}\""),
-            origin_device_id,
-        )?;
-        Ok(updated)
-    }
-
-    pub fn remove_checklist_item(
-        &mut self,
-        quest_id: &str,
-        item_id: &str,
-        origin_device_id: Option<&str>,
-    ) -> Result<Quest, String> {
-        let quest = self.repository.get(quest_id)?;
-        Self::ensure_checklist_quest(&quest)?;
-        let checklist_text = quest.description.clone().unwrap_or_default();
-        let removed_text = checklist::parse(&checklist_text)
-            .into_iter()
-            .find(|it| it.id == item_id)
-            .map(|it| it.text);
-        // Same reasoning as edit_checklist_item_text: a missing item_id must be a hard error, not
-        // a silent no-op that still reports success and logs a bogus "Removed an item" activity.
-        let removed_text = match removed_text {
-            Some(text) => text,
-            None => return Err("checklist item not found".to_string()),
-        };
-        let updated_checklist = checklist::remove_item(&checklist_text, item_id);
-        let updated = self
-            .repository
-            .set_checklist_description(quest_id, &updated_checklist)?;
-        log_checklist_activity(
-            self.repository.conn,
-            quest_id,
-            Self::checklist_audit_kind(&quest, "removed"),
-            &format!("Removed \"{removed_text}\""),
-            origin_device_id,
-        )?;
-        Ok(updated)
     }
 
     pub fn reorder_checklist(
         &mut self,
         quest_id: &str,
         ordered_ids: &[String],
-    ) -> Result<Quest, String> {
-        let quest = self.repository.get(quest_id)?;
-        Self::ensure_checklist_quest(&quest)?;
-        let checklist_text = quest.description.clone().unwrap_or_default();
-        let updated_checklist = checklist::reorder(&checklist_text, ordered_ids);
-        self.repository
-            .set_checklist_description(quest_id, &updated_checklist)
-    }
-
-    /// `scope` is `"this"` (mutate only this occurrence's checklist) or `"future"` (mutate the
-    /// series template and reconcile the current occurrence — #128's "This and future
-    /// occurrences"). `new_checklist` is the fully-edited checklist for "this", or the fully
-    /// -edited template for "future".
-    pub fn update_series_checklist(
-        &mut self,
-        series_id: &str,
-        current_occurrence_id: &str,
-        new_checklist: &str,
-        scope: &str,
-        origin_device_id: Option<&str>,
-    ) -> Result<Quest, String> {
-        let current = self.repository.get(current_occurrence_id)?;
-        Self::ensure_checklist_quest(&current)?;
-        if current.series_id.as_deref() != Some(series_id) {
-            return Err("quest is not an occurrence in this series".to_string());
-        }
-        // A completed/abandoned occurrence's checklist is historical. Neither scope should be
-        // able to silently rewrite that snapshot through the set-template command — post-
-        // completion edits must go through the audited item-level helpers instead, which log
-        // "post_completion_edit" explicitly rather than replacing the whole snapshot at once.
-        if current.status != "active" {
-            return Err(
-                "checklist template updates are only available for active quests".to_string(),
-            );
-        }
-
-        match scope {
-            "future" => {
-                let updated = self.repository.update_series_checklist_template(
-                    series_id,
-                    new_checklist,
-                    current_occurrence_id,
-                )?;
-                Self::log_checklist_replacement_activity(
-                    self.repository.conn,
-                    &current,
-                    current.description.as_deref(),
-                    updated.description.as_deref(),
-                    origin_device_id,
-                )?;
-                Ok(updated)
-            }
-            _ => {
-                let updated = self
-                    .repository
-                    .set_checklist_description(current_occurrence_id, new_checklist)?;
-                Self::log_checklist_replacement_activity(
-                    self.repository.conn,
-                    &current,
-                    current.description.as_deref(),
-                    updated.description.as_deref(),
-                    origin_device_id,
-                )?;
-                Ok(updated)
-            }
-        }
+        scope: EditScope,
+    ) -> Result<QuestChange, String> {
+        self.edit_checklist(quest_id, scope, None, |checklist_text| Ok(checklist::reorder(checklist_text, ordered_ids)))
     }
 
     pub fn get_checklist_activity(
         &mut self,
         quest_id: &str,
     ) -> Result<Vec<crate::models::ChecklistActivity>, String> {
-        use crate::schema::checklist_activity;
         checklist_activity::table
             .filter(checklist_activity::quest_id.eq(quest_id))
             .order(checklist_activity::created_at.asc())
@@ -1252,21 +1617,46 @@ impl<'a> QuestService<'a> {
             .load(self.repository.conn)
             .map_err(|e| e.to_string())
     }
+}
 
-    /// The series' stored checklist template — callers building a "This and future occurrences"
-    /// edit must diff against this, not the current occurrence's description: an occurrence may
-    /// already carry "this occurrence only" changes that were never promoted to the template, and
-    /// basing a future-scope edit on the occurrence would silently promote them (issue #128).
-    pub fn get_series_checklist_template(
-        &mut self,
-        series_id: &str,
-    ) -> Result<Option<String>, String> {
-        use crate::schema::quest_series;
-        quest_series::table
-            .find(series_id)
-            .select(quest_series::description)
-            .first(self.repository.conn)
-            .map_err(|e| e.to_string())
+/// Builds an `UpdateQuestInput` with only the fields that are set.
+#[derive(Default)]
+struct UpdateQuestInputBuilder {
+    status: Option<String>,
+    due: Option<String>,
+    repeat_rule: Option<String>,
+}
+
+impl UpdateQuestInputBuilder {
+    fn status(mut self, status: &str) -> Self {
+        self.status = Some(status.to_string());
+        self
+    }
+
+    fn due(mut self, due: Option<String>) -> Self {
+        self.due = due;
+        self
+    }
+
+    fn repeat_rule(mut self, repeat_rule: String) -> Self {
+        self.repeat_rule = Some(repeat_rule);
+        self
+    }
+
+    fn build(self) -> crate::models::UpdateQuestInput {
+        crate::models::UpdateQuestInput {
+            space_id: None,
+            title: None,
+            description: None,
+            status: self.status,
+            energy: None,
+            priority: None,
+            due: self.due,
+            due_time: None,
+            repeat_rule: self.repeat_rule,
+            order_rank: None,
+            is_checklist: None,
+        }
     }
 }
 
@@ -1278,7 +1668,6 @@ fn log_checklist_activity(
     origin_device_id: Option<&str>,
 ) -> Result<(), String> {
     use crate::models::CreateChecklistActivityInput;
-    use crate::schema::checklist_activity;
 
     let input = CreateChecklistActivityInput {
         quest_id: quest_id.to_string(),
@@ -1295,66 +1684,6 @@ fn log_checklist_activity(
 }
 
 #[cfg(test)]
-pub fn update_quest_in_db(
-    conn: &mut SqliteConnection,
-    id: &str,
-    input: UpdateQuestInput,
-) -> Result<(Quest, bool, Option<Quest>), String> {
-    let result = QuestService::new(conn).update(id, input)?;
-    Ok((
-        result.quest,
-        result.restore_should_focus,
-        result.next_occurrence,
-    ))
-}
-
-fn compare_series_occurrence_order(a: &Quest, b: &Quest) -> std::cmp::Ordering {
-    match (parse_due_deadline_utc(a), parse_due_deadline_utc(b)) {
-        (Some(a_due), Some(b_due)) if a_due != b_due => a_due.cmp(&b_due),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        _ => match (
-            parse_utc_timestamp(&a.created_at),
-            parse_utc_timestamp(&b.created_at),
-        ) {
-            (Some(a_created), Some(b_created)) if a_created != b_created => {
-                a_created.cmp(&b_created)
-            }
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            _ => a.created_at.cmp(&b.created_at),
-        },
-    }
-    .then_with(|| a.id.cmp(&b.id))
-}
-
-fn collapse_active_series_occurrences(loaded: Vec<Quest>) -> Vec<Quest> {
-    let mut active_by_series: HashMap<String, Quest> = HashMap::new();
-    let mut passthrough = Vec::with_capacity(loaded.len());
-
-    for quest in loaded {
-        if quest.status == "active" {
-            if let Some(series_id) = quest.series_id.clone() {
-                if let Some(current) = active_by_series.get_mut(&series_id) {
-                    if compare_series_occurrence_order(&quest, current) == std::cmp::Ordering::Less
-                    {
-                        *current = quest;
-                    }
-                } else {
-                    active_by_series.insert(series_id, quest);
-                }
-                continue;
-            }
-        }
-
-        passthrough.push(quest);
-    }
-
-    passthrough.extend(active_by_series.into_values());
-    passthrough
-}
-
-#[cfg(test)]
 pub(crate) fn load_quests_for_list(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<Quest>, diesel::result::Error> {
@@ -1362,9 +1691,7 @@ pub(crate) fn load_quests_for_list(
     Ok(sort_quests_for_list(loaded))
 }
 
-fn sort_quests_for_list(loaded: Vec<Quest>) -> Vec<Quest> {
-    let mut loaded = collapse_active_series_occurrences(loaded);
-
+fn sort_quests_for_list(mut loaded: Vec<Quest>) -> Vec<Quest> {
     let now = Utc::now();
     loaded.sort_by(|a, b| {
         let a_active = a.status == "active";
@@ -1416,12 +1743,36 @@ fn sort_quests_for_list(loaded: Vec<Quest>) -> Vec<Quest> {
             _ => b.updated_at.cmp(&a.updated_at),
         }
         .then_with(|| a.id.cmp(&b.id))
+        .then_with(|| b.due.cmp(&a.due))
     });
 
     loaded
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
+
+/// Keeps a quest's reminder in step with it: a one-time quest that is
+/// active with a date; for a repeating quest its next open occurrence from
+/// today (ADR-0012 D9).
+#[cfg(any(feature = "ui-plane", test))]
+fn refresh_reminder(conn: &mut SqliteConnection, app: &tauri::AppHandle, quest_id: &str) {
+    let target = (|| -> Result<Option<Quest>, String> {
+        let mut service = QuestService::new(conn);
+        if service.is_repeating(quest_id)? {
+            return service.reminder_occurrence(quest_id);
+        }
+        let quest = service.get(quest_id)?;
+        Ok((quest.status == "active" && quest.due.is_some()).then_some(quest))
+    })();
+    let result = match target {
+        Ok(Some(quest)) => reminder::upsert_reminder_for_quest(conn, app, &quest),
+        Ok(None) => reminder::delete_reminder_for_quest(conn, app, quest_id),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
+        eprintln!("[bridge] reminder refresh failed for {quest_id}: {e}");
+    }
+}
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
@@ -1439,46 +1790,16 @@ pub fn create_quest(
     input: CreateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let created = QuestService::new(&mut conn).create(input)?;
-
-    if let Some(series) = &created.series {
-        let series_payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
-        OutboxRepository::new(&mut conn).emit_sync_event(
-            &space_sync.identity().device_id,
-            "quest_series",
-            &series.id,
-            &series.space_id,
-            "upsert",
-            Some(series_payload),
-        )?;
-    }
-
-    let quest = created.quest;
-    let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
-    OutboxRepository::new(&mut conn).emit_sync_event(
-        &space_sync.identity().device_id,
-        "quest",
-        &quest.id,
-        &quest.space_id,
-        "upsert",
-        Some(payload),
-    )?;
-
-    if quest.status == "active" && quest.due.is_some() {
-        if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, &quest) {
-            eprintln!(
-                "[bridge] upsert_reminder on create failed for {}: {e}",
-                quest.id
-            );
-        }
-    }
-
+    let quest = QuestService::new(&mut conn).create(input)?;
+    emit_quest_sync_events(&mut conn, &space_sync.identity().device_id, &quest.space_id, &quest.id)?;
+    refresh_reminder(&mut conn, &app, &quest.id);
     space_sync.wake();
     Ok(quest)
 }
 
 /// Complete a quest from a notification action. Handles its own DB locking and sync emission.
-/// Logs errors rather than returning them — callers are notification action handlers.
+/// Logs errors rather than returning them — callers are notification action handlers. For a
+/// repeating quest it closes the occurrence the reminder was for.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     let db = match app.try_state::<AppDbConnection>() {
@@ -1497,6 +1818,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     };
 
     let mut conn = db.0.lock().unwrap();
+    let device_id = space_sync.identity().device_id.clone();
 
     let quest: Quest = match QuestService::new(&mut conn).get(quest_id) {
         Ok(q) => q,
@@ -1505,35 +1827,29 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
             return;
         }
     };
+    let period_key = QuestService::new(&mut conn)
+        .reminder_occurrence(quest_id)
+        .ok()
+        .flatten()
+        .and_then(|day| day.due);
 
-    let space_id = quest.space_id.clone();
-    let input = UpdateQuestInput {
-        status: Some("completed".to_string()),
-        space_id: None,
-        title: None,
-        description: None,
-        energy: None,
-        priority: None,
-        due: None,
-        due_time: None,
-        repeat_rule: None,
-        order_rank: None,
-        is_checklist: None,
+    let patch = QuestUpdatePatch {
+        input: UpdateQuestInputBuilder::default().status(OCCURRENCE_COMPLETED).build(),
+        description: QuestFieldPatch::Unchanged,
+        due: QuestFieldPatch::Unchanged,
+        due_time: QuestFieldPatch::Unchanged,
+        repeat_rule: QuestFieldPatch::Unchanged,
     };
-
-    match QuestService::new(&mut conn).update_with_origin(
+    match QuestService::new(&mut conn).update_scoped(
         quest_id,
-        input,
-        Some(&space_sync.identity().device_id),
+        patch,
+        EditScope::All,
+        period_key.as_deref(),
+        Some(&device_id),
     ) {
-        Ok(result) => {
-            let updated_quest = result.quest;
-            if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, app, quest_id) {
-                eprintln!("[notification] complete: delete_reminder failed: {e}");
-            }
-            if let Err(e) =
-                emit_quest_sync_events(&mut conn, &space_sync.identity().device_id, &space_id, &updated_quest)
-            {
+        Ok(change) => {
+            refresh_reminder(&mut conn, app, quest_id);
+            if let Err(e) = emit_change_sync_events(&mut conn, &device_id, &quest.space_id, &change) {
                 eprintln!("[notification] complete: sync emit failed: {e}");
             }
             space_sync.wake();
@@ -1556,6 +1872,8 @@ pub fn set_focus(state: State<AppDbConnection>, id: String) -> Result<Quest, Str
     QuestService::new(&mut conn).set_focus(&id, "manual")
 }
 
+/// `input.scope` and `input.period_key` apply to a repeating quest only
+/// (ADR-0012 D8).
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn update_quest(
@@ -1566,51 +1884,49 @@ pub fn update_quest(
     input: UpdateQuestCommandInput,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let previous = QuestService::new(&mut conn).get(&id)?;
-    let previous_status = previous.status.clone();
-    let previous_space_id = previous.space_id.clone();
+    let device_id = space_sync.identity().device_id.clone();
+    let previous_space_id = QuestService::new(&mut conn).get(&id)?.space_id;
+    let scope = EditScope::parse(input.scope.as_deref())?;
+    let period_key = input.period_key.clone();
 
-    let update_result = QuestService::new(&mut conn).update_patch_with_origin(
+    let change = QuestService::new(&mut conn).update_scoped(
         &id,
         input.into_patch(),
-        Some(&space_sync.identity().device_id),
+        scope,
+        period_key.as_deref(),
+        Some(&device_id),
     )?;
-    let mut quest = update_result.quest;
+    let mut quest = change.quest.clone();
 
-    if previous_status != "active" && quest.status == "active" && update_result.restore_should_focus
-    {
+    if change.restore_should_focus {
         append_focus_history(&mut conn, &quest.id, &quest.space_id, "restore")?;
         quest = record_focus_enter(&mut conn, &quest).map_err(|e| e.to_string())?;
     }
 
-    // Bridge: manage Reminder row based on resulting quest state
-    let should_have_reminder = quest.status == "active" && quest.due.is_some();
-    if should_have_reminder {
-        if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, &quest) {
-            eprintln!("[bridge] upsert_reminder failed for {}: {e}", quest.id);
-        }
-    } else if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, &app, &quest.id) {
-        eprintln!("[bridge] delete_reminder failed for {}: {e}", quest.id);
-    }
-
-    // If a new occurrence was generated, create its reminder too
-    if let Some(ref occ) = update_result.next_occurrence {
-        if occ.due.is_some() {
-            if let Err(e) = reminder::upsert_reminder_for_quest(&mut conn, &app, occ) {
-                eprintln!("[bridge] upsert_reminder for occurrence failed: {e}");
-            }
-        }
-    }
-
-    emit_quest_sync_events(
-        &mut conn,
-        &space_sync.identity().device_id,
-        &previous_space_id,
-        &quest,
-    )?;
+    refresh_reminder(&mut conn, &app, &id);
+    emit_change_sync_events(&mut conn, &device_id, &previous_space_id, &change)?;
     space_sync.wake();
 
     Ok(quest)
+}
+
+/// "Complete through today" (ADR-0012 D7).
+#[cfg(any(feature = "ui-plane", test))]
+#[tauri::command]
+pub fn complete_quest_through_today(
+    app: tauri::AppHandle,
+    state: State<AppDbConnection>,
+    space_sync: State<std::sync::Arc<SpaceSyncService>>,
+    id: String,
+) -> Result<Quest, String> {
+    let mut conn = state.inner().0.lock().unwrap();
+    let device_id = space_sync.identity().device_id.clone();
+    let space_id = QuestService::new(&mut conn).get(&id)?.space_id;
+    let change = QuestService::new(&mut conn).complete_through_today(&id, Some(&device_id))?;
+    refresh_reminder(&mut conn, &app, &id);
+    emit_change_sync_events(&mut conn, &device_id, &space_id, &change)?;
+    space_sync.wake();
+    Ok(change.quest)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1646,45 +1962,18 @@ pub fn delete_quest(
 
 // ── Checklist commands (issue #128) ─────────────────────────────────────────
 
+/// Syncs and returns a checklist change.
 #[cfg(any(feature = "ui-plane", test))]
-fn emit_quest_checklist_sync(
+fn finish_checklist_command(
     conn: &mut SqliteConnection,
-    device_id: &str,
-    quest: &Quest,
-) -> Result<(), String> {
-    let payload = serde_json::to_string(quest).map_err(|e| e.to_string())?;
-    OutboxRepository::new(conn).emit_sync_event(
-        device_id,
-        "quest",
-        &quest.id,
-        &quest.space_id,
-        "upsert",
-        Some(payload),
-    )?;
-    emit_checklist_activity_sync_events(conn, device_id, quest)
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-fn emit_series_checklist_template_sync(
-    conn: &mut SqliteConnection,
-    device_id: &str,
-    series_id: &str,
-    outbox_space_id: &str,
-) -> Result<(), String> {
-    let series: QuestSeries = crate::schema::quest_series::table
-        .find(series_id)
-        .select(QuestSeries::as_select())
-        .first(&mut *conn)
-        .map_err(|e: diesel::result::Error| e.to_string())?;
-    let payload = serde_json::to_string(&series).map_err(|e| e.to_string())?;
-    OutboxRepository::new(conn).emit_sync_event(
-        device_id,
-        "quest_series",
-        series_id,
-        outbox_space_id,
-        "upsert",
-        Some(payload),
-    )
+    space_sync: &SpaceSyncService,
+    change: QuestChange,
+) -> Result<Quest, String> {
+    let device_id = space_sync.identity().device_id.clone();
+    let space_id = QuestService::new(conn).get(&change.quest.id)?.space_id;
+    emit_change_sync_events(conn, &device_id, &space_id, &change)?;
+    space_sync.wake();
+    Ok(change.quest)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1694,14 +1983,17 @@ pub fn add_checklist_item(
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     text: String,
+    scope: Option<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
     let device_id = space_sync.identity().device_id.clone();
-    let quest =
-        QuestService::new(&mut conn).add_checklist_item(&quest_id, &text, Some(&device_id))?;
-    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
-    space_sync.wake();
-    Ok(quest)
+    let change = QuestService::new(&mut conn).add_checklist_item(
+        &quest_id,
+        &text,
+        EditScope::parse(scope.as_deref())?,
+        Some(&device_id),
+    )?;
+    finish_checklist_command(&mut conn, &space_sync, change)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1712,13 +2004,11 @@ pub fn toggle_checklist_item(
     quest_id: String,
     item_id: String,
     checked: bool,
+    period_key: Option<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = space_sync.identity().device_id.clone();
-    let quest = QuestService::new(&mut conn).toggle_checklist_item(&quest_id, &item_id, checked)?;
-    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
-    space_sync.wake();
-    Ok(quest)
+    let change = QuestService::new(&mut conn).toggle_checklist_item(&quest_id, &item_id, checked, period_key.as_deref())?;
+    finish_checklist_command(&mut conn, &space_sync, change)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1729,18 +2019,18 @@ pub fn edit_checklist_item(
     quest_id: String,
     item_id: String,
     text: String,
+    scope: Option<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
     let device_id = space_sync.identity().device_id.clone();
-    let quest = QuestService::new(&mut conn).edit_checklist_item_text(
+    let change = QuestService::new(&mut conn).edit_checklist_item_text(
         &quest_id,
         &item_id,
         &text,
+        EditScope::parse(scope.as_deref())?,
         Some(&device_id),
     )?;
-    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
-    space_sync.wake();
-    Ok(quest)
+    finish_checklist_command(&mut conn, &space_sync, change)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1750,17 +2040,17 @@ pub fn remove_checklist_item(
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     item_id: String,
+    scope: Option<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
     let device_id = space_sync.identity().device_id.clone();
-    let quest = QuestService::new(&mut conn).remove_checklist_item(
+    let change = QuestService::new(&mut conn).remove_checklist_item(
         &quest_id,
         &item_id,
+        EditScope::parse(scope.as_deref())?,
         Some(&device_id),
     )?;
-    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
-    space_sync.wake();
-    Ok(quest)
+    finish_checklist_command(&mut conn, &space_sync, change)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1770,41 +2060,15 @@ pub fn reorder_checklist(
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     ordered_item_ids: Vec<String>,
+    scope: Option<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    let device_id = space_sync.identity().device_id.clone();
-    let quest = QuestService::new(&mut conn).reorder_checklist(&quest_id, &ordered_item_ids)?;
-    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
-    space_sync.wake();
-    Ok(quest)
-}
-
-/// `scope` is `"this"` or `"future"` — see issue #128's recurrence edit-scope contract.
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn update_series_checklist(
-    state: State<AppDbConnection>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
-    series_id: String,
-    current_occurrence_id: String,
-    checklist: String,
-    scope: String,
-) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
-    let device_id = space_sync.identity().device_id.clone();
-    let quest = QuestService::new(&mut conn).update_series_checklist(
-        &series_id,
-        &current_occurrence_id,
-        &checklist,
-        &scope,
-        Some(&device_id),
+    let change = QuestService::new(&mut conn).reorder_checklist(
+        &quest_id,
+        &ordered_item_ids,
+        EditScope::parse(scope.as_deref())?,
     )?;
-    emit_quest_checklist_sync(&mut conn, &device_id, &quest)?;
-    if scope == "future" {
-        emit_series_checklist_template_sync(&mut conn, &device_id, &series_id, &quest.space_id)?;
-    }
-    space_sync.wake();
-    Ok(quest)
+    finish_checklist_command(&mut conn, &space_sync, change)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1815,45 +2079,6 @@ pub fn get_checklist_activity(
 ) -> Result<Vec<crate::models::ChecklistActivity>, String> {
     let mut conn = state.inner().0.lock().unwrap();
     QuestService::new(&mut conn).get_checklist_activity(&quest_id)
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn get_series_checklist_template(
-    state: State<AppDbConnection>,
-    series_id: String,
-) -> Result<Option<String>, String> {
-    let mut conn = state.inner().0.lock().unwrap();
-    QuestService::new(&mut conn).get_series_checklist_template(&series_id)
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-#[tauri::command]
-pub fn delete_quest_series(
-    app: tauri::AppHandle,
-    state: State<AppDbConnection>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
-    series_id: String,
-) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
-    let origin_device_id = space_sync.identity().device_id.clone();
-
-    // Cancel OS notifications before the DB transaction. Reminder cancellation is
-    // best-effort: notification cancel is non-transactional and will not be undone
-    // if the DB transaction below rolls back.
-    let quest_ids = QuestService::new(&mut conn).series_quest_ids(&series_id)?;
-
-    for quest_id in &quest_ids {
-        if let Err(e) = reminder::delete_reminder_for_quest(&mut *conn, &app, quest_id) {
-            eprintln!("[bridge] delete_reminder on series delete failed for {quest_id}: {e}");
-        }
-    }
-
-    QuestService::new(&mut conn)
-        .delete_series_with_sync(&origin_device_id, &series_id)
-        .map_err(|e| e.to_string())?;
-    space_sync.wake();
-    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

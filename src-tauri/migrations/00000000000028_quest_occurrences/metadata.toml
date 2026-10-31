@@ -1,0 +1,4 @@
+# The rebuild of `quests` needs foreign keys off, and SQLite ignores
+# `PRAGMA foreign_keys` inside a transaction. up.sql runs its own
+# transaction (SQLite's generalized ALTER TABLE procedure).
+run_in_transaction = false

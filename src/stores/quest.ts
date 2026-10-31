@@ -63,10 +63,23 @@ export interface Quest {
   focus_enter_count: number;
   created_at: string;
   updated_at: string;
-  series_id: string | null;
-  period_key: string | null;
   /** When true, `description` is task-list text rendered/edited as a checklist (#128). */
   is_checklist: boolean;
+}
+
+/** The edit scope of a repeating quest (ADR-0012 D8): one day, or the quest. */
+export type EditScope = "day" | "all";
+
+/** Whether a quest repeats. A repeating quest is one quest; the backend
+ * resolves each row of it to one occurrence, whose `due` is that day (ADR-0012). */
+export function isRepeating(quest: Pick<Quest, "repeat_rule">): boolean {
+  return !!quest.repeat_rule && quest.repeat_rule !== "null";
+}
+
+/** A list key that is unique per row: a repeating quest has one row per day
+ * (its open day, and each closed day in History). */
+export function questRowKey(quest: Pick<Quest, "id" | "repeat_rule" | "due">): string {
+  return isRepeating(quest) ? `${quest.id}:${quest.due ?? ""}` : quest.id;
 }
 
 export interface ChecklistActivity {
@@ -103,6 +116,10 @@ export interface UpdateQuestInput {
   due_time?: string | null;
   repeat_rule?: string | null;
   order_rank?: number;
+  /** A repeating quest only: "day" writes the edit on one occurrence; "all" (default) on the quest. */
+  scope?: EditScope;
+  /** A repeating quest only: the occurrence (its date) the edit is for; default its oldest open day. */
+  period_key?: string;
 }
 
 export const useQuestStore = defineStore("quest", () => {
@@ -141,12 +158,18 @@ export const useQuestStore = defineStore("quest", () => {
   ) {
     const quest = await invoke<Quest>("update_quest", { id, input });
     if (options?.refresh === false) {
-      const idx = quests.value.findIndex((q) => q.id === id);
-      if (idx !== -1) quests.value[idx] = quest;
-      if (activeQuest.value?.id === id) activeQuest.value = quest;
+      applyLocalQuest(quest);
     } else {
       await fetchQuests();
     }
+    return quest;
+  }
+
+  /** "Complete through today" (ADR-0012 D7): closes every open occurrence of
+   * a repeating quest dated today or before. */
+  async function completeThroughToday(id: string) {
+    const quest = await invoke<Quest>("complete_quest_through_today", { id });
+    await fetchQuests();
     return quest;
   }
 
@@ -162,9 +185,12 @@ export const useQuestStore = defineStore("quest", () => {
     await fetchQuests();
   }
 
-  /** Replaces `quest` wherever it's held locally (list row + active quest), without a refetch. */
+  /** Replaces `quest` wherever it's held locally (list row + active quest), without a refetch.
+   * A repeating quest replaces its open row (History rows of other days stay). */
   function applyLocalQuest(quest: Quest) {
-    const idx = quests.value.findIndex((q) => q.id === quest.id);
+    const idx = quests.value.findIndex(
+      (q) => q.id === quest.id && (!isRepeating(q) || q.status === "active"),
+    );
     if (idx !== -1) quests.value[idx] = quest;
     if (activeQuest.value?.id === quest.id) activeQuest.value = quest;
   }
@@ -174,15 +200,19 @@ export const useQuestStore = defineStore("quest", () => {
   // returned by the server response is what callers should key on afterward. `toggleChecklistItem`
   // additionally applies an optimistic local update so the checkbox feels instant.
 
-  async function addChecklistItem(questId: string, text: string) {
-    const quest = await invoke<Quest>("add_checklist_item", { questId, text });
+  // A repeating quest's checklist edit goes to one day ("day") or to the
+  // quest's template ("all", default), which reaches every open day (ADR-0012 D5).
+
+  async function addChecklistItem(questId: string, text: string, scope?: EditScope) {
+    const quest = await invoke<Quest>("add_checklist_item", { questId, text, scope });
     applyLocalQuest(quest);
     return quest;
   }
 
+  /** A tick is always the day's: it has no scope (ADR-0012 D8). */
   async function toggleChecklistItem(questId: string, itemId: string, checked: boolean) {
     const current =
-      quests.value.find((q) => q.id === questId) ??
+      quests.value.find((q) => q.id === questId && (!isRepeating(q) || q.status === "active")) ??
       (activeQuest.value?.id === questId ? activeQuest.value : null);
     if (current) {
       const items = parseChecklist(current.description).map((it) =>
@@ -201,50 +231,26 @@ export const useQuestStore = defineStore("quest", () => {
     return quest;
   }
 
-  async function editChecklistItemText(questId: string, itemId: string, text: string) {
-    const quest = await invoke<Quest>("edit_checklist_item", { questId, itemId, text });
+  async function editChecklistItemText(questId: string, itemId: string, text: string, scope?: EditScope) {
+    const quest = await invoke<Quest>("edit_checklist_item", { questId, itemId, text, scope });
     applyLocalQuest(quest);
     return quest;
   }
 
-  async function removeChecklistItem(questId: string, itemId: string) {
-    const quest = await invoke<Quest>("remove_checklist_item", { questId, itemId });
+  async function removeChecklistItem(questId: string, itemId: string, scope?: EditScope) {
+    const quest = await invoke<Quest>("remove_checklist_item", { questId, itemId, scope });
     applyLocalQuest(quest);
     return quest;
   }
 
-  async function reorderChecklist(questId: string, orderedItemIds: string[]) {
-    const quest = await invoke<Quest>("reorder_checklist", { questId, orderedItemIds });
-    applyLocalQuest(quest);
-    return quest;
-  }
-
-  /** `scope` is `"this"` or `"future"` — see issue #128's recurrence edit-scope contract. */
-  async function updateSeriesChecklist(
-    seriesId: string,
-    currentOccurrenceId: string,
-    checklist: string,
-    scope: "this" | "future",
-  ) {
-    const quest = await invoke<Quest>("update_series_checklist", {
-      seriesId,
-      currentOccurrenceId,
-      checklist,
-      scope,
-    });
+  async function reorderChecklist(questId: string, orderedItemIds: string[], scope?: EditScope) {
+    const quest = await invoke<Quest>("reorder_checklist", { questId, orderedItemIds, scope });
     applyLocalQuest(quest);
     return quest;
   }
 
   async function fetchChecklistActivity(questId: string) {
     return invoke<ChecklistActivity[]>("get_checklist_activity", { questId });
-  }
-
-  /** The series' own stored checklist template — callers building a "This and future
-   * occurrences" edit must diff against this, not the current occurrence's description, or
-   * occurrence-only changes get silently promoted into the template. */
-  async function fetchSeriesChecklistTemplate(seriesId: string) {
-    return invoke<string | null>("get_series_checklist_template", { seriesId });
   }
 
   return {
@@ -256,6 +262,7 @@ export const useQuestStore = defineStore("quest", () => {
     fetchActiveQuest,
     createQuest,
     updateQuest,
+    completeThroughToday,
     setFocusQuest,
     deleteQuest,
     addChecklistItem,
@@ -263,8 +270,6 @@ export const useQuestStore = defineStore("quest", () => {
     editChecklistItemText,
     removeChecklistItem,
     reorderChecklist,
-    updateSeriesChecklist,
     fetchChecklistActivity,
-    fetchSeriesChecklistTemplate,
   };
 });

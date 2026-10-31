@@ -21,7 +21,7 @@ use crate::services::event_bus_service::EventBusService;
 use crate::services::network_channel_service::NetworkChannelService;
 use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
 use crate::services::quest::{
-    append_focus_history, record_focus_enter, resolve_active_quest, QuestService,
+    append_focus_history, record_focus_enter, resolve_active_quest, EditScope, QuestService,
 };
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
@@ -156,9 +156,11 @@ enum QuestCommand {
     #[command(about = "List a quest's checklist audit activity")]
     ChecklistActivity(QuestIdArg),
     #[command(
-        about = "Replace a recurring quest's checklist. --scope this edits only this occurrence; --scope future edits the series template and reconciles this occurrence (issue #128)"
+        about = "Replace a quest's checklist. For a repeating quest --scope this edits only its oldest open day; --scope future edits the quest's template, which reaches every open day (ADR-0012)"
     )]
     ChecklistSetTemplate(ChecklistSetTemplateArgs),
+    #[command(about = "Complete every open occurrence of a repeating quest dated today or before (ADR-0012)")]
+    CompleteThroughToday(IdArg),
 }
 
 #[derive(Args)]
@@ -558,8 +560,6 @@ struct ChecklistEditArgs {
 #[derive(Args)]
 struct ChecklistSetTemplateArgs {
     #[arg(long)]
-    series_id: String,
-    #[arg(long)]
     quest_id: String,
     #[arg(
         long,
@@ -570,7 +570,7 @@ struct ChecklistSetTemplateArgs {
         long,
         value_parser = ["this", "future"],
         default_value = "this",
-        help = "'this' edits only this occurrence; 'future' also updates the series template (issue #128)"
+        help = "'this' edits only the oldest open day; 'future' edits the quest's template (ADR-0012)"
     )]
     scope: String,
 }
@@ -730,12 +730,18 @@ fn should_run_auto_update() -> bool {
     !cfg!(debug_assertions) && std::env::var_os("FINI_DISABLE_AUTO_UPDATE").is_none()
 }
 
+/// Emits the stored quest row: a repeating quest syncs as one entity, never
+/// as the resolved occurrence a command returns (ADR-0012 D11).
 fn emit_quest_sync(
     ctx: &CliContext,
     conn: &mut diesel::sqlite::SqliteConnection,
     quest: &crate::models::Quest,
     op_type: &str,
 ) {
+    let stored = (op_type != "delete")
+        .then(|| crate::repositories::QuestRepository::new(conn).get(&quest.id).ok())
+        .flatten();
+    let quest = stored.as_ref().unwrap_or(quest);
     let payload = if op_type == "delete" {
         None
     } else {
@@ -802,20 +808,61 @@ fn emit_checklist_activity_sync(
     }
 }
 
-fn emit_series_sync(
+/// Emits what a quest change wrote: the quest row, and each changed or
+/// removed occurrence mark. Returns the quest as the command shows it.
+fn emit_change_sync(
     ctx: &CliContext,
     conn: &mut diesel::sqlite::SqliteConnection,
-    series: &crate::models::QuestSeries,
-) {
-    let payload = serde_json::to_string(series).ok();
-    let _ = OutboxRepository::new(conn).emit_sync_event(
-        ctx.device_id(),
-        "quest_series",
-        &series.id,
-        &series.space_id,
-        "upsert",
-        payload,
-    );
+    change: crate::services::quest::QuestChange,
+) -> CliResult<Value> {
+    let space_id = crate::repositories::QuestRepository::new(conn)
+        .get(&change.quest.id)
+        .map(|quest| quest.space_id)
+        .unwrap_or_else(|_| change.quest.space_id.clone());
+    if change.quest_row_changed || change.quest.is_checklist {
+        emit_quest_sync(ctx, conn, &change.quest, "upsert");
+    }
+    for occurrence in &change.occurrences {
+        let _ = OutboxRepository::new(conn).emit_sync_event(
+            ctx.device_id(),
+            "quest_occurrence",
+            &occurrence.sync_id(),
+            &space_id,
+            "upsert",
+            serde_json::to_string(occurrence).ok(),
+        );
+    }
+    for period_key in &change.removed_occurrences {
+        let _ = OutboxRepository::new(conn).emit_sync_event(
+            ctx.device_id(),
+            "quest_occurrence",
+            &format!("{}:{period_key}", change.quest.id),
+            &space_id,
+            "delete",
+            None,
+        );
+    }
+    refresh_cli_reminder(conn, &change.quest.id);
+    serde_json::to_value(change.quest).map_err(|e| CliError::runtime(e.to_string()))
+}
+
+/// The reminder rows follow the quest: a one-time quest as it is; a
+/// repeating quest's next open occurrence from today (ADR-0012 D9).
+fn refresh_cli_reminder(conn: &mut diesel::sqlite::SqliteConnection, quest_id: &str) {
+    let target = (|| -> Result<Option<crate::models::Quest>, String> {
+        let mut service = QuestService::new(conn);
+        if service.is_repeating(quest_id)? {
+            return service.reminder_occurrence(quest_id);
+        }
+        service.get(quest_id).map(Some)
+    })();
+    match target {
+        Ok(Some(quest)) => sync_reminder_rows(conn, &quest),
+        Ok(None) => {
+            let _ = ReminderService::new(conn).delete_for_quest(quest_id);
+        }
+        Err(_) => {}
+    }
 }
 
 fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
@@ -869,7 +916,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         }
         QuestCommand::Get(args) => serde_json::to_value(
             QuestService::new(&mut conn)
-                .get(&args.id)
+                .resolved(&args.id)
                 .map_err(CliError::from_string)?,
         )
         .map_err(|e| CliError::runtime(e.to_string())),
@@ -908,17 +955,12 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 order_rank: None,
                 is_checklist,
             };
-            let created = QuestService::new(&mut conn)
+            let quest = QuestService::new(&mut conn)
                 .create(input)
                 .map_err(CliError::from_string)?;
-            if let Some(series) = &created.series {
-                emit_series_sync(ctx, &mut conn, series);
-            }
-            if created.quest.status == "active" && created.quest.due.is_some() {
-                let _ = ReminderService::new(&mut conn).upsert_for_quest(&created.quest);
-            }
-            emit_quest_sync(ctx, &mut conn, &created.quest, "upsert");
-            serde_json::to_value(created.quest).map_err(|e| CliError::runtime(e.to_string()))
+            refresh_cli_reminder(&mut conn, &quest.id);
+            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
+            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
         QuestCommand::Update(args) => update_quest_from_cli(ctx, &mut conn, args),
         QuestCommand::Complete(args) => update_quest_status(ctx, &mut conn, args.id, "completed"),
@@ -947,7 +989,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         }
         QuestCommand::ChecklistList(args) => {
             let quest = QuestService::new(&mut conn)
-                .get(&args.quest_id)
+                .resolved(&args.quest_id)
                 .map_err(CliError::from_string)?;
             let items = crate::services::checklist::parse_opt(quest.description.as_deref());
             Ok(
@@ -955,52 +997,46 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             )
         }
         QuestCommand::ChecklistAdd(args) => {
-            let quest = QuestService::new(&mut conn)
-                .add_checklist_item(
-                    &args.quest_id,
-                    &args.text,
-                    Some(ctx.device_id()),
-                )
+            let change = QuestService::new(&mut conn)
+                .add_checklist_item(&args.quest_id, &args.text, EditScope::All, Some(ctx.device_id()))
                 .map_err(CliError::from_string)?;
-            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
-            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+            emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistCheck(args) => {
-            let quest = QuestService::new(&mut conn)
-                .toggle_checklist_item(&args.quest_id, &args.item_id, true)
+            let change = QuestService::new(&mut conn)
+                .toggle_checklist_item(&args.quest_id, &args.item_id, true, None)
                 .map_err(CliError::from_string)?;
-            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
-            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+            emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistUncheck(args) => {
-            let quest = QuestService::new(&mut conn)
-                .toggle_checklist_item(&args.quest_id, &args.item_id, false)
+            let change = QuestService::new(&mut conn)
+                .toggle_checklist_item(&args.quest_id, &args.item_id, false, None)
                 .map_err(CliError::from_string)?;
-            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
-            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+            emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistEdit(args) => {
-            let quest = QuestService::new(&mut conn)
+            let change = QuestService::new(&mut conn)
                 .edit_checklist_item_text(
                     &args.quest_id,
                     &args.item_id,
                     &args.text,
+                    EditScope::All,
                     Some(ctx.device_id()),
                 )
                 .map_err(CliError::from_string)?;
-            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
-            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+            emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistRemove(args) => {
-            let quest = QuestService::new(&mut conn)
-                .remove_checklist_item(
-                    &args.quest_id,
-                    &args.item_id,
-                    Some(ctx.device_id()),
-                )
+            let change = QuestService::new(&mut conn)
+                .remove_checklist_item(&args.quest_id, &args.item_id, EditScope::All, Some(ctx.device_id()))
                 .map_err(CliError::from_string)?;
-            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
-            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+            emit_change_sync(ctx, &mut conn, change)
+        }
+        QuestCommand::CompleteThroughToday(args) => {
+            let change = QuestService::new(&mut conn)
+                .complete_through_today(&args.id, Some(ctx.device_id()))
+                .map_err(CliError::from_string)?;
+            emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistActivity(args) => {
             let activity = QuestService::new(&mut conn)
@@ -1009,52 +1045,18 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quest_id": args.quest_id, "activity": activity }))
         }
         QuestCommand::ChecklistSetTemplate(args) => {
-            let normalized_checklist = if args.scope == "future" {
-                // Preserve ids for text-matching lines against the *series template* — not the
-                // current occurrence, which may carry this-occurrence-only edits (e.g. a rename)
-                // that never made it into the template. Matching against the occurrence would
-                // miss the template's own item and assign it a fresh id, which
-                // reconcile_future_scope then treats as a brand-new item — dropping the real one
-                // and re-adding it unchecked. The template is what the user is actually revising,
-                // and reconcile_future_scope's own occurrence/template id match still carries
-                // checked-state over for any item whose id round-trips through this template
-                // unchanged (see normalize_future_template).
-                let series_template = QuestService::new(&mut conn)
-                    .get_series_checklist_template(&args.series_id)
-                    .ok()
-                    .flatten();
-                normalize_future_template(&args.checklist, series_template.as_deref())
-            } else {
-                normalize_cli_checklist(&args.checklist)
-            };
-            let quest = QuestService::new(&mut conn)
-                .update_series_checklist(
-                    &args.series_id,
-                    &args.quest_id,
-                    &normalized_checklist,
-                    &args.scope,
-                    Some(ctx.device_id()),
-                )
+            let scope = if args.scope == "future" { EditScope::All } else { EditScope::Day };
+            // Text-matching lines keep the ids of the quest's template, so an
+            // unchanged item keeps its identity (and its ticks on open days).
+            let template = QuestService::new(&mut conn)
+                .get(&args.quest_id)
+                .map_err(CliError::from_string)?
+                .description;
+            let normalized_checklist = normalize_future_template(&args.checklist, template.as_deref());
+            let change = QuestService::new(&mut conn)
+                .set_checklist(&args.quest_id, &normalized_checklist, scope, Some(ctx.device_id()))
                 .map_err(CliError::from_string)?;
-            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
-            if args.scope == "future" {
-                // Route through the occurrence's current space, not series.space_id: if this
-                // occurrence was moved to another space, peers mapped only to the destination
-                // space must still receive the template update, matching the Tauri
-                // update_series_checklist command's emit_series_checklist_template_sync.
-                if let Ok(series) = QuestService::new(&mut conn).get_series(&args.series_id) {
-                    let payload = serde_json::to_string(&series).ok();
-                    let _ = OutboxRepository::new(&mut conn).emit_sync_event(
-                        ctx.device_id(),
-                        "quest_series",
-                        &series.id,
-                        &quest.space_id,
-                        "upsert",
-                        payload,
-                    );
-                }
-            }
-            serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+            emit_change_sync(ctx, &mut conn, change)
         }
     }
 }
@@ -1157,26 +1159,20 @@ fn update_quest_from_cli(
         due_time,
         repeat_rule,
     };
-    let result = QuestService::new(conn)
+    let change = QuestService::new(conn)
         .update_patch_with_origin(&args.id, patch, Some(ctx.device_id()))
         .map_err(CliError::from_string)?;
-    let quest = result.quest;
     if args.trigger_reminder_focus {
-        append_focus_history(conn, &quest.id, &quest.space_id, "reminder")
+        append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")
             .map_err(CliError::from_string)?;
     } else if args.set_focus
         || args.status.as_deref() == Some("active")
-        || result.restore_should_focus
+        || change.restore_should_focus
     {
-        append_focus_history(conn, &quest.id, &quest.space_id, "manual")
+        append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")
             .map_err(CliError::from_string)?;
     }
-    sync_reminder_rows(conn, &quest);
-    if let Some(ref occurrence) = result.next_occurrence {
-        sync_reminder_rows(conn, occurrence);
-    }
-    emit_quest_sync(ctx, conn, &quest, "upsert");
-    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
+    emit_change_sync(ctx, conn, change)
 }
 
 fn update_quest_status(

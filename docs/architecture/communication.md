@@ -39,7 +39,7 @@ app start (composition root)    lib.rs
 │                                 iroh over ble-gatt-iroh, scanner,
 │                                 advertiser
 ├── SpaceSyncService            services/space-sync.service.rs: sessions,
-│                                 sync, takes fini/sync/4 links
+│                                 sync, takes fini/sync/5 links
 ├── DeviceService               services/device.service.rs: pairing, Add
 │                                 Device, the channel switches, takes
 │                                 fini/peer/1 links
@@ -161,7 +161,7 @@ the connection finds the paired device by that key
 
 | ALPN | Carries | Taken by |
 |---|---|---|
-| `fini/sync/4` (`SYNC_ALPN`) | a sync session; the last part is the protocol version | `SpaceSyncService` |
+| `fini/sync/5` (`SYNC_ALPN`) | a sync session; the last part is the protocol version (5: ADR-0012) | `SpaceSyncService` |
 | `fini/peer/1` (`PEER_ALPN`) | the frames before a session: pairing, `IdentifyDevice` | `DeviceService` |
 
 Before pairing there is no pinned key. Over Bluetooth, the identify step

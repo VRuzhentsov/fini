@@ -466,8 +466,9 @@ pub const PEER_ALPN: &[u8] = b"fini/peer/1";
 /// The ALPN of a sync session. Its last part is the protocol version: a
 /// device on another version shares no ALPN with this one, and the TLS
 /// handshake fails. Who the peer is, is the key the handshake proved; there
-/// is no auth frame (2026-10-13: TLS only).
-pub const SYNC_ALPN: &[u8] = b"fini/sync/4";
+/// is no auth frame (2026-10-13: TLS only). Version 5: a repeating quest is
+/// one quest with its occurrence marks (ADR-0012 D11).
+pub const SYNC_ALPN: &[u8] = b"fini/sync/5";
 
 /// An empty frame: the dialer's first write, so that the acceptor sees the
 /// stream before the first real frame. Not a message; `recv` skips it.
