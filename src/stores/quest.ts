@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ref } from "vue";
 import { parseChecklist, serializeChecklist } from "../utils/checklist";
 import { localDateStr, formatDue, formatTime } from "../utils/date";
+import type { EditScope } from "../utils/quest";
 
 export type Energy = "small" | "medium" | "large";
 export type Priority = "low" | "medium" | "high";
@@ -67,8 +68,7 @@ export interface Quest {
   is_checklist: boolean;
 }
 
-/** The edit scope of a repeating quest (ADR-0012 D8): one day, or the quest. */
-export type EditScope = "day" | "all";
+export { EditScope } from "../utils/quest";
 
 /** Whether a quest repeats. A repeating quest is one quest; the backend
  * resolves each row of it to one occurrence, whose `due` is that day (ADR-0012). */

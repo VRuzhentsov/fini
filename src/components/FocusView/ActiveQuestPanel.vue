@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { CheckIcon } from "@heroicons/vue/24/outline";
-import { isRepeating, useQuestStore, type EditScope, type Quest } from "../../stores/quest";
+import { isRepeating, useQuestStore, type Quest } from "../../stores/quest";
+import { EditScope } from "../../utils/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
 import { buildQuestMenu, completeThroughTodayItem } from "../../composables/buildQuestMenu";
@@ -56,7 +57,7 @@ function editChecklist(action: PendingScopeAction) {
     pendingScopeAction.value = action;
     return;
   }
-  void applyChecklistEdit(action, "all");
+  void applyChecklistEdit(action, EditScope.All);
 }
 
 function onEditChecklistItemText(itemId: string, text: string) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from "vue";
 import { ArrowPathIcon, CalendarDaysIcon } from "@heroicons/vue/24/outline";
-import type { EditScope } from "../../stores/quest";
+import { EditScope } from "../../utils/quest";
 
 defineProps<{
   /** Title of the quest whose checklist is being edited, shown in the prompt. */
@@ -41,7 +41,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       <p class="recurrence-scope-title">Apply checklist change</p>
       <p class="recurrence-scope-subtitle">{{ questTitle }} repeats. Where should this change apply?</p>
 
-      <button class="recurrence-scope-option" data-testid="recurrence-scope-day" @click="emit('choose', 'day')">
+      <button class="recurrence-scope-option" data-testid="recurrence-scope-day" @click="emit('choose', EditScope.Day)">
         <CalendarDaysIcon class="recurrence-scope-option-icon" />
         <span class="recurrence-scope-option-text">
           <span class="recurrence-scope-option-label">This day</span>
@@ -49,7 +49,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </span>
       </button>
 
-      <button class="recurrence-scope-option" data-testid="recurrence-scope-all" @click="emit('choose', 'all')">
+      <button class="recurrence-scope-option" data-testid="recurrence-scope-all" @click="emit('choose', EditScope.All)">
         <ArrowPathIcon class="recurrence-scope-option-icon" />
         <span class="recurrence-scope-option-text">
           <span class="recurrence-scope-option-label">All days</span>

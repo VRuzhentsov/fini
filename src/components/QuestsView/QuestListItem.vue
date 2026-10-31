@@ -8,7 +8,6 @@ import {
   dueBadgeClass,
   smartDueLabel,
   type ChecklistActivity,
-  type EditScope,
   type Quest,
   type UpdateQuestInput,
 } from "../../stores/quest";
@@ -19,6 +18,7 @@ import { buildQuestMenu } from "../../composables/buildQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { ArrowPathIcon, CheckCircleIcon } from "@heroicons/vue/24/outline";
 import { checklistCounts } from "../../utils/checklist";
+import { EditScope } from "../../utils/quest";
 import { formatTimestamp } from "../../utils/timestamp";
 import ReminderMenu from "./ReminderMenu.vue";
 import RecurrenceScopeSheet from "./RecurrenceScopeSheet.vue";
@@ -94,7 +94,7 @@ function editChecklist(action: PendingScopeAction) {
     pendingScopeAction.value = action;
     return;
   }
-  void applyChecklistEdit(action, "all");
+  void applyChecklistEdit(action, EditScope.All);
 }
 
 function onEditChecklistItemText(itemId: string, text: string) {
