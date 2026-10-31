@@ -983,6 +983,14 @@ impl<'a> QuestService<'a> {
         }
 
         if matches!(patch.repeat_rule, QuestFieldPatch::Clear) {
+            // The rest of the same edit (a title, a date) applies too.
+            let mut rest = patch;
+            rest.repeat_rule = QuestFieldPatch::Unchanged;
+            rest.input.status = None;
+            self.repository.update_patch(id, rest)?;
+            let quest = self.repository.get(id)?;
+            let repeating = RepeatingQuest::new(&quest, &marks)
+                .ok_or_else(|| "the quest does not repeat".to_string())?;
             return self.stop_repeat(&repeating, origin_device_id);
         }
 
@@ -1117,15 +1125,14 @@ impl<'a> QuestService<'a> {
     }
 
     /// ADR-0012 D10: with no marks the quest becomes a one-time quest on its
-    /// oldest open date; with marks the rule gets an end at the last closed
+    /// date; with marks the rule gets an end at the last closed
     /// day, and the quest ends.
     fn stop_repeat(&mut self, repeating: &RepeatingQuest<'_>, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
         let quest = repeating.quest().clone();
         let closed = repeating.closed();
+        // With no closed day the quest's date is its oldest open day already.
         let input = match closed.last() {
-            None => UpdateQuestInputBuilder::default()
-                .due(repeating.oldest_open())
-                .build(),
+            None => UpdateQuestInputBuilder::default().build(),
             Some(last_closed) => {
                 let mut rule = repeating.rule.clone();
                 rule.end = Some("on_date".to_string());
@@ -1623,18 +1630,12 @@ impl<'a> QuestService<'a> {
 #[derive(Default)]
 struct UpdateQuestInputBuilder {
     status: Option<String>,
-    due: Option<String>,
     repeat_rule: Option<String>,
 }
 
 impl UpdateQuestInputBuilder {
     fn status(mut self, status: &str) -> Self {
         self.status = Some(status.to_string());
-        self
-    }
-
-    fn due(mut self, due: Option<String>) -> Self {
-        self.due = due;
         self
     }
 
@@ -1651,13 +1652,25 @@ impl UpdateQuestInputBuilder {
             status: self.status,
             energy: None,
             priority: None,
-            due: self.due,
+            due: None,
             due_time: None,
             repeat_rule: self.repeat_rule,
             order_rank: None,
             is_checklist: None,
         }
     }
+}
+
+/// Test helper: one update through the service; (quest as the UI shows it,
+/// whether a restore should set Focus, ()).
+#[cfg(test)]
+pub fn update_quest_in_db(
+    conn: &mut SqliteConnection,
+    id: &str,
+    input: crate::models::UpdateQuestInput,
+) -> Result<(Quest, bool, ()), String> {
+    let change = QuestService::new(conn).update(id, input)?;
+    Ok((change.quest, change.restore_should_focus, ()))
 }
 
 fn log_checklist_activity(
@@ -2720,113 +2733,6 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    #[test]
-    fn recurring_quest_lifecycle_create_complete_generates_and_delete() {
-        let db_path = temp_db_path("recurring-quest-lifecycle");
-        let mut conn = open_db_at_path(&db_path);
-
-        let repeat_rule = r#"{"preset":"weekly"}"#;
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("1"),
-                quests::title.eq("Weekly chore"),
-                quests::status.eq("active"),
-                quests::due.eq("2026-04-01"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::created_at.eq("2026-03-29T10:00:00Z"),
-                quests::updated_at.eq("2026-03-29T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert recurring quest");
-
-        let first: Quest = quests::table
-            .filter(quests::title.eq("Weekly chore"))
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("load first occurrence");
-
-        assert_eq!(first.status, "active");
-        assert_eq!(first.due.as_deref(), Some("2026-04-01"));
-        assert!(first.series_id.is_none(), "no series yet before completion");
-
-        diesel::update(quests::table.find(&first.id))
-            .set((
-                quests::status.eq("completed"),
-                quests::completed_at.eq("2026-04-01T18:00:00Z"),
-                quests::updated_at.eq("2026-04-01T18:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("complete first occurrence");
-
-        let completed: Quest = quests::table
-            .find(&first.id)
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("reload completed quest");
-
-        let _ = generate_next_occurrence(&mut conn, &completed);
-
-        let linked: Quest = quests::table
-            .find(&first.id)
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("reload linked quest");
-        assert!(
-            linked.series_id.is_some(),
-            "series must be backfilled on completion"
-        );
-        assert!(
-            linked.period_key.is_some(),
-            "period_key must be set on completion"
-        );
-
-        let series_id = linked.series_id.unwrap();
-
-        let next: Quest = quests::table
-            .filter(quests::series_id.eq(&series_id))
-            .filter(quests::status.eq("active"))
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("next occurrence must exist");
-
-        assert_eq!(next.title, "Weekly chore");
-        assert_eq!(
-            next.due.as_deref(),
-            Some("2026-04-08"),
-            "next weekly occurrence must be 7 days later"
-        );
-        assert_eq!(next.series_id.as_deref(), Some(series_id.as_str()));
-        assert_eq!(next.period_key.as_deref(), Some("2026-04-08"));
-        assert_eq!(
-            next.repeat_rule.as_deref(),
-            Some(repeat_rule),
-            "repeat_rule must carry over"
-        );
-
-        diesel::delete(quests::table.find(&next.id))
-            .execute(&mut conn)
-            .expect("delete next occurrence");
-
-        let remaining = quests::table
-            .filter(quests::series_id.eq(&series_id))
-            .filter(quests::status.eq("active"))
-            .count()
-            .get_result::<i64>(&mut conn)
-            .expect("count remaining active");
-        assert_eq!(remaining, 0, "no active occurrences after delete");
-
-        let series_exists = quest_series::table
-            .find(&series_id)
-            .count()
-            .get_result::<i64>(&mut conn)
-            .expect("check series exists");
-        assert_eq!(
-            series_exists, 1,
-            "series record must persist after deleting occurrence"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
 
     #[test]
     fn update_quest_command_input_null_actually_clears_due_due_time_and_repeat_rule() {
@@ -2923,99 +2829,8 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    fn complete_and_generate_next(conn: &mut SqliteConnection, quest_id: &str) -> Option<Quest> {
-        diesel::update(quests::table.find(quest_id))
-            .set(quests::status.eq("completed"))
-            .execute(conn)
-            .expect("complete occurrence");
-        let completed: Quest = quests::table
-            .find(quest_id)
-            .select(Quest::as_select())
-            .first(conn)
-            .expect("reload completed quest");
-        generate_next_occurrence(conn, &completed).expect("generate next occurrence")
-    }
 
-    #[test]
-    fn recurring_custom_interval_without_weekdays_uses_unit_step() {
-        let db_path = temp_db_path("recurring-custom-unit-step");
-        let mut conn = open_db_at_path(&db_path);
 
-        let repeat_rule = r#"{"preset":"custom","interval":2,"unit":"week"}"#;
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("1"),
-                quests::title.eq("Biweekly custom"),
-                quests::status.eq("active"),
-                quests::due.eq("2026-04-06"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::created_at.eq("2026-04-06T10:00:00Z"),
-                quests::updated_at.eq("2026-04-06T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert custom-interval quest");
-
-        let first: Quest = quests::table
-            .filter(quests::title.eq("Biweekly custom"))
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("load first occurrence");
-
-        let next = complete_and_generate_next(&mut conn, &first.id)
-            .expect("next occurrence must be generated");
-        assert_eq!(
-            next.due.as_deref(),
-            Some("2026-04-20"),
-            "empty days_of_week must fall back to plain interval*unit stepping"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn recurring_custom_weekly_by_weekday_honors_interval_and_anchor() {
-        let db_path = temp_db_path("recurring-custom-weekday-interval");
-        let mut conn = open_db_at_path(&db_path);
-
-        // 2026-04-06 is a Monday; anchor week == this quest's own creation week.
-        let repeat_rule = r#"{"preset":"custom","interval":2,"unit":"day","days_of_week":["Mo","We"]}"#;
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("1"),
-                quests::title.eq("Every 2 weeks Mon/Wed"),
-                quests::status.eq("active"),
-                quests::due.eq("2026-04-06"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::created_at.eq("2026-04-06T10:00:00Z"),
-                quests::updated_at.eq("2026-04-06T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert weekday-interval quest");
-
-        let first: Quest = quests::table
-            .filter(quests::title.eq("Every 2 weeks Mon/Wed"))
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("load first occurrence");
-
-        let second = complete_and_generate_next(&mut conn, &first.id)
-            .expect("second occurrence must be generated");
-        assert_eq!(
-            second.due.as_deref(),
-            Some("2026-04-08"),
-            "Wednesday of the same (anchor) week is still an active week"
-        );
-
-        let third = complete_and_generate_next(&mut conn, &second.id)
-            .expect("third occurrence must be generated");
-        assert_eq!(
-            third.due.as_deref(),
-            Some("2026-04-20"),
-            "the intervening week is skipped; next active week's Monday is 2 weeks after the anchor"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
 
     #[test]
     fn restoring_future_due_quest_does_not_set_focus() {
@@ -3100,166 +2915,7 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    #[test]
-    fn restoring_occurrence_from_history_shows_single_active_series_item() {
-        let db_path = temp_db_path("restore-occurrence-history-single-active-series-item");
-        let mut conn = open_db_at_path(&db_path);
 
-        let repeat_rule = r#"{"preset":"weekly"}"#;
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("1"),
-                quests::title.eq("Weekly sync"),
-                quests::status.eq("active"),
-                quests::due.eq("2026-04-01"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::created_at.eq("2026-03-29T10:00:00Z"),
-                quests::updated_at.eq("2026-03-29T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert recurring quest");
-
-        let first: Quest = quests::table
-            .filter(quests::title.eq("Weekly sync"))
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("load first occurrence");
-
-        diesel::update(quests::table.find(&first.id))
-            .set((
-                quests::status.eq("completed"),
-                quests::completed_at.eq("2026-04-01T18:00:00Z"),
-                quests::updated_at.eq("2026-04-01T18:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("complete first occurrence");
-
-        let completed: Quest = quests::table
-            .find(&first.id)
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("reload completed first occurrence");
-
-        let _ = generate_next_occurrence(&mut conn, &completed);
-
-        let linked: Quest = quests::table
-            .find(&first.id)
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("reload first occurrence with series linkage");
-        let series_id = linked
-            .series_id
-            .clone()
-            .expect("series must exist after first completion");
-
-        diesel::update(quests::table.find(&linked.id))
-            .set((
-                quests::status.eq("active"),
-                quests::completed_at.eq(Option::<String>::None),
-                quests::updated_at.eq("2026-04-02T09:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("restore first occurrence from history");
-
-        diesel::sql_query(format!(
-            "INSERT INTO focus_history (quest_id, space_id, trigger, created_at) \
-             VALUES ('{}', '1', 'restore', '2026-04-02T09:00:00Z')",
-            linked.id
-        ))
-        .execute(&mut conn)
-        .expect("insert restore focus_history row");
-
-        let active_in_db = quests::table
-            .filter(quests::series_id.eq(&series_id))
-            .filter(quests::status.eq("active"))
-            .count()
-            .get_result::<i64>(&mut conn)
-            .expect("count active occurrences in series");
-        assert_eq!(
-            active_in_db, 2,
-            "restore flow leaves multiple unresolved series occurrences in storage"
-        );
-
-        let visible =
-            load_quests_for_list(&mut conn).expect("load quests for active/history lists");
-        let visible_series_active: Vec<&Quest> = visible
-            .iter()
-            .filter(|quest| {
-                quest.status == "active" && quest.series_id.as_deref() == Some(series_id.as_str())
-            })
-            .collect();
-
-        assert_eq!(
-            visible_series_active.len(),
-            1,
-            "active quest lists must show only one unresolved occurrence per series"
-        );
-        assert_eq!(
-            visible_series_active[0].id, linked.id,
-            "restored occurrence should be shown instead of later generated one"
-        );
-        assert_eq!(
-            visible_series_active[0].due.as_deref(),
-            Some("2026-04-01"),
-            "restored earliest unresolved occurrence must be surfaced"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn updating_due_on_series_occurrence_syncs_period_key() {
-        let db_path = temp_db_path("updating-due-syncs-period-key");
-        let mut conn = open_db_at_path(&db_path);
-
-        let repeat_rule = r#"{"preset":"weekly"}"#;
-        let series = diesel::insert_into(quest_series::table)
-            .values(&CreateSeriesInput {
-                space_id: "1".to_string(),
-                title: "Weekly sync".to_string(),
-                description: None,
-                repeat_rule: repeat_rule.to_string(),
-                priority: crate::models::PRIORITY_MEDIUM,
-                energy: crate::models::ENERGY_MEDIUM,
-                is_checklist: false,
-            })
-            .returning(QuestSeries::as_returning())
-            .get_result::<QuestSeries>(&mut conn)
-            .expect("insert series");
-
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("1"),
-                quests::title.eq("Weekly sync"),
-                quests::status.eq("active"),
-                quests::due.eq("2026-03-28"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::series_id.eq(&series.id),
-                quests::period_key.eq("2026-03-28"),
-                quests::created_at.eq("2026-03-28T10:00:00Z"),
-                quests::updated_at.eq("2026-03-28T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert series occurrence");
-
-        let id: String = quests::table
-            .filter(quests::title.eq("Weekly sync"))
-            .select(quests::id)
-            .first(&mut conn)
-            .expect("load inserted occurrence id");
-
-        let (updated, _, _) = update_quest_in_db(&mut conn, &id, due_patch("2026-03-29"))
-            .expect("update due on recurring occurrence");
-
-        assert_eq!(updated.due.as_deref(), Some("2026-03-29"));
-        assert_eq!(
-            updated.period_key.as_deref(),
-            Some("2026-03-29"),
-            "period_key must follow due when editing recurring occurrence date"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
 
     #[test]
     fn moving_quest_between_spaces_emits_delete_then_upsert_events() {
@@ -3285,7 +2941,7 @@ mod tests {
 
         let (updated, _, _) =
             update_quest_in_db(&mut conn, &id, space_patch("2")).expect("move quest to space 2");
-        emit_quest_sync_events(&mut conn, "device-local", "1", &updated)
+        emit_quest_sync_events(&mut conn, "device-local", "1", &updated.id)
             .expect("emit sync events for space move");
 
         let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
@@ -3334,8 +2990,7 @@ mod tests {
                 order_rank: None,
                 is_checklist: true,
             })
-            .expect("create checklist quest")
-            .quest;
+            .expect("create checklist quest");
 
         log_checklist_activity(
             &mut conn,
@@ -3346,7 +3001,7 @@ mod tests {
         )
         .expect("log checklist activity");
 
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest.id)
             .expect("emit quest sync with checklist activity");
 
         let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
@@ -3393,8 +3048,7 @@ mod tests {
                 order_rank: None,
                 is_checklist: true,
             })
-            .expect("create checklist quest")
-            .quest;
+            .expect("create checklist quest");
 
         log_checklist_activity(
             &mut conn,
@@ -3405,13 +3059,14 @@ mod tests {
         )
         .expect("log checklist activity");
 
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest.id)
             .expect("emit initial quest sync with checklist activity");
 
         let toggled = QuestService::new(&mut conn)
-            .toggle_checklist_item(&quest.id, "a1", true)
-            .expect("toggle checklist item");
-        emit_quest_sync_events(&mut conn, "device-local", &toggled.space_id, &toggled)
+            .toggle_checklist_item(&quest.id, "a1", true, None)
+            .expect("toggle checklist item")
+            .quest;
+        emit_quest_sync_events(&mut conn, "device-local", &toggled.space_id, &toggled.id)
             .expect("emit toggle quest sync without duplicate activity");
 
         let rows: Vec<(String, String)> = sync_outbox::table
@@ -3453,8 +3108,7 @@ mod tests {
                 order_rank: None,
                 is_checklist: true,
             })
-            .expect("create checklist quest")
-            .quest;
+            .expect("create checklist quest");
 
         log_checklist_activity(
             &mut conn,
@@ -3465,12 +3119,12 @@ mod tests {
         )
         .expect("log checklist activity");
 
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest)
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest.id)
             .expect("emit initial quest sync with checklist activity");
 
         let (moved, _, _) = update_quest_in_db(&mut conn, &quest.id, space_patch("2"))
             .expect("move checklist to space 2");
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &moved)
+        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &moved.id)
             .expect("emit move sync with checklist activity in destination space");
 
         let rows: Vec<(String, String, String)> = sync_outbox::table
@@ -3506,325 +3160,9 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    #[test]
-    fn future_series_checklist_sync_uses_current_occurrence_space() {
-        let db_path = temp_db_path("future-series-checklist-sync-occurrence-space");
-        let mut conn = open_db_at_path(&db_path);
 
-        let repeat_rule = r#"{"preset":"weekly"}"#;
-        let series = diesel::insert_into(quest_series::table)
-            .values(&CreateSeriesInput {
-                space_id: "1".to_string(),
-                title: "Moved checklist".to_string(),
-                description: Some("- [ ] old <!--k=a1-->".to_string()),
-                repeat_rule: repeat_rule.to_string(),
-                priority: crate::models::PRIORITY_MEDIUM,
-                energy: crate::models::ENERGY_MEDIUM,
-                is_checklist: true,
-            })
-            .returning(QuestSeries::as_returning())
-            .get_result::<QuestSeries>(&mut conn)
-            .expect("insert series");
 
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("2"),
-                quests::title.eq("Moved checklist"),
-                quests::description.eq(Some("- [ ] old <!--k=a1-->")),
-                quests::status.eq("active"),
-                quests::due.eq("2026-05-15"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::series_id.eq(&series.id),
-                quests::period_key.eq("2026-05-15"),
-                quests::is_checklist.eq(true),
-                quests::created_at.eq("2026-05-15T10:00:00Z"),
-                quests::updated_at.eq("2026-05-15T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert moved occurrence");
 
-        let occurrence_id: String = quests::table
-            .filter(quests::series_id.eq(&series.id))
-            .select(quests::id)
-            .first(&mut conn)
-            .expect("load occurrence id");
-
-        let updated = QuestService::new(&mut conn)
-            .update_series_checklist(
-                &series.id,
-                &occurrence_id,
-                "- [ ] new <!--k=a1-->",
-                "future",
-                Some("device-local"),
-            )
-            .expect("update future checklist");
-
-        assert_eq!(updated.space_id, "2", "occurrence stays in its moved space");
-        assert_eq!(
-            QuestRepository::new(&mut conn)
-                .series_space_id(&series.id)
-                .expect("load series space"),
-            "1",
-            "series row can still retain the original space"
-        );
-
-        emit_quest_checklist_sync(&mut conn, "device-local", &updated)
-            .expect("emit occurrence checklist sync");
-        emit_series_checklist_template_sync(
-            &mut conn,
-            "device-local",
-            &series.id,
-            &updated.space_id,
-        )
-        .expect("emit series template sync");
-
-        let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
-            .order(sync_outbox::created_at.asc())
-            .select((
-                sync_outbox::entity_type,
-                sync_outbox::op_type,
-                sync_outbox::space_id,
-                sync_outbox::payload,
-            ))
-            .load(&mut conn)
-            .expect("load sync outbox rows");
-
-        let series_row = rows
-            .iter()
-            .find(|(entity_type, op_type, _, _)| {
-                entity_type == "quest_series" && op_type == "upsert"
-            })
-            .expect("series template sync row");
-        assert_eq!(
-            series_row.2, "2",
-            "series template update must route through the moved occurrence space"
-        );
-        let payload = series_row.3.as_ref().expect("series payload");
-        let payload: QuestSeries =
-            serde_json::from_str(payload).expect("deserialize series payload");
-        assert_eq!(
-            payload.space_id, "1",
-            "outbox routing space must not require mutating the series row"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn updating_due_to_existing_series_period_key_is_rejected() {
-        let db_path = temp_db_path("updating-due-conflicting-period-key-is-rejected");
-        let mut conn = open_db_at_path(&db_path);
-
-        let repeat_rule = r#"{"preset":"weekly"}"#;
-        let series = diesel::insert_into(quest_series::table)
-            .values(&CreateSeriesInput {
-                space_id: "1".to_string(),
-                title: "Laundry".to_string(),
-                description: None,
-                repeat_rule: repeat_rule.to_string(),
-                priority: crate::models::PRIORITY_MEDIUM,
-                energy: crate::models::ENERGY_MEDIUM,
-                is_checklist: false,
-            })
-            .returning(QuestSeries::as_returning())
-            .get_result::<QuestSeries>(&mut conn)
-            .expect("insert series");
-
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("1"),
-                quests::title.eq("Laundry"),
-                quests::status.eq("active"),
-                quests::due.eq("2026-03-28"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::series_id.eq(&series.id),
-                quests::period_key.eq("2026-03-28"),
-                quests::created_at.eq("2026-03-28T10:00:00Z"),
-                quests::updated_at.eq("2026-03-28T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert first occurrence");
-
-        diesel::insert_into(quests::table)
-            .values((
-                quests::space_id.eq("1"),
-                quests::title.eq("Laundry"),
-                quests::status.eq("active"),
-                quests::due.eq("2026-04-04"),
-                quests::repeat_rule.eq(repeat_rule),
-                quests::series_id.eq(&series.id),
-                quests::period_key.eq("2026-04-04"),
-                quests::created_at.eq("2026-03-29T10:00:00Z"),
-                quests::updated_at.eq("2026-03-29T10:00:00Z"),
-            ))
-            .execute(&mut conn)
-            .expect("insert second occurrence");
-
-        let first_id: String = quests::table
-            .filter(quests::series_id.eq(&series.id))
-            .filter(quests::period_key.eq("2026-03-28"))
-            .select(quests::id)
-            .first(&mut conn)
-            .expect("load first occurrence id");
-
-        let err = match update_quest_in_db(&mut conn, &first_id, due_patch("2026-04-04")) {
-            Ok(_) => panic!("conflicting period_key update must fail"),
-            Err(err) => err,
-        };
-        assert!(
-            err.contains("occurrence for this date already exists in the series"),
-            "error should explain duplicate series date conflict"
-        );
-
-        let first: Quest = quests::table
-            .find(&first_id)
-            .select(Quest::as_select())
-            .first(&mut conn)
-            .expect("reload first occurrence");
-        assert_eq!(
-            first.period_key.as_deref(),
-            Some("2026-03-28"),
-            "failed update must not mutate period_key"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn delete_quest_series_removes_all_children_and_series_row() {
-        let db_path = temp_db_path("delete-quest-series-removes-all");
-        let mut conn = open_db_at_path(&db_path);
-
-        let repeat_rule = r#"{"preset":"daily"}"#;
-        let series = diesel::insert_into(quest_series::table)
-            .values(&CreateSeriesInput {
-                space_id: "1".to_string(),
-                title: "Daily standup".to_string(),
-                description: None,
-                repeat_rule: repeat_rule.to_string(),
-                priority: crate::models::PRIORITY_MEDIUM,
-                energy: crate::models::ENERGY_MEDIUM,
-                is_checklist: false,
-            })
-            .returning(QuestSeries::as_returning())
-            .get_result::<QuestSeries>(&mut conn)
-            .expect("insert series");
-
-        for (status, period) in [
-            ("active", "2026-05-15"),
-            ("completed", "2026-05-14"),
-            ("abandoned", "2026-05-13"),
-        ] {
-            diesel::insert_into(quests::table)
-                .values((
-                    quests::space_id.eq("1"),
-                    quests::title.eq("Daily standup"),
-                    quests::status.eq(status),
-                    quests::series_id.eq(&series.id),
-                    quests::period_key.eq(period),
-                    quests::created_at.eq("2026-05-13T10:00:00Z"),
-                    quests::updated_at.eq("2026-05-13T10:00:00Z"),
-                ))
-                .execute(&mut conn)
-                .expect("insert occurrence");
-        }
-
-        let count_before: i64 = quests::table
-            .filter(quests::series_id.eq(&series.id))
-            .count()
-            .get_result(&mut conn)
-            .expect("count before");
-        assert_eq!(count_before, 3, "expected 3 occurrences before delete");
-
-        QuestService::new(&mut conn)
-            .delete_series_with_sync("device-test", &series.id)
-            .expect("delete series");
-
-        let count_after: i64 = quests::table
-            .filter(quests::series_id.eq(&series.id))
-            .count()
-            .get_result(&mut conn)
-            .expect("count after");
-        assert_eq!(count_after, 0, "all occurrence quests must be gone");
-
-        let series_count: i64 = quest_series::table
-            .filter(quest_series::id.eq(&series.id))
-            .count()
-            .get_result(&mut conn)
-            .expect("count series");
-        assert_eq!(series_count, 0, "quest_series row must be gone");
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn delete_quest_series_emits_sync_events_for_each_quest_and_series() {
-        let db_path = temp_db_path("delete-quest-series-sync-events");
-        let mut conn = open_db_at_path(&db_path);
-
-        let repeat_rule = r#"{"preset":"daily"}"#;
-        let series = diesel::insert_into(quest_series::table)
-            .values(&CreateSeriesInput {
-                space_id: "1".to_string(),
-                title: "Daily sync".to_string(),
-                description: None,
-                repeat_rule: repeat_rule.to_string(),
-                priority: crate::models::PRIORITY_MEDIUM,
-                energy: crate::models::ENERGY_MEDIUM,
-                is_checklist: false,
-            })
-            .returning(QuestSeries::as_returning())
-            .get_result::<QuestSeries>(&mut conn)
-            .expect("insert series");
-
-        for (status, period) in [
-            ("active", "2026-05-15"),
-            ("completed", "2026-05-14"),
-            ("abandoned", "2026-05-13"),
-        ] {
-            diesel::insert_into(quests::table)
-                .values((
-                    quests::space_id.eq("1"),
-                    quests::title.eq("Daily sync"),
-                    quests::status.eq(status),
-                    quests::series_id.eq(&series.id),
-                    quests::period_key.eq(period),
-                    quests::created_at.eq("2026-05-13T10:00:00Z"),
-                    quests::updated_at.eq("2026-05-13T10:00:00Z"),
-                ))
-                .execute(&mut conn)
-                .expect("insert occurrence");
-        }
-
-        QuestService::new(&mut conn)
-            .delete_series_with_sync("device-test", &series.id)
-            .expect("delete series");
-
-        let events: Vec<(String, String)> = sync_outbox::table
-            .select((sync_outbox::entity_type, sync_outbox::op_type))
-            .load(&mut conn)
-            .expect("load outbox events");
-
-        let quest_deletes = events
-            .iter()
-            .filter(|(t, op)| t == "quest" && op == "delete")
-            .count();
-        let series_deletes = events
-            .iter()
-            .filter(|(t, op)| t == "quest_series" && op == "delete")
-            .count();
-
-        assert_eq!(
-            quest_deletes, 3,
-            "must emit one delete event per occurrence"
-        );
-        assert_eq!(
-            series_deletes, 1,
-            "must emit one delete event for quest_series"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
 
     // ── Checklist (issue #128) ──────────────────────────────────────────────
     //
@@ -3846,7 +3184,7 @@ mod tests {
                 is_checklist: true,
             })
             .expect("create quest with checklist");
-        result.quest
+        result
     }
 
     fn create_active_quest_with_prose(conn: &mut SqliteConnection, description: &str) -> Quest {
@@ -3864,7 +3202,7 @@ mod tests {
                 is_checklist: false,
             })
             .expect("create quest with prose");
-        result.quest
+        result
     }
 
     #[test]
@@ -3876,28 +3214,32 @@ mod tests {
         let mut service = QuestService::new(&mut conn);
 
         let quest = service
-            .add_checklist_item(&quest.id, "headphones", Some("dev-a"))
-            .expect("add item");
+            .add_checklist_item(&quest.id, "headphones", EditScope::All, Some("dev-a"))
+            .expect("add item")
+            .quest;
         let item_id = checklist::parse(quest.description.as_deref().unwrap())[0]
             .id
             .clone();
 
         let quest = service
-            .toggle_checklist_item(&quest.id, &item_id, true)
-            .expect("toggle item");
+            .toggle_checklist_item(&quest.id, &item_id, true, None)
+            .expect("toggle item")
+            .quest;
         assert!(checklist::parse(quest.description.as_deref().unwrap())[0].checked);
 
         let quest = service
-            .edit_checklist_item_text(&quest.id, &item_id, "over-ear headphones", Some("dev-a"))
-            .expect("edit item text");
+            .edit_checklist_item_text(&quest.id, &item_id, "over-ear headphones", EditScope::All, Some("dev-a"))
+            .expect("edit item text")
+            .quest;
         assert_eq!(
             checklist::parse(quest.description.as_deref().unwrap())[0].text,
             "over-ear headphones"
         );
 
         let quest = service
-            .remove_checklist_item(&quest.id, &item_id, Some("dev-a"))
-            .expect("remove item");
+            .remove_checklist_item(&quest.id, &item_id, EditScope::All, Some("dev-a"))
+            .expect("remove item")
+            .quest;
         assert!(checklist::parse(quest.description.as_deref().unwrap()).is_empty());
 
         let activity = service
@@ -3987,7 +3329,7 @@ mod tests {
         let original_description = quest.description.clone();
         let original_updated_at = quest.updated_at.clone();
 
-        let result = QuestService::new(&mut conn).toggle_checklist_item(&quest.id, "missing", true);
+        let result = QuestService::new(&mut conn).toggle_checklist_item(&quest.id, "missing", true, None);
         assert!(matches!(
             result,
             Err(ref error) if error == "checklist item not found"
@@ -4023,6 +3365,7 @@ mod tests {
             &quest.id,
             "missing",
             "new text",
+            EditScope::All,
             Some("dev-a"),
         );
         assert!(matches!(
@@ -4062,7 +3405,7 @@ mod tests {
         let original_description = quest.description.clone();
 
         let result =
-            QuestService::new(&mut conn).remove_checklist_item(&quest.id, "missing", Some("dev-a"));
+            QuestService::new(&mut conn).remove_checklist_item(&quest.id, "missing", EditScope::All, Some("dev-a"));
         assert!(matches!(
             result,
             Err(ref error) if error == "checklist item not found"
@@ -4109,7 +3452,7 @@ mod tests {
                 .get_checklist_activity(&quest.id)
                 .expect("load activity before rejected toggle");
 
-            let result = service.toggle_checklist_item(&quest.id, "a1", true);
+            let result = service.toggle_checklist_item(&quest.id, "a1", true, None);
             assert!(matches!(
                 result,
                 Err(ref error) if error == "checklist toggles are only available for active quests"
@@ -4143,11 +3486,11 @@ mod tests {
         let mut service = QuestService::new(&mut conn);
 
         for result in [
-            service.add_checklist_item(&quest.id, "headphones", Some("dev-a")),
-            service.toggle_checklist_item(&quest.id, "a1", true),
-            service.edit_checklist_item_text(&quest.id, "a1", "headphones", Some("dev-a")),
-            service.remove_checklist_item(&quest.id, "a1", Some("dev-a")),
-            service.reorder_checklist(&quest.id, &["a1".to_string()]),
+            service.add_checklist_item(&quest.id, "headphones", EditScope::All, Some("dev-a")).map(|_| ()),
+            service.toggle_checklist_item(&quest.id, "a1", true, None).map(|_| ()),
+            service.edit_checklist_item_text(&quest.id, "a1", "headphones", EditScope::All, Some("dev-a")).map(|_| ()),
+            service.remove_checklist_item(&quest.id, "a1", EditScope::All, Some("dev-a")).map(|_| ()),
+            service.reorder_checklist(&quest.id, &["a1".to_string()], EditScope::All).map(|_| ()),
         ] {
             assert!(matches!(
                 result,
@@ -4173,115 +3516,6 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    #[test]
-    fn update_series_checklist_rejects_prose_and_mismatched_occurrences() {
-        let db_path = temp_db_path("checklist-series-reject-invalid");
-        let mut conn = open_db_at_path(&db_path);
-
-        let prose_result = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Recurring notes".to_string(),
-                description: Some("meeting notes".to_string()),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: false,
-            })
-            .expect("create repeating prose quest");
-        let prose_quest = prose_result.quest;
-        let prose_series = prose_result
-            .series
-            .expect("repeating prose quest must create a series");
-
-        for scope in ["this", "future"] {
-            let result = QuestService::new(&mut conn).update_series_checklist(
-                &prose_series.id,
-                &prose_quest.id,
-                "- [ ] checklist item <!--k=a1-->",
-                scope,
-                None,
-            );
-            assert!(matches!(
-                result,
-                Err(ref error) if error == "quest is not a checklist"
-            ));
-        }
-
-        let stored_prose = QuestService::new(&mut conn).get(&prose_quest.id).unwrap();
-        assert!(
-            !stored_prose.is_checklist,
-            "set-template must not convert prose quests"
-        );
-        assert_eq!(stored_prose.description.as_deref(), Some("meeting notes"));
-
-        let stored_prose_series: QuestSeries = crate::schema::quest_series::table
-            .find(&prose_series.id)
-            .select(QuestSeries::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert!(
-            !stored_prose_series.is_checklist,
-            "rejected future scope must not convert series"
-        );
-        assert_eq!(
-            stored_prose_series.description.as_deref(),
-            Some("meeting notes")
-        );
-
-        let first_checklist = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Checklist one".to_string(),
-                description: Some("- [ ] one <!--k=a1-->".to_string()),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-02".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: true,
-            })
-            .expect("create first checklist series");
-        let first_series = first_checklist.series.expect("first checklist series");
-        let second_checklist = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Checklist two".to_string(),
-                description: Some("- [ ] two <!--k=b1-->".to_string()),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-03".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: true,
-            })
-            .expect("create second checklist series");
-        let second_quest = second_checklist.quest;
-
-        let result = QuestService::new(&mut conn).update_series_checklist(
-            &first_series.id,
-            &second_quest.id,
-            "- [ ] wrong series <!--k=x1-->",
-            "this",
-            None,
-        );
-        assert!(matches!(
-            result,
-            Err(ref error) if error == "quest is not an occurrence in this series"
-        ));
-        let stored_second = QuestService::new(&mut conn).get(&second_quest.id).unwrap();
-        assert_eq!(
-            stored_second.description.as_deref(),
-            Some("- [ ] two <!--k=b1-->")
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
 
     #[test]
     fn completing_quest_with_checklist_logs_completed_snapshot() {
@@ -4332,7 +3566,7 @@ mod tests {
             .expect("complete quest");
 
         service
-            .add_checklist_item(&quest.id, "late addition", Some("dev-a"))
+            .add_checklist_item(&quest.id, "late addition", EditScope::All, Some("dev-a"))
             .expect("add item after completion");
 
         let activity = service
@@ -4350,461 +3584,237 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    #[test]
-    fn get_series_checklist_template_reads_the_stored_template_not_the_occurrence() {
-        let db_path = temp_db_path("checklist-get-series-template");
-        let mut conn = open_db_at_path(&db_path);
+    // ── Repeating quests (ADR-0012) ─────────────────────────────────────────
 
-        let template = checklist::serialize(&[checklist::ChecklistItem {
-            id: "a1".into(),
-            text: "headphones".into(),
-            checked: false,
-        }]);
-        let result = QuestService::new(&mut conn)
+    fn day(offset_days: i64) -> String {
+        period_key_of(Utc::now().date_naive() + chrono::Duration::days(offset_days))
+    }
+
+    fn create_repeating(conn: &mut SqliteConnection, due: &str, rule: &str, checklist: Option<&str>) -> Quest {
+        QuestService::new(conn)
             .create(CreateQuestInput {
                 space_id: "1".to_string(),
-                title: "Go to office".to_string(),
-                description: Some(template.clone()),
+                title: "Gym".to_string(),
+                description: checklist.map(str::to_string),
                 energy: crate::models::ENERGY_MEDIUM,
                 priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                due: Some(due.to_string()),
+                due_time: Some("20:00".to_string()),
+                repeat_rule: Some(rule.to_string()),
                 order_rank: None,
-                is_checklist: true,
+                is_checklist: checklist.is_some(),
             })
-            .expect("create repeating quest with checklist");
-        let quest = result.quest;
-        let series = result.series.expect("repeating quest must create a series");
+            .expect("create repeating quest")
+    }
 
-        // "This occurrence" only affects the occurrence — the template read must be unaffected.
-        let occurrence_only_checklist = checklist::add_item(Some(&template), "today only");
-        QuestService::new(&mut conn)
-            .update_series_checklist(
-                &series.id,
+    const DAILY: &str = r#"{"preset":"daily"}"#;
+
+    fn marks(conn: &mut SqliteConnection, quest_id: &str) -> Vec<(String, Option<String>)> {
+        use crate::schema::quest_occurrences;
+        quest_occurrences::table
+            .filter(quest_occurrences::quest_id.eq(quest_id))
+            .order(quest_occurrences::period_key.asc())
+            .select((quest_occurrences::period_key, quest_occurrences::status))
+            .load(conn)
+            .expect("load marks")
+    }
+
+    #[test]
+    fn a_repeating_quest_stores_no_day_rows_until_a_day_is_closed() {
+        let db_path = temp_db_path("repeating-no-rows");
+        let mut conn = open_db_at_path(&db_path);
+        let quest = create_repeating(&mut conn, &day(-2), DAILY, None);
+
+        let listed = QuestService::new(&mut conn).list_for_ui().expect("list");
+        assert_eq!(listed.len(), 1, "one row for the quest, its oldest open day");
+        assert_eq!(listed[0].due.as_deref(), Some(day(-2).as_str()));
+        assert!(marks(&mut conn, &quest.id).is_empty(), "nothing stored while nobody acts");
+
+        let change = QuestService::new(&mut conn).update(&quest.id, status_patch("completed")).expect("complete");
+        assert_eq!(marks(&mut conn, &quest.id), vec![(day(-2), Some("completed".to_string()))]);
+        assert_eq!(change.quest.due.as_deref(), Some(day(-1).as_str()), "the next open day shows");
+        assert_eq!(change.quest.status, "active");
+        let quest_rows: i64 = quests::table.count().get_result(&mut conn).unwrap();
+        assert_eq!(quest_rows, 1, "complete writes no next occurrence row");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn complete_through_today_closes_each_open_day_through_today() {
+        let db_path = temp_db_path("repeating-complete-through-today");
+        let mut conn = open_db_at_path(&db_path);
+        let quest = create_repeating(&mut conn, &day(-3), DAILY, None);
+
+        let change = QuestService::new(&mut conn).complete_through_today(&quest.id, None).expect("complete through today");
+        let expected: Vec<_> = (-3..=0).map(|offset| (day(offset), Some("completed".to_string()))).collect();
+        assert_eq!(marks(&mut conn, &quest.id), expected, "one completed mark per day, today's included");
+        assert_eq!(change.occurrences.len(), 4);
+        assert_eq!(change.quest.due.as_deref(), Some(day(1).as_str()));
+
+        let again = QuestService::new(&mut conn).complete_through_today(&quest.id, None);
+        assert!(again.is_err(), "nothing is left to close through today");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn reopening_a_closed_day_removes_its_empty_mark() {
+        let db_path = temp_db_path("repeating-reopen");
+        let mut conn = open_db_at_path(&db_path);
+        let quest = create_repeating(&mut conn, &day(-1), DAILY, None);
+        QuestService::new(&mut conn).update(&quest.id, status_patch("completed")).expect("complete");
+
+        let reopened = QuestService::new(&mut conn)
+            .update_scoped(
                 &quest.id,
-                &occurrence_only_checklist,
-                "this",
+                QuestUpdatePatch::unchanged(status_patch("active")),
+                EditScope::All,
+                Some(&day(-1)),
                 None,
             )
-            .expect("this-occurrence scoped update");
-
-        let stored_template = QuestService::new(&mut conn)
-            .get_series_checklist_template(&series.id)
-            .expect("load series template");
-        assert_eq!(
-            stored_template.as_deref(),
-            Some(template.as_str()),
-            "get_series_checklist_template must return the series' own stored template, not \
-             whatever the current occurrence happens to look like"
-        );
+            .expect("reopen the day");
+        assert_eq!(reopened.removed_occurrences, vec![day(-1)]);
+        assert!(marks(&mut conn, &quest.id).is_empty());
+        assert_eq!(reopened.quest.due.as_deref(), Some(day(-1).as_str()), "the reopened day is the oldest open again");
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn update_series_checklist_this_scope_leaves_template_untouched() {
-        let db_path = temp_db_path("checklist-scope-this");
+    fn a_day_edit_overrides_one_day_and_an_all_days_edit_changes_every_day() {
+        let db_path = temp_db_path("repeating-edit-scope");
         let mut conn = open_db_at_path(&db_path);
+        let quest = create_repeating(&mut conn, &day(-1), DAILY, None);
+        let rename = |title: &str| {
+            QuestUpdatePatch::unchanged(UpdateQuestInput { title: Some(title.to_string()), ..status_patch("active") })
+        };
+        let mut no_status = rename("Gym (short)");
+        no_status.input.status = None;
 
-        let template = checklist::serialize(&[checklist::ChecklistItem {
-            id: "a1".into(),
-            text: "headphones".into(),
-            checked: false,
-        }]);
-        let result = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Go to office".to_string(),
-                description: Some(template.clone()),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: true,
-            })
-            .expect("create repeating quest with checklist");
-        let quest = result.quest;
-        let series = result.series.expect("repeating quest must create a series");
-
-        let occurrence_only_checklist =
-            checklist::add_item(Some(&template), "extra for today only");
         QuestService::new(&mut conn)
-            .update_series_checklist(
-                &series.id,
-                &quest.id,
-                &occurrence_only_checklist,
-                "this",
-                None,
-            )
-            .expect("this-occurrence scoped update");
+            .update_scoped(&quest.id, no_status, EditScope::Day, None, None)
+            .expect("this day");
+        let mut service = QuestService::new(&mut conn);
+        assert_eq!(service.get(&quest.id).unwrap().title, "Gym", "the quest keeps its title");
+        assert_eq!(service.resolved(&quest.id).unwrap().title, "Gym (short)", "the day shows its own title");
 
-        let stored_series: QuestSeries = crate::schema::quest_series::table
-            .find(&series.id)
-            .select(QuestSeries::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(
-            stored_series.description.as_deref(),
-            Some(template.as_str()),
-            "'this occurrence' scope must not touch the series template"
-        );
-
-        let stored_quest = QuestService::new(&mut conn).get(&quest.id).unwrap();
-        assert_eq!(
-            checklist::parse(stored_quest.description.as_deref().unwrap()).len(),
-            2,
-            "the occurrence itself must reflect the this-scoped edit"
-        );
+        let mut all = rename("Run");
+        all.input.status = None;
+        service.update_scoped(&quest.id, all, EditScope::All, None, None).expect("all days");
+        assert_eq!(service.get(&quest.id).unwrap().title, "Run");
+        assert_eq!(service.resolved(&quest.id).unwrap().title, "Gym (short)", "the day keeps its override");
+        service.update(&quest.id, status_patch("completed")).expect("complete the overridden day");
+        assert_eq!(service.resolved(&quest.id).unwrap().title, "Run", "the next day takes the quest's title");
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn update_series_checklist_this_scope_logs_replacement_activity() {
-        let db_path = temp_db_path("checklist-scope-this-activity");
+    fn a_tick_writes_a_day_copy_and_a_template_edit_reaches_it() {
+        let db_path = temp_db_path("repeating-checklist-day-copy");
         let mut conn = open_db_at_path(&db_path);
-
-        let template = checklist::serialize(&[checklist::ChecklistItem {
-            id: "a1".into(),
-            text: "headphones".into(),
-            checked: false,
-        }]);
-        let result = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Go to office".to_string(),
-                description: Some(template.clone()),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: true,
-            })
-            .expect("create repeating quest with checklist");
-        let quest = result.quest;
-        let series = result.series.expect("repeating quest must create a series");
-
-        // "This occurrence" set-template must be audited the same as add/remove/edit — issue
-        // #128's history requirement doesn't stop applying just because the whole checklist was
-        // replaced in one call instead of one item at a time.
-        let replacement = checklist::add_item(Some(&template), "lunch");
-        QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &replacement, "this", Some("dev-a"))
-            .expect("this-scope replacement");
-
-        let activity = QuestService::new(&mut conn)
-            .get_checklist_activity(&quest.id)
-            .expect("load activity");
-        assert_eq!(
-            activity.iter().map(|a| a.kind.as_str()).collect::<Vec<_>>(),
-            vec!["added"],
-            "this-scope set-template must log the structural diff, not silently replace"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
-
-    #[test]
-    fn update_series_checklist_rejects_non_active_occurrence_for_both_scopes() {
-        for scope in ["this", "future"] {
-            let db_path = temp_db_path(&format!("checklist-scope-non-active-{scope}"));
-            let mut conn = open_db_at_path(&db_path);
-
-            let template = checklist::serialize(&[checklist::ChecklistItem {
-                id: "a1".into(),
-                text: "headphones".into(),
-                checked: false,
-            }]);
-            let result = QuestService::new(&mut conn)
-                .create(CreateQuestInput {
-                    space_id: "1".to_string(),
-                    title: "Go to office".to_string(),
-                    description: Some(template.clone()),
-                    energy: crate::models::ENERGY_MEDIUM,
-                    priority: crate::models::PRIORITY_MEDIUM,
-                    due: Some("2026-04-01".to_string()),
-                    due_time: None,
-                    repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                    order_rank: None,
-                    is_checklist: true,
-                })
-                .expect("create repeating quest with checklist");
-            let quest = result.quest;
-            let series = result.series.expect("repeating quest must create a series");
-
-            QuestService::new(&mut conn)
-                .update(&quest.id, status_patch("completed"))
-                .expect("complete occurrence");
-
-            // A completed occurrence's checklist is historical — set-template must not be able
-            // to silently rewrite it outside the audited post-completion-edit path.
-            let result = QuestService::new(&mut conn).update_series_checklist(
-                &series.id,
-                &quest.id,
-                &checklist::add_item(Some(&template), "lunch"),
-                scope,
-                Some("dev-a"),
-            );
-            assert!(
-                result.is_err(),
-                "set-template on a completed occurrence must be rejected for scope={scope}"
-            );
-
-            let _ = std::fs::remove_file(db_path);
-        }
-    }
-
-    #[test]
-    fn update_series_checklist_future_scope_updates_template_and_reconciles_occurrence() {
-        let db_path = temp_db_path("checklist-scope-future");
-        let mut conn = open_db_at_path(&db_path);
-
         let template = checklist::serialize(&[
-            checklist::ChecklistItem {
-                id: "a1".into(),
-                text: "headphones".into(),
-                checked: false,
-            },
-            checklist::ChecklistItem {
-                id: "a2".into(),
-                text: "key fob".into(),
-                checked: false,
-            },
+            checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+            checklist::ChecklistItem { id: "a2".into(), text: "charger".into(), checked: false },
         ]);
-        let result = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Go to office".to_string(),
-                description: Some(template),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: true,
-            })
-            .expect("create repeating quest with checklist");
-        let quest = result.quest;
-        let series = result.series.expect("repeating quest must create a series");
+        let quest = create_repeating(&mut conn, &day(0), DAILY, Some(&template));
 
-        // User checks headphones on today's occurrence before editing the template.
-        QuestService::new(&mut conn)
-            .toggle_checklist_item(&quest.id, "a1", true)
-            .expect("toggle item");
+        let ticked = QuestService::new(&mut conn).toggle_checklist_item(&quest.id, "a1", true, None).expect("tick");
+        assert!(checklist::parse(ticked.quest.description.as_deref().unwrap())[0].checked);
+        let mut service = QuestService::new(&mut conn);
+        assert_eq!(service.get(&quest.id).unwrap().description.as_deref(), Some(template.as_str()), "the template has no ticks");
 
-        // "This and future occurrences": drop the key fob, add a badge, keep headphones.
-        let new_template = checklist::serialize(&[
-            checklist::ChecklistItem {
-                id: "a1".into(),
-                text: "headphones".into(),
-                checked: false,
-            },
-            checklist::ChecklistItem {
-                id: "a3".into(),
-                text: "badge".into(),
-                checked: false,
-            },
-        ]);
-        QuestService::new(&mut conn)
-            .update_series_checklist(&series.id, &quest.id, &new_template, "future", None)
-            .expect("future-scoped update");
+        let added = service.add_checklist_item(&quest.id, "lunch", EditScope::All, None).expect("add to all days").quest;
+        let items = checklist::parse(added.description.as_deref().unwrap());
+        assert_eq!(items.len(), 3, "the open day copy took the template edit");
+        assert!(items.iter().find(|it| it.id == "a1").unwrap().checked, "and kept its tick");
+        assert!(!items.iter().find(|it| it.text == "lunch").unwrap().checked);
 
-        let stored_series: QuestSeries = crate::schema::quest_series::table
-            .find(&series.id)
-            .select(QuestSeries::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(
-            stored_series.description.as_deref(),
-            Some(new_template.as_str()),
-            "'this and future' scope must update the series template"
-        );
-
-        let stored_quest = QuestService::new(&mut conn).get(&quest.id).unwrap();
-        let items = checklist::parse(stored_quest.description.as_deref().unwrap());
-        assert!(
-            items.iter().find(|it| it.id == "a1").unwrap().checked,
-            "unchanged current-occurrence item must keep its check"
-        );
-        assert!(
-            !items.iter().find(|it| it.id == "a3").unwrap().checked,
-            "newly added template item must be unchecked"
-        );
-        assert!(
-            items.iter().find(|it| it.id == "a2").is_none(),
-            "template-removed item must be dropped from the active occurrence"
-        );
-
-        let activity = QuestService::new(&mut conn)
-            .get_checklist_activity(&quest.id)
-            .expect("load activity");
-        assert!(
-            activity
-                .iter()
-                .any(|row| row.kind == "added" && row.detail == "Added \"badge\""),
-            "future-scope reconciliation must audit the item added to the current occurrence"
-        );
-        assert!(
-            activity
-                .iter()
-                .any(|row| row.kind == "removed" && row.detail == "Removed \"key fob\""),
-            "future-scope reconciliation must audit the item removed from the current occurrence"
-        );
+        service.update(&quest.id, status_patch("completed")).expect("complete the day");
+        let next = service.resolved(&quest.id).unwrap();
+        assert!(checklist::parse(next.description.as_deref().unwrap()).iter().all(|it| !it.checked), "the next day starts unticked");
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn recurring_occurrence_retains_explicit_large_energy_and_high_priority() {
-        let db_path = temp_db_path("recurrence-retains-energy-priority");
+    fn stopping_the_repeat_ends_the_rule_at_the_last_closed_day() {
+        let db_path = temp_db_path("repeating-stop");
         let mut conn = open_db_at_path(&db_path);
-        let result = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Prepare launch".to_string(),
-                description: None,
-                energy: crate::models::ENERGY_LARGE,
-                priority: crate::models::PRIORITY_HIGH,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: false,
-            })
-            .expect("create recurring quest with explicit metadata");
-        let quest = result.quest;
+        let quest = create_repeating(&mut conn, &day(-2), DAILY, None);
+        QuestService::new(&mut conn).update(&quest.id, status_patch("completed")).expect("complete one day");
 
-        let next = QuestService::new(&mut conn)
-            .update(&quest.id, status_patch("completed"))
-            .expect("complete recurring quest")
-            .next_occurrence
-            .expect("completion must generate the next occurrence");
+        let mut stop = QuestUpdatePatch::unchanged(status_patch("active"));
+        stop.input.status = None;
+        stop.repeat_rule = QuestFieldPatch::Clear;
+        QuestService::new(&mut conn).update_patch(&quest.id, stop).expect("stop the repeat");
 
-        assert_eq!(next.energy, crate::models::ENERGY_LARGE);
-        assert_eq!(next.priority, crate::models::PRIORITY_HIGH);
+        let mut service = QuestService::new(&mut conn);
+        let stored = service.get(&quest.id).unwrap();
+        assert_eq!(stored.status, "completed", "the quest ends");
+        assert!(stored.repeat_rule.as_deref().unwrap().contains(&day(-2)), "the rule ends at the last closed day");
+        assert!(service.active_quests().unwrap().is_empty(), "no open day is left");
+        assert_eq!(marks(&mut conn, &quest.id).len(), 1, "the closed day stays in History");
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn recurring_occurrence_copies_checklist_template_fresh_and_unchecked() {
-        let db_path = temp_db_path("checklist-recurrence-copy");
+    fn a_rule_that_ends_after_n_has_no_open_day_after_n_completions() {
+        let db_path = temp_db_path("repeating-end-after-n");
         let mut conn = open_db_at_path(&db_path);
+        let rule = r#"{"preset":"daily","end":"after_n","end_after":2}"#;
+        let quest = create_repeating(&mut conn, &day(-5), rule, None);
 
-        let template = checklist::serialize(&[checklist::ChecklistItem {
-            id: "a1".into(),
-            text: "headphones".into(),
-            checked: false,
-        }]);
-        let result = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Go to office".to_string(),
-                description: Some(template),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: true,
-            })
-            .expect("create repeating quest with checklist");
-        let quest = result.quest;
-
-        // Check the item, then complete the occurrence — completion must generate the next
-        // occurrence with a fresh, unchecked copy of the series template (#128).
-        QuestService::new(&mut conn)
-            .toggle_checklist_item(&quest.id, "a1", true)
-            .expect("toggle item");
-
-        let update_result = QuestService::new(&mut conn)
-            .update(&quest.id, status_patch("completed"))
-            .expect("complete occurrence");
-        let next = update_result
-            .next_occurrence
-            .expect("completing a recurring quest must generate the next occurrence");
-
-        let next_items = checklist::parse(next.description.as_deref().unwrap());
-        assert_eq!(next_items.len(), 1);
-        assert!(
-            !next_items[0].checked,
-            "next occurrence's checklist must start fully unchecked"
-        );
+        QuestService::new(&mut conn).complete_through_today(&quest.id, None).expect("complete through today");
+        assert_eq!(marks(&mut conn, &quest.id).len(), 2, "only the two days the rule allows close");
+        assert!(QuestService::new(&mut conn).active_quests().unwrap().is_empty());
 
         let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
-    fn recurring_non_checklist_occurrence_copies_current_prose_description() {
-        let db_path = temp_db_path("non-checklist-recurrence-current-description");
-        let mut conn = open_db_at_path(&db_path);
+    fn custom_rules_compute_their_dates() {
+        let quest_with = |due: &str, rule: &str| Quest {
+            due: Some(due.to_string()),
+            repeat_rule: Some(rule.to_string()),
+            ..test_quest_row()
+        };
+        let none: Vec<QuestOccurrence> = Vec::new();
 
-        let result = QuestService::new(&mut conn)
-            .create(CreateQuestInput {
-                space_id: "1".to_string(),
-                title: "Write journal".to_string(),
-                description: Some("Original notes".to_string()),
-                energy: crate::models::ENERGY_MEDIUM,
-                priority: crate::models::PRIORITY_MEDIUM,
-                due: Some("2026-04-01".to_string()),
-                due_time: None,
-                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
-                order_rank: None,
-                is_checklist: false,
-            })
-            .expect("create repeating prose quest");
-        let quest = result.quest;
-        let series = result.series.expect("repeating quest must create a series");
+        // Every 2 weeks on Monday and Wednesday, from Monday 2026-03-02.
+        let quest = quest_with("2026-03-02", r#"{"preset":"custom","interval":2,"days_of_week":["Mo","We"]}"#);
+        let repeating = RepeatingQuest::new(&quest, &none).unwrap();
+        let dates: Vec<String> = repeating.dates().take(4).map(period_key_of).collect();
+        assert_eq!(dates, ["2026-03-02", "2026-03-04", "2026-03-16", "2026-03-18"]);
 
-        QuestService::new(&mut conn)
-            .update_patch(
-                &quest.id,
-                QuestUpdatePatch {
-                    input: UpdateQuestInput {
-                        description: Some("Edited occurrence notes".to_string()),
-                        ..status_patch("active")
-                    },
-                    description: QuestFieldPatch::Set("Edited occurrence notes".to_string()),
-                    due: QuestFieldPatch::Unchanged,
-                    due_time: QuestFieldPatch::Unchanged,
-                    repeat_rule: QuestFieldPatch::Unchanged,
-                },
-            )
-            .expect("edit current occurrence prose");
+        // Every 3 days, with no weekdays: the unit step.
+        let quest = quest_with("2026-03-01", r#"{"preset":"custom","interval":3,"unit":"day"}"#);
+        let repeating = RepeatingQuest::new(&quest, &none).unwrap();
+        let dates: Vec<String> = repeating.dates().take(3).map(period_key_of).collect();
+        assert_eq!(dates, ["2026-03-01", "2026-03-04", "2026-03-07"]);
+    }
 
-        let stored_series: QuestSeries = crate::schema::quest_series::table
-            .find(&series.id)
-            .select(QuestSeries::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert_eq!(
-            stored_series.description.as_deref(),
-            Some("Original notes"),
-            "normal prose edits must not rewrite the series row"
-        );
-
-        let update_result = QuestService::new(&mut conn)
-            .update(&quest.id, status_patch("completed"))
-            .expect("complete occurrence");
-        let next = update_result
-            .next_occurrence
-            .expect("completing a recurring quest must generate the next occurrence");
-
-        assert_eq!(
-            next.description.as_deref(),
-            Some("Edited occurrence notes"),
-            "non-checklist recurrence should carry current prose notes forward"
-        );
-        assert!(!next.is_checklist);
-        assert!(next.checklist_base.is_none());
-
-        let _ = std::fs::remove_file(db_path);
+    fn test_quest_row() -> Quest {
+        Quest {
+            id: "q".to_string(),
+            space_id: "1".to_string(),
+            title: "Gym".to_string(),
+            description: None,
+            status: "active".to_string(),
+            energy: crate::models::ENERGY_MEDIUM,
+            priority: crate::models::PRIORITY_MEDIUM,
+            due: None,
+            due_time: None,
+            repeat_rule: None,
+            completed_at: None,
+            order_rank: 0.0,
+            focus_enter_count: 0,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            is_checklist: false,
+            checklist_base: None,
+        }
     }
 }

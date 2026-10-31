@@ -1239,110 +1239,7 @@ mod tests {
             .expect("insert custom space");
     }
 
-    fn create_legacy_v2_backup_schema(conn: &mut SqliteConnection) {
-        conn.batch_execute(
-            "
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE spaces (
-                id TEXT PRIMARY KEY NOT NULL,
-                name TEXT NOT NULL,
-                item_order INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE quest_series (
-                id TEXT PRIMARY KEY NOT NULL,
-                space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
-                title TEXT NOT NULL,
-                description TEXT,
-                repeat_rule TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
-                energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
-                active BOOLEAN NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE quests (
-                id TEXT PRIMARY KEY NOT NULL,
-                space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE SET DEFAULT,
-                title TEXT NOT NULL,
-                description TEXT,
-                status TEXT NOT NULL DEFAULT 'active',
-                energy INTEGER NOT NULL DEFAULT 2 CHECK (energy IN (1, 2, 3)),
-                priority INTEGER NOT NULL DEFAULT 2 CHECK (priority IN (1, 2, 3)),
-                    due TEXT,
-                due_time TEXT,
-                repeat_rule TEXT,
-                completed_at TEXT,
-                order_rank REAL NOT NULL DEFAULT 0,
-                focus_enter_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                series_id TEXT REFERENCES quest_series(id) ON DELETE CASCADE,
-                period_key TEXT
-            );
-            ",
-        )
-        .expect("create legacy backup schema");
-    }
 
-    fn write_legacy_v2_backup_archive(label: &str) -> (PathBuf, PathBuf) {
-        let backup_database_path = temp_db_path(&format!("{label}-db"));
-        let mut backup_conn =
-            SqliteConnection::establish(path_str(&backup_database_path).expect("path"))
-                .expect("create legacy backup database");
-        create_legacy_v2_backup_schema(&mut backup_conn);
-        backup_conn
-            .batch_execute(
-                "
-                INSERT INTO spaces (id, name, item_order, created_at)
-                VALUES ('1', 'Inbox', 0, '2026-01-01T00:00:00Z');
-                INSERT INTO quest_series (
-                    id, space_id, title, description, repeat_rule, priority, energy,
-                    active, created_at, updated_at
-                ) VALUES (
-                    'legacy-series', '1', 'Legacy series', '- [ ] Template item',
-                    '{\"type\":\"daily\"}', 2, 2, 1,
-                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
-                );
-                INSERT INTO quests (
-                    id, space_id, title, description, status, energy, priority,
-                    due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key
-                ) VALUES (
-                    'legacy-quest', '1', 'Legacy quest', '- [ ] Existing item', 'active',
-                    'medium', 2, NULL, NULL, NULL, NULL, 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
-                    'legacy-series', '2026-01-01'
-                );
-                ",
-            )
-            .expect("seed legacy backup database");
-        drop(backup_conn);
-
-        let archive_path = backup_path(label);
-        let manifest = BackupManifest {
-            format: BACKUP_FORMAT.to_string(),
-            version: BACKUP_VERSION,
-            app_version: "0.2.1".to_string(),
-            exported_at: "2026-01-01T00:00:00Z".to_string(),
-            domains: vec![
-                "spaces".to_string(),
-                "quest_series".to_string(),
-                "quests".to_string(),
-            ],
-            spaces: vec![ManifestSpace {
-                id: "1".to_string(),
-                name: "Inbox".to_string(),
-            }],
-            counts: ManifestCounts {
-                spaces: 1,
-                quest_series: 1,
-                quests: 1,
-            },
-        };
-        write_zip(&archive_path, &manifest, &backup_database_path).expect("write legacy archive");
-        (archive_path, backup_database_path)
-    }
 
     #[test]
     fn dry_run_plan_reports_unresolved_conflicts_without_selecting_a_resolution() {
@@ -1357,7 +1254,7 @@ mod tests {
                 spaces: vec![],
                 counts: ManifestCounts {
                     spaces: 0,
-                    quest_series: 0,
+                    quest_occurrences: 0,
                     quests: 1,
                 },
             },
@@ -1439,42 +1336,6 @@ mod tests {
         let _ = fs::remove_file(target_db_path);
     }
 
-    #[test]
-    #[should_panic(expected = "CHECK constraint failed: energy IN (1, 2, 3)")]
-    fn backup_schema_rejects_legacy_energy_values() {
-        let _guard = lock_temp_dir_namespace();
-        let (archive_path, backup_database_path) =
-            write_legacy_v2_backup_archive("backup-legacy-v2-checklist-columns");
-
-        let inspection = inspect_backup(&archive_path).expect("inspect legacy backup");
-        assert_eq!(inspection.contents.counts.quest_series, 1);
-        assert_eq!(inspection.contents.counts.quests, 1);
-
-        let target_db_path = temp_db_path("backup-legacy-v2-target");
-        let mut target = open_db_at_path(&target_db_path);
-        let preflight = preflight_import(&mut target, &archive_path, &[]).expect("preflight");
-        assert!(preflight.required_space_mappings.is_empty());
-        assert!(preflight.conflicts.is_empty());
-
-        apply_import(&mut target, &archive_path, &[], &[]).expect("import legacy backup");
-        let imported_series: QuestSeries = quest_series::table
-            .find("legacy-series")
-            .select(QuestSeries::as_select())
-            .first(&mut target)
-            .expect("load imported series");
-        let imported_quest: Quest = quests::table
-            .find("legacy-quest")
-            .select(Quest::as_select())
-            .first(&mut target)
-            .expect("load imported quest");
-        assert!(!imported_series.is_checklist);
-        assert!(!imported_quest.is_checklist);
-        assert_eq!(imported_quest.checklist_base, None);
-
-        let _ = fs::remove_file(archive_path);
-        let _ = fs::remove_file(backup_database_path);
-        let _ = fs::remove_file(target_db_path);
-    }
 
     #[test]
     fn backup_roundtrip_preserves_checklist_activity() {
@@ -1487,12 +1348,12 @@ mod tests {
                 INSERT INTO quests (
                     id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                    created_at, updated_at, is_checklist, checklist_base
                 ) VALUES (
                     'checklist-quest', '1', 'Packed list',
                     '- [x] Charger <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 1,
                     '- [x] Charger <!--k=item-1-->'
                 );
                 INSERT INTO checklist_activity (
@@ -1547,12 +1408,12 @@ mod tests {
                 INSERT INTO quests (
                     id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                    created_at, updated_at, is_checklist, checklist_base
                 ) VALUES (
                     'replace-activity-quest', '1', 'Backup title',
                     '- [x] Backup item <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 1,
                     '- [x] Backup item <!--k=item-1-->'
                 );
                 INSERT INTO checklist_activity (
@@ -1576,12 +1437,12 @@ mod tests {
                 INSERT INTO quests (
                     id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                    created_at, updated_at, is_checklist, checklist_base
                 ) VALUES (
                     'replace-activity-quest', '1', 'Local title',
                     '- [x] Local item <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z', NULL, NULL, 1,
+                    '2026-01-01T00:00:00Z', '2026-01-03T00:00:00Z', 1,
                     '- [x] Local item <!--k=item-1-->'
                 );
                 INSERT INTO checklist_activity (
@@ -1639,12 +1500,12 @@ mod tests {
                 INSERT INTO quests (
                     id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                    created_at, updated_at, is_checklist, checklist_base
                 ) VALUES (
                     'base-quest', '1', 'Pack bag',
                     '- [ ] headphones <!--k=a1-->', 'active', 2, 2,
                     NULL, NULL, NULL, NULL, 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, NULL, 1,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1,
                     'stale-backup-base'
                 );
                 "#,
@@ -1662,12 +1523,12 @@ mod tests {
                 INSERT INTO quests (
                     id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                    created_at, updated_at, is_checklist, checklist_base
                 ) VALUES (
                     'base-quest', '1', 'Pack bag',
                     '- [ ] headphones <!--k=a1-->', 'active', 2, 2,
                     NULL, NULL, NULL, NULL, 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, NULL, 1,
+                    '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1,
                     'current-local-base'
                 );
                 "#,
@@ -1714,12 +1575,12 @@ mod tests {
                 INSERT INTO quests (
                     id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                    created_at, updated_at, is_checklist, checklist_base
                 ) VALUES (
                     'activity-conflict-quest', '1', 'Packed list',
                     '- [x] Charger <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 1,
                     '- [x] Charger <!--k=item-1-->'
                 );
                 INSERT INTO checklist_activity (
@@ -1743,12 +1604,12 @@ mod tests {
                 INSERT INTO quests (
                     id, space_id, title, description, status, energy, priority,
                     due, due_time, repeat_rule, completed_at, order_rank, focus_enter_count,
-                    created_at, updated_at, series_id, period_key, is_checklist, checklist_base
+                    created_at, updated_at, is_checklist, checklist_base
                 ) VALUES (
                     'activity-conflict-quest', '1', 'Packed list',
                     '- [x] Charger <!--k=item-1-->', 'completed', 2, 2,
                     NULL, NULL, NULL, '2026-01-02T00:00:00Z', 0, 0,
-                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', NULL, NULL, 1,
+                    '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 1,
                     '- [x] Charger <!--k=item-1-->'
                 );
                 INSERT INTO checklist_activity (
@@ -1816,7 +1677,7 @@ mod tests {
             spaces: vec![],
             counts: ManifestCounts {
                 spaces: 0,
-                quest_series: 0,
+                quest_occurrences: 0,
                 quests: 0,
             },
         };
@@ -1872,7 +1733,7 @@ mod tests {
             spaces: vec![],
             counts: ManifestCounts {
                 spaces: 0,
-                quest_series: 0,
+                quest_occurrences: 0,
                 quests: 0,
             },
         };

@@ -332,8 +332,21 @@ mod tests {
     }
 
     #[test]
-    fn future_scope_preserves_checked_adds_unchecked_drops_removed() {
-        let occurrence = serialize(&[
+    fn template_edit_reaches_a_day_copy_keeping_its_ticks() {
+        // ADR-0012 D5: the day copy was taken from this template.
+        let base_template = serialize(&[
+            ChecklistItem {
+                id: "a1".into(),
+                text: "headphones".into(),
+                checked: false,
+            },
+            ChecklistItem {
+                id: "a2".into(),
+                text: "key fob".into(),
+                checked: false,
+            },
+        ]);
+        let day_copy = serialize(&[
             ChecklistItem {
                 id: "a1".into(),
                 text: "headphones".into(),
@@ -358,7 +371,8 @@ mod tests {
                 checked: false,
             },
         ]);
-        let reconciled = parse(&reconcile_future_scope(Some(&occurrence), &new_template));
+        let (merged, _) = merge_3way(Some(&base_template), &day_copy, &new_template);
+        let reconciled = parse(&merged);
         assert_eq!(reconciled.len(), 2);
         assert!(
             reconciled.iter().find(|it| it.id == "a1").unwrap().checked,

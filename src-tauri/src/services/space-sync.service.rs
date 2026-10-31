@@ -1957,7 +1957,7 @@ pub(super) fn partition_remote_mapped_spaces(
 mod tests {
     use super::*;
     use crate::models::CreateSyncOutboxEntry;
-    use crate::schema::{pair_space_mappings, paired_devices, quests, quest_series};
+    use crate::schema::{pair_space_mappings, paired_devices, quest_occurrences, quests};
     use crate::services::db::open_db_at_path;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -1983,8 +1983,6 @@ mod tests {
             focus_enter_count: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: updated_at.to_string(),
-            series_id: None,
-            period_key: None,
             is_checklist: false,
             checklist_base: None,
         }
@@ -2017,21 +2015,6 @@ mod tests {
         serde_json::to_string(quest).unwrap()
     }
 
-    fn test_series(id: &str, title: &str, updated_at: &str) -> QuestSeries {
-        QuestSeries {
-            id: id.to_string(),
-            space_id: "1".to_string(),
-            title: title.to_string(),
-            description: None,
-            repeat_rule: r#"{"preset":"daily"}"#.to_string(),
-            priority: crate::models::PRIORITY_MEDIUM,
-            energy: crate::models::ENERGY_MEDIUM,
-            active: true,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: updated_at.to_string(),
-            is_checklist: false,
-        }
-    }
 
     fn insert_outbox_entry_for_space(
         conn: &mut SqliteConnection,
@@ -2103,74 +2086,6 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    #[test]
-    fn apply_sync_event_persists_synced_series_checklist_flag() {
-        let db_path = temp_db_path("series-checklist-flag");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let checklist_template =
-            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
-                id: "a1".into(),
-                text: "headphones".into(),
-                checked: true,
-            }]);
-        let mut remote_series = test_series("series-checklist", "Pack", "2026-03-02T00:00:00Z");
-        remote_series.description = Some(checklist_template.clone());
-        remote_series.is_checklist = true;
-
-        let event = test_envelope(
-            "evt-series-checklist",
-            "dev-remote",
-            "quest_series",
-            &remote_series.id,
-            "upsert",
-            Some(serde_json::to_string(&remote_series).unwrap()),
-            "2026-03-02T00:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &event).unwrap());
-
-        let stored: QuestSeries = quest_series::table
-            .find(&remote_series.id)
-            .select(QuestSeries::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert!(
-            stored.is_checklist,
-            "synced recurring checklist series must not fall back to the DB default prose flag"
-        );
-        assert_eq!(
-            stored.description.as_deref(),
-            Some(checklist_template.as_str())
-        );
-
-        remote_series.is_checklist = false;
-        remote_series.updated_at = "2026-03-03T00:00:00Z".to_string();
-        let update_event = test_envelope(
-            "evt-series-prose",
-            "dev-remote",
-            "quest_series",
-            &remote_series.id,
-            "upsert",
-            Some(serde_json::to_string(&remote_series).unwrap()),
-            "2026-03-03T00:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &update_event).unwrap());
-
-        let updated_is_checklist: bool = quest_series::table
-            .find(&remote_series.id)
-            .select(quest_series::is_checklist)
-            .first(&mut conn)
-            .unwrap();
-        assert!(
-            !updated_is_checklist,
-            "synced quest_series upserts must also update checklist mode changes"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
 
     #[test]
     fn apply_sync_event_preserves_checklist_activity_rows() {
@@ -2268,6 +2183,53 @@ mod tests {
 
     /// Inserts a real local `quests` row (not just an outbox entry) so the checklist merge path,
     /// which reads the row directly, has something to merge against.
+    /// ADR-0012 D11: a peer's occurrence mark applies to its quest, keyed by
+    /// (quest_id, period_key); its delete removes it.
+    #[test]
+    fn apply_sync_event_applies_and_deletes_an_occurrence_mark() {
+        let db_path = temp_db_path("occurrence-mark-sync");
+        let mut conn = open_db_at_path(&db_path);
+        let mut quest = test_quest("quest-repeating", "Gym", "2026-03-01T00:00:00Z");
+        quest.repeat_rule = Some(r#"{"preset":"daily"}"#.to_string());
+        quest.due = Some("2026-03-01".to_string());
+        insert_local_quest_row(&mut conn, &quest);
+
+        let mut mark = QuestOccurrence::new(&quest.id, "2026-03-02", "2026-03-02T09:00:00Z");
+        mark.status = Some(crate::models::OCCURRENCE_COMPLETED.to_string());
+        mark.closed_at = Some("2026-03-02T09:00:00Z".to_string());
+        let upsert = test_envelope(
+            "evt-mark",
+            "peer",
+            "quest_occurrence",
+            &mark.sync_id(),
+            "upsert",
+            Some(serde_json::to_string(&mark).unwrap()),
+            "2026-03-02T09:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &upsert).unwrap());
+        let stored: Vec<(String, Option<String>)> = quest_occurrences::table
+            .filter(quest_occurrences::quest_id.eq(&quest.id))
+            .select((quest_occurrences::period_key, quest_occurrences::status))
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(stored, vec![("2026-03-02".to_string(), Some("completed".to_string()))]);
+
+        let delete = test_envelope(
+            "evt-mark-delete",
+            "peer",
+            "quest_occurrence",
+            &mark.sync_id(),
+            "delete",
+            None,
+            "2026-03-02T10:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &delete).unwrap());
+        let left: i64 = quest_occurrences::table.count().get_result(&mut conn).unwrap();
+        assert_eq!(left, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
     fn insert_local_quest_row(conn: &mut SqliteConnection, quest: &Quest) {
         diesel::insert_into(quests::table)
             .values((
@@ -2286,8 +2248,6 @@ mod tests {
                 quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
-                quests::series_id.eq(&quest.series_id),
-                quests::period_key.eq(&quest.period_key),
                 quests::is_checklist.eq(quest.is_checklist),
                 quests::checklist_base.eq(&quest.checklist_base),
             ))
@@ -3143,8 +3103,6 @@ mod tests {
             focus_enter_count: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-04-11T20:00:00Z".to_string(),
-            series_id: None,
-            period_key: None,
             is_checklist: false,
             checklist_base: None,
         };
