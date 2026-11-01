@@ -183,9 +183,9 @@ impl DeviceService {
             self.identity.device_id
         );
         self.network.set_add_device_mode(on);
-        if bluetooth || !on {
-            self.bluetooth.set_add_device_mode(on);
-        }
+        // Always set: choosing Network after Bluetooth must switch the
+        // Bluetooth half off, or its scan and add flag stay on.
+        self.bluetooth.set_add_device_mode(on && bluetooth);
         // Opening Add Device is a person's act: the right moment to ask for
         // the Nearby Devices permission, once for each opening.
         #[cfg(target_os = "android")]
