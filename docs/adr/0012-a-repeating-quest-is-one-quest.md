@@ -55,10 +55,7 @@ edit of the quest's description reaches a day copy through the 3-way merge
 (`checklist_base` and `merge_3way`).
 
 **D6 — Focus and the lists show the oldest open occurrence.** Set Focus
-points at the quest and writes no mark. A repeating quest can be the Focus
-quest only while its oldest open occurrence is dated today or before. When
-Complete or Complete through today leaves only later occurrences open, the
-quest leaves Focus, and it can come back on its next day.
+points at the quest and writes no mark.
 
 **D7 — Complete through today.** A new action closes every open occurrence
 dated today or before, today's included, whatever its time. Each one gets
