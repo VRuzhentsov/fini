@@ -27,8 +27,14 @@ const restore = () => {
 copyFileSync(DEVTOOLS_CAPABILITY, CAPABILITY);
 const child = spawn(command, args, { stdio: 'inherit' });
 
+// Put the file back first: a stop can end this process before the command.
+// A SIGKILL (for example a container that is killed) still leaves the
+// devtools capability in place; `git checkout src-tauri/capabilities` puts it back.
 for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => child.kill(signal));
+  process.on(signal, () => {
+    restore();
+    child.kill(signal);
+  });
 }
 child.on('error', (error) => {
   restore();
