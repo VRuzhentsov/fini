@@ -256,6 +256,91 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
+    /// Migration 28 (ADR-0012) turns each series into one quest with the
+    /// series id, and its closed occurrence rows into marks. Winds a migrated
+    /// database back to the v0.3.17 shape, seeds series rows as v0.3.17 wrote
+    /// them, and runs the real SQL forward through Diesel.
+    #[test]
+    fn migration_28_turns_each_series_into_one_quest_with_marks() {
+        use crate::schema::{focus_history, quest_occurrences, reminders};
+        use diesel::connection::SimpleConnection;
+
+        let db_path = temp_db_path("migration-28-series-to-marks");
+        let mut conn = open_db_at_path(&db_path);
+        while diesel::sql_query("SELECT 1 FROM quest_series LIMIT 1")
+            .execute(&mut conn)
+            .is_err()
+        {
+            conn.revert_last_migration(MIGRATIONS)
+                .expect("wind back to the v0.3.17 shape");
+        }
+
+        conn.batch_execute(
+            "
+            INSERT INTO quest_series (id, space_id, title, description, repeat_rule, active, created_at, updated_at, is_checklist, priority, energy) VALUES
+                ('gym', '1', 'Gym', NULL, '{\"preset\":\"daily\"}', 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 0, 2, 2),
+                ('pack', '1', 'Pack', '- [ ] headphones <!--k=a1-->', '{\"preset\":\"daily\"}', 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 1, 2, 2);
+            INSERT INTO quests (id, space_id, title, description, status, due, due_time, repeat_rule, completed_at, created_at, updated_at, series_id, period_key, is_checklist) VALUES
+                ('gym-1', '1', 'Gym', NULL, 'completed', '2026-10-01', '20:00', '{\"preset\":\"daily\"}', '2026-10-01T20:05:00Z', '2026-10-01T00:00:00Z', '2026-10-01T20:05:00Z', 'gym', '2026-10-01', 0),
+                ('gym-2', '1', 'Gym', NULL, 'abandoned', '2026-10-02', '20:00', '{\"preset\":\"daily\"}', NULL, '2026-10-02T00:00:00Z', '2026-10-02T21:00:00Z', 'gym', '2026-10-02', 0),
+                ('gym-3', '1', 'Gym', NULL, 'active', '2026-10-03', '20:00', '{\"preset\":\"daily\"}', NULL, '2026-10-03T00:00:00Z', '2026-10-03T00:00:00Z', 'gym', '2026-10-03', 0),
+                ('pack-1', '1', 'Pack', '- [x] headphones <!--k=a1-->', 'active', '2026-10-01', NULL, '{\"preset\":\"daily\"}', NULL, '2026-10-01T00:00:00Z', '2026-10-01T08:00:00Z', 'pack', '2026-10-01', 1),
+                ('one-time', '1', 'Call bank', NULL, 'active', '2026-10-05', NULL, NULL, NULL, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', NULL, NULL, 0);
+            INSERT INTO focus_history (id, quest_id, space_id, trigger, created_at) VALUES ('focus-1', 'gym-3', '1', 'manual', '2026-10-03T09:00:00Z');
+            INSERT INTO reminders (id, quest_id, type, mm_offset, due_at_utc, created_at) VALUES ('reminder-old', 'gym-3', 'relative', 10, '2026-10-03T19:50:00Z', '2026-10-03T00:00:00Z');
+            INSERT INTO series_reminder_templates (id, series_id, kind, mm_offset, created_at) VALUES ('template-1', 'gym', 'relative', 10, '2026-10-01T00:00:00Z');
+            ",
+        )
+        .expect("seed v0.3.17 series rows");
+
+        conn.run_pending_migrations(MIGRATIONS)
+            .expect("run migration 28 over v0.3.17 series");
+
+        let quests_now: Vec<(String, String, Option<String>, Option<String>, Option<String>)> = quests::table
+            .order(quests::id.asc())
+            .select((quests::id, quests::status, quests::due, quests::due_time, quests::description))
+            .load(&mut conn)
+            .expect("load quests");
+        assert_eq!(
+            quests_now,
+            vec![
+                ("gym".into(), "active".into(), Some("2026-10-03".into()), Some("20:00".into()), None),
+                ("one-time".into(), "active".into(), Some("2026-10-05".into()), None, None),
+                ("pack".into(), "active".into(), Some("2026-10-01".into()), None, Some("- [ ] headphones <!--k=a1-->".into())),
+            ],
+            "one quest per series with the series id, dated at its open day; the template keeps no ticks"
+        );
+
+        let marks: Vec<(String, String, Option<String>, Option<String>)> = quest_occurrences::table
+            .order((quest_occurrences::quest_id.asc(), quest_occurrences::period_key.asc()))
+            .select((quest_occurrences::quest_id, quest_occurrences::period_key, quest_occurrences::status, quest_occurrences::description))
+            .load(&mut conn)
+            .expect("load marks");
+        assert_eq!(
+            marks,
+            vec![
+                ("gym".into(), "2026-10-01".into(), Some("completed".into()), None),
+                ("gym".into(), "2026-10-02".into(), Some("abandoned".into()), None),
+                ("pack".into(), "2026-10-01".into(), None, Some("- [x] headphones <!--k=a1-->".into())),
+            ],
+            "closed days become marks; an open day with ticks keeps them as its day copy"
+        );
+
+        let focus: Vec<String> = focus_history::table.select(focus_history::quest_id).load(&mut conn).unwrap();
+        assert_eq!(focus, vec!["gym".to_string()], "Focus points at the quest");
+        let reminder_rows: Vec<(String, Option<i64>, Option<String>)> = reminders::table
+            .select((reminders::quest_id, reminders::mm_offset, reminders::due_at_utc))
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(reminder_rows, vec![("gym".to_string(), Some(10), None)], "reminders keep only their rule, on the quest");
+        assert!(
+            diesel::sql_query("SELECT 1 FROM quest_series").execute(&mut conn).is_err(),
+            "quest_series is gone"
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
     /// Migration 23 turns six columns on `paired_devices` into `channels`
     /// rows, and the backfill has to reconstruct what each pair had.
     ///
