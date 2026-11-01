@@ -1383,7 +1383,7 @@ mod pair_tests {
     fn pairing_again_over_the_network_switches_network_on_again() {
         let mut fixture = fixture("network-repair");
         save(&mut fixture, "peer-old", None, false);
-        ChannelRepository::new(&mut fixture.conn).set_enabled("peer-old", ChannelKind::Network, false).unwrap();
+        ChannelRepository::new(&mut fixture.conn).configure("peer-old", ChannelKind::Network, false, None).unwrap();
 
         save(&mut fixture, "peer-old", None, false);
         assert!(ChannelRepository::new(&mut fixture.conn).is_enabled("peer-old", ChannelKind::Network));
