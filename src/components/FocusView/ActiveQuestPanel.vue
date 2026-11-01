@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { CheckIcon } from "@heroicons/vue/24/outline";
 import { isRepeating, useQuestStore, type Quest } from "../../stores/quest";
 import { EditScope } from "../../utils/quest";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
-import { buildQuestMenu, completeThroughTodayItem } from "../../composables/buildQuestMenu";
+import { useQuestMenu } from "../../composables/useQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { parseChecklist } from "../../utils/checklist";
 import ChecklistEditor from "../ChecklistEditor.vue";
@@ -18,6 +17,7 @@ const props = defineProps<{ quest: Quest }>();
 const store = useQuestStore();
 const spaceStore = useSpaceStore();
 const contextMenu = useContextMenu();
+const questMenu = useQuestMenu(() => props.quest);
 const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
@@ -86,23 +86,13 @@ async function onScopeChosen(scope: EditScope) {
 }
 
 function onContextMenu(e: MouseEvent) {
-  const items = buildQuestMenu(props.quest, {
-    spaces: spaceStore.spaces,
-    updateQuest: (id, patch) => store.updateQuest(id, patch),
-    setFocusQuest: (id) => store.setFocusQuest(id),
-    deleteQuest: (id) => store.deleteQuest(id),
-    completeThroughToday: (id) => store.completeThroughToday(id),
-  });
-  contextMenu.open(e, items);
+  contextMenu.open(e, questMenu.items.value);
 }
 
 /** The menu of the Complete button (ADR-0012 D7). */
 function openCompleteMenu(e: MouseEvent) {
   if (!renderFlags.value.completeHoldMenu) return;
-  contextMenu.open(e, [
-    { label: "Complete", icon: CheckIcon, action: () => completeQuest() },
-    ...completeThroughTodayItem(props.quest, (id) => store.completeThroughToday(id)),
-  ]);
+  contextMenu.open(e, questMenu.completeMenu.value);
 }
 
 function startCompleteHold(event: PointerEvent) {

@@ -41,4 +41,14 @@ database only because time passed or a record exists. The exception is a
 value whose computation is too slow to repeat on each read; store it then as a
 cache with the rule that rebuilds it.
 
+**Declare a value; do not build it step by step.** Write a list, a menu or a
+set of options as one literal that shows all of it, and give each entry the
+condition that makes it apply (for example a `visible` field on a menu item).
+Do not start from an empty value and add parts with `push` and `if` branches,
+and do not name a function `build…` or `make…`. In Vue, the literal is a
+`computed` in a composable (`useQuestMenu`: the whole quest menu, each item
+with `visible`); the code that shows it drops the entries that do not apply.
+The exception is a value that comes from a loop over data (one menu item for
+each space): use `map` or `filter` over the data for that part.
+
 **No magic strings.** A closed set of values — states, kinds, colours, problem codes, frame types — is named once and used through that name everywhere: a `const ChannelColor = { Green: "green", … } as const` object with `type ChannelColor = (typeof ChannelColor)[keyof typeof ChannelColor]` in TypeScript, an `enum` in Rust. Comparisons, `switch`es, props, test fixtures and e2e helpers all write `ChannelColor.Green`, never `"green"`. A union type alone does not satisfy this — `color === "green"` against `"green" | "grey"` is still a magic string, just a type-checked one. Mirroring a Rust `#[serde]` wire format is not an exception: the const object is the one place the wire literals are spelled, and everything else goes through it. Keep such consts in a module with no runtime imports (no Tauri, no Pinia) so specs and e2e helpers import them rather than redeclare them. In Rust, match on the enum; never compare its `.code()` or serialized string. Only a lone value with no set behind it, used once in a self-explanatory spot, may stay inline. When fixing one, fix the whole set in front of you, not a codebase sweep.

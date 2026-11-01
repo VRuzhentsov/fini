@@ -23,9 +23,8 @@ jest.mock("../../composables/useContextMenu", () => ({
   useContextMenu: () => ({ open: jest.fn() }),
 }));
 
-jest.mock("../../composables/buildQuestMenu", () => ({
-  buildQuestMenu: jest.fn(() => []),
-  completeThroughTodayItem: jest.fn(() => []),
+jest.mock("../../composables/useQuestMenu", () => ({
+  useQuestMenu: jest.fn(() => ({ items: { value: [] }, completeMenu: { value: [] } })),
 }));
 
 jest.mock("../../composables/useReminderNotifications", () => ({

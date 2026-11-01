@@ -70,5 +70,5 @@ Right-click the row (or its collapsed/expanded surface) to open [[ContextMenu]] 
 | [[ReminderMenu]] | Due date / time / repeat controls |
 | [[RecurrenceScopeSheet]] | Checklist edit-scope prompt for recurring quests |
 | [[ContextMenu]] | Right-click menus (via `useContextMenu()`) |
-| [[buildQuestMenu]] | Standard context-menu items |
+| [[useQuestMenu]] | Context-menu items, written in full; each item says when it shows |
 | [[QuestList]] | Parent — owns the accordion's `expanded` state |

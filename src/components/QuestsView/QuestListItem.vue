@@ -14,7 +14,7 @@ import {
 import { useSpaceStore, spaceName, spaceCss } from "../../stores/space";
 import { formatDue, formatTime } from "../../utils/date";
 import { useContextMenu } from "../../composables/useContextMenu";
-import { buildQuestMenu } from "../../composables/buildQuestMenu";
+import { useQuestMenu } from "../../composables/useQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { ArrowPathIcon, CheckCircleIcon } from "@heroicons/vue/24/outline";
 import { checklistCounts } from "../../utils/checklist";
@@ -37,19 +37,13 @@ const store = useQuestStore();
 const { t } = useI18n();
 const spaceStore = useSpaceStore();
 const contextMenu = useContextMenu();
+const questMenu = useQuestMenu(() => props.quest);
 const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
 function onContextMenu(e: MouseEvent) {
-  const items = buildQuestMenu(props.quest, {
-    spaces: spaceStore.spaces,
-    updateQuest: (id, patch) => store.updateQuest(id, patch),
-    setFocusQuest: (id) => store.setFocusQuest(id),
-    deleteQuest: (id) => store.deleteQuest(id),
-    completeThroughToday: (id) => store.completeThroughToday(id),
-  });
-  contextMenu.open(e, items);
+  contextMenu.open(e, questMenu.items.value);
 }
 
 // ── Checklist (issue #128) ──────────────────────────────────────────────────
