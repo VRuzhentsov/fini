@@ -322,6 +322,24 @@ abandoned) or changed (a tick, a "This day" edit), in `quest_occurrences`.
 Its fields override the quest's fields for that day; an empty field takes
 the quest's value.
 
+### Reminder
+
+A stored record that says when Fini reminds a person about a quest: the
+quest, the kind, the offset and the moment (table `reminders`). It is data;
+it does nothing by itself.
+
+*Elsewhere:* an alarm in a calendar event (iCalendar `VALARM`); a reminder in
+Todoist.
+
+### Notification
+
+The message that the operating system shows to the person at a reminder's
+moment, with the buttons Complete and Snooze. Showing it, its buttons and its
+snooze are the work of the notification service.
+
+*Elsewhere:* a notification on Android and in desktop notification daemons;
+the delivery of an alarm, not the alarm.
+
 ## Words deliberately not used
 
 | Not used | Why |
