@@ -3,6 +3,7 @@ import { nextTick } from "vue";
 import ActiveQuestPanel from "../../components/FocusView/ActiveQuestPanel.vue";
 import QuestList from "../../components/QuestsView/QuestList.vue";
 import { useQuestStore, type Quest } from "../../stores/quest";
+import { EditScope } from "../../utils/quest";
 
 jest.mock("vue-i18n", () => ({
   useI18n: () => ({ t: (key: string) => key }),
@@ -24,6 +25,7 @@ jest.mock("../../composables/useContextMenu", () => ({
 
 jest.mock("../../composables/buildQuestMenu", () => ({
   buildQuestMenu: jest.fn(() => []),
+  completeThroughTodayItem: jest.fn(() => []),
 }));
 
 jest.mock("../../composables/useReminderNotifications", () => ({
@@ -40,6 +42,9 @@ const recurrenceScopeSheetStub = {
   template: '<div data-testid="scope-sheet-stub" />',
 };
 
+const DAILY = JSON.stringify({ preset: "daily" });
+
+/** A repeating checklist quest, resolved to its oldest open day (ADR-0012). */
 function baseQuest(overrides: Partial<Quest> = {}): Quest {
   return {
     id: "q1",
@@ -49,249 +54,129 @@ function baseQuest(overrides: Partial<Quest> = {}): Quest {
     status: "active",
     energy: "medium",
     priority: "medium",
-    due: null,
+    due: "2026-01-01",
     due_time: null,
-    repeat_rule: null,
+    repeat_rule: DAILY,
     completed_at: null,
     order_rank: 0,
     focus_enter_count: 0,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
-    series_id: "series-1",
-    period_key: "2026-01-01",
     is_checklist: true,
     ...overrides,
   };
 }
 
-function mockQuestStore(seriesTemplate: string | null = null) {
+function mockQuestStore() {
   const store = {
     activeQuest: null,
     toggleChecklistItem: jest.fn().mockResolvedValue(undefined),
     editChecklistItemText: jest.fn().mockResolvedValue(undefined),
     addChecklistItem: jest.fn().mockResolvedValue(undefined),
     removeChecklistItem: jest.fn().mockResolvedValue(undefined),
-    updateSeriesChecklist: jest.fn().mockResolvedValue(undefined),
     updateQuest: jest.fn().mockResolvedValue(undefined),
+    completeThroughToday: jest.fn().mockResolvedValue(undefined),
     setFocusQuest: jest.fn().mockResolvedValue(undefined),
     deleteQuest: jest.fn().mockResolvedValue(undefined),
     fetchChecklistActivity: jest.fn().mockResolvedValue([]),
-    fetchSeriesChecklistTemplate: jest.fn().mockResolvedValue(seriesTemplate),
   };
   (useQuestStore as unknown as jest.Mock).mockReturnValue(store);
   return store;
 }
 
-describe("recurring checklist item text scope", () => {
+const listStubs = {
+  QuestListItem: false,
+  QuestEditor: questEditorStub,
+  RecurrenceScopeSheet: recurrenceScopeSheetStub,
+  ReminderMenu: true,
+  ArrowPathIcon: true,
+  CheckCircleIcon: true,
+};
+
+const panelStubs = {
+  QuestEditor: questEditorStub,
+  RecurrenceScopeSheet: recurrenceScopeSheetStub,
+  ReminderMenu: true,
+  CheckIcon: true,
+};
+
+describe("repeating checklist edit scope (ADR-0012 D8)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it("prompts for scope before QuestList applies recurring item text edits", async () => {
-    const quest = baseQuest();
-    const store = mockQuestStore(quest.description);
-    const wrapper = shallowMount(QuestList, {
-      props: { quests: [quest] },
-      global: {
-        stubs: {
-          QuestListItem: false,
-          QuestEditor: questEditorStub,
-          RecurrenceScopeSheet: recurrenceScopeSheetStub,
-          ReminderMenu: true,
-          ArrowPathIcon: true,
-          CheckCircleIcon: true,
-        },
-      },
-    });
+  it("asks This day / All days before QuestList applies an item text edit", async () => {
+    const store = mockQuestStore();
+    const wrapper = shallowMount(QuestList, { props: { quests: [baseQuest()] }, global: { stubs: listStubs } });
 
     await wrapper.find(".quest-row-surface").trigger("click");
     wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("edit-checklist-item-text", "a1", "headphones");
     await nextTick();
 
     expect(store.editChecklistItemText).not.toHaveBeenCalled();
-    expect(store.updateSeriesChecklist).not.toHaveBeenCalled();
     expect(wrapper.findComponent({ name: "RecurrenceScopeSheet" }).exists()).toBe(true);
 
-    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "future");
-    await nextTick();
+    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", EditScope.All);
     await nextTick();
 
-    expect(store.fetchSeriesChecklistTemplate).toHaveBeenCalledWith("series-1");
-    expect(store.updateSeriesChecklist).toHaveBeenCalledWith(
-      "series-1",
-      "q1",
-      "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->",
-      "future",
-    );
-    expect(store.editChecklistItemText).not.toHaveBeenCalled();
+    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a1", "headphones", EditScope.All);
   });
 
-  it("bases a future-scope edit on the series template, not occurrence-only changes (#128)", async () => {
-    // The occurrence already has a "today only" item that was never promoted to the template —
-    // a future-scope edit must not silently promote it.
-    const quest = baseQuest({
-      description:
-        "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->\n- [ ] today only <!--k=a3-->",
-    });
-    const seriesTemplate = "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->";
-    const store = mockQuestStore(seriesTemplate);
-    const wrapper = shallowMount(QuestList, {
-      props: { quests: [quest] },
-      global: {
-        stubs: {
-          QuestListItem: false,
-          QuestEditor: questEditorStub,
-          RecurrenceScopeSheet: recurrenceScopeSheetStub,
-          ReminderMenu: true,
-          ArrowPathIcon: true,
-          CheckCircleIcon: true,
-        },
-      },
-    });
+  it("sends an added item with the chosen scope", async () => {
+    const store = mockQuestStore();
+    const wrapper = shallowMount(QuestList, { props: { quests: [baseQuest()] }, global: { stubs: listStubs } });
 
     await wrapper.find(".quest-row-surface").trigger("click");
     wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("add-checklist-item", "lunch");
     await nextTick();
-    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "future");
-    await nextTick();
+    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", EditScope.Day);
     await nextTick();
 
-    const [, , sentChecklist] = store.updateSeriesChecklist.mock.calls[0];
-    expect(sentChecklist).toContain("lunch");
-    expect(sentChecklist).not.toContain("today only");
+    expect(store.addChecklistItem).toHaveBeenCalledWith("q1", "lunch", EditScope.Day);
   });
 
-  it("falls back to a this-occurrence edit when a future-scoped rename targets an occurrence-only item (#128)", async () => {
-    // "today only" exists on the occurrence but was never promoted to the series template — there
-    // is no "future" version of it to rename.
-    const quest = baseQuest({
-      description:
-        "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->\n- [ ] today only <!--k=a3-->",
-    });
-    const seriesTemplate = "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->";
-    const store = mockQuestStore(seriesTemplate);
-    const wrapper = shallowMount(QuestList, {
-      props: { quests: [quest] },
-      global: {
-        stubs: {
-          QuestListItem: false,
-          QuestEditor: questEditorStub,
-          RecurrenceScopeSheet: recurrenceScopeSheetStub,
-          ReminderMenu: true,
-          ArrowPathIcon: true,
-          CheckCircleIcon: true,
-        },
-      },
-    });
-
-    await wrapper.find(".quest-row-surface").trigger("click");
-    wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("edit-checklist-item-text", "a3", "today only, renamed");
-    await nextTick();
-    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "future");
-    await nextTick();
-    await nextTick();
-
-    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a3", "today only, renamed");
-    expect(store.updateSeriesChecklist).not.toHaveBeenCalled();
-  });
-
-  it("falls back to a this-occurrence edit for an occurrence-only item via the focused active panel (#128)", async () => {
-    const quest = baseQuest({
-      description:
-        "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->\n- [ ] today only <!--k=a3-->",
-    });
-    const seriesTemplate = "- [ ] headphones <!--k=a1-->\n- [x] key fob <!--k=a2-->";
-    const store = mockQuestStore(seriesTemplate);
-    const wrapper = shallowMount(ActiveQuestPanel, {
-      props: { quest },
-      global: {
-        stubs: {
-          QuestEditor: questEditorStub,
-          RecurrenceScopeSheet: recurrenceScopeSheetStub,
-          ReminderMenu: true,
-          CheckIcon: true,
-        },
-      },
-    });
+  it("edits a one-time quest's checklist without asking", async () => {
+    const store = mockQuestStore();
+    const quest = baseQuest({ repeat_rule: null, due: null });
+    const wrapper = shallowMount(ActiveQuestPanel, { props: { quest }, global: { stubs: panelStubs } });
 
     await wrapper.find(".active-quest-title").trigger("click");
-    wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("edit-checklist-item-text", "a3", "today only, renamed");
-    await nextTick();
-    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "future");
-    await nextTick();
+    wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("remove-checklist-item", "a2");
     await nextTick();
 
-    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a3", "today only, renamed");
-    expect(store.updateSeriesChecklist).not.toHaveBeenCalled();
+    expect(wrapper.findComponent({ name: "RecurrenceScopeSheet" }).exists()).toBe(false);
+    expect(store.removeChecklistItem).toHaveBeenCalledWith("q1", "a2", EditScope.All);
   });
 
-  it("applies this-occurrence recurring item text edits through the focused active panel", async () => {
-    const quest = baseQuest();
-    const store = mockQuestStore(quest.description);
-    const wrapper = shallowMount(ActiveQuestPanel, {
-      props: { quest },
-      global: {
-        stubs: {
-          QuestEditor: questEditorStub,
-          RecurrenceScopeSheet: recurrenceScopeSheetStub,
-          ReminderMenu: true,
-          CheckIcon: true,
-        },
-      },
-    });
+  it("applies This day through the focused active panel", async () => {
+    const store = mockQuestStore();
+    const wrapper = shallowMount(ActiveQuestPanel, { props: { quest: baseQuest() }, global: { stubs: panelStubs } });
 
     await wrapper.find(".active-quest-title").trigger("click");
     wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("edit-checklist-item-text", "a1", "headphones");
     await nextTick();
-
-    expect(store.editChecklistItemText).not.toHaveBeenCalled();
-    expect(wrapper.findComponent({ name: "RecurrenceScopeSheet" }).exists()).toBe(true);
-
-    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "this");
+    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", EditScope.Day);
     await nextTick();
 
-    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a1", "headphones");
-    expect(store.updateSeriesChecklist).not.toHaveBeenCalled();
+    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a1", "headphones", EditScope.Day);
   });
 
   it("resolves a pending scope action against the quest that opened the sheet, not a quest swapped in while it was open", async () => {
-    // Simulates Focus reassigning activeQuest (e.g. after a sync or reminder refresh) while the
-    // scope sheet is still open — the pending edit must not silently apply to the new quest.
-    const quest = baseQuest();
-    const otherQuest = baseQuest({
-      id: "q2",
-      series_id: "series-2",
-      title: "Different quest",
-      description: "- [ ] milk <!--k=b1-->",
-    });
-    const store = mockQuestStore(quest.description);
-    const wrapper = shallowMount(ActiveQuestPanel, {
-      props: { quest },
-      global: {
-        stubs: {
-          QuestEditor: questEditorStub,
-          RecurrenceScopeSheet: recurrenceScopeSheetStub,
-          ReminderMenu: true,
-          CheckIcon: true,
-        },
-      },
-    });
+    // Focus can replace activeQuest (after a sync or a reminder) while the sheet is open; the
+    // pending edit must not apply to the new quest.
+    const otherQuest = baseQuest({ id: "q2", title: "Different quest", description: "- [ ] milk <!--k=b1-->" });
+    const store = mockQuestStore();
+    const wrapper = shallowMount(ActiveQuestPanel, { props: { quest: baseQuest() }, global: { stubs: panelStubs } });
 
     await wrapper.find(".active-quest-title").trigger("click");
     wrapper.findComponent({ name: "QuestEditor" }).vm.$emit("edit-checklist-item-text", "a1", "headphones");
     await nextTick();
-
-    // The active quest changes out from under the still-open sheet.
     await wrapper.setProps({ quest: otherQuest });
 
-    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", "this");
+    wrapper.findComponent({ name: "RecurrenceScopeSheet" }).vm.$emit("choose", EditScope.Day);
     await nextTick();
 
-    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a1", "headphones");
-    expect(store.editChecklistItemText).not.toHaveBeenCalledWith(
-      "q2",
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(store.editChecklistItemText).toHaveBeenCalledWith("q1", "a1", "headphones", EditScope.Day);
+    expect(store.editChecklistItemText).not.toHaveBeenCalledWith("q2", expect.anything(), expect.anything(), expect.anything());
   });
 });
