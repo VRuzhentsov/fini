@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { CheckCircleIcon } from "@heroicons/vue/24/outline";
 import { isRepeating, useQuestStore, type Quest } from "../../stores/quest";
 import { EditScope } from "../../utils/quest";
+import { localDateStr } from "../../utils/date";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
-import { useQuestMenu } from "../../composables/useQuestMenu";
+import { hasMissedDays, useQuestMenu } from "../../composables/useQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { parseChecklist } from "../../utils/checklist";
 import ChecklistEditor from "../ChecklistEditor.vue";
@@ -33,6 +35,9 @@ const renderFlags = computed(() => ({
   checklist: props.quest.is_checklist,
   // ADR-0012 D7: holding Complete on a repeating quest opens its menu.
   completeHoldMenu: isRepeating(props.quest),
+  // One tap closes every open day through today; shown only when a day before today is open.
+  completeThroughTodayButton:
+    hasMissedDays(props.quest) && (props.quest.due ?? "") < localDateStr(new Date()),
 }));
 const checklistItems = computed(() => parseChecklist(props.quest.description));
 
@@ -179,6 +184,10 @@ async function completeQuest() {
   await store.updateQuest(props.quest.id, { status: "completed" });
 }
 
+async function completeThroughToday() {
+  await store.completeThroughToday(props.quest.id);
+}
+
 async function abandonQuest() {
   await store.updateQuest(props.quest.id, { status: "abandoned" });
 }
@@ -252,7 +261,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
       />
     </div>
 
-    <div class="active-quest-actions">
+    <div class="active-quest-actions" :class="{ 'with-through-today': renderFlags.completeThroughTodayButton }">
       <button
         class="hold-action abandon"
         aria-label="Abandon (hold)"
@@ -263,6 +272,16 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
       >
         <span class="hold-fill" />
         <span class="hold-glyph x" />
+      </button>
+      <button
+        v-if="renderFlags.completeThroughTodayButton"
+        class="hold-action through-today"
+        title="Complete through today"
+        aria-label="Complete through today"
+        data-testid="focus-complete-through-today"
+        @click="completeThroughToday"
+      >
+        <CheckCircleIcon class="through-today-icon" aria-hidden="true" />
       </button>
       <button
         class="hold-action complete"
@@ -444,6 +463,8 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
   margin-top: 0.875rem;
 }
 
+.active-quest-actions.with-through-today { grid-template-columns: 1fr 1fr 3fr; }
+
 .hold-action {
   position: relative;
   display: flex;
@@ -461,6 +482,8 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
 
 .hold-action:active { transform: scale(0.97); }
 .hold-action.abandon { color: var(--fg-5); background: var(--color-base-200); }
+.hold-action.through-today { color: var(--color-success); background: var(--color-base-200); }
+.through-today-icon { width: 26px; height: 26px; }
 .hold-action.complete { color: #fff; background: var(--color-success); box-shadow: 0 4px 10px rgba(0, 184, 107, 0.3); }
 
 .hold-fill {

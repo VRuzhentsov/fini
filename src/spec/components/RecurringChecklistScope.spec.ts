@@ -25,6 +25,7 @@ jest.mock("../../composables/useContextMenu", () => ({
 
 jest.mock("../../composables/useQuestMenu", () => ({
   useQuestMenu: jest.fn(() => ({ items: { value: [] }, completeMenu: { value: [] } })),
+  hasMissedDays: jest.fn(() => false),
 }));
 
 jest.mock("../../composables/useReminderNotifications", () => ({
