@@ -396,26 +396,15 @@ fn resolve_active_fallback(active: Vec<&Quest>) -> Option<Quest> {
     fallback.first().map(|quest| (*quest).clone())
 }
 
-/// A day of a repeating quest appears on its date; before it, the quest has
-/// no day to show on Focus (FocusView.md, Focus quest computation contract).
-fn waits_for_future_day(quest: &Quest, today: NaiveDate) -> bool {
-    RepeatRule::parse(quest.repeat_rule.as_deref()).is_some()
-        && quest
-            .due
-            .as_deref()
-            .and_then(|due| NaiveDate::parse_from_str(due, "%Y-%m-%d").ok())
-            .is_some_and(|due| due > today)
-}
-
 fn resolve_active_quest_at(
     conn: &mut SqliteConnection,
     now: DateTime<Utc>,
 ) -> Result<Option<Quest>, String> {
-    let today = now.date_naive();
     let active_quests: Vec<Quest> = QuestService::new(conn)
         .active_quests()?
         .into_iter()
-        .filter(|quest| !waits_for_future_day(quest, today))
+        // A quest is on Focus from its due + due_time (FocusView.md).
+        .filter(|quest| parse_due_reminder_fire_utc(quest).is_none_or(|due_at| due_at <= now))
         .collect();
     let active_by_id: std::collections::HashMap<&str, &Quest> = active_quests
         .iter()
@@ -3675,7 +3664,7 @@ mod tests {
     }
 
     #[test]
-    fn a_repeating_day_is_not_on_focus_before_its_date() {
+    fn a_repeating_day_comes_to_focus_at_its_time() {
         let db_path = temp_db_path("repeating-focus-future-day");
         let mut conn = open_db_at_path(&db_path);
         let quest = create_repeating(&mut conn, &day(-2), DAILY, None);
@@ -3690,7 +3679,19 @@ mod tests {
         assert_eq!(
             resolve_active_quest(&mut conn).expect("resolve").map(|q| q.id),
             None,
-            "the next day is tomorrow; it has not appeared yet"
+            "the next day is tomorrow at 20:00; it has not come yet"
+        );
+
+        let comes_at = crate::services::due_time::compute_fire_utc(&day(1), Some("20:00")).expect("moment");
+        assert_eq!(
+            resolve_active_quest_at(&mut conn, comes_at - chrono::Duration::minutes(1)).expect("resolve").map(|q| q.id),
+            None,
+            "one minute before tomorrow's 20:00"
+        );
+        assert_eq!(
+            resolve_active_quest_at(&mut conn, comes_at).expect("resolve").map(|q| q.id),
+            Some(quest.id.clone()),
+            "tomorrow at 20:00 the day comes to Focus"
         );
 
         let _ = std::fs::remove_file(db_path);
