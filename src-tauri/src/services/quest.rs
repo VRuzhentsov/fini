@@ -396,11 +396,27 @@ fn resolve_active_fallback(active: Vec<&Quest>) -> Option<Quest> {
     fallback.first().map(|quest| (*quest).clone())
 }
 
+/// A day of a repeating quest appears on its date; before it, the quest has
+/// no day to show on Focus (FocusView.md, Focus quest computation contract).
+fn waits_for_future_day(quest: &Quest, today: NaiveDate) -> bool {
+    RepeatRule::parse(quest.repeat_rule.as_deref()).is_some()
+        && quest
+            .due
+            .as_deref()
+            .and_then(|due| NaiveDate::parse_from_str(due, "%Y-%m-%d").ok())
+            .is_some_and(|due| due > today)
+}
+
 fn resolve_active_quest_at(
     conn: &mut SqliteConnection,
     now: DateTime<Utc>,
 ) -> Result<Option<Quest>, String> {
-    let active_quests = QuestService::new(conn).active_quests()?;
+    let today = now.date_naive();
+    let active_quests: Vec<Quest> = QuestService::new(conn)
+        .active_quests()?
+        .into_iter()
+        .filter(|quest| !waits_for_future_day(quest, today))
+        .collect();
     let active_by_id: std::collections::HashMap<&str, &Quest> = active_quests
         .iter()
         .map(|q| (q.id.as_str(), q))
@@ -3654,6 +3670,28 @@ mod tests {
 
         let again = QuestService::new(&mut conn).complete_through_today(&quest.id, None);
         assert!(again.is_err(), "nothing is left to close through today");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn a_repeating_day_is_not_on_focus_before_its_date() {
+        let db_path = temp_db_path("repeating-focus-future-day");
+        let mut conn = open_db_at_path(&db_path);
+        let quest = create_repeating(&mut conn, &day(-2), DAILY, None);
+        QuestService::new(&mut conn).set_focus(&quest.id, "manual").expect("set focus");
+        assert_eq!(
+            resolve_active_quest(&mut conn).expect("resolve").map(|q| q.id),
+            Some(quest.id.clone()),
+            "a missed day keeps the quest on Focus"
+        );
+
+        QuestService::new(&mut conn).complete_through_today(&quest.id, None).expect("complete through today");
+        assert_eq!(
+            resolve_active_quest(&mut conn).expect("resolve").map(|q| q.id),
+            None,
+            "the next day is tomorrow; it has not appeared yet"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
