@@ -2479,6 +2479,9 @@ pub struct Scanner {
     paired_heard: StdMutex<HashMap<String, (Instant, String)>>,
     /// Set while Add Device is open; see `set_add_device_mode`.
     add_device_mode: AtomicBool,
+    /// Set while the check for devices that left the Add Device list runs;
+    /// see `watch_stale`.
+    stale_watch: AtomicBool,
     /// The devices around this one in Add Device mode.
     pub(crate) available: AvailableDevices,
     /// Told when a paired device is heard again.
@@ -2510,6 +2513,7 @@ impl Scanner {
             scan_starts: StdMutex::new(VecDeque::new()),
             paired_heard: StdMutex::new(HashMap::new()),
             add_device_mode: AtomicBool::new(false),
+            stale_watch: AtomicBool::new(false),
             available: AvailableDevices::default(),
         }
     }
@@ -2692,6 +2696,29 @@ impl Scanner {
         self.add_device_mode.store(on, Ordering::SeqCst);
         self.start_once();
         self.changed.notify_one();
+        if on {
+            self.watch_stale();
+        }
+    }
+
+    /// While Add Device is open, removes the devices that stopped
+    /// advertising from the list and tells the UI. Without this a device
+    /// that left stayed in the list: the list drops old records only when it
+    /// is read, and only a new advertisement made the UI read it.
+    fn watch_stale(self: &Arc<Self>) {
+        if self.stale_watch.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let scanner = self.clone();
+        tauri::async_runtime::spawn(async move {
+            while scanner.in_add_device_mode() {
+                tokio::time::sleep(STALE_CHECK).await;
+                if scanner.available.remove_stale() {
+                    scanner.bus.publish(Event::AvailableDevicesChanged);
+                }
+            }
+            scanner.stale_watch.store(false, Ordering::SeqCst);
+        });
     }
 
     fn in_add_device_mode(&self) -> bool {
@@ -2962,6 +2989,10 @@ pub struct AvailableDevices {
 /// a device that stops (it left Add Device, or went away) drops out quickly.
 const HEARD_FRESH: Duration = Duration::from_secs(15);
 
+/// How often the open Add Device list is checked for devices that left
+/// (`Scanner::watch_stale`).
+const STALE_CHECK: Duration = Duration::from_secs(2);
+
 /// What one advertisement told the scan.
 #[derive(Clone)]
 struct HeardDevice {
@@ -2989,6 +3020,16 @@ impl AvailableDevices {
         if let Ok(mut heard) = self.heard.lock() {
             heard.clear();
         }
+    }
+
+    /// Removes the listed devices that were not heard with the Add Device
+    /// flag in the last `HEARD_FRESH`. True when one was removed: the Add
+    /// Device list changed.
+    pub fn remove_stale(&self) -> bool {
+        let Ok(mut heard) = self.heard.lock() else { return false };
+        let before = heard.len();
+        heard.retain(|_, device| !(device.add_device_flag && device.at.elapsed() >= HEARD_FRESH));
+        heard.len() != before
     }
 
     /// Records one advertisement: the newest address of that device wins.
