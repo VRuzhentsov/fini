@@ -2384,14 +2384,14 @@ const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
 const ANDROID_SCAN_STARTS: usize = 5;
 const ANDROID_SCAN_START_PERIOD: Duration = Duration::from_secs(30);
 
-/// Whether the scan keeps running for `SCAN_LINGER` after nothing wants it.
-/// Each stop and start of the scan uses one of Android's
-/// `ANDROID_SCAN_STARTS`: after fast repeated pairings (Add Device closed and
-/// opened, searches that end and start) the next scan waited for a free start,
-/// and a listing took 11 s. The scan still stops for each connection: on
-/// Android too (virtual phones, 2026-11-01) a connect while the scan ran
-/// timed out, and the new pair stayed grey.
-const SCAN_LINGERS: bool = cfg!(target_os = "android");
+/// Whether one scan keeps running across connections, and for `SCAN_LINGER`
+/// after nothing wants it. Each stop and start of the scan uses one of
+/// Android's `ANDROID_SCAN_STARTS`: a pairing stopped the scan for its
+/// identify connect and its pairing connect (3 starts in 3 s), so after two
+/// fast pairings the next listing waited for a free start (11-14 s). Android
+/// can scan and connect at the same time. BlueZ breaks when a connection
+/// opens during discovery, so on Linux the scan stops for each connection.
+const SCAN_DURING_CONNECT: bool = cfg!(target_os = "android");
 const SCAN_LINGER: Duration = Duration::from_secs(10);
 
 /// Why a search runs (ADR-0008 D12). The coordinator hands the peer's
@@ -2642,10 +2642,13 @@ impl Scanner {
 
     /// A guard for a dial the coordinator did not hand off: the running
     /// scan sees the guard and stops, and this returns once it has (the
-    /// scan lease is free), so the dial never overlaps a scan.
+    /// scan lease is free), so the dial never overlaps a scan. With
+    /// `SCAN_DURING_CONNECT` the scan keeps running and the dial starts at once.
     pub async fn acquire_connect(&self) -> ConnectGuard {
         let guard = self.connect_guard();
-        drop(self.scan_lock().await);
+        if !SCAN_DURING_CONNECT {
+            drop(self.scan_lock().await);
+        }
         guard
     }
 
@@ -2692,7 +2695,7 @@ impl Scanner {
             started.elapsed(),
             if found.is_some() { "heard" } else { "not heard" }
         );
-        if found.is_some() {
+        if found.is_some() && !SCAN_DURING_CONNECT {
             // The hand-off wakes this task before the coordinator has dropped
             // its discovery stream; the lease comes free only once it has, so
             // the caller's dial never overlaps the scan. `Found` holds a dial
@@ -2819,8 +2822,10 @@ impl Scanner {
 
         let mut connections = self.connections.subscribe();
         loop {
-            // Never scan while a dial runs.
-            let _ = connections.wait_for(|count| *count == 0).await;
+            // Never start a scan while a dial runs (see `SCAN_DURING_CONNECT`).
+            if !SCAN_DURING_CONNECT {
+                let _ = connections.wait_for(|count| *count == 0).await;
+            }
 
             let mut wanted = self.wanted();
             if !self.scan_wanted(&wanted) {
@@ -2908,23 +2913,23 @@ impl Scanner {
                             if self.connect_recently_failed(&candidate.address.0) {
                                 continue;
                             }
-                            if self.hand_off(peer, &candidate.address.0) {
+                            if self.hand_off(peer, &candidate.address.0) && !SCAN_DURING_CONNECT {
                                 break;
                             }
                         }
                         Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
                     },
                     // A dial started outside a hand-off: stop for it.
-                    _ = connections.wait_for(|count| *count > 0) => break,
+                    _ = connections.wait_for(|count| *count > 0), if !SCAN_DURING_CONNECT => break,
                     // What is wanted changed: keep the scan running over the
                     // new set rather than restarting the radio, and stop only
-                    // once nothing is wanted any more -- with `SCAN_LINGERS`,
-                    // `SCAN_LINGER` later.
+                    // once nothing is wanted any more -- with
+                    // `SCAN_DURING_CONNECT`, `SCAN_LINGER` later.
                     _ = self.changed.notified() => {
                         wanted = self.wanted();
                         if self.scan_wanted(&wanted) {
                             deadline = window_end;
-                        } else if SCAN_LINGERS {
+                        } else if SCAN_DURING_CONNECT {
                             deadline = deadline.min(tokio::time::Instant::now() + SCAN_LINGER);
                         } else {
                             break;
