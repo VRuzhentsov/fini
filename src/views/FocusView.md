@@ -16,7 +16,7 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 
 - Renders [[ActiveQuestPanel]] for the current computed Focus quest
 - If no active quests exist, shows an empty-state placeholder
-- Complete and Abandon actions are one-click
+- Complete is one tap; on a repeating quest, holding Complete opens a menu with "Complete through today". Abandon is a hold
 
 ### Active backlog
 

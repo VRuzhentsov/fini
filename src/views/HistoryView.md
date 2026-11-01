@@ -27,12 +27,12 @@ For repeating quests, only the most recently resolved occurrence appears; earlie
 
 ## State
 
-Uses [[quest.ts]] store. Loads on mount; `history` is a computed filter (`completed` or `abandoned`). [[historyGrouping]] deduplicates series rows and sorts, then the result is passed directly to `<QuestList>`.
+Uses [[quest.ts]] store. Loads on mount; `history` is a computed filter (`completed` or `abandoned`). [[historyGrouping]] keeps the newest closed day of each repeating quest (the backend gives one row per closed day, ADR-0012) and sorts, then the result is passed directly to `<QuestList>`.
 
 ## Dependencies
 
 | Dep | Role |
 |---|---|
 | [[quest.ts]] | Fetch, update status, delete |
-| [[historyGrouping]] | Deduplicates series rows to latest occurrence |
+| [[historyGrouping]] | Keeps the newest closed day of each repeating quest |
 | [[QuestList]] | Shared list component |

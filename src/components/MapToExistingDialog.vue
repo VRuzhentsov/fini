@@ -19,7 +19,7 @@ const canConfirm = computed(() => Boolean(selectedId.value));
 const blurb = computed(() =>
   props.context.kind === "peer-space"
     ? `Pick the local space to keep in sync with ${props.context.name}.`
-    : `Pick the local space to merge ${props.context.name} into. Imported quests and series will be reassigned to it.`,
+    : `Pick the local space to merge ${props.context.name} into. Imported quests will be reassigned to it.`,
 );
 
 function spaceColor(id: string): string {
