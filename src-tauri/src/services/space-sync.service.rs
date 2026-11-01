@@ -93,6 +93,12 @@ const BOOTSTRAP_RETRY: Duration = Duration::from_secs(2);
 /// take (`forward_pending`).
 const PENDING_RETRY: Duration = Duration::from_secs(1);
 
+/// How long a session from a key with no pair waits for the pair to be
+/// stored before it is rejected (`paired_device_for_key`), and how often it
+/// looks.
+const PAIR_SAVE_WAIT: Duration = Duration::from_secs(5);
+const PAIR_SAVE_CHECK: Duration = Duration::from_millis(200);
+
 /// How soon after a held session ends the channel tries to connect again.
 const HELD_SESSION_RECONNECT: Duration = Duration::from_secs(2);
 
@@ -396,7 +402,10 @@ impl SpaceSyncService {
                 self.outbox_kept();
                 self.wake();
             }
-            Event::DeviceHeard { .. } | Event::ConnectChanged { .. } => self.wake(),
+            // The adapter became usable (for example the Android permission
+            // was granted): the tick starts the advertising and the
+            // connections that wait.
+            Event::DeviceHeard { .. } | Event::ConnectChanged { .. } | Event::AdapterChanged => self.wake(),
             _ => {}
         }
     }
@@ -829,6 +838,25 @@ impl SpaceSyncService {
         }
     }
 
+    /// The paired device whose key TLS proved. A key with no pair yet gets
+    /// `PAIR_SAVE_WAIT`: at the end of a pairing each device stores the pair
+    /// itself, so the first device to store it can open the first session
+    /// before the other one has. A rejection then made the first device wait
+    /// `REJECTED_WAIT_TIME`, and the new pair stayed grey.
+    async fn paired_device_for_key(&self, key: Option<String>) -> Option<String> {
+        let key = key?;
+        let end = Instant::now() + PAIR_SAVE_WAIT;
+        loop {
+            if let Some(device_id) = self.with_conn(|conn| DeviceRepository::new(conn).find_by_key(&key)) {
+                return Some(device_id);
+            }
+            if Instant::now() >= end {
+                return None;
+            }
+            tokio::time::sleep(PAIR_SAVE_CHECK).await;
+        }
+    }
+
     /// The checks of a sync connection a peer opened: who it is (the key
     /// TLS proved), whether the channel is on here, and whether it crosses
     /// this device's own connection. Then the session runs, or the
@@ -836,9 +864,7 @@ impl SpaceSyncService {
     async fn accept_session(&self, mut link: Box<dyn DataLink>) {
         let kind = link.kind();
         let from_addr = link.peer_addr().unwrap_or_default();
-        let device_id =
-            link.peer_key().and_then(|key| self.with_conn(|conn| DeviceRepository::new(conn).find_by_key(&key)));
-        let Some(device_id) = device_id else {
+        let Some(device_id) = self.paired_device_for_key(link.peer_key()).await else {
             log::warn!("[space_sync][accept] {kind:?} session from {from_addr} rejected: its key is pinned for no pair");
             link.close(CLOSE_NOT_PAIRED, "not paired; pair the devices again");
             if kind == ChannelKind::Bluetooth {

@@ -1124,9 +1124,16 @@ impl BluetoothAdapter {
     /// open Device page shows the new colour of its Bluetooth row.
     fn set_health(&self, health: u8) {
         if self.health.swap(health, Ordering::Relaxed) != health {
-            if let Some(bus) = self.bus.get() {
-                bus.publish(Event::AdapterChanged);
-            }
+            self.publish_changed();
+        }
+    }
+
+    /// Tells the app that the adapter can be used now, or not any more: the
+    /// rows refresh, and SpaceSync ticks, which starts the advertising. Also
+    /// after the Android permission dialog granted Nearby Devices.
+    pub fn publish_changed(&self) {
+        if let Some(bus) = self.bus.get() {
+            bus.publish(Event::AdapterChanged);
         }
     }
 
