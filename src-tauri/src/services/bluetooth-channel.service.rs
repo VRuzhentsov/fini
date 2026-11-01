@@ -92,6 +92,7 @@ pub struct BluetoothChannelService {
 
 impl BluetoothChannelService {
     pub fn new(identity: Identity, db_path: PathBuf, bus: Arc<EventBusService>) -> Arc<Self> {
+        BluetoothAdapter::this_device().set_bus(bus.clone());
         Arc::new_cyclic(|me| Self {
             scanner: Arc::new(Scanner::new(bus.clone())),
             advertiser: Arc::new(Advertiser::new(&identity)),
@@ -987,6 +988,8 @@ pub struct BluetoothAdapter {
     adapter: tokio::sync::OnceCell<Adapter>,
     /// See `ADAPTER_UNKNOWN`.
     health: AtomicU8,
+    /// Gets `AdapterChanged` when the health changes (`set_bus`).
+    bus: std::sync::OnceLock<Arc<EventBusService>>,
     #[cfg(feature = "devtools")]
     switch: std::sync::OnceLock<Arc<test_switch::RadioSwitch>>,
 }
@@ -994,6 +997,7 @@ pub struct BluetoothAdapter {
 static THIS_DEVICE: BluetoothAdapter = BluetoothAdapter {
     adapter: tokio::sync::OnceCell::const_new(),
     health: AtomicU8::new(ADAPTER_UNKNOWN),
+    bus: std::sync::OnceLock::new(),
     #[cfg(feature = "devtools")]
     switch: std::sync::OnceLock::new(),
 };
@@ -1103,12 +1107,27 @@ impl BluetoothAdapter {
         }
     }
 
+    /// The event bus that gets `AdapterChanged`. The first one set stays.
+    pub(super) fn set_bus(&self, bus: Arc<EventBusService>) {
+        let _ = self.bus.set(bus);
+    }
+
     pub(super) fn note_reachable(&self) {
-        self.health.store(ADAPTER_REACHABLE, Ordering::Relaxed);
+        self.set_health(ADAPTER_REACHABLE);
     }
 
     pub(super) fn note_unreachable(&self) {
-        self.health.store(ADAPTER_UNREACHABLE, Ordering::Relaxed);
+        self.set_health(ADAPTER_UNREACHABLE);
+    }
+
+    /// Records the health. A change publishes `AdapterChanged`, so that an
+    /// open Device page shows the new colour of its Bluetooth row.
+    fn set_health(&self, health: u8) {
+        if self.health.swap(health, Ordering::Relaxed) != health {
+            if let Some(bus) = self.bus.get() {
+                bus.publish(Event::AdapterChanged);
+            }
+        }
     }
 
     /// Records what a refused scan says about the adapter. A busy adapter (a

@@ -145,6 +145,7 @@ export const FINI_EVENT = "fini-event";
 export const FiniEventType = {
   SessionChanged: "session-changed",
   ChannelsChanged: "channels-changed",
+  AdapterChanged: "adapter-changed",
   PairedDevicesChanged: "paired-devices-changed",
   AvailableDevicesChanged: "available-devices-changed",
   PairRequestsChanged: "pair-requests-changed",
@@ -434,6 +435,8 @@ export const useDeviceStore = defineStore("device", () => {
         case FiniEventType.ChannelsChanged:
           if (event.peerDeviceId) void refreshChannelStatuses(event.peerDeviceId);
           break;
+        case FiniEventType.AdapterChanged:
+          void refreshAllChannelStatuses();
           break;
         case FiniEventType.PairedDevicesChanged:
           void loadPairedDevices().then(refreshAllChannelStatuses);
