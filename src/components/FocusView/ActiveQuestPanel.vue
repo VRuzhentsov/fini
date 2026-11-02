@@ -230,7 +230,9 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
       <div class="active-quest-meta">
         <QuestMetadataButton v-if="quest.energy !== 'medium'" kind="energy" :model-value="quest.energy" readonly />
         <QuestMetadataButton v-if="quest.priority !== 'medium'" kind="priority" :model-value="quest.priority" readonly />
-        <span v-if="quest.focus_enter_count > 1" class="badge badge-xs">Focus {{ quest.focus_enter_count }}</span>
+        <!-- "Focus N": how many times the quest became the Focus quest. Switched off
+             for now; the backend will count it again later (services/quest.rs).
+        <span v-if="quest.focus_enter_count > 1" class="badge badge-xs">Focus {{ quest.focus_enter_count }}</span> -->
         <span class="badge badge-xs active-quest-space" :class="spaceCss()">{{ spaceName() }}</span>
         <button
           class="hold-ring-menu"

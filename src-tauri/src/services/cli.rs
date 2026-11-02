@@ -21,7 +21,7 @@ use crate::services::event_bus_service::EventBusService;
 use crate::services::network_channel_service::NetworkChannelService;
 use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
 use crate::repositories::QuestRepository;
-use crate::services::quest::{append_focus_history, record_focus_enter, resolve_active_quest, EditScope};
+use crate::services::quest::{append_focus_history, EditScope};
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
@@ -868,10 +868,8 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
     let mut conn = ctx.open_db()?;
     match command {
         FocusCommand::Get => {
-            let quest = resolve_active_quest(&mut conn)
-                .map_err(|e| CliError::runtime(e.to_string()))?
-                .map(|quest| record_focus_enter(&mut conn, &quest))
-                .transpose()
+            let quest = QuestRepository::new(&mut conn)
+                .focus(chrono::Utc::now())
                 .map_err(|e| CliError::runtime(e.to_string()))?;
             quest
                 .map(|quest| {

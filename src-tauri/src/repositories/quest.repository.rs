@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use std::collections::HashMap;
@@ -8,12 +8,13 @@ use crate::models::{
     RepeatRule, RepeatingQuest, Space, UpdateQuestInput, OCCURRENCE_ABANDONED, OCCURRENCE_COMPLETED,
 };
 use crate::repositories::OutboxRepository;
-use crate::schema::{checklist_activity, quest_occurrences, quests, spaces};
+use crate::schema::{checklist_activity, focus_history, quest_occurrences, quests, spaces};
 use crate::services::checklist;
 use crate::services::db::utc_now;
 use crate::services::quest::{
-    append_focus_history, emit_occurrence_sync_event, emit_quest_sync_events, log_checklist_activity,
-    record_focus_enter, should_set_focus_now_for_restore, sort_quests_for_list, validate_metadata, validate_optional_metadata, EditScope, QuestChange,
+    append_focus_history, emit_occurrence_sync_event, emit_quest_sync_events, is_overdue, log_checklist_activity,
+    parse_utc_timestamp,
+    should_set_focus_now_for_restore, sort_quests_for_list, validate_metadata, validate_optional_metadata, EditScope, QuestChange,
     UpdateQuestInputBuilder,
 };
 
@@ -184,13 +185,15 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
-    pub fn increment_focus_enter_count(&mut self, id: &str) -> Result<Quest, String> {
-        diesel::update(quests::table.find(id))
-            .set(quests::focus_enter_count.eq(quests::focus_enter_count + 1))
-            .execute(self.conn)
-            .map_err(|error| error.to_string())?;
-        self.get(id)
-    }
+    // "Focus N" badge counting is switched off for now; see the note in
+    // services/quest.rs.
+    // pub fn increment_focus_enter_count(&mut self, id: &str) -> Result<Quest, String> {
+    //     diesel::update(quests::table.find(id))
+    //         .set(quests::focus_enter_count.eq(quests::focus_enter_count + 1))
+    //         .execute(self.conn)
+    //         .map_err(|error| error.to_string())?;
+    //     self.get(id)
+    // }
 
     pub fn find_external_quest(&mut self, id: &str) -> Result<Option<Quest>, String> {
         quests::table
@@ -441,6 +444,23 @@ impl<'a> QuestRepository<'a> {
 
 // ── Quests as a person sees and changes them (ADR-0012) ─────────────────────
 
+/// The Focus fallback order (src/views/FocusView.md): overdue first, then
+/// `order_rank`, then Priority (high first), then the oldest `created_at`.
+fn fallback_order(mut quests: Vec<Quest>) -> Vec<Quest> {
+    let now = Utc::now();
+    // A `created_at` that does not read as a time goes last.
+    let created = |quest: &Quest| parse_utc_timestamp(&quest.created_at).unwrap_or(DateTime::<Utc>::MAX_UTC);
+    quests.sort_by(|a, b| {
+        is_overdue(b, &now)
+            .cmp(&is_overdue(a, &now))
+            .then_with(|| a.order_rank.partial_cmp(&b.order_rank).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.priority.cmp(&a.priority))
+            .then_with(|| created(a).cmp(&created(b)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    quests
+}
+
 /// A change of the status only.
 fn status_patch(status: &str) -> QuestUpdatePatch {
     QuestUpdatePatch::unchanged(UpdateQuestInputBuilder::default().status(status).build())
@@ -482,6 +502,43 @@ impl<'a> QuestRepository<'a> {
             .into_iter()
             .filter(|quest| quest.status == "active")
             .collect())
+    }
+
+    /// The Focus quest at `now` (src/views/FocusView.md): among the active
+    /// quests that have come (`due_at` at or before `now`), the one with the
+    /// newest Set Focus or `due_at`; with none, the first in the fallback
+    /// order. It only reads.
+    pub fn focus(&mut self, now: DateTime<Utc>) -> Result<Option<Quest>, String> {
+        let candidates: Vec<Quest> = self
+            .active_quests()?
+            .into_iter()
+            .filter(|quest| quest.due_at().is_none_or(|due_at| due_at <= now))
+            .collect();
+        let set_focus_at = self.last_set_focus_at()?;
+        let newest = candidates
+            .iter()
+            .filter_map(|quest| {
+                let moment = [set_focus_at.get(&quest.id).copied(), quest.due_at()].into_iter().flatten().max()?;
+                Some((moment, quest))
+            })
+            .max_by_key(|(moment, _)| *moment)
+            .map(|(_, quest)| quest.clone());
+        Ok(newest.or_else(|| fallback_order(candidates).into_iter().next()))
+    }
+
+    /// The newest Set Focus of each quest (`focus_history`).
+    fn last_set_focus_at(&mut self) -> Result<HashMap<String, DateTime<Utc>>, String> {
+        let history: Vec<crate::models::FocusHistoryEntry> = focus_history::table
+            .select(crate::models::FocusHistoryEntry::as_select())
+            .load(self.conn)
+            .map_err(|error| error.to_string())?;
+        let mut moments: Vec<(String, DateTime<Utc>)> = history
+            .into_iter()
+            .filter_map(|entry| Some((entry.quest_id, parse_utc_timestamp(&entry.created_at)?)))
+            .collect();
+        // Oldest first, so the newest of each quest is the one the map keeps.
+        moments.sort_by_key(|(_, at)| *at);
+        Ok(moments.into_iter().collect())
     }
 
     /// The quest as the UI shows it now (see `list_for_ui`).
@@ -526,8 +583,7 @@ impl<'a> QuestRepository<'a> {
             .ok_or_else(|| "cannot set Focus on non-active quest".to_string())?;
         self.touch(id)?;
         append_focus_history(self.conn, &quest.id, &quest.space_id, trigger)?;
-        let resolved = self.resolved(id)?;
-        record_focus_enter(self.conn, &resolved)
+        self.resolved(id)
     }
 
     pub fn create(&mut self, input: CreateQuestInput) -> Result<Quest, String> {

@@ -6,7 +6,6 @@ use crate::models::{CreateFocusHistoryInput, Quest, Reminder, Space};
 use crate::schema::{focus_history, quests, reminders, spaces};
 use crate::services::db::AppDbConnection;
 use crate::services::notification;
-use crate::services::quest::record_focus_enter;
 use crate::services::reminder as reminder_svc;
 
 /// Run on every app launch and after system resume.
@@ -57,12 +56,14 @@ pub fn run(app: &AppHandle, db: &AppDbConnection) {
             );
             continue;
         }
-        if let Err(e) = record_focus_enter(&mut conn, quest) {
-            eprintln!(
-                "[reconciler] failed to record focus enter for {}: {e}",
-                quest.id
-            );
-        }
+        // "Focus N" badge counting is switched off for now; see the note in
+        // services/quest.rs.
+        // if let Err(e) = record_focus_enter(&mut conn, quest) {
+        //     eprintln!(
+        //         "[reconciler] failed to record focus enter for {}: {e}",
+        //         quest.id
+        //     );
+        // }
 
         // Always fire immediately — no grace window
         notification::fire_immediate(app, reminder, quest, space);

@@ -1,26 +1,17 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-use std::collections::HashMap;
 #[cfg(any(feature = "ui-plane", test))]
 use tauri::{Manager, State};
 
 #[cfg(any(feature = "ui-plane", test))]
-use crate::models::Space;
-#[cfg(any(feature = "ui-plane", test))]
-use crate::models::UpdateQuestInput;
-#[cfg(any(feature = "ui-plane", test))]
 use crate::models::UpdateQuestCommandInput;
-use crate::models::{
-    period_key_of, CreateFocusHistoryInput, Quest, QuestOccurrence, RepeatRule, RepeatingQuest, OCCURRENCE_ABANDONED,
-    OCCURRENCE_COMPLETED,
-};
+use crate::models::{CreateFocusHistoryInput, Quest, QuestOccurrence, OCCURRENCE_COMPLETED};
 use crate::models::{CreateQuestInput, QuestFieldPatch, QuestUpdatePatch};
 use crate::repositories::QuestRepository;
-use crate::schema::{checklist_activity, focus_history, settings};
+use crate::schema::{checklist_activity, focus_history};
 #[cfg(test)]
 use crate::schema::quests;
-use crate::services::checklist;
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::db::sync_timestamp;
@@ -61,177 +52,62 @@ fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
     Some(NaiveDateTime::new(date, time).and_utc())
 }
 
-fn parse_due_reminder_fire_utc(quest: &Quest) -> Option<DateTime<Utc>> {
-    let due = quest.due.as_deref()?;
-    crate::services::due_time::compute_fire_utc(due, quest.due_time.as_deref())
-}
-
 pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
     parse_due_deadline_utc(quest)
         .map(|deadline| deadline < *now)
         .unwrap_or(false)
 }
 
-fn resolve_active_fallback(active: Vec<&Quest>) -> Option<Quest> {
-    let now = Utc::now();
-    let mut fallback = active;
-    fallback.sort_by(|a, b| {
-        let a_overdue = is_overdue(a, &now);
-        let b_overdue = is_overdue(b, &now);
-
-        if a_overdue != b_overdue {
-            return b_overdue.cmp(&a_overdue);
-        }
-
-        if (a.order_rank - b.order_rank).abs() > f64::EPSILON {
-            return a
-                .order_rank
-                .partial_cmp(&b.order_rank)
-                .unwrap_or(std::cmp::Ordering::Equal);
-        }
-
-        if a.priority != b.priority {
-            return b.priority.cmp(&a.priority);
-        }
-
-        match (
-            parse_utc_timestamp(&a.created_at),
-            parse_utc_timestamp(&b.created_at),
-        ) {
-            (Some(a_created), Some(b_created)) if a_created != b_created => {
-                a_created.cmp(&b_created)
-            }
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            _ => a.created_at.cmp(&b.created_at),
-        }
-        .then_with(|| a.id.cmp(&b.id))
-    });
-
-    fallback.first().map(|quest| (*quest).clone())
-}
-
-fn resolve_active_quest_at(
-    conn: &mut SqliteConnection,
-    now: DateTime<Utc>,
-) -> Result<Option<Quest>, String> {
-    let active_quests: Vec<Quest> = QuestRepository::new(conn)
-        .active_quests()?
-        .into_iter()
-        // A quest is on Focus from its due + due_time (FocusView.md).
-        .filter(|quest| parse_due_reminder_fire_utc(quest).is_none_or(|due_at| due_at <= now))
-        .collect();
-    let active_by_id: std::collections::HashMap<&str, &Quest> = active_quests
-        .iter()
-        .map(|q| (q.id.as_str(), q))
-        .collect();
-
-    if active_by_id.is_empty() {
-        return Ok(None);
-    }
-
-    let mut winner: Option<(DateTime<Utc>, &Quest)> = None;
-
-    // Walk persisted focus events; active reminder due times below compete at the same priority.
-    let history: Vec<crate::models::FocusHistoryEntry> = focus_history::table
-        .order(focus_history::created_at.desc())
-        .select(crate::models::FocusHistoryEntry::as_select())
-        .load(conn)
-        .map_err(|error| error.to_string())?;
-
-    for entry in &history {
-        if let Some(&quest) = active_by_id.get(entry.quest_id.as_str()) {
-            if let Some(created_at) = parse_utc_timestamp(&entry.created_at) {
-                if winner
-                    .as_ref()
-                    .map(|(winner_at, _)| created_at > *winner_at)
-                    .unwrap_or(true)
-                {
-                    winner = Some((created_at, quest));
-                }
-            }
-        }
-    }
-
-    for quest in active_by_id.values().copied() {
-        if let Some(fire_at) = parse_due_reminder_fire_utc(quest) {
-            if fire_at <= now
-                && winner
-                    .as_ref()
-                    .map(|(winner_at, _)| fire_at > *winner_at)
-                    .unwrap_or(true)
-            {
-                winner = Some((fire_at, quest));
-            }
-        }
-    }
-
-    if let Some((_, quest)) = winner {
-        return Ok(Some(quest.clone()));
-    }
-
-    // No focus_history or due-reminder candidate matches an active quest — use fallback ordering
-    Ok(resolve_active_fallback(
-        active_by_id.values().copied().collect(),
-    ))
-}
-
-pub fn resolve_active_quest(conn: &mut SqliteConnection) -> Result<Option<Quest>, String> {
-    resolve_active_quest_at(conn, Utc::now())
-}
-
-const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
-
-fn save_active_focus_quest_id(
-    conn: &mut SqliteConnection,
-    quest_id: Option<&str>,
-) -> Result<(), diesel::result::Error> {
-    if let Some(quest_id) = quest_id {
-        diesel::insert_into(settings::table)
-            .values((
-                settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
-                settings::value.eq(quest_id),
-            ))
-            .on_conflict(settings::key)
-            .do_update()
-            .set(settings::value.eq(quest_id))
-            .execute(conn)?;
-    } else {
-        diesel::delete(settings::table.find(ACTIVE_FOCUS_QUEST_SETTING_KEY)).execute(conn)?;
-    }
-    Ok(())
-}
-
-/// Counts a Focus enter on the quest (ADR-0012 D9: a repeating quest counts
-/// on the quest, not on a day) and returns `quest` with the new count.
-pub(crate) fn record_focus_enter(
-    conn: &mut SqliteConnection,
-    quest: &Quest,
-) -> Result<Quest, String> {
-    let previous_focus_id = settings::table
-        .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
-        .select(settings::value)
-        .first::<String>(conn)
-        .optional()
-        .map_err(|error| error.to_string())?;
-
-    let mut quest = quest.clone();
-    if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
-        let stored = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
-        save_active_focus_quest_id(conn, Some(&quest.id)).map_err(|error| error.to_string())?;
-        quest.focus_enter_count = stored.focus_enter_count;
-    }
-    Ok(quest)
-}
-
-fn resolve_and_record_active_quest(conn: &mut SqliteConnection) -> Result<Option<Quest>, String> {
-    let Some(quest) = resolve_active_quest(conn)? else {
-        save_active_focus_quest_id(conn, None).map_err(|error| error.to_string())?;
-        return Ok(None);
-    };
-
-    record_focus_enter(conn, &quest).map(Some)
-}
+// ── "Focus N" badge: how many times the quest became the Focus quest ───────
+//
+// TODO: count this in the backend again, later. Focus is now a read-only
+// computation (`QuestRepository::focus`), and this counter was a write that
+// happened on each read of Focus, so it is switched off for now (decided
+// 2026-11-01). The old code is kept below so we remember how it worked.
+//
+// const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
+// 
+// fn save_active_focus_quest_id(
+//     conn: &mut SqliteConnection,
+//     quest_id: Option<&str>,
+// ) -> Result<(), diesel::result::Error> {
+//     if let Some(quest_id) = quest_id {
+//         diesel::insert_into(settings::table)
+//             .values((
+//                 settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
+//                 settings::value.eq(quest_id),
+//             ))
+//             .on_conflict(settings::key)
+//             .do_update()
+//             .set(settings::value.eq(quest_id))
+//             .execute(conn)?;
+//     } else {
+//         diesel::delete(settings::table.find(ACTIVE_FOCUS_QUEST_SETTING_KEY)).execute(conn)?;
+//     }
+//     Ok(())
+// }
+// 
+// /// Counts a Focus enter on the quest (ADR-0012 D9: a repeating quest counts
+// /// on the quest, not on a day) and returns `quest` with the new count.
+// pub(crate) fn record_focus_enter(
+//     conn: &mut SqliteConnection,
+//     quest: &Quest,
+// ) -> Result<Quest, String> {
+//     let previous_focus_id = settings::table
+//         .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
+//         .select(settings::value)
+//         .first::<String>(conn)
+//         .optional()
+//         .map_err(|error| error.to_string())?;
+// 
+//     let mut quest = quest.clone();
+//     if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
+//         let stored = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
+//         save_active_focus_quest_id(conn, Some(&quest.id)).map_err(|error| error.to_string())?;
+//         quest.focus_enter_count = stored.focus_enter_count;
+//     }
+//     Ok(quest)
+// }
 
 pub(crate) fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
     let Some(due_str) = due else {
@@ -747,7 +623,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
 #[tauri::command]
 pub fn get_active_focus(state: State<AppDbConnection>) -> Result<Option<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    resolve_and_record_active_quest(&mut conn).map_err(|e| e.to_string())
+    QuestRepository::new(&mut conn).focus(Utc::now())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -781,11 +657,10 @@ pub fn update_quest(
         period_key.as_deref(),
         Some(&device_id),
     )?;
-    let mut quest = change.quest.clone();
+    let quest = change.quest.clone();
 
     if change.restore_should_focus {
         append_focus_history(&mut conn, &quest.id, &quest.space_id, "restore")?;
-        quest = record_focus_enter(&mut conn, &quest).map_err(|e| e.to_string())?;
     }
 
     refresh_reminder(&mut conn, &app, &id);
@@ -971,6 +846,8 @@ pub fn get_checklist_activity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{period_key_of, RepeatingQuest, UpdateQuestInput};
+    use crate::services::checklist;
 
     #[test]
     fn quest_service_metadata_validation_rejects_values_outside_persistence_domain() {
@@ -1158,7 +1035,7 @@ mod tests {
     }
 
     #[test]
-    fn set_focus_records_manual_history_touches_and_counts_first_entry() {
+    fn set_focus_records_manual_history_and_touches() {
         let db_path = temp_db_path("set-focus-service");
         let mut conn = open_db_at_path(&db_path);
         let id = insert_active_quest(
@@ -1175,7 +1052,7 @@ mod tests {
             .expect("set active quest as focus");
 
         assert_eq!(focused.id, id);
-        assert_eq!(focused.focus_enter_count, 1);
+        // "Focus N" counting is switched off for now (see the note at the top).
         assert_ne!(focused.updated_at, "2020-01-01T00:00:00Z");
         let triggers: Vec<String> = focus_history::table
             .filter(focus_history::quest_id.eq(&id))
@@ -1279,7 +1156,7 @@ mod tests {
             None,
         );
 
-        let before = resolve_active_quest(&mut conn)
+        let before = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve before set-main")
             .expect("must return active quest");
         assert_eq!(
@@ -1296,7 +1173,7 @@ mod tests {
         .execute(&mut conn)
         .expect("insert manual focus_history row");
 
-        let after = resolve_active_quest(&mut conn)
+        let after = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve after set-main")
             .expect("must return active quest");
         assert_eq!(
@@ -1338,7 +1215,7 @@ mod tests {
         .execute(&mut conn)
         .expect("insert manual focus_history row");
 
-        let before_preempt = resolve_active_quest(&mut conn)
+        let before_preempt = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve before reminder")
             .expect("must return active quest");
         assert_eq!(
@@ -1355,7 +1232,7 @@ mod tests {
         .execute(&mut conn)
         .expect("insert reminder focus_history row");
 
-        let preempted = resolve_active_quest(&mut conn)
+        let preempted = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve during reminder")
             .expect("must return active quest");
         assert_eq!(
@@ -1370,7 +1247,7 @@ mod tests {
             .expect("resolve reminder quest by completion");
 
         // Resolver skips completed quest, finds manual entry for manual_id
-        let unwound = resolve_active_quest(&mut conn)
+        let unwound = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve after reminder completion")
             .expect("must return active quest");
         assert_eq!(
@@ -1408,7 +1285,7 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut conn)
             .expect("load reminder quest");
-        let fire_at = parse_due_reminder_fire_utc(&reminder_quest).expect("parse reminder fire");
+        let fire_at = reminder_quest.due_at().expect("the moment the quest comes");
         let manual_at = fire_at - chrono::Duration::minutes(1);
         let manual_at_str = manual_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -1420,7 +1297,7 @@ mod tests {
         .execute(&mut conn)
         .expect("insert manual focus_history row");
 
-        let before_due = resolve_active_quest_at(&mut conn, fire_at - chrono::Duration::seconds(1))
+        let before_due = QuestRepository::new(&mut conn).focus(fire_at - chrono::Duration::seconds(1))
             .expect("resolve before due")
             .expect("must return active quest");
         assert_eq!(
@@ -1428,7 +1305,7 @@ mod tests {
             "future reminder must not preempt manual Focus before its fire time"
         );
 
-        let after_due = resolve_active_quest_at(&mut conn, fire_at)
+        let after_due = QuestRepository::new(&mut conn).focus(fire_at)
             .expect("resolve after due")
             .expect("must return active quest");
         assert_eq!(
@@ -1466,7 +1343,7 @@ mod tests {
             .select(Quest::as_select())
             .first(&mut conn)
             .expect("load reminder quest");
-        let fire_at = parse_due_reminder_fire_utc(&reminder_quest).expect("parse reminder fire");
+        let fire_at = reminder_quest.due_at().expect("the moment the quest comes");
         let manual_at = fire_at + chrono::Duration::minutes(1);
         let manual_at_str = manual_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -1478,7 +1355,7 @@ mod tests {
         .execute(&mut conn)
         .expect("insert manual focus_history row");
 
-        let winner = resolve_active_quest_at(&mut conn, manual_at + chrono::Duration::seconds(1))
+        let winner = QuestRepository::new(&mut conn).focus(manual_at + chrono::Duration::seconds(1))
             .expect("resolve after manual")
             .expect("must return active quest");
         assert_eq!(
@@ -1519,7 +1396,7 @@ mod tests {
             None,
         );
 
-        let first = resolve_active_quest(&mut conn)
+        let first = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve with mixed overdue state")
             .expect("must return active quest");
         assert_eq!(
@@ -1561,7 +1438,7 @@ mod tests {
             .execute(&mut conn)
             .expect("set higher rank");
 
-        let winner = resolve_active_quest(&mut conn)
+        let winner = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve active after rank updates")
             .expect("must return active quest");
 
@@ -1595,7 +1472,7 @@ mod tests {
             None,
         );
 
-        let winner = resolve_active_quest(&mut conn)
+        let winner = QuestRepository::new(&mut conn).focus(Utc::now())
             .expect("resolve tie on fallback")
             .expect("must return active quest");
 
@@ -2546,26 +2423,26 @@ mod tests {
         let quest = create_repeating(&mut conn, &day(-2), DAILY, None);
         QuestRepository::new(&mut conn).set_focus(&quest.id, "manual").expect("set focus");
         assert_eq!(
-            resolve_active_quest(&mut conn).expect("resolve").map(|q| q.id),
+            QuestRepository::new(&mut conn).focus(Utc::now()).expect("resolve").map(|q| q.id),
             Some(quest.id.clone()),
             "a missed day keeps the quest on Focus"
         );
 
         QuestRepository::new(&mut conn).complete_through_today(&quest.id, None).expect("complete through today");
         assert_eq!(
-            resolve_active_quest(&mut conn).expect("resolve").map(|q| q.id),
+            QuestRepository::new(&mut conn).focus(Utc::now()).expect("resolve").map(|q| q.id),
             None,
             "the next day is tomorrow at 20:00; it has not come yet"
         );
 
         let comes_at = crate::services::due_time::compute_fire_utc(&day(1), Some("20:00")).expect("moment");
         assert_eq!(
-            resolve_active_quest_at(&mut conn, comes_at - chrono::Duration::minutes(1)).expect("resolve").map(|q| q.id),
+            QuestRepository::new(&mut conn).focus(comes_at - chrono::Duration::minutes(1)).expect("resolve").map(|q| q.id),
             None,
             "one minute before tomorrow's 20:00"
         );
         assert_eq!(
-            resolve_active_quest_at(&mut conn, comes_at).expect("resolve").map(|q| q.id),
+            QuestRepository::new(&mut conn).focus(comes_at).expect("resolve").map(|q| q.id),
             Some(quest.id.clone()),
             "tomorrow at 20:00 the day comes to Focus"
         );

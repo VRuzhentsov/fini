@@ -221,6 +221,14 @@ pub struct QuestUpdatePatch {
     pub repeat_rule: QuestFieldPatch<String>,
 }
 
+impl Quest {
+    /// The moment the quest comes: `due` + `due_time`, local time (09:00 when
+    /// there is no time). For a repeating quest, of its shown day.
+    pub fn due_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        crate::services::due_time::compute_fire_utc(self.due.as_deref()?, self.due_time.as_deref())
+    }
+}
+
 impl QuestUpdatePatch {
     /// The fields of `input`; the clearable fields stay as they are.
     pub fn unchanged(input: UpdateQuestInput) -> Self {
