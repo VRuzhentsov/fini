@@ -19,7 +19,7 @@ use crate::models::{ChecklistActivity, Quest, QuestOccurrence, Space};
 use crate::schema::{checklist_activity, quest_occurrences, quests, spaces};
 use crate::services::db::utc_now;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 
 const MANIFEST_NAME: &str = "manifest.json";
 const BACKUP_DB_NAME: &str = "fini-backup.sqlite";
@@ -160,12 +160,12 @@ struct ColumnNameRow {
 #[tauri::command]
 pub fn backup_export(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     path: String,
     space_ids: Vec<String>,
 ) -> Result<BackupExportResult, String> {
     let file_path: FilePath = path.parse().unwrap();
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     match file_path {
         FilePath::Path(p) => export_backup(&mut conn, &p, &space_ids),
         FilePath::Url(url) => {
@@ -192,12 +192,12 @@ pub fn backup_export(
 #[tauri::command]
 pub fn backup_preflight_import(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
 ) -> Result<BackupImportPreflight, String> {
     let file_path: FilePath = path.parse().unwrap();
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     match file_path {
         FilePath::Path(p) => preflight_import(&mut conn, &p, &mappings),
         FilePath::Url(url) => {
@@ -213,13 +213,13 @@ pub fn backup_preflight_import(
 #[tauri::command]
 pub fn backup_apply_import(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     path: String,
     mappings: Vec<BackupSpaceMappingInput>,
     resolutions: Vec<BackupConflictResolutionInput>,
 ) -> Result<BackupImportResult, String> {
     let file_path: FilePath = path.parse().unwrap();
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     match file_path {
         FilePath::Path(p) => apply_import(&mut conn, &p, &mappings, &resolutions),
         FilePath::Url(url) => {

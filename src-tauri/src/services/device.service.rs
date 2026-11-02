@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -26,7 +25,7 @@ use crate::services::channel_service::{
     recv_frame, send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice,
     PairAcceptPayload, PairCompletePayload, PairRequestPayload, PeerFrame, PeerLinkHandler,
 };
-use crate::services::db::{open_db_at_path, utc_now};
+use crate::services::db::{utc_now, DbPool};
 use crate::services::event_bus_service::EventBusService;
 use crate::services::network_channel_service::NetworkChannelService;
 
@@ -105,7 +104,7 @@ impl PairingState {
 
 pub struct DeviceService {
     identity: Identity,
-    db_path: PathBuf,
+    pool: DbPool,
     bus: Arc<EventBusService>,
     network: Arc<NetworkChannelService>,
     bluetooth: Arc<BluetoothChannelService>,
@@ -119,14 +118,14 @@ pub struct DeviceService {
 impl DeviceService {
     pub fn new(
         identity: Identity,
-        db_path: PathBuf,
+        pool: DbPool,
         bus: Arc<EventBusService>,
         network: Arc<NetworkChannelService>,
         bluetooth: Arc<BluetoothChannelService>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             identity,
-            db_path,
+            pool,
             bus,
             network,
             bluetooth,
@@ -141,7 +140,7 @@ impl DeviceService {
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&mut SqliteConnection) -> T) -> T {
-        tokio::task::block_in_place(|| f(&mut open_db_at_path(&self.db_path)))
+        tokio::task::block_in_place(|| f(&mut self.pool.connection()))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, PairingState>, String> {
@@ -1242,7 +1241,9 @@ mod pair_tests {
     use super::*;
     use crate::models::Channel;
     use crate::schema::paired_devices;
+    use crate::services::db::open_db_at_path;
     use diesel::prelude::*;
+    use std::path::PathBuf;
     use uuid::Uuid;
 
     struct Fixture {
@@ -1268,9 +1269,10 @@ mod pair_tests {
         let mut conn = open_db_at_path(&db_path);
         let identity = DeviceRepository::new(&mut conn).load_or_create_identity(&app_dir).unwrap();
         let bus = Arc::new(EventBusService::default());
-        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), db_path.clone(), bus.clone(), 0));
-        let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
-        let service = DeviceService::new(identity, db_path.clone(), bus, network, bluetooth);
+        let pool = DbPool::open_for_test(&db_path);
+        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), pool.clone(), bus.clone(), 0));
+        let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
+        let service = DeviceService::new(identity, pool, bus, network, bluetooth);
         Fixture { service, conn, db_path, app_dir }
     }
 

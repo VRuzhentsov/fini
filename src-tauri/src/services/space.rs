@@ -6,7 +6,7 @@ use tauri::State;
 use crate::models::{CreateSpaceInput, Space, UpdateSpaceInput};
 use crate::schema::spaces;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 
 pub struct SpaceRepository<'a> {
     conn: &'a mut SqliteConnection,
@@ -55,35 +55,35 @@ impl<'a> SpaceRepository<'a> {
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn get_spaces(state: State<AppDbConnection>) -> Result<Vec<Space>, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+pub fn get_spaces(state: State<DbPool>) -> Result<Vec<Space>, String> {
+    let mut conn = state.get()?;
     SpaceRepository::new(&mut conn).list()
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn create_space(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     input: CreateSpaceInput,
 ) -> Result<Space, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     SpaceRepository::new(&mut conn).create(input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn update_space(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     id: String,
     input: UpdateSpaceInput,
 ) -> Result<Space, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     SpaceRepository::new(&mut conn).update(&id, input)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn delete_space(state: State<AppDbConnection>, id: String) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
+pub fn delete_space(state: State<DbPool>, id: String) -> Result<(), String> {
+    let mut conn = state.get()?;
     SpaceRepository::new(&mut conn).delete(&id)
 }

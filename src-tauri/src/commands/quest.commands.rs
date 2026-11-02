@@ -13,7 +13,7 @@ use crate::models::{
 use crate::repositories::outbox_repository::{emit_change_sync_events, emit_quest_sync_events};
 use crate::repositories::quest_repository::{append_focus_history, QuestChange};
 use crate::repositories::{OutboxRepository, QuestRepository};
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 use crate::services::reminder;
 use crate::services::space_sync_service::SpaceSyncService;
 
@@ -44,8 +44,8 @@ fn refresh_reminder(conn: &mut SqliteConnection, app: &tauri::AppHandle, quest_i
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn get_quests(state: State<AppDbConnection>) -> Result<Vec<Quest>, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+pub fn get_quests(state: State<DbPool>) -> Result<Vec<Quest>, String> {
+    let mut conn = state.get()?;
     QuestRepository::new(&mut conn).all()
 }
 
@@ -53,11 +53,11 @@ pub fn get_quests(state: State<AppDbConnection>) -> Result<Vec<Quest>, String> {
 #[tauri::command]
 pub fn create_quest(
     app: tauri::AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     input: CreateQuestInput,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let quest = QuestRepository::new(&mut conn).create(input)?;
     emit_quest_sync_events(&mut conn, &space_sync.identity().device_id, &quest.space_id, &quest.id)?;
     refresh_reminder(&mut conn, &app, &quest.id);
@@ -70,10 +70,10 @@ pub fn create_quest(
 /// repeating quest it closes the occurrence the reminder was for.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
-    let db = match app.try_state::<AppDbConnection>() {
+    let db = match app.try_state::<DbPool>() {
         Some(s) => s,
         None => {
-            eprintln!("[notification] complete: AppDbConnection not available");
+            eprintln!("[notification] complete: DbPool not available");
             return;
         }
     };
@@ -85,7 +85,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
         }
     };
 
-    let mut conn = db.0.lock().unwrap();
+    let mut conn = db.connection();
     let device_id = space_sync.identity().device_id.clone();
 
     let quest: Quest = match QuestRepository::new(&mut conn).get(quest_id) {
@@ -128,15 +128,15 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn get_active_focus(state: State<AppDbConnection>) -> Result<Option<Quest>, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+pub fn get_active_focus(state: State<DbPool>) -> Result<Option<Quest>, String> {
+    let mut conn = state.get()?;
     QuestRepository::new(&mut conn).focus(Utc::now())
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn set_focus(state: State<AppDbConnection>, id: String) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+pub fn set_focus(state: State<DbPool>, id: String) -> Result<Quest, String> {
+    let mut conn = state.get()?;
     QuestRepository::new(&mut conn).set_focus(&id, "manual")
 }
 
@@ -146,12 +146,12 @@ pub fn set_focus(state: State<AppDbConnection>, id: String) -> Result<Quest, Str
 #[tauri::command]
 pub fn update_quest(
     app: tauri::AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     id: String,
     input: UpdateQuestCommandInput,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
     let previous_space_id = QuestRepository::new(&mut conn).get(&id)?.space_id;
     let scope = EditScope::parse(input.scope.as_deref())?;
@@ -182,11 +182,11 @@ pub fn update_quest(
 #[tauri::command]
 pub fn complete_quest_through_today(
     app: tauri::AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     id: String,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
     let space_id = QuestRepository::new(&mut conn).get(&id)?.space_id;
     let change = QuestRepository::new(&mut conn).complete_through_today(&id, Some(&device_id))?;
@@ -200,11 +200,11 @@ pub fn complete_quest_through_today(
 #[tauri::command]
 pub fn delete_quest(
     app: tauri::AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     id: String,
 ) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
 
     let quest = QuestRepository::new(&mut conn).get(&id)?;
 
@@ -246,13 +246,13 @@ fn finish_checklist_command(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn add_checklist_item(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     text: String,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
     let change = QuestRepository::new(&mut conn).add_checklist_item(
         &quest_id,
@@ -266,14 +266,14 @@ pub fn add_checklist_item(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn toggle_checklist_item(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     item_id: String,
     checked: bool,
     period_key: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let change = QuestRepository::new(&mut conn).toggle_checklist_item(&quest_id, &item_id, checked, period_key.as_deref())?;
     finish_checklist_command(&mut conn, &space_sync, change)
 }
@@ -281,14 +281,14 @@ pub fn toggle_checklist_item(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn edit_checklist_item(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     item_id: String,
     text: String,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
     let change = QuestRepository::new(&mut conn).edit_checklist_item_text(
         &quest_id,
@@ -303,13 +303,13 @@ pub fn edit_checklist_item(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn remove_checklist_item(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     item_id: String,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
     let change = QuestRepository::new(&mut conn).remove_checklist_item(
         &quest_id,
@@ -323,13 +323,13 @@ pub fn remove_checklist_item(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn reorder_checklist(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     space_sync: State<std::sync::Arc<SpaceSyncService>>,
     quest_id: String,
     ordered_item_ids: Vec<String>,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     let change = QuestRepository::new(&mut conn).reorder_checklist(
         &quest_id,
         &ordered_item_ids,
@@ -341,10 +341,10 @@ pub fn reorder_checklist(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn get_checklist_activity(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     quest_id: String,
 ) -> Result<Vec<crate::models::ChecklistActivity>, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     QuestRepository::new(&mut conn).get_checklist_activity(&quest_id)
 }
 

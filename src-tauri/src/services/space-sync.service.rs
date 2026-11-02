@@ -13,7 +13,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Once, Weak};
 use std::time::{Duration, Instant};
 
@@ -31,7 +30,7 @@ use crate::services::channel_service::{
     recv_frame, send_frame, ChannelKind, ChannelService, CustomSpaceDescriptor, DataLink, PeerFrame, SessionHandler,
     SyncEventEnvelope,
 };
-use crate::services::db::{open_db_at_path, utc_now};
+use crate::services::db::{utc_now, DbPool};
 use crate::services::event_bus_service::EventBusService;
 use crate::services::network_channel_service::NetworkChannelService;
 
@@ -205,7 +204,7 @@ struct Sessions {
 
 pub struct SpaceSyncService {
     identity: Identity,
-    db_path: PathBuf,
+    pool: DbPool,
     bus: Arc<EventBusService>,
     network: Arc<NetworkChannelService>,
     bluetooth: Arc<BluetoothChannelService>,
@@ -236,14 +235,14 @@ pub struct SpaceSyncService {
 impl SpaceSyncService {
     pub fn new(
         identity: Identity,
-        db_path: PathBuf,
+        pool: DbPool,
         bus: Arc<EventBusService>,
         network: Arc<NetworkChannelService>,
         bluetooth: Arc<BluetoothChannelService>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             identity,
-            db_path,
+            pool,
             bus,
             network,
             bluetooth,
@@ -275,7 +274,7 @@ impl SpaceSyncService {
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&mut SqliteConnection) -> T) -> T {
-        tokio::task::block_in_place(|| f(&mut open_db_at_path(&self.db_path)))
+        tokio::task::block_in_place(|| f(&mut self.pool.connection()))
     }
 
     // ---- When sync runs ----
@@ -906,13 +905,15 @@ impl SpaceSyncService {
     /// One pass of sync: keep the channels serving, send what waits, apply
     /// what arrived, record the acks.
     pub fn tick(&self) -> Result<SpaceSyncTickResult, String> {
-        let mut conn = open_db_at_path(&self.db_path);
-        let conn = &mut conn;
+        // A connection for each database step, not for the whole pass: the
+        // channel calls between the steps take connections of their own
+        // (docs/db.md, rule 2).
+        let conn = || self.pool.connection();
         if let Ok(mut at) = self.last_tick_at.lock() {
             *at = Some(Instant::now());
         }
-        let peer_ids = DeviceRepository::new(conn).ids();
-        self.record_channel_order(conn, &peer_ids);
+        let peer_ids = DeviceRepository::new(&mut conn()).ids();
+        self.record_channel_order(&mut conn(), &peer_ids);
 
         // Keep this device reachable and its held connections up. Before
         // the Activity is up, Network alone.
@@ -937,13 +938,16 @@ impl SpaceSyncService {
             .map(|mut sessions| sessions.incoming_space_sync_ends.drain().map(|(_, end)| end).collect())
             .unwrap_or_default();
         for end in ends {
-            SpaceMappingRepository::new(conn).end(&end.from_device_id, &[end.space_id.clone()], &end.ended_at)?;
+            SpaceMappingRepository::new(&mut conn()).end(&end.from_device_id, &[end.space_id.clone()], &end.ended_at)?;
         }
 
         let mut sent_events_total = 0usize;
         for peer_device_id in &peer_ids {
-            let mapped = SpaceMappingRepository::new(conn).active(peer_device_id)?;
-            let pending = OutboxRepository::new(conn).load_unacked_events_for_peer(peer_device_id, &mapped)?;
+            let pending = {
+                let mut conn = conn();
+                let mapped = SpaceMappingRepository::new(&mut conn).active(peer_device_id)?;
+                OutboxRepository::new(&mut conn).load_unacked_events_for_peer(peer_device_id, &mapped)?
+            };
             let mut sent_events = 0usize;
             for event in &pending {
                 if sent_events >= MAX_EVENTS_PER_PEER_PER_TICK {
@@ -967,7 +971,7 @@ impl SpaceSyncService {
         }
 
         for peer_device_id in &peer_ids {
-            let unsynced = SpaceMappingRepository::new(conn).never_synced(peer_device_id)?;
+            let unsynced = SpaceMappingRepository::new(&mut conn()).never_synced(peer_device_id)?;
             if unsynced.is_empty() || !self.has_any_session(peer_device_id) {
                 continue;
             }
@@ -996,11 +1000,12 @@ impl SpaceSyncService {
         let mut handled_events = 0usize;
         let mut deferred = Vec::new();
         for event in incoming {
-            if !SpaceMappingRepository::new(conn).is_active(&event.origin_device_id, &event.space_id).unwrap_or(false) {
+            if !SpaceMappingRepository::new(&mut conn()).is_active(&event.origin_device_id, &event.space_id).unwrap_or(false) {
                 deferred.push(event);
                 continue;
             }
-            match apply::apply_sync_event(conn, &event) {
+            let applied = apply::apply_sync_event(&mut conn(), &event);
+            match applied {
                 Ok(applied) => {
                     handled_events += 1;
                     if applied {
@@ -1029,11 +1034,12 @@ impl SpaceSyncService {
             .unwrap_or_default();
         let mut received_acks = 0usize;
         for ack in acks {
-            if !OutboxRepository::new(conn).record_ack(&ack.from_device_id, &ack.event_id).unwrap_or(false) {
+            let mut conn = conn();
+            if !OutboxRepository::new(&mut conn).record_ack(&ack.from_device_id, &ack.event_id).unwrap_or(false) {
                 continue;
             }
-            if let Some((space_id, updated_at)) = OutboxRepository::new(conn).space_and_time(&ack.event_id)? {
-                SpaceMappingRepository::new(conn).record_synced(&ack.from_device_id, &space_id, &updated_at)?;
+            if let Some((space_id, updated_at)) = OutboxRepository::new(&mut conn).space_and_time(&ack.event_id)? {
+                SpaceMappingRepository::new(&mut conn).record_synced(&ack.from_device_id, &space_id, &updated_at)?;
             }
             received_acks += 1;
             transferred_by_peer.entry(ack.from_device_id.clone()).or_insert((0, 0, 0)).2 += 1;
@@ -1052,7 +1058,7 @@ impl SpaceSyncService {
             .collect();
         peers.sort_by(|a, b| a.peer_device_id.cmp(&b.peer_device_id));
 
-        let _ = apply::cleanup_old_tombstones(conn);
+        let _ = apply::cleanup_old_tombstones(&mut conn());
 
         // Only when a peer's change landed here: the UI re-reads then, and
         // an idle pair makes no work for anyone.
@@ -3001,6 +3007,8 @@ pub struct IncomingSyncAck {
 mod tests {
     use super::*;
     use crate::schema::{pair_space_mappings, paired_devices, quests};
+    use crate::services::db::open_db_at_path;
+    use std::path::PathBuf;
     use uuid::Uuid;
 
     struct Fixture {
@@ -3037,9 +3045,10 @@ mod tests {
             .unwrap();
         let identity = DeviceRepository::new(&mut conn).load_or_create_identity(&app_dir).unwrap();
         let bus = Arc::new(EventBusService::default());
-        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), db_path.clone(), bus.clone(), 0));
-        let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
-        let service = SpaceSyncService::new(identity, db_path.clone(), bus, network, bluetooth);
+        let pool = DbPool::open_for_test(&db_path);
+        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), pool.clone(), bus.clone(), 0));
+        let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
+        let service = SpaceSyncService::new(identity, pool, bus, network, bluetooth);
         Fixture { service, conn, db_path, app_dir }
     }
 

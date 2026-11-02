@@ -11,7 +11,7 @@ use crate::models::{
 
 use crate::services::backup;
 use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
-use crate::services::db::{db_default_path, try_open_db_at_path};
+use crate::services::db::{db_default_path, DbConnection, DbPool};
 use crate::services::device_service::{DevicePairRequestAckInput, DevicePairRequestInput};
 use crate::repositories::OutboxRepository;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
@@ -618,7 +618,7 @@ impl CliError {
 type CliResult<T> = Result<T, CliError>;
 
 struct CliContext {
-    db_path: std::path::PathBuf,
+    pool: DbPool,
     devices: std::sync::Arc<DeviceService>,
     space_sync: std::sync::Arc<SpaceSyncService>,
 }
@@ -635,33 +635,30 @@ impl CliContext {
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let identity = crate::repositories::DeviceRepository::new(&mut open_cli_db_at_path(&db_path)?)
+        let pool = DbPool::open(&db_path).map_err(CliError::runtime)?;
+        let identity = crate::repositories::DeviceRepository::new(&mut *pool.get().map_err(CliError::runtime)?)
             .load_or_create_identity(&app_data_dir)
             .map_err(CliError::runtime)?;
         let bus = std::sync::Arc::new(EventBusService::default());
-        let network = NetworkChannelService::new(identity.clone(), db_path.clone(), bus.clone());
-        let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
+        let network = NetworkChannelService::new(identity.clone(), pool.clone(), bus.clone());
+        let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
         let space_sync =
-            SpaceSyncService::new(identity.clone(), db_path.clone(), bus.clone(), network.clone(), bluetooth.clone());
-        let devices = DeviceService::new(identity, db_path.clone(), bus, network.clone(), bluetooth);
+            SpaceSyncService::new(identity.clone(), pool.clone(), bus.clone(), network.clone(), bluetooth.clone());
+        let devices = DeviceService::new(identity, pool.clone(), bus, network.clone(), bluetooth);
         network.set_link_handlers(LinkHandlers { peer: devices.clone(), session: space_sync.clone() });
         // The CLI connects out for sync and cannot connect to what it has not
         // found, so it starts discovery, though it serves nobody.
         network.start_discovery();
-        Ok(Self { db_path, devices, space_sync })
+        Ok(Self { pool, devices, space_sync })
     }
 
     fn device_id(&self) -> &str {
         &self.devices.identity().device_id
     }
 
-    fn open_db(&self) -> CliResult<SqliteConnection> {
-        open_cli_db_at_path(&self.db_path)
+    fn open_db(&self) -> CliResult<DbConnection> {
+        self.pool.get().map_err(CliError::runtime)
     }
-}
-
-fn open_cli_db_at_path(path: &std::path::Path) -> CliResult<SqliteConnection> {
-    try_open_db_at_path(path).map_err(CliError::runtime)
 }
 
 pub fn run(args: Vec<String>) -> i32 {
@@ -1254,7 +1251,7 @@ fn handle_backup(ctx: &CliContext, command: BackupCommand) -> CliResult<Value> {
         BackupCommand::Export(args) => handle_export(ctx, args, "backup export"),
         BackupCommand::Import(args) => serde_json::to_value(
             backup::import_cli(
-                &mut ctx.open_db()?,
+                &mut *ctx.open_db()?,
                 std::path::Path::new(&args.path),
                 args.force,
             )

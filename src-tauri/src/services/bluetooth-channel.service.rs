@@ -26,7 +26,6 @@
 //! (see `pairing::DeviceConnectionState::recompute_primary_locked`),
 //! not whether Bluetooth connects at all.
 
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -44,7 +43,7 @@ use crate::services::channel_service::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_
 use crate::services::channel_service::{
     ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlerSlot, LinkHandlers,
 };
-use crate::services::db::open_db_at_path;
+use crate::services::db::DbPool;
 use crate::services::event_bus_service::EventBusService;
 use crate::services::space_sync_service::rejected_by_peer;
 
@@ -63,7 +62,7 @@ use scanner::Purpose;
 /// Bluetooth.
 pub struct BluetoothChannelService {
     identity: Identity,
-    db_path: PathBuf,
+    pool: DbPool,
     bus: Arc<EventBusService>,
     /// This object, for the tasks it starts.
     me: Weak<BluetoothChannelService>,
@@ -91,7 +90,7 @@ pub struct BluetoothChannelService {
 }
 
 impl BluetoothChannelService {
-    pub fn new(identity: Identity, db_path: PathBuf, bus: Arc<EventBusService>) -> Arc<Self> {
+    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBusService>) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             scanner: Arc::new(Scanner::new(bus.clone())),
             advertiser: Arc::new(Advertiser::new(&identity)),
@@ -101,7 +100,7 @@ impl BluetoothChannelService {
             connect_once: std::sync::Mutex::default(),
             refused_at: std::sync::Mutex::default(),
             identity,
-            db_path,
+            pool,
             bus,
             me: me.clone(),
             handlers: LinkHandlerSlot::default(),
@@ -125,7 +124,7 @@ impl BluetoothChannelService {
 
     /// The iroh key pinned for the pair, if any.
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
-        tokio::task::block_in_place(|| DeviceRepository::new(&mut open_db_at_path(&self.db_path)).pinned_key(peer_id))
+        tokio::task::block_in_place(|| DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id))
     }
 }
 
@@ -352,8 +351,8 @@ impl ChannelService for BluetoothChannelService {
         ChannelKind::Bluetooth
     }
 
-    fn db_path(&self) -> &Path {
-        &self.db_path
+    fn pool(&self) -> &DbPool {
+        &self.pool
     }
 
     fn set_link_handlers(&self, handlers: LinkHandlers) {
@@ -403,7 +402,7 @@ impl ChannelService for BluetoothChannelService {
         // (2026-10-13: green is a live connection). `start_exchange` skips
         // a device that has one, or whose delivery search is not due.
         let peers = tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut open_db_at_path(&self.db_path)).peers_with_channel_enabled(ChannelKind::Bluetooth)
+            ChannelRepository::new(&mut *self.pool.connection()).peers_with_channel_enabled(ChannelKind::Bluetooth)
         });
         for peer in peers {
             self.start_exchange(&peer);
@@ -865,7 +864,7 @@ impl BluetoothChannelService {
         };
         // Diagnostics only: nothing connects to a stored address.
         tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut open_db_at_path(&self.db_path)).note_address(
+            ChannelRepository::new(&mut *self.pool.connection()).note_address(
                 peer_id,
                 ChannelKind::Bluetooth,
                 address,
@@ -902,7 +901,7 @@ impl BluetoothChannelService {
     /// the setups open now. Cheap; called whenever one of these can change.
     pub fn refresh_advertising(&self) {
         let any_channel_on = tokio::task::block_in_place(|| {
-            !ChannelRepository::new(&mut open_db_at_path(&self.db_path))
+            !ChannelRepository::new(&mut *self.pool.connection())
                 .peers_with_channel_enabled(ChannelKind::Bluetooth)
                 .is_empty()
         });

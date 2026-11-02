@@ -8,7 +8,7 @@ use tauri::State;
 use crate::models::channel::ChannelKind;
 use crate::models::{Device, Identity};
 use crate::services::channel_service::DiscoveredDevice;
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 use crate::services::device_service::{
     ChannelStatus, DeviceConnectionDebugStatus, DevicePairRequestAckInput,
     DevicePairRequestBluetoothInput, DevicePairRequestInput, DeviceService, IncomingPairRequest, PairCodeUpdate,
@@ -33,12 +33,12 @@ async fn off_main_thread<T: Send + 'static>(
 }
 
 fn statuses(
-    db: &AppDbConnection,
+    db: &DbPool,
     devices: &DeviceService,
     space_sync: &SpaceSyncService,
     peer_device_id: &str,
 ) -> Result<Vec<ChannelStatus>, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     devices.channel_statuses(&mut conn, peer_device_id, |kind| space_sync.has_session_on(peer_device_id, kind))
 }
 
@@ -133,7 +133,7 @@ pub fn device_paired_devices(devices: Devices) -> Result<Vec<Device>, String> {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn device_save_paired_device(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     devices: Devices,
     peer_device_id: String,
     display_name: String,
@@ -142,7 +142,7 @@ pub fn device_save_paired_device(
     request_id: Option<String>,
     endpoint_id: Option<String>,
 ) -> Result<Device, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     devices.save_paired_device(
         &mut conn,
         &peer_device_id,
@@ -155,25 +155,25 @@ pub fn device_save_paired_device(
 }
 
 #[tauri::command]
-pub fn device_unpair(db: State<AppDbConnection>, devices: Devices, peer_device_id: String) -> Result<(), String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+pub fn device_unpair(db: State<DbPool>, devices: Devices, peer_device_id: String) -> Result<(), String> {
+    let mut conn = db.get()?;
     devices.unpair(&mut conn, &peer_device_id)
 }
 
 #[tauri::command]
 pub fn device_update_last_seen(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     devices: Devices,
     peer_device_id: String,
     last_seen_at: String,
 ) -> Result<(), String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     devices.update_last_seen(&mut conn, &peer_device_id, &last_seen_at)
 }
 
 #[tauri::command]
 pub fn device_channel_statuses(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     devices: Devices,
     space_sync: SpaceSync,
     peer_device_id: String,
@@ -183,7 +183,7 @@ pub fn device_channel_statuses(
 
 #[tauri::command]
 pub async fn device_set_channel_enabled(
-    db: State<'_, AppDbConnection>,
+    db: State<'_, DbPool>,
     devices: Devices<'_>,
     space_sync: SpaceSync<'_>,
     peer_device_id: String,
@@ -196,14 +196,14 @@ pub async fn device_set_channel_enabled(
 
 #[tauri::command]
 pub fn device_set_primary_channel(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     devices: Devices,
     space_sync: SpaceSync,
     peer_device_id: String,
     primary: Option<ChannelKind>,
 ) -> Result<Vec<ChannelStatus>, String> {
     {
-        let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+        let mut conn = db.get()?;
         devices.set_primary_channel(&mut conn, &peer_device_id, primary)?;
     }
     statuses(&db, &devices, &space_sync, &peer_device_id)

@@ -13,7 +13,7 @@ mod utils;
 #[cfg(feature = "ui-plane")]
 use services::backup::{backup_apply_import, backup_export, backup_preflight_import};
 #[cfg(feature = "ui-plane")]
-use services::db::{app_data_dir, try_open_db, try_open_db_at_path, AppDbConnection};
+use services::db::{app_data_dir, app_db_path, DbPool};
 #[cfg(feature = "ui-plane")]
 mod commands;
 #[cfg(feature = "ui-plane")]
@@ -149,8 +149,8 @@ const _: &str = TAP_EVENT;
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn get_theme_mode(db: tauri::State<AppDbConnection>) -> Result<String, String> {
-    let mut conn = db.0.lock().unwrap();
+fn get_theme_mode(db: tauri::State<DbPool>) -> Result<String, String> {
+    let mut conn = db.get()?;
     settings::theme_mode(&mut conn).map(|mode| mode.as_str().to_string())
 }
 
@@ -158,11 +158,11 @@ fn get_theme_mode(db: tauri::State<AppDbConnection>) -> Result<String, String> {
 #[tauri::command]
 fn set_theme_mode(
     app: AppHandle,
-    db: tauri::State<AppDbConnection>,
+    db: tauri::State<DbPool>,
     mode: String,
 ) -> Result<String, String> {
     let mode = ThemeMode::parse(&mode).ok_or_else(|| "invalid theme mode".to_string())?;
-    let mut conn = db.0.lock().unwrap();
+    let mut conn = db.get()?;
     let mode = settings::set_theme_mode(&mut conn, mode)?;
     let effective = settings::theme_hint(&mut conn);
     settings::apply_native_theme(&app, &effective);
@@ -172,25 +172,25 @@ fn set_theme_mode(
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn theme_hint(db: tauri::State<AppDbConnection>) -> String {
-    let mut conn = db.0.lock().unwrap();
-    settings::theme_hint(&mut conn)
+fn theme_hint(db: tauri::State<DbPool>) -> Result<String, String> {
+    let mut conn = db.get()?;
+    Ok(settings::theme_hint(&mut conn))
 }
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
-fn get_auto_update_enabled(db: tauri::State<AppDbConnection>) -> Result<bool, String> {
-    let mut conn = db.0.lock().unwrap();
+fn get_auto_update_enabled(db: tauri::State<DbPool>) -> Result<bool, String> {
+    let mut conn = db.get()?;
     settings::automatic_updates_enabled(&mut conn)
 }
 
 #[cfg(feature = "ui-plane")]
 #[tauri::command]
 fn set_auto_update_enabled(
-    db: tauri::State<AppDbConnection>,
+    db: tauri::State<DbPool>,
     enabled: bool,
 ) -> Result<bool, String> {
-    let mut conn = db.0.lock().unwrap();
+    let mut conn = db.get()?;
     settings::set_automatic_updates_enabled(&mut conn, enabled)
 }
 
@@ -380,15 +380,12 @@ pub fn run() {
             services::ble_plugin::install(app.handle());
             let app_handle = app.handle();
 
-            match try_open_db(&app_handle) {
-                Ok(conn) => {
+            let db_path = app_db_path(&app_handle)?;
+            match DbPool::open(&db_path) {
+                Ok(pool) => {
                     app.manage(StartupRecoveryState(std::sync::Mutex::new(None)));
-                    app.manage(AppDbConnection(std::sync::Mutex::new(conn)));
-                    let auto_updates_enabled = {
-                        let db = app.state::<AppDbConnection>();
-                        let mut conn = db.0.lock().unwrap();
-                        settings::automatic_updates_enabled(&mut conn).unwrap_or(true)
-                    };
+                    let auto_updates_enabled = settings::automatic_updates_enabled(&mut *pool.get()?).unwrap_or(true);
+                    app.manage(pool);
                     services::desktop_update::spawn_startup_auto_update(
                         &app_handle,
                         auto_updates_enabled,
@@ -415,11 +412,8 @@ pub fn run() {
 
             setup_notifications(&app_handle);
 
-            let initial_theme = {
-                let db = app.state::<AppDbConnection>();
-                let mut conn = db.0.lock().unwrap();
-                settings::theme_hint(&mut conn)
-            };
+            let pool = app.state::<DbPool>().inner().clone();
+            let initial_theme = settings::theme_hint(&mut *pool.get()?);
             settings::apply_native_theme(&app_handle, &initial_theme);
             settings::spawn_theme_watcher(&app_handle);
 
@@ -434,8 +428,7 @@ pub fn run() {
                 }
             }
 
-            let db_state = app.state::<AppDbConnection>();
-            reconciler::run(&app_handle, &db_state);
+            reconciler::run(&app_handle, &pool);
 
             resume_watcher::spawn(&app_handle);
 
@@ -444,19 +437,17 @@ pub fn run() {
             // channels' link handlers last.
             use services::channel_service::{ChannelService, LinkHandlers};
             let data_dir = app_data_dir(&app_handle);
-            let db_path = data_dir.join("fini.db");
             let identity =
-                repositories::DeviceRepository::new(&mut try_open_db_at_path(&db_path)?).load_or_create_identity(&data_dir)?;
+                repositories::DeviceRepository::new(&mut *pool.get()?).load_or_create_identity(&data_dir)?;
             let bus = std::sync::Arc::new(services::event_bus_service::EventBusService::default());
-            let network = NetworkChannelService::new(identity.clone(), db_path.clone(), bus.clone());
-            let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
+            let network = NetworkChannelService::new(identity.clone(), pool.clone(), bus.clone());
+            let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
             let space_sync =
-                SpaceSyncService::new(identity.clone(), db_path.clone(), bus.clone(), network.clone(), bluetooth.clone());
+                SpaceSyncService::new(identity.clone(), pool.clone(), bus.clone(), network.clone(), bluetooth.clone());
             // ADR-0012 D11: the quests and occurrence marks that a migration
             // wrote have no sync events yet; sync sends only what has one.
-            repositories::QuestRepository::new(&mut try_open_db_at_path(&db_path)?)
-                .emit_missing_sync_events(&identity.device_id)?;
-            let devices = DeviceService::new(identity, db_path, bus.clone(), network.clone(), bluetooth.clone());
+            repositories::QuestRepository::new(&mut *pool.get()?).emit_missing_sync_events(&identity.device_id)?;
+            let devices = DeviceService::new(identity, pool, bus.clone(), network.clone(), bluetooth.clone());
             let handlers = LinkHandlers { peer: devices.clone(), session: space_sync.clone() };
             network.set_link_handlers(handlers.clone());
             bluetooth.set_link_handlers(handlers);

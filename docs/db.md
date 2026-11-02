@@ -100,8 +100,8 @@ rejected: more code of our own, and every read waits for every write.
 
 ## Not done yet
 
-- `AppDbConnection` (one `Mutex<SqliteConnection>`) and the services that
-  open a new connection on each call (`with_conn` + `open_db_at_path` in
-  `DeviceService`, `SpaceSyncService` and the channels) move to the pool.
+- Some commands take a connection and then call a service that takes a
+  second one for the same work (for example `device_channel_statuses`). It
+  works with a pool of ten, but breaks rule 2.
 - Quest writes and their outbox rows are two steps in the command; they
   become one transaction.

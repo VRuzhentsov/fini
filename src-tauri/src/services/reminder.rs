@@ -8,7 +8,7 @@ use crate::models::{CreateReminderInput, Quest, Reminder};
 use crate::repositories::ReminderRepository;
 
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::notification;
 #[cfg(any(feature = "ui-plane", test))]
@@ -234,10 +234,10 @@ pub fn delete_reminder_for_quest(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn get_reminders(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     quest_id: String,
 ) -> Result<Vec<Reminder>, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).list_for_quest(&quest_id)
 }
 
@@ -245,10 +245,10 @@ pub fn get_reminders(
 #[tauri::command]
 pub fn create_reminder(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).create_with_notifications_for_quest(&app, input)
 }
 
@@ -256,11 +256,11 @@ pub fn create_reminder(
 #[tauri::command]
 pub fn update_reminder(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     id: String,
     input: crate::models::UpdateReminderInput,
 ) -> Result<Reminder, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).update_with_notifications_for_reminder(&app, &id, input)
 }
 
@@ -270,10 +270,10 @@ pub fn update_reminder(
 #[tauri::command]
 pub fn cancel_quest_notifications(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     quest_id: String,
 ) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).cancel_for_quest_notifications(&app, &quest_id)
 }
 
@@ -281,9 +281,9 @@ pub fn cancel_quest_notifications(
 #[tauri::command]
 pub fn delete_reminder(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     id: String,
 ) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).delete_with_notifications(&app, &id)
 }

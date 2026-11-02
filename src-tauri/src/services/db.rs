@@ -1,12 +1,11 @@
 use diesel::migration::MigrationSource;
 use diesel::prelude::*;
+use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool, PooledConnection};
 use diesel::sqlite::Sqlite;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-#[cfg(any(feature = "ui-plane", test))]
-use std::sync::Mutex;
 
 use crate::services::update_recovery::unsupported_schema_guidance;
 
@@ -16,8 +15,62 @@ pub const APP_DATA_DIR_NAME: &str = "com.fini.app";
 #[cfg(not(target_os = "android"))]
 pub const APP_DATA_DIR_NAME: &str = "fini";
 
-#[cfg(any(feature = "ui-plane", test))]
-pub struct AppDbConnection(pub Mutex<SqliteConnection>);
+/// One connection taken from the pool; the pool takes it back when it is
+/// dropped. It derefs to `SqliteConnection`.
+pub type DbConnection = PooledConnection<ConnectionManager<SqliteConnection>>;
+
+/// The connections of the process (`docs/db.md`): made once at start and
+/// kept by Tauri (`app.manage`) or by the CLI run. A command, a service call
+/// or a task takes one connection with `get` for its work.
+#[derive(Clone)]
+pub struct DbPool(Pool<ConnectionManager<SqliteConnection>>);
+
+impl DbPool {
+    /// Checks and migrates the database on one connection, then makes the
+    /// pool (r2d2 default size, 10). The pool opens connections when they
+    /// are needed, and sets the pragmas on each one.
+    pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_sized(path, None)
+    }
+
+    /// A pool of one connection, as Diesel's documentation gives for tests.
+    #[cfg(test)]
+    pub fn open_for_test(path: &Path) -> Self {
+        Self::open_sized(path, Some(1)).expect("open the test database pool")
+    }
+
+    fn open_sized(path: &Path, max_size: Option<u32>) -> Result<Self, String> {
+        drop(try_open_db_at_path(path)?);
+        let manager = ConnectionManager::<SqliteConnection>::new(path.to_str().ok_or("database path is not UTF-8")?);
+        let builder = Pool::builder().min_idle(Some(1)).connection_customizer(Box::new(Pragmas));
+        let builder = match max_size {
+            Some(size) => builder.max_size(size),
+            None => builder,
+        };
+        builder.build(manager).map(Self).map_err(|err| format!("failed to make the database pool: {err}"))
+    }
+
+    pub fn get(&self) -> Result<DbConnection, String> {
+        self.0.get().map_err(|err| format!("no database connection: {err}"))
+    }
+
+    /// A connection, for code that has no way to return an error: it stops
+    /// the thread when the pool gives none in its timeout (30 s), as an open
+    /// that failed did before the pool.
+    pub fn connection(&self) -> DbConnection {
+        self.get().expect("database connection")
+    }
+}
+
+/// Sets the pragmas on each connection that the pool opens.
+#[derive(Debug)]
+struct Pragmas;
+
+impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for Pragmas {
+    fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
+        set_pragmas(conn).map_err(|err| diesel::r2d2::Error::ConnectionError(ConnectionError::BadConnection(err)))
+    }
+}
 
 pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -68,6 +121,9 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
         .expect("failed to resolve app data dir")
 }
 
+/// A connection of its own, outside the pool: for tests that need two
+/// connections to one file, or a database that the pool does not serve.
+#[cfg(test)]
 pub fn open_db_at_path(path: &Path) -> SqliteConnection {
     try_open_db_at_path(path).expect("failed to open compatible Fini database")
 }
@@ -133,19 +189,24 @@ fn try_open_db_at_path_once(path: &Path) -> Result<SqliteConnection, String> {
     // concurrent connection. Setting the timeout first gives the switch
     // something to wait with -- otherwise this open, which previously
     // "succeeded" by silently applying nothing, would now fail outright.
+    set_pragmas(&mut conn)?;
+    ensure_database_schema_is_supported(&mut conn)?;
+    conn.run_pending_migrations(MIGRATIONS)
+        .map_err(|err| format!("failed to run database migrations: {err}"))?;
+    Ok(conn)
+}
+
+fn set_pragmas(conn: &mut SqliteConnection) -> Result<(), String> {
     for pragma in [
         "PRAGMA busy_timeout = 15000",
         "PRAGMA foreign_keys = ON",
         "PRAGMA journal_mode = WAL",
     ] {
         diesel::sql_query(pragma)
-            .execute(&mut conn)
+            .execute(conn)
             .map_err(|err| format!("failed to set {pragma}: {err}"))?;
     }
-    ensure_database_schema_is_supported(&mut conn)?;
-    conn.run_pending_migrations(MIGRATIONS)
-        .map_err(|err| format!("failed to run database migrations: {err}"))?;
-    Ok(conn)
+    Ok(())
 }
 
 fn ensure_database_schema_is_supported(conn: &mut SqliteConnection) -> Result<(), String> {
@@ -180,22 +241,19 @@ fn embedded_migration_versions() -> Result<BTreeSet<String>, String> {
         })
 }
 
+/// The app's database file: `FINI_DB_PATH`, or `fini.db` in the app data
+/// folder. Makes the folder when it is missing.
 #[cfg(any(feature = "ui-plane", test))]
-pub fn try_open_db(app: &tauri::AppHandle) -> Result<SqliteConnection, String> {
-    if std::env::var_os("FINI_DB_PATH").is_some() {
-        let db_path = db_default_path();
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create app data dir: {err}"))?;
-        }
-        return try_open_db_at_path(&db_path);
+pub fn app_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let db_path = if std::env::var_os("FINI_DB_PATH").is_some() {
+        db_default_path()
+    } else {
+        app_data_dir(app).join("fini.db")
+    };
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("failed to create app data dir: {err}"))?;
     }
-
-    let data_dir = app_data_dir(app);
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|err| format!("failed to create app data dir: {err}"))?;
-    let db_path = data_dir.join("fini.db");
-    try_open_db_at_path(&db_path)
+    Ok(db_path)
 }
 
 #[cfg(test)]
