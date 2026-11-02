@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use std::collections::HashMap;
@@ -566,7 +566,7 @@ impl<'a> QuestRepository<'a> {
             return Ok(None);
         }
         Ok(repeating
-            .next_open_from(Utc::now().date_naive())
+            .next_open_from(Local::now().date_naive())
             .map(|period_key| repeating.on_day(&period_key)))
     }
 
@@ -591,7 +591,7 @@ impl<'a> QuestRepository<'a> {
         let repeats = RepeatRule::parse(input.repeat_rule.as_deref()).is_some();
         let input = if repeats && input.due.is_none() {
             // A repeating quest's rule starts at its date (ADR-0012 D2).
-            CreateQuestInput { due: Some(period_key_of(Utc::now().date_naive())), ..input }
+            CreateQuestInput { due: Some(period_key_of(Local::now().date_naive())), ..input }
         } else {
             input
         };
@@ -833,7 +833,8 @@ impl<'a> QuestRepository<'a> {
         let quest = self.get(id)?;
         let marks = self.occurrences(id)?;
         let repeating = RepeatingQuest::new(&quest, &marks).ok_or_else(|| "the quest does not repeat".to_string())?;
-        let days = repeating.open_through(Utc::now().date_naive());
+        // Today is the person's local date, as on their screen.
+        let days = repeating.open_through(Local::now().date_naive());
         if days.is_empty() {
             return Err("no open occurrence is dated today or before".to_string());
         }

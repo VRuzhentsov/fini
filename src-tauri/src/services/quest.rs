@@ -2345,7 +2345,7 @@ mod tests {
     // ── Repeating quests (ADR-0012) ─────────────────────────────────────────
 
     fn day(offset_days: i64) -> String {
-        period_key_of(Utc::now().date_naive() + chrono::Duration::days(offset_days))
+        period_key_of(chrono::Local::now().date_naive() + chrono::Duration::days(offset_days))
     }
 
     fn create_repeating(conn: &mut SqliteConnection, due: &str, rule: &str, checklist: Option<&str>) -> Quest {
