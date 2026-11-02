@@ -14,7 +14,7 @@ use crate::services::db::utc_now;
 use crate::services::quest::{
     append_focus_history, emit_occurrence_sync_event, emit_quest_sync_events, is_overdue, log_checklist_activity,
     parse_utc_timestamp,
-    should_set_focus_now_for_restore, sort_quests_for_list, validate_metadata, validate_optional_metadata, EditScope, QuestChange,
+    should_set_focus_now_for_restore, validate_metadata, validate_optional_metadata, EditScope, QuestChange,
     UpdateQuestInputBuilder,
 };
 
@@ -467,38 +467,34 @@ fn status_patch(status: &str) -> QuestUpdatePatch {
 }
 
 impl<'a> QuestRepository<'a> {
-    // ---- Reading: the resolved view (ADR-0012 D2, D6) ----
+    // ---- Reading (ADR-0012 D2, D6) ----
 
-    /// Every quest as the UI lists it: one-time quests as stored; for a
-    /// repeating quest its oldest open occurrence, and each closed day (the
-    /// days in History).
-    pub fn list_for_ui(&mut self) -> Result<Vec<Quest>, String> {
+    /// Every quest, in no order: a one-time quest as stored; a repeating
+    /// quest as its oldest open occurrence (when it is active) and as each
+    /// closed occurrence. The UI chooses and orders what it shows.
+    pub fn all(&mut self) -> Result<Vec<Quest>, String> {
         let quests = self.load_all()?;
         let marks = self.all_occurrences()?;
-        let mut listed = Vec::with_capacity(quests.len() + marks.len());
-        for quest in &quests {
-            match RepeatingQuest::new(quest, &marks) {
-                Some(repeating) => {
-                    if quest.status == "active" {
-                        if let Some(period_key) = repeating.oldest_open() {
-                            listed.push(repeating.on_day(&period_key));
-                        }
-                    }
-                    for period_key in repeating.closed() {
-                        listed.push(repeating.on_day(&period_key));
-                    }
-                }
-                None => listed.push(quest.clone()),
-            }
-        }
-        Ok(sort_quests_for_list(listed))
+        Ok(quests
+            .iter()
+            .flat_map(|quest| match RepeatingQuest::new(quest, &marks) {
+                Some(repeating) => (quest.status == "active")
+                    .then(|| repeating.oldest_open())
+                    .flatten()
+                    .into_iter()
+                    .chain(repeating.closed())
+                    .map(|period_key| repeating.on_day(&period_key))
+                    .collect::<Vec<_>>(),
+                None => vec![quest.clone()],
+            })
+            .collect())
     }
 
-    /// The quests that can have Focus: active one-time quests, and the oldest
-    /// open occurrence of each active repeating quest.
+    /// The active quests: active one-time quests, and the oldest open
+    /// occurrence of each active repeating quest.
     pub fn active_quests(&mut self) -> Result<Vec<Quest>, String> {
         Ok(self
-            .list_for_ui()?
+            .all()?
             .into_iter()
             .filter(|quest| quest.status == "active")
             .collect())
@@ -541,7 +537,7 @@ impl<'a> QuestRepository<'a> {
         Ok(moments.into_iter().collect())
     }
 
-    /// The quest as the UI shows it now (see `list_for_ui`).
+    /// The quest as it is now (see `all`).
     pub fn resolved(&mut self, id: &str) -> Result<Quest, String> {
         let quest = self.get(id)?;
         let marks = self.occurrences(id)?;

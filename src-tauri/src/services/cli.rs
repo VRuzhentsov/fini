@@ -897,11 +897,11 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
     match command {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
-            let quests: Vec<_> = QuestRepository::new(&mut conn)
-                .list_for_ui()
-                .map_err(CliError::from_string)?
-                .into_iter()
-                .filter(|quest| quest.status == status)
+            let quests: Vec<_> = crate::services::quest::sort_quests_for_list(
+                QuestRepository::new(&mut conn).all().map_err(CliError::from_string)?,
+            )
+            .into_iter()
+            .filter(|quest| quest.status == status)
                 .filter(|quest| {
                     args.space_id
                         .as_ref()
@@ -972,7 +972,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         }
         QuestCommand::History => {
             let mut quests: Vec<_> = QuestRepository::new(&mut conn)
-                .list_for_ui()
+                .all()
                 .map_err(CliError::from_string)?
                 .into_iter()
                 .filter(|quest| quest.status != "active")

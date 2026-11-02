@@ -2,13 +2,9 @@
 import { computed, onMounted } from "vue";
 import { useQuestStore } from "../stores/quest";
 import QuestList from "../components/QuestsView/QuestList.vue";
-import { sortHistoryItems } from "../utils/historyGrouping";
 
 const store = useQuestStore();
-const history = computed(() =>
-  store.quests.filter((q) => q.status === "completed" || q.status === "abandoned")
-);
-const sorted = computed(() => sortHistoryItems(history.value));
+const sorted = computed(() => store.historyQuests);
 
 onMounted(() => store.fetchQuests());
 </script>

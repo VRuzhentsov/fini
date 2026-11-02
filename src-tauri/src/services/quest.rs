@@ -452,6 +452,8 @@ pub(crate) fn load_quests_for_list(
     Ok(sort_quests_for_list(loaded))
 }
 
+/// The order of `fini quest list`. The UI orders its own lists (stores/quest.ts).
+#[cfg(any(feature = "cli-plane", test))]
 pub(crate) fn sort_quests_for_list(mut loaded: Vec<Quest>) -> Vec<Quest> {
     let now = Utc::now();
     loaded.sort_by(|a, b| {
@@ -539,7 +541,7 @@ fn refresh_reminder(conn: &mut SqliteConnection, app: &tauri::AppHandle, quest_i
 #[tauri::command]
 pub fn get_quests(state: State<AppDbConnection>) -> Result<Vec<Quest>, String> {
     let mut conn = state.inner().0.lock().unwrap();
-    QuestRepository::new(&mut conn).list_for_ui()
+    QuestRepository::new(&mut conn).all()
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -2383,7 +2385,7 @@ mod tests {
         let mut conn = open_db_at_path(&db_path);
         let quest = create_repeating(&mut conn, &day(-2), DAILY, None);
 
-        let listed = QuestRepository::new(&mut conn).list_for_ui().expect("list");
+        let listed = QuestRepository::new(&mut conn).all().expect("list");
         assert_eq!(listed.len(), 1, "one row for the quest, its oldest open day");
         assert_eq!(listed[0].due.as_deref(), Some(day(-2).as_str()));
         assert!(marks(&mut conn, &quest.id).is_empty(), "nothing stored while nobody acts");

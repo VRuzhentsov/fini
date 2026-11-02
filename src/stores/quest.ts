@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
-import { ref } from "vue";
+import { computed, ref } from "vue";
+import { sortHistoryItems } from "../utils/historyGrouping";
 import { parseChecklist, serializeChecklist } from "../utils/checklist";
 import { localDateStr, formatDue, formatTime } from "../utils/date";
 import type { EditScope } from "../utils/quest";
@@ -122,11 +123,33 @@ export interface UpdateQuestInput {
   period_key?: string;
 }
 
+/** The order of active quests: overdue first, then scheduled, then by date,
+ * then `order_rank`, then Priority (high first), then the oldest. */
+function activeOrder(today: string) {
+  return (a: Quest, b: Quest): number =>
+    Number(!!a.due && a.due < today ? 0 : 1) - Number(!!b.due && b.due < today ? 0 : 1) ||
+    Number(a.due || a.repeat_rule ? 0 : 1) - Number(b.due || b.repeat_rule ? 0 : 1) ||
+    Number(a.due ? 0 : 1) - Number(b.due ? 0 : 1) ||
+    (a.due && b.due ? a.due.localeCompare(b.due) : 0) ||
+    a.order_rank - b.order_rank ||
+    priorityWeight(b.priority) - priorityWeight(a.priority) ||
+    a.created_at.localeCompare(b.created_at);
+}
+
 export const useQuestStore = defineStore("quest", () => {
   const quests = ref<Quest[]>([]);
   const activeQuest = ref<Quest | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
+
+  /** The active quests, in their order. A repeating quest is here as its oldest open day. */
+  const activeQuests = computed(() =>
+    quests.value.filter((q) => q.status === "active").sort(activeOrder(localDateStr(new Date()))),
+  );
+  /** The completed and abandoned quests and days, newest first (History). */
+  const historyQuests = computed(() =>
+    sortHistoryItems(quests.value.filter((q) => q.status === "completed" || q.status === "abandoned")),
+  );
 
   async function fetchActiveQuest() {
     activeQuest.value = await invoke<Quest | null>("get_active_focus");
@@ -255,6 +278,8 @@ export const useQuestStore = defineStore("quest", () => {
 
   return {
     quests,
+    activeQuests,
+    historyQuests,
     activeQuest,
     loading,
     error,
