@@ -340,6 +340,15 @@ snooze are the work of the notification service.
 *Elsewhere:* a notification on Android and in desktop notification daemons;
 the delivery of an alarm, not the alarm.
 
+### Xvfb
+
+X virtual framebuffer: an X display server that draws into memory, not on a
+screen. The e2e container starts one Xvfb (`DISPLAY=:99`) for the whole lane,
+and every test app draws on it, headless. A local `make e2e` draws on the real
+screen, headful.
+
+*Elsewhere:* the headless display of most Linux CI for GUI tests.
+
 ## Words deliberately not used
 
 | Not used | Why |
