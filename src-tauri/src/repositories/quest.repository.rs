@@ -1,22 +1,21 @@
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use std::collections::HashMap;
 
 use crate::models::{
-    clamp_order_rank, period_key_of, CreateQuestInput, Quest, QuestFieldPatch, QuestOccurrence, QuestUpdatePatch,
-    RepeatRule, RepeatingQuest, Space, UpdateQuestInput, OCCURRENCE_ABANDONED, OCCURRENCE_COMPLETED,
+    clamp_order_rank, is_overdue, parse_utc_timestamp, period_key_of, validate_metadata, validate_optional_metadata,
+    CreateFocusHistoryInput, CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestOccurrence, QuestUpdatePatch,
+    RepeatRule, RepeatingQuest, Space, UpdateQuestInput, UpdateQuestInputBuilder, OCCURRENCE_ABANDONED,
+    OCCURRENCE_COMPLETED,
 };
+#[cfg(any(feature = "ui-plane", test))]
+use crate::repositories::outbox_repository::{emit_occurrence_sync_event, emit_quest_sync_events};
+#[cfg(any(feature = "ui-plane", test))]
 use crate::repositories::OutboxRepository;
 use crate::schema::{checklist_activity, focus_history, quest_occurrences, quests, spaces};
 use crate::services::checklist;
 use crate::services::db::utc_now;
-use crate::services::quest::{
-    append_focus_history, emit_occurrence_sync_event, emit_quest_sync_events, is_overdue, log_checklist_activity,
-    parse_utc_timestamp,
-    should_set_focus_now_for_restore, validate_metadata, validate_optional_metadata, EditScope, QuestChange,
-    UpdateQuestInputBuilder,
-};
 
 /// The quests and the occurrence marks of repeating quests (ADR-0012): the
 /// only code that reads and writes them.
@@ -185,8 +184,8 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
-    // "Focus N" badge counting is switched off for now; see the note in
-    // services/quest.rs.
+    // "Focus N" badge counting is switched off for now; see the note
+    // "Focus N" badge below.
     // pub fn increment_focus_enter_count(&mut self, id: &str) -> Result<Quest, String> {
     //     diesel::update(quests::table.find(id))
     //         .set(quests::focus_enter_count.eq(quests::focus_enter_count + 1))
@@ -1258,6 +1257,132 @@ impl<'a> QuestRepository<'a> {
             .map_err(|e| e.to_string())
     }
 }
+
+
+// ── "Focus N" badge: how many times the quest became the Focus quest ───────
+//
+// TODO: count this in the backend again, later. Focus is now a read-only
+// computation (`QuestRepository::focus`), and this counter was a write that
+// happened on each read of Focus, so it is switched off for now (decided
+// 2026-11-01). The old code is kept below so we remember how it worked.
+//
+// const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
+// 
+// fn save_active_focus_quest_id(
+//     conn: &mut SqliteConnection,
+//     quest_id: Option<&str>,
+// ) -> Result<(), diesel::result::Error> {
+//     if let Some(quest_id) = quest_id {
+//         diesel::insert_into(settings::table)
+//             .values((
+//                 settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
+//                 settings::value.eq(quest_id),
+//             ))
+//             .on_conflict(settings::key)
+//             .do_update()
+//             .set(settings::value.eq(quest_id))
+//             .execute(conn)?;
+//     } else {
+//         diesel::delete(settings::table.find(ACTIVE_FOCUS_QUEST_SETTING_KEY)).execute(conn)?;
+//     }
+//     Ok(())
+// }
+// 
+// /// Counts a Focus enter on the quest (ADR-0012 D9: a repeating quest counts
+// /// on the quest, not on a day) and returns `quest` with the new count.
+// pub(crate) fn record_focus_enter(
+//     conn: &mut SqliteConnection,
+//     quest: &Quest,
+// ) -> Result<Quest, String> {
+//     let previous_focus_id = settings::table
+//         .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
+//         .select(settings::value)
+//         .first::<String>(conn)
+//         .optional()
+//         .map_err(|error| error.to_string())?;
+// 
+//     let mut quest = quest.clone();
+//     if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
+//         let stored = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
+//         save_active_focus_quest_id(conn, Some(&quest.id)).map_err(|error| error.to_string())?;
+//         quest.focus_enter_count = stored.focus_enter_count;
+//     }
+//     Ok(quest)
+// }
+
+pub(crate) fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
+    let Some(due_str) = due else {
+        return true;
+    };
+
+    let Some(due_date) = NaiveDate::parse_from_str(due_str, "%Y-%m-%d").ok() else {
+        return true;
+    };
+
+    due_date <= now.date_naive()
+}
+
+pub(crate) fn append_focus_history(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+    space_id: &str,
+    trigger: &str,
+) -> Result<(), String> {
+    let input = CreateFocusHistoryInput {
+        quest_id: quest_id.to_string(),
+        space_id: space_id.to_string(),
+        trigger: trigger.to_string(),
+    };
+
+    diesel::insert_into(focus_history::table)
+        .values(&input)
+        .execute(conn)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+
+/// What a quest change wrote, for the callers that sync it and schedule
+/// reminders.
+pub struct QuestChange {
+    /// The quest as the UI shows it after the change: for a repeating quest,
+    /// its oldest open occurrence (or the day that changed, if that one is
+    /// closed now and nothing is open).
+    pub quest: Quest,
+    /// True when the stored quest row changed (sync emits it).
+    pub quest_row_changed: bool,
+    /// The marks the change wrote.
+    pub occurrences: Vec<QuestOccurrence>,
+    /// The days whose marks the change removed.
+    pub removed_occurrences: Vec<String>,
+    pub restore_should_focus: bool,
+}
+
+
+pub(crate) fn log_checklist_activity(
+    conn: &mut SqliteConnection,
+    quest_id: &str,
+    kind: &str,
+    detail: &str,
+    origin_device_id: Option<&str>,
+) -> Result<(), String> {
+    use crate::models::CreateChecklistActivityInput;
+
+    let input = CreateChecklistActivityInput {
+        quest_id: quest_id.to_string(),
+        kind: kind.to_string(),
+        detail: detail.to_string(),
+        created_at: utc_now(),
+        origin_device_id: origin_device_id.map(|s| s.to_string()),
+    };
+    diesel::insert_into(checklist_activity::table)
+        .values(&input)
+        .execute(conn)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {

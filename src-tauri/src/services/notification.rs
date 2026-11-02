@@ -424,7 +424,7 @@ pub fn dispatch_action(app: &AppHandle, action_id: &str, reminder_id: &str) {
             // Find the quest for this reminder so we can complete it.
             let quest_id = reminder_quest_id(app, reminder_id);
             if let Some(qid) = quest_id {
-                crate::services::quest::complete_quest_for_notification(app, &qid);
+                crate::commands::quest_commands::complete_quest_for_notification(app, &qid);
             }
         }
         ACTION_SNOOZE_30M => snooze(app, reminder_id, 30),

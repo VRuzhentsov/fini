@@ -21,7 +21,10 @@ use crate::services::event_bus_service::EventBusService;
 use crate::services::network_channel_service::NetworkChannelService;
 use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
 use crate::repositories::QuestRepository;
-use crate::services::quest::{append_focus_history, EditScope};
+use crate::models::{is_overdue, parse_utc_timestamp, EditScope, Quest};
+#[cfg(any(feature = "cli-plane", test))]
+use chrono::Utc;
+use crate::repositories::quest_repository::append_focus_history;
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
@@ -812,7 +815,7 @@ fn emit_checklist_activity_sync(
 fn emit_change_sync(
     ctx: &CliContext,
     conn: &mut diesel::sqlite::SqliteConnection,
-    change: crate::services::quest::QuestChange,
+    change: crate::repositories::quest_repository::QuestChange,
 ) -> CliResult<Value> {
     let space_id = crate::repositories::QuestRepository::new(conn)
         .get(&change.quest.id)
@@ -897,7 +900,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
     match command {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
-            let quests: Vec<_> = crate::services::quest::sort_quests_for_list(
+            let quests: Vec<_> = sort_quests_for_list(
                 QuestRepository::new(&mut conn).all().map_err(CliError::from_string)?,
             )
             .into_iter()
@@ -1748,6 +1751,67 @@ fn format_scalar(value: &Value) -> String {
         Value::Object(map) => format!("{} fields", map.len()),
     }
 }
+
+/// The order of `fini quest list`. The UI orders its own lists (stores/quest.ts).
+#[cfg(any(feature = "cli-plane", test))]
+pub(crate) fn sort_quests_for_list(mut loaded: Vec<Quest>) -> Vec<Quest> {
+    let now = Utc::now();
+    loaded.sort_by(|a, b| {
+        let a_active = a.status == "active";
+        let b_active = b.status == "active";
+        if a_active != b_active {
+            return b_active.cmp(&a_active);
+        }
+
+        if a_active {
+            let a_overdue = is_overdue(a, &now);
+            let b_overdue = is_overdue(b, &now);
+            if a_overdue != b_overdue {
+                return b_overdue.cmp(&a_overdue);
+            }
+
+            if (a.order_rank - b.order_rank).abs() > f64::EPSILON {
+                return a
+                    .order_rank
+                    .partial_cmp(&b.order_rank)
+                    .unwrap_or(std::cmp::Ordering::Equal);
+            }
+
+            if a.priority != b.priority {
+                return b.priority.cmp(&a.priority);
+            }
+            return match (
+                parse_utc_timestamp(&a.created_at),
+                parse_utc_timestamp(&b.created_at),
+            ) {
+                (Some(a_created), Some(b_created)) if a_created != b_created => {
+                    a_created.cmp(&b_created)
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                _ => a.created_at.cmp(&b.created_at),
+            }
+            .then_with(|| a.id.cmp(&b.id));
+        }
+
+        match (
+            parse_utc_timestamp(&a.updated_at),
+            parse_utc_timestamp(&b.updated_at),
+        ) {
+            (Some(a_updated), Some(b_updated)) if a_updated != b_updated => {
+                b_updated.cmp(&a_updated)
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => b.updated_at.cmp(&a.updated_at),
+        }
+        .then_with(|| a.id.cmp(&b.id))
+        .then_with(|| b.due.cmp(&a.due))
+    });
+
+    loaded
+}
+
 
 #[cfg(test)]
 mod tests {

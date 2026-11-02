@@ -57,7 +57,7 @@ pub fn run(app: &AppHandle, db: &AppDbConnection) {
             continue;
         }
         // "Focus N" badge counting is switched off for now; see the note in
-        // services/quest.rs.
+        // repositories/quest.repository.rs.
         // if let Err(e) = record_focus_enter(&mut conn, quest) {
         //     eprintln!(
         //         "[reconciler] failed to record focus enter for {}: {e}",

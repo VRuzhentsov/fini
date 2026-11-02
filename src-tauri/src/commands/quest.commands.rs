@@ -1,516 +1,21 @@
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use diesel::prelude::*;
+//! The quest commands: the UI's calls that read and change quests. Each one
+//! calls `QuestRepository`, then keeps the reminder and the sync outbox in
+//! step (ADR-0010 D3).
+
+use chrono::Utc;
 use diesel::sqlite::SqliteConnection;
-#[cfg(any(feature = "ui-plane", test))]
 use tauri::{Manager, State};
 
-#[cfg(any(feature = "ui-plane", test))]
-use crate::models::UpdateQuestCommandInput;
-use crate::models::{CreateFocusHistoryInput, Quest, QuestOccurrence, OCCURRENCE_COMPLETED};
-use crate::models::{CreateQuestInput, QuestFieldPatch, QuestUpdatePatch};
-use crate::repositories::QuestRepository;
-use crate::schema::{checklist_activity, focus_history};
-#[cfg(test)]
-use crate::schema::quests;
-use crate::services::db::utc_now;
-#[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::sync_timestamp;
-#[cfg(any(feature = "ui-plane", test))]
+use crate::models::{
+    CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestUpdatePatch, UpdateQuestCommandInput,
+    UpdateQuestInputBuilder, OCCURRENCE_COMPLETED,
+};
+use crate::repositories::outbox_repository::{emit_change_sync_events, emit_quest_sync_events};
+use crate::repositories::quest_repository::{append_focus_history, QuestChange};
+use crate::repositories::{OutboxRepository, QuestRepository};
 use crate::services::db::AppDbConnection;
-#[cfg(any(feature = "ui-plane", test))]
-use crate::repositories::OutboxRepository;
-#[cfg(any(feature = "ui-plane", test))]
 use crate::services::reminder;
-#[cfg(any(feature = "ui-plane", test))]
 use crate::services::space_sync_service::SpaceSyncService;
-
-
-// ── Focus resolution ─────────────────────────────────────────────────────────
-
-pub fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
-    if let Ok(ts) = DateTime::parse_from_rfc3339(value) {
-        return Some(ts.with_timezone(&Utc));
-    }
-    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Some(ts.and_utc());
-    }
-    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
-        return Some(ts.and_utc());
-    }
-    None
-}
-
-fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
-    let due = quest.due.as_deref()?;
-    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
-    let time = match quest.due_time.as_deref() {
-        Some(value) => NaiveTime::parse_from_str(value, "%H:%M")
-            .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M:%S"))
-            .ok()?,
-        None => NaiveTime::from_hms_opt(23, 59, 59)?,
-    };
-    Some(NaiveDateTime::new(date, time).and_utc())
-}
-
-pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
-    parse_due_deadline_utc(quest)
-        .map(|deadline| deadline < *now)
-        .unwrap_or(false)
-}
-
-// ── "Focus N" badge: how many times the quest became the Focus quest ───────
-//
-// TODO: count this in the backend again, later. Focus is now a read-only
-// computation (`QuestRepository::focus`), and this counter was a write that
-// happened on each read of Focus, so it is switched off for now (decided
-// 2026-11-01). The old code is kept below so we remember how it worked.
-//
-// const ACTIVE_FOCUS_QUEST_SETTING_KEY: &str = "active_focus_quest_id";
-// 
-// fn save_active_focus_quest_id(
-//     conn: &mut SqliteConnection,
-//     quest_id: Option<&str>,
-// ) -> Result<(), diesel::result::Error> {
-//     if let Some(quest_id) = quest_id {
-//         diesel::insert_into(settings::table)
-//             .values((
-//                 settings::key.eq(ACTIVE_FOCUS_QUEST_SETTING_KEY),
-//                 settings::value.eq(quest_id),
-//             ))
-//             .on_conflict(settings::key)
-//             .do_update()
-//             .set(settings::value.eq(quest_id))
-//             .execute(conn)?;
-//     } else {
-//         diesel::delete(settings::table.find(ACTIVE_FOCUS_QUEST_SETTING_KEY)).execute(conn)?;
-//     }
-//     Ok(())
-// }
-// 
-// /// Counts a Focus enter on the quest (ADR-0012 D9: a repeating quest counts
-// /// on the quest, not on a day) and returns `quest` with the new count.
-// pub(crate) fn record_focus_enter(
-//     conn: &mut SqliteConnection,
-//     quest: &Quest,
-// ) -> Result<Quest, String> {
-//     let previous_focus_id = settings::table
-//         .find(ACTIVE_FOCUS_QUEST_SETTING_KEY)
-//         .select(settings::value)
-//         .first::<String>(conn)
-//         .optional()
-//         .map_err(|error| error.to_string())?;
-// 
-//     let mut quest = quest.clone();
-//     if previous_focus_id.as_deref() != Some(quest.id.as_str()) {
-//         let stored = QuestRepository::new(conn).increment_focus_enter_count(&quest.id)?;
-//         save_active_focus_quest_id(conn, Some(&quest.id)).map_err(|error| error.to_string())?;
-//         quest.focus_enter_count = stored.focus_enter_count;
-//     }
-//     Ok(quest)
-// }
-
-pub(crate) fn should_set_focus_now_for_restore(due: Option<&str>, now: DateTime<Utc>) -> bool {
-    let Some(due_str) = due else {
-        return true;
-    };
-
-    let Some(due_date) = NaiveDate::parse_from_str(due_str, "%Y-%m-%d").ok() else {
-        return true;
-    };
-
-    due_date <= now.date_naive()
-}
-
-pub(crate) fn append_focus_history(
-    conn: &mut SqliteConnection,
-    quest_id: &str,
-    space_id: &str,
-    trigger: &str,
-) -> Result<(), String> {
-    let input = CreateFocusHistoryInput {
-        quest_id: quest_id.to_string(),
-        space_id: space_id.to_string(),
-        trigger: trigger.to_string(),
-    };
-
-    diesel::insert_into(focus_history::table)
-        .values(&input)
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-// ── Sync events ──────────────────────────────────────────────────────────────
-
-/// Emits the stored quest row (never a resolved occurrence view: a repeating
-/// quest syncs as one entity, ADR-0012 D11).
-#[cfg(any(feature = "ui-plane", test))]
-pub(crate) fn emit_quest_sync_events(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-    previous_space_id: &str,
-    quest_id: &str,
-) -> Result<(), String> {
-    let quest = QuestRepository::new(conn).get(quest_id)?;
-    let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
-
-    if previous_space_id == quest.space_id {
-        OutboxRepository::new(conn).emit_sync_event(
-            origin_device_id,
-            "quest",
-            &quest.id,
-            &quest.space_id,
-            "upsert",
-            Some(payload),
-        )?;
-        return emit_checklist_activity_sync_events(conn, origin_device_id, &quest);
-    }
-
-    let delete_updated_at = sync_timestamp();
-    let upsert_updated_at = (Utc::now() + chrono::Duration::seconds(1))
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-        .to_string();
-
-    OutboxRepository::new(conn).emit_sync_event_at(
-        origin_device_id,
-        "quest",
-        &quest.id,
-        previous_space_id,
-        "delete",
-        None,
-        delete_updated_at,
-    )?;
-
-    OutboxRepository::new(conn).emit_sync_event_at(
-        origin_device_id,
-        "quest",
-        &quest.id,
-        &quest.space_id,
-        "upsert",
-        Some(payload),
-        upsert_updated_at,
-    )?;
-
-    emit_checklist_activity_sync_events(conn, origin_device_id, &quest)?;
-
-    // The marks go with their quest to its new space.
-    for occurrence in QuestRepository::new(conn).occurrences(&quest.id)? {
-        emit_occurrence_sync_event(conn, origin_device_id, &quest.space_id, &occurrence)?;
-    }
-
-    Ok(())
-}
-
-/// Emits one occurrence mark: the entity `quest_occurrence`, keyed by
-/// (quest_id, period_key) (ADR-0012 D11).
-#[cfg(any(feature = "ui-plane", test))]
-pub(crate) fn emit_occurrence_sync_event(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-    space_id: &str,
-    occurrence: &QuestOccurrence,
-) -> Result<(), String> {
-    let payload = serde_json::to_string(occurrence).map_err(|e| e.to_string())?;
-    OutboxRepository::new(conn).emit_sync_event(
-        origin_device_id,
-        "quest_occurrence",
-        &occurrence.sync_id(),
-        space_id,
-        "upsert",
-        Some(payload),
-    )
-}
-
-/// Emits a removed mark (a day opened again with nothing left to keep).
-#[cfg(any(feature = "ui-plane", test))]
-fn emit_occurrence_delete_event(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-    space_id: &str,
-    quest_id: &str,
-    period_key: &str,
-) -> Result<(), String> {
-    OutboxRepository::new(conn).emit_sync_event(
-        origin_device_id,
-        "quest_occurrence",
-        &format!("{quest_id}:{period_key}"),
-        space_id,
-        "delete",
-        None,
-    )
-}
-
-#[cfg(any(feature = "ui-plane", test))]
-fn emit_checklist_activity_sync_events(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-    quest: &Quest,
-) -> Result<(), String> {
-    if !quest.is_checklist {
-        return Ok(());
-    }
-
-    let emitted_activity_ids: Vec<String> = crate::schema::sync_outbox::table
-        .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
-        .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
-        .filter(crate::schema::sync_outbox::space_id.eq(&quest.space_id))
-        .select(crate::schema::sync_outbox::entity_id)
-        .load(conn)
-        .map_err(|e| e.to_string())?;
-
-    let activities: Vec<crate::models::ChecklistActivity> = checklist_activity::table
-        .filter(checklist_activity::quest_id.eq(&quest.id))
-        .filter(
-            checklist_activity::origin_device_id
-                .is_null()
-                .or(checklist_activity::origin_device_id.eq(origin_device_id)),
-        )
-        .filter(checklist_activity::id.ne_all(emitted_activity_ids))
-        .select(crate::models::ChecklistActivity::as_select())
-        .load(conn)
-        .map_err(|e| e.to_string())?;
-
-    for activity in activities {
-        let payload = serde_json::to_string(&activity).map_err(|e| e.to_string())?;
-        OutboxRepository::new(conn).emit_sync_event(
-            origin_device_id,
-            "checklist_activity",
-            &activity.id,
-            &quest.space_id,
-            "upsert",
-            Some(payload),
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Emits what a change wrote: the quest row, and each changed or removed mark.
-#[cfg(any(feature = "ui-plane", test))]
-fn emit_change_sync_events(
-    conn: &mut SqliteConnection,
-    origin_device_id: &str,
-    previous_space_id: &str,
-    change: &QuestChange,
-) -> Result<(), String> {
-    if change.quest_row_changed {
-        emit_quest_sync_events(conn, origin_device_id, previous_space_id, &change.quest.id)?;
-    }
-    let space_id = QuestRepository::new(conn).get(&change.quest.id)?.space_id;
-    for occurrence in &change.occurrences {
-        emit_occurrence_sync_event(conn, origin_device_id, &space_id, occurrence)?;
-    }
-    for period_key in &change.removed_occurrences {
-        emit_occurrence_delete_event(conn, origin_device_id, &space_id, &change.quest.id, period_key)?;
-    }
-    if !change.quest_row_changed && !change.occurrences.is_empty() {
-        // Checklist activity of a day is kept on the quest.
-        let quest = QuestRepository::new(conn).get(&change.quest.id)?;
-        emit_checklist_activity_sync_events(conn, origin_device_id, &quest)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_metadata(energy: i64, priority: i64) -> Result<(), String> {
-    if !matches!(energy, 1..=3) {
-        return Err(format!(
-            "invalid stored energy {energy}; expected 1, 2, or 3"
-        ));
-    }
-    if !matches!(priority, 1..=3) {
-        return Err(format!(
-            "invalid stored priority {priority}; expected 1, 2, or 3"
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_optional_metadata(energy: Option<i64>, priority: Option<i64>) -> Result<(), String> {
-    validate_metadata(
-        energy.unwrap_or(crate::models::ENERGY_MEDIUM),
-        priority.unwrap_or(crate::models::PRIORITY_MEDIUM),
-    )
-}
-
-/// What a quest change wrote, for the callers that sync it and schedule
-/// reminders.
-pub(crate) struct QuestChange {
-    /// The quest as the UI shows it after the change: for a repeating quest,
-    /// its oldest open occurrence (or the day that changed, if that one is
-    /// closed now and nothing is open).
-    pub quest: Quest,
-    /// True when the stored quest row changed (sync emits it).
-    pub quest_row_changed: bool,
-    /// The marks the change wrote.
-    pub occurrences: Vec<QuestOccurrence>,
-    /// The days whose marks the change removed.
-    pub removed_occurrences: Vec<String>,
-    pub restore_should_focus: bool,
-}
-
-/// The edit scope of a repeating quest (ADR-0012 D8).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EditScope {
-    /// The one occurrence: an override on its mark.
-    Day,
-    /// The quest: every occurrence.
-    All,
-}
-
-impl EditScope {
-    pub fn parse(value: Option<&str>) -> Result<Self, String> {
-        match value {
-            None | Some("all") => Ok(Self::All),
-            Some("day") => Ok(Self::Day),
-            Some(other) => Err(format!("invalid edit scope {other:?}; expected \"day\" or \"all\"")),
-        }
-    }
-}
-
-/// Builds an `UpdateQuestInput` with only the fields that are set.
-#[derive(Default)]
-pub(crate) struct UpdateQuestInputBuilder {
-    status: Option<String>,
-    repeat_rule: Option<String>,
-}
-
-impl UpdateQuestInputBuilder {
-    pub(crate) fn status(mut self, status: &str) -> Self {
-        self.status = Some(status.to_string());
-        self
-    }
-
-    pub(crate) fn repeat_rule(mut self, repeat_rule: String) -> Self {
-        self.repeat_rule = Some(repeat_rule);
-        self
-    }
-
-    pub(crate) fn build(self) -> crate::models::UpdateQuestInput {
-        crate::models::UpdateQuestInput {
-            space_id: None,
-            title: None,
-            description: None,
-            status: self.status,
-            energy: None,
-            priority: None,
-            due: None,
-            due_time: None,
-            repeat_rule: self.repeat_rule,
-            order_rank: None,
-            is_checklist: None,
-        }
-    }
-}
-
-/// Test helper: one update through the service; (quest as the UI shows it,
-/// whether a restore should set Focus, ()).
-#[cfg(test)]
-pub fn update_quest_in_db(
-    conn: &mut SqliteConnection,
-    id: &str,
-    input: crate::models::UpdateQuestInput,
-) -> Result<(Quest, bool, ()), String> {
-    let change = QuestRepository::new(conn).update(
-        id,
-        crate::models::QuestUpdatePatch::unchanged(input),
-        EditScope::All,
-        None,
-        None,
-    )?;
-    Ok((change.quest, change.restore_should_focus, ()))
-}
-
-pub(crate) fn log_checklist_activity(
-    conn: &mut SqliteConnection,
-    quest_id: &str,
-    kind: &str,
-    detail: &str,
-    origin_device_id: Option<&str>,
-) -> Result<(), String> {
-    use crate::models::CreateChecklistActivityInput;
-
-    let input = CreateChecklistActivityInput {
-        quest_id: quest_id.to_string(),
-        kind: kind.to_string(),
-        detail: detail.to_string(),
-        created_at: utc_now(),
-        origin_device_id: origin_device_id.map(|s| s.to_string()),
-    };
-    diesel::insert_into(checklist_activity::table)
-        .values(&input)
-        .execute(conn)
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[cfg(test)]
-pub(crate) fn load_quests_for_list(
-    conn: &mut SqliteConnection,
-) -> Result<Vec<Quest>, diesel::result::Error> {
-    let loaded: Vec<Quest> = quests::table.select(Quest::as_select()).load(conn)?;
-    Ok(sort_quests_for_list(loaded))
-}
-
-/// The order of `fini quest list`. The UI orders its own lists (stores/quest.ts).
-#[cfg(any(feature = "cli-plane", test))]
-pub(crate) fn sort_quests_for_list(mut loaded: Vec<Quest>) -> Vec<Quest> {
-    let now = Utc::now();
-    loaded.sort_by(|a, b| {
-        let a_active = a.status == "active";
-        let b_active = b.status == "active";
-        if a_active != b_active {
-            return b_active.cmp(&a_active);
-        }
-
-        if a_active {
-            let a_overdue = is_overdue(a, &now);
-            let b_overdue = is_overdue(b, &now);
-            if a_overdue != b_overdue {
-                return b_overdue.cmp(&a_overdue);
-            }
-
-            if (a.order_rank - b.order_rank).abs() > f64::EPSILON {
-                return a
-                    .order_rank
-                    .partial_cmp(&b.order_rank)
-                    .unwrap_or(std::cmp::Ordering::Equal);
-            }
-
-            if a.priority != b.priority {
-                return b.priority.cmp(&a.priority);
-            }
-            return match (
-                parse_utc_timestamp(&a.created_at),
-                parse_utc_timestamp(&b.created_at),
-            ) {
-                (Some(a_created), Some(b_created)) if a_created != b_created => {
-                    a_created.cmp(&b_created)
-                }
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                _ => a.created_at.cmp(&b.created_at),
-            }
-            .then_with(|| a.id.cmp(&b.id));
-        }
-
-        match (
-            parse_utc_timestamp(&a.updated_at),
-            parse_utc_timestamp(&b.updated_at),
-        ) {
-            (Some(a_updated), Some(b_updated)) if a_updated != b_updated => {
-                b_updated.cmp(&a_updated)
-            }
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            _ => b.updated_at.cmp(&a.updated_at),
-        }
-        .then_with(|| a.id.cmp(&b.id))
-        .then_with(|| b.due.cmp(&a.due))
-    });
-
-    loaded
-}
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
@@ -845,11 +350,42 @@ pub fn get_checklist_activity(
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+/// Test helper: one update through the service; (quest as the UI shows it,
+/// whether a restore should set Focus, ()).
+#[cfg(test)]
+pub fn update_quest_in_db(
+    conn: &mut SqliteConnection,
+    id: &str,
+    input: crate::models::UpdateQuestInput,
+) -> Result<(Quest, bool, ()), String> {
+    let change = QuestRepository::new(conn).update(
+        id,
+        crate::models::QuestUpdatePatch::unchanged(input),
+        EditScope::All,
+        None,
+        None,
+    )?;
+    Ok((change.quest, change.restore_should_focus, ()))
+}
+
+#[cfg(test)]
+pub(crate) fn load_quests_for_list(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<Quest>, diesel::result::Error> {
+    use diesel::prelude::*;
+    let loaded: Vec<Quest> = crate::schema::quests::table.select(Quest::as_select()).load(conn)?;
+    Ok(crate::services::cli::sort_quests_for_list(loaded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{period_key_of, RepeatingQuest, UpdateQuestInput};
+    use crate::models::{period_key_of, validate_metadata, RepeatingQuest, UpdateQuestInput};
+    use crate::repositories::quest_repository::log_checklist_activity;
+    use crate::schema::{focus_history, quests};
+    use crate::models::QuestOccurrence;
     use crate::services::checklist;
+    use diesel::prelude::*;
 
     #[test]
     fn quest_service_metadata_validation_rejects_values_outside_persistence_domain() {

@@ -49,7 +49,7 @@ use services::notification::{
 #[cfg(feature = "ui-plane")]
 mod resume_watcher;
 #[cfg(feature = "ui-plane")]
-use services::quest::{
+use commands::quest_commands::{
     add_checklist_item, complete_quest_through_today, create_quest, delete_quest, edit_checklist_item,
     get_active_focus, get_checklist_activity, get_quests, remove_checklist_item, reorder_checklist,
     set_focus, toggle_checklist_item, update_quest,

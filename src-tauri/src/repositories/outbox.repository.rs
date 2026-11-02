@@ -6,11 +6,19 @@
 //!   channel unlinked, a space no longer synced), kept until a session has
 //!   carried them (ADR-0008 D14).
 
+#[cfg(any(feature = "ui-plane", test))]
+use chrono::Utc;
 use diesel::prelude::*;
 use diesel::SqliteConnection;
 use uuid::Uuid;
 
 use crate::models::{CreateSyncAck, CreateSyncOutboxEntry, CreateSyncSeen, SyncOutboxEntry};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::models::{Quest, QuestOccurrence};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::repositories::{quest_repository::QuestChange, QuestRepository};
+#[cfg(any(feature = "ui-plane", test))]
+use crate::schema::checklist_activity;
 use crate::schema::{peer_control_outbox, sync_acks, sync_outbox, sync_seen};
 use crate::services::channel_service::{PeerFrame, SyncEventEnvelope};
 use crate::services::db::{sync_timestamp, utc_now};
@@ -279,6 +287,179 @@ impl<'a> OutboxRepository<'a> {
         let _ = diesel::delete(peer_control_outbox::table.find(id)).execute(&mut *self.conn);
     }
 }
+
+
+// ── Sync events ──────────────────────────────────────────────────────────────
+
+/// Emits the stored quest row (never a resolved occurrence view: a repeating
+/// quest syncs as one entity, ADR-0012 D11).
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) fn emit_quest_sync_events(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    previous_space_id: &str,
+    quest_id: &str,
+) -> Result<(), String> {
+    let quest = QuestRepository::new(conn).get(quest_id)?;
+    let payload = serde_json::to_string(&quest).map_err(|e| e.to_string())?;
+
+    if previous_space_id == quest.space_id {
+        OutboxRepository::new(conn).emit_sync_event(
+            origin_device_id,
+            "quest",
+            &quest.id,
+            &quest.space_id,
+            "upsert",
+            Some(payload),
+        )?;
+        return emit_checklist_activity_sync_events(conn, origin_device_id, &quest);
+    }
+
+    let delete_updated_at = sync_timestamp();
+    let upsert_updated_at = (Utc::now() + chrono::Duration::seconds(1))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+
+    OutboxRepository::new(conn).emit_sync_event_at(
+        origin_device_id,
+        "quest",
+        &quest.id,
+        previous_space_id,
+        "delete",
+        None,
+        delete_updated_at,
+    )?;
+
+    OutboxRepository::new(conn).emit_sync_event_at(
+        origin_device_id,
+        "quest",
+        &quest.id,
+        &quest.space_id,
+        "upsert",
+        Some(payload),
+        upsert_updated_at,
+    )?;
+
+    emit_checklist_activity_sync_events(conn, origin_device_id, &quest)?;
+
+    // The marks go with their quest to its new space.
+    for occurrence in QuestRepository::new(conn).occurrences(&quest.id)? {
+        emit_occurrence_sync_event(conn, origin_device_id, &quest.space_id, &occurrence)?;
+    }
+
+    Ok(())
+}
+
+/// Emits one occurrence mark: the entity `quest_occurrence`, keyed by
+/// (quest_id, period_key) (ADR-0012 D11).
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) fn emit_occurrence_sync_event(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    space_id: &str,
+    occurrence: &QuestOccurrence,
+) -> Result<(), String> {
+    let payload = serde_json::to_string(occurrence).map_err(|e| e.to_string())?;
+    OutboxRepository::new(conn).emit_sync_event(
+        origin_device_id,
+        "quest_occurrence",
+        &occurrence.sync_id(),
+        space_id,
+        "upsert",
+        Some(payload),
+    )
+}
+
+/// Emits a removed mark (a day opened again with nothing left to keep).
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_occurrence_delete_event(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    space_id: &str,
+    quest_id: &str,
+    period_key: &str,
+) -> Result<(), String> {
+    OutboxRepository::new(conn).emit_sync_event(
+        origin_device_id,
+        "quest_occurrence",
+        &format!("{quest_id}:{period_key}"),
+        space_id,
+        "delete",
+        None,
+    )
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+fn emit_checklist_activity_sync_events(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    quest: &Quest,
+) -> Result<(), String> {
+    if !quest.is_checklist {
+        return Ok(());
+    }
+
+    let emitted_activity_ids: Vec<String> = crate::schema::sync_outbox::table
+        .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+        .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
+        .filter(crate::schema::sync_outbox::space_id.eq(&quest.space_id))
+        .select(crate::schema::sync_outbox::entity_id)
+        .load(conn)
+        .map_err(|e| e.to_string())?;
+
+    let activities: Vec<crate::models::ChecklistActivity> = checklist_activity::table
+        .filter(checklist_activity::quest_id.eq(&quest.id))
+        .filter(
+            checklist_activity::origin_device_id
+                .is_null()
+                .or(checklist_activity::origin_device_id.eq(origin_device_id)),
+        )
+        .filter(checklist_activity::id.ne_all(emitted_activity_ids))
+        .select(crate::models::ChecklistActivity::as_select())
+        .load(conn)
+        .map_err(|e| e.to_string())?;
+
+    for activity in activities {
+        let payload = serde_json::to_string(&activity).map_err(|e| e.to_string())?;
+        OutboxRepository::new(conn).emit_sync_event(
+            origin_device_id,
+            "checklist_activity",
+            &activity.id,
+            &quest.space_id,
+            "upsert",
+            Some(payload),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Emits what a change wrote: the quest row, and each changed or removed mark.
+#[cfg(any(feature = "ui-plane", test))]
+pub(crate) fn emit_change_sync_events(
+    conn: &mut SqliteConnection,
+    origin_device_id: &str,
+    previous_space_id: &str,
+    change: &QuestChange,
+) -> Result<(), String> {
+    if change.quest_row_changed {
+        emit_quest_sync_events(conn, origin_device_id, previous_space_id, &change.quest.id)?;
+    }
+    let space_id = QuestRepository::new(conn).get(&change.quest.id)?.space_id;
+    for occurrence in &change.occurrences {
+        emit_occurrence_sync_event(conn, origin_device_id, &space_id, occurrence)?;
+    }
+    for period_key in &change.removed_occurrences {
+        emit_occurrence_delete_event(conn, origin_device_id, &space_id, &change.quest.id, period_key)?;
+    }
+    if !change.quest_row_changed && !change.occurrences.is_empty() {
+        // Checklist activity of a day is kept on the quest.
+        let quest = QuestRepository::new(conn).get(&change.quest.id)?;
+        emit_checklist_activity_sync_events(conn, origin_device_id, &quest)?;
+    }
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use diesel::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
@@ -626,6 +626,117 @@ impl<'q> RepeatingQuest<'q> {
             .unwrap_or_else(|| QuestOccurrence::new(&self.quest.id, period_key, &utc_now()))
     }
 }
+
+// ── Focus resolution ─────────────────────────────────────────────────────────
+
+pub fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    if let Ok(ts) = DateTime::parse_from_rfc3339(value) {
+        return Some(ts.with_timezone(&Utc));
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    None
+}
+
+fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
+    let due = quest.due.as_deref()?;
+    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
+    let time = match quest.due_time.as_deref() {
+        Some(value) => NaiveTime::parse_from_str(value, "%H:%M")
+            .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M:%S"))
+            .ok()?,
+        None => NaiveTime::from_hms_opt(23, 59, 59)?,
+    };
+    Some(NaiveDateTime::new(date, time).and_utc())
+}
+
+pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
+    parse_due_deadline_utc(quest)
+        .map(|deadline| deadline < *now)
+        .unwrap_or(false)
+}
+
+
+pub(crate) fn validate_metadata(energy: i64, priority: i64) -> Result<(), String> {
+    if !matches!(energy, 1..=3) {
+        return Err(format!(
+            "invalid stored energy {energy}; expected 1, 2, or 3"
+        ));
+    }
+    if !matches!(priority, 1..=3) {
+        return Err(format!(
+            "invalid stored priority {priority}; expected 1, 2, or 3"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_optional_metadata(energy: Option<i64>, priority: Option<i64>) -> Result<(), String> {
+    validate_metadata(
+        energy.unwrap_or(crate::models::ENERGY_MEDIUM),
+        priority.unwrap_or(crate::models::PRIORITY_MEDIUM),
+    )
+}
+
+
+/// The edit scope of a repeating quest (ADR-0012 D8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditScope {
+    /// The one occurrence: an override on its mark.
+    Day,
+    /// The quest: every occurrence.
+    All,
+}
+
+impl EditScope {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("all") => Ok(Self::All),
+            Some("day") => Ok(Self::Day),
+            Some(other) => Err(format!("invalid edit scope {other:?}; expected \"day\" or \"all\"")),
+        }
+    }
+}
+
+/// Builds an `UpdateQuestInput` with only the fields that are set.
+#[derive(Default)]
+pub(crate) struct UpdateQuestInputBuilder {
+    status: Option<String>,
+    repeat_rule: Option<String>,
+}
+
+impl UpdateQuestInputBuilder {
+    pub(crate) fn status(mut self, status: &str) -> Self {
+        self.status = Some(status.to_string());
+        self
+    }
+
+    pub(crate) fn repeat_rule(mut self, repeat_rule: String) -> Self {
+        self.repeat_rule = Some(repeat_rule);
+        self
+    }
+
+    pub(crate) fn build(self) -> crate::models::UpdateQuestInput {
+        crate::models::UpdateQuestInput {
+            space_id: None,
+            title: None,
+            description: None,
+            status: self.status,
+            energy: None,
+            priority: None,
+            due: None,
+            due_time: None,
+            repeat_rule: self.repeat_rule,
+            order_rank: None,
+            is_checklist: None,
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
