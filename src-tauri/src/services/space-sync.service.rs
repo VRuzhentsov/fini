@@ -1622,11 +1622,14 @@ fn delete_entity(conn: &mut SqliteConnection, event: &SyncEventEnvelope) -> Resu
                 .map_err(|e| e.to_string())?;
         }
         "quest" => {
-            QuestRepository::new(conn).sync_delete_quest(&event.entity_id)?;
+            let mut quests = QuestRepository::new(conn);
+            if quests.find_external_quest(&event.entity_id)?.is_some() {
+                quests.delete(&event.entity_id)?;
+            }
         }
         "quest_occurrence" => {
             if let Some((quest_id, period_key)) = event.entity_id.split_once(':') {
-                QuestRepository::new(conn).sync_delete_occurrence(quest_id, period_key)?;
+                QuestRepository::new(conn).delete_occurrence(quest_id, period_key)?;
             }
         }
         "focus_history" => {
@@ -1738,7 +1741,7 @@ pub(super) fn apply_sync_event(
             // brand-new quest arriving for the first time — falls through to the normal
             // whole-entity path; its `description` is treated like any other field.
             let local_is_checklist = if event.entity_type == "quest" {
-                QuestRepository::new(conn).sync_quest_is_checklist(&event.entity_id)?
+                QuestRepository::new(conn).external_quest_is_checklist(&event.entity_id)?
             } else {
                 false
             };
@@ -1890,7 +1893,7 @@ pub(super) fn merge_local_space_into_remote_id(
     }
 
     QuestRepository::new(conn)
-        .sync_move_quests_between_spaces(local_space_id, remote_space_id)?;
+        .move_quests_between_spaces(local_space_id, remote_space_id)?;
 
     diesel::update(focus_history::table.filter(focus_history::space_id.eq(local_space_id)))
         .set(focus_history::space_id.eq(remote_space_id))

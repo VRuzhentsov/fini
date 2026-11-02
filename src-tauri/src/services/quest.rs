@@ -535,7 +535,13 @@ pub fn update_quest_in_db(
     id: &str,
     input: crate::models::UpdateQuestInput,
 ) -> Result<(Quest, bool, ()), String> {
-    let change = QuestRepository::new(conn).update(id, input)?;
+    let change = QuestRepository::new(conn).update(
+        id,
+        crate::models::QuestUpdatePatch::unchanged(input),
+        EditScope::All,
+        None,
+        None,
+    )?;
     Ok((change.quest, change.restore_should_focus, ()))
 }
 
@@ -719,7 +725,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
         due_time: QuestFieldPatch::Unchanged,
         repeat_rule: QuestFieldPatch::Unchanged,
     };
-    match QuestRepository::new(&mut conn).update_scoped(
+    match QuestRepository::new(&mut conn).update(
         quest_id,
         patch,
         EditScope::All,
@@ -768,7 +774,7 @@ pub fn update_quest(
     let scope = EditScope::parse(input.scope.as_deref())?;
     let period_key = input.period_key.clone();
 
-    let change = QuestRepository::new(&mut conn).update_scoped(
+    let change = QuestRepository::new(&mut conn).update(
         &id,
         input.into_patch(),
         scope,
@@ -1106,7 +1112,7 @@ mod tests {
             repeat_rule: QuestFieldPatch::Clear,
         };
         let cleared = QuestRepository::new(&mut conn)
-            .update_patch(&id, patch)
+            .update(&id, patch, EditScope::All, None, None)
             .expect("clear nullable fields");
         assert_eq!(cleared.quest.description, None);
         assert_eq!(cleared.quest.due, None);
@@ -1123,7 +1129,7 @@ mod tests {
             .execute(&mut conn)
             .expect("reseed nullable fields");
         let preserved = QuestRepository::new(&mut conn)
-            .update_patch(&id, QuestUpdatePatch::unchanged(status_patch("active")))
+            .update(&id, QuestUpdatePatch::unchanged(status_patch("active")), EditScope::All, None, None)
             .expect("omit nullable fields");
         assert_eq!(preserved.quest.description.as_deref(), Some("preserved"));
         assert_eq!(preserved.quest.due.as_deref(), Some("2026-05-01"));
@@ -1131,7 +1137,7 @@ mod tests {
         assert_eq!(preserved.quest.repeat_rule.as_deref(), Some("weekly"));
 
         let empty = QuestRepository::new(&mut conn)
-            .update_patch(
+            .update(
                 &id,
                 QuestUpdatePatch {
                     input: status_patch("active"),
@@ -1140,6 +1146,9 @@ mod tests {
                     due_time: QuestFieldPatch::Unchanged,
                     repeat_rule: QuestFieldPatch::Unchanged,
                 },
+                EditScope::All,
+                None,
+                None,
             )
             .expect("set an empty nullable field");
         assert_eq!(empty.quest.description.as_deref(), Some(""));
@@ -1623,7 +1632,7 @@ mod tests {
         )
         .expect("clear payload must deserialize");
         QuestRepository::new(&mut conn)
-            .update_patch_with_origin(&id, command_input.into_patch(), None)
+            .update(&id, command_input.into_patch(), EditScope::All, None, None)
             .expect("clearing update must succeed");
 
         let cleared: Quest = quests::table
@@ -1663,7 +1672,7 @@ mod tests {
             serde_json::from_str(r#"{"priority":"high"}"#)
                 .expect("partial payload must deserialize");
         QuestRepository::new(&mut conn)
-            .update_patch_with_origin(&id, command_input.into_patch(), None)
+            .update(&id, command_input.into_patch(), EditScope::All, None, None)
             .expect("partial update must succeed");
 
         let updated: Quest = quests::table
@@ -2138,10 +2147,13 @@ mod tests {
         let mut service = QuestRepository::new(&mut conn);
         let result = service.update(
             &quest.id,
-            UpdateQuestInput {
+            QuestUpdatePatch::unchanged(UpdateQuestInput {
                 description: Some("notes".to_string()),
                 ..status_patch("active")
-            },
+            }),
+            EditScope::All,
+            None,
+            None,
         );
         assert!(
             result.is_err(),
@@ -2156,7 +2168,7 @@ mod tests {
         );
 
         // The nullable-patch path (CLI's `quest update --description`) must reject the same way.
-        let patch_result = service.update_patch(
+        let patch_result = service.update(
             &quest.id,
             QuestUpdatePatch {
                 input: status_patch("active"),
@@ -2165,6 +2177,9 @@ mod tests {
                 due_time: QuestFieldPatch::Unchanged,
                 repeat_rule: QuestFieldPatch::Unchanged,
             },
+            EditScope::All,
+            None,
+            None,
         );
         assert!(
             patch_result.is_err(),
@@ -2309,7 +2324,7 @@ mod tests {
             let quest = create_active_quest_with_checklist(&mut conn, &template);
             let mut service = QuestRepository::new(&mut conn);
             service
-                .update(&quest.id, status_patch(status))
+                .update(&quest.id, QuestUpdatePatch::unchanged(status_patch(status)), EditScope::All, None, None)
                 .expect("move quest out of active status");
             let before = service
                 .get(&quest.id)
@@ -2404,7 +2419,7 @@ mod tests {
 
         let mut service = QuestRepository::new(&mut conn);
         service
-            .update_with_origin(&quest.id, status_patch("completed"), Some("dev-a"))
+            .complete(&quest.id, Some("dev-a"))
             .expect("complete quest");
 
         let activity = service
@@ -2428,7 +2443,7 @@ mod tests {
         let quest = create_active_quest_with_checklist(&mut conn, "");
         let mut service = QuestRepository::new(&mut conn);
         service
-            .update(&quest.id, status_patch("completed"))
+            .complete(&quest.id, None)
             .expect("complete quest");
 
         service
@@ -2496,7 +2511,7 @@ mod tests {
         assert_eq!(listed[0].due.as_deref(), Some(day(-2).as_str()));
         assert!(marks(&mut conn, &quest.id).is_empty(), "nothing stored while nobody acts");
 
-        let change = QuestRepository::new(&mut conn).update(&quest.id, status_patch("completed")).expect("complete");
+        let change = QuestRepository::new(&mut conn).complete(&quest.id, None).expect("complete");
         assert_eq!(marks(&mut conn, &quest.id), vec![(day(-2), Some("completed".to_string()))]);
         assert_eq!(change.quest.due.as_deref(), Some(day(-1).as_str()), "the next open day shows");
         assert_eq!(change.quest.status, "active");
@@ -2563,10 +2578,10 @@ mod tests {
         let db_path = temp_db_path("repeating-reopen");
         let mut conn = open_db_at_path(&db_path);
         let quest = create_repeating(&mut conn, &day(-1), DAILY, None);
-        QuestRepository::new(&mut conn).update(&quest.id, status_patch("completed")).expect("complete");
+        QuestRepository::new(&mut conn).complete(&quest.id, None).expect("complete");
 
         let reopened = QuestRepository::new(&mut conn)
-            .update_scoped(
+            .update(
                 &quest.id,
                 QuestUpdatePatch::unchanged(status_patch("active")),
                 EditScope::All,
@@ -2593,7 +2608,7 @@ mod tests {
         no_status.input.status = None;
 
         QuestRepository::new(&mut conn)
-            .update_scoped(&quest.id, no_status, EditScope::Day, None, None)
+            .update(&quest.id, no_status, EditScope::Day, None, None)
             .expect("this day");
         let mut service = QuestRepository::new(&mut conn);
         assert_eq!(service.get(&quest.id).unwrap().title, "Gym", "the quest keeps its title");
@@ -2601,10 +2616,10 @@ mod tests {
 
         let mut all = rename("Run");
         all.input.status = None;
-        service.update_scoped(&quest.id, all, EditScope::All, None, None).expect("all days");
+        service.update(&quest.id, all, EditScope::All, None, None).expect("all days");
         assert_eq!(service.get(&quest.id).unwrap().title, "Run");
         assert_eq!(service.resolved(&quest.id).unwrap().title, "Gym (short)", "the day keeps its override");
-        service.update(&quest.id, status_patch("completed")).expect("complete the overridden day");
+        service.complete(&quest.id, None).expect("complete the overridden day");
         assert_eq!(service.resolved(&quest.id).unwrap().title, "Run", "the next day takes the quest's title");
 
         let _ = std::fs::remove_file(db_path);
@@ -2631,7 +2646,7 @@ mod tests {
         assert!(items.iter().find(|it| it.id == "a1").unwrap().checked, "and kept its tick");
         assert!(!items.iter().find(|it| it.text == "lunch").unwrap().checked);
 
-        service.update(&quest.id, status_patch("completed")).expect("complete the day");
+        service.complete(&quest.id, None).expect("complete the day");
         let next = service.resolved(&quest.id).unwrap();
         assert!(checklist::parse(next.description.as_deref().unwrap()).iter().all(|it| !it.checked), "the next day starts unticked");
 
@@ -2643,12 +2658,12 @@ mod tests {
         let db_path = temp_db_path("repeating-stop");
         let mut conn = open_db_at_path(&db_path);
         let quest = create_repeating(&mut conn, &day(-2), DAILY, None);
-        QuestRepository::new(&mut conn).update(&quest.id, status_patch("completed")).expect("complete one day");
+        QuestRepository::new(&mut conn).complete(&quest.id, None).expect("complete one day");
 
         let mut stop = QuestUpdatePatch::unchanged(status_patch("active"));
         stop.input.status = None;
         stop.repeat_rule = QuestFieldPatch::Clear;
-        QuestRepository::new(&mut conn).update_patch(&quest.id, stop).expect("stop the repeat");
+        QuestRepository::new(&mut conn).update(&quest.id, stop, EditScope::All, None, None).expect("stop the repeat");
 
         let mut service = QuestRepository::new(&mut conn);
         let stored = service.get(&quest.id).unwrap();

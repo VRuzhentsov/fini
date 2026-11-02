@@ -309,13 +309,6 @@ impl<'a> QuestRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
-    pub fn delete_external_quest(&mut self, id: &str) -> Result<(), String> {
-        diesel::delete(quests::table.find(id))
-            .execute(self.conn)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
     /// Writes a new quest row as given.
     pub fn insert(&mut self, input: CreateQuestInput) -> Result<Quest, String> {
         let max_rank = quests::table
@@ -435,7 +428,8 @@ impl<'a> QuestRepository<'a> {
         Ok((previous, quest))
     }
 
-    pub fn delete_row(&mut self, id: &str) -> Result<Quest, String> {
+    /// Deletes the quest; its occurrence marks go with it (foreign key cascade).
+    pub fn delete(&mut self, id: &str) -> Result<Quest, String> {
         let quest = self.get(id)?;
         diesel::delete(quests::table.find(id))
             .execute(self.conn)
@@ -446,6 +440,11 @@ impl<'a> QuestRepository<'a> {
 
 
 // ── Quests as a person sees and changes them (ADR-0012) ─────────────────────
+
+/// A change of the status only.
+fn status_patch(status: &str) -> QuestUpdatePatch {
+    QuestUpdatePatch::unchanged(UpdateQuestInputBuilder::default().status(status).build())
+}
 
 impl<'a> QuestRepository<'a> {
     // ---- Reading: the resolved view (ADR-0012 D2, D6) ----
@@ -519,24 +518,6 @@ impl<'a> QuestRepository<'a> {
         Ok(RepeatRule::parse(quest.repeat_rule.as_deref()).is_some())
     }
 
-    pub fn export_quests_for_spaces(&mut self, space_ids: &[String]) -> Result<Vec<Quest>, String> {
-        self.load_for_spaces(space_ids)
-    }
-
-    pub fn export_insert_quest(&mut self, quest: &Quest) -> Result<(), String> {
-        validate_metadata(quest.energy, quest.priority)?;
-        self.insert_export_quest(quest)
-    }
-
-    pub fn import_load_quests(&mut self) -> Result<Vec<Quest>, String> {
-        self.load_all()
-    }
-
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn get_with_space(&mut self, id: &str) -> Result<(Quest, Space), String> {
-        self.load_quest_and_space(id)
-    }
-
     /// Focus on a quest; for a repeating quest on the quest itself, with no
     /// day row (ADR-0012 D6).
     pub fn set_focus(&mut self, id: &str, trigger: &str) -> Result<Quest, String> {
@@ -564,39 +545,14 @@ impl<'a> QuestRepository<'a> {
 
     // ---- Writing ----
 
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn update(&mut self, id: &str, input: UpdateQuestInput) -> Result<QuestChange, String> {
-        self.update_with_origin(id, input, None)
+    /// Completes the quest; for a repeating quest its shown day (ADR-0012 D7).
+    pub fn complete(&mut self, id: &str, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
+        self.update(id, status_patch(OCCURRENCE_COMPLETED), EditScope::All, None, origin_device_id)
     }
 
-    #[cfg(any(feature = "ui-plane", test))]
-    pub fn update_with_origin(
-        &mut self,
-        id: &str,
-        input: UpdateQuestInput,
-        origin_device_id: Option<&str>,
-    ) -> Result<QuestChange, String> {
-        let patch = QuestUpdatePatch {
-            input,
-            description: QuestFieldPatch::Unchanged,
-            due: QuestFieldPatch::Unchanged,
-            due_time: QuestFieldPatch::Unchanged,
-            repeat_rule: QuestFieldPatch::Unchanged,
-        };
-        self.update_scoped(id, patch, EditScope::All, None, origin_device_id)
-    }
-
-    pub fn update_patch(&mut self, id: &str, patch: QuestUpdatePatch) -> Result<QuestChange, String> {
-        self.update_scoped(id, patch, EditScope::All, None, None)
-    }
-
-    pub fn update_patch_with_origin(
-        &mut self,
-        id: &str,
-        patch: QuestUpdatePatch,
-        origin_device_id: Option<&str>,
-    ) -> Result<QuestChange, String> {
-        self.update_scoped(id, patch, EditScope::All, None, origin_device_id)
+    /// Abandons the quest; for a repeating quest its shown day.
+    pub fn abandon(&mut self, id: &str, origin_device_id: Option<&str>) -> Result<QuestChange, String> {
+        self.update(id, status_patch(OCCURRENCE_ABANDONED), EditScope::All, None, origin_device_id)
     }
 
     /// One quest change. For a repeating quest (ADR-0012): Complete or Abandon
@@ -604,7 +560,7 @@ impl<'a> QuestRepository<'a> {
     /// closed day opens it again; `EditScope::Day` writes the fields as that
     /// day's overrides; `EditScope::All` edits the quest; clearing the rule
     /// stops the repeat (D10).
-    pub fn update_scoped(
+    pub fn update(
         &mut self,
         id: &str,
         patch: QuestUpdatePatch,
@@ -908,10 +864,6 @@ impl<'a> QuestRepository<'a> {
         self.save_occurrence(&merged).map(|_| ())
     }
 
-    pub fn sync_delete_occurrence(&mut self, quest_id: &str, period_key: &str) -> Result<(), String> {
-        self.delete_occurrence(quest_id, period_key)
-    }
-
     /// Emits an upsert for each repeating quest and occurrence mark that has
     /// no sync event yet (the rows a migration wrote, ADR-0012 D11).
     #[cfg(any(feature = "ui-plane", test))]
@@ -933,10 +885,6 @@ impl<'a> QuestRepository<'a> {
             }
         }
         Ok(())
-    }
-
-    pub fn sync_quest_is_checklist(&mut self, id: &str) -> Result<bool, String> {
-        self.external_quest_is_checklist(id)
     }
 
     pub fn sync_merge_quest_checklist(
@@ -984,30 +932,6 @@ impl<'a> QuestRepository<'a> {
         ))
     }
 
-    pub fn sync_move_quests_between_spaces(
-        &mut self,
-        local_space_id: &str,
-        remote_space_id: &str,
-    ) -> Result<(), String> {
-        self.move_quests_between_spaces(local_space_id, remote_space_id)
-    }
-
-    pub fn import_upsert_quest(&mut self, quest: &Quest) -> Result<(), String> {
-        self.sync_upsert_quest(quest)
-    }
-
-    pub fn import_find_quest(&mut self, id: &str) -> Result<Option<Quest>, String> {
-        self.find_external_quest(id)
-    }
-
-    pub fn sync_delete_quest(&mut self, id: &str) -> Result<(), String> {
-        self.delete_external_quest(id)
-    }
-
-    /// Deletes the quest; for a repeating quest every occurrence and mark.
-    pub fn delete(&mut self, id: &str) -> Result<Quest, String> {
-        self.delete_row(id)
-    }
 
     // ── Checklist (issue #128; repeating quests: ADR-0012 D5) ──────────────────
 

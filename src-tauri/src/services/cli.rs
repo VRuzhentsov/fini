@@ -1159,7 +1159,7 @@ fn update_quest_from_cli(
         repeat_rule,
     };
     let change = QuestRepository::new(conn)
-        .update_patch_with_origin(&args.id, patch, Some(ctx.device_id()))
+        .update(&args.id, patch, EditScope::All, None, Some(ctx.device_id()))
         .map_err(CliError::from_string)?;
     if args.trigger_reminder_focus {
         append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")

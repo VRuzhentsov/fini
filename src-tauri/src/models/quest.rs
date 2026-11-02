@@ -222,7 +222,7 @@ pub struct QuestUpdatePatch {
 }
 
 impl QuestUpdatePatch {
-    #[cfg(test)]
+    /// The fields of `input`; the clearable fields stay as they are.
     pub fn unchanged(input: UpdateQuestInput) -> Self {
         Self {
             input,
