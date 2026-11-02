@@ -1387,7 +1387,7 @@ use crate::models::{ChecklistActivity, FocusHistoryEntry, Quest, QuestOccurrence
 use crate::repositories::{OutboxRepository, SpaceMappingRepository};
 use crate::schema::{checklist_activity, focus_history, spaces, sync_outbox, tombstones};
 use crate::services::db::utc_now;
-use crate::services::quest::QuestService;
+use crate::repositories::QuestRepository;
 
 pub(super) fn normalized_space_ids(mapped_space_ids: Vec<String>) -> Vec<String> {
     mapped_space_ids
@@ -1568,13 +1568,13 @@ fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String
 
 fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
     ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
-    QuestService::new(conn).sync_upsert_quest(quest)
+    QuestRepository::new(conn).sync_upsert_quest(quest)
 }
 
 /// An occurrence mark of a repeating quest (ADR-0012 D11). Its quest comes
 /// first in the outbox, so it exists here already.
 fn upsert_quest_occurrence(conn: &mut SqliteConnection, occurrence: &QuestOccurrence) -> Result<(), String> {
-    QuestService::new(conn).sync_upsert_occurrence(occurrence)
+    QuestRepository::new(conn).sync_upsert_occurrence(occurrence)
 }
 
 fn upsert_focus_history(
@@ -1622,11 +1622,11 @@ fn delete_entity(conn: &mut SqliteConnection, event: &SyncEventEnvelope) -> Resu
                 .map_err(|e| e.to_string())?;
         }
         "quest" => {
-            QuestService::new(conn).sync_delete_quest(&event.entity_id)?;
+            QuestRepository::new(conn).sync_delete_quest(&event.entity_id)?;
         }
         "quest_occurrence" => {
             if let Some((quest_id, period_key)) = event.entity_id.split_once(':') {
-                QuestService::new(conn).sync_delete_occurrence(quest_id, period_key)?;
+                QuestRepository::new(conn).sync_delete_occurrence(quest_id, period_key)?;
             }
         }
         "focus_history" => {
@@ -1675,7 +1675,7 @@ fn emit_checklist_convergence_event(
 ) -> Result<(), String> {
     if let Some(own_device_id) = local_device_id(conn) {
         if own_device_id != remote_origin_device_id {
-            let refreshed = QuestService::new(conn).get(entity_id)?;
+            let refreshed = QuestRepository::new(conn).get(entity_id)?;
             let payload = serde_json::to_string(&refreshed).map_err(|e| e.to_string())?;
             OutboxRepository::new(conn).emit_sync_event(
                 &own_device_id,
@@ -1704,7 +1704,7 @@ fn merge_and_persist_quest_checklist(
     entity_id: &str,
     incoming_description: Option<&str>,
 ) -> Result<(Option<String>, bool), String> {
-    QuestService::new(conn).sync_merge_quest_checklist(entity_id, incoming_description)
+    QuestRepository::new(conn).sync_merge_quest_checklist(entity_id, incoming_description)
 }
 
 pub(super) fn apply_sync_event(
@@ -1738,7 +1738,7 @@ pub(super) fn apply_sync_event(
             // brand-new quest arriving for the first time — falls through to the normal
             // whole-entity path; its `description` is treated like any other field.
             let local_is_checklist = if event.entity_type == "quest" {
-                QuestService::new(conn).sync_quest_is_checklist(&event.entity_id)?
+                QuestRepository::new(conn).sync_quest_is_checklist(&event.entity_id)?
             } else {
                 false
             };
@@ -1889,7 +1889,7 @@ pub(super) fn merge_local_space_into_remote_id(
         create_space_with_id(conn, remote_space_id, &name)?;
     }
 
-    QuestService::new(conn)
+    QuestRepository::new(conn)
         .sync_move_quests_between_spaces(local_space_id, remote_space_id)?;
 
     diesel::update(focus_history::table.filter(focus_history::space_id.eq(local_space_id)))

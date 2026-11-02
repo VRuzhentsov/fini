@@ -12,7 +12,7 @@ use crate::services::db::AppDbConnection;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::notification;
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::quest::QuestService;
+use crate::repositories::QuestRepository;
 
 /// Owns reminder reconciliation after quest persistence succeeds.
 pub struct ReminderService<'a> {
@@ -109,7 +109,7 @@ impl<'a> ReminderService<'a> {
         app: &AppHandle,
         quest: &Quest,
     ) -> Result<(), String> {
-        let (_, space) = QuestService::new(self.repository.conn).get_with_space(&quest.id)?;
+        let (_, space) = QuestRepository::new(self.repository.conn).get_with_space(&quest.id)?;
         self.reconcile_with_notifications(app, quest, &space)
     }
 
@@ -163,7 +163,7 @@ impl<'a> ReminderService<'a> {
         input: CreateReminderInput,
     ) -> Result<Reminder, String> {
         let (quest, space) =
-            QuestService::new(self.repository.conn).get_with_space(&input.quest_id)?;
+            QuestRepository::new(self.repository.conn).get_with_space(&input.quest_id)?;
         self.create_with_notifications(app, input, &quest, &space)
     }
 
@@ -196,7 +196,7 @@ impl<'a> ReminderService<'a> {
     ) -> Result<Reminder, String> {
         let existing = self.get(id)?;
         let (quest, space) =
-            QuestService::new(self.repository.conn).get_with_space(&existing.quest_id)?;
+            QuestRepository::new(self.repository.conn).get_with_space(&existing.quest_id)?;
         self.update_with_notifications(app, id, input, &quest, &space)
     }
 

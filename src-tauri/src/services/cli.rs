@@ -20,9 +20,8 @@ use crate::services::device_service::DeviceService;
 use crate::services::event_bus_service::EventBusService;
 use crate::services::network_channel_service::NetworkChannelService;
 use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
-use crate::services::quest::{
-    append_focus_history, record_focus_enter, resolve_active_quest, EditScope, QuestService,
-};
+use crate::repositories::QuestRepository;
+use crate::services::quest::{append_focus_history, record_focus_enter, resolve_active_quest, EditScope};
 use crate::services::reminder::ReminderService;
 use crate::services::settings::{self, ThemeMode};
 use crate::services::space::SpaceRepository;
@@ -850,7 +849,7 @@ fn emit_change_sync(
 /// repeating quest's next open occurrence from today (ADR-0012 D9).
 fn refresh_cli_reminder(conn: &mut diesel::sqlite::SqliteConnection, quest_id: &str) {
     let target = (|| -> Result<Option<crate::models::Quest>, String> {
-        let mut service = QuestService::new(conn);
+        let mut service = QuestRepository::new(conn);
         if service.is_repeating(quest_id)? {
             return service.reminder_occurrence(quest_id);
         }
@@ -887,7 +886,7 @@ fn handle_focus(ctx: &CliContext, command: FocusCommand) -> CliResult<Value> {
             } else {
                 "manual"
             };
-            let quest = QuestService::new(&mut conn)
+            let quest = QuestRepository::new(&mut conn)
                 .set_focus(&args.quest_id, trigger)
                 .map_err(CliError::from_string)?;
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
@@ -900,7 +899,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
     match command {
         QuestCommand::List(args) => {
             let status = args.status.unwrap_or_else(|| "active".to_string());
-            let quests: Vec<_> = QuestService::new(&mut conn)
+            let quests: Vec<_> = QuestRepository::new(&mut conn)
                 .list_for_ui()
                 .map_err(CliError::from_string)?
                 .into_iter()
@@ -915,7 +914,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quests": quests }))
         }
         QuestCommand::Get(args) => serde_json::to_value(
-            QuestService::new(&mut conn)
+            QuestRepository::new(&mut conn)
                 .resolved(&args.id)
                 .map_err(CliError::from_string)?,
         )
@@ -955,7 +954,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 order_rank: None,
                 is_checklist,
             };
-            let quest = QuestService::new(&mut conn)
+            let quest = QuestRepository::new(&mut conn)
                 .create(input)
                 .map_err(CliError::from_string)?;
             refresh_cli_reminder(&mut conn, &quest.id);
@@ -966,7 +965,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
         QuestCommand::Complete(args) => update_quest_status(ctx, &mut conn, args.id, "completed"),
         QuestCommand::Abandon(args) => update_quest_status(ctx, &mut conn, args.id, "abandoned"),
         QuestCommand::Delete(args) => {
-            let quest = QuestService::new(&mut conn)
+            let quest = QuestRepository::new(&mut conn)
                 .delete(&args.id)
                 .map_err(CliError::from_string)?;
             let _ = ReminderService::new(&mut conn).delete_for_quest(&quest.id);
@@ -974,7 +973,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "deleted": true, "id": args.id }))
         }
         QuestCommand::History => {
-            let mut quests: Vec<_> = QuestService::new(&mut conn)
+            let mut quests: Vec<_> = QuestRepository::new(&mut conn)
                 .list_for_ui()
                 .map_err(CliError::from_string)?
                 .into_iter()
@@ -988,7 +987,7 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             Ok(json!({ "quests": quests }))
         }
         QuestCommand::ChecklistList(args) => {
-            let quest = QuestService::new(&mut conn)
+            let quest = QuestRepository::new(&mut conn)
                 .resolved(&args.quest_id)
                 .map_err(CliError::from_string)?;
             let items = crate::services::checklist::parse_opt(quest.description.as_deref());
@@ -997,25 +996,25 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             )
         }
         QuestCommand::ChecklistAdd(args) => {
-            let change = QuestService::new(&mut conn)
+            let change = QuestRepository::new(&mut conn)
                 .add_checklist_item(&args.quest_id, &args.text, EditScope::All, Some(ctx.device_id()))
                 .map_err(CliError::from_string)?;
             emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistCheck(args) => {
-            let change = QuestService::new(&mut conn)
+            let change = QuestRepository::new(&mut conn)
                 .toggle_checklist_item(&args.quest_id, &args.item_id, true, None)
                 .map_err(CliError::from_string)?;
             emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistUncheck(args) => {
-            let change = QuestService::new(&mut conn)
+            let change = QuestRepository::new(&mut conn)
                 .toggle_checklist_item(&args.quest_id, &args.item_id, false, None)
                 .map_err(CliError::from_string)?;
             emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistEdit(args) => {
-            let change = QuestService::new(&mut conn)
+            let change = QuestRepository::new(&mut conn)
                 .edit_checklist_item_text(
                     &args.quest_id,
                     &args.item_id,
@@ -1027,19 +1026,19 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistRemove(args) => {
-            let change = QuestService::new(&mut conn)
+            let change = QuestRepository::new(&mut conn)
                 .remove_checklist_item(&args.quest_id, &args.item_id, EditScope::All, Some(ctx.device_id()))
                 .map_err(CliError::from_string)?;
             emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::CompleteThroughToday(args) => {
-            let change = QuestService::new(&mut conn)
+            let change = QuestRepository::new(&mut conn)
                 .complete_through_today(&args.id, Some(ctx.device_id()))
                 .map_err(CliError::from_string)?;
             emit_change_sync(ctx, &mut conn, change)
         }
         QuestCommand::ChecklistActivity(args) => {
-            let activity = QuestService::new(&mut conn)
+            let activity = QuestRepository::new(&mut conn)
                 .get_checklist_activity(&args.quest_id)
                 .map_err(CliError::from_string)?;
             Ok(json!({ "quest_id": args.quest_id, "activity": activity }))
@@ -1048,12 +1047,12 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
             let scope = if args.scope == "future" { EditScope::All } else { EditScope::Day };
             // Text-matching lines keep the ids of the quest's template, so an
             // unchanged item keeps its identity (and its ticks on open days).
-            let template = QuestService::new(&mut conn)
+            let template = QuestRepository::new(&mut conn)
                 .get(&args.quest_id)
                 .map_err(CliError::from_string)?
                 .description;
             let normalized_checklist = normalize_future_template(&args.checklist, template.as_deref());
-            let change = QuestService::new(&mut conn)
+            let change = QuestRepository::new(&mut conn)
                 .set_checklist(&args.quest_id, &normalized_checklist, scope, Some(ctx.device_id()))
                 .map_err(CliError::from_string)?;
             emit_change_sync(ctx, &mut conn, change)
@@ -1159,7 +1158,7 @@ fn update_quest_from_cli(
         due_time,
         repeat_rule,
     };
-    let change = QuestService::new(conn)
+    let change = QuestRepository::new(conn)
         .update_patch_with_origin(&args.id, patch, Some(ctx.device_id()))
         .map_err(CliError::from_string)?;
     if args.trigger_reminder_focus {
@@ -2044,19 +2043,15 @@ mod tests {
         let created = handle_quest(&ctx, command)
             .unwrap_or_else(|err| panic!("create non-repeating quest: {}", err.message));
         assert_eq!(created["repeat_rule"], Value::Null);
-        assert_eq!(created["series_id"], Value::Null);
 
         let mut conn = ctx
             .open_db()
             .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
-        let series_count: i64 = crate::schema::quest_series::table
+        let marks: i64 = crate::schema::quest_occurrences::table
             .count()
             .get_result(&mut conn)
-            .expect("count quest series");
-        assert_eq!(
-            series_count, 0,
-            "--repeat null must not create a quest series"
-        );
+            .expect("count occurrence marks");
+        assert_eq!(marks, 0, "--repeat null makes a one-time quest, with no day rows");
 
         std::env::remove_var("FINI_DB_PATH");
         let _ = std::fs::remove_file(db_path);
@@ -2093,7 +2088,7 @@ mod tests {
         let mut conn = ctx
             .open_db()
             .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
-        let stored_quest = QuestService::new(&mut conn)
+        let stored_quest = QuestRepository::new(&mut conn)
             .get(&quest_id)
             .expect("load created checklist quest");
         let stored_checklist = stored_quest
@@ -2160,17 +2155,11 @@ mod tests {
             .as_str()
             .expect("created quest id")
             .to_string();
-        let series_id = created["series_id"]
-            .as_str()
-            .expect("created series id")
-            .to_string();
 
         let set_template_cli = Cli::try_parse_from([
             "fini",
             "quest",
             "checklist-set-template",
-            "--series-id",
-            &series_id,
             "--quest-id",
             &quest_id,
             "--checklist=- [ ] headphones",
@@ -2188,25 +2177,16 @@ mod tests {
         let mut conn = ctx
             .open_db()
             .unwrap_or_else(|err| panic!("open isolated CLI database: {}", err.message));
-        let stored_quest = QuestService::new(&mut conn)
+        // "future" edits the quest itself, the template of every day (ADR-0012).
+        let stored_quest = QuestRepository::new(&mut conn)
             .get(&quest_id)
-            .expect("load updated occurrence");
-        let stored_series: crate::models::QuestSeries = crate::schema::quest_series::table
-            .find(&series_id)
-            .select(crate::models::QuestSeries::as_select())
-            .first(&mut conn)
-            .expect("load updated series");
+            .expect("load updated quest");
 
-        for stored_checklist in [
-            stored_quest
-                .description
-                .as_deref()
-                .expect("quest checklist md"),
-            stored_series
-                .description
-                .as_deref()
-                .expect("series checklist md"),
-        ] {
+        for stored_checklist in [stored_quest
+            .description
+            .as_deref()
+            .expect("quest checklist md")]
+        {
             let items = crate::services::checklist::parse(stored_checklist);
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].text, "headphones");

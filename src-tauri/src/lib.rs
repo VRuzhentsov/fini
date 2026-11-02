@@ -454,7 +454,7 @@ pub fn run() {
                 SpaceSyncService::new(identity.clone(), db_path.clone(), bus.clone(), network.clone(), bluetooth.clone());
             // ADR-0012 D11: the quests and occurrence marks that a migration
             // wrote have no sync events yet; sync sends only what has one.
-            services::quest::QuestService::new(&mut try_open_db_at_path(&db_path)?)
+            repositories::QuestRepository::new(&mut try_open_db_at_path(&db_path)?)
                 .emit_missing_sync_events(&identity.device_id)?;
             let devices = DeviceService::new(identity, db_path, bus.clone(), network.clone(), bluetooth.clone());
             let handlers = LinkHandlers { peer: devices.clone(), session: space_sync.clone() };
