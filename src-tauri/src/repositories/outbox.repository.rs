@@ -6,18 +6,18 @@
 //!   channel unlinked, a space no longer synced), kept until a session has
 //!   carried them (ADR-0008 D14).
 
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use chrono::Utc;
 use diesel::prelude::*;
 use diesel::SqliteConnection;
 use uuid::Uuid;
 
 use crate::models::{CreateSyncAck, CreateSyncOutboxEntry, CreateSyncSeen, SyncOutboxEntry};
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::models::{Quest, QuestOccurrence};
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::repositories::{quest_repository::QuestChange, QuestRepository};
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 use crate::schema::checklist_activity;
 use crate::schema::{peer_control_outbox, sync_acks, sync_outbox, sync_seen};
 use crate::services::channel_service::{PeerFrame, SyncEventEnvelope};
@@ -291,7 +291,7 @@ impl<'a> OutboxRepository<'a> {
 
 // ── Sync events of quests ────────────────────────────────────────────────────
 
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 impl OutboxRepository<'_> {
     /// Records the stored quest row (never a resolved occurrence view: a
     /// repeating quest syncs as one entity, ADR-0012 D11). A quest that moved

@@ -44,20 +44,22 @@ pub mod update_recovery;
 /// platform branches. It reports that Bluetooth is not supported.
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub mod bluetooth_channel_service {
-    use std::path::{Path, PathBuf};
     use std::sync::Arc;
+
+    use diesel::SqliteConnection;
 
     use crate::models::Identity;
     use crate::services::channel_service::{ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlers};
+    use crate::services::db::DbPool;
     use crate::services::event_bus_service::EventBusService;
 
     pub struct BluetoothChannelService {
-        db_path: PathBuf,
+        pool: DbPool,
     }
 
     impl BluetoothChannelService {
-        pub fn new(_identity: Identity, db_path: PathBuf, _bus: Arc<EventBusService>) -> Arc<Self> {
-            Arc::new(Self { db_path })
+        pub fn new(_identity: Identity, pool: DbPool, _bus: Arc<EventBusService>) -> Arc<Self> {
+            Arc::new(Self { pool })
         }
 
         pub fn has_session(&self, _peer_id: &str) -> bool {
@@ -68,7 +70,7 @@ pub mod bluetooth_channel_service {
             false
         }
 
-        pub fn refresh_advertising(&self) {}
+        pub fn refresh_advertising(&self, _conn: &mut SqliteConnection) {}
 
         pub fn connect_once_after_switch_on(&self, _peer_id: &str) {}
 
@@ -85,8 +87,8 @@ pub mod bluetooth_channel_service {
             ChannelKind::Bluetooth
         }
 
-        fn db_path(&self) -> &Path {
-            &self.db_path
+        fn pool(&self) -> &DbPool {
+            &self.pool
         }
 
         fn set_link_handlers(&self, _handlers: LinkHandlers) {}

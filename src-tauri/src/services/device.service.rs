@@ -811,7 +811,7 @@ impl DeviceService {
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = peer_key;
         self.refresh_network_lookup(conn);
-        self.bluetooth.refresh_advertising();
+        self.bluetooth.refresh_advertising(conn);
         Ok(())
     }
 
@@ -896,8 +896,10 @@ impl DeviceService {
         if enabled {
             channel.forget_failures(peer_device_id);
         }
-        self.with_conn(|conn| self.refresh_network_lookup(conn));
-        self.bluetooth.refresh_advertising();
+        self.with_conn(|conn| {
+            self.refresh_network_lookup(conn);
+            self.bluetooth.refresh_advertising(conn);
+        });
         self.bus.publish(Event::ChannelsChanged { peer_device_id: peer_device_id.to_string() });
         if enabled && kind == ChannelKind::Bluetooth {
             self.bluetooth.connect_once_after_switch_on(peer_device_id);

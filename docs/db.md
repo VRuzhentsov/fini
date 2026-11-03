@@ -98,12 +98,3 @@ considered. PHP runs one request at a time in its process; Fini does not.
 One shared connection needs a lock, and a transaction across repositories
 needs that lock to be re-entrant (`parking_lot::ReentrantMutex`). That was
 rejected: more code of our own, and every read waits for every write.
-
-## Not done yet
-
-- Some commands take a connection and then call a service that takes a
-  second one for the same work (for example `device_channel_statuses`). It
-  works with a pool of ten, but breaks rule 2.
-- The CLI has its own copy of the quest outbox code (`emit_quest_sync`,
-  `emit_change_sync` in `cli.rs`), with no transaction; it moves to
-  `OutboxRepository::record_quest` / `record_change`.

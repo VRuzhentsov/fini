@@ -362,7 +362,7 @@ impl ChannelService for BluetoothChannelService {
     fn set_add_device_mode(&self, on: bool) {
         self.advertiser.set_add_mode(on);
         self.scanner.set_add_device_mode(on);
-        self.refresh_advertising();
+        tokio::task::block_in_place(|| self.refresh_advertising(&mut self.pool.connection()));
     }
 
     /// Linux and Android: the only builds with a Bluetooth channel.
@@ -397,7 +397,7 @@ impl ChannelService for BluetoothChannelService {
         if crate::services::ble_plugin::permission_granted() {
             self.start_peripheral_once();
         }
-        self.refresh_advertising();
+        tokio::task::block_in_place(|| self.refresh_advertising(&mut self.pool.connection()));
         // Hold a session with every paired device that has Bluetooth on
         // (2026-10-13: green is a live connection). `start_exchange` skips
         // a device that has one, or whose delivery search is not due.
@@ -899,12 +899,9 @@ impl BluetoothChannelService {
 
     /// Works out again whether to advertise, from the stored channels and
     /// the setups open now. Cheap; called whenever one of these can change.
-    pub fn refresh_advertising(&self) {
-        let any_channel_on = tokio::task::block_in_place(|| {
-            !ChannelRepository::new(&mut *self.pool.connection())
-                .peers_with_channel_enabled(ChannelKind::Bluetooth)
-                .is_empty()
-        });
+    /// The caller gives its connection (docs/db.md, rule 2).
+    pub fn refresh_advertising(&self, conn: &mut diesel::SqliteConnection) {
+        let any_channel_on = !ChannelRepository::new(conn).peers_with_channel_enabled(ChannelKind::Bluetooth).is_empty();
         let advertiser = &self.advertiser;
         let wanted =
             any_channel_on || advertiser.in_add_mode();

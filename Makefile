@@ -313,8 +313,8 @@ e2e-headed:
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path ble-mock-broker/Cargo.toml; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
+	FINI_E2E_ROOT="$$run_root" FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors; \
+	FINI_E2E_ROOT="$$run_root" FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
 
 # "Fini Debug": a genuinely separate desktop application that lives beside the
 # production "Fini" install instead of replacing it -- the desktop counterpart
@@ -468,12 +468,6 @@ desktop-debug:
 # or torn down -- their real pairing, storage and radio state is the thing
 # under test, which is exactly what a spawned throwaway actor cannot give.
 #
-# Deliberately not headful: an external actor's window belongs to whoever
-# started it, and this harness drives it through the plugin channel rather
-# than the screen, so there is nothing to show. Forcing FINI_E2E_HEADFUL here
-# additionally proved able to lock up the desktop session on this machine's
-# GPU path, which is a bad trade for output nobody reads.
-#
 #   make e2e-devices                          # whole actors suite
 #   make e2e-devices E2E_DEVICES_SPEC="sync"  # -g filter
 #
@@ -545,7 +539,7 @@ e2e-phone:
 	restore_capability; \
 	trap - EXIT INT TERM; \
 	adb forward tcp:$(E2E_PHONE_PORT) tcp:$(E2E_PHONE_PORT) >/dev/null; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_HEADFUL=1 \
+	FINI_E2E_ROOT="$$run_root" \
 	FINI_E2E_ACTORS="actor-a,$(E2E_PHONE_ACTOR)" \
 	FINI_E2E_EXTERNAL_ACTORS="$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
 	FINI_APP_BINARY="$$app_bin_path" TZ=UTC \

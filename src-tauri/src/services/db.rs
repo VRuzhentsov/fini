@@ -66,7 +66,7 @@ impl DbPool {
 /// repositories): it begins `IMMEDIATE` (docs/db.md, rule 5), commits when
 /// the closure returns `Ok`, and rolls back and gives the closure's error
 /// when it returns `Err`.
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 pub trait WriteTransaction {
     fn write_transaction<T>(
         &mut self,
@@ -74,7 +74,7 @@ pub trait WriteTransaction {
     ) -> Result<T, String>;
 }
 
-#[cfg(any(feature = "ui-plane", test))]
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
 impl WriteTransaction for SqliteConnection {
     fn write_transaction<T>(
         &mut self,

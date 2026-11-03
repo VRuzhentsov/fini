@@ -11,7 +11,8 @@ use crate::models::{
 
 use crate::services::backup;
 use crate::services::cli_update::{maybe_auto_update, run_update, UpdateOptions};
-use crate::services::db::{db_default_path, DbConnection, DbPool};
+use crate::services::db::{db_default_path, DbConnection, DbPool, WriteTransaction};
+use crate::repositories::quest_repository::QuestChange;
 use crate::services::device_service::{DevicePairRequestAckInput, DevicePairRequestInput};
 use crate::repositories::OutboxRepository;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
@@ -729,120 +730,25 @@ fn should_run_auto_update() -> bool {
     !cfg!(debug_assertions) && std::env::var_os("FINI_DISABLE_AUTO_UPDATE").is_none()
 }
 
-/// Emits the stored quest row: a repeating quest syncs as one entity, never
-/// as the resolved occurrence a command returns (ADR-0012 D11).
-fn emit_quest_sync(
+/// Writes one change of quest `id` and its outbox rows in one transaction
+/// (docs/db.md, rules 4-6), as the app's `write_change` does, then keeps the
+/// reminder in step. Returns the quest as the command shows it.
+fn write_change(
     ctx: &CliContext,
-    conn: &mut diesel::sqlite::SqliteConnection,
-    quest: &crate::models::Quest,
-    op_type: &str,
-) {
-    let stored = (op_type != "delete")
-        .then(|| crate::repositories::QuestRepository::new(conn).get(&quest.id).ok())
-        .flatten();
-    let quest = stored.as_ref().unwrap_or(quest);
-    let payload = if op_type == "delete" {
-        None
-    } else {
-        serde_json::to_string(quest).ok()
-    };
-    let _ = OutboxRepository::new(conn).emit_sync_event(
-        ctx.device_id(),
-        "quest",
-        &quest.id,
-        &quest.space_id,
-        op_type,
-        payload,
-    );
-
-    if op_type == "upsert" && quest.is_checklist {
-        emit_checklist_activity_sync(ctx, conn, quest);
-    }
-}
-
-fn emit_checklist_activity_sync(
-    ctx: &CliContext,
-    conn: &mut diesel::sqlite::SqliteConnection,
-    quest: &crate::models::Quest,
-) {
-    use diesel::prelude::*;
-
-    let emitted_activity_ids = crate::schema::sync_outbox::table
-        .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
-        .filter(crate::schema::sync_outbox::op_type.eq("upsert"))
-        .filter(crate::schema::sync_outbox::space_id.eq(&quest.space_id))
-        .select(crate::schema::sync_outbox::entity_id)
-        .load::<String>(conn);
-
-    let Ok(emitted_activity_ids) = emitted_activity_ids else {
-        return;
-    };
-
-    let activities = crate::schema::checklist_activity::table
-        .filter(crate::schema::checklist_activity::quest_id.eq(&quest.id))
-        .filter(
-            crate::schema::checklist_activity::origin_device_id
-                .is_null()
-                .or(crate::schema::checklist_activity::origin_device_id
-                    .eq(ctx.device_id())),
-        )
-        .filter(crate::schema::checklist_activity::id.ne_all(emitted_activity_ids))
-        .select(crate::models::ChecklistActivity::as_select())
-        .load::<crate::models::ChecklistActivity>(conn);
-
-    let Ok(activities) = activities else {
-        return;
-    };
-
-    for activity in activities {
-        let payload = serde_json::to_string(&activity).ok();
-        let _ = OutboxRepository::new(conn).emit_sync_event(
-            ctx.device_id(),
-            "checklist_activity",
-            &activity.id,
-            &quest.space_id,
-            "upsert",
-            payload,
-        );
-    }
-}
-
-/// Emits what a quest change wrote: the quest row, and each changed or
-/// removed occurrence mark. Returns the quest as the command shows it.
-fn emit_change_sync(
-    ctx: &CliContext,
-    conn: &mut diesel::sqlite::SqliteConnection,
-    change: crate::repositories::quest_repository::QuestChange,
+    conn: &mut SqliteConnection,
+    id: &str,
+    write: impl FnOnce(&mut SqliteConnection) -> Result<QuestChange, String>,
 ) -> CliResult<Value> {
-    let space_id = crate::repositories::QuestRepository::new(conn)
-        .get(&change.quest.id)
-        .map(|quest| quest.space_id)
-        .unwrap_or_else(|_| change.quest.space_id.clone());
-    if change.quest_row_changed || change.quest.is_checklist {
-        emit_quest_sync(ctx, conn, &change.quest, "upsert");
-    }
-    for occurrence in &change.occurrences {
-        let _ = OutboxRepository::new(conn).emit_sync_event(
-            ctx.device_id(),
-            "quest_occurrence",
-            &occurrence.sync_id(),
-            &space_id,
-            "upsert",
-            serde_json::to_string(occurrence).ok(),
-        );
-    }
-    for period_key in &change.removed_occurrences {
-        let _ = OutboxRepository::new(conn).emit_sync_event(
-            ctx.device_id(),
-            "quest_occurrence",
-            &format!("{}:{period_key}", change.quest.id),
-            &space_id,
-            "delete",
-            None,
-        );
-    }
-    refresh_cli_reminder(conn, &change.quest.id);
-    serde_json::to_value(change.quest).map_err(|e| CliError::runtime(e.to_string()))
+    let quest = conn
+        .write_transaction(|conn| {
+            let previous_space_id = QuestRepository::new(conn).get(id)?.space_id;
+            let change = write(conn)?;
+            OutboxRepository::new(conn).record_change(ctx.device_id(), &previous_space_id, &change)?;
+            Ok(change.quest)
+        })
+        .map_err(CliError::from_string)?;
+    refresh_cli_reminder(conn, &quest.id);
+    serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
 }
 
 /// The reminder rows follow the quest: a one-time quest as it is; a
@@ -952,22 +858,34 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 order_rank: None,
                 is_checklist,
             };
-            let quest = QuestRepository::new(&mut conn)
-                .create(input)
+            let quest = conn
+                .write_transaction(|conn| {
+                    let quest = QuestRepository::new(conn).create(input)?;
+                    OutboxRepository::new(conn).record_quest(ctx.device_id(), &quest.space_id, &quest.id)?;
+                    Ok(quest)
+                })
                 .map_err(CliError::from_string)?;
             refresh_cli_reminder(&mut conn, &quest.id);
-            emit_quest_sync(ctx, &mut conn, &quest, "upsert");
             serde_json::to_value(quest).map_err(|e| CliError::runtime(e.to_string()))
         }
         QuestCommand::Update(args) => update_quest_from_cli(ctx, &mut conn, args),
         QuestCommand::Complete(args) => update_quest_status(ctx, &mut conn, args.id, "completed"),
         QuestCommand::Abandon(args) => update_quest_status(ctx, &mut conn, args.id, "abandoned"),
         QuestCommand::Delete(args) => {
-            let quest = QuestRepository::new(&mut conn)
-                .delete(&args.id)
-                .map_err(CliError::from_string)?;
-            let _ = ReminderService::new(&mut conn).delete_for_quest(&quest.id);
-            emit_quest_sync(ctx, &mut conn, &quest, "delete");
+            conn.write_transaction(|conn| {
+                let quest = QuestRepository::new(conn).get(&args.id)?;
+                OutboxRepository::new(conn).emit_sync_event(
+                    ctx.device_id(),
+                    "quest",
+                    &args.id,
+                    &quest.space_id,
+                    "delete",
+                    None,
+                )?;
+                QuestRepository::new(conn).delete(&args.id).map(|_| ())
+            })
+            .map_err(CliError::from_string)?;
+            let _ = ReminderService::new(&mut conn).delete_for_quest(&args.id);
             Ok(json!({ "deleted": true, "id": args.id }))
         }
         QuestCommand::History => {
@@ -993,48 +911,30 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 json!({ "quest_id": args.quest_id, "is_checklist": quest.is_checklist, "items": items }),
             )
         }
-        QuestCommand::ChecklistAdd(args) => {
-            let change = QuestRepository::new(&mut conn)
-                .add_checklist_item(&args.quest_id, &args.text, EditScope::All, Some(ctx.device_id()))
-                .map_err(CliError::from_string)?;
-            emit_change_sync(ctx, &mut conn, change)
-        }
-        QuestCommand::ChecklistCheck(args) => {
-            let change = QuestRepository::new(&mut conn)
-                .toggle_checklist_item(&args.quest_id, &args.item_id, true, None)
-                .map_err(CliError::from_string)?;
-            emit_change_sync(ctx, &mut conn, change)
-        }
-        QuestCommand::ChecklistUncheck(args) => {
-            let change = QuestRepository::new(&mut conn)
-                .toggle_checklist_item(&args.quest_id, &args.item_id, false, None)
-                .map_err(CliError::from_string)?;
-            emit_change_sync(ctx, &mut conn, change)
-        }
-        QuestCommand::ChecklistEdit(args) => {
-            let change = QuestRepository::new(&mut conn)
-                .edit_checklist_item_text(
-                    &args.quest_id,
-                    &args.item_id,
-                    &args.text,
-                    EditScope::All,
-                    Some(ctx.device_id()),
-                )
-                .map_err(CliError::from_string)?;
-            emit_change_sync(ctx, &mut conn, change)
-        }
-        QuestCommand::ChecklistRemove(args) => {
-            let change = QuestRepository::new(&mut conn)
-                .remove_checklist_item(&args.quest_id, &args.item_id, EditScope::All, Some(ctx.device_id()))
-                .map_err(CliError::from_string)?;
-            emit_change_sync(ctx, &mut conn, change)
-        }
-        QuestCommand::CompleteThroughToday(args) => {
-            let change = QuestRepository::new(&mut conn)
-                .complete_through_today(&args.id, Some(ctx.device_id()))
-                .map_err(CliError::from_string)?;
-            emit_change_sync(ctx, &mut conn, change)
-        }
+        QuestCommand::ChecklistAdd(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
+            QuestRepository::new(conn).add_checklist_item(&args.quest_id, &args.text, EditScope::All, Some(ctx.device_id()))
+        }),
+        QuestCommand::ChecklistCheck(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
+            QuestRepository::new(conn).toggle_checklist_item(&args.quest_id, &args.item_id, true, None)
+        }),
+        QuestCommand::ChecklistUncheck(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
+            QuestRepository::new(conn).toggle_checklist_item(&args.quest_id, &args.item_id, false, None)
+        }),
+        QuestCommand::ChecklistEdit(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
+            QuestRepository::new(conn).edit_checklist_item_text(
+                &args.quest_id,
+                &args.item_id,
+                &args.text,
+                EditScope::All,
+                Some(ctx.device_id()),
+            )
+        }),
+        QuestCommand::ChecklistRemove(args) => write_change(ctx, &mut conn, &args.quest_id, |conn| {
+            QuestRepository::new(conn).remove_checklist_item(&args.quest_id, &args.item_id, EditScope::All, Some(ctx.device_id()))
+        }),
+        QuestCommand::CompleteThroughToday(args) => write_change(ctx, &mut conn, &args.id, |conn| {
+            QuestRepository::new(conn).complete_through_today(&args.id, Some(ctx.device_id()))
+        }),
         QuestCommand::ChecklistActivity(args) => {
             let activity = QuestRepository::new(&mut conn)
                 .get_checklist_activity(&args.quest_id)
@@ -1050,10 +950,9 @@ fn handle_quest(ctx: &CliContext, command: QuestCommand) -> CliResult<Value> {
                 .map_err(CliError::from_string)?
                 .description;
             let normalized_checklist = normalize_future_template(&args.checklist, template.as_deref());
-            let change = QuestRepository::new(&mut conn)
-                .set_checklist(&args.quest_id, &normalized_checklist, scope, Some(ctx.device_id()))
-                .map_err(CliError::from_string)?;
-            emit_change_sync(ctx, &mut conn, change)
+            write_change(ctx, &mut conn, &args.quest_id, |conn| {
+                QuestRepository::new(conn).set_checklist(&args.quest_id, &normalized_checklist, scope, Some(ctx.device_id()))
+            })
         }
     }
 }
@@ -1156,20 +1055,18 @@ fn update_quest_from_cli(
         due_time,
         repeat_rule,
     };
-    let change = QuestRepository::new(conn)
-        .update(&args.id, patch, EditScope::All, None, Some(ctx.device_id()))
-        .map_err(CliError::from_string)?;
-    if args.trigger_reminder_focus {
-        append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")
-            .map_err(CliError::from_string)?;
-    } else if args.set_focus
-        || args.status.as_deref() == Some("active")
-        || change.restore_should_focus
-    {
-        append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")
-            .map_err(CliError::from_string)?;
-    }
-    emit_change_sync(ctx, conn, change)
+    write_change(ctx, conn, &args.id, |conn| {
+        let change = QuestRepository::new(conn).update(&args.id, patch, EditScope::All, None, Some(ctx.device_id()))?;
+        if args.trigger_reminder_focus {
+            append_focus_history(conn, &change.quest.id, &change.quest.space_id, "reminder")?;
+        } else if args.set_focus
+            || args.status.as_deref() == Some("active")
+            || change.restore_should_focus
+        {
+            append_focus_history(conn, &change.quest.id, &change.quest.space_id, "manual")?;
+        }
+        Ok(change)
+    })
 }
 
 fn update_quest_status(
@@ -1425,8 +1322,9 @@ fn to_json<T: serde::Serialize>(value: T) -> CliResult<Value> {
     serde_json::to_value(value).map_err(|e| CliError::runtime(e.to_string()))
 }
 
+/// An arm that does SQL takes its own connection; an arm that calls a
+/// service lets the service take one (docs/db.md, rule 2).
 fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
-    let mut conn = ctx.open_db()?;
     let devices = &ctx.devices;
     let value = match command {
         DeviceCommand::Identity => to_json(devices.identity())?,
@@ -1441,17 +1339,17 @@ fn handle_device(ctx: &CliContext, command: DeviceCommand) -> CliResult<Value> {
             DevicePairedCommand::List => to_json(devices.paired_devices().map_err(CliError::from_string)?)?,
             DevicePairedCommand::Save(args) => to_json(
                 devices
-                    .save_paired_device(&mut conn, &args.peer_device_id, &args.display_name, None, false, None, args.endpoint_id)
+                    .save_paired_device(&mut *ctx.open_db()?, &args.peer_device_id, &args.display_name, None, false, None, args.endpoint_id)
                     .map_err(CliError::from_string)?,
             )?,
             DevicePairedCommand::UpdateLastSeen(args) => {
                 devices
-                    .update_last_seen(&mut conn, &args.peer_device_id, &args.last_seen_at)
+                    .update_last_seen(&mut *ctx.open_db()?, &args.peer_device_id, &args.last_seen_at)
                     .map_err(CliError::from_string)?;
                 json!({ "ok": true })
             }
             DevicePairedCommand::Unpair(args) => {
-                devices.unpair(&mut conn, &args.peer_device_id).map_err(CliError::from_string)?;
+                devices.unpair(&mut *ctx.open_db()?, &args.peer_device_id).map_err(CliError::from_string)?;
                 json!({ "ok": true })
             }
         },
@@ -1504,28 +1402,28 @@ fn handle_device_pair(ctx: &CliContext, command: DevicePairCommand) -> CliResult
     Ok(value)
 }
 
+/// As `handle_device`: `tick` takes its own connections.
 fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
-    let mut conn = ctx.open_db()?;
     let space_sync = &ctx.space_sync;
     let value = match command {
         SyncCommand::Mappings { command } => match command {
             SyncMappingsCommand::List(args) => {
-                to_json(space_sync.list_mappings(&mut conn, &args.peer_device_id).map_err(CliError::from_string)?)?
+                to_json(space_sync.list_mappings(&mut *ctx.open_db()?, &args.peer_device_id).map_err(CliError::from_string)?)?
             }
             SyncMappingsCommand::Update(args) => to_json(
                 space_sync
-                    .update_mappings(&mut conn, &args.peer_device_id, args.mapped_space_id)
+                    .update_mappings(&mut *ctx.open_db()?,&args.peer_device_id, args.mapped_space_id)
                     .map_err(CliError::from_string)?,
             )?,
             SyncMappingsCommand::ApplyRemote(args) => to_json(
                 space_sync
-                    .apply_remote_mappings(&mut conn, &args.peer_device_id, args.mapped_space_id, Vec::new())
+                    .apply_remote_mappings(&mut *ctx.open_db()?,&args.peer_device_id, args.mapped_space_id, Vec::new())
                     .map_err(CliError::from_string)?,
             )?,
             SyncMappingsCommand::ResolveCustom(args) => to_json(
                 space_sync
                     .resolve_custom_space_mapping(
-                        &mut conn,
+                        &mut *ctx.open_db()?,
                         &args.peer_device_id,
                         args.space_id,
                         args.space_name,
@@ -1556,7 +1454,7 @@ fn handle_sync(ctx: &CliContext, command: SyncCommand) -> CliResult<Value> {
             }
         }
         SyncCommand::Status { peer_device_id } => {
-            to_json(space_sync.status(&mut conn, peer_device_id).map_err(CliError::from_string)?)?
+            to_json(space_sync.status(&mut *ctx.open_db()?, peer_device_id).map_err(CliError::from_string)?)?
         }
     };
     Ok(value)
