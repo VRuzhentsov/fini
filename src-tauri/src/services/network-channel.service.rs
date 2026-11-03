@@ -25,7 +25,7 @@ use crate::services::channel_service::{
     LinkHandlers, PeerFrame,
 };
 use crate::services::db::{utc_now, DbPool};
-use crate::services::event_bus_service::EventBusService;
+use crate::services::event_bus_service::EventBus;
 
 /// How long a connect may take before it counts as failed. A peer on the
 /// same network answers in milliseconds; one that went away never does.
@@ -71,7 +71,7 @@ struct HeardDevice {
 pub struct NetworkChannelService {
     identity: Identity,
     pool: DbPool,
-    bus: Arc<EventBusService>,
+    bus: Arc<EventBus>,
     /// The UDP port the endpoint binds; see `endpoint`.
     port: u16,
     /// Bound on first use.
@@ -112,7 +112,7 @@ pub struct NetworkChannelService {
 impl NetworkChannelService {
     /// The channel on `NETWORK_PORT`, or on the port that
     /// `FINI_SPACE_SYNC_WS_PORT` gives.
-    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBusService>) -> Arc<Self> {
+    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
         let port = std::env::var("FINI_SPACE_SYNC_WS_PORT")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -120,7 +120,7 @@ impl NetworkChannelService {
         Arc::new(Self::on_port(identity, pool, bus, port))
     }
 
-    pub fn on_port(identity: Identity, pool: DbPool, bus: Arc<EventBusService>, port: u16) -> Self {
+    pub fn on_port(identity: Identity, pool: DbPool, bus: Arc<EventBus>, port: u16) -> Self {
         Self {
             identity,
             pool,

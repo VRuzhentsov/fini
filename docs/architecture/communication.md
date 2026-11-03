@@ -30,7 +30,7 @@ Paths are from `src-tauri/src/`.
 ```
 app start (composition root)    lib.rs
 ├── Identity                    models/device.rs: id, name, iroh key
-├── EventBusService             services/event-bus.service.rs
+├── EventBus                    services/event-bus.service.rs
 ├── channels                    services/channel.service.rs: the
 │   │                             ChannelService interface, DataLink
 │   ├── NetworkChannelService   services/network-channel.service.rs:

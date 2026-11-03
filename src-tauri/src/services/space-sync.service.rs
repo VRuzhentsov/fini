@@ -31,7 +31,7 @@ use crate::services::channel_service::{
     SyncEventEnvelope,
 };
 use crate::services::db::{utc_now, DbPool};
-use crate::services::event_bus_service::EventBusService;
+use crate::services::event_bus_service::EventBus;
 use crate::services::network_channel_service::NetworkChannelService;
 
 /// QUIC close codes of a session the peer rejected, which the connecting
@@ -205,7 +205,7 @@ struct Sessions {
 pub struct SpaceSyncService {
     identity: Identity,
     pool: DbPool,
-    bus: Arc<EventBusService>,
+    bus: Arc<EventBus>,
     network: Arc<NetworkChannelService>,
     bluetooth: Arc<BluetoothChannelService>,
     /// This object, for the tasks it starts.
@@ -236,7 +236,7 @@ impl SpaceSyncService {
     pub fn new(
         identity: Identity,
         pool: DbPool,
-        bus: Arc<EventBusService>,
+        bus: Arc<EventBus>,
         network: Arc<NetworkChannelService>,
         bluetooth: Arc<BluetoothChannelService>,
     ) -> Arc<Self> {
@@ -3048,7 +3048,7 @@ mod tests {
             .execute(&mut conn)
             .unwrap();
         let identity = DeviceRepository::new(&mut conn).load_or_create_identity(&app_dir).unwrap();
-        let bus = Arc::new(EventBusService::default());
+        let bus = Arc::new(EventBus::default());
         let pool = DbPool::open_for_test(&db_path);
         let network = Arc::new(NetworkChannelService::on_port(identity.clone(), pool.clone(), bus.clone(), 0));
         let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());

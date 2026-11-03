@@ -62,7 +62,7 @@ app start (lib.rs setup) or CLI start (run_cli)
    transaction as the change (transactional outbox). Then a change is never
    saved without its outbox rows, and the reverse.
 7. Tell other parts about a change after the commit, on the event bus
-   (`EventBusService`, ADR-0010 D8). The repository does not call them.
+   (`EventBus`, ADR-0010 D8). The repository does not call them.
    Example: a quest command publishes `Event::QuestChanged`;
    `ReminderService` moves the reminder; `SpaceSyncService` wakes.
 

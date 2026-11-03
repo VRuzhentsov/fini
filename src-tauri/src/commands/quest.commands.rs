@@ -16,10 +16,10 @@ use crate::models::{
 use crate::repositories::quest_repository::{append_focus_history, QuestChange};
 use crate::repositories::{OutboxRepository, QuestRepository, ReminderRepository};
 use crate::services::db::{DbPool, WriteTransaction};
-use crate::services::event_bus_service::EventBusService;
+use crate::services::event_bus_service::EventBus;
 use crate::services::space_sync_service::SpaceSyncService;
 
-type Bus<'a> = State<'a, Arc<EventBusService>>;
+type Bus<'a> = State<'a, Arc<EventBus>>;
 type SpaceSync<'a> = State<'a, Arc<SpaceSyncService>>;
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     let (Some(db), Some(space_sync), Some(bus)) = (
         app.try_state::<DbPool>(),
         app.try_state::<Arc<SpaceSyncService>>(),
-        app.try_state::<Arc<EventBusService>>(),
+        app.try_state::<Arc<EventBus>>(),
     ) else {
         eprintln!("[notification] complete: the app is not started yet");
         return;
@@ -168,7 +168,7 @@ pub fn delete_quest(pool: State<DbPool>, space_sync: SpaceSync, bus: Bus, id: St
 #[cfg(any(feature = "ui-plane", test))]
 fn write_change(
     pool: &DbPool,
-    bus: &EventBusService,
+    bus: &EventBus,
     device_id: &str,
     id: &str,
     write: impl FnOnce(&mut SqliteConnection) -> Result<QuestChange, String>,

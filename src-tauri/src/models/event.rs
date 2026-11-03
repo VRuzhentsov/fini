@@ -1,4 +1,4 @@
-//! What changed in the app (ADR-0010 D8, D12). `EventBusService` carries
+//! What changed in the app (ADR-0010 D8, D12). `EventBus` carries
 //! each one to the services that subscribe and to the UI (D9). An event
 //! tells that one thing changed and carries its new state, so a subscriber
 //! that missed events is correct again after the next one.

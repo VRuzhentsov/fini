@@ -51,14 +51,14 @@ pub mod bluetooth_channel_service {
     use crate::models::Identity;
     use crate::services::channel_service::{ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlers};
     use crate::services::db::DbPool;
-    use crate::services::event_bus_service::EventBusService;
+    use crate::services::event_bus_service::EventBus;
 
     pub struct BluetoothChannelService {
         pool: DbPool,
     }
 
     impl BluetoothChannelService {
-        pub fn new(_identity: Identity, pool: DbPool, _bus: Arc<EventBusService>) -> Arc<Self> {
+        pub fn new(_identity: Identity, pool: DbPool, _bus: Arc<EventBus>) -> Arc<Self> {
             Arc::new(Self { pool })
         }
 

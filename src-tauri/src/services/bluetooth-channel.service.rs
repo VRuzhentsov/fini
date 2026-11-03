@@ -44,7 +44,7 @@ use crate::services::channel_service::{
     ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlerSlot, LinkHandlers,
 };
 use crate::services::db::DbPool;
-use crate::services::event_bus_service::EventBusService;
+use crate::services::event_bus_service::EventBus;
 use crate::services::space_sync_service::rejected_by_peer;
 
 
@@ -63,7 +63,7 @@ use scanner::Purpose;
 pub struct BluetoothChannelService {
     identity: Identity,
     pool: DbPool,
-    bus: Arc<EventBusService>,
+    bus: Arc<EventBus>,
     /// This object, for the tasks it starts.
     me: Weak<BluetoothChannelService>,
     handlers: LinkHandlerSlot,
@@ -90,7 +90,7 @@ pub struct BluetoothChannelService {
 }
 
 impl BluetoothChannelService {
-    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBusService>) -> Arc<Self> {
+    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             scanner: Arc::new(Scanner::new(bus.clone())),
             advertiser: Arc::new(Advertiser::new(&identity)),
@@ -159,13 +159,13 @@ const FAILED_CONNECT_WAIT_TIME: Duration = Duration::from_secs(2);
 /// connection. In memory only, as ADR-0008 decided: a started app tries at
 /// once.
 pub struct DeliverySchedule {
-    bus: Arc<EventBusService>,
+    bus: Arc<EventBus>,
     schedule: std::sync::Mutex<std::collections::HashMap<String, (usize, std::time::Instant)>>,
     rejected_until: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl DeliverySchedule {
-    pub fn new(bus: Arc<EventBusService>) -> Self {
+    pub fn new(bus: Arc<EventBus>) -> Self {
         Self { bus, schedule: Default::default(), rejected_until: Default::default() }
     }
 
@@ -928,7 +928,7 @@ mod tests {
     /// earlier misses left behind.
     #[tokio::test]
     async fn forgetting_delivery_misses_makes_the_next_search_due_now() {
-        let schedule = DeliverySchedule::new(Arc::new(EventBusService::default()));
+        let schedule = DeliverySchedule::new(Arc::new(EventBus::default()));
         let scanner = Scanner::default();
         let peer = "peer-forget-delivery-misses";
         schedule.note_delivery_missed(peer);
@@ -2308,7 +2308,7 @@ use super::{
 };
 use crate::models::Event;
 use crate::services::channel_service::ChannelKind;
-use crate::services::event_bus_service::EventBusService;
+use crate::services::event_bus_service::EventBus;
 
 /// How long a heard advertisement counts as current (`heard_recently`).
 const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -2459,7 +2459,7 @@ pub struct Scanner {
     /// The devices around this one in Add Device mode.
     pub(crate) available: AvailableDevices,
     /// Told when a paired device is heard again.
-    bus: Arc<EventBusService>,
+    bus: Arc<EventBus>,
 }
 
 #[cfg(test)]
@@ -2470,7 +2470,7 @@ impl Default for Scanner {
 }
 
 impl Scanner {
-    pub fn new(bus: Arc<EventBusService>) -> Self {
+    pub fn new(bus: Arc<EventBus>) -> Self {
         Self {
             bus,
             pairing_steps: Arc::new(watch::channel(0).0),

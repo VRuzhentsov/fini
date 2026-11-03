@@ -18,7 +18,7 @@ use crate::repositories::OutboxRepository;
 use crate::services::bluetooth_channel_service::BluetoothChannelService;
 use crate::services::channel_service::{ChannelService, LinkHandlers};
 use crate::services::device_service::DeviceService;
-use crate::services::event_bus_service::EventBusService;
+use crate::services::event_bus_service::EventBus;
 use crate::services::network_channel_service::NetworkChannelService;
 use crate::services::space_sync_service::{SpaceResolutionMode, SpaceSyncService};
 use crate::repositories::QuestRepository;
@@ -640,7 +640,7 @@ impl CliContext {
         let identity = crate::repositories::DeviceRepository::new(&mut *pool.get().map_err(CliError::runtime)?)
             .load_or_create_identity(&app_data_dir)
             .map_err(CliError::runtime)?;
-        let bus = std::sync::Arc::new(EventBusService::default());
+        let bus = std::sync::Arc::new(EventBus::default());
         let network = NetworkChannelService::new(identity.clone(), pool.clone(), bus.clone());
         let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
         let space_sync =

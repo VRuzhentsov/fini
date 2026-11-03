@@ -439,7 +439,7 @@ pub fn run() {
             let data_dir = app_data_dir(&app_handle);
             let identity =
                 repositories::DeviceRepository::new(&mut *pool.get()?).load_or_create_identity(&data_dir)?;
-            let bus = std::sync::Arc::new(services::event_bus_service::EventBusService::default());
+            let bus = std::sync::Arc::new(services::event_bus_service::EventBus::default());
             let network = NetworkChannelService::new(identity.clone(), pool.clone(), bus.clone());
             let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
             let space_sync =
