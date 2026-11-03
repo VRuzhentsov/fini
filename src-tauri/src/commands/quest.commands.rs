@@ -46,7 +46,8 @@ pub fn create_quest(pool: State<DbPool>, space_sync: SpaceSync, bus: Bus, input:
 
 /// Complete a quest from a notification action. Logs errors rather than
 /// returning them: the callers are notification action handlers. For a
-/// repeating quest it closes the occurrence the reminder was for.
+/// repeating quest it closes the oldest open occurrence, as a tap on
+/// Complete does (ADR-0012 D6, D7).
 #[cfg(any(feature = "ui-plane", test))]
 pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     let (Some(db), Some(space_sync), Some(bus)) = (
@@ -68,12 +69,6 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
             return;
         }
     };
-    let period_key = QuestRepository::new(&mut conn)
-        .reminder_occurrence(quest_id)
-        .ok()
-        .flatten()
-        .and_then(|day| day.due);
-
     let patch = QuestUpdatePatch {
         input: UpdateQuestInputBuilder::default().status(OCCURRENCE_COMPLETED).build(),
         description: QuestFieldPatch::Unchanged,
@@ -83,7 +78,7 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     };
     let written = conn.write_transaction(|conn| {
         let change =
-            QuestRepository::new(conn).update(quest_id, patch, EditScope::All, period_key.as_deref(), Some(&device_id))?;
+            QuestRepository::new(conn).update(quest_id, patch, EditScope::All, None, Some(&device_id))?;
         OutboxRepository::new(conn).record_change(&device_id, &quest.space_id, &change)?;
         Ok(change.quest)
     });
