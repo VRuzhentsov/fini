@@ -324,9 +324,12 @@ the quest's value.
 
 ### Reminder
 
-A stored record that says when Fini reminds a person about a quest: the
-quest, the kind, the offset and the moment (table `reminders`). It is data;
-it does nothing by itself.
+A stored record that says when Fini reminds a person about a quest (table
+`reminders`). A relative reminder keeps an offset: it fires at the quest's
+due + due_time minus the offset, and that moment is computed when it is read
+(for a repeating quest, from its next open day). An absolute reminder keeps
+a moment of its own. A quest's due date makes a relative reminder at the due
+time (offset 0). It is data; it does nothing by itself.
 
 *Elsewhere:* an alarm in a calendar event (iCalendar `VALARM`); a reminder in
 Todoist.

@@ -29,16 +29,12 @@ pub fn run(app: &AppHandle, db: &DbPool) {
     };
 
     for (reminder, quest, space) in &past_due {
-        let already_recorded = focus_history_exists(&mut conn, &quest.id, &reminder);
+        let already_recorded = focus_history_exists(&mut conn, quest, reminder);
         if already_recorded {
             continue;
         }
 
-        let fire_time = reminder
-            .due_at_utc
-            .as_deref()
-            .and_then(|s| s.parse::<DateTime<Utc>>().ok())
-            .unwrap_or(now);
+        let fire_time = reminder.moment(quest).unwrap_or(now);
 
         let fire_time_str = fire_time.format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let input = CreateFocusHistoryInput {
@@ -89,18 +85,17 @@ fn past_due_reminders(
     conn: &mut SqliteConnection,
     now: &DateTime<Utc>,
 ) -> Result<Vec<(Reminder, Quest, Space)>, String> {
-    let now_str = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-
+    // The moment is computed (`Reminder::moment`), so the filter runs here,
+    // not in SQL.
     let rows: Vec<(Reminder, Quest)> = reminders::table
         .inner_join(quests::table.on(reminders::quest_id.eq(quests::id)))
-        .filter(reminders::due_at_utc.le(&now_str))
         .filter(quests::status.eq("active"))
         .select((Reminder::as_select(), Quest::as_select()))
         .load(conn)
         .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for (reminder, quest) in rows {
+    for (reminder, quest) in rows.into_iter().filter(|(reminder, quest)| reminder.moment(quest).is_some_and(|at| at <= *now)) {
         let space: Space = spaces::table
             .find(&quest.space_id)
             .select(Space::as_select())
@@ -111,15 +106,16 @@ fn past_due_reminders(
     Ok(result)
 }
 
-fn focus_history_exists(conn: &mut SqliteConnection, quest_id: &str, reminder: &Reminder) -> bool {
-    let Some(due_str) = reminder.due_at_utc.as_deref() else {
+fn focus_history_exists(conn: &mut SqliteConnection, quest: &Quest, reminder: &Reminder) -> bool {
+    let Some(due_at) = reminder.moment(quest) else {
         return false;
     };
+    let due_str = due_at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     use diesel::dsl::count;
     focus_history::table
-        .filter(focus_history::quest_id.eq(quest_id))
+        .filter(focus_history::quest_id.eq(&quest.id))
         .filter(focus_history::trigger.eq("reminder"))
-        .filter(focus_history::created_at.eq(due_str))
+        .filter(focus_history::created_at.eq(&due_str))
         .select(count(focus_history::id))
         .first::<i64>(conn)
         .map(|c| c > 0)

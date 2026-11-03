@@ -11,7 +11,6 @@ use crate::repositories::ReminderRepository;
 use crate::services::db::DbPool;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::notification;
-#[cfg(any(feature = "ui-plane", test))]
 use crate::repositories::QuestRepository;
 
 /// Owns reminder reconciliation after quest persistence succeeds.
@@ -35,14 +34,7 @@ impl<'a> ReminderService<'a> {
     }
 
     pub fn upsert_for_quest(&mut self, quest: &Quest) -> Result<Reminder, String> {
-        let due_at_utc = quest
-            .due
-            .as_deref()
-            .and_then(|due| {
-                crate::services::due_time::compute_fire_utc(due, quest.due_time.as_deref())
-            })
-            .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string());
-        self.repository.upsert_for_quest(&quest.id, due_at_utc)
+        self.repository.upsert_for_quest(&quest.id)
     }
 
     pub fn delete_for_quest(&mut self, quest_id: &str) -> Result<(), String> {
@@ -54,12 +46,42 @@ impl<'a> ReminderService<'a> {
         self.repository.get(id)
     }
 
+    /// The reminders of a quest as the CLI and the UI read them: each with
+    /// its moment in `due_at_utc`, also when the moment is computed.
     pub fn list_for_quest(&mut self, quest_id: &str) -> Result<Vec<Reminder>, String> {
-        self.repository.list_for_quest(quest_id)
+        let reminders = self.repository.list_for_quest(quest_id)?;
+        let shown = self.shown_quest(quest_id)?;
+        Ok(reminders
+            .into_iter()
+            .map(|reminder| match &shown {
+                Some(quest) => reminder.with_moment(quest),
+                None => reminder,
+            })
+            .collect())
     }
 
     pub fn create(&mut self, input: CreateReminderInput) -> Result<Reminder, String> {
-        self.repository.create(input)
+        let reminder = self.repository.create(input)?;
+        self.readable(reminder)
+    }
+
+    /// The quest that a reminder's moment is computed from: the quest, or
+    /// for a repeating quest its next open day (ADR-0012 D9). `None` for a
+    /// repeating quest with no open day left.
+    fn shown_quest(&mut self, quest_id: &str) -> Result<Option<Quest>, String> {
+        let mut quests = QuestRepository::new(self.repository.conn);
+        if quests.is_repeating(quest_id)? {
+            return quests.reminder_occurrence(quest_id);
+        }
+        quests.get(quest_id).map(Some)
+    }
+
+    /// One reminder as the readers get it (see `list_for_quest`).
+    fn readable(&mut self, reminder: Reminder) -> Result<Reminder, String> {
+        Ok(match self.shown_quest(&reminder.quest_id)? {
+            Some(quest) => reminder.with_moment(&quest),
+            None => reminder,
+        })
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -148,12 +170,12 @@ impl<'a> ReminderService<'a> {
         space: &Space,
     ) -> Result<Reminder, String> {
         let reminder = self.repository.create(input)?;
-        if reminder.due_at_utc.is_none() {
-            return Ok(reminder);
+        if reminder.moment(quest).is_none() {
+            return self.readable(reminder);
         }
         let notification_id = notification::schedule_reminder(app, &reminder, quest, space);
-        self.repository
-            .set_scheduled_notification_id(&reminder.id, notification_id.as_deref())
+        let reminder = self.repository.set_scheduled_notification_id(&reminder.id, notification_id.as_deref())?;
+        self.readable(reminder)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -180,11 +202,10 @@ impl<'a> ReminderService<'a> {
         self.cancel_scheduled(app, &existing);
         let updated = self.update(id, input)?;
         let notification_id = updated
-            .due_at_utc
-            .as_ref()
+            .moment(quest)
             .and_then(|_| notification::schedule_reminder(app, &updated, quest, space));
-        self.repository
-            .set_scheduled_notification_id(&updated.id, notification_id.as_deref())
+        let updated = self.repository.set_scheduled_notification_id(&updated.id, notification_id.as_deref())?;
+        self.readable(updated)
     }
 
     #[cfg(any(feature = "ui-plane", test))]

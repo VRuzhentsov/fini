@@ -28,15 +28,6 @@ pub const FOREGROUND_FIRE_EVENT: &str = "notification://foreground-fire";
 // Tauri event emitted when the user taps a reminder notification.
 pub const TAP_EVENT: &str = "notification://tap";
 
-/// Compute the UTC fire time from quest due fields using the local wall-clock timezone.
-/// If `due_time` is None, defaults to 09:00 local.
-pub fn compute_fire_utc(
-    due: &str,
-    due_time: Option<&str>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    crate::services::due_time::compute_fire_utc(due, due_time)
-}
-
 /// In-process timer handles keyed by reminder ID (desktop only).
 pub struct SchedulerState(pub Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>);
 
@@ -158,7 +149,7 @@ pub fn schedule_reminder(
 ) -> Option<String> {
     #[cfg(mobile)]
     {
-        let due_utc = compute_fire_utc(quest.due.as_deref()?, quest.due_time.as_deref())?;
+        let due_utc = reminder.moment(quest)?;
         let due_ts = due_utc.timestamp();
         let due = time::OffsetDateTime::from_unix_timestamp(due_ts).ok()?;
 
@@ -209,7 +200,7 @@ pub fn schedule_reminder(
     }
     #[cfg(not(mobile))]
     {
-        let due_utc = compute_fire_utc(quest.due.as_deref()?, quest.due_time.as_deref())?;
+        let due_utc = reminder.moment(quest)?;
         let now = chrono::Utc::now();
         let delay_ms = (due_utc - now).num_milliseconds();
         if delay_ms <= 0 {
