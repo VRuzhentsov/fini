@@ -1703,6 +1703,22 @@ fn emit_checklist_convergence_event(
     Ok(())
 }
 
+/// Sends a merged day mark back out, so that the peer that sent the other
+/// side of the merge gets the same checklist.
+fn emit_occurrence_convergence_event(
+    conn: &mut SqliteConnection,
+    remote_origin_device_id: &str,
+    space_id: &str,
+    mark: &QuestOccurrence,
+) -> Result<(), String> {
+    match local_device_id(conn) {
+        Some(own_device_id) if own_device_id != remote_origin_device_id => {
+            OutboxRepository::new(conn).record_occurrence(&own_device_id, space_id, mark)
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Merges an incoming checklist quest's `description` (task-list text) against local state
 /// and persists the result, regardless of whether the incoming event wins the whole-entity LWW
 /// comparison for the quest's other fields. Issue #128 explicitly forbids whole-quest LWW for
@@ -1755,8 +1771,28 @@ pub(super) fn apply_sync_event(
             } else {
                 false
             };
+            // A day mark of a checklist quest gets the same per-item merge
+            // (ADR-0012 D5), also before the win/lose gate.
+            let checklist_occurrence = if event.entity_type == "quest_occurrence" {
+                let occurrence: QuestOccurrence = serde_json::from_str(payload).map_err(|e| e.to_string())?;
+                QuestRepository::new(conn)
+                    .external_quest_is_checklist(&occurrence.quest_id)?
+                    .then_some(occurrence)
+            } else {
+                None
+            };
 
-            if local_is_checklist {
+            if let Some(occurrence) = checklist_occurrence {
+                let converged =
+                    QuestRepository::new(conn).sync_merge_occurrence_checklist(&occurrence, whole_entity_wins)?;
+                if let Some(mark) = converged {
+                    emit_occurrence_convergence_event(conn, &event.origin_device_id, &event.space_id, &mark)?;
+                }
+                if !whole_entity_wins {
+                    OutboxRepository::new(conn).mark_event_seen(&event.event_id)?;
+                    return Ok(false);
+                }
+            } else if local_is_checklist {
                 let mut quest: Quest = serde_json::from_str(payload).map_err(|e| e.to_string())?;
                 let (merged_description, should_emit_convergence) =
                     merge_and_persist_quest_checklist(
@@ -2574,6 +2610,67 @@ mod tests {
             items.iter().find(|it| it.id == "a2").unwrap().checked,
             "remote's independent pack of item a2 must still merge in, despite losing whole-entity LWW"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// ADR-0012 D5: two devices tick different items of the same day of a
+    /// repeating checklist quest. The device whose own event is newer keeps
+    /// both ticks and sends the merged day back, so both devices agree.
+    #[test]
+    fn apply_sync_event_merges_occurrence_checklist_when_its_event_loses() {
+        let db_path = temp_db_path("occurrence-checklist-merge-lose");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local").unwrap();
+
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+            crate::services::checklist::ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: false },
+        ]);
+        let mut quest = test_quest("q1", "Go to office", "2026-03-01T00:00:00Z");
+        quest.is_checklist = true;
+        quest.description = Some(base_checklist.clone());
+        quest.repeat_rule = Some(r#"{"preset":"daily"}"#.to_string());
+        quest.due = Some("2026-03-01".to_string());
+        insert_local_quest_row(&mut conn, &quest);
+
+        let mut local_mark = QuestOccurrence::new("q1", "2026-03-02", "2026-03-02T09:00:00Z");
+        local_mark.description = Some(crate::services::checklist::set_checked(&base_checklist, "a1", true));
+        local_mark.checklist_base = Some(base_checklist.clone());
+        local_mark.updated_at = "2026-03-02T09:05:00Z".to_string();
+        QuestRepository::new(&mut conn).save_occurrence(&local_mark).unwrap();
+        insert_outbox_entry(&mut conn, "dev-local", "quest_occurrence", &local_mark.sync_id(), "2026-03-02T09:05:00Z", None);
+
+        let mut remote_mark = QuestOccurrence::new("q1", "2026-03-02", "2026-03-02T09:00:00Z");
+        remote_mark.description = Some(crate::services::checklist::set_checked(&base_checklist, "a2", true));
+        remote_mark.updated_at = "2026-03-02T09:01:00Z".to_string();
+        let event = test_envelope(
+            "evt-remote-mark",
+            "dev-remote",
+            "quest_occurrence",
+            &remote_mark.sync_id(),
+            "upsert",
+            Some(serde_json::to_string(&remote_mark).unwrap()),
+            "2026-03-02T09:01:00Z",
+        );
+
+        assert!(!apply_sync_event(&mut conn, &event).unwrap(), "the older event loses");
+
+        let after = QuestRepository::new(&mut conn).find_occurrence("q1", "2026-03-02").unwrap().unwrap();
+        let items = crate::services::checklist::parse(after.description.as_deref().unwrap());
+        assert!(items.iter().all(|item| item.checked), "both ticks are kept: {items:?}");
+
+        let sent: Vec<Option<String>> = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest_occurrence"))
+            .filter(sync_outbox::origin_device_id.eq("dev-local"))
+            .filter(sync_outbox::payload.is_not_null())
+            .select(sync_outbox::payload)
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(sent.len(), 1, "the merged day goes back to the peer");
+        let sent: QuestOccurrence = serde_json::from_str(sent[0].as_deref().unwrap()).unwrap();
+        assert_eq!(sent.description, after.description);
 
         let _ = std::fs::remove_file(db_path);
     }

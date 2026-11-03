@@ -937,6 +937,37 @@ impl<'a> QuestRepository<'a> {
         Ok(())
     }
 
+    /// Applies a synced day mark of a checklist quest (ADR-0012 D5). The
+    /// day's checklist is merged item by item (#128) whichever event wins;
+    /// the other fields follow the winner. Returns the saved mark when the
+    /// merge changed what the peer sent, so that the peer gets it back.
+    pub fn sync_merge_occurrence_checklist(
+        &mut self,
+        incoming: &QuestOccurrence,
+        incoming_wins: bool,
+    ) -> Result<Option<QuestOccurrence>, String> {
+        let Some(local) = self.find_occurrence(&incoming.quest_id, &incoming.period_key)? else {
+            let mut mark = incoming.clone();
+            mark.checklist_base = mark.description.clone();
+            self.save_occurrence(&mark)?;
+            return Ok(None);
+        };
+        let merged = match (&local.description, &incoming.description) {
+            (Some(local_description), Some(incoming_description)) => {
+                let (merged, _) = checklist::merge_3way(local.checklist_base.as_deref(), local_description, incoming_description);
+                Some(merged).filter(|merged| !merged.is_empty())
+            }
+            _ if incoming_wins => incoming.description.clone(),
+            _ => local.description.clone(),
+        };
+        let incoming_matches_merged = merged == incoming.description;
+        let mut mark = if incoming_wins { incoming.clone() } else { local.clone() };
+        mark.checklist_base = if incoming_matches_merged { merged.clone() } else { local.checklist_base.clone() };
+        mark.description = merged;
+        let saved = self.save_occurrence(&mark)?;
+        Ok((!incoming_matches_merged).then_some(saved))
+    }
+
     pub fn sync_merge_quest_checklist(
         &mut self,
         id: &str,
