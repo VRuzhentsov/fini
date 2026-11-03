@@ -45,14 +45,15 @@ app start (lib.rs setup) or CLI start (run_cli)
    connection:
 
    ```rust
-   conn.immediate_transaction(|conn| {
-       QuestRepository::new(conn).update(&id, patch)?;
-       OutboxRepository::new(conn).record_change(&device_id, &change)
+   conn.write_transaction(|conn| {
+       let change = QuestRepository::new(conn).update(&id, patch, scope, period_key, Some(&device_id))?;
+       OutboxRepository::new(conn).record_change(&device_id, &previous_space_id, &change)
    })
    ```
 
-5. A transaction that writes begins with `immediate_transaction`, not
-   `transaction`. A deferred transaction that reads first and writes later
+5. A transaction that writes begins with `IMMEDIATE`, not as a plain
+   `transaction`. `WriteTransaction::write_transaction` (`db.rs`) does this
+   for code with `String` errors, and gives the closure's error back. A deferred transaction that reads first and writes later
    fails at once when another connection wrote in between (SQLite
    `SQLITE_BUSY_SNAPSHOT`); `busy_timeout` does not help it. An immediate
    transaction takes the write lock at its start, so another writer waits
@@ -103,5 +104,6 @@ rejected: more code of our own, and every read waits for every write.
 - Some commands take a connection and then call a service that takes a
   second one for the same work (for example `device_channel_statuses`). It
   works with a pool of ten, but breaks rule 2.
-- Quest writes and their outbox rows are two steps in the command; they
-  become one transaction.
+- The CLI has its own copy of the quest outbox code (`emit_quest_sync`,
+  `emit_change_sync` in `cli.rs`), with no transaction; it moves to
+  `OutboxRepository::record_quest` / `record_change`.

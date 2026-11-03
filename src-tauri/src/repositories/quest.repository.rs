@@ -10,8 +10,6 @@ use crate::models::{
     OCCURRENCE_COMPLETED,
 };
 #[cfg(any(feature = "ui-plane", test))]
-use crate::repositories::outbox_repository::{emit_occurrence_sync_event, emit_quest_sync_events};
-#[cfg(any(feature = "ui-plane", test))]
 use crate::repositories::OutboxRepository;
 use crate::schema::{checklist_activity, focus_history, quest_occurrences, quests, spaces};
 use crate::services::checklist;
@@ -924,16 +922,16 @@ impl<'a> QuestRepository<'a> {
         let marks = self.all_occurrences()?;
         let space_by_quest: HashMap<&str, &str> =
             quests.iter().map(|quest| (quest.id.as_str(), quest.space_id.as_str())).collect();
-        let conn = &mut *self.conn;
+        let mut outbox = OutboxRepository::new(self.conn);
         for quest in quests.iter().filter(|quest| RepeatRule::parse(quest.repeat_rule.as_deref()).is_some()) {
-            if OutboxRepository::new(conn).load_latest_event_for_entity("quest", &quest.id)?.is_none() {
-                emit_quest_sync_events(conn, device_id, &quest.space_id, &quest.id)?;
+            if outbox.load_latest_event_for_entity("quest", &quest.id)?.is_none() {
+                outbox.record_quest(device_id, &quest.space_id, &quest.id)?;
             }
         }
         for mark in &marks {
             let Some(space_id) = space_by_quest.get(mark.quest_id.as_str()) else { continue };
-            if OutboxRepository::new(conn).load_latest_event_for_entity("quest_occurrence", &mark.sync_id())?.is_none() {
-                emit_occurrence_sync_event(conn, device_id, space_id, mark)?;
+            if outbox.load_latest_event_for_entity("quest_occurrence", &mark.sync_id())?.is_none() {
+                outbox.record_occurrence(device_id, space_id, mark)?;
             }
         }
         Ok(())

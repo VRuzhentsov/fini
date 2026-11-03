@@ -10,10 +10,9 @@ use crate::models::{
     CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestUpdatePatch, UpdateQuestCommandInput,
     UpdateQuestInputBuilder, OCCURRENCE_COMPLETED,
 };
-use crate::repositories::outbox_repository::{emit_change_sync_events, emit_quest_sync_events};
 use crate::repositories::quest_repository::{append_focus_history, QuestChange};
 use crate::repositories::{OutboxRepository, QuestRepository};
-use crate::services::db::DbPool;
+use crate::services::db::{DbPool, WriteTransaction};
 use crate::services::reminder;
 use crate::services::space_sync_service::SpaceSyncService;
 
@@ -58,8 +57,12 @@ pub fn create_quest(
     input: CreateQuestInput,
 ) -> Result<Quest, String> {
     let mut conn = state.get()?;
-    let quest = QuestRepository::new(&mut conn).create(input)?;
-    emit_quest_sync_events(&mut conn, &space_sync.identity().device_id, &quest.space_id, &quest.id)?;
+    let device_id = &space_sync.identity().device_id;
+    let quest = conn.write_transaction(|conn| {
+        let quest = QuestRepository::new(conn).create(input)?;
+        OutboxRepository::new(conn).record_quest(device_id, &quest.space_id, &quest.id)?;
+        Ok(quest)
+    })?;
     refresh_reminder(&mut conn, &app, &quest.id);
     space_sync.wake();
     Ok(quest)
@@ -108,18 +111,14 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
         due_time: QuestFieldPatch::Unchanged,
         repeat_rule: QuestFieldPatch::Unchanged,
     };
-    match QuestRepository::new(&mut conn).update(
-        quest_id,
-        patch,
-        EditScope::All,
-        period_key.as_deref(),
-        Some(&device_id),
-    ) {
-        Ok(change) => {
+    let written = conn.write_transaction(|conn| {
+        let change =
+            QuestRepository::new(conn).update(quest_id, patch, EditScope::All, period_key.as_deref(), Some(&device_id))?;
+        OutboxRepository::new(conn).record_change(&device_id, &quest.space_id, &change)
+    });
+    match written {
+        Ok(()) => {
             refresh_reminder(&mut conn, app, quest_id);
-            if let Err(e) = emit_change_sync_events(&mut conn, &device_id, &quest.space_id, &change) {
-                eprintln!("[notification] complete: sync emit failed: {e}");
-            }
             space_sync.wake();
         }
         Err(e) => eprintln!("[notification] complete: update failed for {quest_id}: {e}"),
@@ -157,21 +156,17 @@ pub fn update_quest(
     let scope = EditScope::parse(input.scope.as_deref())?;
     let period_key = input.period_key.clone();
 
-    let change = QuestRepository::new(&mut conn).update(
-        &id,
-        input.into_patch(),
-        scope,
-        period_key.as_deref(),
-        Some(&device_id),
-    )?;
-    let quest = change.quest.clone();
-
-    if change.restore_should_focus {
-        append_focus_history(&mut conn, &quest.id, &quest.space_id, "restore")?;
-    }
+    let quest = conn.write_transaction(|conn| {
+        let change =
+            QuestRepository::new(conn).update(&id, input.into_patch(), scope, period_key.as_deref(), Some(&device_id))?;
+        if change.restore_should_focus {
+            append_focus_history(conn, &change.quest.id, &change.quest.space_id, "restore")?;
+        }
+        OutboxRepository::new(conn).record_change(&device_id, &previous_space_id, &change)?;
+        Ok(change.quest)
+    })?;
 
     refresh_reminder(&mut conn, &app, &id);
-    emit_change_sync_events(&mut conn, &device_id, &previous_space_id, &change)?;
     space_sync.wake();
 
     Ok(quest)
@@ -188,12 +183,15 @@ pub fn complete_quest_through_today(
 ) -> Result<Quest, String> {
     let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
-    let space_id = QuestRepository::new(&mut conn).get(&id)?.space_id;
-    let change = QuestRepository::new(&mut conn).complete_through_today(&id, Some(&device_id))?;
+    let quest = conn.write_transaction(|conn| {
+        let space_id = QuestRepository::new(conn).get(&id)?.space_id;
+        let change = QuestRepository::new(conn).complete_through_today(&id, Some(&device_id))?;
+        OutboxRepository::new(conn).record_change(&device_id, &space_id, &change)?;
+        Ok(change.quest)
+    })?;
     refresh_reminder(&mut conn, &app, &id);
-    emit_change_sync_events(&mut conn, &device_id, &space_id, &change)?;
     space_sync.wake();
-    Ok(change.quest)
+    Ok(quest)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -213,34 +211,40 @@ pub fn delete_quest(
         eprintln!("[bridge] delete_reminder on quest delete failed for {id}: {e}");
     }
 
-    OutboxRepository::new(&mut conn).emit_sync_event(
-        &space_sync.identity().device_id,
-        "quest",
-        &id,
-        &quest.space_id,
-        "delete",
-        None,
-    )?;
-
-    QuestRepository::new(&mut conn).delete(&id)?;
+    conn.write_transaction(|conn| {
+        OutboxRepository::new(conn).emit_sync_event(
+            &space_sync.identity().device_id,
+            "quest",
+            &id,
+            &quest.space_id,
+            "delete",
+            None,
+        )?;
+        QuestRepository::new(conn).delete(&id).map(|_| ())
+    })?;
     space_sync.wake();
     Ok(())
 }
 
 // ── Checklist commands (issue #128) ─────────────────────────────────────────
 
-/// Syncs and returns a checklist change.
+/// Writes a checklist change and its outbox rows in one transaction, wakes
+/// sync, and returns the quest.
 #[cfg(any(feature = "ui-plane", test))]
 fn finish_checklist_command(
     conn: &mut SqliteConnection,
     space_sync: &SpaceSyncService,
-    change: QuestChange,
+    write: impl FnOnce(&mut SqliteConnection) -> Result<QuestChange, String>,
 ) -> Result<Quest, String> {
     let device_id = space_sync.identity().device_id.clone();
-    let space_id = QuestRepository::new(conn).get(&change.quest.id)?.space_id;
-    emit_change_sync_events(conn, &device_id, &space_id, &change)?;
+    let quest = conn.write_transaction(|conn| {
+        let change = write(conn)?;
+        let space_id = QuestRepository::new(conn).get(&change.quest.id)?.space_id;
+        OutboxRepository::new(conn).record_change(&device_id, &space_id, &change)?;
+        Ok(change.quest)
+    })?;
     space_sync.wake();
-    Ok(change.quest)
+    Ok(quest)
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -254,13 +258,10 @@ pub fn add_checklist_item(
 ) -> Result<Quest, String> {
     let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
-    let change = QuestRepository::new(&mut conn).add_checklist_item(
-        &quest_id,
-        &text,
-        EditScope::parse(scope.as_deref())?,
-        Some(&device_id),
-    )?;
-    finish_checklist_command(&mut conn, &space_sync, change)
+    let scope = EditScope::parse(scope.as_deref())?;
+    finish_checklist_command(&mut conn, &space_sync, |conn| {
+        QuestRepository::new(conn).add_checklist_item(&quest_id, &text, scope, Some(&device_id))
+    })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -274,8 +275,9 @@ pub fn toggle_checklist_item(
     period_key: Option<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.get()?;
-    let change = QuestRepository::new(&mut conn).toggle_checklist_item(&quest_id, &item_id, checked, period_key.as_deref())?;
-    finish_checklist_command(&mut conn, &space_sync, change)
+    finish_checklist_command(&mut conn, &space_sync, |conn| {
+        QuestRepository::new(conn).toggle_checklist_item(&quest_id, &item_id, checked, period_key.as_deref())
+    })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -290,14 +292,10 @@ pub fn edit_checklist_item(
 ) -> Result<Quest, String> {
     let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
-    let change = QuestRepository::new(&mut conn).edit_checklist_item_text(
-        &quest_id,
-        &item_id,
-        &text,
-        EditScope::parse(scope.as_deref())?,
-        Some(&device_id),
-    )?;
-    finish_checklist_command(&mut conn, &space_sync, change)
+    let scope = EditScope::parse(scope.as_deref())?;
+    finish_checklist_command(&mut conn, &space_sync, |conn| {
+        QuestRepository::new(conn).edit_checklist_item_text(&quest_id, &item_id, &text, scope, Some(&device_id))
+    })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -311,13 +309,10 @@ pub fn remove_checklist_item(
 ) -> Result<Quest, String> {
     let mut conn = state.get()?;
     let device_id = space_sync.identity().device_id.clone();
-    let change = QuestRepository::new(&mut conn).remove_checklist_item(
-        &quest_id,
-        &item_id,
-        EditScope::parse(scope.as_deref())?,
-        Some(&device_id),
-    )?;
-    finish_checklist_command(&mut conn, &space_sync, change)
+    let scope = EditScope::parse(scope.as_deref())?;
+    finish_checklist_command(&mut conn, &space_sync, |conn| {
+        QuestRepository::new(conn).remove_checklist_item(&quest_id, &item_id, scope, Some(&device_id))
+    })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -330,12 +325,10 @@ pub fn reorder_checklist(
     scope: Option<String>,
 ) -> Result<Quest, String> {
     let mut conn = state.get()?;
-    let change = QuestRepository::new(&mut conn).reorder_checklist(
-        &quest_id,
-        &ordered_item_ids,
-        EditScope::parse(scope.as_deref())?,
-    )?;
-    finish_checklist_command(&mut conn, &space_sync, change)
+    let scope = EditScope::parse(scope.as_deref())?;
+    finish_checklist_command(&mut conn, &space_sync, |conn| {
+        QuestRepository::new(conn).reorder_checklist(&quest_id, &ordered_item_ids, scope)
+    })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
@@ -1231,7 +1224,7 @@ mod tests {
 
         let (updated, _, _) =
             update_quest_in_db(&mut conn, &id, space_patch("2")).expect("move quest to space 2");
-        emit_quest_sync_events(&mut conn, "device-local", "1", &updated.id)
+        OutboxRepository::new(&mut conn).record_quest("device-local", "1", &updated.id)
             .expect("emit sync events for space move");
 
         let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
@@ -1291,7 +1284,7 @@ mod tests {
         )
         .expect("log checklist activity");
 
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest.id)
+        OutboxRepository::new(&mut conn).record_quest("device-local", &quest.space_id, &quest.id)
             .expect("emit quest sync with checklist activity");
 
         let rows: Vec<(String, String, String, Option<String>)> = sync_outbox::table
@@ -1349,14 +1342,14 @@ mod tests {
         )
         .expect("log checklist activity");
 
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest.id)
+        OutboxRepository::new(&mut conn).record_quest("device-local", &quest.space_id, &quest.id)
             .expect("emit initial quest sync with checklist activity");
 
         let toggled = QuestRepository::new(&mut conn)
             .toggle_checklist_item(&quest.id, "a1", true, None)
             .expect("toggle checklist item")
             .quest;
-        emit_quest_sync_events(&mut conn, "device-local", &toggled.space_id, &toggled.id)
+        OutboxRepository::new(&mut conn).record_quest("device-local", &toggled.space_id, &toggled.id)
             .expect("emit toggle quest sync without duplicate activity");
 
         let rows: Vec<(String, String)> = sync_outbox::table
@@ -1409,12 +1402,12 @@ mod tests {
         )
         .expect("log checklist activity");
 
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &quest.id)
+        OutboxRepository::new(&mut conn).record_quest("device-local", &quest.space_id, &quest.id)
             .expect("emit initial quest sync with checklist activity");
 
         let (moved, _, _) = update_quest_in_db(&mut conn, &quest.id, space_patch("2"))
             .expect("move checklist to space 2");
-        emit_quest_sync_events(&mut conn, "device-local", &quest.space_id, &moved.id)
+        OutboxRepository::new(&mut conn).record_quest("device-local", &quest.space_id, &moved.id)
             .expect("emit move sync with checklist activity in destination space");
 
         let rows: Vec<(String, String, String)> = sync_outbox::table

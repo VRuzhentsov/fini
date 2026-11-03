@@ -62,6 +62,35 @@ impl DbPool {
     }
 }
 
+/// A write transaction for code whose errors are `String`s (the
+/// repositories): it begins `IMMEDIATE` (docs/db.md, rule 5), commits when
+/// the closure returns `Ok`, and rolls back and gives the closure's error
+/// when it returns `Err`.
+#[cfg(any(feature = "ui-plane", test))]
+pub trait WriteTransaction {
+    fn write_transaction<T>(
+        &mut self,
+        work: impl FnOnce(&mut SqliteConnection) -> Result<T, String>,
+    ) -> Result<T, String>;
+}
+
+#[cfg(any(feature = "ui-plane", test))]
+impl WriteTransaction for SqliteConnection {
+    fn write_transaction<T>(
+        &mut self,
+        work: impl FnOnce(&mut SqliteConnection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut failure = None;
+        self.immediate_transaction::<T, diesel::result::Error, _>(|conn| {
+            work(conn).map_err(|err| {
+                failure = Some(err);
+                diesel::result::Error::RollbackTransaction
+            })
+        })
+        .map_err(|err| failure.take().unwrap_or_else(|| err.to_string()))
+    }
+}
+
 /// Sets the pragmas on each connection that the pool opens.
 #[derive(Debug)]
 struct Pragmas;
