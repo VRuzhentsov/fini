@@ -1,4 +1,4 @@
-// The `testDevices` fixture (ADR-0012 D4): each test gets its test devices by
+// The `testDevices` fixture (ADR-0013 D4): each test gets its test devices by
 // name. A TestDevice is one running Fini app that the test drives. It is not
 // the Fini `Device` model (a paired peer).
 

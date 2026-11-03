@@ -107,7 +107,7 @@ play-store-screenshots:
 	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
 
 # The gate steps live in scripts/ci-gate.mjs; CI calls them as `npm run
-# gate:*` (ADR-0012 D9). These targets are local shortcuts to the same steps.
+# gate:*` (ADR-0013 D9). These targets are local shortcuts to the same steps.
 pr-gate-fe-unit:
 	npm run gate:fe-unit
 

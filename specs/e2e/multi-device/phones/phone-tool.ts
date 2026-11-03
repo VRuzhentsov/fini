@@ -1,5 +1,5 @@
 // A phone tool starts and stops a group of virtual phones that share one
-// virtual Bluetooth medium (ADR-0012 D1, D7).
+// virtual Bluetooth medium (ADR-0013 D1, D7).
 
 export interface PhoneTool {
   readonly name: string;

@@ -364,7 +364,7 @@ jobs:
           disable-animations: true
           script: bash scripts/android-e2e-assert.sh
 
-  # Two virtual phones on one virtual Bluetooth medium (ADR-0012). Not a
+  # Two virtual phones on one virtual Bluetooth medium (ADR-0013). Not a
   # required check yet (D5): it becomes one after about ten green runs.
   android-ble-e2e:
     name: Android BLE E2E
@@ -420,7 +420,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run the android-ble lane
-        # The same command as on a developer's computer (ADR-0012 D8). It
+        # The same command as on a developer's computer (ADR-0013 D8). It
         # builds the android-phones-runner image and runs Playwright in it.
         env:
           FINI_E2E_KEEP: "1"

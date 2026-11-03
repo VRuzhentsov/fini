@@ -88,7 +88,7 @@ node ... 9224 "(async () => { const p = await invoke('device_paired_devices');
 ## Two virtual phones: the `android-ble` lane
 
 For Bluetooth between two Android stacks without hardware, use the e2e lane
-on two virtual phones (ADR-0012), not this skill's physical phone:
+on two virtual phones (ADR-0013), not this skill's physical phone:
 
 ```bash
 npm run build:android:e2e          # x86_64 debug APK with devtools (make android-build-emulator-e2e)

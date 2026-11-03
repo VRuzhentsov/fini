@@ -1,4 +1,4 @@
-// The pull-request and release gate steps (ADR-0012 D9). CI calls them as
+// The pull-request and release gate steps (ADR-0013 D9). CI calls them as
 // `npm run gate:<step>`; the `make pr-gate-*` targets call the same scripts.
 // Each step reads the same environment variables that the Makefile set before.
 //

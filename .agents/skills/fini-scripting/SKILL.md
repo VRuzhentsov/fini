@@ -13,7 +13,7 @@ This is a foundation skill. It defines how automation is structured; domain-spec
 
 Keep automation predictable and discoverable:
 
-- Makefile is the entrypoint for developers on their own computers only (ADR-0012 D9).
+- Makefile is the entrypoint for developers on their own computers only (ADR-0013 D9).
 - `npm run` owns JavaScript, TypeScript, frontend, package, and JS/TS test scripts, and every CI step.
 - `cargo xtask` owns non-trivial Rust repo automation.
 - CI calls `npm run ...` (or `cargo xtask ...`) directly. CI never calls `make`.
@@ -86,7 +86,7 @@ Prefer Makefile wrappers for human-facing `xtask` workflows.
 
 ## Script Policy
 
-Node scripts in `scripts/*.mjs` are the adopted runner for the logic behind npm scripts and CI steps (ADR-0012 D9): they need no install beyond Node, which every CI job and developer has. Avoid other ad hoc runners (shell, PHP, Python) for repo automation.
+Node scripts in `scripts/*.mjs` are the adopted runner for the logic behind npm scripts and CI steps (ADR-0013 D9): they need no install beyond Node, which every CI job and developer has. Avoid other ad hoc runners (shell, PHP, Python) for repo automation.
 
 If adding a new automation runner, make it explicit in project dependencies and update this skill with when to use it.
 

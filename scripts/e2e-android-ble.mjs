@@ -1,11 +1,11 @@
-// Runs the android-ble e2e lane (ADR-0012 D8). The same command locally and
+// Runs the android-ble e2e lane (ADR-0013 D8). The same command locally and
 // in CI: `npm run test:e2e:android-ble [-- <playwright args>]`.
 //
 // On the host it builds the `android-phones-runner` image and runs this same
 // script in it, with /dev/kvm and the repo mounted. The container has its own
 // network, so its adb server does not touch the adb server of the host. In
 // the container (FINI_E2E_CONTAINER_RUNNER=1) it runs Playwright. Phones start
-// only when a test needs them (ADR-0012 D7).
+// only when a test needs them (ADR-0013 D7).
 
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';

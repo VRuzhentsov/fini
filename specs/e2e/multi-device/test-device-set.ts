@@ -106,7 +106,7 @@ export class TestDeviceSet {
     }
 
     // Only here does a phone start, and only when a test device is a phone
-    // (ADR-0012 D7).
+    // (ADR-0013 D7).
     const phoneSerials = phones.length > 0
       ? await PhoneGroup.shared().serials(Math.max(this.phoneCount, phones.length))
       : [];

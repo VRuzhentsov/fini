@@ -1,5 +1,5 @@
 // A test device that is the Fini debug app on a virtual phone of the phone
-// group (ADR-0012 D2). Playwright `_android` finds the phone and runs the
+// group (ADR-0013 D2). Playwright `_android` finds the phone and runs the
 // shell commands; the app actions go through the devtools bridge on TCP 9223,
 // which `adb forward` makes available on a host port for each phone.
 

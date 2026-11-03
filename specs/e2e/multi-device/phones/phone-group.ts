@@ -1,5 +1,5 @@
 // PhoneGroup starts the virtual phones of a run, once, on the first request
-// (ADR-0012 D7). It writes the serials to `android-phones.json`, so that a
+// (ADR-0013 D7). It writes the serials to `android-phones.json`, so that a
 // worker that Playwright starts again connects to the same phones and does not
 // start new ones. `global-teardown.ts` stops them.
 
@@ -35,7 +35,7 @@ export class PhoneGroup {
     return this.starting;
   }
 
-  /** The Android Emulator, the phone tool that the spike chose (ADR-0012 D1). */
+  /** The Android Emulator, the phone tool that the spike chose (ADR-0013 D1). */
   static tool(): PhoneTool {
     return new AndroidEmulator();
   }

@@ -313,7 +313,7 @@ Unrelated to everything above: the app-update track (stable/beta).
 
 ### TestDevice
 
-**One running Fini app that an e2e test drives** (ADR-0012). It is a desktop
+**One running Fini app that an e2e test drives** (ADR-0013). It is a desktop
 process, a virtual phone, or a physical device. The fixture `devices` gives
 the test its test devices by name: `devices.a`, `devices.b`. A `TestDevice`
 is not a Fini *device*: a Fini device is a paired peer.
@@ -324,7 +324,7 @@ is not a Fini *device*: a Fini device is a paired peer.
 ### Phone tool
 
 **The tool that starts and stops virtual phones** for the e2e tests: the
-Android Emulator (ADR-0012 D1). In code: `PhoneTool`.
+Android Emulator (ADR-0013 D1). In code: `PhoneTool`.
 
 *Elsewhere:* a device provider in Mobly; virtual device management in
 OmniLab ATS.
@@ -361,7 +361,7 @@ OmniLab ATS.
 | **`DeviceConnectionState`** | read as a state or an enum; the services are built and registered one by one (ADR-0010 D5) |
 | **sticky handoff**, **transport selection** | older names for the rule of one session for each channel (see *Session*) and for the channel order (see *Primary*) |
 | **`Auth`**, **`AuthOk`**, **`AuthFail`** | removed frames; the TLS handshake proves the key (see *Session*) |
-| **actor**, **external** (e2e) | older e2e names; Fini uses *TestDevice*, and *physical device* for a device that a person connects (ADR-0012 D4) |
+| **actor**, **external** (e2e) | older e2e names; Fini uses *TestDevice*, and *physical device* for a device that a person connects (ADR-0013 D4) |
 
 ### Radio
 

@@ -6,7 +6,7 @@ export default defineConfig({
   reporter: 'list',
   fullyParallel: false,
   workers: 1,
-  // Stops the virtual phones only if a test started them (ADR-0012 D7).
+  // Stops the virtual phones only if a test started them (ADR-0013 D7).
   globalTeardown: './multi-device/global-teardown.ts',
   projects: [
     {
@@ -34,7 +34,7 @@ export default defineConfig({
       testMatch: ['multi-device/tests/peer-sync-over-ble.spec.ts'],
     },
     {
-      // Two virtual phones on one virtual Bluetooth medium (ADR-0012). The
+      // Two virtual phones on one virtual Bluetooth medium (ADR-0013). The
       // phones start on the first test that needs them.
       // FINI_E2E_TEST_DEVICES=a=tcp:9224,b=tcp:9223 runs it on physical devices.
       name: 'android-ble',
