@@ -1,45 +1,28 @@
-//! The quest commands: the UI's calls that read and change quests. Each one
-//! calls `QuestRepository`, then keeps the reminder and the sync outbox in
-//! step (ADR-0010 D3).
+//! The quest commands: the UI's calls that read and change quests. A write
+//! saves the quest and its sync outbox rows in one transaction, then
+//! publishes `QuestChanged` or `QuestDeleted`; the reminders and sync react
+//! to the event (docs/db.md, rules 4-7).
+
+use std::sync::Arc;
 
 use chrono::Utc;
 use diesel::sqlite::SqliteConnection;
 use tauri::{Manager, State};
 
 use crate::models::{
-    CreateQuestInput, EditScope, Quest, QuestFieldPatch, QuestUpdatePatch, UpdateQuestCommandInput,
+    CreateQuestInput, EditScope, Event, Quest, QuestFieldPatch, QuestUpdatePatch, UpdateQuestCommandInput,
     UpdateQuestInputBuilder, OCCURRENCE_COMPLETED,
 };
 use crate::repositories::quest_repository::{append_focus_history, QuestChange};
-use crate::repositories::{OutboxRepository, QuestRepository};
+use crate::repositories::{OutboxRepository, QuestRepository, ReminderRepository};
 use crate::services::db::{DbPool, WriteTransaction};
-use crate::services::reminder;
+use crate::services::event_bus_service::EventBusService;
 use crate::services::space_sync_service::SpaceSyncService;
 
-// ── Tauri commands ───────────────────────────────────────────────────────────
+type Bus<'a> = State<'a, Arc<EventBusService>>;
+type SpaceSync<'a> = State<'a, Arc<SpaceSyncService>>;
 
-/// Keeps a quest's reminder in step with it: a one-time quest that is
-/// active with a date; for a repeating quest its next open occurrence from
-/// today (ADR-0012 D9).
-#[cfg(any(feature = "ui-plane", test))]
-fn refresh_reminder(conn: &mut SqliteConnection, app: &tauri::AppHandle, quest_id: &str) {
-    let target = (|| -> Result<Option<Quest>, String> {
-        let mut service = QuestRepository::new(conn);
-        if service.is_repeating(quest_id)? {
-            return service.reminder_occurrence(quest_id);
-        }
-        let quest = service.get(quest_id)?;
-        Ok((quest.status == "active" && quest.due.is_some()).then_some(quest))
-    })();
-    let result = match target {
-        Ok(Some(quest)) => reminder::upsert_reminder_for_quest(conn, app, &quest),
-        Ok(None) => reminder::delete_reminder_for_quest(conn, app, quest_id),
-        Err(e) => Err(e),
-    };
-    if let Err(e) = result {
-        eprintln!("[bridge] reminder refresh failed for {quest_id}: {e}");
-    }
-}
+// ── Tauri commands ───────────────────────────────────────────────────────────
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
@@ -50,42 +33,29 @@ pub fn get_quests(state: State<DbPool>) -> Result<Vec<Quest>, String> {
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn create_quest(
-    app: tauri::AppHandle,
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
-    input: CreateQuestInput,
-) -> Result<Quest, String> {
-    let mut conn = state.get()?;
+pub fn create_quest(pool: State<DbPool>, space_sync: SpaceSync, bus: Bus, input: CreateQuestInput) -> Result<Quest, String> {
     let device_id = &space_sync.identity().device_id;
-    let quest = conn.write_transaction(|conn| {
+    let quest = pool.get()?.write_transaction(|conn| {
         let quest = QuestRepository::new(conn).create(input)?;
         OutboxRepository::new(conn).record_quest(device_id, &quest.space_id, &quest.id)?;
         Ok(quest)
     })?;
-    refresh_reminder(&mut conn, &app, &quest.id);
-    space_sync.wake();
+    bus.publish(Event::QuestChanged { quest: quest.clone() });
     Ok(quest)
 }
 
-/// Complete a quest from a notification action. Handles its own DB locking and sync emission.
-/// Logs errors rather than returning them — callers are notification action handlers. For a
+/// Complete a quest from a notification action. Logs errors rather than
+/// returning them: the callers are notification action handlers. For a
 /// repeating quest it closes the occurrence the reminder was for.
 #[cfg(any(feature = "ui-plane", test))]
 pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
-    let db = match app.try_state::<DbPool>() {
-        Some(s) => s,
-        None => {
-            eprintln!("[notification] complete: DbPool not available");
-            return;
-        }
-    };
-    let space_sync = match app.try_state::<std::sync::Arc<SpaceSyncService>>() {
-        Some(s) => s,
-        None => {
-            eprintln!("[notification] complete: SpaceSyncService not available");
-            return;
-        }
+    let (Some(db), Some(space_sync), Some(bus)) = (
+        app.try_state::<DbPool>(),
+        app.try_state::<Arc<SpaceSyncService>>(),
+        app.try_state::<Arc<EventBusService>>(),
+    ) else {
+        eprintln!("[notification] complete: the app is not started yet");
+        return;
     };
 
     let mut conn = db.connection();
@@ -114,13 +84,11 @@ pub fn complete_quest_for_notification(app: &tauri::AppHandle, quest_id: &str) {
     let written = conn.write_transaction(|conn| {
         let change =
             QuestRepository::new(conn).update(quest_id, patch, EditScope::All, period_key.as_deref(), Some(&device_id))?;
-        OutboxRepository::new(conn).record_change(&device_id, &quest.space_id, &change)
+        OutboxRepository::new(conn).record_change(&device_id, &quest.space_id, &change)?;
+        Ok(change.quest)
     });
     match written {
-        Ok(()) => {
-            refresh_reminder(&mut conn, app, quest_id);
-            space_sync.wake();
-        }
+        Ok(quest) => bus.publish(Event::QuestChanged { quest }),
         Err(e) => eprintln!("[notification] complete: update failed for {quest_id}: {e}"),
     }
 }
@@ -144,74 +112,41 @@ pub fn set_focus(state: State<DbPool>, id: String) -> Result<Quest, String> {
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn update_quest(
-    app: tauri::AppHandle,
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
+    pool: State<DbPool>,
+    space_sync: SpaceSync,
+    bus: Bus,
     id: String,
     input: UpdateQuestCommandInput,
 ) -> Result<Quest, String> {
-    let mut conn = state.get()?;
-    let device_id = space_sync.identity().device_id.clone();
-    let previous_space_id = QuestRepository::new(&mut conn).get(&id)?.space_id;
+    let device_id = &space_sync.identity().device_id;
     let scope = EditScope::parse(input.scope.as_deref())?;
     let period_key = input.period_key.clone();
-
-    let quest = conn.write_transaction(|conn| {
+    write_change(&pool, &bus, device_id, &id, |conn| {
         let change =
-            QuestRepository::new(conn).update(&id, input.into_patch(), scope, period_key.as_deref(), Some(&device_id))?;
+            QuestRepository::new(conn).update(&id, input.into_patch(), scope, period_key.as_deref(), Some(device_id))?;
         if change.restore_should_focus {
             append_focus_history(conn, &change.quest.id, &change.quest.space_id, "restore")?;
         }
-        OutboxRepository::new(conn).record_change(&device_id, &previous_space_id, &change)?;
-        Ok(change.quest)
-    })?;
-
-    refresh_reminder(&mut conn, &app, &id);
-    space_sync.wake();
-
-    Ok(quest)
+        Ok(change)
+    })
 }
 
 /// "Complete through today" (ADR-0012 D7).
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn complete_quest_through_today(
-    app: tauri::AppHandle,
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
-    id: String,
-) -> Result<Quest, String> {
-    let mut conn = state.get()?;
-    let device_id = space_sync.identity().device_id.clone();
-    let quest = conn.write_transaction(|conn| {
-        let space_id = QuestRepository::new(conn).get(&id)?.space_id;
-        let change = QuestRepository::new(conn).complete_through_today(&id, Some(&device_id))?;
-        OutboxRepository::new(conn).record_change(&device_id, &space_id, &change)?;
-        Ok(change.quest)
-    })?;
-    refresh_reminder(&mut conn, &app, &id);
-    space_sync.wake();
-    Ok(quest)
+pub fn complete_quest_through_today(pool: State<DbPool>, space_sync: SpaceSync, bus: Bus, id: String) -> Result<Quest, String> {
+    let device_id = &space_sync.identity().device_id;
+    write_change(&pool, &bus, device_id, &id, |conn| {
+        QuestRepository::new(conn).complete_through_today(&id, Some(device_id))
+    })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
-pub fn delete_quest(
-    app: tauri::AppHandle,
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
-    id: String,
-) -> Result<(), String> {
-    let mut conn = state.get()?;
-
-    let quest = QuestRepository::new(&mut conn).get(&id)?;
-
-    // Cancel notifications before cascade delete removes the reminder rows
-    if let Err(e) = reminder::delete_reminder_for_quest(&mut conn, &app, &id) {
-        eprintln!("[bridge] delete_reminder on quest delete failed for {id}: {e}");
-    }
-
-    conn.write_transaction(|conn| {
+pub fn delete_quest(pool: State<DbPool>, space_sync: SpaceSync, bus: Bus, id: String) -> Result<(), String> {
+    let reminders = pool.get()?.write_transaction(|conn| {
+        let quest = QuestRepository::new(conn).get(&id)?;
+        let reminders = ReminderRepository::new(conn).list_for_quest(&id)?;
         OutboxRepository::new(conn).emit_sync_event(
             &space_sync.identity().device_id,
             "quest",
@@ -220,62 +155,65 @@ pub fn delete_quest(
             "delete",
             None,
         )?;
-        QuestRepository::new(conn).delete(&id).map(|_| ())
+        QuestRepository::new(conn).delete(&id)?;
+        Ok(reminders)
     })?;
-    space_sync.wake();
+    bus.publish(Event::QuestDeleted { quest_id: id, reminders });
     Ok(())
+}
+
+/// Writes one change of quest `id` and its outbox rows in one transaction,
+/// then publishes `QuestChanged`. `write` makes the change on the
+/// transaction's connection.
+#[cfg(any(feature = "ui-plane", test))]
+fn write_change(
+    pool: &DbPool,
+    bus: &EventBusService,
+    device_id: &str,
+    id: &str,
+    write: impl FnOnce(&mut SqliteConnection) -> Result<QuestChange, String>,
+) -> Result<Quest, String> {
+    let quest = pool.get()?.write_transaction(|conn| {
+        let previous_space_id = QuestRepository::new(conn).get(id)?.space_id;
+        let change = write(conn)?;
+        OutboxRepository::new(conn).record_change(device_id, &previous_space_id, &change)?;
+        Ok(change.quest)
+    })?;
+    bus.publish(Event::QuestChanged { quest: quest.clone() });
+    Ok(quest)
 }
 
 // ── Checklist commands (issue #128) ─────────────────────────────────────────
 
-/// Writes a checklist change and its outbox rows in one transaction, wakes
-/// sync, and returns the quest.
-#[cfg(any(feature = "ui-plane", test))]
-fn finish_checklist_command(
-    conn: &mut SqliteConnection,
-    space_sync: &SpaceSyncService,
-    write: impl FnOnce(&mut SqliteConnection) -> Result<QuestChange, String>,
-) -> Result<Quest, String> {
-    let device_id = space_sync.identity().device_id.clone();
-    let quest = conn.write_transaction(|conn| {
-        let change = write(conn)?;
-        let space_id = QuestRepository::new(conn).get(&change.quest.id)?.space_id;
-        OutboxRepository::new(conn).record_change(&device_id, &space_id, &change)?;
-        Ok(change.quest)
-    })?;
-    space_sync.wake();
-    Ok(quest)
-}
-
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn add_checklist_item(
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
+    pool: State<DbPool>,
+    space_sync: SpaceSync,
+    bus: Bus,
     quest_id: String,
     text: String,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.get()?;
-    let device_id = space_sync.identity().device_id.clone();
+    let device_id = &space_sync.identity().device_id;
     let scope = EditScope::parse(scope.as_deref())?;
-    finish_checklist_command(&mut conn, &space_sync, |conn| {
-        QuestRepository::new(conn).add_checklist_item(&quest_id, &text, scope, Some(&device_id))
+    write_change(&pool, &bus, device_id, &quest_id, |conn| {
+        QuestRepository::new(conn).add_checklist_item(&quest_id, &text, scope, Some(device_id))
     })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn toggle_checklist_item(
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
+    pool: State<DbPool>,
+    space_sync: SpaceSync,
+    bus: Bus,
     quest_id: String,
     item_id: String,
     checked: bool,
     period_key: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.get()?;
-    finish_checklist_command(&mut conn, &space_sync, |conn| {
+    write_change(&pool, &bus, &space_sync.identity().device_id, &quest_id, |conn| {
         QuestRepository::new(conn).toggle_checklist_item(&quest_id, &item_id, checked, period_key.as_deref())
     })
 }
@@ -283,50 +221,50 @@ pub fn toggle_checklist_item(
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn edit_checklist_item(
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
+    pool: State<DbPool>,
+    space_sync: SpaceSync,
+    bus: Bus,
     quest_id: String,
     item_id: String,
     text: String,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.get()?;
-    let device_id = space_sync.identity().device_id.clone();
+    let device_id = &space_sync.identity().device_id;
     let scope = EditScope::parse(scope.as_deref())?;
-    finish_checklist_command(&mut conn, &space_sync, |conn| {
-        QuestRepository::new(conn).edit_checklist_item_text(&quest_id, &item_id, &text, scope, Some(&device_id))
+    write_change(&pool, &bus, device_id, &quest_id, |conn| {
+        QuestRepository::new(conn).edit_checklist_item_text(&quest_id, &item_id, &text, scope, Some(device_id))
     })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn remove_checklist_item(
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
+    pool: State<DbPool>,
+    space_sync: SpaceSync,
+    bus: Bus,
     quest_id: String,
     item_id: String,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.get()?;
-    let device_id = space_sync.identity().device_id.clone();
+    let device_id = &space_sync.identity().device_id;
     let scope = EditScope::parse(scope.as_deref())?;
-    finish_checklist_command(&mut conn, &space_sync, |conn| {
-        QuestRepository::new(conn).remove_checklist_item(&quest_id, &item_id, scope, Some(&device_id))
+    write_change(&pool, &bus, device_id, &quest_id, |conn| {
+        QuestRepository::new(conn).remove_checklist_item(&quest_id, &item_id, scope, Some(device_id))
     })
 }
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn reorder_checklist(
-    state: State<DbPool>,
-    space_sync: State<std::sync::Arc<SpaceSyncService>>,
+    pool: State<DbPool>,
+    space_sync: SpaceSync,
+    bus: Bus,
     quest_id: String,
     ordered_item_ids: Vec<String>,
     scope: Option<String>,
 ) -> Result<Quest, String> {
-    let mut conn = state.get()?;
     let scope = EditScope::parse(scope.as_deref())?;
-    finish_checklist_command(&mut conn, &space_sync, |conn| {
+    write_change(&pool, &bus, &space_sync.identity().device_id, &quest_id, |conn| {
         QuestRepository::new(conn).reorder_checklist(&quest_id, &ordered_item_ids, scope)
     })
 }

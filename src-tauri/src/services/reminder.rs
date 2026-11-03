@@ -219,15 +219,60 @@ pub fn upsert_reminder_for_quest(
     ReminderService::new(conn).reconcile_with_notifications_for_quest(app, quest)
 }
 
+/// Keeps reminders in step with the quests, on the quest events of the bus
+/// (docs/db.md, rule 7).
 #[cfg(any(feature = "ui-plane", test))]
-/// Delete all Reminder rows for a quest and cancel their OS notifications.
-pub fn delete_reminder_for_quest(
-    conn: &mut SqliteConnection,
-    app: &AppHandle,
-    quest_id: &str,
-) -> Result<(), String> {
-    ReminderService::new(conn).delete_for_quest_with_notifications(app, quest_id)
+impl ReminderService<'_> {
+    /// Hears the event bus until it closes. Started once, at app start.
+    pub async fn follow_quest_events(
+        mut events: tokio::sync::broadcast::Receiver<crate::models::Event>,
+        app: AppHandle,
+        pool: DbPool,
+    ) {
+        use crate::models::Event;
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            match events.recv().await {
+                Ok(Event::QuestChanged { quest }) => tokio::task::block_in_place(|| {
+                    if let Err(e) = ReminderService::new(&mut pool.connection()).keep_in_step(&app, &quest.id) {
+                        log::warn!("[reminder] could not keep the reminder of {} in step: {e}", quest.id);
+                    }
+                }),
+                Ok(Event::QuestDeleted { reminders, .. }) => tokio::task::block_in_place(|| {
+                    let mut conn = pool.connection();
+                    let mut service = ReminderService::new(&mut conn);
+                    for reminder in &reminders {
+                        service.cancel_scheduled(&app, reminder);
+                        notification::cancel_snooze_with_conn(service.repository.conn, &app, &reminder.id);
+                    }
+                }),
+                Ok(_) => {}
+                Err(RecvError::Lagged(missed)) => {
+                    log::warn!("[reminder] missed {missed} events; the reconciler puts reminders in step at the next start")
+                }
+                Err(RecvError::Closed) => return,
+            }
+        }
+    }
+
+    /// Puts the reminder of one quest in step with it: a one-time quest that
+    /// is active with a date has one; a repeating quest has one for its next
+    /// open day from today (ADR-0012 D9); any other quest has none.
+    pub fn keep_in_step(&mut self, app: &AppHandle, quest_id: &str) -> Result<(), String> {
+        let mut quests = QuestRepository::new(self.repository.conn);
+        let target = if quests.is_repeating(quest_id)? {
+            quests.reminder_occurrence(quest_id)?
+        } else {
+            let quest = quests.get(quest_id)?;
+            (quest.status == "active" && quest.due.is_some()).then_some(quest)
+        };
+        match target {
+            Some(quest) => self.reconcile_with_notifications_for_quest(app, &quest),
+            None => self.delete_for_quest_with_notifications(app, quest_id),
+        }
+    }
 }
+
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 

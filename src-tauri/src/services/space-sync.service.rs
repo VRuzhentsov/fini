@@ -391,7 +391,11 @@ impl SpaceSyncService {
                 self.outbox_kept();
                 self.wake();
             }
-            Event::DeviceHeard { .. } | Event::ConnectChanged { .. } => self.wake(),
+            // A quest change left rows in the outbox: send them.
+            Event::DeviceHeard { .. }
+            | Event::ConnectChanged { .. }
+            | Event::QuestChanged { .. }
+            | Event::QuestDeleted { .. } => self.wake(),
             _ => {}
         }
     }

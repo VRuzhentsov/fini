@@ -117,7 +117,7 @@ where
         .transpose()
 }
 
-#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
+#[derive(Queryable, Selectable, Serialize, Deserialize, Clone, Debug)]
 #[diesel(table_name = quests)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Quest {

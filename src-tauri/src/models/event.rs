@@ -6,6 +6,7 @@
 use serde::Serialize;
 
 use crate::models::channel::ChannelKind;
+use crate::models::{Quest, Reminder};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -42,4 +43,12 @@ pub enum Event {
     /// after that ended: the work for it can go another way, or try again.
     #[serde(rename_all = "camelCase")]
     ConnectChanged { peer_device_id: String, kind: ChannelKind },
+    /// A person changed a quest or one of its days on this device, and the
+    /// change is saved. `quest` is the quest as the UI shows it.
+    QuestChanged { quest: Quest },
+    /// A person deleted a quest on this device. The database removed its
+    /// reminders with it; they go with the event, so that their
+    /// notifications can still be cancelled.
+    #[serde(rename_all = "camelCase")]
+    QuestDeleted { quest_id: String, reminders: Vec<Reminder> },
 }

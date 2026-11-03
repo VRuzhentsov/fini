@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::reminders;
 
-#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
+#[derive(Queryable, Selectable, Serialize, Deserialize, Clone, Debug)]
 #[diesel(table_name = reminders)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Reminder {

@@ -453,6 +453,11 @@ pub fn run() {
             bluetooth.set_link_handlers(handlers);
 
             tauri::async_runtime::spawn(forward_events_to_ui(bus.subscribe(), app_handle.clone()));
+            tauri::async_runtime::spawn(services::reminder::ReminderService::follow_quest_events(
+                bus.subscribe(),
+                app_handle.clone(),
+                app.state::<DbPool>().inner().clone(),
+            ));
             network.clone().start_discovery();
             network.clone().start_serving();
             bluetooth.clone().start_discovery();
