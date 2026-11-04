@@ -177,6 +177,11 @@ DELETE FROM sync_outbox WHERE entity_type = 'quest_series';
 DELETE FROM sync_outbox
 WHERE entity_type = 'quest'
   AND entity_id IN (SELECT occurrence_id FROM occurrence_rows);
+-- Checklist activity events that still name an old occurrence go; the
+-- activity is sent again with its quest's id on the next quest change.
+DELETE FROM sync_outbox
+WHERE entity_type = 'checklist_activity'
+  AND json_extract(payload, '$.quest_id') NOT IN (SELECT id FROM quests);
 UPDATE pair_space_mappings SET last_synced_at = NULL WHERE end_of_sync_at IS NULL;
 
 DROP TABLE occurrence_rows;

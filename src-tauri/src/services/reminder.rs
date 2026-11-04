@@ -183,6 +183,8 @@ impl<'a> ReminderService<'a> {
         space: &Space,
     ) -> Result<Reminder, String> {
         let reminder = self.repository.create(input)?;
+        // A repeating quest's reminder is for its next open day, not the rule's start (D9).
+        let quest = &self.shown_quest(&quest.id)?.unwrap_or_else(|| quest.clone());
         if reminder.moment(quest).is_none() {
             return self.readable(reminder);
         }
@@ -214,6 +216,7 @@ impl<'a> ReminderService<'a> {
         let existing = self.repository.get(id)?;
         self.cancel_scheduled(app, &existing);
         let updated = self.update(id, input)?;
+        let quest = &self.shown_quest(&quest.id)?.unwrap_or_else(|| quest.clone());
         let notification_id = updated
             .moment(quest)
             .and_then(|_| notification::schedule_reminder(app, &updated, quest, space));

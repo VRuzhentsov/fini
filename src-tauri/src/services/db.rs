@@ -375,6 +375,8 @@ mod tests {
                 ('pack-1', '1', 'Pack', '- [x] headphones <!--k=a1-->', 'active', '2026-10-01', NULL, '{\"preset\":\"daily\"}', NULL, '2026-10-01T00:00:00Z', '2026-10-01T08:00:00Z', 'pack', '2026-10-01', 1),
                 ('one-time', '1', 'Call bank', NULL, 'active', '2026-10-05', NULL, NULL, NULL, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', NULL, NULL, 0);
             INSERT INTO focus_history (id, quest_id, space_id, trigger, created_at) VALUES ('focus-1', 'gym-3', '1', 'manual', '2026-10-03T09:00:00Z');
+            INSERT INTO sync_outbox (event_id, correlation_id, origin_device_id, entity_type, entity_id, space_id, op_type, payload, updated_at, created_at)
+                VALUES ('evt-activity', 'c', 'dev', 'checklist_activity', 'act-1', '1', 'upsert', '{\"id\":\"act-1\",\"quest_id\":\"pack-1\"}', 't', 't');
             INSERT INTO reminders (id, quest_id, type, mm_offset, due_at_utc, created_at) VALUES ('reminder-old', 'gym-3', 'relative', 10, '2026-10-03T19:50:00Z', '2026-10-03T00:00:00Z');
             INSERT INTO series_reminder_templates (id, series_id, kind, mm_offset, created_at) VALUES ('template-1', 'gym', 'relative', 10, '2026-10-01T00:00:00Z');
             ",
@@ -426,6 +428,12 @@ mod tests {
             diesel::sql_query("SELECT 1 FROM quest_series").execute(&mut conn).is_err(),
             "quest_series is gone"
         );
+        let stale_activity: i64 = crate::schema::sync_outbox::table
+            .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+            .count()
+            .get_result(&mut conn)
+            .unwrap();
+        assert_eq!(stale_activity, 0, "an activity event that names an old occurrence goes");
 
         let _ = std::fs::remove_file(db_path);
     }

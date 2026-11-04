@@ -217,6 +217,10 @@ pub fn schedule_reminder(
         let handle = tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
             show_now(&app_clone, &reminder_id, &quest_id, &body_for_timer);
+            // A repeating quest's next open day gets its reminder now (ADR-0012 D9).
+            if let Some(db) = app_clone.try_state::<crate::services::db::DbPool>() {
+                let _ = crate::services::reminder::ReminderService::new(&mut db.connection()).keep_in_step(&app_clone, &quest_id);
+            }
         });
 
         if let Some(state) = app.try_state::<SchedulerState>() {
