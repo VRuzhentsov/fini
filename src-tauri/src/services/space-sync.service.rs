@@ -2695,6 +2695,42 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
+    /// A "This day" description of a quest that is not a checklist is prose:
+    /// the newer edit wins whole, with no checklist merge that drops it.
+    #[test]
+    fn apply_sync_event_keeps_a_prose_day_description() {
+        let db_path = temp_db_path("occurrence-prose-description");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        let mut quest = test_quest("q1", "Read", "2026-03-01T00:00:00Z");
+        quest.repeat_rule = Some(r#"{"preset":"daily"}"#.to_string());
+        quest.due = Some("2026-03-01".to_string());
+        insert_local_quest_row(&mut conn, &quest);
+
+        let mut local_mark = QuestOccurrence::new("q1", "2026-03-02", "2026-03-02T09:00:00Z");
+        local_mark.description = Some("Chapter one".to_string());
+        QuestRepository::new(&mut conn).save_occurrence(&local_mark).unwrap();
+
+        let mut remote_mark = local_mark.clone();
+        remote_mark.description = Some("Chapter two".to_string());
+        remote_mark.updated_at = "2026-03-02T10:00:00Z".to_string();
+        let event = test_envelope(
+            "evt-prose",
+            "dev-remote",
+            "quest_occurrence",
+            &remote_mark.sync_id(),
+            "upsert",
+            Some(serde_json::to_string(&remote_mark).unwrap()),
+            "2026-03-02T10:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let after = QuestRepository::new(&mut conn).find_occurrence("q1", "2026-03-02").unwrap().unwrap();
+        assert_eq!(after.description.as_deref(), Some("Chapter two"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
     #[test]
     fn apply_sync_event_emits_convergence_event_when_checklist_base_advances_only() {
         let db_path = temp_db_path("checklist-base-ack");

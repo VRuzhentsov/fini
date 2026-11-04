@@ -896,22 +896,12 @@ impl<'a> QuestRepository<'a> {
         self.upsert_external_quest(&persisted)
     }
 
-    /// A mark from a peer. A day's checklist copy merges with the local copy
-    /// (the 3-way merge, D5); the other fields: the newer edit wins (the
-    /// caller already compared the events).
+    /// A mark from a peer of a quest that is not a checklist: the newer edit
+    /// wins whole, its description included (the caller already compared
+    /// the events). A checklist quest's mark goes through
+    /// `sync_merge_occurrence_checklist`.
     pub fn sync_upsert_occurrence(&mut self, incoming: &QuestOccurrence) -> Result<(), String> {
-        let local = self.find_occurrence(&incoming.quest_id, &incoming.period_key)?;
-        let mut merged = incoming.clone();
-        if let Some(local) = local {
-            merged.checklist_base = local.checklist_base.clone();
-            if let (Some(local_description), Some(incoming_description)) = (&local.description, &incoming.description) {
-                let (description, _) = checklist::merge_3way(local.checklist_base.as_deref(), local_description, incoming_description);
-                merged.description = Some(description);
-            }
-        } else if merged.description.is_some() {
-            merged.checklist_base = merged.description.clone();
-        }
-        self.save_occurrence(&merged).map(|_| ())
+        self.save_occurrence(incoming).map(|_| ())
     }
 
     /// Emits an upsert for each repeating quest and occurrence mark that has
