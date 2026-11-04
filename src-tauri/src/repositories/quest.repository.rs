@@ -841,11 +841,27 @@ impl<'a> QuestRepository<'a> {
             }
         };
         let clear_rule = closed.is_empty();
+        // A quest that becomes one-time keeps what was done on its open day:
+        // the ticks and the "This day" edits of that day.
+        let open_day = clear_rule.then(|| repeating.oldest_open().map(|key| repeating.on_day(&key))).flatten();
+        let mut input = input;
+        let (description, due_time) = match &open_day {
+            Some(day) => {
+                input.title = Some(day.title.clone());
+                input.energy = Some(day.energy);
+                input.priority = Some(day.priority);
+                (
+                    day.description.clone().map_or(QuestFieldPatch::Unchanged, QuestFieldPatch::Set),
+                    day.due_time.clone().map_or(QuestFieldPatch::Unchanged, QuestFieldPatch::Set),
+                )
+            }
+            None => (QuestFieldPatch::Unchanged, QuestFieldPatch::Unchanged),
+        };
         let patch = QuestUpdatePatch {
             input,
-            description: QuestFieldPatch::Unchanged,
+            description,
             due: QuestFieldPatch::Unchanged,
-            due_time: QuestFieldPatch::Unchanged,
+            due_time,
             repeat_rule: if clear_rule { QuestFieldPatch::Clear } else { QuestFieldPatch::Unchanged },
         };
         let _ = origin_device_id;
@@ -1545,6 +1561,33 @@ mod tests {
         let change = QuestRepository::new(&mut conn).update(&quest.id, patch, EditScope::All, None, None).unwrap();
 
         assert_eq!(change.quest.due.as_deref(), Some(today.as_str()), "the oldest open day is today");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// ADR-0012 D10: a quest with no closed day becomes one-time when its
+    /// repeat is removed, and it keeps the "This day" edit of its open day.
+    #[test]
+    fn removing_the_repeat_keeps_the_open_day_edits() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let (quest, _, _) = daily_at_midnight(&mut conn);
+        let patch = |title: Option<&str>, repeat_rule| QuestUpdatePatch {
+            input: UpdateQuestInput { title: title.map(str::to_string), ..crate::models::UpdateQuestInputBuilder::default().build() },
+            description: QuestFieldPatch::Unchanged,
+            due: QuestFieldPatch::Unchanged,
+            due_time: QuestFieldPatch::Unchanged,
+            repeat_rule,
+        };
+
+        QuestRepository::new(&mut conn)
+            .update(&quest.id, patch(Some("This day only"), QuestFieldPatch::Unchanged), EditScope::Day, None, None)
+            .unwrap();
+        let change = QuestRepository::new(&mut conn)
+            .update(&quest.id, patch(None, QuestFieldPatch::Clear), EditScope::All, None, None)
+            .unwrap();
+
+        assert_eq!(change.quest.repeat_rule, None);
+        assert_eq!(change.quest.title, "This day only");
         let _ = std::fs::remove_file(db_path);
     }
 
