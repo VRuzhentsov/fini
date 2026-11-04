@@ -144,3 +144,57 @@ fn a_pair_from_before_keys_upgrades_with_no_key_pinned() {
 
     let _ = std::fs::remove_file(db_path);
 }
+
+/// Migration 29: only the reminder that a quest's date made (the first
+/// reminder of a quest with a due date) becomes relative. An absolute
+/// reminder made with its own time keeps it.
+#[test]
+fn reminder_moment_migration_keeps_reminders_made_with_their_own_time() {
+    let db_path = temp_db_path("reminder-moment-keeps-own-time");
+    let mut conn = open_db_at_path(&db_path);
+
+    while conn
+        .applied_migrations()
+        .expect("read the applied migrations")
+        .iter()
+        .any(|version| version.to_string() == "00000000000029")
+    {
+        conn.revert_last_migration(MIGRATIONS).expect("wind back past migration 29");
+    }
+
+    diesel::sql_query(
+        "INSERT INTO quests (id, space_id, title, status, energy, priority, due, due_time, order_rank,
+                             focus_enter_count, created_at, updated_at, is_checklist)
+         VALUES ('dated', '1', 'Dated', 'active', 2, 2, '2026-03-01', '09:00', 1, 0, 't', 't', 0),
+                ('undated', '1', 'Undated', 'active', 2, 2, NULL, NULL, 2, 0, 't', 't', 0)",
+    )
+    .execute(&mut conn)
+    .expect("seed two quests");
+    diesel::sql_query(
+        "INSERT INTO reminders (id, quest_id, type, mm_offset, due_at_utc, created_at)
+         VALUES ('from-date', 'dated', 'absolute', NULL, '2026-03-01T09:00:00Z', 't'),
+                ('own-time', 'dated', 'absolute', NULL, '2026-03-05T18:00:00Z', 't'),
+                ('undated-own', 'undated', 'absolute', NULL, '2026-04-01T08:00:00Z', 't')",
+    )
+    .execute(&mut conn)
+    .expect("seed reminders");
+
+    conn.run_pending_migrations(MIGRATIONS).expect("upgrade through migration 29");
+
+    use crate::schema::reminders;
+    let mut rows: Vec<(String, String, Option<i64>, Option<String>)> = reminders::table
+        .select((reminders::id, reminders::kind, reminders::mm_offset, reminders::due_at_utc))
+        .load(&mut conn)
+        .expect("load the upgraded reminders");
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            ("from-date".to_string(), "relative".to_string(), Some(0), None),
+            ("own-time".to_string(), "absolute".to_string(), None, Some("2026-03-05T18:00:00Z".to_string())),
+            ("undated-own".to_string(), "absolute".to_string(), None, Some("2026-04-01T08:00:00Z".to_string())),
+        ]
+    );
+
+    let _ = std::fs::remove_file(db_path);
+}
