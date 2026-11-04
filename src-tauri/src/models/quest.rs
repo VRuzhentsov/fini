@@ -348,6 +348,18 @@ pub struct RepeatRule {
     pub end_after: Option<i64>,
 }
 
+impl RepeatRule {
+    /// Whether the two rules give the same days, the end aside: a change of
+    /// the days restarts the rule from today (ADR-0012 D10); a change of the
+    /// end only moves the end.
+    pub fn same_days_as(&self, other: &RepeatRule) -> bool {
+        self.preset == other.preset
+            && self.interval == other.interval
+            && self.unit == other.unit
+            && self.days_of_week == other.days_of_week
+    }
+}
+
 /// Maps the two-letter weekday tokens the UI uses ("Mo".."Su") to `chrono::Weekday`.
 fn parse_weekday_token(s: &str) -> Option<chrono::Weekday> {
     use chrono::Weekday;

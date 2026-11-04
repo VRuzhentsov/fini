@@ -711,6 +711,17 @@ impl<'a> QuestRepository<'a> {
                 let mut patch = patch;
                 // The quest of a repeating series stays active; its days close.
                 patch.input.status = None;
+                // A changed rule computes its open days from today; the old
+                // marks stay (D10). A new date given in the same edit wins.
+                let rule_changed = match (&patch.repeat_rule, RepeatRule::parse(quest.repeat_rule.as_deref())) {
+                    (QuestFieldPatch::Set(rule), Some(stored)) => {
+                        RepeatRule::parse(Some(rule)).is_some_and(|new| !new.same_days_as(&stored))
+                    }
+                    _ => false,
+                };
+                if rule_changed && matches!(patch.due, QuestFieldPatch::Unchanged) {
+                    patch.due = QuestFieldPatch::Set(Local::now().date_naive().format("%Y-%m-%d").to_string());
+                }
                 let (_, _) = self.write_patch(id, patch)?;
                 self.finish_repeating(id, Vec::new(), Vec::new(), true, None)
             }
@@ -1513,6 +1524,28 @@ mod tests {
             .expect("create quest");
         let tomorrow = (today + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
         (quest, today.format("%Y-%m-%d").to_string(), tomorrow)
+    }
+
+    /// ADR-0012 D10: a changed rule computes its open days from today, so
+    /// the days before today under the old rule do not come back as a
+    /// backlog.
+    #[test]
+    fn a_changed_rule_starts_from_today() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let (quest, today, _) = daily_at_midnight(&mut conn);
+
+        let patch = QuestUpdatePatch {
+            input: crate::models::UpdateQuestInputBuilder::default().build(),
+            description: QuestFieldPatch::Unchanged,
+            due: QuestFieldPatch::Unchanged,
+            due_time: QuestFieldPatch::Unchanged,
+            repeat_rule: QuestFieldPatch::Set(r#"{"preset":"custom","interval":2,"unit":"day"}"#.to_string()),
+        };
+        let change = QuestRepository::new(&mut conn).update(&quest.id, patch, EditScope::All, None, None).unwrap();
+
+        assert_eq!(change.quest.due.as_deref(), Some(today.as_str()), "the oldest open day is today");
+        let _ = std::fs::remove_file(db_path);
     }
 
     /// ADR-0012 D9: today's 00:00 has passed, so the reminder is armed for
