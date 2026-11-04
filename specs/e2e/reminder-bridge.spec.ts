@@ -68,7 +68,9 @@ test('setting due+due_time auto-creates a reminder row', async () => {
   const after = await reminders(q.id);
   expect(after).toHaveLength(1);
   expect(after[0].quest_id).toBe(q.id);
-  expect(after[0].kind).toBe('absolute');
+  // The reminder a due date makes fires at the due time (relative, offset
+  // 0); its moment is computed when it is read.
+  expect(after[0].kind).toBe('relative');
   // In UTC (Docker container TZ=UTC): local 14:30 == 14:30 UTC
   expect(after[0].due_at_utc).toBe('2099-06-15T14:30:00Z');
 });

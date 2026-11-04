@@ -102,7 +102,7 @@ onMounted(() => {
       <div class="relative w-full max-w-md rounded-xl bg-base-100 shadow-2xl">
         <div class="p-4 pb-3">
           <h3 class="text-base font-semibold">Export backup</h3>
-          <p class="mt-1 text-sm opacity-60">Pick the spaces to include. The backup contains every quest in those spaces — active, completed, and abandoned — plus their quest series.</p>
+          <p class="mt-1 text-sm opacity-60">Pick the spaces to include. The backup contains every quest in those spaces — active, completed, and abandoned — with the closed days of repeating quests.</p>
         </div>
 
         <div class="border-t border-base-200 px-4 py-3">

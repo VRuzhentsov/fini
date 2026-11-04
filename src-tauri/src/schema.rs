@@ -15,18 +15,19 @@ diesel::table! {
 }
 
 diesel::table! {
-    quest_series (id) {
-        id          -> Text,
-        space_id    -> Text,
-        title       -> Text,
-        description -> Nullable<Text>,
-        repeat_rule -> Text,
-        priority    -> BigInt,
-        energy      -> BigInt,
-        active      -> Bool,
-        created_at  -> Text,
-        updated_at  -> Text,
-        is_checklist -> Bool,
+    quest_occurrences (quest_id, period_key) {
+        quest_id       -> Text,
+        period_key     -> Text,
+        status         -> Nullable<Text>,
+        closed_at      -> Nullable<Text>,
+        title          -> Nullable<Text>,
+        description    -> Nullable<Text>,
+        energy         -> Nullable<BigInt>,
+        priority       -> Nullable<BigInt>,
+        due_time       -> Nullable<Text>,
+        checklist_base -> Nullable<Text>,
+        created_at     -> Text,
+        updated_at     -> Text,
     }
 }
 
@@ -47,8 +48,6 @@ diesel::table! {
         focus_enter_count -> BigInt,
         created_at  -> Text,
         updated_at  -> Text,
-        series_id   -> Nullable<Text>,
-        period_key  -> Nullable<Text>,
         is_checklist -> Bool,
         checklist_base -> Nullable<Text>,
     }
@@ -75,16 +74,6 @@ diesel::table! {
         due_at_utc               -> Nullable<Text>,
         created_at               -> Text,
         scheduled_notification_id -> Nullable<Text>,
-    }
-}
-
-diesel::table! {
-    series_reminder_templates (id) {
-        id         -> Text,
-        series_id  -> Text,
-        kind       -> Text,
-        mm_offset  -> Nullable<BigInt>,
-        created_at -> Text,
     }
 }
 
@@ -195,10 +184,8 @@ diesel::table! {
 }
 
 diesel::joinable!(quests -> spaces (space_id));
-diesel::joinable!(quests -> quest_series (series_id));
-diesel::joinable!(quest_series -> spaces (space_id));
+diesel::joinable!(quest_occurrences -> quests (quest_id));
 diesel::joinable!(reminders -> quests (quest_id));
-diesel::joinable!(series_reminder_templates -> quest_series (series_id));
 diesel::joinable!(pair_space_mappings -> paired_devices (peer_device_id));
 diesel::joinable!(peer_control_outbox -> paired_devices (peer_device_id));
 diesel::joinable!(pair_space_mappings -> spaces (space_id));
@@ -211,9 +198,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     spaces,
     settings,
     quests,
-    quest_series,
+    quest_occurrences,
     reminders,
-    series_reminder_templates,
     paired_devices,
     pair_space_mappings,
     peer_control_outbox,

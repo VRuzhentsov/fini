@@ -7,6 +7,8 @@ export interface MenuItem {
   disabled?: boolean;
   children?: MenuItem[];
   separator?: boolean;
+  /** False hides the item; a menu is written in full and each item says when it shows. */
+  visible?: boolean;
   // visual slots
   icon?: Component;
   value?: string;
@@ -50,11 +52,17 @@ function deriveTrigger(event: Event): ContextMenuTrigger {
   return { kind: "pointer", x: me.clientX ?? 0, y: me.clientY ?? 0 };
 }
 
+function shown(items: MenuItem[]): MenuItem[] {
+  return items
+    .filter((item) => item.visible !== false)
+    .map((item) => (item.children ? { ...item, children: shown(item.children) } : item));
+}
+
 function open(event: Event, items: MenuItem[]) {
   event.preventDefault?.();
   event.stopPropagation?.();
   state.trigger = deriveTrigger(event);
-  state.items = items;
+  state.items = shown(items);
   state.visible = true;
 }
 
@@ -63,7 +71,7 @@ function openFromRect(rect: DOMRect | DOMRectReadOnly, items: MenuItem[]) {
     kind: "element",
     rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
   };
-  state.items = items;
+  state.items = shown(items);
   state.visible = true;
 }
 

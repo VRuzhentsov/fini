@@ -7,7 +7,7 @@ use tauri::State;
 
 use crate::models::channel::ChannelKind;
 use crate::services::channel_service::CustomSpaceDescriptor;
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 use crate::services::space_sync_service::{
     IncomingSpaceMappingUpdate, SpaceMappingApplyResult, SpaceResolutionMode, SpaceSyncService, SpaceSyncStatus, SpaceSyncTickResult,
     SyncQueueSummary,
@@ -17,40 +17,40 @@ type SpaceSync<'a> = State<'a, Arc<SpaceSyncService>>;
 
 #[tauri::command]
 pub fn space_sync_list_mappings(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     space_sync: SpaceSync,
     peer_device_id: String,
 ) -> Result<Vec<String>, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     space_sync.list_mappings(&mut conn, &peer_device_id)
 }
 
 #[tauri::command]
 pub fn space_sync_update_mappings(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     space_sync: SpaceSync,
     peer_device_id: String,
     mapped_space_ids: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     space_sync.update_mappings(&mut conn, &peer_device_id, mapped_space_ids)
 }
 
 #[tauri::command]
 pub fn space_sync_apply_remote_mappings(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     space_sync: SpaceSync,
     peer_device_id: String,
     mapped_space_ids: Vec<String>,
     custom_spaces: Vec<CustomSpaceDescriptor>,
 ) -> Result<SpaceMappingApplyResult, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     space_sync.apply_remote_mappings(&mut conn, &peer_device_id, mapped_space_ids, custom_spaces)
 }
 
 #[tauri::command]
 pub fn space_sync_resolve_custom_space_mapping(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     space_sync: SpaceSync,
     peer_device_id: String,
     remote_space_id: String,
@@ -58,7 +58,7 @@ pub fn space_sync_resolve_custom_space_mapping(
     resolution_mode: SpaceResolutionMode,
     existing_space_id: Option<String>,
 ) -> Result<SpaceMappingApplyResult, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     space_sync.resolve_custom_space_mapping(
         &mut conn,
         &peer_device_id,
@@ -88,21 +88,21 @@ pub async fn space_sync_tick(space_sync: SpaceSync<'_>) -> Result<SpaceSyncTickR
 
 #[tauri::command]
 pub fn space_sync_status(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     space_sync: SpaceSync,
     peer_device_id: Option<String>,
 ) -> Result<SpaceSyncStatus, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     space_sync.status(&mut conn, peer_device_id)
 }
 
 #[tauri::command]
 pub fn space_sync_queue_summary(
-    db: State<AppDbConnection>,
+    db: State<DbPool>,
     space_sync: SpaceSync,
     peer_device_id: String,
 ) -> Result<SyncQueueSummary, String> {
-    let mut conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.get()?;
     space_sync.queue_summary(&mut conn, peer_device_id)
 }
 

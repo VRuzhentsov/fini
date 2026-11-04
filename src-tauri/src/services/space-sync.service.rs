@@ -4,7 +4,7 @@
 //! It owns the sync sessions (one for each device and channel kind), when
 //! sync runs (the wake signal, the keeper), and which green channel a frame
 //! goes over (the primary first). It accepts the sync connections that
-//! peers open (`SessionHandler`, ALPN `fini/sync/4`) and holds the ones the
+//! peers open (`SessionHandler`, ALPN `fini/sync/5`) and holds the ones the
 //! channels open.
 //!
 //! Work for a device with no green channel waits in the outbox: the
@@ -13,7 +13,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Once, Weak};
 use std::time::{Duration, Instant};
 
@@ -31,8 +30,8 @@ use crate::services::channel_service::{
     recv_frame, send_frame, ChannelKind, ChannelService, CustomSpaceDescriptor, DataLink, PeerFrame, SessionHandler,
     SyncEventEnvelope,
 };
-use crate::services::db::{open_db_at_path, utc_now};
-use crate::services::event_bus_service::EventBusService;
+use crate::services::db::{utc_now, DbPool};
+use crate::services::event_bus_service::EventBus;
 use crate::services::network_channel_service::NetworkChannelService;
 
 /// QUIC close codes of a session the peer rejected, which the connecting
@@ -205,8 +204,8 @@ struct Sessions {
 
 pub struct SpaceSyncService {
     identity: Identity,
-    db_path: PathBuf,
-    bus: Arc<EventBusService>,
+    pool: DbPool,
+    bus: Arc<EventBus>,
     network: Arc<NetworkChannelService>,
     bluetooth: Arc<BluetoothChannelService>,
     /// This object, for the tasks it starts.
@@ -236,14 +235,14 @@ pub struct SpaceSyncService {
 impl SpaceSyncService {
     pub fn new(
         identity: Identity,
-        db_path: PathBuf,
-        bus: Arc<EventBusService>,
+        pool: DbPool,
+        bus: Arc<EventBus>,
         network: Arc<NetworkChannelService>,
         bluetooth: Arc<BluetoothChannelService>,
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             identity,
-            db_path,
+            pool,
             bus,
             network,
             bluetooth,
@@ -275,7 +274,7 @@ impl SpaceSyncService {
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&mut SqliteConnection) -> T) -> T {
-        tokio::task::block_in_place(|| f(&mut open_db_at_path(&self.db_path)))
+        tokio::task::block_in_place(|| f(&mut self.pool.connection()))
     }
 
     // ---- When sync runs ----
@@ -392,7 +391,11 @@ impl SpaceSyncService {
                 self.outbox_kept();
                 self.wake();
             }
-            Event::DeviceHeard { .. } | Event::ConnectChanged { .. } => self.wake(),
+            // A quest change left rows in the outbox: send them.
+            Event::DeviceHeard { .. }
+            | Event::ConnectChanged { .. }
+            | Event::QuestChanged { .. }
+            | Event::QuestDeleted { .. } => self.wake(),
             _ => {}
         }
     }
@@ -906,13 +909,15 @@ impl SpaceSyncService {
     /// One pass of sync: keep the channels serving, send what waits, apply
     /// what arrived, record the acks.
     pub fn tick(&self) -> Result<SpaceSyncTickResult, String> {
-        let mut conn = open_db_at_path(&self.db_path);
-        let conn = &mut conn;
+        // A connection for each database step, not for the whole pass: the
+        // channel calls between the steps take connections of their own
+        // (docs/db.md, rule 2).
+        let conn = || self.pool.connection();
         if let Ok(mut at) = self.last_tick_at.lock() {
             *at = Some(Instant::now());
         }
-        let peer_ids = DeviceRepository::new(conn).ids();
-        self.record_channel_order(conn, &peer_ids);
+        let peer_ids = DeviceRepository::new(&mut conn()).ids();
+        self.record_channel_order(&mut conn(), &peer_ids);
 
         // Keep this device reachable and its held connections up. Before
         // the Activity is up, Network alone.
@@ -937,13 +942,16 @@ impl SpaceSyncService {
             .map(|mut sessions| sessions.incoming_space_sync_ends.drain().map(|(_, end)| end).collect())
             .unwrap_or_default();
         for end in ends {
-            SpaceMappingRepository::new(conn).end(&end.from_device_id, &[end.space_id.clone()], &end.ended_at)?;
+            SpaceMappingRepository::new(&mut conn()).end(&end.from_device_id, &[end.space_id.clone()], &end.ended_at)?;
         }
 
         let mut sent_events_total = 0usize;
         for peer_device_id in &peer_ids {
-            let mapped = SpaceMappingRepository::new(conn).active(peer_device_id)?;
-            let pending = OutboxRepository::new(conn).load_unacked_events_for_peer(peer_device_id, &mapped)?;
+            let pending = {
+                let mut conn = conn();
+                let mapped = SpaceMappingRepository::new(&mut conn).active(peer_device_id)?;
+                OutboxRepository::new(&mut conn).load_unacked_events_for_peer(peer_device_id, &mapped)?
+            };
             let mut sent_events = 0usize;
             for event in &pending {
                 if sent_events >= MAX_EVENTS_PER_PEER_PER_TICK {
@@ -967,7 +975,7 @@ impl SpaceSyncService {
         }
 
         for peer_device_id in &peer_ids {
-            let unsynced = SpaceMappingRepository::new(conn).never_synced(peer_device_id)?;
+            let unsynced = SpaceMappingRepository::new(&mut conn()).never_synced(peer_device_id)?;
             if unsynced.is_empty() || !self.has_any_session(peer_device_id) {
                 continue;
             }
@@ -987,7 +995,20 @@ impl SpaceSyncService {
                 .lock()
                 .map(|mut sessions| sessions.incoming_sync_events.drain().map(|(_, event)| event).collect())
                 .unwrap_or_default();
-            events.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.event_id.cmp(&b.event_id)));
+            // In the same second, a parent comes before the rows that refer to
+            // it: a space, then a quest, then the rest (occurrence marks,
+            // focus history, checklist activity).
+            let parent_rank = |entity_type: &str| match entity_type {
+                "space" => 0,
+                "quest" => 1,
+                _ => 2,
+            };
+            events.sort_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| parent_rank(&a.entity_type).cmp(&parent_rank(&b.entity_type)))
+                    .then_with(|| a.event_id.cmp(&b.event_id))
+            });
             events
         };
         let mut applied_events = 0usize;
@@ -996,11 +1017,12 @@ impl SpaceSyncService {
         let mut handled_events = 0usize;
         let mut deferred = Vec::new();
         for event in incoming {
-            if !SpaceMappingRepository::new(conn).is_active(&event.origin_device_id, &event.space_id).unwrap_or(false) {
+            if !SpaceMappingRepository::new(&mut conn()).is_active(&event.origin_device_id, &event.space_id).unwrap_or(false) {
                 deferred.push(event);
                 continue;
             }
-            match apply::apply_sync_event(conn, &event) {
+            let applied = apply::apply_sync_event(&mut conn(), &event);
+            match applied {
                 Ok(applied) => {
                     handled_events += 1;
                     if applied {
@@ -1011,7 +1033,13 @@ impl SpaceSyncService {
                     // so that the peer stops sending it again.
                     self.queue_for_peer(&event.origin_device_id, PeerFrame::Ack { event_id: event.event_id.clone() });
                 }
-                Err(err) => log::warn!("[space-sync] applying incoming event {} failed: {err}", event.event_id),
+                // The receipt was acknowledged already, so the peer does not
+                // send it again: keep it for the next tick (its parent can
+                // come later).
+                Err(err) => {
+                    log::warn!("[space-sync] applying incoming event {} failed, kept for the next tick: {err}", event.event_id);
+                    deferred.push(event);
+                }
             }
         }
         if !deferred.is_empty() {
@@ -1029,11 +1057,12 @@ impl SpaceSyncService {
             .unwrap_or_default();
         let mut received_acks = 0usize;
         for ack in acks {
-            if !OutboxRepository::new(conn).record_ack(&ack.from_device_id, &ack.event_id).unwrap_or(false) {
+            let mut conn = conn();
+            if !OutboxRepository::new(&mut conn).record_ack(&ack.from_device_id, &ack.event_id).unwrap_or(false) {
                 continue;
             }
-            if let Some((space_id, updated_at)) = OutboxRepository::new(conn).space_and_time(&ack.event_id)? {
-                SpaceMappingRepository::new(conn).record_synced(&ack.from_device_id, &space_id, &updated_at)?;
+            if let Some((space_id, updated_at)) = OutboxRepository::new(&mut conn).space_and_time(&ack.event_id)? {
+                SpaceMappingRepository::new(&mut conn).record_synced(&ack.from_device_id, &space_id, &updated_at)?;
             }
             received_acks += 1;
             transferred_by_peer.entry(ack.from_device_id.clone()).or_insert((0, 0, 0)).2 += 1;
@@ -1052,7 +1081,7 @@ impl SpaceSyncService {
             .collect();
         peers.sort_by(|a, b| a.peer_device_id.cmp(&b.peer_device_id));
 
-        let _ = apply::cleanup_old_tombstones(conn);
+        let _ = apply::cleanup_old_tombstones(&mut conn());
 
         // Only when a peer's change landed here: the UI re-reads then, and
         // an idle pair makes no work for anyone.
@@ -1383,11 +1412,11 @@ use diesel::sqlite::SqliteConnection;
 
 use super::UnresolvedCustomSpace;
 use crate::services::channel_service::{CustomSpaceDescriptor, SyncEventEnvelope};
-use crate::models::{ChecklistActivity, FocusHistoryEntry, Quest, QuestSeries, Space};
+use crate::models::{ChecklistActivity, FocusHistoryEntry, Quest, QuestOccurrence, Space};
 use crate::repositories::{OutboxRepository, SpaceMappingRepository};
 use crate::schema::{checklist_activity, focus_history, spaces, sync_outbox, tombstones};
 use crate::services::db::utc_now;
-use crate::services::quest::QuestService;
+use crate::repositories::QuestRepository;
 
 pub(super) fn normalized_space_ids(mapped_space_ids: Vec<String>) -> Vec<String> {
     mapped_space_ids
@@ -1568,12 +1597,14 @@ fn upsert_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), String
 
 fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String> {
     ensure_spaces_exist(conn, &[quest.space_id.clone()])?;
-    QuestService::new(conn).sync_upsert_quest(quest)
+    QuestRepository::new(conn).sync_upsert_quest(quest)
 }
 
-fn upsert_quest_series(conn: &mut SqliteConnection, series: &QuestSeries) -> Result<(), String> {
-    ensure_spaces_exist(conn, &[series.space_id.clone()])?;
-    QuestService::new(conn).sync_upsert_series(series)
+/// An occurrence mark of a repeating quest (ADR-0012 D11). A tick applies
+/// its quest first; a mark that arrives before its quest waits for a later
+/// tick.
+fn upsert_quest_occurrence(conn: &mut SqliteConnection, occurrence: &QuestOccurrence) -> Result<(), String> {
+    QuestRepository::new(conn).sync_upsert_occurrence(occurrence)
 }
 
 fn upsert_focus_history(
@@ -1621,10 +1652,15 @@ fn delete_entity(conn: &mut SqliteConnection, event: &SyncEventEnvelope) -> Resu
                 .map_err(|e| e.to_string())?;
         }
         "quest" => {
-            QuestService::new(conn).sync_delete_quest(&event.entity_id)?;
+            let mut quests = QuestRepository::new(conn);
+            if quests.find_external_quest(&event.entity_id)?.is_some() {
+                quests.delete(&event.entity_id)?;
+            }
         }
-        "quest_series" => {
-            QuestService::new(conn).sync_delete_series(&event.entity_id)?;
+        "quest_occurrence" => {
+            if let Some((quest_id, period_key)) = event.entity_id.split_once(':') {
+                QuestRepository::new(conn).delete_occurrence(quest_id, period_key)?;
+            }
         }
         "focus_history" => {
             diesel::delete(focus_history::table.find(&event.entity_id))
@@ -1672,7 +1708,7 @@ fn emit_checklist_convergence_event(
 ) -> Result<(), String> {
     if let Some(own_device_id) = local_device_id(conn) {
         if own_device_id != remote_origin_device_id {
-            let refreshed = QuestService::new(conn).get(entity_id)?;
+            let refreshed = QuestRepository::new(conn).get(entity_id)?;
             let payload = serde_json::to_string(&refreshed).map_err(|e| e.to_string())?;
             OutboxRepository::new(conn).emit_sync_event(
                 &own_device_id,
@@ -1685,6 +1721,22 @@ fn emit_checklist_convergence_event(
         }
     }
     Ok(())
+}
+
+/// Sends a merged day mark back out, so that the peer that sent the other
+/// side of the merge gets the same checklist.
+fn emit_occurrence_convergence_event(
+    conn: &mut SqliteConnection,
+    remote_origin_device_id: &str,
+    space_id: &str,
+    mark: &QuestOccurrence,
+) -> Result<(), String> {
+    match local_device_id(conn) {
+        Some(own_device_id) if own_device_id != remote_origin_device_id => {
+            OutboxRepository::new(conn).record_occurrence(&own_device_id, space_id, mark)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Merges an incoming checklist quest's `description` (task-list text) against local state
@@ -1701,7 +1753,7 @@ fn merge_and_persist_quest_checklist(
     entity_id: &str,
     incoming_description: Option<&str>,
 ) -> Result<(Option<String>, bool), String> {
-    QuestService::new(conn).sync_merge_quest_checklist(entity_id, incoming_description)
+    QuestRepository::new(conn).sync_merge_quest_checklist(entity_id, incoming_description)
 }
 
 pub(super) fn apply_sync_event(
@@ -1735,12 +1787,32 @@ pub(super) fn apply_sync_event(
             // brand-new quest arriving for the first time — falls through to the normal
             // whole-entity path; its `description` is treated like any other field.
             let local_is_checklist = if event.entity_type == "quest" {
-                QuestService::new(conn).sync_quest_is_checklist(&event.entity_id)?
+                QuestRepository::new(conn).external_quest_is_checklist(&event.entity_id)?
             } else {
                 false
             };
+            // A day mark of a checklist quest gets the same per-item merge
+            // (ADR-0012 D5), also before the win/lose gate.
+            let checklist_occurrence = if event.entity_type == "quest_occurrence" {
+                let occurrence: QuestOccurrence = serde_json::from_str(payload).map_err(|e| e.to_string())?;
+                QuestRepository::new(conn)
+                    .external_quest_is_checklist(&occurrence.quest_id)?
+                    .then_some(occurrence)
+            } else {
+                None
+            };
 
-            if local_is_checklist {
+            if let Some(occurrence) = checklist_occurrence {
+                let converged =
+                    QuestRepository::new(conn).sync_merge_occurrence_checklist(&occurrence, whole_entity_wins)?;
+                if let Some(mark) = converged {
+                    emit_occurrence_convergence_event(conn, &event.origin_device_id, &event.space_id, &mark)?;
+                }
+                if !whole_entity_wins {
+                    OutboxRepository::new(conn).mark_event_seen(&event.event_id)?;
+                    return Ok(false);
+                }
+            } else if local_is_checklist {
                 let mut quest: Quest = serde_json::from_str(payload).map_err(|e| e.to_string())?;
                 let (merged_description, should_emit_convergence) =
                     merge_and_persist_quest_checklist(
@@ -1788,10 +1860,10 @@ pub(super) fn apply_sync_event(
                             serde_json::from_str(payload).map_err(|e| e.to_string())?;
                         upsert_quest(conn, &quest)?;
                     }
-                    "quest_series" => {
-                        let series: QuestSeries =
+                    "quest_occurrence" => {
+                        let occurrence: QuestOccurrence =
                             serde_json::from_str(payload).map_err(|e| e.to_string())?;
-                        upsert_quest_series(conn, &series)?;
+                        upsert_quest_occurrence(conn, &occurrence)?;
                     }
                     "focus_history" => {
                         let focus: FocusHistoryEntry =
@@ -1886,8 +1958,8 @@ pub(super) fn merge_local_space_into_remote_id(
         create_space_with_id(conn, remote_space_id, &name)?;
     }
 
-    QuestService::new(conn)
-        .sync_move_quests_and_series_between_spaces(local_space_id, remote_space_id)?;
+    QuestRepository::new(conn)
+        .move_quests_between_spaces(local_space_id, remote_space_id)?;
 
     diesel::update(focus_history::table.filter(focus_history::space_id.eq(local_space_id)))
         .set(focus_history::space_id.eq(remote_space_id))
@@ -1954,7 +2026,7 @@ pub(super) fn partition_remote_mapped_spaces(
 mod tests {
     use super::*;
     use crate::models::CreateSyncOutboxEntry;
-    use crate::schema::{pair_space_mappings, paired_devices, quests, quest_series};
+    use crate::schema::{pair_space_mappings, paired_devices, quest_occurrences, quests};
     use crate::services::db::open_db_at_path;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -1980,8 +2052,6 @@ mod tests {
             focus_enter_count: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: updated_at.to_string(),
-            series_id: None,
-            period_key: None,
             is_checklist: false,
             checklist_base: None,
         }
@@ -2014,21 +2084,6 @@ mod tests {
         serde_json::to_string(quest).unwrap()
     }
 
-    fn test_series(id: &str, title: &str, updated_at: &str) -> QuestSeries {
-        QuestSeries {
-            id: id.to_string(),
-            space_id: "1".to_string(),
-            title: title.to_string(),
-            description: None,
-            repeat_rule: r#"{"preset":"daily"}"#.to_string(),
-            priority: crate::models::PRIORITY_MEDIUM,
-            energy: crate::models::ENERGY_MEDIUM,
-            active: true,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: updated_at.to_string(),
-            is_checklist: false,
-        }
-    }
 
     fn insert_outbox_entry_for_space(
         conn: &mut SqliteConnection,
@@ -2100,74 +2155,6 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
-    #[test]
-    fn apply_sync_event_persists_synced_series_checklist_flag() {
-        let db_path = temp_db_path("series-checklist-flag");
-        let mut conn = open_db_at_path(&db_path);
-        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
-
-        let checklist_template =
-            crate::services::checklist::serialize(&[crate::services::checklist::ChecklistItem {
-                id: "a1".into(),
-                text: "headphones".into(),
-                checked: true,
-            }]);
-        let mut remote_series = test_series("series-checklist", "Pack", "2026-03-02T00:00:00Z");
-        remote_series.description = Some(checklist_template.clone());
-        remote_series.is_checklist = true;
-
-        let event = test_envelope(
-            "evt-series-checklist",
-            "dev-remote",
-            "quest_series",
-            &remote_series.id,
-            "upsert",
-            Some(serde_json::to_string(&remote_series).unwrap()),
-            "2026-03-02T00:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &event).unwrap());
-
-        let stored: QuestSeries = quest_series::table
-            .find(&remote_series.id)
-            .select(QuestSeries::as_select())
-            .first(&mut conn)
-            .unwrap();
-        assert!(
-            stored.is_checklist,
-            "synced recurring checklist series must not fall back to the DB default prose flag"
-        );
-        assert_eq!(
-            stored.description.as_deref(),
-            Some(checklist_template.as_str())
-        );
-
-        remote_series.is_checklist = false;
-        remote_series.updated_at = "2026-03-03T00:00:00Z".to_string();
-        let update_event = test_envelope(
-            "evt-series-prose",
-            "dev-remote",
-            "quest_series",
-            &remote_series.id,
-            "upsert",
-            Some(serde_json::to_string(&remote_series).unwrap()),
-            "2026-03-03T00:00:00Z",
-        );
-
-        assert!(apply_sync_event(&mut conn, &update_event).unwrap());
-
-        let updated_is_checklist: bool = quest_series::table
-            .find(&remote_series.id)
-            .select(quest_series::is_checklist)
-            .first(&mut conn)
-            .unwrap();
-        assert!(
-            !updated_is_checklist,
-            "synced quest_series upserts must also update checklist mode changes"
-        );
-
-        let _ = std::fs::remove_file(db_path);
-    }
 
     #[test]
     fn apply_sync_event_preserves_checklist_activity_rows() {
@@ -2265,6 +2252,53 @@ mod tests {
 
     /// Inserts a real local `quests` row (not just an outbox entry) so the checklist merge path,
     /// which reads the row directly, has something to merge against.
+    /// ADR-0012 D11: a peer's occurrence mark applies to its quest, keyed by
+    /// (quest_id, period_key); its delete removes it.
+    #[test]
+    fn apply_sync_event_applies_and_deletes_an_occurrence_mark() {
+        let db_path = temp_db_path("occurrence-mark-sync");
+        let mut conn = open_db_at_path(&db_path);
+        let mut quest = test_quest("quest-repeating", "Gym", "2026-03-01T00:00:00Z");
+        quest.repeat_rule = Some(r#"{"preset":"daily"}"#.to_string());
+        quest.due = Some("2026-03-01".to_string());
+        insert_local_quest_row(&mut conn, &quest);
+
+        let mut mark = QuestOccurrence::new(&quest.id, "2026-03-02", "2026-03-02T09:00:00Z");
+        mark.status = Some(crate::models::OCCURRENCE_COMPLETED.to_string());
+        mark.closed_at = Some("2026-03-02T09:00:00Z".to_string());
+        let upsert = test_envelope(
+            "evt-mark",
+            "peer",
+            "quest_occurrence",
+            &mark.sync_id(),
+            "upsert",
+            Some(serde_json::to_string(&mark).unwrap()),
+            "2026-03-02T09:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &upsert).unwrap());
+        let stored: Vec<(String, Option<String>)> = quest_occurrences::table
+            .filter(quest_occurrences::quest_id.eq(&quest.id))
+            .select((quest_occurrences::period_key, quest_occurrences::status))
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(stored, vec![("2026-03-02".to_string(), Some("completed".to_string()))]);
+
+        let delete = test_envelope(
+            "evt-mark-delete",
+            "peer",
+            "quest_occurrence",
+            &mark.sync_id(),
+            "delete",
+            None,
+            "2026-03-02T10:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &delete).unwrap());
+        let left: i64 = quest_occurrences::table.count().get_result(&mut conn).unwrap();
+        assert_eq!(left, 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
     fn insert_local_quest_row(conn: &mut SqliteConnection, quest: &Quest) {
         diesel::insert_into(quests::table)
             .values((
@@ -2283,8 +2317,6 @@ mod tests {
                 quests::focus_enter_count.eq(quest.focus_enter_count),
                 quests::created_at.eq(&quest.created_at),
                 quests::updated_at.eq(&quest.updated_at),
-                quests::series_id.eq(&quest.series_id),
-                quests::period_key.eq(&quest.period_key),
                 quests::is_checklist.eq(quest.is_checklist),
                 quests::checklist_base.eq(&quest.checklist_base),
             ))
@@ -2598,6 +2630,103 @@ mod tests {
             items.iter().find(|it| it.id == "a2").unwrap().checked,
             "remote's independent pack of item a2 must still merge in, despite losing whole-entity LWW"
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// ADR-0012 D5: two devices tick different items of the same day of a
+    /// repeating checklist quest. The device whose own event is newer keeps
+    /// both ticks and sends the merged day back, so both devices agree.
+    #[test]
+    fn apply_sync_event_merges_occurrence_checklist_when_its_event_loses() {
+        let db_path = temp_db_path("occurrence-checklist-merge-lose");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        crate::services::settings::upsert_setting(&mut conn, "device.id", "dev-local").unwrap();
+
+        let base_checklist = crate::services::checklist::serialize(&[
+            crate::services::checklist::ChecklistItem { id: "a1".into(), text: "headphones".into(), checked: false },
+            crate::services::checklist::ChecklistItem { id: "a2".into(), text: "key fob".into(), checked: false },
+        ]);
+        let mut quest = test_quest("q1", "Go to office", "2026-03-01T00:00:00Z");
+        quest.is_checklist = true;
+        quest.description = Some(base_checklist.clone());
+        quest.repeat_rule = Some(r#"{"preset":"daily"}"#.to_string());
+        quest.due = Some("2026-03-01".to_string());
+        insert_local_quest_row(&mut conn, &quest);
+
+        let mut local_mark = QuestOccurrence::new("q1", "2026-03-02", "2026-03-02T09:00:00Z");
+        local_mark.description = Some(crate::services::checklist::set_checked(&base_checklist, "a1", true));
+        local_mark.checklist_base = Some(base_checklist.clone());
+        local_mark.updated_at = "2026-03-02T09:05:00Z".to_string();
+        QuestRepository::new(&mut conn).save_occurrence(&local_mark).unwrap();
+        insert_outbox_entry(&mut conn, "dev-local", "quest_occurrence", &local_mark.sync_id(), "2026-03-02T09:05:00Z", None);
+
+        let mut remote_mark = QuestOccurrence::new("q1", "2026-03-02", "2026-03-02T09:00:00Z");
+        remote_mark.description = Some(crate::services::checklist::set_checked(&base_checklist, "a2", true));
+        remote_mark.updated_at = "2026-03-02T09:01:00Z".to_string();
+        let event = test_envelope(
+            "evt-remote-mark",
+            "dev-remote",
+            "quest_occurrence",
+            &remote_mark.sync_id(),
+            "upsert",
+            Some(serde_json::to_string(&remote_mark).unwrap()),
+            "2026-03-02T09:01:00Z",
+        );
+
+        assert!(!apply_sync_event(&mut conn, &event).unwrap(), "the older event loses");
+
+        let after = QuestRepository::new(&mut conn).find_occurrence("q1", "2026-03-02").unwrap().unwrap();
+        let items = crate::services::checklist::parse(after.description.as_deref().unwrap());
+        assert!(items.iter().all(|item| item.checked), "both ticks are kept: {items:?}");
+
+        let sent: Vec<Option<String>> = sync_outbox::table
+            .filter(sync_outbox::entity_type.eq("quest_occurrence"))
+            .filter(sync_outbox::origin_device_id.eq("dev-local"))
+            .filter(sync_outbox::payload.is_not_null())
+            .select(sync_outbox::payload)
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(sent.len(), 1, "the merged day goes back to the peer");
+        let sent: QuestOccurrence = serde_json::from_str(sent[0].as_deref().unwrap()).unwrap();
+        assert_eq!(sent.description, after.description);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// A "This day" description of a quest that is not a checklist is prose:
+    /// the newer edit wins whole, with no checklist merge that drops it.
+    #[test]
+    fn apply_sync_event_keeps_a_prose_day_description() {
+        let db_path = temp_db_path("occurrence-prose-description");
+        let mut conn = open_db_at_path(&db_path);
+        ensure_spaces_exist(&mut conn, &["1".to_string()]).unwrap();
+        let mut quest = test_quest("q1", "Read", "2026-03-01T00:00:00Z");
+        quest.repeat_rule = Some(r#"{"preset":"daily"}"#.to_string());
+        quest.due = Some("2026-03-01".to_string());
+        insert_local_quest_row(&mut conn, &quest);
+
+        let mut local_mark = QuestOccurrence::new("q1", "2026-03-02", "2026-03-02T09:00:00Z");
+        local_mark.description = Some("Chapter one".to_string());
+        QuestRepository::new(&mut conn).save_occurrence(&local_mark).unwrap();
+
+        let mut remote_mark = local_mark.clone();
+        remote_mark.description = Some("Chapter two".to_string());
+        remote_mark.updated_at = "2026-03-02T10:00:00Z".to_string();
+        let event = test_envelope(
+            "evt-prose",
+            "dev-remote",
+            "quest_occurrence",
+            &remote_mark.sync_id(),
+            "upsert",
+            Some(serde_json::to_string(&remote_mark).unwrap()),
+            "2026-03-02T10:00:00Z",
+        );
+        assert!(apply_sync_event(&mut conn, &event).unwrap());
+
+        let after = QuestRepository::new(&mut conn).find_occurrence("q1", "2026-03-02").unwrap().unwrap();
+        assert_eq!(after.description.as_deref(), Some("Chapter two"));
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -3035,6 +3164,8 @@ pub struct IncomingSyncAck {
 mod tests {
     use super::*;
     use crate::schema::{pair_space_mappings, paired_devices, quests};
+    use crate::services::db::open_db_at_path;
+    use std::path::PathBuf;
     use uuid::Uuid;
 
     struct Fixture {
@@ -3070,10 +3201,11 @@ mod tests {
             .execute(&mut conn)
             .unwrap();
         let identity = DeviceRepository::new(&mut conn).load_or_create_identity(&app_dir).unwrap();
-        let bus = Arc::new(EventBusService::default());
-        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), db_path.clone(), bus.clone(), 0));
-        let bluetooth = BluetoothChannelService::new(identity.clone(), db_path.clone(), bus.clone());
-        let service = SpaceSyncService::new(identity, db_path.clone(), bus, network, bluetooth);
+        let bus = Arc::new(EventBus::default());
+        let pool = DbPool::open_for_test(&db_path);
+        let network = Arc::new(NetworkChannelService::on_port(identity.clone(), pool.clone(), bus.clone(), 0));
+        let bluetooth = BluetoothChannelService::new(identity.clone(), pool.clone(), bus.clone());
+        let service = SpaceSyncService::new(identity, pool, bus, network, bluetooth);
         Fixture { service, conn, db_path, app_dir }
     }
 
@@ -3140,8 +3272,6 @@ mod tests {
             focus_enter_count: 0,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-04-11T20:00:00Z".to_string(),
-            series_id: None,
-            period_key: None,
             is_checklist: false,
             checklist_base: None,
         };

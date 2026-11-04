@@ -28,14 +28,16 @@ fini-backup.sqlite
 ```json
 {
   "format": "fini-backup",
-  "version": 1,
-  "app_version": "0.1.27",
+  "version": 3,
+  "app_version": "0.3.18",
   "exported_at": "2026-05-19T12:00:00Z",
-  "domains": ["spaces", "quest_series", "quests"],
+  "domains": ["spaces", "quests", "quest_occurrences"],
   "spaces": [{ "id": "1", "name": "Personal" }],
-  "counts": { "spaces": 1, "quest_series": 0, "quests": 0 }
+  "counts": { "spaces": 1, "quests": 0, "quest_occurrences": 0 }
 }
 ```
+
+Version 3 (ADR-0012): a repeating quest is one quest; its closed or changed days are `quest_occurrences` rows. A version 2 backup (with `quest_series`) is refused as an unsupported version.
 
 Import rejects non-zip files, raw SQLite files, JSON backup files, archives missing required files, archives with extra files, unsupported manifest versions, malformed backup SQLite databases, and databases missing required backup tables.
 
@@ -45,7 +47,7 @@ Export includes:
 
 - Selected spaces.
 - All quests in selected spaces, including active, completed, and abandoned.
-- `quest_series` rows whose `space_id` is selected.
+- The occurrence marks (`quest_occurrences`) of those quests.
 
 Export excludes:
 
@@ -55,7 +57,6 @@ Export excludes:
 - space sync mappings
 - sync outbox, acks, seen rows, and tombstones
 - reminders
-- series reminder templates
 - notification snoozes
 - focus history
 
@@ -78,7 +79,7 @@ Settings import flow:
 1. User clicks `Import backup`.
 2. Native document picker opens and accepts `.zip` files.
 3. Backend validates the zip and manifest before any write.
-4. Backend preflights imported spaces, quests, and quest series.
+4. Backend preflights imported spaces, quests, and occurrence marks.
 5. Built-in spaces are hidden from mapping and automatically use matching IDs.
 6. Custom backup spaces with existing local IDs use that ID automatically.
 7. Missing custom backup spaces are resolved one at a time.
@@ -98,7 +99,7 @@ Built-in space IDs are `1`, `2`, and `3`.
 - Incoming custom spaces whose IDs already exist locally map to that same ID automatically.
 - Missing custom spaces require `create_new` or `use_existing`.
 - `create_new` creates the local space using the backup space ID.
-- `use_existing` assigns imported quests and quest series from that backup space to the selected local space ID.
+- `use_existing` assigns imported quests from that backup space to the selected local space ID.
 
 ## MergeConflictDialog
 
@@ -144,9 +145,9 @@ Use the term `relations` for normal data relationships.
 Relevant relations:
 
 - A quest belongs to a space.
-- A repeating quest belongs to a quest series.
+- An occurrence mark belongs to its repeating quest.
 
-The importer must not write quests or quest series in a state that breaks these relations.
+The importer must not write quests or occurrence marks in a state that breaks these relations.
 
 ## Acceptance Criteria
 
@@ -157,13 +158,13 @@ The importer must not write quests or quest series in a state that breaks these 
 - Export checklist starts with no spaces selected.
 - Export button is disabled until at least one space is selected.
 - Export writes a `.zip` containing exactly `manifest.json` and `fini-backup.sqlite`.
-- Export includes only selected spaces, their quests, and selected-space quest series.
-- Import rejects any file that is not the v1 backup zip format.
+- Export includes only selected spaces, their quests, and the occurrence marks of those quests.
+- Import rejects any file that is not the current (v3) backup zip format.
 - Import maps custom incoming spaces one at a time using the device-sync-style mapping pattern.
 - Built-in spaces are auto-mapped and hidden from mapping.
 - Existing local custom space IDs are reused without mapping.
 - Missing custom space IDs require create-new or map-to-existing choice.
-- Quest and quest-series conflicts use the generic `MergeConflictDialog`.
+- Quest and occurrence-mark conflicts use the generic `MergeConflictDialog`.
 - CLI export requires `--space-id` or `--all-spaces`.
 - CLI import fails on conflicts by default.
 - CLI import `--force` uses backup versions for conflicts.

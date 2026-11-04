@@ -16,7 +16,7 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 
 - Renders [[ActiveQuestPanel]] for the current computed Focus quest
 - If no active quests exist, shows an empty-state placeholder
-- Complete and Abandon actions are one-click
+- Complete is one tap; on a repeating quest, holding Complete opens a menu with "Complete through today". Abandon is a hold
 
 ### Active backlog
 
@@ -36,6 +36,7 @@ All sections respect the active space from [[SpacePicker]]. When a specific spac
 - Manual focus and restore triggers append events in [[FocusHistory]]
 - Active reminder due timestamps are virtual Focus events: once `due + due_time` arrives, the reminder timestamp competes with manual Focus timestamps and the youngest valid timestamp wins
 - Reminder preemption is temporary and unwinds to previous valid target
+- A quest comes to Focus at its `due + due_time` (09:00 when there is no time); before that moment it is not on Focus. For a repeating quest this is the moment of its shown day: a daily meeting at 09:00 comes to Focus each day at 09:00
 - If no active override exists, fallback is overdue > `order_rank` > Priority (`high > medium > low`) > oldest `created_at`
 
 See `specs/e2e/focus-reminder-preemption.md` for the open-app e2e contract.

@@ -26,7 +26,6 @@
 //! (see `pairing::DeviceConnectionState::recompute_primary_locked`),
 //! not whether Bluetooth connects at all.
 
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -44,8 +43,8 @@ use crate::services::channel_service::iroh_link::{IrohDataLink, PEER_ALPN, SYNC_
 use crate::services::channel_service::{
     ChannelKind, ChannelProblem, ChannelService, DataLink, LinkHandlerSlot, LinkHandlers,
 };
-use crate::services::db::open_db_at_path;
-use crate::services::event_bus_service::EventBusService;
+use crate::services::db::DbPool;
+use crate::services::event_bus_service::EventBus;
 use crate::services::space_sync_service::rejected_by_peer;
 
 
@@ -63,8 +62,8 @@ use scanner::Purpose;
 /// Bluetooth.
 pub struct BluetoothChannelService {
     identity: Identity,
-    db_path: PathBuf,
-    bus: Arc<EventBusService>,
+    pool: DbPool,
+    bus: Arc<EventBus>,
     /// This object, for the tasks it starts.
     me: Weak<BluetoothChannelService>,
     handlers: LinkHandlerSlot,
@@ -91,7 +90,7 @@ pub struct BluetoothChannelService {
 }
 
 impl BluetoothChannelService {
-    pub fn new(identity: Identity, db_path: PathBuf, bus: Arc<EventBusService>) -> Arc<Self> {
+    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             scanner: Arc::new(Scanner::new(bus.clone())),
             advertiser: Arc::new(Advertiser::new(&identity)),
@@ -101,7 +100,7 @@ impl BluetoothChannelService {
             connect_once: std::sync::Mutex::default(),
             refused_at: std::sync::Mutex::default(),
             identity,
-            db_path,
+            pool,
             bus,
             me: me.clone(),
             handlers: LinkHandlerSlot::default(),
@@ -125,7 +124,7 @@ impl BluetoothChannelService {
 
     /// The iroh key pinned for the pair, if any.
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
-        tokio::task::block_in_place(|| DeviceRepository::new(&mut open_db_at_path(&self.db_path)).pinned_key(peer_id))
+        tokio::task::block_in_place(|| DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id))
     }
 }
 
@@ -160,13 +159,13 @@ const FAILED_CONNECT_WAIT_TIME: Duration = Duration::from_secs(2);
 /// connection. In memory only, as ADR-0008 decided: a started app tries at
 /// once.
 pub struct DeliverySchedule {
-    bus: Arc<EventBusService>,
+    bus: Arc<EventBus>,
     schedule: std::sync::Mutex<std::collections::HashMap<String, (usize, std::time::Instant)>>,
     rejected_until: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl DeliverySchedule {
-    pub fn new(bus: Arc<EventBusService>) -> Self {
+    pub fn new(bus: Arc<EventBus>) -> Self {
         Self { bus, schedule: Default::default(), rejected_until: Default::default() }
     }
 
@@ -352,8 +351,8 @@ impl ChannelService for BluetoothChannelService {
         ChannelKind::Bluetooth
     }
 
-    fn db_path(&self) -> &Path {
-        &self.db_path
+    fn pool(&self) -> &DbPool {
+        &self.pool
     }
 
     fn set_link_handlers(&self, handlers: LinkHandlers) {
@@ -363,7 +362,7 @@ impl ChannelService for BluetoothChannelService {
     fn set_add_device_mode(&self, on: bool) {
         self.advertiser.set_add_mode(on);
         self.scanner.set_add_device_mode(on);
-        self.refresh_advertising();
+        tokio::task::block_in_place(|| self.refresh_advertising(&mut self.pool.connection()));
     }
 
     /// Linux and Android: the only builds with a Bluetooth channel.
@@ -398,12 +397,12 @@ impl ChannelService for BluetoothChannelService {
         if crate::services::ble_plugin::permission_granted() {
             self.start_peripheral_once();
         }
-        self.refresh_advertising();
+        tokio::task::block_in_place(|| self.refresh_advertising(&mut self.pool.connection()));
         // Hold a session with every paired device that has Bluetooth on
         // (2026-10-13: green is a live connection). `start_exchange` skips
         // a device that has one, or whose delivery search is not due.
         let peers = tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut open_db_at_path(&self.db_path)).peers_with_channel_enabled(ChannelKind::Bluetooth)
+            ChannelRepository::new(&mut *self.pool.connection()).peers_with_channel_enabled(ChannelKind::Bluetooth)
         });
         for peer in peers {
             self.start_exchange(&peer);
@@ -865,7 +864,7 @@ impl BluetoothChannelService {
         };
         // Diagnostics only: nothing connects to a stored address.
         tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut open_db_at_path(&self.db_path)).note_address(
+            ChannelRepository::new(&mut *self.pool.connection()).note_address(
                 peer_id,
                 ChannelKind::Bluetooth,
                 address,
@@ -900,12 +899,9 @@ impl BluetoothChannelService {
 
     /// Works out again whether to advertise, from the stored channels and
     /// the setups open now. Cheap; called whenever one of these can change.
-    pub fn refresh_advertising(&self) {
-        let any_channel_on = tokio::task::block_in_place(|| {
-            !ChannelRepository::new(&mut open_db_at_path(&self.db_path))
-                .peers_with_channel_enabled(ChannelKind::Bluetooth)
-                .is_empty()
-        });
+    /// The caller gives its connection (docs/db.md, rule 2).
+    pub fn refresh_advertising(&self, conn: &mut diesel::SqliteConnection) {
+        let any_channel_on = !ChannelRepository::new(conn).peers_with_channel_enabled(ChannelKind::Bluetooth).is_empty();
         let advertiser = &self.advertiser;
         let wanted =
             any_channel_on || advertiser.in_add_mode();
@@ -932,7 +928,7 @@ mod tests {
     /// earlier misses left behind.
     #[tokio::test]
     async fn forgetting_delivery_misses_makes_the_next_search_due_now() {
-        let schedule = DeliverySchedule::new(Arc::new(EventBusService::default()));
+        let schedule = DeliverySchedule::new(Arc::new(EventBus::default()));
         let scanner = Scanner::default();
         let peer = "peer-forget-delivery-misses";
         schedule.note_delivery_missed(peer);
@@ -2312,7 +2308,7 @@ use super::{
 };
 use crate::models::Event;
 use crate::services::channel_service::ChannelKind;
-use crate::services::event_bus_service::EventBusService;
+use crate::services::event_bus_service::EventBus;
 
 /// How long a heard advertisement counts as current (`heard_recently`).
 const BLUETOOTH_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -2463,7 +2459,7 @@ pub struct Scanner {
     /// The devices around this one in Add Device mode.
     pub(crate) available: AvailableDevices,
     /// Told when a paired device is heard again.
-    bus: Arc<EventBusService>,
+    bus: Arc<EventBus>,
 }
 
 #[cfg(test)]
@@ -2474,7 +2470,7 @@ impl Default for Scanner {
 }
 
 impl Scanner {
-    pub fn new(bus: Arc<EventBusService>) -> Self {
+    pub fn new(bus: Arc<EventBus>) -> Self {
         Self {
             bus,
             pairing_steps: Arc::new(watch::channel(0).0),

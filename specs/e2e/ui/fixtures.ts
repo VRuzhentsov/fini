@@ -8,9 +8,10 @@
  *   binary does not bind ports the live dev app already holds.
  * - When FINI_APP_BINARY points at a prebuilt e2e binary, no `tauri dev` is started,
  *   so Vite port 1420 is free for the developer's `make dev` session.
- * - FINI_E2E_HEADFUL=1 skips the `xvfb-run` wrapper so the test window draws on
- *   the real X session (default for `make e2e`). CI sets FINI_E2E_HEADFUL=0 (or
- *   leaves it unset) to keep the xvfb wrapper.
+ * - The app draws on DISPLAY: headful on the real session (`make e2e`),
+ *   headless on the lane's Xvfb (DISPLAY=:99) in the e2e container.
+ * - Each test starts its own app (the `tauriPage` fixture is test-scoped) and
+ *   stops it with SIGTERM at the end of the test.
  */
 import { createTauriTest } from '@srsholmes/tauri-playwright';
 import { mkdirSync } from 'fs';
@@ -27,14 +28,11 @@ mkdirSync(e2eUiRoot, { recursive: true });
 const dataDir = process.env.FINI_APP_DATA_DIR ?? e2eUiRoot;
 const discoveryPort = pickRandomPort('FINI_DISCOVERY_PORT', 47000, 500);
 const wsPort = pickRandomPort('FINI_SPACE_SYNC_WS_PORT', 47500, 500);
-const headful = process.env.FINI_E2E_HEADFUL === '1';
-
 const envFlags = `FINI_APP_DATA_DIR=${dataDir} FINI_DISCOVERY_PORT=${discoveryPort} FINI_SPACE_SYNC_WS_PORT=${wsPort} TZ=UTC`;
-// A backstop against a runaway app process outliving the run -- not a
-// budget for the lane. It has to exceed the *whole* `ui` project's runtime,
-// because one app process serves every test in it: when this fires
-// mid-lane the app simply disappears, and the next test hangs forever
-// rather than failing, since a dead socket neither answers nor times out.
+// A backstop against an app process that outlives its test -- not a
+// budget for the test. Each test starts its own app; when this fires
+// during a test, the app simply disappears, and the test hangs until its
+// own timeout, since a dead socket neither answers nor times out.
 //
 // That is exactly what 300s did once the lane grew past five minutes --
 // whichever test happened to run around the four-minute mark died with a
@@ -47,10 +45,8 @@ const envFlags = `FINI_APP_DATA_DIR=${dataDir} FINI_DISCOVERY_PORT=${discoveryPo
 const binaryTimeout = process.platform === 'linux' ? '/usr/bin/timeout --foreground --kill-after=5s 1800s ' : '';
 
 const tauriCommand = process.env.FINI_APP_BINARY
-  ? (headful
-      ? `${binaryTimeout}env ${envFlags} ${process.env.FINI_APP_BINARY}`
-      : `${binaryTimeout}xvfb-run -a env ${envFlags} ${process.env.FINI_APP_BINARY}`)
-  : `env ${envFlags} npm run tauri -- dev --features ui-plane,devtools`;
+  ? `${binaryTimeout}env ${envFlags} ${process.env.FINI_APP_BINARY}`
+  :`env ${envFlags} npm run tauri -- dev --features ui-plane,devtools`;
 
 export const { test, expect } = createTauriTest({
   tauriCommand,

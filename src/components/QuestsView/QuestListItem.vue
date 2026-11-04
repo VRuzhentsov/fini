@@ -3,6 +3,7 @@ import { ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   useQuestStore,
+  isRepeating,
   statusLabel,
   dueBadgeClass,
   smartDueLabel,
@@ -13,10 +14,11 @@ import {
 import { useSpaceStore, spaceName, spaceCss } from "../../stores/space";
 import { formatDue, formatTime } from "../../utils/date";
 import { useContextMenu } from "../../composables/useContextMenu";
-import { buildQuestMenu } from "../../composables/buildQuestMenu";
+import { useQuestMenu } from "../../composables/useQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
 import { ArrowPathIcon, CheckCircleIcon } from "@heroicons/vue/24/outline";
-import { checklistCounts, newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
+import { checklistCounts } from "../../utils/checklist";
+import { EditScope } from "../../utils/quest";
 import { formatTimestamp } from "../../utils/timestamp";
 import ReminderMenu from "./ReminderMenu.vue";
 import RecurrenceScopeSheet from "./RecurrenceScopeSheet.vue";
@@ -35,18 +37,13 @@ const store = useQuestStore();
 const { t } = useI18n();
 const spaceStore = useSpaceStore();
 const contextMenu = useContextMenu();
+const questMenu = useQuestMenu(() => props.quest);
 const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
 function onContextMenu(e: MouseEvent) {
-  const items = buildQuestMenu(props.quest, {
-    spaces: spaceStore.spaces,
-    updateQuest: (id, patch) => store.updateQuest(id, patch),
-    setFocusQuest: (id) => store.setFocusQuest(id),
-    deleteQuest: (id) => store.deleteQuest(id),
-  });
-  contextMenu.open(e, items);
+  contextMenu.open(e, questMenu.items.value);
 }
 
 // ── Checklist (issue #128) ──────────────────────────────────────────────────
@@ -77,16 +74,8 @@ function onToggleChecklistItem(itemId: string, checked: boolean) {
   store.toggleChecklistItem(props.quest.id, itemId, checked);
 }
 
-function onEditChecklistItemText(itemId: string, text: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "edit", payload: { itemId, text } };
-    return;
-  }
-  store.editChecklistItemText(props.quest.id, itemId, text);
-}
-
-// A structural or text edit on a recurring quest needs the user's scope choice
-// (#128: "This occurrence" vs "This and future occurrences") before it's applied.
+// A structural or text edit on a repeating quest asks "This day" / "All days"
+// first (ADR-0012 D8); the backend applies it to the day copy or the template.
 type PendingScopeAction =
   | { quest: Quest; kind: "add"; payload: string }
   | { quest: Quest; kind: "remove"; payload: string }
@@ -94,61 +83,37 @@ type PendingScopeAction =
 
 const pendingScopeAction = ref<PendingScopeAction | null>(null);
 
-function onAddChecklistItem(text: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "add", payload: text };
+function editChecklist(action: PendingScopeAction) {
+  if (isRepeating(action.quest)) {
+    pendingScopeAction.value = action;
     return;
   }
-  store.addChecklistItem(props.quest.id, text);
+  void applyChecklistEdit(action, EditScope.All);
+}
+
+function onEditChecklistItemText(itemId: string, text: string) {
+  editChecklist({ quest: props.quest, kind: "edit", payload: { itemId, text } });
+}
+
+function onAddChecklistItem(text: string) {
+  editChecklist({ quest: props.quest, kind: "add", payload: text });
 }
 
 function onRemoveChecklistItem(itemId: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "remove", payload: itemId };
-    return;
-  }
-  store.removeChecklistItem(props.quest.id, itemId);
+  editChecklist({ quest: props.quest, kind: "remove", payload: itemId });
 }
 
-async function onScopeChosen(scope: "this" | "future") {
+async function applyChecklistEdit(action: PendingScopeAction, scope: EditScope) {
+  const { quest } = action;
+  if (action.kind === "add") await store.addChecklistItem(quest.id, action.payload, scope);
+  else if (action.kind === "remove") await store.removeChecklistItem(quest.id, action.payload, scope);
+  else await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text, scope);
+}
+
+async function onScopeChosen(scope: EditScope) {
   const action = pendingScopeAction.value;
   pendingScopeAction.value = null;
-  if (!action) return;
-  const { quest, kind, payload } = action;
-
-  if (scope === "this") {
-    if (kind === "add") await store.addChecklistItem(quest.id, payload);
-    else if (kind === "remove") await store.removeChecklistItem(quest.id, payload);
-    else await store.editChecklistItemText(quest.id, payload.itemId, payload.text);
-    return;
-  }
-
-  // "This and future occurrences": diff against the series' own stored template, not this
-  // occurrence's current description (which may already carry "this occurrence only" changes
-  // that were never promoted — basing the edit on it would silently promote them), then push the
-  // result as the new template. The backend reconciles this occurrence against it (preserving
-  // checks on unchanged items, per #128).
-  const template = await store.fetchSeriesChecklistTemplate(quest.series_id!);
-  const items = parseChecklist(template);
-
-  if (kind === "edit" && !items.some((it) => it.id === payload.itemId)) {
-    // The item being renamed was added via "This occurrence" and was never promoted to the
-    // template — it has no counterpart there to update. Pushing the template unchanged would
-    // leave the rename un-applied, and reconcile_future_scope would then drop the item entirely
-    // (since it's absent from the new template), destroying it instead of renaming it. There's no
-    // coherent "future" version of an occurrence-only item, so fall back to applying the rename
-    // to just this occurrence.
-    await store.editChecklistItemText(quest.id, payload.itemId, payload.text);
-    return;
-  }
-
-  const nextItems =
-    kind === "add"
-      ? [...items, { id: newChecklistItemId(), text: payload, checked: false }]
-      : kind === "remove"
-        ? items.filter((it) => it.id !== payload)
-        : items.map((it) => (it.id === payload.itemId ? { ...it, text: payload.text } : it));
-  await store.updateSeriesChecklist(quest.series_id!, quest.id, serializeChecklist(nextItems), "future");
+  if (action) await applyChecklistEdit(action, scope);
 }
 
 // ── Active actions ────────────────────────────────────────────────────────────
@@ -167,8 +132,10 @@ async function updateQuest(patch: UpdateQuestInput) {
 
 // ── History actions ───────────────────────────────────────────────────────────
 
+/** A closed day of a repeating quest opens that day again (ADR-0012). */
 async function restore() {
-  await store.updateQuest(props.quest.id, { status: "active" });
+  const periodKey = isRepeating(props.quest) ? props.quest.due ?? undefined : undefined;
+  await store.updateQuest(props.quest.id, { status: "active", period_key: periodKey });
 }
 
 // ── Reminder menu ─────────────────────────────────────────────────────────────
@@ -268,7 +235,7 @@ function pillText(): string {
     :is-focus="store.activeQuest?.id === quest.id"
     :reminder-text="pillText()"
     :timestamp-text="quest.status !== 'active' ? formatTimestamp(quest.completed_at ?? quest.updated_at) : ''"
-    :is-recurring="!!quest.series_id"
+    :is-recurring="isRepeating(quest)"
     :checklist-activity="checklistActivity"
     @contextmenu="onContextMenu"
     @update="updateQuest"

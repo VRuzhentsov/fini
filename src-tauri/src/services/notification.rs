@@ -12,7 +12,7 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::models::{InsertNotificationSnooze, NotificationSnooze, Quest, Reminder, Space};
 use crate::schema::notification_snoozes;
-use crate::services::db::{utc_now, AppDbConnection};
+use crate::services::db::{utc_now, DbPool};
 
 #[cfg(not(target_os = "linux"))]
 const CHANNEL_ID: &str = "fini.reminders";
@@ -27,15 +27,6 @@ const ACTION_SNOOZE_1D: &str = "snooze_1d";
 pub const FOREGROUND_FIRE_EVENT: &str = "notification://foreground-fire";
 // Tauri event emitted when the user taps a reminder notification.
 pub const TAP_EVENT: &str = "notification://tap";
-
-/// Compute the UTC fire time from quest due fields using the local wall-clock timezone.
-/// If `due_time` is None, defaults to 09:00 local.
-pub fn compute_fire_utc(
-    due: &str,
-    due_time: Option<&str>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    crate::services::due_time::compute_fire_utc(due, due_time)
-}
 
 /// In-process timer handles keyed by reminder ID (desktop only).
 pub struct SchedulerState(pub Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>);
@@ -158,7 +149,7 @@ pub fn schedule_reminder(
 ) -> Option<String> {
     #[cfg(mobile)]
     {
-        let due_utc = compute_fire_utc(quest.due.as_deref()?, quest.due_time.as_deref())?;
+        let due_utc = reminder.moment(quest)?;
         let due_ts = due_utc.timestamp();
         let due = time::OffsetDateTime::from_unix_timestamp(due_ts).ok()?;
 
@@ -209,7 +200,7 @@ pub fn schedule_reminder(
     }
     #[cfg(not(mobile))]
     {
-        let due_utc = compute_fire_utc(quest.due.as_deref()?, quest.due_time.as_deref())?;
+        let due_utc = reminder.moment(quest)?;
         let now = chrono::Utc::now();
         let delay_ms = (due_utc - now).num_milliseconds();
         if delay_ms <= 0 {
@@ -226,6 +217,10 @@ pub fn schedule_reminder(
         let handle = tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
             show_now(&app_clone, &reminder_id, &quest_id, &body_for_timer);
+            // A repeating quest's next open day gets its reminder now (ADR-0012 D9).
+            if let Some(db) = app_clone.try_state::<crate::services::db::DbPool>() {
+                let _ = crate::services::reminder::ReminderService::new(&mut db.connection()).keep_in_step(&app_clone, &quest_id);
+            }
         });
 
         if let Some(state) = app.try_state::<SchedulerState>() {
@@ -424,7 +419,7 @@ pub fn dispatch_action(app: &AppHandle, action_id: &str, reminder_id: &str) {
             // Find the quest for this reminder so we can complete it.
             let quest_id = reminder_quest_id(app, reminder_id);
             if let Some(qid) = quest_id {
-                crate::services::quest::complete_quest_for_notification(app, &qid);
+                crate::commands::quest_commands::complete_quest_for_notification(app, &qid);
             }
         }
         ACTION_SNOOZE_30M => snooze(app, reminder_id, 30),
@@ -441,8 +436,8 @@ pub fn dispatch_action(app: &AppHandle, action_id: &str, reminder_id: &str) {
 /// Look up the quest_id for a reminder from the DB.
 fn reminder_quest_id(app: &AppHandle, reminder_id: &str) -> Option<String> {
     use crate::schema::reminders;
-    let db = app.try_state::<AppDbConnection>()?;
-    let mut conn = db.0.lock().unwrap();
+    let db = app.try_state::<DbPool>()?;
+    let mut conn = db.connection();
     reminders::table
         .find(reminder_id)
         .select(reminders::quest_id)
@@ -462,8 +457,8 @@ pub fn snooze(app: &AppHandle, reminder_id: &str, minutes: i64) {
     let now_str = utc_now();
 
     // Persist snooze so it survives app restart.
-    if let Some(db) = app.try_state::<AppDbConnection>() {
-        let mut conn = db.0.lock().unwrap();
+    if let Some(db) = app.try_state::<DbPool>() {
+        let mut conn = db.connection();
         let row = InsertNotificationSnooze {
             reminder_id: reminder_id.to_string(),
             fire_at_utc: fire_at_str.clone(),
@@ -513,8 +508,8 @@ pub fn snooze(app: &AppHandle, reminder_id: &str, minutes: i64) {
 
 fn snooze_body(app: &AppHandle, reminder_id: &str) -> Option<String> {
     use crate::schema::{quests, reminders, spaces};
-    let db = app.try_state::<AppDbConnection>()?;
-    let mut conn = db.0.lock().unwrap();
+    let db = app.try_state::<DbPool>()?;
+    let mut conn = db.connection();
     let quest_id: String = reminders::table
         .find(reminder_id)
         .select(reminders::quest_id)
@@ -535,8 +530,8 @@ fn snooze_body(app: &AppHandle, reminder_id: &str) -> Option<String> {
 
 fn remove_snooze(app: &AppHandle, reminder_id: &str) {
     use diesel::prelude::*;
-    if let Some(db) = app.try_state::<AppDbConnection>() {
-        let mut conn = db.0.lock().unwrap();
+    if let Some(db) = app.try_state::<DbPool>() {
+        let mut conn = db.connection();
         let _ = diesel::delete(notification_snoozes::table.find(reminder_id)).execute(&mut *conn);
     }
 }
@@ -544,12 +539,12 @@ fn remove_snooze(app: &AppHandle, reminder_id: &str) {
 /// Re-arm in-process timers for snoozed reminders found in the DB. Called by the reconciler.
 pub fn rearm_snoozed_reminders(app: &AppHandle) {
     use diesel::prelude::*;
-    let db = match app.try_state::<AppDbConnection>() {
+    let db = match app.try_state::<DbPool>() {
         Some(s) => s,
         None => return,
     };
     let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let mut conn = db.0.lock().unwrap();
+    let mut conn = db.connection();
 
     let snoozed: Vec<NotificationSnooze> = match notification_snoozes::table
         .select(NotificationSnooze::as_select())
@@ -630,8 +625,8 @@ pub fn cancel_in_process(app: &AppHandle, reminder_id: &str) {
 }
 
 /// Cancel the DB snooze record using a connection the caller already holds.
-/// Use this instead of `cancel_snooze` when the AppDbConnection mutex is already locked
-/// on the current thread to avoid a deadlock.
+/// Use this instead of `cancel_snooze` when the caller already holds a
+/// connection: one piece of work uses one connection (docs/db.md, rule 2).
 pub fn cancel_snooze_with_conn(
     conn: &mut diesel::sqlite::SqliteConnection,
     app: &AppHandle,

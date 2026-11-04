@@ -19,7 +19,7 @@ const showBackupExport = ref(false);
     <SettingsListGroup>
       <SettingsListItem button data-testid="backup-export-row" @click="showBackupExport = true">
         <template #leading><svg class="h-5 w-5 flex-shrink-0 opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></template>
-        <div><span class="block font-medium">Export backup</span><span class="block text-xs opacity-60">Saves a <code class="font-mono">.zip</code> with quests and quest series for the spaces you pick.</span></div>
+        <div><span class="block font-medium">Export backup</span><span class="block text-xs opacity-60">Saves a <code class="font-mono">.zip</code> with the quests of the spaces you pick, and the closed days of their repeating quests.</span></div>
         <template #trailing><span class="text-sm opacity-50">›</span></template>
       </SettingsListItem>
       <SettingsListItem button data-testid="backup-import-row" @click="void backupImport.startImport()">

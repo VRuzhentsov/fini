@@ -5,14 +5,13 @@ use tauri::{AppHandle, State};
 #[cfg(any(feature = "ui-plane", test))]
 use crate::models::Space;
 use crate::models::{CreateReminderInput, Quest, Reminder};
-use crate::repositories::reminder::ReminderRepository;
+use crate::repositories::ReminderRepository;
 
 #[cfg(any(feature = "ui-plane", test))]
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 #[cfg(any(feature = "ui-plane", test))]
 use crate::services::notification;
-#[cfg(any(feature = "ui-plane", test))]
-use crate::services::quest::QuestService;
+use crate::repositories::QuestRepository;
 
 /// Owns reminder reconciliation after quest persistence succeeds.
 pub struct ReminderService<'a> {
@@ -35,14 +34,7 @@ impl<'a> ReminderService<'a> {
     }
 
     pub fn upsert_for_quest(&mut self, quest: &Quest) -> Result<Reminder, String> {
-        let due_at_utc = quest
-            .due
-            .as_deref()
-            .and_then(|due| {
-                crate::services::due_time::compute_fire_utc(due, quest.due_time.as_deref())
-            })
-            .map(|time| time.format("%Y-%m-%dT%H:%M:%SZ").to_string());
-        self.repository.upsert_for_quest(&quest.id, due_at_utc)
+        self.repository.upsert_for_quest(&quest.id)
     }
 
     pub fn delete_for_quest(&mut self, quest_id: &str) -> Result<(), String> {
@@ -54,12 +46,55 @@ impl<'a> ReminderService<'a> {
         self.repository.get(id)
     }
 
+    /// The reminders of a quest as the CLI and the UI read them: each with
+    /// its moment in `due_at_utc`, also when the moment is computed.
     pub fn list_for_quest(&mut self, quest_id: &str) -> Result<Vec<Reminder>, String> {
-        self.repository.list_for_quest(quest_id)
+        let reminders = self.repository.list_for_quest(quest_id)?;
+        let shown = self.shown_quest(quest_id)?;
+        Ok(reminders
+            .into_iter()
+            .map(|reminder| match &shown {
+                Some(quest) => reminder.with_moment(quest),
+                None => reminder,
+            })
+            .collect())
     }
 
     pub fn create(&mut self, input: CreateReminderInput) -> Result<Reminder, String> {
-        self.repository.create(input)
+        let reminder = self.repository.create(input)?;
+        self.readable(reminder)
+    }
+
+    /// The quest that a reminder's moment is computed from: the quest, or
+    /// for a repeating quest its next open day (ADR-0012 D9). `None` for a
+    /// repeating quest with no open day left.
+    fn shown_quest(&mut self, quest_id: &str) -> Result<Option<Quest>, String> {
+        if QuestRepository::new(self.repository.conn).is_repeating(quest_id)? {
+            return self.armed_day(quest_id);
+        }
+        QuestRepository::new(self.repository.conn).get(quest_id).map(Some)
+    }
+
+    /// The day a repeating quest's reminders are armed for (ADR-0012 D9):
+    /// the first open day from today on on which one of its reminders is
+    /// still to come. With no reminder yet, the day's due moment counts.
+    pub fn armed_day(&mut self, quest_id: &str) -> Result<Option<Quest>, String> {
+        let reminders = self.repository.list_for_quest(quest_id)?;
+        let now = chrono::Utc::now();
+        QuestRepository::new(self.repository.conn).reminder_occurrence(quest_id, |day| {
+            if reminders.is_empty() {
+                return day.due_at().is_some_and(|at| at > now);
+            }
+            reminders.iter().any(|reminder| reminder.moment(day).is_some_and(|at| at > now))
+        })
+    }
+
+    /// One reminder as the readers get it (see `list_for_quest`).
+    fn readable(&mut self, reminder: Reminder) -> Result<Reminder, String> {
+        Ok(match self.shown_quest(&reminder.quest_id)? {
+            Some(quest) => reminder.with_moment(&quest),
+            None => reminder,
+        })
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -109,7 +144,7 @@ impl<'a> ReminderService<'a> {
         app: &AppHandle,
         quest: &Quest,
     ) -> Result<(), String> {
-        let (_, space) = QuestService::new(self.repository.conn).get_with_space(&quest.id)?;
+        let (_, space) = QuestRepository::new(self.repository.conn).load_quest_and_space(&quest.id)?;
         self.reconcile_with_notifications(app, quest, &space)
     }
 
@@ -148,12 +183,14 @@ impl<'a> ReminderService<'a> {
         space: &Space,
     ) -> Result<Reminder, String> {
         let reminder = self.repository.create(input)?;
-        if reminder.due_at_utc.is_none() {
-            return Ok(reminder);
+        // A repeating quest's reminder is for its next open day, not the rule's start (D9).
+        let quest = &self.shown_quest(&quest.id)?.unwrap_or_else(|| quest.clone());
+        if reminder.moment(quest).is_none() {
+            return self.readable(reminder);
         }
         let notification_id = notification::schedule_reminder(app, &reminder, quest, space);
-        self.repository
-            .set_scheduled_notification_id(&reminder.id, notification_id.as_deref())
+        let reminder = self.repository.set_scheduled_notification_id(&reminder.id, notification_id.as_deref())?;
+        self.readable(reminder)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -163,7 +200,7 @@ impl<'a> ReminderService<'a> {
         input: CreateReminderInput,
     ) -> Result<Reminder, String> {
         let (quest, space) =
-            QuestService::new(self.repository.conn).get_with_space(&input.quest_id)?;
+            QuestRepository::new(self.repository.conn).load_quest_and_space(&input.quest_id)?;
         self.create_with_notifications(app, input, &quest, &space)
     }
 
@@ -179,12 +216,12 @@ impl<'a> ReminderService<'a> {
         let existing = self.repository.get(id)?;
         self.cancel_scheduled(app, &existing);
         let updated = self.update(id, input)?;
+        let quest = &self.shown_quest(&quest.id)?.unwrap_or_else(|| quest.clone());
         let notification_id = updated
-            .due_at_utc
-            .as_ref()
+            .moment(quest)
             .and_then(|_| notification::schedule_reminder(app, &updated, quest, space));
-        self.repository
-            .set_scheduled_notification_id(&updated.id, notification_id.as_deref())
+        let updated = self.repository.set_scheduled_notification_id(&updated.id, notification_id.as_deref())?;
+        self.readable(updated)
     }
 
     #[cfg(any(feature = "ui-plane", test))]
@@ -196,7 +233,7 @@ impl<'a> ReminderService<'a> {
     ) -> Result<Reminder, String> {
         let existing = self.get(id)?;
         let (quest, space) =
-            QuestService::new(self.repository.conn).get_with_space(&existing.quest_id)?;
+            QuestRepository::new(self.repository.conn).load_quest_and_space(&existing.quest_id)?;
         self.update_with_notifications(app, id, input, &quest, &space)
     }
 
@@ -219,25 +256,70 @@ pub fn upsert_reminder_for_quest(
     ReminderService::new(conn).reconcile_with_notifications_for_quest(app, quest)
 }
 
+/// Keeps reminders in step with the quests, on the quest events of the bus
+/// (docs/db.md, rule 7).
 #[cfg(any(feature = "ui-plane", test))]
-/// Delete all Reminder rows for a quest and cancel their OS notifications.
-pub fn delete_reminder_for_quest(
-    conn: &mut SqliteConnection,
-    app: &AppHandle,
-    quest_id: &str,
-) -> Result<(), String> {
-    ReminderService::new(conn).delete_for_quest_with_notifications(app, quest_id)
+impl ReminderService<'_> {
+    /// Hears the event bus until it closes. Started once, at app start.
+    pub async fn follow_quest_events(
+        mut events: tokio::sync::broadcast::Receiver<crate::models::Event>,
+        app: AppHandle,
+        pool: DbPool,
+    ) {
+        use crate::models::Event;
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            match events.recv().await {
+                Ok(Event::QuestChanged { quest }) => tokio::task::block_in_place(|| {
+                    if let Err(e) = ReminderService::new(&mut pool.connection()).keep_in_step(&app, &quest.id) {
+                        log::warn!("[reminder] could not keep the reminder of {} in step: {e}", quest.id);
+                    }
+                }),
+                Ok(Event::QuestDeleted { reminders, .. }) => tokio::task::block_in_place(|| {
+                    let mut conn = pool.connection();
+                    let mut service = ReminderService::new(&mut conn);
+                    for reminder in &reminders {
+                        service.cancel_scheduled(&app, reminder);
+                        notification::cancel_snooze_with_conn(service.repository.conn, &app, &reminder.id);
+                    }
+                }),
+                Ok(_) => {}
+                Err(RecvError::Lagged(missed)) => {
+                    log::warn!("[reminder] missed {missed} events; the reconciler puts reminders in step at the next start")
+                }
+                Err(RecvError::Closed) => return,
+            }
+        }
+    }
+
+    /// Puts the reminder of one quest in step with it: a one-time quest that
+    /// is active with a date has one; a repeating quest has one for the
+    /// next open day on which it is still to come (ADR-0012 D9); any other
+    /// quest has none.
+    pub fn keep_in_step(&mut self, app: &AppHandle, quest_id: &str) -> Result<(), String> {
+        let target = if QuestRepository::new(self.repository.conn).is_repeating(quest_id)? {
+            self.armed_day(quest_id)?
+        } else {
+            let quest = QuestRepository::new(self.repository.conn).get(quest_id)?;
+            (quest.status == "active" && quest.due.is_some()).then_some(quest)
+        };
+        match target {
+            Some(quest) => self.reconcile_with_notifications_for_quest(app, &quest),
+            None => self.delete_for_quest_with_notifications(app, quest_id),
+        }
+    }
 }
+
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
 #[cfg(any(feature = "ui-plane", test))]
 #[tauri::command]
 pub fn get_reminders(
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     quest_id: String,
 ) -> Result<Vec<Reminder>, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).list_for_quest(&quest_id)
 }
 
@@ -245,10 +327,10 @@ pub fn get_reminders(
 #[tauri::command]
 pub fn create_reminder(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     input: CreateReminderInput,
 ) -> Result<Reminder, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).create_with_notifications_for_quest(&app, input)
 }
 
@@ -256,11 +338,11 @@ pub fn create_reminder(
 #[tauri::command]
 pub fn update_reminder(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     id: String,
     input: crate::models::UpdateReminderInput,
 ) -> Result<Reminder, String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).update_with_notifications_for_reminder(&app, &id, input)
 }
 
@@ -270,10 +352,10 @@ pub fn update_reminder(
 #[tauri::command]
 pub fn cancel_quest_notifications(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     quest_id: String,
 ) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).cancel_for_quest_notifications(&app, &quest_id)
 }
 
@@ -281,9 +363,9 @@ pub fn cancel_quest_notifications(
 #[tauri::command]
 pub fn delete_reminder(
     app: AppHandle,
-    state: State<AppDbConnection>,
+    state: State<DbPool>,
     id: String,
 ) -> Result<(), String> {
-    let mut conn = state.inner().0.lock().unwrap();
+    let mut conn = state.get()?;
     ReminderService::new(&mut conn).delete_with_notifications(&app, &id)
 }

@@ -140,5 +140,5 @@ the service. File names carry the role, as [`naming.md`](../naming.md)
 tells.
 
 **D18 — The bus is a service, an event is a model.** The bus is
-`EventBusService` in `services/event-bus.service.rs`; the `Event` enum is
+`EventBus` in `services/event-bus.service.rs`; the `Event` enum is
 in `models/event.rs`. No new role folder.

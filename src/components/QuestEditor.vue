@@ -22,8 +22,8 @@ const props = defineProps<{
   timestampText?: string;
   /** Post-completion audit trail (issue #128) — only meaningful for checklist quests. */
   checklistActivity?: ChecklistActivity[];
-  /** Set when this occurrence belongs to a series and the checklist is being edited, so the
-   * caller can present the "This occurrence" / "This and future occurrences" scope choice. */
+  /** Set for a repeating quest, so the caller can present the "This day" / "All days" scope
+   * choice for a checklist edit (ADR-0012 D8). */
   isRecurring?: boolean;
 }>();
 

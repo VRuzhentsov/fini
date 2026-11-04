@@ -1,7 +1,12 @@
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use diesel::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashMap;
 
+use crate::models::{QuestOccurrence, OCCURRENCE_COMPLETED};
 use crate::schema::quests;
+use crate::services::checklist;
+use crate::services::db::utc_now;
 
 pub const ENERGY_SMALL: i64 = 1;
 pub const ENERGY_MEDIUM: i64 = 2;
@@ -112,7 +117,7 @@ where
         .transpose()
 }
 
-#[derive(Queryable, Selectable, Serialize, Deserialize, Clone)]
+#[derive(Queryable, Selectable, Serialize, Deserialize, Clone, Debug)]
 #[diesel(table_name = quests)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Quest {
@@ -143,8 +148,6 @@ pub struct Quest {
     pub focus_enter_count: i64,
     pub created_at: String,
     pub updated_at: String,
-    pub series_id: Option<String>,
-    pub period_key: Option<String>,
     /// When true, `description` is authored/rendered as a checklist (task-list text,
     /// `- [ ] text <!--k=id-->` lines) instead of prose — issue #128. There is no separate
     /// checklist content column: the description field itself holds that task-list text, and a
@@ -218,8 +221,16 @@ pub struct QuestUpdatePatch {
     pub repeat_rule: QuestFieldPatch<String>,
 }
 
+impl Quest {
+    /// The moment the quest comes: `due` + `due_time`, local time (09:00 when
+    /// there is no time). For a repeating quest, of its shown day.
+    pub fn due_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        crate::services::due_time::compute_fire_utc(self.due.as_deref()?, self.due_time.as_deref())
+    }
+}
+
 impl QuestUpdatePatch {
-    #[cfg(test)]
+    /// The fields of `input`; the clearable fields stay as they are.
     pub fn unchanged(input: UpdateQuestInput) -> Self {
         Self {
             input,
@@ -274,6 +285,14 @@ pub struct UpdateQuestCommandInput {
     pub repeat_rule: QuestFieldPatch<String>,
     pub order_rank: Option<f64>,
     pub is_checklist: Option<bool>,
+    /// A repeating quest only (ADR-0012 D8): `"day"` writes the edit on one
+    /// occurrence, `"all"` (the default) on the quest.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// A repeating quest only: the occurrence the edit is for. Missing means
+    /// its oldest open occurrence.
+    #[serde(default)]
+    pub period_key: Option<String>,
 }
 
 impl UpdateQuestCommandInput {
@@ -315,6 +334,426 @@ pub fn default_energy() -> i64 {
 pub fn clamp_order_rank(value: f64) -> f64 {
     value.clamp(-100.0, 100.0)
 }
+
+// ── Repeat rule ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct RepeatRule {
+    pub preset: Option<String>,
+    pub interval: Option<i64>,
+    pub unit: Option<String>,
+    pub days_of_week: Option<Vec<String>>,
+    pub end: Option<String>,
+    pub end_date: Option<String>,
+    pub end_after: Option<i64>,
+}
+
+impl RepeatRule {
+    /// Whether the two rules give the same days, the end aside: a change of
+    /// the days restarts the rule from today (ADR-0012 D10); a change of the
+    /// end only moves the end.
+    pub fn same_days_as(&self, other: &RepeatRule) -> bool {
+        self.preset == other.preset
+            && self.interval == other.interval
+            && self.unit == other.unit
+            && self.days_of_week == other.days_of_week
+    }
+}
+
+/// Maps the two-letter weekday tokens the UI uses ("Mo".."Su") to `chrono::Weekday`.
+fn parse_weekday_token(s: &str) -> Option<chrono::Weekday> {
+    use chrono::Weekday;
+    match s {
+        "Mo" => Some(Weekday::Mon),
+        "Tu" => Some(Weekday::Tue),
+        "We" => Some(Weekday::Wed),
+        "Th" => Some(Weekday::Thu),
+        "Fr" => Some(Weekday::Fri),
+        "Sa" => Some(Weekday::Sat),
+        "Su" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+/// Number of ISO weeks between the Monday of `anchor`'s week and the Monday of `date`'s week.
+/// `date` is assumed to be on or after `anchor` (only ever called with forward-scanned dates).
+fn weeks_since_anchor(anchor: &NaiveDate, date: &NaiveDate) -> i64 {
+    use chrono::Datelike;
+    let anchor_monday = *anchor - chrono::Duration::days(anchor.weekday().num_days_from_monday() as i64);
+    let date_monday = *date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
+    (date_monday - anchor_monday).num_days() / 7
+}
+
+/// Next date strictly after `current_due` whose weekday is in `days` and whose week is `interval`
+/// weeks (or a multiple thereof) from `week_anchor`'s week. Bounded so a malformed/empty `days`
+/// can never loop forever.
+fn next_weekday_occurrence(
+    current_due: &NaiveDate,
+    week_anchor: &NaiveDate,
+    interval: i64,
+    days: &[chrono::Weekday],
+) -> Option<NaiveDate> {
+    use chrono::Datelike;
+    let interval = interval.max(1);
+    let max_scan_days = interval * 7 + 7;
+    let mut candidate = *current_due + chrono::Duration::days(1);
+    for _ in 0..max_scan_days {
+        if days.contains(&candidate.weekday())
+            && weeks_since_anchor(week_anchor, &candidate) % interval == 0
+        {
+            return Some(candidate);
+        }
+        candidate += chrono::Duration::days(1);
+    }
+    None
+}
+
+fn compute_next_due(
+    current_due: &NaiveDate,
+    rule: &RepeatRule,
+    week_anchor: &NaiveDate,
+) -> Option<NaiveDate> {
+    use chrono::{Datelike, Months, Weekday};
+
+    match rule.preset.as_deref() {
+        Some("daily") => Some(*current_due + chrono::Duration::days(1)),
+        Some("weekdays") => {
+            let mut next = *current_due + chrono::Duration::days(1);
+            while next.weekday() == Weekday::Sat || next.weekday() == Weekday::Sun {
+                next += chrono::Duration::days(1);
+            }
+            Some(next)
+        }
+        Some("weekends") => {
+            let mut next = *current_due + chrono::Duration::days(1);
+            while next.weekday() != Weekday::Sat && next.weekday() != Weekday::Sun {
+                next += chrono::Duration::days(1);
+            }
+            Some(next)
+        }
+        Some("weekly") => Some(*current_due + chrono::Duration::weeks(1)),
+        Some("monthly") => current_due.checked_add_months(Months::new(1)),
+        Some("yearly") => current_due.checked_add_months(Months::new(12)),
+        Some("custom") => {
+            let interval = rule.interval.unwrap_or(1).max(1);
+            let days: Vec<Weekday> = rule
+                .days_of_week
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|token| parse_weekday_token(token))
+                .collect();
+            if !days.is_empty() {
+                return next_weekday_occurrence(current_due, week_anchor, interval, &days);
+            }
+            match rule.unit.as_deref() {
+                Some("day") => Some(*current_due + chrono::Duration::days(interval)),
+                Some("week") => Some(*current_due + chrono::Duration::weeks(interval)),
+                Some("month") => current_due.checked_add_months(Months::new(interval as u32)),
+                Some("year") => current_due.checked_add_months(Months::new(interval as u32 * 12)),
+                _ => None,
+            }
+        }
+        Some("none") | None => None,
+        _ => None,
+    }
+}
+
+impl RepeatRule {
+    pub fn parse(value: Option<&str>) -> Option<Self> {
+        let value = value.filter(|value| !value.is_empty())?;
+        let rule: RepeatRule = serde_json::from_str(value).ok()?;
+        matches!(rule.preset.as_deref(), Some(preset) if preset != "none").then_some(rule)
+    }
+
+    /// The last date the rule allows (`end = "on_date"`), if any.
+    fn end_date(&self) -> Option<NaiveDate> {
+        (self.end.as_deref() == Some("on_date"))
+            .then(|| self.end_date.as_deref())
+            .flatten()
+            .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+    }
+
+    /// How many completed occurrences end the rule (`end = "after_n"`), if any.
+    fn end_after(&self) -> Option<i64> {
+        (self.end.as_deref() == Some("after_n")).then_some(self.end_after).flatten()
+    }
+}
+
+pub fn parse_period_key(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
+}
+
+pub fn period_key_of(date: NaiveDate) -> String {
+    date.format("%Y-%m-%d").to_string()
+}
+
+// ── Repeating quests (ADR-0012) ──────────────────────────────────────────────
+
+/// The longest walk over a rule's dates: about 27 years of a daily quest.
+const MAX_OCCURRENCE_STEPS: usize = 10_000;
+
+/// A repeating quest with its stored occurrence marks. Its occurrences are
+/// computed from the rule (ADR-0012 D2): a date has a row only after a
+/// person closed or changed it.
+pub struct RepeatingQuest<'q> {
+    quest: &'q Quest,
+    rule: RepeatRule,
+    start: NaiveDate,
+    marks: HashMap<&'q str, &'q QuestOccurrence>,
+}
+
+impl<'q> RepeatingQuest<'q> {
+    /// `None` for a one-time quest (no rule, or a rule that never repeats).
+    pub fn new(quest: &'q Quest, marks: &'q [QuestOccurrence]) -> Option<Self> {
+        let rule = RepeatRule::parse(quest.repeat_rule.as_deref())?;
+        let start = quest
+            .due
+            .as_deref()
+            .and_then(parse_period_key)
+            .or_else(|| parse_period_key(quest.created_at.get(..10)?))?;
+        let marks = marks
+            .iter()
+            .filter(|mark| mark.quest_id == quest.id)
+            .map(|mark| (mark.period_key.as_str(), mark))
+            .collect();
+        Some(Self { quest, rule, start, marks })
+    }
+
+    pub fn quest(&self) -> &Quest {
+        self.quest
+    }
+
+    pub fn rule(&self) -> &RepeatRule {
+        &self.rule
+    }
+
+    /// Every date of the rule from its start, ending at its end date.
+    pub fn dates(&self) -> impl Iterator<Item = NaiveDate> + '_ {
+        let end = self.rule.end_date();
+        std::iter::successors(Some(self.start), move |date| compute_next_due(date, &self.rule, &self.start))
+            .take(MAX_OCCURRENCE_STEPS)
+            .take_while(move |date| end.is_none_or(|end| *date <= end))
+    }
+
+    pub fn mark(&self, period_key: &str) -> Option<&QuestOccurrence> {
+        self.marks.get(period_key).copied()
+    }
+
+    pub fn is_closed(&self, period_key: &str) -> bool {
+        self.mark(period_key).is_some_and(QuestOccurrence::is_closed)
+    }
+
+    fn completed_count(&self) -> i64 {
+        self.marks
+            .values()
+            .filter(|mark| mark.status.as_deref() == Some(OCCURRENCE_COMPLETED))
+            .count() as i64
+    }
+
+    /// How many more occurrences the rule allows (`after_n`), or no limit.
+    pub fn remaining(&self) -> Option<i64> {
+        self.rule.end_after().map(|max| (max - self.completed_count()).max(0))
+    }
+
+    /// The open occurrences, oldest first.
+    fn open_dates(&self) -> impl Iterator<Item = String> + '_ {
+        let limit = self.remaining().map_or(usize::MAX, |left| left as usize);
+        self.dates()
+            .map(period_key_of)
+            .filter(move |key| !self.is_closed(key))
+            .take(limit)
+    }
+
+    /// The occurrence that Focus and the lists show (ADR-0012 D6).
+    pub fn oldest_open(&self) -> Option<String> {
+        self.open_dates().next()
+    }
+
+    /// The open occurrences dated `today` or before, today's included (D7).
+    pub fn open_through(&self, today: NaiveDate) -> Vec<String> {
+        let today = period_key_of(today);
+        self.open_dates().take_while(|key| *key <= today).collect()
+    }
+
+    /// The first open occurrence dated `day` or later: the one a reminder is
+    /// for (D9).
+    pub fn next_open_from(&self, day: NaiveDate) -> Option<String> {
+        self.open_from(day).next()
+    }
+
+    /// The open occurrences dated `day` or later, oldest first.
+    pub fn open_from(&self, day: NaiveDate) -> impl Iterator<Item = String> + '_ {
+        let day = period_key_of(day);
+        self.open_dates().skip_while(move |key| *key < day)
+    }
+
+    /// The closed occurrences, oldest first: the days in History.
+    pub fn closed(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .marks
+            .values()
+            .filter(|mark| mark.is_closed())
+            .map(|mark| mark.period_key.clone())
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// The quest as it is on `period_key`: the quest's fields, with the day's
+    /// overrides (D4). Its `due` is the occurrence's date.
+    pub fn on_day(&self, period_key: &str) -> Quest {
+        let mut quest = self.quest.clone();
+        quest.due = Some(period_key.to_string());
+        quest.status = "active".to_string();
+        quest.completed_at = None;
+        if quest.is_checklist {
+            quest.description = quest.description.as_deref().map(checklist::reset_unchecked);
+        }
+        if let Some(mark) = self.mark(period_key) {
+            if let Some(title) = &mark.title {
+                quest.title = title.clone();
+            }
+            if let Some(description) = &mark.description {
+                quest.description = Some(description.clone());
+                quest.checklist_base = mark.checklist_base.clone();
+            }
+            if let Some(energy) = mark.energy {
+                quest.energy = energy;
+            }
+            if let Some(priority) = mark.priority {
+                quest.priority = priority;
+            }
+            if let Some(due_time) = &mark.due_time {
+                quest.due_time = Some(due_time.clone());
+            }
+            if let Some(status) = &mark.status {
+                quest.status = status.clone();
+                quest.completed_at = (status == OCCURRENCE_COMPLETED).then(|| mark.closed_at.clone()).flatten();
+                quest.updated_at = mark.updated_at.clone();
+            }
+        }
+        quest
+    }
+
+    /// The day's stored mark, or a new empty one.
+    pub fn mark_or_new(&self, period_key: &str) -> QuestOccurrence {
+        self.mark(period_key)
+            .cloned()
+            .unwrap_or_else(|| QuestOccurrence::new(&self.quest.id, period_key, &utc_now()))
+    }
+}
+
+// ── Focus resolution ─────────────────────────────────────────────────────────
+
+pub fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    if let Ok(ts) = DateTime::parse_from_rfc3339(value) {
+        return Some(ts.with_timezone(&Utc));
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    if let Ok(ts) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+        return Some(ts.and_utc());
+    }
+    None
+}
+
+fn parse_due_deadline_utc(quest: &Quest) -> Option<DateTime<Utc>> {
+    let due = quest.due.as_deref()?;
+    let date = NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
+    let time = match quest.due_time.as_deref() {
+        Some(value) => NaiveTime::parse_from_str(value, "%H:%M")
+            .or_else(|_| NaiveTime::parse_from_str(value, "%H:%M:%S"))
+            .ok()?,
+        None => NaiveTime::from_hms_opt(23, 59, 59)?,
+    };
+    Some(NaiveDateTime::new(date, time).and_utc())
+}
+
+pub fn is_overdue(quest: &Quest, now: &DateTime<Utc>) -> bool {
+    parse_due_deadline_utc(quest)
+        .map(|deadline| deadline < *now)
+        .unwrap_or(false)
+}
+
+
+pub(crate) fn validate_metadata(energy: i64, priority: i64) -> Result<(), String> {
+    if !matches!(energy, 1..=3) {
+        return Err(format!(
+            "invalid stored energy {energy}; expected 1, 2, or 3"
+        ));
+    }
+    if !matches!(priority, 1..=3) {
+        return Err(format!(
+            "invalid stored priority {priority}; expected 1, 2, or 3"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_optional_metadata(energy: Option<i64>, priority: Option<i64>) -> Result<(), String> {
+    validate_metadata(
+        energy.unwrap_or(crate::models::ENERGY_MEDIUM),
+        priority.unwrap_or(crate::models::PRIORITY_MEDIUM),
+    )
+}
+
+
+/// The edit scope of a repeating quest (ADR-0012 D8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditScope {
+    /// The one occurrence: an override on its mark.
+    Day,
+    /// The quest: every occurrence.
+    All,
+}
+
+impl EditScope {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("all") => Ok(Self::All),
+            Some("day") => Ok(Self::Day),
+            Some(other) => Err(format!("invalid edit scope {other:?}; expected \"day\" or \"all\"")),
+        }
+    }
+}
+
+/// Builds an `UpdateQuestInput` with only the fields that are set.
+#[derive(Default)]
+pub(crate) struct UpdateQuestInputBuilder {
+    status: Option<String>,
+    repeat_rule: Option<String>,
+}
+
+impl UpdateQuestInputBuilder {
+    pub(crate) fn status(mut self, status: &str) -> Self {
+        self.status = Some(status.to_string());
+        self
+    }
+
+    pub(crate) fn repeat_rule(mut self, repeat_rule: String) -> Self {
+        self.repeat_rule = Some(repeat_rule);
+        self
+    }
+
+    pub(crate) fn build(self) -> crate::models::UpdateQuestInput {
+        crate::models::UpdateQuestInput {
+            space_id: None,
+            title: None,
+            description: None,
+            status: self.status,
+            energy: None,
+            priority: None,
+            due: None,
+            due_time: None,
+            repeat_rule: self.repeat_rule,
+            order_rank: None,
+            is_checklist: None,
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
