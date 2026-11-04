@@ -754,10 +754,24 @@ impl<'a> QuestRepository<'a> {
             );
         }
 
+        // A checklist that starts to repeat keeps its ticks as the copy of its
+        // first day (D5); the template shows its items unchecked.
+        let mut occurrences = Vec::new();
+        let starts_to_repeat = RepeatRule::parse(previous.repeat_rule.as_deref()).is_none()
+            && RepeatRule::parse(quest.repeat_rule.as_deref()).is_some();
+        if let (true, true, Some(day)) = (starts_to_repeat, quest.is_checklist, quest.due.as_deref()) {
+            if quest.description.as_deref().map(checklist::reset_unchecked) != quest.description {
+                let mut mark = QuestOccurrence::new(&quest.id, day, &utc_now());
+                mark.description = quest.description.clone();
+                mark.checklist_base = quest.description.clone();
+                occurrences.push(self.save_occurrence(&mark)?);
+            }
+        }
+
         Ok(QuestChange {
             quest,
             quest_row_changed: true,
-            occurrences: Vec::new(),
+            occurrences,
             removed_occurrences: Vec::new(),
             restore_should_focus,
         })
@@ -1588,6 +1602,40 @@ mod tests {
 
         assert_eq!(change.quest.repeat_rule, None);
         assert_eq!(change.quest.title, "This day only");
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// A checklist that starts to repeat keeps its ticks as its first day's copy.
+    #[test]
+    fn a_checklist_that_starts_to_repeat_keeps_its_ticks() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let quest = QuestRepository::new(&mut conn)
+            .insert(crate::models::CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "Pack".to_string(),
+                description: Some("- [x] headphones <!--k=a1-->".to_string()),
+                energy: crate::models::ENERGY_MEDIUM,
+                priority: crate::models::PRIORITY_MEDIUM,
+                due: Some("2026-03-01".to_string()),
+                due_time: None,
+                repeat_rule: None,
+                order_rank: None,
+                is_checklist: true,
+            })
+            .unwrap();
+        let patch = QuestUpdatePatch {
+            input: crate::models::UpdateQuestInputBuilder::default().build(),
+            description: QuestFieldPatch::Unchanged,
+            due: QuestFieldPatch::Unchanged,
+            due_time: QuestFieldPatch::Unchanged,
+            repeat_rule: QuestFieldPatch::Set(r#"{"preset":"daily"}"#.to_string()),
+        };
+        let change = QuestRepository::new(&mut conn).update(&quest.id, patch, EditScope::All, None, None).unwrap();
+
+        assert_eq!(change.occurrences.len(), 1, "the first day's copy syncs");
+        let day = QuestRepository::new(&mut conn).find_occurrence(&quest.id, "2026-03-01").unwrap().unwrap();
+        assert_eq!(day.description.as_deref(), Some("- [x] headphones <!--k=a1-->"));
         let _ = std::fs::remove_file(db_path);
     }
 
