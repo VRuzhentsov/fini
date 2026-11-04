@@ -995,7 +995,20 @@ impl SpaceSyncService {
                 .lock()
                 .map(|mut sessions| sessions.incoming_sync_events.drain().map(|(_, event)| event).collect())
                 .unwrap_or_default();
-            events.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.event_id.cmp(&b.event_id)));
+            // In the same second, a parent comes before the rows that refer to
+            // it: a space, then a quest, then the rest (occurrence marks,
+            // focus history, checklist activity).
+            let parent_rank = |entity_type: &str| match entity_type {
+                "space" => 0,
+                "quest" => 1,
+                _ => 2,
+            };
+            events.sort_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| parent_rank(&a.entity_type).cmp(&parent_rank(&b.entity_type)))
+                    .then_with(|| a.event_id.cmp(&b.event_id))
+            });
             events
         };
         let mut applied_events = 0usize;
@@ -1020,7 +1033,13 @@ impl SpaceSyncService {
                     // so that the peer stops sending it again.
                     self.queue_for_peer(&event.origin_device_id, PeerFrame::Ack { event_id: event.event_id.clone() });
                 }
-                Err(err) => log::warn!("[space-sync] applying incoming event {} failed: {err}", event.event_id),
+                // The receipt was acknowledged already, so the peer does not
+                // send it again: keep it for the next tick (its parent can
+                // come later).
+                Err(err) => {
+                    log::warn!("[space-sync] applying incoming event {} failed, kept for the next tick: {err}", event.event_id);
+                    deferred.push(event);
+                }
             }
         }
         if !deferred.is_empty() {
@@ -1581,8 +1600,9 @@ fn upsert_quest(conn: &mut SqliteConnection, quest: &Quest) -> Result<(), String
     QuestRepository::new(conn).sync_upsert_quest(quest)
 }
 
-/// An occurrence mark of a repeating quest (ADR-0012 D11). Its quest comes
-/// first in the outbox, so it exists here already.
+/// An occurrence mark of a repeating quest (ADR-0012 D11). A tick applies
+/// its quest first; a mark that arrives before its quest waits for a later
+/// tick.
 fn upsert_quest_occurrence(conn: &mut SqliteConnection, occurrence: &QuestOccurrence) -> Result<(), String> {
     QuestRepository::new(conn).sync_upsert_occurrence(occurrence)
 }
