@@ -567,8 +567,13 @@ impl<'q> RepeatingQuest<'q> {
     /// The first open occurrence dated `day` or later: the one a reminder is
     /// for (D9).
     pub fn next_open_from(&self, day: NaiveDate) -> Option<String> {
+        self.open_from(day).next()
+    }
+
+    /// The open occurrences dated `day` or later, oldest first.
+    pub fn open_from(&self, day: NaiveDate) -> impl Iterator<Item = String> + '_ {
         let day = period_key_of(day);
-        self.open_dates().find(|key| *key >= day)
+        self.open_dates().skip_while(move |key| *key < day)
     }
 
     /// The closed occurrences, oldest first: the days in History.

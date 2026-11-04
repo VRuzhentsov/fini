@@ -69,11 +69,24 @@ impl<'a> ReminderService<'a> {
     /// for a repeating quest its next open day (ADR-0012 D9). `None` for a
     /// repeating quest with no open day left.
     fn shown_quest(&mut self, quest_id: &str) -> Result<Option<Quest>, String> {
-        let mut quests = QuestRepository::new(self.repository.conn);
-        if quests.is_repeating(quest_id)? {
-            return quests.reminder_occurrence(quest_id);
+        if QuestRepository::new(self.repository.conn).is_repeating(quest_id)? {
+            return self.armed_day(quest_id);
         }
-        quests.get(quest_id).map(Some)
+        QuestRepository::new(self.repository.conn).get(quest_id).map(Some)
+    }
+
+    /// The day a repeating quest's reminders are armed for (ADR-0012 D9):
+    /// the first open day from today on on which one of its reminders is
+    /// still to come. With no reminder yet, the day's due moment counts.
+    pub fn armed_day(&mut self, quest_id: &str) -> Result<Option<Quest>, String> {
+        let reminders = self.repository.list_for_quest(quest_id)?;
+        let now = chrono::Utc::now();
+        QuestRepository::new(self.repository.conn).reminder_occurrence(quest_id, |day| {
+            if reminders.is_empty() {
+                return day.due_at().is_some_and(|at| at > now);
+            }
+            reminders.iter().any(|reminder| reminder.moment(day).is_some_and(|at| at > now))
+        })
     }
 
     /// One reminder as the readers get it (see `list_for_quest`).
@@ -277,14 +290,14 @@ impl ReminderService<'_> {
     }
 
     /// Puts the reminder of one quest in step with it: a one-time quest that
-    /// is active with a date has one; a repeating quest has one for its next
-    /// open day from today (ADR-0012 D9); any other quest has none.
+    /// is active with a date has one; a repeating quest has one for the
+    /// next open day on which it is still to come (ADR-0012 D9); any other
+    /// quest has none.
     pub fn keep_in_step(&mut self, app: &AppHandle, quest_id: &str) -> Result<(), String> {
-        let mut quests = QuestRepository::new(self.repository.conn);
-        let target = if quests.is_repeating(quest_id)? {
-            quests.reminder_occurrence(quest_id)?
+        let target = if QuestRepository::new(self.repository.conn).is_repeating(quest_id)? {
+            self.armed_day(quest_id)?
         } else {
-            let quest = quests.get(quest_id)?;
+            let quest = QuestRepository::new(self.repository.conn).get(quest_id)?;
             (quest.status == "active" && quest.due.is_some()).then_some(quest)
         };
         match target {

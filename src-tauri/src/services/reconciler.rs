@@ -3,6 +3,7 @@ use diesel::prelude::*;
 use tauri::AppHandle;
 
 use crate::models::{CreateFocusHistoryInput, Quest, Reminder, Space};
+use crate::repositories::QuestRepository;
 use crate::schema::{focus_history, quests, reminders, spaces};
 use crate::services::db::DbPool;
 use crate::services::notification;
@@ -94,8 +95,15 @@ fn past_due_reminders(
         .load(conn)
         .map_err(|e| e.to_string())?;
 
+    // A repeating quest's row holds its rule, not a day: the reminder is
+    // for the newest open day on which it has come (ADR-0012 D9), so each
+    // day gets its own catch-up.
     let mut result = Vec::new();
-    for (reminder, quest) in rows.into_iter().filter(|(reminder, quest)| reminder.moment(quest).is_some_and(|at| at <= *now)) {
+    for (reminder, stored) in rows {
+        let fired = |day: &Quest| reminder.moment(day).is_some_and(|at| at <= *now);
+        let Some(quest) = QuestRepository::new(conn).missed_reminder_occurrence(&stored, fired)? else {
+            continue;
+        };
         let space: Space = spaces::table
             .find(&quest.space_id)
             .select(Space::as_select())

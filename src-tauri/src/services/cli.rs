@@ -752,14 +752,14 @@ fn write_change(
 }
 
 /// The reminder rows follow the quest: a one-time quest as it is; a
-/// repeating quest's next open occurrence from today (ADR-0012 D9).
+/// repeating quest's next open occurrence on which it is still to come
+/// (ADR-0012 D9).
 fn refresh_cli_reminder(conn: &mut diesel::sqlite::SqliteConnection, quest_id: &str) {
     let target = (|| -> Result<Option<crate::models::Quest>, String> {
-        let mut service = QuestRepository::new(conn);
-        if service.is_repeating(quest_id)? {
-            return service.reminder_occurrence(quest_id);
+        if QuestRepository::new(conn).is_repeating(quest_id)? {
+            return ReminderService::new(conn).armed_day(quest_id);
         }
-        service.get(quest_id).map(Some)
+        QuestRepository::new(conn).get(quest_id).map(Some)
     })();
     match target {
         Ok(Some(quest)) => sync_reminder_rows(conn, &quest),

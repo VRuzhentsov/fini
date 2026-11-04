@@ -549,7 +549,10 @@ impl<'a> QuestRepository<'a> {
 
     /// For a repeating quest: the open occurrence a reminder is for (the
     /// first one dated today or later, ADR-0012 D9), resolved.
-    pub fn reminder_occurrence(&mut self, id: &str) -> Result<Option<Quest>, String> {
+    /// The open occurrence that the reminders are armed for (ADR-0012 D9):
+    /// the first one from today on whose reminder moment is still to come
+    /// (`fires_later`), as a quest of that day.
+    pub fn reminder_occurrence(&mut self, id: &str, fires_later: impl Fn(&Quest) -> bool) -> Result<Option<Quest>, String> {
         let quest = self.get(id)?;
         let marks = self.occurrences(id)?;
         let Some(repeating) = RepeatingQuest::new(&quest, &marks) else {
@@ -558,9 +561,28 @@ impl<'a> QuestRepository<'a> {
         if quest.status != "active" {
             return Ok(None);
         }
+        let day = repeating
+            .open_from(Local::now().date_naive())
+            .map(|period_key| repeating.on_day(&period_key))
+            .find(|day| fires_later(day));
+        Ok(day)
+    }
+
+    /// The newest open occurrence, today or before, whose reminder moment
+    /// has come (`fired`): the one a missed reminder is for, as a quest of
+    /// that day. For a quest that does not repeat: the quest itself.
+    #[cfg(any(feature = "ui-plane", test))]
+    pub fn missed_reminder_occurrence(&mut self, quest: &Quest, fired: impl Fn(&Quest) -> bool) -> Result<Option<Quest>, String> {
+        let marks = self.occurrences(&quest.id)?;
+        let Some(repeating) = RepeatingQuest::new(quest, &marks) else {
+            return Ok(fired(quest).then(|| quest.clone()));
+        };
         Ok(repeating
-            .next_open_from(Local::now().date_naive())
-            .map(|period_key| repeating.on_day(&period_key)))
+            .open_through(Local::now().date_naive())
+            .iter()
+            .rev()
+            .map(|period_key| repeating.on_day(period_key))
+            .find(|day| fired(day)))
     }
 
     pub fn is_repeating(&mut self, id: &str) -> Result<bool, String> {
@@ -1468,6 +1490,62 @@ mod tests {
         assert_eq!(updated.due.as_deref(), Some("2026-04-01"));
         assert_eq!(updated.due_time.as_deref(), Some("10:30"));
         assert_eq!(updated.repeat_rule.as_deref(), Some("weekly"));
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// A daily quest at 00:00 that started two days ago, every day open.
+    fn daily_at_midnight(conn: &mut SqliteConnection) -> (Quest, String, String) {
+        let today = Local::now().date_naive();
+        let start = (today - chrono::Duration::days(2)).format("%Y-%m-%d").to_string();
+        let quest = QuestRepository::new(conn)
+            .insert(crate::models::CreateQuestInput {
+                space_id: "1".to_string(),
+                title: "daily".to_string(),
+                description: None,
+                energy: crate::models::ENERGY_MEDIUM,
+                priority: crate::models::PRIORITY_MEDIUM,
+                due: Some(start),
+                due_time: Some("00:00".to_string()),
+                repeat_rule: Some(r#"{"preset":"daily"}"#.to_string()),
+                order_rank: None,
+                is_checklist: false,
+            })
+            .expect("create quest");
+        let tomorrow = (today + chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+        (quest, today.format("%Y-%m-%d").to_string(), tomorrow)
+    }
+
+    /// ADR-0012 D9: today's 00:00 has passed, so the reminder is armed for
+    /// tomorrow, not for today (a past moment arms nothing).
+    #[test]
+    fn reminder_occurrence_is_the_next_day_whose_moment_is_to_come() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let (quest, _, tomorrow) = daily_at_midnight(&mut conn);
+        let now = chrono::Utc::now();
+
+        let day = QuestRepository::new(&mut conn)
+            .reminder_occurrence(&quest.id, |day| day.due_at().is_some_and(|at| at > now))
+            .unwrap()
+            .expect("an open day");
+        assert_eq!(day.due.as_deref(), Some(tomorrow.as_str()));
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// A missed reminder of a repeating quest is for the newest open day on
+    /// which it came (today), not for the rule's first day.
+    #[test]
+    fn missed_reminder_occurrence_is_the_newest_day_whose_moment_came() {
+        let db_path = temp_db_path();
+        let mut conn = open_db_at_path(&db_path);
+        let (quest, today, _) = daily_at_midnight(&mut conn);
+        let now = chrono::Utc::now();
+
+        let day = QuestRepository::new(&mut conn)
+            .missed_reminder_occurrence(&quest, |day| day.due_at().is_some_and(|at| at <= now))
+            .unwrap()
+            .expect("a missed day");
+        assert_eq!(day.due.as_deref(), Some(today.as_str()));
         let _ = std::fs::remove_file(db_path);
     }
 }
