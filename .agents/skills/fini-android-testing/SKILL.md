@@ -95,7 +95,7 @@ npm run build:android:e2e          # x86_64 debug APK with devtools (make androi
 npm run test:e2e:android-ble       # podman image, two emulators on one netsim radio
 ```
 
-`fini-test` has the details. The bridge above also works on such a phone:
+`docs/e2e-android.md` has the details. The bridge above also works on such a phone:
 the lane forwards phone A to host port 9223 and phone B to 9225 while a test
 runs (inside the container).
 

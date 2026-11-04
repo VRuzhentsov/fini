@@ -110,7 +110,7 @@ The dev-runner image starts the desktop processes. `make pr-gate-e2e` (or `make 
 npm run test:e2e:android-ble [-- <playwright args>]
 ```
 
-Builds the `android-phones-runner` podman image and runs the project `android-ble` in it with `/dev/kvm`. Needs the x86_64 APK with devtools first: `npm run build:android:e2e` (local shortcut `make android-build-emulator-e2e`). Two emulators start only when a test needs them (ADR-0013 D7), and `globalTeardown` stops them. `FINI_E2E_KEEP_PHONES=1` keeps them on for the next run. Emulator logs: `tmp/fini-e2e-multi-device/emulator-<port>.log`; phone logcat: `<run>/test-devices/<slug>.logcat.txt`. A boot failure is a `PhoneBootError` with the prefix `[infrastructure]`.
+Needs the x86_64 APK with devtools first: `npm run build:android:e2e`. The image, when the phones start, the logs and the rules for the specs: `docs/e2e-android.md`.
 
 ### Targeting a single Playwright project
 
@@ -223,7 +223,7 @@ Conventions:
 
 Layout: `specs/e2e/multi-device/tests/<feature>.spec.ts`. Fixture: `specs/e2e/multi-device/test-device.ts` gives `testDevices` (by slug), `testDeviceA` and `testDeviceB` (by position). A `TestDevice` is one running Fini app that the test drives (glossary, ADR-0013); it is not the Fini `Device` model. Each one has `page` (a `TauriPage`), `invoke<T>(command, args)` and `kind`: `desktop-process`, `android-phone` or `physical-device`.
 
-`FINI_E2E_TEST_DEVICES` sets the test devices as `slug=kind,...`, where a kind is `desktop-process`, `android-phone` or `tcp:<port>` (a physical device). Without it, the project option `testDeviceKinds` applies (`a=desktop-process,b=desktop-process`; `android-ble` uses two `android-phone`). `TestDeviceSet` (`test-device-set.ts`) starts them, one provider for each kind in `providers/`.
+How the test devices start (`FINI_E2E_TEST_DEVICES`, providers, run folders): `docs/e2e.md`.
 
 Helpers live in `specs/e2e/multi-device/helpers/`:
 
@@ -253,7 +253,7 @@ Conventions:
 - Prefix late-running test files with `zz-` (see `zz-personal-space-live-quest-sync.spec.ts`) when the test depends on state established by earlier tests in the same project — Playwright runs files in lexical order with `fullyParallel: false, workers: 1`.
 - Talk to the backend through `testDevice.invoke<T>(command, args)`; use `testDevice.page.evaluate` only for DOM probes.
 - A spec that needs two radios skips when a test device is a `desktop-process` (see `bluetooth-pair-from-zero.spec.ts`).
-- In the `android-ble` lane, pair through the Add Device screen, do not call `space_sync_tick`, and prove the channel with `space_sync_session_channel` (ADR-0013).
+- In the `android-ble` lane, obey the rules in `docs/e2e-android.md`, "Rules for the specs".
 
 ## Writing CLI e2e
 

@@ -348,9 +348,10 @@ the delivery of an alarm, not the alarm.
 ### TestDevice
 
 **One running Fini app that an e2e test drives** (ADR-0013). It is a desktop
-process, a virtual phone, or a physical device. The fixture `devices` gives
-the test its test devices by name: `devices.a`, `devices.b`. A `TestDevice`
-is not a Fini *device*: a Fini device is a paired peer.
+process, a virtual phone, or a physical device. The fixture `testDevices`
+gives the test its test devices by slug: `testDevices.a`, `testDevices.b`
+(`docs/e2e.md`). A `TestDevice` is not a Fini *device*: a Fini device is a
+paired peer.
 
 *Elsewhere:* an `AndroidDevice` with a label in a Mobly testbed; an
 `AndroidDevice` in Playwright `_android`; a session in Appium.
