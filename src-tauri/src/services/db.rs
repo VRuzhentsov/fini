@@ -371,6 +371,7 @@ mod tests {
                 ('gym-1', '1', 'Gym', NULL, 'completed', '2026-10-01', '20:00', '{\"preset\":\"daily\"}', '2026-10-01T20:05:00Z', '2026-10-01T00:00:00Z', '2026-10-01T20:05:00Z', 'gym', '2026-10-01', 0),
                 ('gym-2', '1', 'Gym', NULL, 'abandoned', '2026-10-02', '20:00', '{\"preset\":\"daily\"}', NULL, '2026-10-02T00:00:00Z', '2026-10-02T21:00:00Z', 'gym', '2026-10-02', 0),
                 ('gym-3', '1', 'Gym', NULL, 'active', '2026-10-03', '20:00', '{\"preset\":\"daily\"}', NULL, '2026-10-03T00:00:00Z', '2026-10-03T00:00:00Z', 'gym', '2026-10-03', 0),
+                ('pack-0', '1', 'Pack', '- [ ] headphones <!--k=a1-->', 'completed', '2026-09-30', NULL, '{\"preset\":\"daily\"}', '2026-09-30T20:00:00Z', '2026-09-30T00:00:00Z', '2026-09-30T20:00:00Z', 'pack', '2026-09-30', 1),
                 ('pack-1', '1', 'Pack', '- [x] headphones <!--k=a1-->', 'active', '2026-10-01', NULL, '{\"preset\":\"daily\"}', NULL, '2026-10-01T00:00:00Z', '2026-10-01T08:00:00Z', 'pack', '2026-10-01', 1),
                 ('one-time', '1', 'Call bank', NULL, 'active', '2026-10-05', NULL, NULL, NULL, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', NULL, NULL, 0);
             INSERT INTO focus_history (id, quest_id, space_id, trigger, created_at) VALUES ('focus-1', 'gym-3', '1', 'manual', '2026-10-03T09:00:00Z');
@@ -408,9 +409,10 @@ mod tests {
             vec![
                 ("gym".into(), "2026-10-01".into(), Some("completed".into()), None),
                 ("gym".into(), "2026-10-02".into(), Some("abandoned".into()), None),
+                ("pack".into(), "2026-09-30".into(), Some("completed".into()), Some("- [ ] headphones <!--k=a1-->".into())),
                 ("pack".into(), "2026-10-01".into(), None, Some("- [x] headphones <!--k=a1-->".into())),
             ],
-            "closed days become marks; an open day with ticks keeps them as its day copy"
+            "closed days become marks; a checklist day keeps its own copy, also one equal to the template"
         );
 
         let focus: Vec<String> = focus_history::table.select(focus_history::quest_id).load(&mut conn).unwrap();

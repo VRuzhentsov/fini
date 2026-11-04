@@ -73,7 +73,8 @@ LEFT JOIN quests r ON r.id = c.row_id;
 
 -- Closed occurrences become marks. A field is stored only where the day
 -- differs from its quest (an empty field takes the quest's value). The
--- description of a checklist day is that day's copy (ADR-0012 D5).
+-- description of a checklist day is always that day's copy (ADR-0012 D5),
+-- so a later template edit does not change a closed day.
 INSERT OR IGNORE INTO quest_occurrences
     (quest_id, period_key, status, closed_at, title, description, energy, priority, due_time,
      checklist_base, created_at, updated_at)
@@ -82,7 +83,7 @@ SELECT q.series_id,
        q.status,
        COALESCE(q.completed_at, q.updated_at),
        NULLIF(q.title, sq.title),
-       CASE WHEN q.description IS sq.description THEN NULL ELSE q.description END,
+       CASE WHEN q.description IS sq.description AND NOT sq.is_checklist THEN NULL ELSE q.description END,
        NULLIF(q.energy, sq.energy),
        NULLIF(q.priority, sq.priority),
        CASE WHEN q.due_time IS sq.due_time THEN NULL ELSE q.due_time END,

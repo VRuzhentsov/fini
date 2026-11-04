@@ -993,8 +993,8 @@ impl<'a> QuestRepository<'a> {
         };
         let merged = match (&local.description, &incoming.description) {
             (Some(local_description), Some(incoming_description)) => {
-                let (merged, _) = checklist::merge_3way(local.checklist_base.as_deref(), local_description, incoming_description);
-                Some(merged).filter(|merged| !merged.is_empty())
+                // An empty day copy is an override too (all items removed).
+                Some(checklist::merge_3way(local.checklist_base.as_deref(), local_description, incoming_description).0)
             }
             _ if incoming_wins => incoming.description.clone(),
             _ => local.description.clone(),
