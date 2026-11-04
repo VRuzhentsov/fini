@@ -81,7 +81,7 @@ function onMap(spaceId: string) {
               </span>
               <div>
                 <div class="text-sm font-medium">Map to existing</div>
-                <div class="mt-0.5 text-xs opacity-60">Reassign imported quests and series to a local space you already have.</div>
+                <div class="mt-0.5 text-xs opacity-60">Reassign imported quests to a local space you already have.</div>
               </div>
             </div>
           </div>

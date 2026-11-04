@@ -21,7 +21,7 @@ function conflictKey(conflict: BackupConflict) {
 }
 
 function kindLabel(entityType: string): string {
-  return entityType === "quest_series" ? "Quest series" : "Quest";
+  return entityType === "quest_occurrence" ? "Day of a repeating quest" : "Quest";
 }
 
 function choose(resolution: "local" | "backup") {
@@ -116,7 +116,7 @@ function applyResolutions() {
             <div class="mb-1 flex items-center gap-2">
               <span
                 class="badge badge-sm"
-                :class="activeConflict?.entity_type === 'quest_series' ? 'badge-secondary' : 'badge-primary'"
+                :class="activeConflict?.entity_type === 'quest_occurrence' ? 'badge-secondary' : 'badge-primary'"
               >{{ activeConflict ? kindLabel(activeConflict.entity_type) : "" }}</span>
             </div>
             <h3 class="text-base font-semibold">{{ activeConflict?.title ?? "Resolve conflicts" }}</h3>

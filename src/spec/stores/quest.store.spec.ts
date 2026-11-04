@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createPinia, setActivePinia } from "pinia";
 import { useQuestStore, type Quest } from "../../stores/quest";
+import { EditScope } from "../../utils/quest";
 
 jest.mock("@tauri-apps/api/core", () => ({
   invoke: jest.fn(),
@@ -23,8 +24,6 @@ function baseQuest(overrides: Partial<Quest> = {}): Quest {
     focus_enter_count: 0,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
-    series_id: null,
-    period_key: null,
     is_checklist: true,
     ...overrides,
   };
@@ -117,18 +116,31 @@ describe("quest store checklist actions", () => {
     expect(invoke).toHaveBeenCalledWith("remove_checklist_item", { questId: "q1", itemId: "a1" });
   });
 
-  it("updateSeriesChecklist passes scope through to the backend command", async () => {
+  it("checklist edits pass the edit scope through to the backend command", async () => {
     const store = useQuestStore();
     (invoke as unknown as jest.Mock).mockResolvedValueOnce(baseQuest());
 
-    await store.updateSeriesChecklist("series-1", "q1", "- [ ] headphones <!--k=a1-->", "future");
+    await store.editChecklistItemText("q1", "a1", "over-ear headphones", EditScope.Day);
 
-    expect(invoke).toHaveBeenCalledWith("update_series_checklist", {
-      seriesId: "series-1",
-      currentOccurrenceId: "q1",
-      checklist: "- [ ] headphones <!--k=a1-->",
-      scope: "future",
+    expect(invoke).toHaveBeenCalledWith("edit_checklist_item", {
+      questId: "q1",
+      itemId: "a1",
+      text: "over-ear headphones",
+      scope: EditScope.Day,
     });
+  });
+
+  it("completeThroughToday invokes complete_quest_through_today and refreshes", async () => {
+    const store = useQuestStore();
+    (invoke as unknown as jest.Mock)
+      .mockResolvedValueOnce(baseQuest({ repeat_rule: '{"preset":"daily"}', due: "2026-01-02" }))
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(null);
+
+    await store.completeThroughToday("q1");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "complete_quest_through_today", { id: "q1" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_quests");
   });
 
   it("fetchChecklistActivity returns the activity list from the backend", async () => {

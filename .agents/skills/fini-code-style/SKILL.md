@@ -32,4 +32,24 @@ holds the vocabulary and settles *which* word. `naming.md` holds STE, the
 dictionary check, and how names are formed, and settles how to write it. Read the relevant one before inventing a name,
 renaming one, or arguing about one; don't restate their rules here.
 
+**Compute derived state; do not generate or store it ahead.** A value that
+follows from stored data is computed when it is read: a Vue `computed` getter in
+the frontend, a method over the stored rows in Rust. Store only what a person
+did (ADR-0012: a repeating quest's occurrences are computed from its rule; only
+the days a person closed or changed have a row). Nothing appears in the
+database only because time passed or a record exists. The exception is a
+value whose computation is too slow to repeat on each read; store it then as a
+cache with the rule that rebuilds it.
+
+**Name a function as STE writes text.** Use Command–Query Separation
+(Bertrand Meyer; names as in the Swift API Design Guidelines). A query returns
+a value and changes nothing. It is descriptive writing (STE Section 6): name it
+with the technical noun phrase of the value (Section 2). A command changes
+state. It is procedural writing (Section 5): name it with an approved verb in
+the command form (rule 5.3). A function is a query or a command, not both.
+
+**Declare a value.** Write a list, a menu or a set of options as one literal
+that shows all of it. Each entry carries the condition that makes it apply.
+For the part that comes from data, use `map` or `filter` over that data.
+
 **No magic strings.** A closed set of values — states, kinds, colours, problem codes, frame types — is named once and used through that name everywhere: a `const ChannelColor = { Green: "green", … } as const` object with `type ChannelColor = (typeof ChannelColor)[keyof typeof ChannelColor]` in TypeScript, an `enum` in Rust. Comparisons, `switch`es, props, test fixtures and e2e helpers all write `ChannelColor.Green`, never `"green"`. A union type alone does not satisfy this — `color === "green"` against `"green" | "grey"` is still a magic string, just a type-checked one. Mirroring a Rust `#[serde]` wire format is not an exception: the const object is the one place the wire literals are spelled, and everything else goes through it. Keep such consts in a module with no runtime imports (no Tauri, no Pinia) so specs and e2e helpers import them rather than redeclare them. In Rust, match on the enum; never compare its `.code()` or serialized string. Only a lone value with no set behind it, used once in a self-explanatory spot, may stay inline. When fixing one, fix the whole set in front of you, not a codebase sweep.

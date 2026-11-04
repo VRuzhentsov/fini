@@ -1,12 +1,11 @@
 use diesel::migration::MigrationSource;
 use diesel::prelude::*;
+use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool, PooledConnection};
 use diesel::sqlite::Sqlite;
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-#[cfg(any(feature = "ui-plane", test))]
-use std::sync::Mutex;
 
 use crate::services::update_recovery::unsupported_schema_guidance;
 
@@ -16,8 +15,91 @@ pub const APP_DATA_DIR_NAME: &str = "com.fini.app";
 #[cfg(not(target_os = "android"))]
 pub const APP_DATA_DIR_NAME: &str = "fini";
 
-#[cfg(any(feature = "ui-plane", test))]
-pub struct AppDbConnection(pub Mutex<SqliteConnection>);
+/// One connection taken from the pool; the pool takes it back when it is
+/// dropped. It derefs to `SqliteConnection`.
+pub type DbConnection = PooledConnection<ConnectionManager<SqliteConnection>>;
+
+/// The connections of the process (`docs/db.md`): made once at start and
+/// kept by Tauri (`app.manage`) or by the CLI run. A command, a service call
+/// or a task takes one connection with `get` for its work.
+#[derive(Clone)]
+pub struct DbPool(Pool<ConnectionManager<SqliteConnection>>);
+
+impl DbPool {
+    /// Checks and migrates the database on one connection, then makes the
+    /// pool (r2d2 default size, 10). The pool opens connections when they
+    /// are needed, and sets the pragmas on each one.
+    pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_sized(path, None)
+    }
+
+    /// A pool of one connection, as Diesel's documentation gives for tests.
+    #[cfg(test)]
+    pub fn open_for_test(path: &Path) -> Self {
+        Self::open_sized(path, Some(1)).expect("open the test database pool")
+    }
+
+    fn open_sized(path: &Path, max_size: Option<u32>) -> Result<Self, String> {
+        drop(try_open_db_at_path(path)?);
+        let manager = ConnectionManager::<SqliteConnection>::new(path.to_str().ok_or("database path is not UTF-8")?);
+        let builder = Pool::builder().min_idle(Some(1)).connection_customizer(Box::new(Pragmas));
+        let builder = match max_size {
+            Some(size) => builder.max_size(size),
+            None => builder,
+        };
+        builder.build(manager).map(Self).map_err(|err| format!("failed to make the database pool: {err}"))
+    }
+
+    pub fn get(&self) -> Result<DbConnection, String> {
+        self.0.get().map_err(|err| format!("no database connection: {err}"))
+    }
+
+    /// A connection, for code that has no way to return an error: it stops
+    /// the thread when the pool gives none in its timeout (30 s), as an open
+    /// that failed did before the pool.
+    pub fn connection(&self) -> DbConnection {
+        self.get().expect("database connection")
+    }
+}
+
+/// A write transaction for code whose errors are `String`s (the
+/// repositories): it begins `IMMEDIATE` (docs/db.md, rule 5), commits when
+/// the closure returns `Ok`, and rolls back and gives the closure's error
+/// when it returns `Err`.
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
+pub trait WriteTransaction {
+    fn write_transaction<T>(
+        &mut self,
+        work: impl FnOnce(&mut SqliteConnection) -> Result<T, String>,
+    ) -> Result<T, String>;
+}
+
+#[cfg(any(feature = "ui-plane", feature = "cli-plane", test))]
+impl WriteTransaction for SqliteConnection {
+    fn write_transaction<T>(
+        &mut self,
+        work: impl FnOnce(&mut SqliteConnection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut failure = None;
+        self.immediate_transaction::<T, diesel::result::Error, _>(|conn| {
+            work(conn).map_err(|err| {
+                failure = Some(err);
+                diesel::result::Error::RollbackTransaction
+            })
+        })
+        .map_err(|err| failure.take().unwrap_or_else(|| err.to_string()))
+    }
+}
+
+/// Sets the pragmas on each connection that the pool opens.
+#[derive(Debug)]
+struct Pragmas;
+
+impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for Pragmas {
+    fn on_acquire(&self, conn: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
+        set_pragmas(conn).map_err(|err| diesel::r2d2::Error::ConnectionError(ConnectionError::BadConnection(err)))
+    }
+}
 
 pub fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
@@ -68,6 +150,9 @@ pub fn app_data_dir(app: &tauri::AppHandle) -> PathBuf {
         .expect("failed to resolve app data dir")
 }
 
+/// A connection of its own, outside the pool: for tests that need two
+/// connections to one file, or a database that the pool does not serve.
+#[cfg(test)]
 pub fn open_db_at_path(path: &Path) -> SqliteConnection {
     try_open_db_at_path(path).expect("failed to open compatible Fini database")
 }
@@ -133,19 +218,24 @@ fn try_open_db_at_path_once(path: &Path) -> Result<SqliteConnection, String> {
     // concurrent connection. Setting the timeout first gives the switch
     // something to wait with -- otherwise this open, which previously
     // "succeeded" by silently applying nothing, would now fail outright.
+    set_pragmas(&mut conn)?;
+    ensure_database_schema_is_supported(&mut conn)?;
+    conn.run_pending_migrations(MIGRATIONS)
+        .map_err(|err| format!("failed to run database migrations: {err}"))?;
+    Ok(conn)
+}
+
+fn set_pragmas(conn: &mut SqliteConnection) -> Result<(), String> {
     for pragma in [
         "PRAGMA busy_timeout = 15000",
         "PRAGMA foreign_keys = ON",
         "PRAGMA journal_mode = WAL",
     ] {
         diesel::sql_query(pragma)
-            .execute(&mut conn)
+            .execute(conn)
             .map_err(|err| format!("failed to set {pragma}: {err}"))?;
     }
-    ensure_database_schema_is_supported(&mut conn)?;
-    conn.run_pending_migrations(MIGRATIONS)
-        .map_err(|err| format!("failed to run database migrations: {err}"))?;
-    Ok(conn)
+    Ok(())
 }
 
 fn ensure_database_schema_is_supported(conn: &mut SqliteConnection) -> Result<(), String> {
@@ -180,22 +270,19 @@ fn embedded_migration_versions() -> Result<BTreeSet<String>, String> {
         })
 }
 
+/// The app's database file: `FINI_DB_PATH`, or `fini.db` in the app data
+/// folder. Makes the folder when it is missing.
 #[cfg(any(feature = "ui-plane", test))]
-pub fn try_open_db(app: &tauri::AppHandle) -> Result<SqliteConnection, String> {
-    if std::env::var_os("FINI_DB_PATH").is_some() {
-        let db_path = db_default_path();
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create app data dir: {err}"))?;
-        }
-        return try_open_db_at_path(&db_path);
+pub fn app_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let db_path = if std::env::var_os("FINI_DB_PATH").is_some() {
+        db_default_path()
+    } else {
+        app_data_dir(app).join("fini.db")
+    };
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("failed to create app data dir: {err}"))?;
     }
-
-    let data_dir = app_data_dir(app);
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|err| format!("failed to create app data dir: {err}"))?;
-    let db_path = data_dir.join("fini.db");
-    try_open_db_at_path(&db_path)
+    Ok(db_path)
 }
 
 #[cfg(test)]
@@ -252,6 +339,101 @@ mod tests {
             "Family space id=2 must exist"
         );
         assert!(ids.iter().any(|id| id == "3"), "Work space id=3 must exist");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    /// Migration 28 (ADR-0012) turns each series into one quest with the
+    /// series id, and its closed occurrence rows into marks. Winds a migrated
+    /// database back to the v0.3.17 shape, seeds series rows as v0.3.17 wrote
+    /// them, and runs the real SQL forward through Diesel.
+    #[test]
+    fn migration_28_turns_each_series_into_one_quest_with_marks() {
+        use crate::schema::{focus_history, quest_occurrences, reminders};
+        use diesel::connection::SimpleConnection;
+
+        let db_path = temp_db_path("migration-28-series-to-marks");
+        let mut conn = open_db_at_path(&db_path);
+        while diesel::sql_query("SELECT 1 FROM quest_series LIMIT 1")
+            .execute(&mut conn)
+            .is_err()
+        {
+            conn.revert_last_migration(MIGRATIONS)
+                .expect("wind back to the v0.3.17 shape");
+        }
+
+        conn.batch_execute(
+            "
+            INSERT INTO quest_series (id, space_id, title, description, repeat_rule, active, created_at, updated_at, is_checklist, priority, energy) VALUES
+                ('gym', '1', 'Gym', NULL, '{\"preset\":\"daily\"}', 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 0, 2, 2),
+                ('pack', '1', 'Pack', '- [ ] headphones <!--k=a1-->', '{\"preset\":\"daily\"}', 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 1, 2, 2);
+            INSERT INTO quests (id, space_id, title, description, status, due, due_time, repeat_rule, completed_at, created_at, updated_at, series_id, period_key, is_checklist) VALUES
+                ('gym-1', '1', 'Gym', NULL, 'completed', '2026-10-01', '20:00', '{\"preset\":\"daily\"}', '2026-10-01T20:05:00Z', '2026-10-01T00:00:00Z', '2026-10-01T20:05:00Z', 'gym', '2026-10-01', 0),
+                ('gym-2', '1', 'Gym', NULL, 'abandoned', '2026-10-02', '20:00', '{\"preset\":\"daily\"}', NULL, '2026-10-02T00:00:00Z', '2026-10-02T21:00:00Z', 'gym', '2026-10-02', 0),
+                ('gym-3', '1', 'Gym', NULL, 'active', '2026-10-03', '20:00', '{\"preset\":\"daily\"}', NULL, '2026-10-03T00:00:00Z', '2026-10-03T00:00:00Z', 'gym', '2026-10-03', 0),
+                ('pack-0', '1', 'Pack', '- [ ] headphones <!--k=a1-->', 'completed', '2026-09-30', NULL, '{\"preset\":\"daily\"}', '2026-09-30T20:00:00Z', '2026-09-30T00:00:00Z', '2026-09-30T20:00:00Z', 'pack', '2026-09-30', 1),
+                ('pack-1', '1', 'Pack', '- [x] headphones <!--k=a1-->', 'active', '2026-10-01', NULL, '{\"preset\":\"daily\"}', NULL, '2026-10-01T00:00:00Z', '2026-10-01T08:00:00Z', 'pack', '2026-10-01', 1),
+                ('one-time', '1', 'Call bank', NULL, 'active', '2026-10-05', NULL, NULL, NULL, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', NULL, NULL, 0);
+            INSERT INTO focus_history (id, quest_id, space_id, trigger, created_at) VALUES ('focus-1', 'gym-3', '1', 'manual', '2026-10-03T09:00:00Z');
+            INSERT INTO sync_outbox (event_id, correlation_id, origin_device_id, entity_type, entity_id, space_id, op_type, payload, updated_at, created_at)
+                VALUES ('evt-activity', 'c', 'dev', 'checklist_activity', 'act-1', '1', 'upsert', '{\"id\":\"act-1\",\"quest_id\":\"pack-1\"}', 't', 't');
+            INSERT INTO reminders (id, quest_id, type, mm_offset, due_at_utc, created_at) VALUES ('reminder-old', 'gym-3', 'relative', 10, '2026-10-03T19:50:00Z', '2026-10-03T00:00:00Z');
+            INSERT INTO series_reminder_templates (id, series_id, kind, mm_offset, created_at) VALUES ('template-1', 'gym', 'relative', 10, '2026-10-01T00:00:00Z');
+            ",
+        )
+        .expect("seed v0.3.17 series rows");
+
+        conn.run_pending_migrations(MIGRATIONS)
+            .expect("run migration 28 over v0.3.17 series");
+
+        let quests_now: Vec<(String, String, Option<String>, Option<String>, Option<String>)> = quests::table
+            .order(quests::id.asc())
+            .select((quests::id, quests::status, quests::due, quests::due_time, quests::description))
+            .load(&mut conn)
+            .expect("load quests");
+        assert_eq!(
+            quests_now,
+            vec![
+                ("gym".into(), "active".into(), Some("2026-10-03".into()), Some("20:00".into()), None),
+                ("one-time".into(), "active".into(), Some("2026-10-05".into()), None, None),
+                ("pack".into(), "active".into(), Some("2026-10-01".into()), None, Some("- [ ] headphones <!--k=a1-->".into())),
+            ],
+            "one quest per series with the series id, dated at its open day; the template keeps no ticks"
+        );
+
+        let marks: Vec<(String, String, Option<String>, Option<String>)> = quest_occurrences::table
+            .order((quest_occurrences::quest_id.asc(), quest_occurrences::period_key.asc()))
+            .select((quest_occurrences::quest_id, quest_occurrences::period_key, quest_occurrences::status, quest_occurrences::description))
+            .load(&mut conn)
+            .expect("load marks");
+        assert_eq!(
+            marks,
+            vec![
+                ("gym".into(), "2026-10-01".into(), Some("completed".into()), None),
+                ("gym".into(), "2026-10-02".into(), Some("abandoned".into()), None),
+                ("pack".into(), "2026-09-30".into(), Some("completed".into()), Some("- [ ] headphones <!--k=a1-->".into())),
+                ("pack".into(), "2026-10-01".into(), None, Some("- [x] headphones <!--k=a1-->".into())),
+            ],
+            "closed days become marks; a checklist day keeps its own copy, also one equal to the template"
+        );
+
+        let focus: Vec<String> = focus_history::table.select(focus_history::quest_id).load(&mut conn).unwrap();
+        assert_eq!(focus, vec!["gym".to_string()], "Focus points at the quest");
+        let reminder_rows: Vec<(String, Option<i64>, Option<String>)> = reminders::table
+            .select((reminders::quest_id, reminders::mm_offset, reminders::due_at_utc))
+            .load(&mut conn)
+            .unwrap();
+        assert_eq!(reminder_rows, vec![("gym".to_string(), Some(10), None)], "reminders keep only their rule, on the quest");
+        assert!(
+            diesel::sql_query("SELECT 1 FROM quest_series").execute(&mut conn).is_err(),
+            "quest_series is gone"
+        );
+        let stale_activity: i64 = crate::schema::sync_outbox::table
+            .filter(crate::schema::sync_outbox::entity_type.eq("checklist_activity"))
+            .count()
+            .get_result(&mut conn)
+            .unwrap();
+        assert_eq!(stale_activity, 0, "an activity event that names an old occurrence goes");
 
         let _ = std::fs::remove_file(db_path);
     }

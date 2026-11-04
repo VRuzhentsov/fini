@@ -309,6 +309,40 @@ SQL only because `primary` is a keyword.
 
 Unrelated to everything above: the app-update track (stable/beta).
 
+### Occurrence
+
+One date of a repeating quest, computed from the quest's `repeat_rule`
+(ADR-0012). It has no row of its own until a person acts on it. Its key is
+(`quest_id`, `period_key`); `period_key` is its date, `YYYY-MM-DD`.
+
+### Occurrence mark
+
+The stored row of an occurrence that a person closed (completed or
+abandoned) or changed (a tick, a "This day" edit), in `quest_occurrences`.
+Its fields override the quest's fields for that day; an empty field takes
+the quest's value.
+
+### Reminder
+
+A stored record that says when Fini reminds a person about a quest (table
+`reminders`). A relative reminder keeps an offset: it fires at the quest's
+due + due_time minus the offset, and that moment is computed when it is read
+(for a repeating quest, from its next open day). An absolute reminder keeps
+a moment of its own. A quest's due date makes a relative reminder at the due
+time (offset 0). It is data; it does nothing by itself.
+
+*Elsewhere:* an alarm in a calendar event (iCalendar `VALARM`); a reminder in
+Todoist.
+
+### Notification
+
+The message that the operating system shows to the person at a reminder's
+moment, with the buttons Complete and Snooze. Showing it, its buttons and its
+snooze are the work of the notification service.
+
+*Elsewhere:* a notification on Android and in desktop notification daemons;
+the delivery of an alarm, not the alarm.
+
 ## Test words
 
 ### TestDevice
@@ -329,6 +363,15 @@ Android Emulator (ADR-0013 D1). In code: `PhoneTool`.
 *Elsewhere:* a device provider in Mobly; virtual device management in
 OmniLab ATS.
 
+### Xvfb
+
+X virtual framebuffer: an X display server that draws into memory, not on a
+screen. The e2e container starts one Xvfb (`DISPLAY=:99`) for the whole lane,
+and every test app draws on it, headless. A local `make e2e` draws on the real
+screen, headful.
+
+*Elsewhere:* the headless display of most Linux CI for GUI tests.
+
 ## Words deliberately not used
 
 | Not used | Why |
@@ -343,6 +386,7 @@ OmniLab ATS.
 | **probe** | not an approved word; Fini uses *identify* |
 | **candidate** (`AddModeCandidate`) | not an approved word; Fini uses *available device* |
 | **dial** | not an approved word; Fini uses *connect* |
+| **series** (`quest_series`) | a repeating quest is one quest (ADR-0012); its dates are *occurrences* |
 | **leg** (`PairingLeg`) | jargon; Fini uses *pairing step* |
 | **lease** (scan lease) | jargon; Fini uses *scan lock* |
 | **hello** (`Hello`, `DiscoveryHello`) | not an approved word; the message is `IdentifyDevice` |

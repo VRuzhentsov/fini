@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useQuestStore, type Quest } from "../../stores/quest";
+import { CheckCircleIcon } from "@heroicons/vue/24/outline";
+import { isRepeating, useQuestStore, type Quest } from "../../stores/quest";
+import { EditScope } from "../../utils/quest";
+import { localDateStr } from "../../utils/date";
 import { useSpaceStore, SPACE_COLOR_CLASS } from "../../stores/space";
 import { useContextMenu } from "../../composables/useContextMenu";
-import { buildQuestMenu } from "../../composables/buildQuestMenu";
+import { hasMissedDays, useQuestMenu } from "../../composables/useQuestMenu";
 import { useReminderNotifications } from "../../composables/useReminderNotifications";
-import { newChecklistItemId, parseChecklist, serializeChecklist } from "../../utils/checklist";
+import { parseChecklist } from "../../utils/checklist";
 import ChecklistEditor from "../ChecklistEditor.vue";
 import QuestEditor from "../QuestEditor.vue";
 import QuestMetadataButton from "../QuestMetadataButton.vue";
@@ -16,28 +19,30 @@ const props = defineProps<{ quest: Quest }>();
 const store = useQuestStore();
 const spaceStore = useSpaceStore();
 const contextMenu = useContextMenu();
+const questMenu = useQuestMenu(() => props.quest);
 const { ensureReminderNotificationsAllowed } = useReminderNotifications();
 const expanded = ref(false);
 const reminderOpen = ref(false);
 const HOLD_MS = 900;
+const MENU_HOLD_MS = 700;
 let holdTimer: number | null = null;
 let menuHoldTimer: number | null = null;
+let completeHoldTimer: number | null = null;
+/** Set when a hold on Complete opened its menu, so the click that ends the hold completes nothing. */
+let completeHoldOpenedMenu = false;
 
 const renderFlags = computed(() => ({
   checklist: props.quest.is_checklist,
+  // ADR-0012 D7: holding Complete on a repeating quest opens its menu.
+  completeHoldMenu: isRepeating(props.quest),
+  // One tap closes every open day through today; shown only when a day before today is open.
+  completeThroughTodayButton:
+    hasMissedDays(props.quest) && (props.quest.due ?? "") < localDateStr(new Date()),
 }));
 const checklistItems = computed(() => parseChecklist(props.quest.description));
 
 function onToggleChecklistItem(itemId: string, checked: boolean) {
   store.toggleChecklistItem(props.quest.id, itemId, checked);
-}
-
-function onEditChecklistItemText(itemId: string, text: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "edit", payload: { itemId, text } };
-    return;
-  }
-  store.editChecklistItemText(props.quest.id, itemId, text);
 }
 
 // Captures the quest at the moment the scope sheet opens (not just at resolution time): Focus
@@ -51,75 +56,72 @@ type PendingScopeAction =
 
 const pendingScopeAction = ref<PendingScopeAction | null>(null);
 
-function onAddChecklistItem(text: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "add", payload: text };
+/** A checklist edit of a repeating quest asks "This day" / "All days" first (ADR-0012 D8). */
+function editChecklist(action: PendingScopeAction) {
+  if (isRepeating(action.quest)) {
+    pendingScopeAction.value = action;
     return;
   }
-  store.addChecklistItem(props.quest.id, text);
+  void applyChecklistEdit(action, EditScope.All);
+}
+
+function onEditChecklistItemText(itemId: string, text: string) {
+  editChecklist({ quest: props.quest, kind: "edit", payload: { itemId, text } });
+}
+
+function onAddChecklistItem(text: string) {
+  editChecklist({ quest: props.quest, kind: "add", payload: text });
 }
 
 function onRemoveChecklistItem(itemId: string) {
-  if (props.quest.series_id) {
-    pendingScopeAction.value = { quest: props.quest, kind: "remove", payload: itemId };
-    return;
-  }
-  store.removeChecklistItem(props.quest.id, itemId);
+  editChecklist({ quest: props.quest, kind: "remove", payload: itemId });
 }
 
-async function onScopeChosen(scope: "this" | "future") {
+async function applyChecklistEdit(action: PendingScopeAction, scope: EditScope) {
+  const { quest } = action;
+  if (action.kind === "add") await store.addChecklistItem(quest.id, action.payload, scope);
+  else if (action.kind === "remove") await store.removeChecklistItem(quest.id, action.payload, scope);
+  else await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text, scope);
+}
+
+async function onScopeChosen(scope: EditScope) {
   const action = pendingScopeAction.value;
   pendingScopeAction.value = null;
-  if (!action) return;
-  const { quest } = action;
-
-  if (scope === "this") {
-    if (action.kind === "add") await store.addChecklistItem(quest.id, action.payload);
-    else if (action.kind === "remove") await store.removeChecklistItem(quest.id, action.payload);
-    else await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
-    return;
-  }
-
-  // "This and future occurrences" must diff against the series' own stored template, not this
-  // occurrence's current description — the occurrence may already carry "this occurrence only"
-  // changes that were never promoted, and basing the edit on it would silently promote them.
-  const template = await store.fetchSeriesChecklistTemplate(quest.series_id!);
-  const items = parseChecklist(template);
-
-  if (action.kind === "edit" && !items.some((it) => it.id === action.payload.itemId)) {
-    // The item being renamed was added via "This occurrence" and was never promoted to the
-    // template — pushing the template unchanged would leave the rename un-applied, and the
-    // backend's reconcile would then drop the item entirely (absent from the new template)
-    // instead of renaming it. There's no coherent "future" version of an occurrence-only item,
-    // so fall back to applying the rename to just this occurrence.
-    await store.editChecklistItemText(quest.id, action.payload.itemId, action.payload.text);
-    return;
-  }
-
-  const nextItems =
-    action.kind === "add"
-      ? [...items, { id: newChecklistItemId(), text: action.payload, checked: false }]
-      : action.kind === "remove"
-        ? items.filter((it) => it.id !== action.payload)
-        : items.map((it) =>
-            it.id === action.payload.itemId ? { ...it, text: action.payload.text } : it,
-          );
-  await store.updateSeriesChecklist(
-    quest.series_id!,
-    quest.id,
-    serializeChecklist(nextItems),
-    "future",
-  );
+  if (action) await applyChecklistEdit(action, scope);
 }
 
 function onContextMenu(e: MouseEvent) {
-  const items = buildQuestMenu(props.quest, {
-    spaces: spaceStore.spaces,
-    updateQuest: (id, patch) => store.updateQuest(id, patch),
-    setFocusQuest: (id) => store.setFocusQuest(id),
-    deleteQuest: (id) => store.deleteQuest(id),
-  });
-  contextMenu.open(e, items);
+  contextMenu.open(e, questMenu.items.value);
+}
+
+/** The menu of the Complete button (ADR-0012 D7). */
+function openCompleteMenu(e: MouseEvent) {
+  if (!renderFlags.value.completeHoldMenu) return;
+  contextMenu.open(e, questMenu.completeMenu.value);
+}
+
+function startCompleteHold(event: PointerEvent) {
+  completeHoldOpenedMenu = false;
+  if (!renderFlags.value.completeHoldMenu) return;
+  completeHoldTimer = window.setTimeout(() => {
+    completeHoldTimer = null;
+    completeHoldOpenedMenu = true;
+    openCompleteMenu(event as unknown as MouseEvent);
+  }, MENU_HOLD_MS);
+}
+
+function endCompleteHold() {
+  if (completeHoldTimer === null) return;
+  window.clearTimeout(completeHoldTimer);
+  completeHoldTimer = null;
+}
+
+function onCompleteClick() {
+  if (completeHoldOpenedMenu) {
+    completeHoldOpenedMenu = false;
+    return;
+  }
+  void completeQuest();
 }
 
 function spaceName(): string {
@@ -165,7 +167,7 @@ function startMenuHold(event: PointerEvent) {
     button.classList.add("done");
     onContextMenu(event as unknown as MouseEvent);
     window.setTimeout(() => button.classList.remove("done"), 700);
-  }, 700);
+  }, MENU_HOLD_MS);
 }
 
 function endMenuHold(event: PointerEvent) {
@@ -180,6 +182,10 @@ function endMenuHold(event: PointerEvent) {
 
 async function completeQuest() {
   await store.updateQuest(props.quest.id, { status: "completed" });
+}
+
+async function completeThroughToday() {
+  await store.completeThroughToday(props.quest.id);
 }
 
 async function abandonQuest() {
@@ -203,7 +209,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
     :space-name="spaceName()"
     is-focus
     :reminder-text="quest.due ? 'Date set' : 'Date'"
-    :is-recurring="!!quest.series_id"
+    :is-recurring="renderFlags.completeHoldMenu"
     @contextmenu="onContextMenu"
     @update="store.updateQuest(quest.id, $event)"
     @complete="completeQuest"
@@ -224,7 +230,9 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
       <div class="active-quest-meta">
         <QuestMetadataButton v-if="quest.energy !== 'medium'" kind="energy" :model-value="quest.energy" readonly />
         <QuestMetadataButton v-if="quest.priority !== 'medium'" kind="priority" :model-value="quest.priority" readonly />
-        <span v-if="quest.focus_enter_count > 1" class="badge badge-xs">Focus {{ quest.focus_enter_count }}</span>
+        <!-- "Focus N": how many times the quest became the Focus quest. Switched off
+             for now; the backend will count it again later (repositories/quest.repository.rs).
+        <span v-if="quest.focus_enter_count > 1" class="badge badge-xs">Focus {{ quest.focus_enter_count }}</span> -->
         <span class="badge badge-xs active-quest-space" :class="spaceCss()">{{ spaceName() }}</span>
         <button
           class="hold-ring-menu"
@@ -255,7 +263,7 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
       />
     </div>
 
-    <div class="active-quest-actions">
+    <div class="active-quest-actions" :class="{ 'with-through-today': renderFlags.completeThroughTodayButton }">
       <button
         class="hold-action abandon"
         aria-label="Abandon (hold)"
@@ -268,9 +276,25 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
         <span class="hold-glyph x" />
       </button>
       <button
+        v-if="renderFlags.completeThroughTodayButton"
+        class="hold-action through-today"
+        title="Complete through today"
+        aria-label="Complete through today"
+        data-testid="focus-complete-through-today"
+        @click="completeThroughToday"
+      >
+        <CheckCircleIcon class="through-today-icon" aria-hidden="true" />
+      </button>
+      <button
         class="hold-action complete"
         aria-label="Complete"
-        @click="completeQuest"
+        data-testid="focus-complete"
+        @pointerdown="startCompleteHold"
+        @pointerup="endCompleteHold"
+        @pointerleave="endCompleteHold"
+        @pointercancel="endCompleteHold"
+        @contextmenu.prevent.stop="openCompleteMenu"
+        @click="onCompleteClick"
       >
         <span class="hold-glyph check" />
       </button>
@@ -441,6 +465,8 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
   margin-top: 0.875rem;
 }
 
+.active-quest-actions.with-through-today { grid-template-columns: 1fr 1fr 3fr; }
+
 .hold-action {
   position: relative;
   display: flex;
@@ -458,6 +484,8 @@ async function onReminderSave(payload: { due: string | null; due_time: string | 
 
 .hold-action:active { transform: scale(0.97); }
 .hold-action.abandon { color: var(--fg-5); background: var(--color-base-200); }
+.hold-action.through-today { color: var(--color-success); background: var(--color-base-200); }
+.through-today-icon { width: 26px; height: 26px; }
 .hold-action.complete { color: #fff; background: var(--color-success); box-shadow: 0 4px 10px rgba(0, 184, 107, 0.3); }
 
 .hold-fill {

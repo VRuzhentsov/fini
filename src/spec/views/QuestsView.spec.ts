@@ -26,6 +26,7 @@ describe("QuestsView quest creation", () => {
   beforeEach(() => {
     (useQuestStore as unknown as jest.Mock).mockReturnValue({
       quests: [],
+      activeQuests: [],
       error: null,
       fetchQuests: jest.fn().mockResolvedValue(undefined),
     });

@@ -10,7 +10,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,8 +24,8 @@ use crate::services::channel_service::{
     send_frame, ChannelKind, ChannelProblem, ChannelService, DataLink, DiscoveredDevice, LinkHandlerSlot,
     LinkHandlers, PeerFrame,
 };
-use crate::services::db::{open_db_at_path, utc_now};
-use crate::services::event_bus_service::EventBusService;
+use crate::services::db::{utc_now, DbPool};
+use crate::services::event_bus_service::EventBus;
 
 /// How long a connect may take before it counts as failed. A peer on the
 /// same network answers in milliseconds; one that went away never does.
@@ -71,8 +70,8 @@ struct HeardDevice {
 
 pub struct NetworkChannelService {
     identity: Identity,
-    db_path: PathBuf,
-    bus: Arc<EventBusService>,
+    pool: DbPool,
+    bus: Arc<EventBus>,
     /// The UDP port the endpoint binds; see `endpoint`.
     port: u16,
     /// Bound on first use.
@@ -113,18 +112,18 @@ pub struct NetworkChannelService {
 impl NetworkChannelService {
     /// The channel on `NETWORK_PORT`, or on the port that
     /// `FINI_SPACE_SYNC_WS_PORT` gives.
-    pub fn new(identity: Identity, db_path: PathBuf, bus: Arc<EventBusService>) -> Arc<Self> {
+    pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
         let port = std::env::var("FINI_SPACE_SYNC_WS_PORT")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(NETWORK_PORT);
-        Arc::new(Self::on_port(identity, db_path, bus, port))
+        Arc::new(Self::on_port(identity, pool, bus, port))
     }
 
-    pub fn on_port(identity: Identity, db_path: PathBuf, bus: Arc<EventBusService>, port: u16) -> Self {
+    pub fn on_port(identity: Identity, pool: DbPool, bus: Arc<EventBus>, port: u16) -> Self {
         Self {
             identity,
-            db_path,
+            pool,
             bus,
             port,
             endpoint: tokio::sync::OnceCell::new(),
@@ -302,7 +301,7 @@ impl NetworkChannelService {
             }
         };
         let any_pair_on = tokio::task::block_in_place(|| {
-            !ChannelRepository::new(&mut open_db_at_path(&self.db_path))
+            !ChannelRepository::new(&mut *self.pool.connection())
                 .peers_with_channel_enabled(ChannelKind::Network)
                 .is_empty()
         });
@@ -561,7 +560,7 @@ impl NetworkChannelService {
     }
 
     fn pinned_key(&self, peer_id: &str) -> Option<String> {
-        tokio::task::block_in_place(|| DeviceRepository::new(&mut open_db_at_path(&self.db_path)).pinned_key(peer_id))
+        tokio::task::block_in_place(|| DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id))
     }
 
     /// The user data this device publishes with its iroh mDNS record: a
@@ -585,8 +584,8 @@ impl ChannelService for NetworkChannelService {
         ChannelKind::Network
     }
 
-    fn db_path(&self) -> &Path {
-        &self.db_path
+    fn pool(&self) -> &DbPool {
+        &self.pool
     }
 
     fn set_link_handlers(&self, handlers: LinkHandlers) {
@@ -620,7 +619,7 @@ impl ChannelService for NetworkChannelService {
     /// channel on and is heard.
     fn keep_serving(self: Arc<Self>) {
         let peers = tokio::task::block_in_place(|| {
-            ChannelRepository::new(&mut open_db_at_path(&self.db_path)).peers_with_channel_enabled(ChannelKind::Network)
+            ChannelRepository::new(&mut *self.pool.connection()).peers_with_channel_enabled(ChannelKind::Network)
         });
         for peer in peers {
             self.start_exchange(&peer);

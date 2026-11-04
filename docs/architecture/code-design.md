@@ -47,7 +47,9 @@ is used through an interface.
   interface.
 - **Repository:** the only object that reads and writes one kind of stored
   data (the pairs, the channels of a pair, the outbox). A service gets data
-  from a repository, and does not use the database directly.
+  from a repository, and does not use the database directly. How a
+  repository gets its connection, and the rules for transactions, are in
+  [`docs/db.md`](../db.md).
 - **PubSub (event bus):** a service publishes an event when its state
   changes (a device heard, a connection up, a connection down). Other
   services subscribe to the events they need. The publisher does not know

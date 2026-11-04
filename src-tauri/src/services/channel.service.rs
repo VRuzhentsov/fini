@@ -9,7 +9,6 @@
 //! defines these interfaces, so a channel never depends on a feature
 //! service.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -145,14 +144,14 @@ pub trait ChannelService: Send + Sync {
     fn kind(&self) -> ChannelKind;
 
     /// The database this channel reads the pairs from.
-    fn db_path(&self) -> &Path;
+    fn pool(&self) -> &crate::services::db::DbPool;
 
     /// Whether the pair with `peer_device_id` has this channel and it is on
     /// now, read from the database each time. A removed pair, a removed
     /// channel, and a channel that is off all give `false`.
     fn is_on(&self, peer_device_id: &str) -> bool {
         tokio::task::block_in_place(|| {
-            let mut conn = crate::services::db::open_db_at_path(self.db_path());
+            let mut conn = self.pool().connection();
             ChannelRepository::new(&mut conn).is_enabled(peer_device_id, self.kind())
         })
     }
@@ -466,8 +465,9 @@ pub const PEER_ALPN: &[u8] = b"fini/peer/1";
 /// The ALPN of a sync session. Its last part is the protocol version: a
 /// device on another version shares no ALPN with this one, and the TLS
 /// handshake fails. Who the peer is, is the key the handshake proved; there
-/// is no auth frame (2026-10-13: TLS only).
-pub const SYNC_ALPN: &[u8] = b"fini/sync/4";
+/// is no auth frame (2026-10-13: TLS only). Version 5: a repeating quest is
+/// one quest with its occurrence marks (ADR-0012 D11).
+pub const SYNC_ALPN: &[u8] = b"fini/sync/5";
 
 /// An empty frame: the dialer's first write, so that the acceptor sees the
 /// stream before the first real frame. Not a message; `recv` skips it.

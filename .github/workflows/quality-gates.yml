@@ -105,6 +105,15 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # The backend tests compile from scratch inside Docker; the runner's
+      # preinstalled SDKs leave too little disk for that.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          docker-images: false
+          large-packages: false
+
       - name: Compile backend tests
         run: npm run gate:be-compile
 

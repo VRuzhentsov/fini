@@ -55,7 +55,7 @@ Deleting from history is permanent and requires confirmation.
 
 ## Checklist recurrence scope (issue #128)
 
-Adding/removing/renaming a checklist item on a quest that belongs to a series opens [[RecurrenceScopeSheet]] to choose "This occurrence" vs "This and future occurrences" before applying the edit. A future-scoped edit diffs against the series' own stored template (fetched fresh), not this occurrence's current description, so occurrence-only changes that were never promoted aren't silently promoted.
+Adding/removing/renaming a checklist item on a repeating quest opens [[RecurrenceScopeSheet]] to choose "This day" vs "All days" before applying the edit (ADR-0012 D8). "This day" edits that day's copy of the checklist; "All days" edits the quest's template, and the backend merges the edit into every open day copy. Ticking an item never asks: a tick is always that day's. In History, "Make active" on a day of a repeating quest opens only that day again.
 
 ## Context menu
 
@@ -70,5 +70,5 @@ Right-click the row (or its collapsed/expanded surface) to open [[ContextMenu]] 
 | [[ReminderMenu]] | Due date / time / repeat controls |
 | [[RecurrenceScopeSheet]] | Checklist edit-scope prompt for recurring quests |
 | [[ContextMenu]] | Right-click menus (via `useContextMenu()`) |
-| [[buildQuestMenu]] | Standard context-menu items |
+| [[useQuestMenu]] | Context-menu items, written in full; each item says when it shows |
 | [[QuestList]] | Parent — owns the accordion's `expanded` state |

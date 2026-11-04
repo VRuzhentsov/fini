@@ -25,6 +25,11 @@ FROM rust:1.91-bookworm AS rust-builder-base
 
 WORKDIR /workspace
 
+# A build from scratch gains nothing from incremental files, and line tables
+# are enough for test panics; both keep the build inside the CI runner's disk.
+ENV CARGO_INCREMENTAL=0 \
+    CARGO_PROFILE_DEV_DEBUG=line-tables-only
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     set -eux; \

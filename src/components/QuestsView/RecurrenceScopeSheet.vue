@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from "vue";
 import { ArrowPathIcon, CalendarDaysIcon } from "@heroicons/vue/24/outline";
+import { EditScope } from "../../utils/quest";
 
 defineProps<{
   /** Title of the quest whose checklist is being edited, shown in the prompt. */
   questTitle: string;
 }>();
 
+// ADR-0012 D8: one day (an override on that occurrence), or the quest.
 const emit = defineEmits<{
   close: [];
-  choose: [scope: "this" | "future"];
+  choose: [scope: EditScope];
 }>();
 
 function onKeydown(e: KeyboardEvent) {
@@ -39,19 +41,19 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       <p class="recurrence-scope-title">Apply checklist change</p>
       <p class="recurrence-scope-subtitle">{{ questTitle }} repeats. Where should this change apply?</p>
 
-      <button class="recurrence-scope-option" @click="emit('choose', 'this')">
+      <button class="recurrence-scope-option" data-testid="recurrence-scope-day" @click="emit('choose', EditScope.Day)">
         <CalendarDaysIcon class="recurrence-scope-option-icon" />
         <span class="recurrence-scope-option-text">
-          <span class="recurrence-scope-option-label">This occurrence</span>
-          <span class="recurrence-scope-option-hint">Only today's checklist changes</span>
+          <span class="recurrence-scope-option-label">This day</span>
+          <span class="recurrence-scope-option-hint">Only this day's checklist changes</span>
         </span>
       </button>
 
-      <button class="recurrence-scope-option" @click="emit('choose', 'future')">
+      <button class="recurrence-scope-option" data-testid="recurrence-scope-all" @click="emit('choose', EditScope.All)">
         <ArrowPathIcon class="recurrence-scope-option-icon" />
         <span class="recurrence-scope-option-text">
-          <span class="recurrence-scope-option-label">This and future occurrences</span>
-          <span class="recurrence-scope-option-hint">Updates the recurring template too</span>
+          <span class="recurrence-scope-option-label">All days</span>
+          <span class="recurrence-scope-option-hint">Changes the quest, so every day shows it</span>
         </span>
       </button>
     </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch } from "vue";
-import { priorityWeight, useQuestStore, type Quest } from "../stores/quest";
+import { useQuestStore, type Quest } from "../stores/quest";
 import { useSpaceStore } from "../stores/space";
 import { useSpaceSyncStore } from "../stores/space-sync.store";
 import ActiveQuestPanel from "../components/FocusView/ActiveQuestPanel.vue";
@@ -65,40 +65,12 @@ watch(
   { immediate: true },
 );
 
-const filteredQuests = computed(() => {
-  const sid = spaceStore.selectedSpaceId;
-  if (!sid) return store.quests;
-  return store.quests.filter((q) => q.space_id === sid);
-});
-
-function localDateStr(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-const backlog = computed(() => {
-  const mainId = store.activeQuest?.id;
-  const today = localDateStr(new Date());
-  return filteredQuests.value
-    .filter((q) => q.status === "active" && q.id !== mainId)
-    .sort((a, b) => {
-      const aOverdue = a.due && a.due < today ? 1 : 0;
-      const bOverdue = b.due && b.due < today ? 1 : 0;
-      if (aOverdue !== bOverdue) return bOverdue - aOverdue;
-      const aScheduled = a.due || a.repeat_rule ? 1 : 0;
-      const bScheduled = b.due || b.repeat_rule ? 1 : 0;
-      if (aScheduled !== bScheduled) return bScheduled - aScheduled;
-      const aHasDue = a.due ? 1 : 0;
-      const bHasDue = b.due ? 1 : 0;
-      if (aHasDue !== bHasDue) return bHasDue - aHasDue;
-      if (a.due && b.due && a.due !== b.due) return a.due.localeCompare(b.due);
-      if (a.order_rank !== b.order_rank) return a.order_rank - b.order_rank;
-      if (a.priority !== b.priority) return priorityWeight(b.priority) - priorityWeight(a.priority);
-      return a.created_at.localeCompare(b.created_at);
-    });
-});
+/** The active quests of the selected space, without the Focus quest. */
+const backlog = computed(() =>
+  store.activeQuests.filter(
+    (q) => q.id !== store.activeQuest?.id && (!spaceStore.selectedSpaceId || q.space_id === spaceStore.selectedSpaceId),
+  ),
+);
 
 const activeQuest = computed(() => {
   const sid = spaceStore.selectedSpaceId;

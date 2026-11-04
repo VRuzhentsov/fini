@@ -1,7 +1,7 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 
-use crate::models::{CreateReminderInput, Reminder, UpdateReminderInput};
+use crate::models::{CreateReminderInput, Reminder, UpdateReminderInput, REMINDER_RELATIVE};
 use crate::schema::reminders;
 use crate::services::db::utc_now;
 
@@ -32,25 +32,20 @@ impl<'a> ReminderRepository<'a> {
             .map_err(|error| error.to_string())
     }
 
-    pub fn upsert_for_quest(
-        &mut self,
-        quest_id: &str,
-        due_at_utc: Option<String>,
-    ) -> Result<Reminder, String> {
+    /// The reminder of a quest: its first one, or a new one at the quest's
+    /// due time (relative, offset 0). The moment is computed when it is read
+    /// (`Reminder::moment`), so a changed due date changes no row.
+    pub fn upsert_for_quest(&mut self, quest_id: &str) -> Result<Reminder, String> {
         if let Some(existing) = self.get_for_quest(quest_id)? {
-            diesel::update(reminders::table.find(&existing.id))
-                .set(reminders::due_at_utc.eq(due_at_utc))
-                .execute(self.conn)
-                .map_err(|error| error.to_string())?;
-            return self.get(&existing.id);
+            return Ok(existing);
         }
 
         let now = utc_now();
         diesel::insert_into(reminders::table)
             .values((
                 reminders::quest_id.eq(quest_id),
-                reminders::kind.eq("absolute"),
-                reminders::due_at_utc.eq(due_at_utc),
+                reminders::kind.eq(REMINDER_RELATIVE),
+                reminders::mm_offset.eq(Some(0_i64)),
                 reminders::created_at.eq(now),
             ))
             .returning(Reminder::as_returning())

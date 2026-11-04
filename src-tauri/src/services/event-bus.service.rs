@@ -11,17 +11,17 @@ use crate::models::Event;
 /// `Lagged`. A subscriber that gets `Lagged` reads the current state again.
 const CAPACITY: usize = 256;
 
-pub struct EventBusService {
+pub struct EventBus {
     sender: broadcast::Sender<Event>,
 }
 
-impl Default for EventBusService {
+impl Default for EventBus {
     fn default() -> Self {
         Self { sender: broadcast::channel(CAPACITY).0 }
     }
 }
 
-impl EventBusService {
+impl EventBus {
     /// Tells every subscriber about `event`. With no subscriber, the event
     /// goes nowhere, which is correct: nobody waits for it.
     pub fn publish(&self, event: Event) {

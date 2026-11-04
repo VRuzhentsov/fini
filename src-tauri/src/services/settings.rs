@@ -6,7 +6,7 @@ use std::thread;
 use crate::models::{Setting, UpsertSettingInput};
 use crate::schema::settings;
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
-use crate::services::db::AppDbConnection;
+use crate::services::db::DbPool;
 use crate::utils::text::{bool_to_str, parse_bool};
 #[cfg(all(feature = "ui-plane", target_os = "linux"))]
 use gtk::prelude::GtkSettingsExt;
@@ -212,8 +212,8 @@ pub fn spawn_theme_watcher(app: &AppHandle) {
             };
 
             let mode = {
-                let db = app.state::<AppDbConnection>();
-                let mut conn = db.0.lock().unwrap();
+                let db = app.state::<DbPool>();
+                let mut conn = db.connection();
                 theme_mode(&mut conn).unwrap_or(ThemeMode::System)
             };
 
