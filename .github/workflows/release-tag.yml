@@ -236,7 +236,7 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Prepare AppImage GTK bundler
+      - name: Prepare AppImage bundler tools
         run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
 
       - name: Build Linux bundles
