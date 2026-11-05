@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Written during the design discussion of 2026-10-28. The spike of
-D1 chose the Android Emulator on 2026-10-30 (see "Spike results").
+D1 chose the Android Emulator on 2026-10-30 (see "Spike results"). Updated
+with the project owner on 2026-11-05: the lane is the Android e2e lane, with
+Bluetooth as one of its tests (D3, D5, D8, D10).
 
 ## Context
 
@@ -56,19 +58,24 @@ the phones by serial and runs `pm grant` through `shell`, with
 - The port forward. `_android` has no port forward.
 
 **D3 — Scope of the first pull request.** The spike, the new fixture, and
-a lane with two phones for Android-to-Android Bluetooth, local and in CI.
-The test with three phones (A to B to C) comes later.
+the Android lane with two phones, local and in CI. The lane is the project
+`android`. Its tests are the app start with the notification channel, and
+Android-to-Android Bluetooth. The test with three phones (A to B to C) comes
+later.
 
 **D4 — The name is `TestDevice`.** One running Fini app that a test drives
-is a `TestDevice`. The fixture is `devices`: `devices.a`, `devices.b`. A
+is a `TestDevice`. The fixture is `testDevices`: `testDevices.a`,
+`testDevices.b`, and `testDeviceA`, `testDeviceB` by position. A
 `TestDevice` is not a Fini *device* (a paired peer, `device_paired_devices`).
 The words "actor" and "external" go. A device that a person connects by USB
 or Wi-Fi is a *physical device*.
 
 **D5 — CI runs the lane, but it is not a required check at first.** The job
-`android-ble-e2e` runs on each pull request that is not a draft. It uploads
-logcat, the Bluetooth packet trace and the Playwright trace. The project
-owner makes it a required check after approximately ten green runs.
+`android-e2e` (`.github/workflows/android-e2e.yml`) runs on each pull request
+that is not a draft. It uploads the logcat of each phone, the emulator logs
+and the Playwright results. The project owner makes it a required check after
+approximately ten green runs. The release runs the same job as a smoke check
+that does not block (`non_blocking: true`): no publish job waits for it.
 
 **D6 — All specs move to `TestDevice`. The old harness is deleted.** The
 desktop-process provider gets the spawn code of `fixtures.ts`. The
@@ -76,27 +83,36 @@ physical-device provider gets the "external" code. `specs/e2e/actors/` is
 deleted. There is no second harness.
 
 **D7 — Playwright starts the phones, only when a test that runs needs
-them.** The entry point is `npm run`. The `phones` fixture is worker-scoped
-and lazy. Only the `devices` fixture uses it, and only when a test has a
-device of the kind `android-phone`. When no test that runs needs a phone, no
-phone starts. Physical devices in `FINI_E2E_DEVICES` start no phone. The
-first use starts all phones of the project in one group, because
-Cuttlefish shares the radio only in one group. The fixture writes
-`android-phones.json` in the run folder. After Playwright restarts a worker,
-the fixture connects to the phones that run. `globalTeardown` stops the
-phones only when this file exists.
+them.** The entry point is `npm run`. `PhoneGroup` (`phones/phone-group.ts`)
+starts the phones on first use. Only the worker-scoped `testDevices` fixture
+asks for phones, and only when a test has a test device of the kind
+`android-phone`. When no test that runs needs a phone, no phone starts.
+Physical devices in `FINI_E2E_TEST_DEVICES` start no phone. The first use
+starts all phones of the project in one group (the project option
+`phoneCount`); Cuttlefish shared the radio only in one group. The group
+writes `android-phones.json` in the run folder. After Playwright restarts a
+worker, the group connects to the phones that run. `globalTeardown` stops
+the phones only when this file exists.
 
 **D8 — The phones run in one podman image, the same locally and in CI.**
 The stage `android-phones-runner` in the `Dockerfile` has Node, Playwright,
 adb and the phone tool, with fixed versions. The command
-`npm run test:e2e:android-ble` is the same locally and in CI.
+`npm run test:e2e:android` is the same locally and in CI. CI keeps the image
+in GHCR, with the hash of the `Dockerfile` as its tag, and builds it only when
+the `Dockerfile` changed.
 
 **D9 — Make is for developers on their own computers only. CI calls npm
 scripts.** Each workflow step is one `npm run` call. The Make targets call
 the same npm scripts. The logic of the Make recipes moves to Node scripts in
-`scripts/`.
+`scripts/`. New scripts are TypeScript (`.mts`), which Node 24 runs as they
+are.
 
-## Rules for the Android Bluetooth lane
+**D10 — One Android job in CI.** The old job "Android Emulator E2E" (one
+emulator, `scripts/android-e2e-assert.sh`) goes. Its check, the app start and
+the notification channel `fini.reminders`, is `android-app-start.spec.ts` in
+the project `android`.
+
+## Rules for the Android lane
 
 - Pair through the Add Device screen (`AddDeviceDialog`). Do not call
   `device_save_paired_device`.
@@ -131,7 +147,9 @@ phones.
 | Listing time | 0.0 to 0.6 s | 0.0 to 0.4 s |
 
 Fini keeps the Android Emulator (D1): it is faster, it needs less access to
-the host, and it passed all runs. The failed Cuttlefish run was a Fini
+the host, and it passed all runs. After the spike, the emulator version was
+fixed to 36.4.9 (build 14788078): 37.2.13 stops with SIGSEGV on some hosts
+(Bazzite). The failed Cuttlefish run was a Fini
 defect (issue #198), not a defect of the tool.
 
 What the spike found:
