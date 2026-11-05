@@ -100,9 +100,13 @@ the logcat and removes the port forward. The phone stays on.
 On physical devices, `FINI_E2E_TEST_DEVICES=a=tcp:9224,b=tcp:9223` runs
 Playwright on the host, with no container and no emulator.
 
-CI: the job `android-ble-e2e` in `.github/workflows/ci.yml` builds the APK,
-enables KVM and runs the same command. It uploads `tmp/fini-e2e-multi-device/`
-and `specs/e2e/test-results/`. It is not a required check yet (ADR-0013 D5).
+CI: the job `android-ble-e2e` in `.github/workflows/android-ble-e2e.yml` builds
+the APK, enables KVM and runs the same command. It uploads
+`tmp/fini-e2e-multi-device/` and `specs/e2e/test-results/`, and shows the free
+disk space at the end. It is not a required check yet (ADR-0013 D5).
+`ci.yml` calls it for each pull request. `release-tag.yml` calls it with
+`non_blocking: true`: no publish job waits for it, and a failure does not fail
+the release.
 
 ## Logs
 

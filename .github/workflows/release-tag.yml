@@ -160,6 +160,15 @@ jobs:
       push_cache: true
       run_id_prefix: release
 
+  # Smoke check on two virtual phones (ADR-0013). No publish job needs it, and
+  # non_blocking keeps a failure from failing the release run.
+  android-ble-e2e:
+    name: Android BLE E2E
+    needs: validate-tag
+    uses: ./.github/workflows/android-ble-e2e.yml
+    with:
+      non_blocking: true
+
   build-linux:
     name: Build Linux Artifact (${{ matrix.arch }})
     strategy:
