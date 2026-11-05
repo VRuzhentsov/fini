@@ -2,7 +2,7 @@
 # The pull-request run (ci.yml) and the release run (release-tag.yml) call
 # this file. Not a required check yet (D5): it becomes one after about ten
 # green runs. Until then a failure does not stop a release.
-name: Android BLE E2E
+name: Android E2E
 
 on:
   workflow_call:
@@ -19,8 +19,8 @@ on:
         default: true
 
 jobs:
-  android-ble-e2e:
-    name: Android BLE E2E
+  android-e2e:
+    name: Android E2E
     runs-on: ubuntu-latest
     continue-on-error: ${{ inputs.non_blocking }}
     permissions:
@@ -82,7 +82,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Run the android-ble lane
+      - name: Run the android lane
         # The same command as on a developer's computer (ADR-0013 D8). It
         # pulls the android-phones-runner image from GHCR, or builds and
         # pushes it when the Dockerfile changed, and runs Playwright in it.
@@ -90,7 +90,7 @@ jobs:
           FINI_E2E_KEEP: "1"
           FINI_ANDROID_PHONES_CACHE_PREFIX: ghcr.io/${{ github.repository }}
           FINI_ANDROID_PHONES_CACHE_PUSH: ${{ inputs.push_cache && '1' || '0' }}
-        run: npm run test:e2e:android-ble
+        run: npm run test:e2e:android
 
       - name: Show the free disk space
         # The runner disk was too small for Quality Gates before; this records
@@ -102,7 +102,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-ble-e2e-results
+          name: android-e2e-results
           path: |
             tmp/fini-e2e-multi-device/
             specs/e2e/test-results/

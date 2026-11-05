@@ -1,5 +1,5 @@
-// Runs the android-ble e2e lane (ADR-0013 D8). The same command locally and
-// in CI: `npm run test:e2e:android-ble [-- <playwright args>]`.
+// Runs the android e2e lane (ADR-0013 D8). The same command locally and
+// in CI: `npm run test:e2e:android [-- <playwright args>]`.
 //
 // On the host it builds the `android-phones-runner` image and runs this same
 // script in it, with /dev/kvm and the repo mounted. The container has its own
@@ -23,7 +23,7 @@ const PASSED_ENV = [
 
 const args = process.argv.slice(2);
 
-function run(command, commandArgs) {
+function run(command: string, commandArgs: string[]): number {
   const result = spawnSync(command, commandArgs, { stdio: 'inherit', cwd: REPO_ROOT });
   if (result.error) throw result.error;
   return result.status ?? 1;
@@ -36,7 +36,7 @@ const physicalOnly = (process.env.FINI_E2E_TEST_DEVICES ?? '')
   && Boolean(process.env.FINI_E2E_TEST_DEVICES);
 
 if (process.env.FINI_E2E_CONTAINER_RUNNER === '1' || physicalOnly) {
-  process.exit(run('npx', ['playwright', 'test', '--config', 'specs/e2e/playwright.config.ts', '--project=android-ble', ...args]));
+  process.exit(run('npx', ['playwright', 'test', '--config', 'specs/e2e/playwright.config.ts', '--project=android', ...args]));
 }
 
 // CI keeps the image in GHCR (FINI_ANDROID_PHONES_CACHE_PREFIX), with the
@@ -70,5 +70,5 @@ process.exit(run(ENGINE, [
   'run', '--rm', '--device', '/dev/kvm', '--shm-size=2g',
   // `:Z` relabels the mount for SELinux, as ANDROID_BUILD_RUN in the Makefile does.
   '-v', `${REPO_ROOT}:/work:Z`, '-w', '/work', ...envArgs,
-  IMAGE, 'node', 'scripts/e2e-android-ble.mjs', ...args,
+  IMAGE, 'node', 'scripts/e2e-android.mts', ...args,
 ]));

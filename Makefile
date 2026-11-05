@@ -106,13 +106,13 @@ flatpak-install-local:
 play-store-screenshots:
 	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
 
-# The gate steps live in scripts/ci-gate.mjs; CI calls them as `npm run
+# The gate steps live in scripts/ci-gate.mts; CI calls them as `npm run
 # gate:*` (ADR-0013 D9). These targets are local shortcuts to the same steps.
 pr-gate-fe-unit:
 	npm run gate:fe-unit
 
 pr-gate-be-cache-key:
-	@node scripts/ci-gate.mjs be-cache-key
+	@node scripts/ci-gate.mts be-cache-key
 
 pr-gate-be-compile:
 	npm run gate:be-compile
@@ -128,7 +128,7 @@ pr-gate-e2e:
 	$(MAKE) pr-gate-e2e-run
 
 pr-gate-e2e-cache-key:
-	@node scripts/ci-gate.mjs e2e-cache-key
+	@node scripts/ci-gate.mts e2e-cache-key
 
 pr-gate-e2e-build-dev-runner:
 	npm run gate:e2e:build-image

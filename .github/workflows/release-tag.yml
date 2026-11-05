@@ -162,8 +162,8 @@ jobs:
 
   # Smoke check on two virtual phones (ADR-0013). No publish job needs it, and
   # non_blocking keeps a failure from failing the release run.
-  android-ble-e2e:
-    name: Android BLE E2E
+  android-e2e:
+    name: Android E2E
     needs: validate-tag
     permissions:
       contents: read

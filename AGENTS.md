@@ -29,7 +29,7 @@
 - On a developer's computer, prefer `Makefile` targets over raw `npm`/`tauri` commands when possible. See `Makefile` for available targets.
 - In CI, call `npm run` scripts. CI never calls `make`; each Make target calls the same npm script (ADR-0013 D9).
 - Load `fini-scripting` before adding or changing repo automation scripts, package scripts, release tooling, packaging tooling, CI command orchestration, or build orchestration.
-- Use `npm run` (with logic in `scripts/*.mjs`) for JS/TS package tasks and CI steps, and `xtask/` for non-trivial Rust-side repo automation.
+- Use `npm run` (with logic in `scripts/*.mts`) for JS/TS package tasks and CI steps, and `xtask/` for non-trivial Rust-side repo automation.
 - Load `fini-release` before running or changing release commands, signed tags, or release CI verification. Load `fini-versioning` before changing package metadata, app version display, CLI version output, Android versioning, or CI release version sync.
 - When stopping known dev processes, prefer `pkill -f "<specific-pattern>"` over PID-based `kill`.
 

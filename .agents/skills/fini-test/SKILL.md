@@ -23,11 +23,11 @@ Make every test claim defensible:
 | BE unit | `cargo test` | `npm run gate:be-unit` (local shortcut `make pr-gate-be-unit`) | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
 | E2E single-app UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
 | E2E multi-device | Playwright + the `testDevices` fixture (ADR-0013) | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (projects `multi-device`, `multi-device-ble-mock`) | `specs/e2e/multi-device/tests/*.spec.ts` |
-| E2E Android Bluetooth | two virtual phones, project `android-ble` | `npm run test:e2e:android-ble`, local and CI (job `android-ble-e2e`) | `specs/e2e/multi-device/tests/bluetooth-pair-from-zero.spec.ts` |
+| E2E Android | two virtual phones, project `android` | `npm run test:e2e:android`, local and CI (job `android-e2e`) | `specs/e2e/multi-device/tests/bluetooth-pair-from-zero.spec.ts` |
 | E2E CLI-only | Playwright + `createCliClient()` | project `cli` in `specs/e2e/playwright.config.ts` | `specs/e2e/*.spec.ts` (e.g. `reminder-bridge.spec.ts`) |
 | Android on a physical phone | manual device automation | route to `fini-android-testing` | covered by that skill |
 
-CI parity: the workflows call `npm run gate:fe-unit`, `gate:be-compile`, `gate:be-unit`, the `gate:e2e:*` steps and `test:e2e:android-ble` (`scripts/ci-gate.mjs`, `scripts/e2e-android-ble.mjs`). The `make pr-gate-*` targets are local shortcuts to the same scripts.
+CI parity: the workflows call `npm run gate:fe-unit`, `gate:be-compile`, `gate:be-unit`, the `gate:e2e:*` steps and `test:e2e:android` (`scripts/ci-gate.mts`, `scripts/e2e-android.mts`). The `make pr-gate-*` targets are local shortcuts to the same scripts.
 
 ## Choose the right test category
 
@@ -37,11 +37,11 @@ Decide before writing the test:
 - Pure Rust logic, DB migration, service-layer behavior → **BE unit (`#[cfg(test)]`)**.
 - Single Fini app, real GUI flow, single user view → **E2E single-app UI** (`specs/e2e/ui/`).
 - Two or more Fini apps (device pairing, personal/space sync, multi-device behavior) → **E2E multi-device** (`specs/e2e/multi-device/`).
-- Bluetooth between two Android stacks → project `android-ble` (virtual phones).
+- The Android app, and Bluetooth between two Android stacks → project `android` (virtual phones).
 - CLI behavior or backend bridge with no GUI need → **E2E CLI** (`specs/e2e/*.spec.ts`, project `cli`).
 - Android-only behavior → load `fini-android-testing` instead.
 
-If a behavior fits more than one surface, pick the cheapest to run and the most isolated. Multi-device is expensive, and `android-ble` the most expensive — use them only for behaviors that need two apps.
+If a behavior fits more than one surface, pick the cheapest to run and the most isolated. Multi-device is expensive, and `android` the most expensive — use them only for behaviors that need two apps.
 
 ## When to run tests
 
@@ -104,17 +104,17 @@ npm run gate:e2e:build-image && npm run gate:e2e:run
 
 The dev-runner image starts the desktop processes. `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
 
-### E2E — Android Bluetooth on virtual phones
+### E2E — Android on virtual phones
 
 ```sh
-npm run test:e2e:android-ble [-- <playwright args>]
+npm run test:e2e:android [-- <playwright args>]
 ```
 
 Needs the x86_64 APK with devtools first: `npm run build:android:e2e`. The image, when the phones start, the logs and the rules for the specs: `docs/e2e-android.md`.
 
 ### Targeting a single Playwright project
 
-The projects in `specs/e2e/playwright.config.ts`: `cli`, `ui`, `multi-device` (desktop processes over the Network channel), `multi-device-ble-mock` (desktop processes on the ble-gatt mock radio, with `FINI_E2E_TRANSPORT=ble`), `android-ble` (two virtual phones). Pass `--project=<name>` to `npx playwright test --config specs/e2e/playwright.config.ts`.
+The projects in `specs/e2e/playwright.config.ts`: `cli`, `ui`, `multi-device` (desktop processes over the Network channel), `multi-device-ble-mock` (desktop processes on the ble-gatt mock radio, with `FINI_E2E_TRANSPORT=ble`), `android` (two virtual phones). Pass `--project=<name>` to `npx playwright test --config specs/e2e/playwright.config.ts`.
 
 ### Do not invent targets
 
@@ -253,7 +253,7 @@ Conventions:
 - Prefix late-running test files with `zz-` (see `zz-personal-space-live-quest-sync.spec.ts`) when the test depends on state established by earlier tests in the same project — Playwright runs files in lexical order with `fullyParallel: false, workers: 1`.
 - Talk to the backend through `testDevice.invoke<T>(command, args)`; use `testDevice.page.evaluate` only for DOM probes.
 - A spec that needs two radios skips when a test device is a `desktop-process` (see `bluetooth-pair-from-zero.spec.ts`).
-- In the `android-ble` lane, obey the rules in `docs/e2e-android.md`, "Rules for the specs".
+- In the `android` lane, obey the rules in `docs/e2e-android.md`, "Rules for the specs".
 
 ## Writing CLI e2e
 

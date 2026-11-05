@@ -2,7 +2,7 @@
 // `npm run gate:<step>`; the `make pr-gate-*` targets call the same scripts.
 // Each step reads the same environment variables that the Makefile set before.
 //
-//   node scripts/ci-gate.mjs <fe-unit|be-cache-key|be-compile|be-unit|
+//   node scripts/ci-gate.mts <fe-unit|be-cache-key|be-compile|be-unit|
 //                             e2e-cache-key|e2e-build-image|e2e-run|
 //                             e2e-artifacts|e2e-cleanup>
 
@@ -47,7 +47,7 @@ const resultsDir = env.FINI_E2E_CI_RESULTS_DIR ?? join(runDir, 'test-results');
 const runnerName = `fini-${settings.runId}-runner`;
 
 /** The container engine: CONTAINER=docker|podman, or the first one found (docker first, as before). */
-function engine() {
+function engine(): string {
   const chosen = env.CONTAINER ?? 'auto';
   if (chosen !== 'auto') return chosen;
   for (const candidate of ['docker', 'podman']) {
@@ -56,7 +56,7 @@ function engine() {
   throw new Error('No container engine found. Install Docker or Podman, or set CONTAINER=docker|podman.');
 }
 
-function run(command, args, { allowFailure = false } = {}) {
+function run(command: string, args: string[], { allowFailure = false } = {}): number {
   const result = spawnSync(command, args, { stdio: 'inherit', cwd: REPO_ROOT });
   if (result.error) throw result.error;
   if (!allowFailure && result.status !== 0) process.exit(result.status ?? 1);
@@ -64,8 +64,8 @@ function run(command, args, { allowFailure = false } = {}) {
 }
 
 /** sha256 of the tracked and not-ignored untracked files under `paths`, as the Makefile computed it. */
-function cacheKey(paths) {
-  const list = (args) => spawnSync('git', ['ls-files', '-z', ...args, '--', ...paths], { cwd: REPO_ROOT, encoding: 'utf8' })
+function cacheKey(paths: string[]): string {
+  const list = (args: string[]) => spawnSync('git', ['ls-files', '-z', ...args, '--', ...paths], { cwd: REPO_ROOT, encoding: 'utf8' })
     .stdout.split('\0').filter(Boolean);
   const files = [...new Set([...list([]), ...list(['--others', '--exclude-standard'])])].sort();
   const lines = files
@@ -75,8 +75,19 @@ function cacheKey(paths) {
   return createHash('sha256').update(lines).digest('hex');
 }
 
+interface CachedBuild {
+  target: string;
+  image: string;
+  prefix: string;
+  cacheName: string;
+  key: string;
+  label: string;
+  push: boolean;
+  extraArgs?: string[];
+}
+
 /** Pulls the cached image for `key` or builds `target`, and pushes the new cache image if allowed. */
-function cachedBuild({ target, image, prefix, cacheName, key, label, push, extraArgs = [] }) {
+function cachedBuild({ target, image, prefix, cacheName, key, label, push, extraArgs = [] }: CachedBuild): void {
   const cacheImage = prefix ? `${prefix}-${cacheName}:${key}` : '';
   const containerEngine = engine();
   if (cacheImage && run(containerEngine, ['pull', cacheImage], { allowFailure: true }) === 0) {
@@ -90,7 +101,7 @@ function cachedBuild({ target, image, prefix, cacheName, key, label, push, extra
   if (cacheImage && push) run(containerEngine, ['push', cacheImage]);
 }
 
-const steps = {
+const steps: Record<string, () => unknown> = {
   'fe-unit': () => run(engine(), ['build', '--target', 'fe-unit-test', '-t', 'fini-fe-unit-test', '.']),
 
   'be-cache-key': () => console.log(cacheKey(BE_CACHE_INPUTS)),
@@ -158,7 +169,7 @@ const steps = {
 
 const step = steps[process.argv[2]];
 if (!step) {
-  console.error(`usage: ci-gate.mjs <${Object.keys(steps).join('|')}>`);
+  console.error(`usage: ci-gate.mts <${Object.keys(steps).join('|')}>`);
   process.exit(2);
 }
 step();

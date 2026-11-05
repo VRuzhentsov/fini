@@ -366,8 +366,8 @@ jobs:
 
   # Two virtual phones on one virtual Bluetooth medium (ADR-0013); the job is
   # in android-e2e.yml, which the release calls too.
-  android-ble-e2e:
-    name: Android BLE E2E
+  android-e2e:
+    name: Android E2E
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
     permissions:

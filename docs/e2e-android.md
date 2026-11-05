@@ -1,7 +1,8 @@
 # E2E on virtual Android phones
 
-The project `android-ble` runs Fini Bluetooth between two Android Bluetooth
-stacks. The phones are Android Emulators that share one virtual Bluetooth
+The project `android` runs the Fini APK on two virtual Android phones. Its
+largest test is Fini Bluetooth between the two Android Bluetooth stacks. The
+phones are Android Emulators that share one virtual Bluetooth
 medium (netsim). The decisions are in `docs/adr/0013-e2e-test-devices.md`.
 The fixture and the other projects are in `docs/e2e.md`.
 
@@ -12,11 +13,11 @@ or the address rotation of each vendor.
 ## Parts
 
 ```
-npm run test:e2e:android-ble [-- <playwright args>]
-└── scripts/e2e-android-ble.mjs
+npm run test:e2e:android [-- <playwright args>]
+└── scripts/e2e-android.mts
     ├── on the host: podman build --target android-phones-runner
     │               podman run --device /dev/kvm --shm-size=2g -v <repo>:/work:Z
-    └── in the container (FINI_E2E_CONTAINER_RUNNER=1): npx playwright test --project=android-ble
+    └── in the container (FINI_E2E_CONTAINER_RUNNER=1): npx playwright test --project=android
         └── fixture testDevices: a=android-phone, b=android-phone
             ├── PhoneGroup (phones/phone-group.ts)
             │   ├── android-phones.json    the serials, in RUN_ROOT
@@ -95,12 +96,12 @@ the logcat and removes the port forward. The phone stays on.
 1. Build the x86_64 debug APK with devtools: `npm run build:android:e2e`
    (local shortcut: `make android-build-emulator-e2e`). Another APK:
    `FINI_E2E_ANDROID_APK=<path>`.
-2. Run the lane: `npm run test:e2e:android-ble`.
+2. Run the lane: `npm run test:e2e:android`.
 
 On physical devices, `FINI_E2E_TEST_DEVICES=a=tcp:9224,b=tcp:9223` runs
 Playwright on the host, with no container and no emulator.
 
-CI: the job `android-ble-e2e` in `.github/workflows/android-e2e.yml` builds
+CI: the job `android-e2e` in `.github/workflows/android-e2e.yml` builds
 the APK, enables KVM and runs the same command. It uploads
 `tmp/fini-e2e-multi-device/` and `specs/e2e/test-results/`, and shows the free
 disk space at the end. It is not a required check yet (ADR-0013 D5).

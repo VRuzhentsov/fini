@@ -27,7 +27,7 @@ Use this default hierarchy:
 |---|---|
 | `Makefile` | Local developer shortcuts with memorable names; each recipe calls an npm script or a local-only tool (adb, a dev server) |
 | `npm run` | JS/TS/frontend/package scripts, Vite/Tauri package scripts, JS/TS tests, and the CI gate steps (`gate:*`, `test:e2e:*`, `build:android:e2e`) |
-| `scripts/*.mjs` | The logic behind an npm script that is more than one command (`ci-gate.mjs`, `e2e-android-ble.mjs`, `with-devtools-capability.mjs`) |
+| `scripts/*.mts` | The logic behind an npm script that is more than one command (`ci-gate.mts`, `e2e-android.mts`, `with-devtools-capability.mts`). Node 24 runs them as they are (type stripping): use only types that can be erased, so no `enum` and no parameter properties. Older scripts are still `.mjs` |
 | `cargo xtask` | Non-trivial Rust repo automation, file parsing/editing, manifest updates, packaging/release orchestration |
 | CI workflow steps | One `run: npm run <script>` (or `cargo xtask ...`) for each step; no `make` |
 
@@ -86,11 +86,11 @@ Prefer Makefile wrappers for human-facing `xtask` workflows.
 
 ## Script Policy
 
-Node scripts in `scripts/*.mjs` are the adopted runner for the logic behind npm scripts and CI steps (ADR-0013 D9): they need no install beyond Node, which every CI job and developer has. Avoid other ad hoc runners (shell, PHP, Python) for repo automation.
+Node scripts in `scripts/*.mts` (TypeScript that Node 24 runs as it is) are the adopted runner for the logic behind npm scripts and CI steps (ADR-0013 D9): they need no install beyond Node, which every CI job and developer has. Avoid other ad hoc runners (shell, PHP, Python) for repo automation.
 
 If adding a new automation runner, make it explicit in project dependencies and update this skill with when to use it.
 
-Shell in Makefile is acceptable for simple local guards. Logic that CI also runs goes into `scripts/*.mjs` (or `xtask` for Rust-side work), never into a Make recipe.
+Shell in Makefile is acceptable for simple local guards. Logic that CI also runs goes into `scripts/*.mts` (or `xtask` for Rust-side work), never into a Make recipe.
 
 ## Verification
 

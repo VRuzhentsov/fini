@@ -71,7 +71,7 @@ fixture testDevices (worker-scoped)
 | `ui` | one desktop app for each test | `ui/tests/` |
 | `multi-device` | two desktop processes, Network channel | `multi-device/tests/`, without `peer-sync-over-ble` |
 | `multi-device-ble-mock` | two desktop processes on the `ble-gatt` mock radio (`FINI_E2E_TRANSPORT=ble`) | `peer-sync-over-ble.spec.ts` |
-| `android-ble` | two virtual Android phones (`docs/e2e-android.md`) | `bluetooth-pair-from-zero.spec.ts` |
+| `android` | two virtual Android phones (`docs/e2e-android.md`) | `bluetooth-pair-from-zero.spec.ts` |
 
 Playwright runs one worker, and the files in name order. A file that needs
 the state of earlier files starts with `zz-`.
@@ -85,10 +85,10 @@ the same scripts (ADR-0013 D9).
 |---|---|---|
 | `ui`, `multi-device`, `multi-device-ble-mock`, on your screen | `make e2e-headed` (`make e2e`) | – |
 | `cli`, `ui`, `multi-device`, `multi-device-ble-mock`, in the e2e container | `make pr-gate-e2e` | `npm run gate:e2e:build-image`, `npm run gate:e2e:run` |
-| `android-ble` on virtual phones | `npm run test:e2e:android-ble` | the same command, job `android-ble-e2e` |
+| `android` on virtual phones | `npm run test:e2e:android` | the same command, job `android-e2e` |
 | a desktop process and your phone | `make e2e-phone` | – |
 
-`scripts/ci-gate.mjs` holds the gate steps. The e2e container starts one Xvfb
+`scripts/ci-gate.mts` holds the gate steps. The e2e container starts one Xvfb
 (glossary) for the run, and each app draws on it.
 
 To run a spec on apps that run already (for example HMR apps), give them as

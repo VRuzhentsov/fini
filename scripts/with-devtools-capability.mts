@@ -2,7 +2,7 @@
 // committed one, and puts the committed one back however the command ends.
 // Same job as `with_devtools_capability` in the Makefile, for npm scripts.
 //
-//   node scripts/with-devtools-capability.mjs <command> [args...]
+//   node scripts/with-devtools-capability.mts <command> [args...]
 
 import { spawn } from 'node:child_process';
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -12,7 +12,7 @@ const DEVTOOLS_CAPABILITY = 'src-tauri/devtools-capabilities/default.json';
 
 const [command, ...args] = process.argv.slice(2);
 if (!command) {
-  console.error('usage: with-devtools-capability.mjs <command> [args...]');
+  console.error('usage: with-devtools-capability.mts <command> [args...]');
   process.exit(2);
 }
 
@@ -30,7 +30,7 @@ const child = spawn(command, args, { stdio: 'inherit' });
 // Put the file back first: a stop can end this process before the command.
 // A SIGKILL (for example a container that is killed) still leaves the
 // devtools capability in place; `git checkout src-tauri/capabilities` puts it back.
-for (const signal of ['SIGINT', 'SIGTERM']) {
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     restore();
     child.kill(signal);
