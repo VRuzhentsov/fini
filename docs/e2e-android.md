@@ -104,6 +104,12 @@ CI: the job `android-ble-e2e` in `.github/workflows/android-ble-e2e.yml` builds
 the APK, enables KVM and runs the same command. It uploads
 `tmp/fini-e2e-multi-device/` and `specs/e2e/test-results/`, and shows the free
 disk space at the end. It is not a required check yet (ADR-0013 D5).
+The image is kept in GHCR as
+`ghcr.io/<owner>/fini-android-phones-runner-cache:<sha256 of the Dockerfile>`
+(`FINI_ANDROID_PHONES_CACHE_PREFIX`). The script pulls it. When the
+Dockerfile changed, it builds the image and pushes it
+(`FINI_ANDROID_PHONES_CACHE_PUSH=1`; not for pull requests from forks).
+Local runs set no prefix and use the layer cache of podman.
 `ci.yml` calls it for each pull request. `release-tag.yml` calls it with
 `non_blocking: true`: no publish job waits for it, and a failure does not fail
 the release.
@@ -131,6 +137,5 @@ stops the emulator after about 30 s on Bazzite), `FINI_E2E_PACKAGE`
 
 ## Not done yet
 
-- A cache of the phones image in CI.
 - `bluetooth-channel-add-again` and `peer-sync-over-ble` on the phones (they
   need a "pair if needed" helper).

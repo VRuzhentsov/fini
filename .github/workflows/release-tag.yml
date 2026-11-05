@@ -165,6 +165,9 @@ jobs:
   android-ble-e2e:
     name: Android BLE E2E
     needs: validate-tag
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/android-ble-e2e.yml
     with:
       non_blocking: true

@@ -8,6 +8,8 @@
 // only when a test needs them (ADR-0013 D7).
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,8 +39,29 @@ if (process.env.FINI_E2E_CONTAINER_RUNNER === '1' || physicalOnly) {
   process.exit(run('npx', ['playwright', 'test', '--config', 'specs/e2e/playwright.config.ts', '--project=android-ble', ...args]));
 }
 
-const built = run(ENGINE, ['build', '--target', 'android-phones-runner', '-t', IMAGE, '.']);
-if (built !== 0) process.exit(built);
+// CI keeps the image in GHCR (FINI_ANDROID_PHONES_CACHE_PREFIX), with the
+// hash of the Dockerfile as the tag: the stage copies nothing from the repo,
+// so only the Dockerfile changes it. A pull of about 6 GB is quicker than the
+// build. Without the prefix (local runs) the layer cache of the engine does
+// the same job.
+// An image name must be lowercase; GitHub gives the owner as `VRuzhentsov`.
+const cachePrefix = (process.env.FINI_ANDROID_PHONES_CACHE_PREFIX ?? '').toLowerCase();
+const cacheImage = cachePrefix
+  ? `${cachePrefix}-android-phones-runner-cache:${createHash('sha256').update(readFileSync(join(REPO_ROOT, 'Dockerfile'))).digest('hex')}`
+  : '';
+if (cacheImage && run(ENGINE, ['pull', cacheImage]) === 0) {
+  console.log(`Using cached android-phones-runner image: ${cacheImage}`);
+  const tagged = run(ENGINE, ['tag', cacheImage, IMAGE]);
+  if (tagged !== 0) process.exit(tagged);
+} else {
+  const tags = cacheImage ? ['-t', IMAGE, '-t', cacheImage] : ['-t', IMAGE];
+  const built = run(ENGINE, ['build', '--target', 'android-phones-runner', ...tags, '.']);
+  if (built !== 0) process.exit(built);
+  if (cacheImage && process.env.FINI_ANDROID_PHONES_CACHE_PUSH === '1') {
+    // A failed push costs only the next run's build, so the lane goes on.
+    if (run(ENGINE, ['push', cacheImage]) !== 0) console.warn(`Could not push ${cacheImage}; the lane goes on.`);
+  }
+}
 
 const envArgs = PASSED_ENV.filter((name) => process.env[name] !== undefined).flatMap((name) => ['-e', name]);
 process.exit(run(ENGINE, [

@@ -370,4 +370,11 @@ jobs:
     name: Android BLE E2E
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/android-ble-e2e.yml
+    with:
+      # A fork's token cannot write packages, so it reads the cache without
+      # pushing to it.
+      push_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}

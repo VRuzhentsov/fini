@@ -11,12 +11,21 @@ on:
         description: A failure of the lane shows as a warning and does not fail the caller.
         type: boolean
         default: false
+      push_cache:
+        description: >-
+          Whether this caller may push the android-phones-runner image to GHCR.
+          False for pull requests from forks, whose token cannot write packages.
+        type: boolean
+        default: true
 
 jobs:
   android-ble-e2e:
     name: Android BLE E2E
     runs-on: ubuntu-latest
     continue-on-error: ${{ inputs.non_blocking }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -65,11 +74,22 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Podman reads the credentials that this action writes for Docker.
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Run the android-ble lane
         # The same command as on a developer's computer (ADR-0013 D8). It
-        # builds the android-phones-runner image and runs Playwright in it.
+        # pulls the android-phones-runner image from GHCR, or builds and
+        # pushes it when the Dockerfile changed, and runs Playwright in it.
         env:
           FINI_E2E_KEEP: "1"
+          FINI_ANDROID_PHONES_CACHE_PREFIX: ghcr.io/${{ github.repository }}
+          FINI_ANDROID_PHONES_CACHE_PUSH: ${{ inputs.push_cache && '1' || '0' }}
         run: npm run test:e2e:android-ble
 
       - name: Show the free disk space
