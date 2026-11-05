@@ -71,7 +71,7 @@ fixture testDevices (worker-scoped)
 | `ui` | one desktop app for each test | `ui/tests/` |
 | `multi-device` | two desktop processes, Network channel | `multi-device/tests/`, without `peer-sync-over-ble` |
 | `multi-device-ble-mock` | two desktop processes on the `ble-gatt` mock radio (`FINI_E2E_TRANSPORT=ble`) | `peer-sync-over-ble.spec.ts` |
-| `android` | two virtual Android phones (`docs/e2e-android.md`) | `bluetooth-pair-from-zero.spec.ts` |
+| `android` | two virtual Android phones (`docs/e2e-android.md`) | `android-app-start.spec.ts`, `bluetooth-pair-from-zero.spec.ts` |
 
 Playwright runs one worker, and the files in name order. A file that needs
 the state of earlier files starts with `zz-`.

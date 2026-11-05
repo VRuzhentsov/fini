@@ -25,7 +25,7 @@ RELEASE_BUNDLES ?= deb,rpm
 # this default has no effect on published release artifacts.
 NO_STRIP ?= true
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-dev desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-dev desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
 
 help:
 	@echo ""
@@ -597,21 +597,6 @@ android-build: android-require-build-image
 # the JDK 17 build container; CI gets the JDK from setup-java.
 android-build-emulator-e2e: android-require-build-image
 	$(ANDROID_BUILD_RUN) npm run build:android:e2e
-
-# Runs the same smoke assertions CI runs on the emulator (app process starts,
-# `fini.reminders` notification channel registers), but against whatever
-# device `adb` is currently pointed at and whatever APK is passed in --
-# so the debug build on a real phone can be checked with the same script CI
-# uses, rather than a separate ad-hoc procedure.
-#
-#   make android-e2e-assert ANDROID_E2E_APK=<path> [FINI_E2E_PACKAGE=<id>]
-#
-# FINI_E2E_PACKAGE defaults to the release application id; a debug-buildType
-# APK installs under the `.debug` suffix (tauri.conf.json's
-# bundle.android.debugApplicationIdSuffix) and must set it explicitly.
-android-e2e-assert:
-	@test -n "$(ANDROID_E2E_APK)" || (echo "ANDROID_E2E_APK is not set" && exit 1)
-	ANDROID_E2E_APK="$(ANDROID_E2E_APK)" FINI_E2E_PACKAGE="$(FINI_E2E_PACKAGE)" bash scripts/android-e2e-assert.sh
 
 android-sign-debug:
 	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)

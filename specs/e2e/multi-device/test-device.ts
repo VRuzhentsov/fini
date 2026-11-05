@@ -67,6 +67,12 @@ export class TestDevice {
     })()`);
   }
 
+  /** Runs a shell command on the phone of an `android-phone` test device. */
+  shell(command: string): Promise<string> {
+    if (!this.provider.shell) throw new Error(`Test device "${this.slug}" (${this.kind}) has no shell`);
+    return this.provider.shell(command);
+  }
+
   async stop(keepFiles: boolean): Promise<void> {
     try {
       this.client?.disconnect();

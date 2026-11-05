@@ -38,7 +38,7 @@ export default defineConfig({
       // phones start on the first test that needs them.
       // FINI_E2E_TEST_DEVICES=a=tcp:9224,b=tcp:9223 runs it on physical devices.
       name: 'android',
-      testMatch: ['multi-device/tests/bluetooth-pair-from-zero.spec.ts'],
+      testMatch: ['multi-device/tests/android-app-start.spec.ts', 'multi-device/tests/bluetooth-pair-from-zero.spec.ts'],
       // The phone boot (up to 360 s) is part of the first test.
       timeout: 900_000,
       use: { testDeviceKinds: 'a=android-phone,b=android-phone', phoneCount: 2 } as any,

@@ -23,7 +23,7 @@ Make every test claim defensible:
 | BE unit | `cargo test` | `npm run gate:be-unit` (local shortcut `make pr-gate-be-unit`) | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
 | E2E single-app UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
 | E2E multi-device | Playwright + the `testDevices` fixture (ADR-0013) | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (projects `multi-device`, `multi-device-ble-mock`) | `specs/e2e/multi-device/tests/*.spec.ts` |
-| E2E Android | two virtual phones, project `android` | `npm run test:e2e:android`, local and CI (job `android-e2e`) | `specs/e2e/multi-device/tests/bluetooth-pair-from-zero.spec.ts` |
+| E2E Android | two virtual phones, project `android` | `npm run test:e2e:android`, local and CI (job `android-e2e`) | `specs/e2e/multi-device/tests/android-app-start.spec.ts`, `bluetooth-pair-from-zero.spec.ts` |
 | E2E CLI-only | Playwright + `createCliClient()` | project `cli` in `specs/e2e/playwright.config.ts` | `specs/e2e/*.spec.ts` (e.g. `reminder-bridge.spec.ts`) |
 | Android on a physical phone | manual device automation | route to `fini-android-testing` | covered by that skill |
 

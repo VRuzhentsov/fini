@@ -124,7 +124,7 @@ export class AndroidPhoneProvider implements TestDeviceProvider {
     throw new Error(`install on ${this.serial} failed ${INSTALL_ATTEMPTS} times: ${String(lastError)}`);
   }
 
-  private async shell(command: string): Promise<string> {
+  async shell(command: string): Promise<string> {
     return (await this.device!.shell(command)).toString();
   }
 }

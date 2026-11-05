@@ -1,4 +1,6 @@
-# Two virtual phones on one virtual Bluetooth medium (ADR-0013), defined once.
+# The Fini APK on two virtual phones that share one virtual Bluetooth medium
+# (ADR-0013), defined once. It checks the app start and the notification
+# channel, and a Bluetooth pairing between the phones.
 # The pull-request run (ci.yml) and the release run (release-tag.yml) call
 # this file. Not a required check yet (D5): it becomes one after about ten
 # green runs. Until then a failure does not stop a release.
@@ -40,7 +42,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          # See the android-emulator-e2e job in ci.yml: the default `tools` package is gone.
+          # The action's default set is `tools platform-tools`. Google removed
+          # the old `tools` package from the SDK repository, so sdkmanager
+          # exits 1 with "Failed to find package 'tools'". Ask for
+          # `platform-tools` only; the runner image has the SDK, build-tools
+          # and NDK.
           packages: platform-tools
 
       - name: Setup Node.js
@@ -60,7 +66,15 @@ jobs:
         with:
           workspaces: |
             src-tauri -> target
-          shared-key: android-emulator-e2e-rust
+          shared-key: android-e2e-rust
+
+      - name: Restore Android project cache
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/gen/android/.gradle
+          key: android-e2e-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/gradle.properties', 'src-tauri/gen/android/settings.gradle', 'src-tauri/gen/android/build.gradle.kts', 'src-tauri/gen/android/app/build.gradle.kts', 'src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties', 'src-tauri/Cargo.lock', 'package-lock.json') }}
+          restore-keys: |
+            android-e2e-${{ runner.os }}-
 
       - name: Install npm dependencies
         run: npm ci

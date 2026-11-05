@@ -23,6 +23,8 @@ export interface TestDeviceProvider {
   connect(): Promise<PluginClient>;
   /** Releases only what this provider made. Keeps the logs when `keepFiles` is true. */
   dispose(keepFiles: boolean): Promise<void>;
+  /** Runs a shell command on the phone and gives its output. Only `android-phone` has it. */
+  shell?(command: string): Promise<string>;
 }
 
 interface TestDeviceEntry {
