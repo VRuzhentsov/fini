@@ -6,16 +6,25 @@ phones are Android Emulators that share one virtual Bluetooth
 medium (netsim). The decisions are in `docs/adr/0013-e2e-test-devices.md`.
 The fixture and the other projects are in `docs/e2e.md`.
 
-This lane tests the Android Bluetooth API, GATT, pairing, permissions and the
-Fini protocol. It does not test radio chips, radio interference, battery use
-or the address rotation of each vendor.
+This lane tests the app start on Android, the notification channel, the
+Android Bluetooth API, GATT, pairing, permissions and the Fini protocol. It
+does not test radio chips, radio interference, battery use or the address
+rotation of each vendor.
+
+| Spec | What it proves |
+|---|---|
+| `android-app-start.spec.ts` | The app process runs, and the notification channel `fini.reminders` exists. |
+| `bluetooth-pair-from-zero.spec.ts` | A new pair over Bluetooth through Add Device, until the Bluetooth row is green on both phones. |
+
+A spec runs shell commands on its phone with `testDevice.shell(command)`. Only
+an `android-phone` test device has it.
 
 ## Parts
 
 ```
 npm run test:e2e:android [-- <playwright args>]
 └── scripts/e2e-android.mts
-    ├── on the host: podman build --target android-phones-runner
+    ├── on the host: podman pull of the GHCR image (CI), or podman build --target android-phones-runner
     │               podman run --device /dev/kvm --shm-size=2g -v <repo>:/work:Z
     └── in the container (FINI_E2E_CONTAINER_RUNNER=1): npx playwright test --project=android
         └── fixture testDevices: a=android-phone, b=android-phone

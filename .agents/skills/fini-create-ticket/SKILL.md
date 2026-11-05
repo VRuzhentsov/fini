@@ -82,7 +82,7 @@ Prefer Fini's current terminology and architecture:
 - Frontend: Vue 3 in `src/`.
 - Backend: Rust + Tauri in `src-tauri/`.
 - Persistence: Diesel over SQLite.
-- Testing: prefer Makefile targets when available; use E2E only when behavior spans windows, actors, devices, sync, or user flows.
+- Testing: prefer Makefile targets when available; use E2E only when behavior spans windows, test devices, sync, or user flows.
 - Product nouns: Quest, Space, Reminder, Focus, DeviceConnection, SpaceSync, QuestOccurrence, MCP, CLI.
 - Sync/device tickets should distinguish device pairing consent from SpaceSync consent.
 - Reminder tickets should treat `quest.due` and `quest.due_time` as the scheduling source of truth unless newer evidence supersedes it.
@@ -170,7 +170,7 @@ Preserve established Fini patterns unless the source explicitly changes them.
 
 ### E2E Or Test Coverage
 
-Use for missing proof, flaky tests, actor scenarios, CLI parity, or regression coverage.
+Use for missing proof, flaky tests, multi-device scenarios, CLI parity, or regression coverage.
 
 Add:
 
@@ -185,7 +185,7 @@ Add:
 - <how the test restores state>
 ```
 
-For multi-device behavior, prefer paired actor preconditions and state-first evidence over screenshot-only proof.
+For multi-device behavior, prefer paired test device preconditions and state-first evidence over screenshot-only proof.
 
 ### Android Or Mobile
 
@@ -214,7 +214,7 @@ Add:
 
 ```markdown
 ## Topology
-- <one device, two devices, actor count, mapped spaces, online/offline state>
+- <one device, two devices, test device count, mapped spaces, online/offline state>
 
 ## Sync Semantics
 - <what should replicate, what should stay local, and consent lifecycle>

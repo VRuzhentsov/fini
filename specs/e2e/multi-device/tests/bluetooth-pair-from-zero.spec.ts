@@ -14,13 +14,12 @@ import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
  * The other steps have no fixed limit; their times are recorded as test
  * annotations, so a run shows how long a person waits at each step.
  *
- * Needs two real radios: run against devices as external testDevices, e.g. the
- * desktop and phone dev apps (`make desktop-debug-dev`, `make android-dev`
- * and `adb forward tcp:9223 tcp:9223`):
- *   FINI_E2E_ACTORS=desktop,phone \
- *   FINI_E2E_EXTERNAL_ACTORS=desktop=9224,phone=9223 \
- *   npx playwright test --config specs/e2e/playwright.config.ts \
- *     --project testDevices bluetooth-pair-from-zero
+ * Needs two radios: the `android` project runs it on two virtual phones
+ * (`npm run test:e2e:android`, docs/e2e-android.md). On physical devices, for
+ * example the desktop and phone dev apps (`make desktop-debug-dev`,
+ * `make android-dev` and `adb forward tcp:9223 tcp:9223`):
+ *   FINI_E2E_TEST_DEVICES=desktop=tcp:9224,phone=tcp:9223 \
+ *   npm run test:e2e:android -- bluetooth-pair-from-zero
  */
 
 const DISCOVERY_STANDARD_MS = 10_000;

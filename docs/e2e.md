@@ -37,6 +37,7 @@ not the Fini `Device` model. A `TestDevice` has:
 - `page`: a `TauriPage` for the screen.
 - `invoke<T>(command, args)`: a call to a Tauri command.
 - `kind`: `desktop-process`, `android-phone` or `physical-device`.
+- `shell(command)`: a shell command on the phone. Only `android-phone` has it.
 
 A test gets its test devices from the fixture `testDevices` (by slug), or from
 `testDeviceA` and `testDeviceB` (by position). The components in

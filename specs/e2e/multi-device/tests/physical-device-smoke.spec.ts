@@ -10,7 +10,7 @@ import { expect, test } from '../test-device.ts';
  * device has, so this test asserts nothing about them.
  *
  * Run (phone prepared with `make android-debug-deploy` and `adb forward`):
- *   FINI_E2E_DEVICES=a=desktop-process,phone=tcp:9223 \
+ *   FINI_E2E_TEST_DEVICES=a=desktop-process,phone=tcp:9223 \
  *   npx playwright test physical-device-smoke \
  *     --config specs/e2e/playwright.config.ts --project=multi-device
  */

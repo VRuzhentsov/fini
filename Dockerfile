@@ -97,7 +97,7 @@ RUN npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- -
     cp src-tauri/target/debug/fini-app /workspace/fini-app && \
     rm -rf src-tauri/target
 
-# actors-ble's shared radio -- see specs/e2e/actors/helpers/ble-sync.ts. Its
+# The shared radio of multi-device-ble-mock -- see specs/e2e/multi-device/helpers/ble-sync.ts. Its
 # own crate (see ble-mock-broker/Cargo.toml for why), so built separately
 # from fini-app above. Copied out to a path that doesn't collide with the
 # `ble-mock-broker/` source dir itself -- `cp <file> <existing-dir>` nests

@@ -193,7 +193,7 @@ Conventions:
 - Pass a unique `label` per test to `temp_db_path` so parallel runs do not collide.
 - Clean up the temp DB at the end of the test (`std::fs::remove_file`) when the test owns the file.
 
-## Writing single-actor UI e2e
+## Writing single-app UI e2e
 
 Layout: `specs/e2e/ui/tests/<feature>.spec.ts`. Fixture: `specs/e2e/ui/fixtures.ts` exports `test` and `expect` from `createTauriTest` with a socket under the task-scoped E2E root. The test receives a `tauriPage` that drives the real Fini window.
 

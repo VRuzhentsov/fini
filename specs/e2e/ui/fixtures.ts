@@ -4,7 +4,7 @@
  * Designed to run alongside `make dev` without resource conflict:
  * - Spawned binary uses an isolated FINI_APP_DATA_DIR.
  * - Discovery and sync-WS ports default to randomized values in the 47000-47999
- *   range (above the multi-actor lane's 46000-base allocation), so the e2e
+ *   range (above the 46000-base allocation of the multi-device projects), so the e2e
  *   binary does not bind ports the live dev app already holds.
  * - When FINI_APP_BINARY points at a prebuilt e2e binary, no `tauri dev` is started,
  *   so Vite port 1420 is free for the developer's `make dev` session.

@@ -56,7 +56,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
 | Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
-| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
+| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-app UI e2e, multi-device e2e (desktop processes, virtual phones), or CLI e2e. For Android on a physical phone, use `fini-android-testing` instead | `fini-test` |
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
 | Any code change (Rust, TypeScript, Vue, tests or e2e helpers) — always, not only when style seems to matter | `fini-code-style`, alongside whichever domain skill governs the surface being touched |
@@ -265,7 +265,7 @@ Choose verification based on touched area:
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
 - Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-release-deploy-debugsigned` when an installed APK check is needed. Use `make android-debug-deploy` (separate `com.fini.app.debug` id) instead when diagnosing silent plugin failures — this enables Tauri Kotlin logging (`BuildConfig.DEBUG=true`, suppressed in the release profile) and is safe to install alongside a Play Store `com.fini.app` without conflict.
-- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/actors/cli): load `fini-test` for the canonical command + authoring guide.
+- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/multi-device/android/cli): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.

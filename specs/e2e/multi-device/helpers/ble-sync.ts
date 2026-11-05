@@ -15,14 +15,14 @@ import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/c
  * session claim) against a cross-process mock radio instead of a plain TCP
  * stand-in, and pairing is marked `viaBluetooth: true` so the Bluetooth
  * channel is switched on for the pair -- which is what
- * `bluetooth_connect_candidates` actually reads. See `fixtures.ts`'s
- * `fakeBluetoothAddress` wiring and
+ * `bluetooth_connect_candidates` actually reads. See
+ * `fakeBluetoothAddress` in `providers/desktop-process.ts` and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  */
 
 /**
  * Every testDevice's fake address is deterministic from its index alone (see
- * `fixtures.ts`'s `fakeBluetoothAddress`) -- duplicated here rather than
+ * `fakeBluetoothAddress` in `providers/desktop-process.ts`) -- duplicated here rather than
  * exported/imported so this helper stays a pure consumer of what the
  * harness already put in each testDevice's environment (`FINI_LOCAL_BLUETOOTH_
  * ADDRESS`), not a second source of truth for it. Tests never need to
@@ -43,7 +43,7 @@ export async function ensureBlePairedTestDevices(
 
   const [a, b] = await waitForTestDevicesReady(testDevices, timeoutMs);
 
-  // External testDevices are real apps on real devices carrying a real pairing.
+  // Physical devices and virtual phones are real apps carrying a real pairing.
   // Seeding a fake address over that would overwrite the thing the run
   // depends on, so the hardware path asserts the pairing rather than
   // manufacturing it -- and only ensures the per-pair Bluetooth toggle is on,
@@ -91,7 +91,7 @@ interface ChannelStatusRow {
  * actually switched on for it.
  *
  * The pairing itself is still only asserted, never manufactured: these are
- * real apps on real devices, and inventing a pair would replace the thing the
+ * real apps on physical devices or virtual phones, and inventing a pair would replace the thing the
  * run is supposed to exercise.
  *
  * Enablement is different, and ADR-0006 is why. It used to be an assertion

@@ -1234,10 +1234,10 @@ impl BluetoothAdapter {
     }
 }
 
-/// The `actors-ble` e2e lane's radio: a `MockDriver` talking to a
+/// The `multi-device-ble-mock` e2e project's radio: a `MockDriver` talking to a
 /// cross-process broker instead of BlueZ, so two real `fini-app` processes
 /// can prove this file's dial/peripheral/session-claim code path without
-/// hardware. See `specs/e2e/actors/helpers/ble-sync.ts` and ble-gatt's
+/// hardware. See `specs/e2e/multi-device/helpers/ble-sync.ts` and ble-gatt's
 /// `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
 ///
 /// Both the `devtools` feature gate above (off in release builds) and this
@@ -1251,7 +1251,7 @@ async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Driver>, String
     // Reuses the existing "fake local adapter address" escape hatch
     // (`pairing::commands::local_bluetooth_address`'s own env
     // override) rather than adding a second one -- the harness already sets
-    // this per actor for the self-report path.
+    // this for each test device for the self-report path.
     let address = std::env::var("FINI_LOCAL_BLUETOOTH_ADDRESS")
         .map_err(|_| "FINI_BLE_MOCK_BROKER is set but FINI_LOCAL_BLUETOOTH_ADDRESS is not".to_string())?;
     let network = MockNetwork::remote(endpoint)
@@ -1568,8 +1568,8 @@ mod tests {
     /// same connect+advertise+scan shape `ble-gatt`'s own
     /// `tests/mock_broker.rs` exercises, but through fini's injection point
     /// (`FINI_BLE_MOCK_BROKER`/`FINI_LOCAL_BLUETOOTH_ADDRESS`) instead of
-    /// calling `MockNetwork::remote` directly. This is what the `actors-ble`
-    /// e2e lane's two real `fini-app` processes will each do at startup.
+    /// calling `MockNetwork::remote` directly. This is what the
+    /// `multi-device-ble-mock` project's two real `fini-app` processes each do at startup.
     #[cfg(all(target_os = "linux", feature = "devtools"))]
     #[tokio::test]
     async fn mock_driver_connects_to_a_broker_and_reports_full_capabilities() {
