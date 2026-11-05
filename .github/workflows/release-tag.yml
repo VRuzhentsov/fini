@@ -168,7 +168,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: ./.github/workflows/android-ble-e2e.yml
+    uses: ./.github/workflows/android-e2e.yml
     with:
       non_blocking: true
 

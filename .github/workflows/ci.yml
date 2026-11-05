@@ -365,7 +365,7 @@ jobs:
           script: bash scripts/android-e2e-assert.sh
 
   # Two virtual phones on one virtual Bluetooth medium (ADR-0013); the job is
-  # in android-ble-e2e.yml, which the release calls too.
+  # in android-e2e.yml, which the release calls too.
   android-ble-e2e:
     name: Android BLE E2E
     needs: changes
@@ -373,7 +373,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: ./.github/workflows/android-ble-e2e.yml
+    uses: ./.github/workflows/android-e2e.yml
     with:
       # A fork's token cannot write packages, so it reads the cache without
       # pushing to it.
