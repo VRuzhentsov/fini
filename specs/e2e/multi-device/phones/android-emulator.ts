@@ -12,7 +12,9 @@ import { PhoneBootError, type PhoneTool } from './phone-tool.ts';
 const run = promisify(execFile);
 
 const FIRST_CONSOLE_PORT = 5554;
-const BOOT_TIMEOUT_MS = 180_000;
+// Two phones boot at the same time with software rendering. On a CI runner one
+// boot took more than 180 s.
+const BOOT_TIMEOUT_MS = 360_000;
 const START_INTERVAL_MS = 5_000;
 
 export class AndroidEmulator implements PhoneTool {

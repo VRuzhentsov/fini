@@ -51,7 +51,7 @@ physical devices only start no phone.
    the one before it. Two starts in the same second on one read-only AVD can
    fail.
 3. It waits until `sys.boot_completed` is 1 and `pm path android` answers
-   (180 s limit). Else it throws `PhoneBootError`, with the prefix
+   (360 s limit). Else it throws `PhoneBootError`, with the prefix
    `[infrastructure]`.
 4. `PhoneGroup` writes the serials to `android-phones.json`. When Playwright
    starts a worker again, the group reads this file, checks
