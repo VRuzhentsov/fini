@@ -144,8 +144,20 @@ stops the emulator after about 30 s on Bazzite), `FINI_E2E_PACKAGE`
 - Sometimes the first app start after a fresh boot does not answer on the
   bridge ("no answer on tcp:9225"). The cause is not known. The restart check
   in `connect()` catches most cases.
+- On a fresh boot, Google Play services can stop answering (ANR). Android
+  then stops it, and also stops Fini, because the WebView uses the font
+  provider of Play services. Android starts Fini again for
+  `SyncForegroundService` only, with no window, so the bridge has no page.
+  The next test fails with "This socket has been ended by the other party".
+  `pidof` still finds the process. Logcat shows "Killing ... com.fini.app.debug
+  ... depends on provider com.google.android.gms/.fonts.provider.FontsProvider".
+  Seen in CI run 41966860298. This is possibly also the cause of the fault
+  above.
 
 ## Not done yet
 
 - `bluetooth-channel-add-again` and `peer-sync-over-ble` on the phones (they
   need a "pair if needed" helper).
+- Recovery from an app that Android stopped between tests: start
+  `MainActivity` again and connect before each test (as Detox
+  `device.launchApp` does).
