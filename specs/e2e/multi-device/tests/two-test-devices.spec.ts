@@ -1,0 +1,42 @@
+import { test, expect, TestDevicePlatform } from '../test-device.ts';
+import { E2eTag } from '../../e2e-project.ts';
+
+interface DeviceIdentity {
+  device_id: string;
+  hostname: string;
+}
+
+test('runner controls two isolated test devices with different identities', { tag: E2eTag.Smoke }, async ({
+  testDeviceA,
+  testDeviceB,
+}) => {
+  await testDeviceA.page.waitForSelector('nav.nav', 30_000);
+  await testDeviceB.page.waitForSelector('nav.nav', 30_000);
+  await expect(await hasIncomingSyncDialog(testDeviceA.page)).toBe(false);
+  await expect(await hasIncomingSyncDialog(testDeviceB.page)).toBe(false);
+
+  const identityA = await testDeviceA.invoke<DeviceIdentity>('device_get_identity');
+  const identityB = await testDeviceB.invoke<DeviceIdentity>('device_get_identity');
+
+  expect(identityA.device_id).toBeTruthy();
+  expect(identityB.device_id).toBeTruthy();
+  expect(identityA.device_id).not.toBe(identityB.device_id);
+
+  // The harness sets HOSTNAME to the slug only for a virtual Linux test device.
+  // Each other test device has its own name, so the test asserts only that it
+  // has one.
+  for (const [testDevice, identity] of [
+    [testDeviceA, identityA],
+    [testDeviceB, identityB],
+  ] as const) {
+    if (testDevice.isVirtual(TestDevicePlatform.Linux)) {
+      expect(identity.hostname).toBe(testDevice.slug);
+    } else {
+      expect(identity.hostname).toBeTruthy();
+    }
+  }
+});
+
+async function hasIncomingSyncDialog(page: { evaluate: <T>(script: string) => Promise<T> }): Promise<boolean> {
+  return page.evaluate<boolean>(`(() => Boolean(document.querySelector('[data-testid="incoming-space-sync-dialog"]')))()`);
+}

@@ -160,6 +160,18 @@ jobs:
       push_cache: true
       run_id_prefix: release
 
+  # Smoke check on two virtual phones (ADR-0013). No publish job needs it, and
+  # non_blocking keeps a failure from failing the release run.
+  android-e2e:
+    name: Android E2E
+    needs: validate-tag
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/android-e2e.yml
+    with:
+      non_blocking: true
+
   build-linux:
     name: Build Linux Artifact (${{ matrix.arch }})
     strategy:
@@ -224,7 +236,7 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Prepare AppImage GTK bundler
+      - name: Prepare AppImage bundler tools
         run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
 
       - name: Build Linux bundles

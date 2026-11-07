@@ -11,8 +11,10 @@ FINI_E2E_CI_RUN_ID ?= pr-gate
 FINI_SCRATCH_DIR ?= $(CURDIR)/tmp
 FINI_E2E_CI_RUN_DIR ?= $(FINI_SCRATCH_DIR)/fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
-FINI_E2E_CI_ACTORS ?= actor-a,actor-b
-FINI_E2E_CI_ACTOR_WAIT_SECS ?= 180
+# Empty: each spec runs on its own test devices. Set it to give other ones,
+# for example `a=linux,b=android@tcp:9223`.
+FINI_E2E_CI_TEST_DEVICES ?=
+FINI_E2E_CI_TEST_DEVICE_WAIT_SECS ?= 180
 FINI_DEV_RUNNER_IMAGE ?= fini-dev-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
 FINI_E2E_CACHE_PUSH ?= 0
@@ -25,7 +27,7 @@ RELEASE_BUNDLES ?= deb,rpm
 # this default has no effect on published release artifacts.
 NO_STRIP ?= true
 
-.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-dev desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-e2e-assert android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
+.PHONY: help require-container dev build play-store-screenshots pr-gate-fe-unit pr-gate-be-cache-key pr-gate-be-compile pr-gate-be-unit pr-gate-e2e pr-gate-e2e-cache-key pr-gate-e2e-build-dev-runner pr-gate-e2e-run pr-gate-e2e-artifacts pr-gate-e2e-cleanup e2e e2e-ci e2e-image e2e-build e2e-headed e2e-phone e2e-devices e2e-devices-ble desktop-debug desktop-debug-dev desktop-debug-build runtime-image runtime-smoke pre-release-check release android-connect android-dev android-build android-build-emulator-e2e android-sign-debug android-sign-release-local android-launch android-launch-debug android-devices android-release-deploy-debugsigned android-debug-deploy android-release-deploy-local android-build-image android-require-build-image flatpak-install-local
 
 help:
 	@echo ""
@@ -46,7 +48,6 @@ help:
 	@echo "  make e2e-build        Build dev-runner image and run E2E inside it"
 	@echo "  make e2e-headed       Run visible local E2E (UI + multi-actor) alongside make dev"
 	@echo "  make pr-gate-e2e      Run containerized full E2E suite in dev-runner"
-	@echo "  FINI_E2E_LANES=ble make pr-gate-e2e  Run one lane (main|ble) on its own"
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
 	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
@@ -106,63 +107,19 @@ flatpak-install-local:
 play-store-screenshots:
 	cargo run --manifest-path xtask/Cargo.toml -- play-store-screenshots
 
-pr-gate-fe-unit: require-container
-	$(CONTAINER_ENGINE) build --target fe-unit-test -t fini-fe-unit-test .
+# The gate steps live in scripts/ci-gate.mts; CI calls them as `npm run
+# gate:*` (ADR-0013 D9). These targets are local shortcuts to the same steps.
+pr-gate-fe-unit:
+	npm run gate:fe-unit
 
 pr-gate-be-cache-key:
-	@set -eu; \
-	cache_inputs() { \
-	  { \
-	    git ls-files -z -- \
-	      Dockerfile \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json; \
-	    git ls-files --others --exclude-standard -z -- \
-	      Dockerfile \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json; \
-	  } | sort -zu; \
-	}; \
-	cache_inputs | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d ' ' -f 1
+	@node scripts/ci-gate.mts be-cache-key
 
 pr-gate-be-compile:
-	@set -eu; \
-	cache_key="$$(make --no-print-directory pr-gate-be-cache-key)"; \
-	cache_prefix="$(FINI_BE_CACHE_IMAGE_PREFIX)"; \
-	cache_image=""; \
-	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-be-compile-cache:$$cache_key"; fi; \
-	if [ -n "$$cache_image" ] && $(CONTAINER_ENGINE) pull "$$cache_image"; then \
-	  printf 'Using cached backend compile image: %s\n' "$$cache_image"; \
-	  $(CONTAINER_ENGINE) tag "$$cache_image" "$(FINI_BE_COMPILE_IMAGE)"; \
-	  exit 0; \
-	fi; \
-	printf 'Building backend compile image for cache key: %s\n' "$$cache_key"; \
-	if [ -n "$$cache_image" ]; then \
-	  $(CONTAINER_ENGINE) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" -t "$$cache_image" .; \
-	else \
-	  $(CONTAINER_ENGINE) build --target be-test-compile --build-arg BUILDKIT_INLINE_CACHE=1 --label "fini.be.cache-key=$$cache_key" -t "$(FINI_BE_COMPILE_IMAGE)" .; \
-	fi; \
-	if [ -n "$$cache_image" ] && [ "$(FINI_BE_CACHE_PUSH)" = "1" ]; then \
-	  $(CONTAINER_ENGINE) push "$$cache_image"; \
-	fi
+	npm run gate:be-compile
 
 pr-gate-be-unit:
-	$(MAKE) pr-gate-be-compile
-	$(CONTAINER_ENGINE) build --target be-unit-test --cache-from "$(FINI_BE_COMPILE_IMAGE)" -t "$(FINI_BE_UNIT_IMAGE)" .
+	npm run gate:be-unit
 
 pr-gate-e2e:
 	@set -eu; \
@@ -172,106 +129,19 @@ pr-gate-e2e:
 	$(MAKE) pr-gate-e2e-run
 
 pr-gate-e2e-cache-key:
-	@set -eu; \
-	cache_inputs() { \
-	  { \
-	    git ls-files -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      scripts/e2e-runner.sh \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/devtools-capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	    git ls-files --others --exclude-standard -z -- \
-	      Dockerfile \
-	      package.json \
-	      package-lock.json \
-	      tsconfig\*.json \
-	      index.html \
-	      scripts/e2e-runner.sh \
-	      vite.config.ts \
-	      src \
-	      src-tauri/Cargo.toml \
-	      src-tauri/Cargo.lock \
-	      src-tauri/build.rs \
-	      src-tauri/src \
-	      src-tauri/migrations \
-	      src-tauri/patches \
-	      src-tauri/capabilities \
-	      src-tauri/devtools-capabilities \
-	      src-tauri/icons \
-	      src-tauri/tauri.conf.json \
-	      specs/e2e; \
-	  } | sort -zu; \
-	}; \
-	cache_inputs | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d ' ' -f 1
+	@node scripts/ci-gate.mts e2e-cache-key
 
 pr-gate-e2e-build-dev-runner:
-	@set -eu; \
-	cache_key="$$(make --no-print-directory pr-gate-e2e-cache-key)"; \
-	cache_prefix="$(FINI_E2E_CACHE_IMAGE_PREFIX)"; \
-	cache_image=""; \
-	if [ -n "$$cache_prefix" ]; then cache_image="$$cache_prefix-dev-runner-cache:$$cache_key"; fi; \
-	if [ -n "$$cache_image" ] && $(CONTAINER_ENGINE) pull "$$cache_image"; then \
-	  printf 'Using cached dev-runner image: %s\n' "$$cache_image"; \
-	  $(CONTAINER_ENGINE) tag "$$cache_image" "$(FINI_DEV_RUNNER_IMAGE)"; \
-	  exit 0; \
-	fi; \
-	printf 'Building dev-runner image for E2E cache key: %s\n' "$$cache_key"; \
-	if [ -n "$$cache_image" ]; then \
-	  $(CONTAINER_ENGINE) build --target dev-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_DEV_RUNNER_IMAGE)" -t "$$cache_image" .; \
-	else \
-	  $(CONTAINER_ENGINE) build --target dev-runner --label "fini.e2e.cache-key=$$cache_key" -t "$(FINI_DEV_RUNNER_IMAGE)" .; \
-	fi; \
-	if [ -n "$$cache_image" ] && [ "$(FINI_E2E_CACHE_PUSH)" = "1" ]; then \
-	  $(CONTAINER_ENGINE) push "$$cache_image"; \
-	fi
+	npm run gate:e2e:build-image
 
 pr-gate-e2e-run:
-	@set -eu; \
-	mkdir -p "$(FINI_E2E_CI_RESULTS_DIR)"; \
-	$(CONTAINER_ENGINE) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true; \
-	$(CONTAINER_ENGINE) run --rm \
-	  --name "fini-$(FINI_E2E_CI_RUN_ID)-runner" \
-	  -e FINI_E2E_ACTORS="$(FINI_E2E_CI_ACTORS)" \
-	  -e FINI_E2E_CI_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
-	  -e FINI_E2E_RUN_ID="$(FINI_E2E_CI_RUN_ID)" \
-	  -e FINI_E2E_CI_ACTOR_WAIT_SECS="$(FINI_E2E_CI_ACTOR_WAIT_SECS)" \
-	  -e FINI_E2E_LANES="$(FINI_E2E_LANES)" \
-	  -e FINI_E2E_KEEP="$(FINI_E2E_KEEP)" \
-	  -v "$(FINI_E2E_CI_RESULTS_DIR):/app/test-results:Z" \
-	  "$(FINI_DEV_RUNNER_IMAGE)"
+	npm run gate:e2e:run
 
 pr-gate-e2e-artifacts:
-	@set -eu; \
-	run_root="$(FINI_E2E_CI_RESULTS_DIR)/fini-e2e-runs/$(FINI_E2E_CI_RUN_ID)/actors"; \
-	printf '\n===== actor logs =====\n'; \
-	if [ -d "$$run_root" ]; then \
-	  for log_path in "$$run_root"/*.log; do \
-	    [ -f "$$log_path" ] || continue; \
-	    printf '\n--- %s ---\n' "$$log_path"; \
-	    tail -n 200 "$$log_path" || true; \
-	  done; \
-	else \
-	  printf 'No actor log directory found: %s\n' "$$run_root"; \
-	fi
+	npm run gate:e2e:artifacts
 
 pr-gate-e2e-cleanup:
-	@set -eu; \
-	$(CONTAINER_ENGINE) rm -f "fini-$(FINI_E2E_CI_RUN_ID)-runner" >/dev/null 2>&1 || true
+	npm run gate:e2e:cleanup
 
 # Run the real-app e2e lane locally.
 e2e:
@@ -313,8 +183,7 @@ e2e-headed:
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path ble-mock-broker/Cargo.toml; \
-	FINI_E2E_ROOT="$$run_root" FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
+	FINI_E2E_ROOT="$$run_root" FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project multi-device
 
 # "Fini Debug": a genuinely separate desktop application that lives beside the
 # production "Fini" install instead of replacing it -- the desktop counterpart
@@ -481,18 +350,17 @@ e2e-devices:
 	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices}"; \
 	mkdir -p "$$run_root"; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_ACTORS="desktop,$(E2E_PHONE_ACTOR)" \
-	FINI_E2E_EXTERNAL_ACTORS="desktop=$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="desktop=linux@tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=android@tcp:$(E2E_PHONE_PORT)" \
 	TZ=UTC \
-	npx playwright test --config specs/e2e/playwright.config.ts --project actors $(if $(E2E_DEVICES_SPEC),-g "$(E2E_DEVICES_SPEC)",)
+	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device $(if $(E2E_DEVICES_SPEC),-g "$(E2E_DEVICES_SPEC)",)
 
 # The BLE lane against real hardware: the same peer-sync-over-ble spec the
 # mock-radio lane runs, but driving the two already-running debug apps instead
 # of spawning any -- so the radio is a real one.
 #
-# Deliberately no FINI_E2E_TRANSPORT=ble here. That flag exists to launch
-# *spawned* actors with FINI_DISCOVERY_DISABLED=1 and a mock broker; neither
-# applies to apps that are already running. On hardware the pair itself rules
+# The spec's `testDeviceChannel: ChannelKind.Bluetooth` launches virtual Linux test
+# devices with FINI_DISCOVERY_DISABLED=1 and a mock broker; neither applies to
+# apps that are already running (the physical source). On hardware the pair itself rules
 # the network out: it must have no Network channel on, which the spec asserts,
 # so Bluetooth is the only path its sessions can take even with Wi-Fi on. That
 # also lets the phone run under `make android-dev`, whose frontend comes over
@@ -511,18 +379,15 @@ e2e-devices-ble:
 	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices-ble}"; \
 	mkdir -p "$$run_root"; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_ACTORS="desktop,$(E2E_PHONE_ACTOR)" \
-	FINI_E2E_EXTERNAL_ACTORS="desktop=$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="desktop=linux@tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=android@tcp:$(E2E_PHONE_PORT)" \
 	TZ=UTC \
-	npx playwright test --config specs/e2e/playwright.config.ts --project actors-ble
+	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device peer-sync-over-ble
 
-E2E_PHONE_ACTOR ?= phone
+E2E_PHONE_SLUG ?= phone
 E2E_PHONE_PORT ?= 9223
-# Matched against the *test title* by Playwright's `-g`, not the filename.
-# "external actor" appears only in `external-actor-smoke.spec.ts`'s name, so
-# it selected nothing and the documented plain `make e2e-phone` ran an empty
-# suite that still exited green.
-E2E_PHONE_SPEC ?= both actors answer the same invoke surface
+# Playwright's `-g` matches the test title, not the file name. A value that
+# matches no title runs an empty suite that still exits green.
+E2E_PHONE_SPEC ?= both test devices answer the same invoke surface
 e2e-phone:
 	@set -eu; \
 	adb get-state >/dev/null 2>&1 || (echo "No adb device. Connect the phone and run 'make android-devices'." && exit 1); \
@@ -540,10 +405,9 @@ e2e-phone:
 	trap - EXIT INT TERM; \
 	adb forward tcp:$(E2E_PHONE_PORT) tcp:$(E2E_PHONE_PORT) >/dev/null; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_ACTORS="actor-a,$(E2E_PHONE_ACTOR)" \
-	FINI_E2E_EXTERNAL_ACTORS="$(E2E_PHONE_ACTOR)=$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="a=linux,$(E2E_PHONE_SLUG)=android@tcp:$(E2E_PHONE_PORT)" \
 	FINI_APP_BINARY="$$app_bin_path" TZ=UTC \
-	npx playwright test --config specs/e2e/playwright.config.ts --project actors -g "$(E2E_PHONE_SPEC)"
+	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device -g "$(E2E_PHONE_SPEC)"
 
 # Build/update the published headless runtime image locally.
 runtime-image:
@@ -558,8 +422,8 @@ runtime-smoke:
 
 # Real-Bluetooth transport verification: local/manual only, never CI (no
 # radio on GitHub-hosted runners). Lands with the real Bluetooth adapter —
-# see docs/adr/0001-transport-neutral-peer-protocol.md and
-# specs/e2e/transports.md.
+# see docs/adr/0001-transport-neutral-peer-protocol.md and docs/e2e.md,
+# "What each project proves for each channel".
 e2e-bt-local:
 	@echo "e2e-bt-local: real Bluetooth adapter not implemented yet (follow-up PR)." >&2; \
 	echo "This target will pair over real Bluetooth with LAN disabled once it lands." >&2; \
@@ -729,25 +593,10 @@ android-dev: android-connect
 android-build: android-require-build-image
 	$(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 
-# Deliberately NOT containerised: this is the CI lane (ci.yml), where
-# setup-java already provides the right JDK and podman is the wrong tool.
-android-build-emulator-e2e:
-	npm run tauri android build -- --features ui-plane --ci --debug --apk --target x86_64
-
-# Runs the same smoke assertions CI runs on the emulator (app process starts,
-# `fini.reminders` notification channel registers), but against whatever
-# device `adb` is currently pointed at and whatever APK is passed in --
-# so the debug build on a real phone can be checked with the same script CI
-# uses, rather than a separate ad-hoc procedure.
-#
-#   make android-e2e-assert ANDROID_E2E_APK=<path> [FINI_E2E_PACKAGE=<id>]
-#
-# FINI_E2E_PACKAGE defaults to the release application id; a debug-buildType
-# APK installs under the `.debug` suffix (tauri.conf.json's
-# bundle.android.debugApplicationIdSuffix) and must set it explicitly.
-android-e2e-assert:
-	@test -n "$(ANDROID_E2E_APK)" || (echo "ANDROID_E2E_APK is not set" && exit 1)
-	ANDROID_E2E_APK="$(ANDROID_E2E_APK)" FINI_E2E_PACKAGE="$(FINI_E2E_PACKAGE)" bash scripts/android-e2e-assert.sh
+# Local shortcut for the npm script that CI calls directly. Locally it runs in
+# the JDK 17 build container; CI gets the JDK from setup-java.
+android-build-emulator-e2e: android-require-build-image
+	$(ANDROID_BUILD_RUN) npm run build:android:e2e
 
 android-sign-debug:
 	@test -n "$(ANDROID_HOME)" || (echo "ANDROID_HOME is not set" && exit 1)

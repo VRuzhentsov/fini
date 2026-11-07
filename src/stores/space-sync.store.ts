@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import { FiniEventType, onFiniEvent, useDeviceStore } from "./device.store";
 
 // The store of SpaceSyncService (ADR-0010 D16): the spaces each pair syncs,
@@ -338,14 +338,27 @@ export const useSpaceSyncStore = defineStore("space-sync", () => {
         for (const peerId of Object.keys(syncQueueByPeer.value)) void refreshSyncQueue(peerId);
       } else if (event.type === FiniEventType.SpaceMappingRequestsChanged) {
         void takeSpaceMappingUpdates();
-      } else if (event.type === FiniEventType.PairedDevicesChanged) {
-        // A removed pair: forget what this store held for it.
-        const paired = new Set(pairedDeviceIds());
-        for (const peerId of Object.keys(syncStatusByPeer.value)) {
-          if (!paired.has(peerId)) forgetPeer(peerId);
-        }
       }
     });
+    // A removed pair: forget what this store held for it. Watched on the
+    // device store's list, not on PairedDevicesChanged: on that event the
+    // device store reads the list again, so this store saw the old list and
+    // kept an old custom-space request.
+    watch(
+      () => pairedDeviceIds(),
+      (ids) => {
+        const paired = new Set(ids);
+        const known = new Set([
+          ...Object.keys(syncStatusByPeer.value),
+          ...Object.keys(unresolvedCustomSpacesByPeer.value),
+          ...Object.keys(pendingSpaceSyncRequestsByPeer.value),
+          ...Object.keys(mappedSpaceIdsByPeer.value),
+        ]);
+        for (const peerId of known) {
+          if (!paired.has(peerId)) forgetPeer(peerId);
+        }
+      },
+    );
     void takeSpaceMappingUpdates();
     // One pass at app start, for the first read of the sync status.
     void runSpaceSyncTick();

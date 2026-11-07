@@ -48,15 +48,24 @@ pub fn permission_granted() -> bool {
 /// yet. Returns at once; the answer arrives later, so callers poll
 /// [`permission_granted`]. Only from a user action: Android allows asking
 /// for Nearby Devices from a click, not from a background tick.
+///
+/// A grant publishes `AdapterChanged`. Without it the phone did not advertise
+/// until the next sync tick (up to an hour), so Add Device on the other
+/// device did not list it.
 pub fn request_permission() {
     let Ok(app) = app() else {
         eprintln!("[ble-plugin] not installed, not requesting the Bluetooth permission");
         return;
     };
+    let granted_before = permission_granted();
     // `request_permissions` blocks until the person answers the dialog.
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(err) = app.ble_gatt().request_permissions() {
             eprintln!("[ble-plugin] requesting the Bluetooth permission failed: {err}");
+            return;
+        }
+        if !granted_before && permission_granted() {
+            crate::services::bluetooth_channel_service::BluetoothAdapter::this_device().publish_changed();
         }
     });
 }

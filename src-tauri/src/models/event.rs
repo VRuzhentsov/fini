@@ -23,6 +23,9 @@ pub enum Event {
     /// or the primary changed.
     #[serde(rename_all = "camelCase")]
     ChannelsChanged { peer_device_id: String },
+    /// The Bluetooth adapter of this device became usable or unusable: the
+    /// Bluetooth row of each paired device can change colour.
+    AdapterChanged,
     /// The paired devices changed: a pair was made or removed.
     PairedDevicesChanged,
     /// The devices that Add Device can list changed.

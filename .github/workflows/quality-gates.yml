@@ -115,10 +115,10 @@ jobs:
           large-packages: false
 
       - name: Compile backend tests
-        run: make pr-gate-be-compile
+        run: npm run gate:be-compile
 
       - name: Run backend tests
-        run: make pr-gate-be-unit
+        run: npm run gate:be-unit
 
       - name: Build runtime container
         run: |
@@ -134,15 +134,15 @@ jobs:
         run: docker run --rm fini-runtime-ci --help
 
       - name: Build dev-runner image
-        run: make pr-gate-e2e-build-dev-runner
+        run: npm run gate:e2e:build-image
 
       - name: Run desktop e2e flow
-        run: make pr-gate-e2e-run
+        run: npm run gate:e2e:run
 
       - name: Print E2E artifacts on failure
         if: failure()
-        run: make pr-gate-e2e-artifacts
+        run: npm run gate:e2e:artifacts
 
       - name: Cleanup E2E containers
         if: always()
-        run: make pr-gate-e2e-cleanup
+        run: npm run gate:e2e:cleanup

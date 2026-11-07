@@ -16,6 +16,7 @@ Keep every development session consistent:
 - Use the repo's documented context path instead of guessing.
 - Prefer Makefile targets over raw commands.
 - Make the smallest correct change.
+- Write in STE from the first draft: names, comments, log and assertion messages, test titles, docs, commit and PR text (see "Use STE"). Do the STE check yourself; the user does not ask for it.
 - Verify with concrete evidence before reporting success.
 
 ## No-Legacy Policy
@@ -30,7 +31,7 @@ Before implementation, debugging, QA, Android, design-to-code, release, or docum
 
 1. If the work is driven by a GitHub issue, create or switch to a branch whose name includes the issue number before editing, such as `issue-123-short-topic` or `fix/123-short-topic`.
 2. State the target outcome, in-scope work, out-of-scope work, and success checks in the user's terms.
-3. Read only the context needed for the task: `AGENTS.md`, the relevant page in `docs/architecture/`, the relevant folder `README.md` and companion `.md` specs where they still exist (they move to `docs/` when touched; see `fini-documentation`), `docs/adr/`, and targeted source files.
+3. Read only the context needed for the task: `AGENTS.md`, `docs/naming.md` and `docs/glossary.md` (for each task that writes code or text), the relevant page in `docs/architecture/`, the relevant folder `README.md` and companion `.md` specs where they still exist (they move to `docs/` when touched; see `fini-documentation`), `docs/adr/`, and targeted source files.
 4. Choose any specialized skill from the routing table below before doing the domain-specific work.
 5. Pick the smallest useful verification command before editing so the success standard is clear.
 
@@ -56,7 +57,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
 | Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
-| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-actor UI e2e, multi-actor e2e, or CLI e2e. For Android-only behavior, use `fini-android-testing` instead | `fini-test` |
+| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, Rust cargo tests, single-app UI e2e, multi-device and device-support e2e (virtual Linux and virtual Android test devices), or CLI e2e. For Android on a physical phone, use `fini-android-testing` instead | `fini-test` |
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
 | Any code change (Rust, TypeScript, Vue, tests or e2e helpers) — always, not only when style seems to matter | `fini-code-style`, alongside whichever domain skill governs the surface being touched |
@@ -209,8 +210,10 @@ Fini writes in ASD-STE100 Simplified Technical English (STE): names in code, com
 3. Use a technical noun or verb only when it is a term in `docs/glossary.md`.
 4. When no approved word or glossary term gives the meaning, tell the user the new term: the term, its one meaning, and why no approved word fits. Add it to the glossary only after you get the approval of the user.
 5. Before you make a new file, tell the user its name and its job. Make it only after you get approval.
-6. Before you commit, read your diff for the words in the glossary's "Words deliberately not used" list, and replace them.
-7. Talk to the user in STE too. Tell the meaning of each term before you use it.
+6. Before each commit, read your staged diff for STE: each new or changed name, comment, log message, assertion message, test title, doc sentence, and the commit message. Look up each word that is not clearly approved in the text copy of the dictionary (`docs/naming.md`, "Get the standard"). Replace the words in the glossary's list "Words deliberately not used".
+7. Before you push the last commit of a PR stage, and before you report a PR as ready, read the full branch diff (`git diff origin/main...HEAD`) for STE in the same way, and fix what fails. Do this each time, with no request from the user.
+8. Keep the names of the language, of libraries and of tools as they are (`spawn`, `setup-java`, `LinuxBackend`). A Fini name that is not STE changes, also when it comes from older code.
+9. Talk to the user in STE too. Tell the meaning of each term before you use it.
 
 During the change to STE, change the names, comments, and text of each file that you change. Leave other files as they are.
 
@@ -236,7 +239,7 @@ A pull request moves through three stages. Use each stage's checks and no others
    - Leave test files alone during the draft. A test that fails after a planned behaviour change stays failing until stage 3; do not edit its expectation to match the new code, and do not run or fix the suites per step — the next step can change the behaviour again. The only allowed edit is a compile adaptation (a changed function signature), named in the report.
    - Keep a list of the manual bridge checks you ran; stage 3 turns it into test proposals.
 2. **Gate to leave draft: the happy flow works.** Prove the feature's happy flow end to end on the running apps or real hardware, and put the evidence in the PR description: what was run, on which devices, and the result. For Bluetooth, that means pairing both ways, the session going green, and a quest syncing both ways. Then mark the PR ready for review; that starts CI.
-3. **Wrap-up: make it mergeable.** Once the system works as designed: run the unit tests and the relevant e2e lanes (see `fini-test`); for each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides. Then show the user the test cases you propose to add, based on the manual bridge checks from stage 1, and add the ones they choose. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
+3. **Wrap-up: make it mergeable.** Once the system works as designed: run the unit tests and the relevant e2e projects (see `fini-test`), and do the STE check of the full branch diff ("Use STE", step 7); for each failing test, report what it expects and which decision changed that behaviour, then fix, clean up or delete it as the user decides. Then show the user the test cases you propose to add, based on the manual bridge checks from stage 1, and add the ones they choose. Get CI green, and bring the PR title and description up to date with everything the branch now contains.
 
 The user reviews and merges. One worker keeps one branch and one PR for all of its work (`git-workflow`).
 
@@ -265,7 +268,7 @@ Choose verification based on touched area:
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
 - Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-release-deploy-debugsigned` when an installed APK check is needed. Use `make android-debug-deploy` (separate `com.fini.app.debug` id) instead when diagnosing silent plugin failures — this enables Tauri Kotlin logging (`BuildConfig.DEBUG=true`, suppressed in the release profile) and is safe to install alongside a Play Store `com.fini.app` without conflict.
-- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/actors/cli): load `fini-test` for the canonical command + authoring guide.
+- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e cli/ui/multi-device/device-support): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
@@ -279,6 +282,7 @@ Final responses for development work should include:
 
 - What changed, with file references.
 - Verification evidence, with commands and outcomes.
+- The STE check: that you read the diff for STE, and each new term that needs the approval of the user.
 - Any limits, skipped checks, or residual risks.
 
 Keep this concise. Lead with evidence when the user explicitly asks for proof.

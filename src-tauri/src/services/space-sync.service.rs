@@ -88,6 +88,9 @@ const MAX_EVENTS_PER_PEER_PER_TICK: usize = 64;
 /// mailbox did not take.
 const BOOTSTRAP_RETRY: Duration = Duration::from_secs(2);
 
+/// How soon to try again with frames that a full session mailbox did not
+/// take (`forward_pending`).
+const PENDING_RETRY: Duration = Duration::from_secs(1);
 /// How soon after a held session ends the channel tries to connect again.
 const HELD_SESSION_RECONNECT: Duration = Duration::from_secs(2);
 
@@ -391,11 +394,15 @@ impl SpaceSyncService {
                 self.outbox_kept();
                 self.wake();
             }
-            // A quest change left rows in the outbox: send them.
+            // A quest change left rows in the outbox: send them. The adapter
+            // became usable (for example the Android permission was
+            // granted): the tick starts the advertising and the connections
+            // that wait.
             Event::DeviceHeard { .. }
             | Event::ConnectChanged { .. }
             | Event::QuestChanged { .. }
-            | Event::QuestDeleted { .. } => self.wake(),
+            | Event::QuestDeleted { .. }
+            | Event::AdapterChanged => self.wake(),
             _ => {}
         }
     }
@@ -529,6 +536,47 @@ impl SpaceSyncService {
         };
         if !sent {
             self.wake();
+        }
+    }
+
+    /// Sends the frames that wait for a peer into its running session, as
+    /// far as its mailbox takes them, in order. A held session claims only
+    /// once (`try_claim_session`), so without this, frames behind a full
+    /// mailbox waited until the connection ended. Frames that still wait get
+    /// another tick after `PENDING_RETRY`.
+    fn forward_pending(&self) {
+        let peers: Vec<String> = match self.sessions.lock() {
+            Ok(sessions) => sessions
+                .pending_frames
+                .iter()
+                .filter(|(_, queue)| !queue.is_empty())
+                .map(|(peer_device_id, _)| peer_device_id.clone())
+                .collect(),
+            Err(_) => return,
+        };
+        let mut still_waiting = false;
+        for peer_device_id in peers {
+            let order = self.channel_order_for(&peer_device_id);
+            let Ok(mut sessions) = self.sessions.lock() else {
+                return;
+            };
+            let Some(sender) = order
+                .into_iter()
+                .find_map(|kind| sessions.running.get(&(peer_device_id.clone(), kind)).cloned())
+            else {
+                continue;
+            };
+            let queue = sessions.pending_frames.entry(peer_device_id).or_default();
+            while let Some(frame) = queue.first() {
+                if sender.try_send(SessionCommand::Forward(frame.clone())).is_err() {
+                    break;
+                }
+                queue.remove(0);
+            }
+            still_waiting |= !queue.is_empty();
+        }
+        if still_waiting {
+            self.wake_after(PENDING_RETRY);
         }
     }
 
@@ -918,6 +966,7 @@ impl SpaceSyncService {
         }
         let peer_ids = DeviceRepository::new(&mut conn()).ids();
         self.record_channel_order(&mut conn(), &peer_ids);
+        self.forward_pending();
 
         // Keep this device reachable and its held connections up. Before
         // the Activity is up, Network alone.

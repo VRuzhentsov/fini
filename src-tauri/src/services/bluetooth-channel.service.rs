@@ -91,6 +91,7 @@ pub struct BluetoothChannelService {
 
 impl BluetoothChannelService {
     pub fn new(identity: Identity, pool: DbPool, bus: Arc<EventBus>) -> Arc<Self> {
+        BluetoothAdapter::this_device().set_bus(bus.clone());
         Arc::new_cyclic(|me| Self {
             scanner: Arc::new(Scanner::new(bus.clone())),
             advertiser: Arc::new(Advertiser::new(&identity)),
@@ -983,6 +984,8 @@ pub struct BluetoothAdapter {
     adapter: tokio::sync::OnceCell<Adapter>,
     /// See `ADAPTER_UNKNOWN`.
     health: AtomicU8,
+    /// Gets `AdapterChanged` when the health changes (`set_bus`).
+    bus: std::sync::OnceLock<Arc<EventBus>>,
     #[cfg(feature = "devtools")]
     switch: std::sync::OnceLock<Arc<test_switch::RadioSwitch>>,
 }
@@ -990,6 +993,7 @@ pub struct BluetoothAdapter {
 static THIS_DEVICE: BluetoothAdapter = BluetoothAdapter {
     adapter: tokio::sync::OnceCell::const_new(),
     health: AtomicU8::new(ADAPTER_UNKNOWN),
+    bus: std::sync::OnceLock::new(),
     #[cfg(feature = "devtools")]
     switch: std::sync::OnceLock::new(),
 };
@@ -1099,12 +1103,34 @@ impl BluetoothAdapter {
         }
     }
 
+    /// The event bus that gets `AdapterChanged`. The first one set stays.
+    pub(super) fn set_bus(&self, bus: Arc<EventBus>) {
+        let _ = self.bus.set(bus);
+    }
+
     pub(super) fn note_reachable(&self) {
-        self.health.store(ADAPTER_REACHABLE, Ordering::Relaxed);
+        self.set_health(ADAPTER_REACHABLE);
     }
 
     pub(super) fn note_unreachable(&self) {
-        self.health.store(ADAPTER_UNREACHABLE, Ordering::Relaxed);
+        self.set_health(ADAPTER_UNREACHABLE);
+    }
+
+    /// Records the health. A change publishes `AdapterChanged`, so that an
+    /// open Device page shows the new colour of its Bluetooth row.
+    fn set_health(&self, health: u8) {
+        if self.health.swap(health, Ordering::Relaxed) != health {
+            self.publish_changed();
+        }
+    }
+
+    /// Tells the app that the adapter can be used now, or not any more: the
+    /// rows refresh, and SpaceSync ticks, which starts the advertising. Also
+    /// after the Android permission dialog granted Nearby Devices.
+    pub fn publish_changed(&self) {
+        if let Some(bus) = self.bus.get() {
+            bus.publish(Event::AdapterChanged);
+        }
     }
 
     /// Records what a refused scan says about the adapter. A busy adapter (a
@@ -1208,10 +1234,11 @@ impl BluetoothAdapter {
     }
 }
 
-/// The `actors-ble` e2e lane's radio: a `MockDriver` talking to a
+/// The radio of the e2e specs with `testDeviceChannel: ChannelKind.Bluetooth`
+/// on virtual Linux test devices: a `MockDriver` talking to a
 /// cross-process broker instead of BlueZ, so two real `fini-app` processes
 /// can prove this file's dial/peripheral/session-claim code path without
-/// hardware. See `specs/e2e/actors/helpers/ble-sync.ts` and ble-gatt's
+/// hardware. See `specs/e2e/multi-device/helpers/ble-sync.ts` and ble-gatt's
 /// `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
 ///
 /// Both the `devtools` feature gate above (off in release builds) and this
@@ -1225,7 +1252,7 @@ async fn mock_driver(endpoint: &str) -> Result<Arc<dyn ble_gatt::Driver>, String
     // Reuses the existing "fake local adapter address" escape hatch
     // (`pairing::commands::local_bluetooth_address`'s own env
     // override) rather than adding a second one -- the harness already sets
-    // this per actor for the self-report path.
+    // this for each test device for the self-report path.
     let address = std::env::var("FINI_LOCAL_BLUETOOTH_ADDRESS")
         .map_err(|_| "FINI_BLE_MOCK_BROKER is set but FINI_LOCAL_BLUETOOTH_ADDRESS is not".to_string())?;
     let network = MockNetwork::remote(endpoint)
@@ -1542,8 +1569,8 @@ mod tests {
     /// same connect+advertise+scan shape `ble-gatt`'s own
     /// `tests/mock_broker.rs` exercises, but through fini's injection point
     /// (`FINI_BLE_MOCK_BROKER`/`FINI_LOCAL_BLUETOOTH_ADDRESS`) instead of
-    /// calling `MockNetwork::remote` directly. This is what the `actors-ble`
-    /// e2e lane's two real `fini-app` processes will each do at startup.
+    /// calling `MockNetwork::remote` directly. This is what the
+    /// two virtual Linux test devices of `peer-sync-over-ble.spec.ts` each do at startup.
     #[cfg(all(target_os = "linux", feature = "devtools"))]
     #[tokio::test]
     async fn mock_driver_connects_to_a_broker_and_reports_full_capabilities() {
@@ -2354,6 +2381,16 @@ const SCAN_FAILURE_PAUSE: Duration = Duration::from_secs(5);
 const ANDROID_SCAN_STARTS: usize = 5;
 const ANDROID_SCAN_START_PERIOD: Duration = Duration::from_secs(30);
 
+/// Whether one scan keeps running across connections, and for `SCAN_LINGER`
+/// after nothing wants it. Each stop and start of the scan uses one of
+/// Android's `ANDROID_SCAN_STARTS`: a pairing stopped the scan for its
+/// identify connect and its pairing connect (3 starts in 3 s), so after two
+/// fast pairings the next listing waited for a free start (11-14 s). Android
+/// can scan and connect at the same time. BlueZ breaks when a connection
+/// opens during discovery, so on Linux the scan stops for each connection.
+const SCAN_DURING_CONNECT: bool = cfg!(target_os = "android");
+const SCAN_LINGER: Duration = Duration::from_secs(10);
+
 /// Why a search runs (ADR-0008 D12). The coordinator hands the peer's
 /// address over and keeps the purpose for the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2456,6 +2493,9 @@ pub struct Scanner {
     paired_heard: StdMutex<HashMap<String, (Instant, String)>>,
     /// Set while Add Device is open; see `set_add_device_mode`.
     add_device_mode: AtomicBool,
+    /// Set while the check for devices that left the Add Device list runs;
+    /// see `watch_stale`.
+    stale_watch: AtomicBool,
     /// The devices around this one in Add Device mode.
     pub(crate) available: AvailableDevices,
     /// Told when a paired device is heard again.
@@ -2487,6 +2527,7 @@ impl Scanner {
             scan_starts: StdMutex::new(VecDeque::new()),
             paired_heard: StdMutex::new(HashMap::new()),
             add_device_mode: AtomicBool::new(false),
+            stale_watch: AtomicBool::new(false),
             available: AvailableDevices::default(),
         }
     }
@@ -2598,10 +2639,13 @@ impl Scanner {
 
     /// A guard for a dial the coordinator did not hand off: the running
     /// scan sees the guard and stops, and this returns once it has (the
-    /// scan lease is free), so the dial never overlaps a scan.
+    /// scan lease is free), so the dial never overlaps a scan. With
+    /// `SCAN_DURING_CONNECT` the scan keeps running and the dial starts at once.
     pub async fn acquire_connect(&self) -> ConnectGuard {
         let guard = self.connect_guard();
-        drop(self.scan_lock().await);
+        if !SCAN_DURING_CONNECT {
+            drop(self.scan_lock().await);
+        }
         guard
     }
 
@@ -2648,7 +2692,7 @@ impl Scanner {
             started.elapsed(),
             if found.is_some() { "heard" } else { "not heard" }
         );
-        if found.is_some() {
+        if found.is_some() && !SCAN_DURING_CONNECT {
             // The hand-off wakes this task before the coordinator has dropped
             // its discovery stream; the lease comes free only once it has, so
             // the caller's dial never overlaps the scan. `Found` holds a dial
@@ -2669,6 +2713,29 @@ impl Scanner {
         self.add_device_mode.store(on, Ordering::SeqCst);
         self.start_once();
         self.changed.notify_one();
+        if on {
+            self.watch_stale();
+        }
+    }
+
+    /// While Add Device is open, removes the devices that stopped
+    /// advertising from the list and tells the UI. Without this a device
+    /// that left stayed in the list: the list drops old records only when it
+    /// is read, and only a new advertisement made the UI read it.
+    fn watch_stale(self: &Arc<Self>) {
+        if self.stale_watch.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let scanner = self.clone();
+        tauri::async_runtime::spawn(async move {
+            while scanner.in_add_device_mode() {
+                tokio::time::sleep(STALE_CHECK).await;
+                if scanner.available.remove_stale() {
+                    scanner.bus.publish(Event::AvailableDevicesChanged);
+                }
+            }
+            scanner.stale_watch.store(false, Ordering::SeqCst);
+        });
     }
 
     fn in_add_device_mode(&self) -> bool {
@@ -2752,8 +2819,10 @@ impl Scanner {
 
         let mut connections = self.connections.subscribe();
         loop {
-            // Never scan while a dial runs.
-            let _ = connections.wait_for(|count| *count == 0).await;
+            // Never start a scan while a dial runs (see `SCAN_DURING_CONNECT`).
+            if !SCAN_DURING_CONNECT {
+                let _ = connections.wait_for(|count| *count == 0).await;
+            }
 
             let mut wanted = self.wanted();
             if !self.scan_wanted(&wanted) {
@@ -2806,7 +2875,8 @@ impl Scanner {
             } else {
                 SCAN_WINDOW
             };
-            let deadline = tokio::time::Instant::now() + window;
+            let window_end = tokio::time::Instant::now() + window;
+            let mut deadline = window_end;
             loop {
                 tokio::select! {
                     next = tokio::time::timeout_at(deadline, discovered.next()) => match next {
@@ -2840,20 +2910,25 @@ impl Scanner {
                             if self.connect_recently_failed(&candidate.address.0) {
                                 continue;
                             }
-                            if self.hand_off(peer, &candidate.address.0) {
+                            if self.hand_off(peer, &candidate.address.0) && !SCAN_DURING_CONNECT {
                                 break;
                             }
                         }
                         Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
                     },
                     // A dial started outside a hand-off: stop for it.
-                    _ = connections.wait_for(|count| *count > 0) => break,
+                    _ = connections.wait_for(|count| *count > 0), if !SCAN_DURING_CONNECT => break,
                     // What is wanted changed: keep the scan running over the
                     // new set rather than restarting the radio, and stop only
-                    // once nothing is wanted any more.
+                    // once nothing is wanted any more -- with
+                    // `SCAN_DURING_CONNECT`, `SCAN_LINGER` later.
                     _ = self.changed.notified() => {
                         wanted = self.wanted();
-                        if !self.scan_wanted(&wanted) {
+                        if self.scan_wanted(&wanted) {
+                            deadline = window_end;
+                        } else if SCAN_DURING_CONNECT {
+                            deadline = deadline.min(tokio::time::Instant::now() + SCAN_LINGER);
+                        } else {
                             break;
                         }
                     }
@@ -2939,6 +3014,10 @@ pub struct AvailableDevices {
 /// a device that stops (it left Add Device, or went away) drops out quickly.
 const HEARD_FRESH: Duration = Duration::from_secs(15);
 
+/// How often the open Add Device list is checked for devices that left
+/// (`Scanner::watch_stale`).
+const STALE_CHECK: Duration = Duration::from_secs(2);
+
 /// What one advertisement told the scan.
 #[derive(Clone)]
 struct HeardDevice {
@@ -2966,6 +3045,16 @@ impl AvailableDevices {
         if let Ok(mut heard) = self.heard.lock() {
             heard.clear();
         }
+    }
+
+    /// Removes the listed devices that were not heard with the Add Device
+    /// flag in the last `HEARD_FRESH`. True when one was removed: the Add
+    /// Device list changed.
+    pub fn remove_stale(&self) -> bool {
+        let Ok(mut heard) = self.heard.lock() else { return false };
+        let before = heard.len();
+        heard.retain(|_, device| !(device.add_device_flag && device.at.elapsed() >= HEARD_FRESH));
+        heard.len() != before
     }
 
     /// Records one advertisement: the newest address of that device wins.

@@ -39,8 +39,9 @@ impl<'a> ChannelRepository<'a> {
         self.find(device_id, kind).is_some_and(|channel| channel.enabled)
     }
 
-    /// Set a channel up, or turn an existing one back on. Idempotent: it
-    /// updates the switch and, when one is given, the address. It never
+    /// Set a channel up, or switch an existing one on or off. Idempotent: it
+    /// updates the switch and, when one is given, the address. Switching it
+    /// off also releases the primary, in one transaction (ADR-0007). It never
     /// changes `configured_at`, the time this pair first had this channel.
     pub fn configure(
         &mut self,
@@ -50,17 +51,20 @@ impl<'a> ChannelRepository<'a> {
         address: Option<&str>,
     ) -> Result<(), String> {
         if self.find(device_id, kind).is_some() {
-            diesel::update(channels::table.find((device_id, kind.code())))
-                .set(channels::enabled.eq(enabled))
-                .execute(&mut *self.conn)
-                .map_err(|e| e.to_string())?;
-            if let Some(address) = address {
-                diesel::update(channels::table.find((device_id, kind.code())))
-                    .set(channels::address.eq(address))
-                    .execute(&mut *self.conn)
-                    .map_err(|e| e.to_string())?;
-            }
-            return Ok(());
+            return self
+                .conn
+                .transaction::<(), diesel::result::Error, _>(|conn| {
+                    let row = channels::table.find((device_id, kind.code()));
+                    diesel::update(row).set(channels::enabled.eq(enabled)).execute(conn)?;
+                    if !enabled {
+                        diesel::update(row).set(channels::is_primary.eq(false)).execute(conn)?;
+                    }
+                    if let Some(address) = address {
+                        diesel::update(row).set(channels::address.eq(address)).execute(conn)?;
+                    }
+                    Ok(())
+                })
+                .map_err(|e| e.to_string());
         }
 
         diesel::insert_into(channels::table)
@@ -75,24 +79,6 @@ impl<'a> ChannelRepository<'a> {
             .execute(&mut *self.conn)
             .map_err(|e| e.to_string())?;
         Ok(())
-    }
-
-    /// Turn an existing channel on or off (ADR-0008 D15). Turning it off
-    /// also releases the primary, in one transaction (ADR-0007).
-    pub fn set_enabled(&mut self, device_id: &str, kind: ChannelKind, enabled: bool) -> Result<(), String> {
-        self.conn
-            .transaction::<(), diesel::result::Error, _>(|conn| {
-                diesel::update(channels::table.find((device_id, kind.code())))
-                    .set(channels::enabled.eq(enabled))
-                    .execute(conn)?;
-                if !enabled {
-                    diesel::update(channels::table.find((device_id, kind.code())))
-                        .set(channels::is_primary.eq(false))
-                        .execute(conn)?;
-                }
-                Ok(())
-            })
-            .map_err(|e| e.to_string())
     }
 
     /// Make one channel the primary, or clear the pair's primary (ADR-0007).

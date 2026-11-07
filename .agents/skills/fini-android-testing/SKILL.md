@@ -1,6 +1,6 @@
 ---
 name: fini-android-testing
-description: Validate the Fini Android app on a real device or emulator through a device-automation workflow. Use this when users ask to verify Android behavior, prove navigation and state changes, debug mobile-only issues, or execute app automation against `com.fini.app`.
+description: Validate the Fini Android app on a physical device or emulator through a device-automation workflow. Use this when users ask to verify Android behavior, prove navigation and state changes, debug mobile-only issues, or execute app automation against `com.fini.app`.
 ---
 
 # Android Testing
@@ -60,8 +60,8 @@ Consequence: any plugin command that calls `PluginManager.startActivityForResult
 
 Beside this file. A thin bridge to a running debug app's devtools socket: it
 connects, evaluates the expression you give it **inside the app's webview**,
-prints the result, and exits. Seconds, not minutes — no actor pool, no test
-runner, no build.
+prints the result, and exits. Seconds, not minutes — no test devices to
+start, no test runner, no build.
 
 ```bash
 # from the repo root, so it resolves the repo's node_modules
@@ -77,13 +77,28 @@ the Tauri bridge. The last expression is the result; wrap in an async IIFE
 when you need `await`.
 
 ```bash
-node ... 9224 "invoke('device_connection_get_paired_devices')"
+node ... 9224 "invoke('device_paired_devices')"
 node ... 9223 "[...document.querySelectorAll('button')].map(b => b.textContent.trim())"
 node ... 9224 "[...document.querySelectorAll('button')].find(b => b.textContent.includes('Pair')).click()"
-node ... 9224 "(async () => { const p = await invoke('device_connection_get_paired_devices');
-   for (const d of p) await invoke('device_connection_unpair', { peerDeviceId: d.peer_device_id });
+node ... 9224 "(async () => { const p = await invoke('device_paired_devices');
+   for (const d of p) await invoke('device_unpair', { peerDeviceId: d.peer_device_id });
    return p.length; })()"
 ```
+
+## Virtual Android test devices: the `device-support` project
+
+For Bluetooth between two Android stacks without hardware, use the
+`device-support` specs on two virtual Android test devices (ADR-0013), not
+this skill's physical phone:
+
+```bash
+npm run build:android:e2e          # x86_64 debug APK with devtools (make android-build-emulator-e2e)
+npm run test:e2e:android           # podman image, two emulators on one netsim radio
+```
+
+`docs/e2e-android.md` has the details. The bridge above also works on such a phone:
+the run forwards phone A to host port 9223 and phone B to 9225 while a test
+runs (inside the container).
 
 **It deliberately has no verbs.** Compose the expression for the task at
 hand rather than adding a named action to the script — the bridge knows

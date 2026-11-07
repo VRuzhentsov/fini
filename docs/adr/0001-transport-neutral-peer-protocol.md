@@ -131,7 +131,8 @@ runners, which cannot run real Bluetooth radios:
   crossing devices. That requires local/device-lab verification
   (`make e2e-bt-local`, PR B) — GitHub-hosted CI has no Bluetooth hardware
   and pairing two Android emulators in one job is heavy/flaky. See
-  `specs/e2e/transports.md` for the full topology-to-verification matrix.
+  `docs/e2e.md`, "What each project proves for each channel", for the full
+  topology-to-verification matrix.
 
 ### What was deliberately not built
 

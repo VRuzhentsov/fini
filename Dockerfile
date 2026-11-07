@@ -97,7 +97,7 @@ RUN npm run tauri -- build --debug --features ui-plane,devtools --no-bundle -- -
     cp src-tauri/target/debug/fini-app /workspace/fini-app && \
     rm -rf src-tauri/target
 
-# actors-ble's shared radio -- see specs/e2e/actors/helpers/ble-sync.ts. Its
+# The shared mock radio of the multi-device Bluetooth specs -- see specs/e2e/multi-device/helpers/ble-sync.ts. Its
 # own crate (see ble-mock-broker/Cargo.toml for why), so built separately
 # from fini-app above. Copied out to a path that doesn't collide with the
 # `ble-mock-broker/` source dir itself -- `cp <file> <existing-dir>` nests
@@ -203,6 +203,57 @@ ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
     TZ=UTC
 
 CMD ["sh", "./scripts/e2e-runner.sh"]
+
+# Virtual phones for the Android e2e job (ADR-0013 D8): Node, adb and the
+# Android Emulator in one image, so a local run and CI run the same thing. The
+# repo is mounted at run time; nothing of the project is copied in. The
+# emulator needs only /dev/kvm.
+#
+#   npm run test:e2e:android
+FROM debian:trixie-slim AS android-phones-runner
+
+ARG ANDROID_CMDLINE_TOOLS=11076708
+ARG ANDROID_SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
+# Emulator 36.4.9. A fixed build, not sdkmanager's latest: 37.2.13 crashes
+# (SIGSEGV) at start on some hosts (Bazzite) with each GPU mode, and it does
+# not know `-gpu angle_indirect`.
+ARG ANDROID_EMULATOR_BUILD=14788078
+
+ENV ANDROID_HOME=/opt/android-sdk \
+    FINI_E2E_CONTAINER_RUNNER=1 \
+    TZ=UTC
+ENV PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eux; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
+      ca-certificates curl unzip openjdk-21-jre-headless jq \
+      libpulse0 libnss3 libxcomposite1 libxcursor1 libxdamage1 libxi6 libxtst6 libgl1 libdrm2 libgbm1; \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash -; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends nodejs
+
+RUN set -eux; \
+    mkdir -p "$ANDROID_HOME/cmdline-tools"; \
+    curl -fsSL -o /tmp/cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS}_latest.zip"; \
+    unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"; \
+    mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"; \
+    rm /tmp/cmdline-tools.zip; \
+    yes | sdkmanager --licenses > /dev/null; \
+    sdkmanager --install platform-tools "$ANDROID_SYSTEM_IMAGE" > /dev/null; \
+    curl -fsSL -o /tmp/emulator.zip "https://dl.google.com/android/repository/emulator-linux_x64-${ANDROID_EMULATOR_BUILD}.zip"; \
+    # sdkmanager installs the latest emulator with the system image; replace
+    # its files. Keep its package.xml: avdmanager needs the package entry.
+    cp "$ANDROID_HOME/emulator/package.xml" /tmp/emulator-package.xml; \
+    rm -rf "$ANDROID_HOME/emulator"; \
+    unzip -q /tmp/emulator.zip -d "$ANDROID_HOME"; \
+    cp /tmp/emulator-package.xml "$ANDROID_HOME/emulator/package.xml"; \
+    rm /tmp/emulator.zip; \
+    echo no | avdmanager create avd -n fini-e2e -k "$ANDROID_SYSTEM_IMAGE" -d pixel_6
+
+WORKDIR /work
 
 # Local Android build environment: JDK 17 plus Node, for hosts whose system JDK
 # is too new for the Gradle version this project pins -- Gradle's bundled Kotlin

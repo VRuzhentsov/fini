@@ -1,6 +1,6 @@
 ---
 name: fini-test
-description: "Single source of truth for testing the Fini app: how to run unit, integration, and end-to-end tests, and how to write new ones. Use when the user asks to run tests, write a test, add coverage, debug a failing test, choose a test category, set up a multi-actor scenario, or understand fixtures and harnesses. For Android-only behavior, load `fini-android-testing` instead. For CLI semantics referenced from CLI e2e tests, also load `fini-cli`. For Makefile/CI/script changes around tests, also load `fini-scripting`."
+description: "Single source of truth for testing the Fini app: how to run unit, integration, and end-to-end tests, and how to write new ones. Use when the user asks to run tests, write a test, add coverage, debug a failing test, choose a test category, set up a multi-device scenario (TestDevice fixture, virtual Android phones), or understand fixtures and harnesses. For Android-only behavior, load `fini-android-testing` instead. For CLI semantics referenced from CLI e2e tests, also load `fini-cli`. For Makefile/CI/script changes around tests, also load `fini-scripting`."
 ---
 
 # Fini Testing
@@ -20,13 +20,14 @@ Make every test claim defensible:
 | Surface | Runner | Entry point | Location |
 |---|---|---|---|
 | FE unit | Jest + `@vue/test-utils` + jsdom | `npm run test:unit` (no Makefile wrapper) | `src/spec/**/*.spec.ts` |
-| BE unit | `cargo test` | `make pr-gate-be-unit` | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
-| E2E single-actor UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: `make pr-gate-e2e-run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
-| E2E multi-actor | Playwright + custom socket fixtures | local: `make e2e-headed`; CI: `make pr-gate-e2e` chain (project `actors`) | `specs/e2e/actors/tests/*.spec.ts` |
+| BE unit | `cargo test` | `npm run gate:be-unit` (local shortcut `make pr-gate-be-unit`) | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
+| E2E single-app UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
+| E2E multi-device | Playwright + the `testDevices` fixture (ADR-0013) | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `multi-device`) | `specs/e2e/multi-device/tests/*.spec.ts` |
+| E2E device support (now: Android) | project `device-support`, virtual Android test devices | `npm run test:e2e:android`, local and CI (job `android-e2e`) | `specs/e2e/device-support/tests/*.spec.ts` |
 | E2E CLI-only | Playwright + `createCliClient()` | project `cli` in `specs/e2e/playwright.config.ts` | `specs/e2e/*.spec.ts` (e.g. `reminder-bridge.spec.ts`) |
-| Android | manual device automation | route to `fini-android-testing` | covered by that skill |
+| Android on a physical phone | manual device automation | route to `fini-android-testing` | covered by that skill |
 
-CI parity: `.github/workflows/ci.yml` runs `pr-gate-fe-unit`, `pr-gate-be-compile`, `pr-gate-be-unit`, and the full `pr-gate-e2e-*` chain.
+CI parity: the workflows call `npm run gate:fe-unit`, `gate:be-compile`, `gate:be-unit`, the `gate:e2e:*` steps and `test:e2e:android` (`scripts/ci-gate.mts`, `scripts/e2e-android.mts`). The `make pr-gate-*` targets are local shortcuts to the same scripts.
 
 ## Choose the right test category
 
@@ -34,37 +35,37 @@ Decide before writing the test:
 
 - Pure Vue logic, store, or pure component behavior → **FE unit (Jest)**.
 - Pure Rust logic, DB migration, service-layer behavior → **BE unit (`#[cfg(test)]`)**.
-- Single Fini app, real GUI flow, single user view → **E2E single-actor UI** (`specs/e2e/ui/`).
-- Two or more Fini instances (device pairing, personal/space sync, multi-device behavior) → **E2E multi-actor** (`specs/e2e/actors/`).
-- CLI behavior or backend bridge with no GUI need → **E2E CLI** (`specs/e2e/*.spec.ts`, project `cli`).
+- Single Fini app, real GUI flow, single user view → **E2E single-app UI** (`specs/e2e/ui/`).
+- Two or more Fini apps (device pairing, personal/space sync, multi-device behavior) → **E2E multi-device** (`specs/e2e/multi-device/`), on two virtual Linux test devices over Network. A happy path on another pair or channel names it at the top of the file (`test.use({ testDevicePlatforms, testDeviceChannel })`).
+- That a platform and its channels work (the Android app start, Bluetooth between two Android stacks) → project `device-support` (`specs/e2e/device-support/`).
+- CLI behavior, or the bridge to the Rust side with no GUI → **E2E CLI** (`specs/e2e/*.spec.ts`, project `cli`).
 - Android-only behavior → load `fini-android-testing` instead.
 
-If a behavior fits more than one surface, pick the cheapest to run and the most isolated. Multi-actor is the most expensive — reserve it for behaviors that genuinely require two instances.
+If a behavior fits more than one surface, pick the cheapest to run and the most isolated. Multi-device is expensive, and `device-support` on virtual Android the most expensive — use them only for behaviors that need two apps.
 
 ## When to run tests
 
-Run unit tests and e2e lanes in a PR's wrap-up stage, after its happy flow has been proven and the PR has left draft (`fini-dev`, "PR Lifecycle"). While a PR is a draft, prove behaviour on the running HMR apps instead.
+Run unit tests and e2e projects in a PR's wrap-up stage, after its happy flow has been proven and the PR has left draft (`fini-dev`, "PR Lifecycle"). While a PR is a draft, prove behaviour on the running HMR apps instead.
 
 ## Driving the running apps
 
 To make the running apps (desktop and phone, HMR) do something, use one of these two ways. Pick the way for the task:
 
 1. **One manual action at a time** — to do something once: unblock a flow, read a state, see one screen. Send one action with the devtools bridge (`node .agents/skills/fini-android-testing/devtools-bridge.mjs <port> "<js>"`; see `fini-android-testing`), read what the screen shows now, then decide the next action. One call is one action: one click, one read, or one command.
-2. **A Playwright spec built from components** — for a flow with more than one step, a flow to do again, or a flow whose times count. Write the flow in `specs/e2e/` from the components in `specs/e2e/components/`, and run it against the running apps as external actors:
+2. **A Playwright spec built from components** — for a flow with more than one step, a flow to do again, or a flow whose times count. Write the flow in `specs/e2e/` from the components in `specs/e2e/components/`, and run it against the running apps with the physical source:
 
    ```sh
-   FINI_E2E_ACTORS=desktop,phone \
-   FINI_E2E_EXTERNAL_ACTORS=desktop=9224,phone=9223 \
+   FINI_E2E_TEST_DEVICES=desktop=linux@tcp:9224,phone=android@tcp:9223 \
    PLAYWRIGHT_JSON_OUTPUT_NAME=~/.cache/agents/<workflow>/e2e.json \
-   npx playwright test --config specs/e2e/playwright.config.ts --project=actors \
-     --reporter=list,json specs/e2e/actors/tests/<flow>.spec.ts
+   npx playwright test specs/e2e/multi-device/tests/<flow>.spec.ts \
+     --config specs/e2e/playwright.config.ts --project=multi-device --reporter=list,json
    ```
 
    Step times go in test annotations (`test.info().annotations`); read them from the JSON report.
 
 Components:
 
-- A component is a class around one part of the screen, made from a `TauriPage`: `AddDeviceDialog`, `DevicePage`, `ChannelRow`. It knows nothing about actors.
+- A component is a class around one part of the screen, made from a `TauriPage`: `AddDeviceDialog`, `DevicePage`, `ChannelRow`. It knows nothing about test devices.
 - One method is one action that a person does (`openSearch(channel)`, `pair(hostname)`, `unlinkDevice()`), and it returns when the screen shows the result. Wait with Playwright (`waitForSelector`, `waitForFunction`) on a `data-*` hook, for example `[data-pair-step="looking"]`.
 - When a step has no hook, add one to the Vue component (`data-testid`, or a `data-*` attribute that names the state; `docs/naming.md`), then wait on it.
 - When a flow needs a part of the screen that has no component, add a component for it in `specs/e2e/components/`, then use it in the spec.
@@ -77,45 +78,51 @@ Components:
 npm run test:unit
 ```
 
-Underlying command: `jest --runInBand`. `npm run test:unit` has no Makefile wrapper today; use the npm script directly. CI runs the same suite via `make pr-gate-fe-unit`, which builds the `fe-unit-test` Dockerfile stage.
+Underlying command: `jest --runInBand`. CI runs the same suite with `npm run gate:fe-unit`, which builds the `fe-unit-test` Dockerfile stage.
 
 ### Backend unit
 
 ```sh
-make pr-gate-be-unit
+npm run gate:be-unit
 ```
 
-This depends on `make pr-gate-be-compile`, then runs the `be-unit-test` Dockerfile stage which executes `cargo test --manifest-path src-tauri/Cargo.toml`. To iterate locally without containers, run `cargo test --manifest-path src-tauri/Cargo.toml` directly.
+This runs `gate:be-compile` first, then the `be-unit-test` Dockerfile stage which executes `cargo test --manifest-path src-tauri/Cargo.toml`. To iterate locally without containers, run `cargo test --manifest-path src-tauri/Cargo.toml` directly.
 
-### E2E — visible local run (single-actor UI + multi-actor)
+### E2E — visible local run (single-app UI + multi-device)
 
 ```sh
 make e2e-headed
 ```
 
-Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--features cli-plane,devtools`, then executes `npx playwright test --config specs/e2e/playwright.config.ts --project ui --project actors`. The Playwright fixtures spawn the real app processes. `make e2e` is an alias for `make e2e-headed`.
+Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--features cli-plane,devtools`, then runs the projects `ui` and `multi-device`. The `testDevices` fixture starts the virtual Linux test devices. `make e2e` is an alias for `make e2e-headed`.
 
 ### E2E — containerized CI parity
 
 ```sh
-make pr-gate-e2e
+npm run gate:e2e:build-image && npm run gate:e2e:run
 ```
 
-Runs the chain `pr-gate-e2e-build-dev-runner` → `pr-gate-e2e-run`. The dev-runner image owns actor startup and sockets. `make e2e-ci` is a shortcut for the same containerized E2E flow.
+The dev-runner image starts the virtual Linux test devices. `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
+
+### E2E — `device-support` on virtual Android
+
+```sh
+npm run test:e2e:android [-- <playwright args>]
+```
+
+Needs the x86_64 APK with devtools first: `npm run build:android:e2e`. The image, when the phones start, the logs and the rules for the specs: `docs/e2e-android.md`.
 
 ### Targeting a single Playwright project
 
-The Playwright config (`specs/e2e/playwright.config.ts`) exposes three projects:
+The projects in `specs/e2e/playwright.config.ts`: `cli`, `ui`, `multi-device` (what Fini does with two or more devices; by default two virtual Linux test devices over Network), `device-support` (that a platform and its channels work). See `docs/e2e.md`, "Projects". Pass `--project=<name>` to `npx playwright test --config specs/e2e/playwright.config.ts`.
 
-```ts
-projects: [
-  { name: 'cli',    testMatch: ['reminder-bridge.spec.ts'] },
-  { name: 'ui',     testMatch: ['ui/tests/**/*.spec.ts'], use: { mode: 'tauri' } as any },
-  { name: 'actors', testMatch: ['actors/tests/**/*.spec.ts'] },
-],
+### Running only the smoke tests
+
+```sh
+npm run test:e2e:smoke
 ```
 
-Pass `--project cli|ui|actors` when invoking `npx playwright test --config specs/e2e/playwright.config.ts` directly.
+Runs the tests with the tag `E2eTag.Smoke` (`@smoke`) in all projects: quick checks that the harness starts the test devices and the app answers.
 
 ### Do not invent targets
 
@@ -155,7 +162,7 @@ Conventions:
 
 - Mount components with `@vue/test-utils` `mount()` when the test needs DOM behavior; otherwise prefer pure store/composable tests.
 - Reset every `invoke` mock in `beforeEach`. Tests run with `--runInBand`, but mock state still leaks across `it` blocks unless explicitly reset.
-- Match the file path of the production code: `src/stores/device.ts` ↔ `src/spec/stores/device.store.spec.ts`, `src/views/settings/DeviceView.vue` ↔ `src/spec/views/DeviceView.spec.ts`.
+- Match the file path of the production code: `src/stores/device.store.ts` ↔ `src/spec/stores/device.store.spec.ts`, `src/views/settings/DeviceView.vue` ↔ `src/spec/views/DeviceView.spec.ts`.
 
 ## Writing BE unit tests
 
@@ -194,18 +201,18 @@ Conventions:
 - Pass a unique `label` per test to `temp_db_path` so parallel runs do not collide.
 - Clean up the temp DB at the end of the test (`std::fs::remove_file`) when the test owns the file.
 
-## Writing single-actor UI e2e
+## Writing single-app UI e2e
 
 Layout: `specs/e2e/ui/tests/<feature>.spec.ts`. Fixture: `specs/e2e/ui/fixtures.ts` exports `test` and `expect` from `createTauriTest` with a socket under the task-scoped E2E root. The test receives a `tauriPage` that drives the real Fini window.
 
 App data is isolated under the task-scoped `FINI_E2E_ROOT` (default: the repository's ignored `tmp/fini-e2e-ui/`) so the user's normal data directory is untouched. The app is launched with `--features devtools`.
 
-Skeleton from `specs/e2e/ui/tests/context-menu-submenu-hover.spec.ts`:
+Skeleton from `specs/e2e/ui/tests/context-menu-accordion.spec.ts`:
 
 ```ts
 import { test, expect } from '../fixtures.ts';
 
-test('context-menu submenu stays open during hover-to-submenu cursor traversal', async ({ tauriPage }) => {
+test('wide: Move to space opens as in-place accordion, not a flyout', async ({ tauriPage }) => {
   await tauriPage.waitForSelector('nav.nav a[href="#/main"]', 30_000);
   await tauriPage.click('nav.nav a[href="#/main"]');
   await tauriPage.waitForSelector('[data-testid="chat-input"]', 30_000);
@@ -220,48 +227,44 @@ Conventions:
 - For non-trivial DOM mutation (e.g. setting `<textarea>` value programmatically), drop into `tauriPage.evaluate` with a small inline helper, as `fillTextarea` does in the file above.
 - File names use lowercase kebab-case ending in `.spec.ts`.
 
-## Writing multi-actor e2e
+## Writing multi-device e2e
 
-Layout: `specs/e2e/actors/tests/<feature>.spec.ts`. Fixture: `specs/e2e/actors/fixtures.ts` exposes `actorA`, `actorB`, and a generic `actors` map. Each actor is a separate Fini instance with its own `FINI_APP_DATA_DIR` and its own Unix socket; the runner connects via `PluginClient(socketPath)` and exposes `actor.page` (a `TauriPage`) and `actor.invoke<T>(command, args)` (a typed Tauri command call).
+Layout: `specs/e2e/multi-device/tests/<feature>.spec.ts`. Fixture: `specs/e2e/multi-device/test-device.ts` gives `testDevices` (by slug), `testDeviceA` and `testDeviceB` (by position). A `TestDevice` is one running Fini app that the test drives (glossary, ADR-0013); it is not the Fini `Device` model. Each one has `page` (a `TauriPage`), `invoke<T>(command, args)`, `platform` (`TestDevicePlatform`) and `source` (`TestDeviceSource`: virtual or physical).
 
-Actor processes are spawned by the worker-scoped fixture in `specs/e2e/actors/fixtures.ts`. The runner discovers actors through environment variables:
+How the test devices start (`FINI_E2E_TEST_DEVICES`, providers, run folders): `docs/e2e.md`.
 
-- `FINI_E2E_ACTORS` — comma-separated slugs (default `actor-a,actor-b`).
-- `FINI_E2E_SOCKET_DIR` — directory where each actor's `<slug>.sock` appears (default `/var/run/fini-e2e`).
+Helpers live in `specs/e2e/multi-device/helpers/`:
 
-Helpers live in `specs/e2e/actors/helpers/`:
+- `device-sync.ts` — `pairTestDevices(...)`: pairs the test devices (through Add Device with `pairInUi`).
+- `personal-sync.ts` — `syncPersonalSpace(...)`: maps the Personal space of two paired test devices.
+- `ble-sync.ts` — `pairTestDevicesOverBluetooth(...)` for specs with `testDeviceChannel: ChannelKind.Bluetooth`.
+- `dom.ts` — shared DOM checks.
+- `teardown.ts` — `resetTestDevicesUi(...)` runs after every test.
 
-- `device-sync.ts` — `ensureSyncedActors(...)` for paired-device setup.
-- `personal-sync.ts` — `ensurePersonalSpaceSync(...)` for personal-space replication setup.
-- `dom.ts` — shared DOM probes.
-- `teardown.ts` — `resetActorsUi(...)` runs after every test in the fixture's `finally`.
-
-Skeleton from `specs/e2e/actors/tests/multi-actor-smoke.spec.ts`:
+Skeleton from `specs/e2e/multi-device/tests/two-test-devices.spec.ts`:
 
 ```ts
-import { test, expect } from '../fixtures.ts';
+import { test, expect } from '../test-device.ts';
+import { E2eTag } from '../../e2e-project.ts';
 
 interface DeviceIdentity { device_id: string; hostname: string; }
 
-test('runner controls two isolated actors with distinct identities', async ({ actorA, actorB }) => {
-  await actorA.page.waitForSelector('nav.nav', 30_000);
-  await actorB.page.waitForSelector('nav.nav', 30_000);
-
-  const identityA = await actorA.invoke<DeviceIdentity>('device_connection_get_identity');
-  const identityB = await actorB.invoke<DeviceIdentity>('device_connection_get_identity');
-
+test('runner controls two isolated test devices with different identities', { tag: E2eTag.Smoke }, async ({ testDeviceA, testDeviceB }) => {
+  const identityA = await testDeviceA.invoke<DeviceIdentity>('device_get_identity');
+  const identityB = await testDeviceB.invoke<DeviceIdentity>('device_get_identity');
   expect(identityA.device_id).not.toBe(identityB.device_id);
-  expect(identityA.hostname).toBe('actor-a');
-  expect(identityB.hostname).toBe('actor-b');
 });
 ```
 
 Conventions:
 
 - Use a helper from `helpers/` instead of re-implementing pairing or sync inline. If a helper is missing, add it next to the others rather than embedding the setup in the test.
-- Prefix late-running test files with `zz-` (see `zz-personal-space-live-quest-sync.spec.ts`) when the test depends on state established by earlier tests in the same project — Playwright runs files in lexical order with `fullyParallel: false, workers: 1` per `specs/e2e/playwright.config.ts`.
-- Talk to the backend through `actor.invoke<T>(command, args)` for Tauri commands; reach for `actor.page.evaluate` only for DOM probes the page exposes naturally.
-- Never hard-code socket paths — read them via the fixture; the fixture computes `path.join(FINI_E2E_SOCKET_DIR, '<slug>.sock')`.
+- Prefix late-running test files with `zz-` (see `zz-personal-space-live-quest-sync.spec.ts`) when the test depends on state established by earlier tests in the same project — Playwright runs files in lexical order with `fullyParallel: false, workers: 1`.
+- Talk to the Rust side through `testDevice.invoke<T>(command, args)`; use `testDevice.page.evaluate` only for DOM checks.
+- A spec that needs two Bluetooth stacks skips when a test device is virtual Linux (`testDevice.isVirtual(TestDevicePlatform.Linux)`; see `bluetooth-pair-from-zero.spec.ts`).
+- Use the consts (`TestDevicePlatform`, `TestDeviceSource`, `ChannelKind`), never their string values.
+- Mark a group of tests with a Playwright tag, not with a word in the file name. Name the file for what it checks (`two-test-devices.spec.ts`, not `multi-device-smoke.spec.ts`). Give a quick check that the harness and the app answer `{ tag: E2eTag.Smoke }` (`specs/e2e/e2e-project.ts`); a new tag goes into `E2eTag` first, never as a string in a spec. Run them with `npm run test:e2e:smoke` (`--grep @smoke`), or leave them out with `--grep-invert`.
+- With virtual Android test devices, obey the rules in `docs/e2e-android.md`, "Rules for the specs".
 
 ## Writing CLI e2e
 
