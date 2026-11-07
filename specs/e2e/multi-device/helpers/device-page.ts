@@ -46,7 +46,7 @@ export async function channelProblem(testDevice: TestDevice, kind: ChannelKind):
   return (await popup.count()) > 0 ? ((await popup.textContent()) ?? '').trim() : '';
 }
 
-export async function toggleChannel(testDevice: TestDevice, kind: ChannelKind): Promise<void> {
+export async function switchChannel(testDevice: TestDevice, kind: ChannelKind): Promise<void> {
   await testDevice.page.click(`${channelRowSelector(kind)} [data-testid="channel-switch"]`);
 }
 

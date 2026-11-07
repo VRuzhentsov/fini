@@ -1,13 +1,13 @@
 import { test, expect } from '../test-device.ts';
 import type { TestDevice } from '../test-device.ts';
 import {
-  ensureBlePairedTestDevices,
+  pairTestDevicesOverBluetooth,
   expectNetworkChannelUnavailable,
   waitForBluetoothRowConnectedInUi,
   waitForGreenChannel,
 } from '../helpers/ble-sync.ts';
 import {
-  ensurePersonalSpaceSync,
+  syncPersonalSpace,
   expectNoIncomingSpaceSyncDialog,
   waitForPersonalLastSyncedLabel,
 } from '../helpers/personal-sync.ts';
@@ -48,7 +48,7 @@ test('happy-path-BLE: both sides go green over BLE alone, and a single quest con
   testDeviceA,
   testDeviceB,
 }) => {
-  const [syncedA, syncedB] = await ensureBlePairedTestDevices([testDeviceA, testDeviceB]);
+  const [syncedA, syncedB] = await pairTestDevicesOverBluetooth([testDeviceA, testDeviceB]);
 
   // For each peer, so the spec works on each source: a virtual Linux test
   // device hears no device, and on hardware the pair has no Network channel on.
@@ -66,7 +66,7 @@ test('happy-path-BLE: both sides go green over BLE alone, and a single quest con
 
   // The saved mapping is the first work, and it opens the first exchange,
   // over Bluetooth: the only channel that these two can use.
-  await ensurePersonalSpaceSync(
+  await syncPersonalSpace(
     testDeviceA,
     syncedB.identity.device_id,
     testDeviceB,
@@ -76,7 +76,7 @@ test('happy-path-BLE: both sides go green over BLE alone, and a single quest con
   await expectNoIncomingSpaceSyncDialog(testDeviceA);
   await expectNoIncomingSpaceSyncDialog(testDeviceB);
 
-  // `ensurePersonalSpaceSync` proves only that each device recorded the
+  // `syncPersonalSpace` proves only that each device recorded the
   // mapping, not that a sync went in the two directions. Thus the test waits
   // for the first sync, as `zz-personal-space-live-quest-sync.spec.ts` does,
   // before it makes a quest. Else the new quest and the first sync can occur

@@ -235,9 +235,9 @@ How the test devices start (`FINI_E2E_TEST_DEVICES`, providers, run folders): `d
 
 Helpers live in `specs/e2e/multi-device/helpers/`:
 
-- `device-sync.ts` — `ensureSyncedTestDevices(...)` for paired-device setup.
-- `personal-sync.ts` — `ensurePersonalSpaceSync(...)` for personal-space replication setup.
-- `ble-sync.ts` — `ensureBlePairedTestDevices(...)` for specs with `testDeviceChannel: ChannelKind.Bluetooth`.
+- `device-sync.ts` — `pairTestDevices(...)`: pairs the test devices (through Add Device with `pairInUi`).
+- `personal-sync.ts` — `syncPersonalSpace(...)`: maps the Personal space of two paired test devices.
+- `ble-sync.ts` — `pairTestDevicesOverBluetooth(...)` for specs with `testDeviceChannel: ChannelKind.Bluetooth`.
 - `dom.ts` — shared DOM checks.
 - `teardown.ts` — `resetTestDevicesUi(...)` runs after every test.
 

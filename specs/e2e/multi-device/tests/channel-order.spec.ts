@@ -1,6 +1,6 @@
 import { test, expect } from '../test-device.ts';
-import { ensureSyncedTestDevices } from '../helpers/device-sync.ts';
-import { ensurePersonalSpaceSync } from '../helpers/personal-sync.ts';
+import { pairTestDevices } from '../helpers/device-sync.ts';
+import { syncPersonalSpace } from '../helpers/personal-sync.ts';
 import { pollUntil } from '../helpers/dom.ts';
 import { ChannelKind } from '../../../../src/utils/channel.ts';
 
@@ -16,11 +16,11 @@ test('an exchange between paired test devices on one network runs over the netwo
   testDeviceA,
   testDeviceB,
 }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
 
   // A pair with no work has no exchange. A saved mapping is work, and its
   // exchange stays open for some time after the work stops.
-  await ensurePersonalSpaceSync(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
+  await syncPersonalSpace(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
   await testDeviceA.invoke('create_quest', {
     input: { title: `network exchange ${Date.now()}`, description: null, space_id: '1', is_checklist: false },
   });

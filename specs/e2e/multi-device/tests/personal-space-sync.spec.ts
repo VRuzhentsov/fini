@@ -1,8 +1,8 @@
 import { test, expect } from '../test-device.ts';
-import { ensureSyncedTestDevices } from '../helpers/device-sync.ts';
+import { pairTestDevices } from '../helpers/device-sync.ts';
 import { pollUntil } from '../helpers/dom.ts';
 import {
-  ensurePersonalSpaceSync,
+  syncPersonalSpace,
   expectNoIncomingSpaceSyncDialog,
   openDeviceDetailsFromSettings,
   waitForPersonalLastSyncedLabel,
@@ -11,9 +11,9 @@ import {
 const PERSONAL_SPACE_ID = '1';
 
 test('device can request Personal space sync and peer confirms it', async ({ testDeviceA, testDeviceB }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
 
-  await ensurePersonalSpaceSync(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
+  await syncPersonalSpace(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
 
   const [labelA, labelB] = await Promise.all([
     waitForPersonalLastSyncedLabel(testDeviceA, syncedB.identity.device_id),
@@ -27,9 +27,9 @@ test('device can request Personal space sync and peer confirms it', async ({ tes
 });
 
 test('already mapped Personal space does not prompt again on sync tick', async ({ testDeviceA, testDeviceB }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
 
-  await ensurePersonalSpaceSync(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
+  await syncPersonalSpace(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
   await testDeviceA.invoke('space_sync_tick');
   await testDeviceB.invoke('space_sync_tick');
 
@@ -38,9 +38,9 @@ test('already mapped Personal space does not prompt again on sync tick', async (
 });
 
 test('ending and re-enabling Personal sync records end then bootstraps again', async ({ testDeviceA, testDeviceB }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
 
-  await ensurePersonalSpaceSync(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
+  await syncPersonalSpace(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
 
   await testDeviceA.invoke<string[]>('space_sync_update_mappings', {
     peerDeviceId: syncedB.identity.device_id,

@@ -1,8 +1,8 @@
 import { test, expect } from '../test-device.ts';
 import type { TestDevice } from '../test-device.ts';
-import { ensureSyncedTestDevices } from '../helpers/device-sync.ts';
+import { pairTestDevices } from '../helpers/device-sync.ts';
 import {
-  ensurePersonalSpaceSync,
+  syncPersonalSpace,
   expectNoIncomingSpaceSyncDialog,
   waitForPersonalLastSyncedLabel,
   waitForPersonalLastSyncedLabelChange,
@@ -12,10 +12,10 @@ import { pollUntil } from '../helpers/dom.ts';
 const TIMEOUT_MS = 60_000;
 
 test('live Personal quest sync updates Focus on the peer without confirmation', async ({ testDeviceA, testDeviceB }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
   const questTitle = `Live sync ${Date.now()}`;
 
-  await ensurePersonalSpaceSync(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
+  await syncPersonalSpace(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
   const lastSyncedBefore = await waitForPersonalLastSyncedLabel(testDeviceB, syncedA.identity.device_id);
   await sleep(1_100);
 
@@ -35,11 +35,11 @@ test('live Personal quest sync updates Focus on the peer without confirmation', 
 });
 
 test('second live Personal quest from peer appears in Focus backlog list', async ({ testDeviceA, testDeviceB }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
   const firstQuestTitle = `Focus seed ${Date.now()}`;
   const secondQuestTitle = `Backlog peer ${Date.now()}`;
 
-  await ensurePersonalSpaceSync(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
+  await syncPersonalSpace(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
 
   let activeTitle = await tryFocusActiveQuestTitle(testDeviceA);
   if (!activeTitle) {

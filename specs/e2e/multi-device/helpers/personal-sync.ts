@@ -6,7 +6,7 @@ import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
 const PERSONAL_SPACE_ID = '1';
 const TIMEOUT_MS = 60_000;
 
-export async function ensurePersonalSpaceSync(
+export async function syncPersonalSpace(
   requester: TestDevice,
   requesterPeerDeviceId: string,
   approver: TestDevice,
@@ -24,7 +24,7 @@ export async function ensurePersonalSpaceSync(
 
   if (!mapped.includes(PERSONAL_SPACE_ID)) {
     await openDeviceDetailsFromSettings(requester, requesterPeerDeviceId);
-    await waitForMappingControlsReady(requester, PERSONAL_SPACE_ID);
+    await waitForMappingControls(requester, PERSONAL_SPACE_ID);
     await requester.page.click(spaceCheckboxSelector(PERSONAL_SPACE_ID));
     await requester.page.waitForSelector('[data-testid="save-space-mappings"]:not([disabled])', TIMEOUT_MS);
     await requester.page.click('[data-testid="save-space-mappings"]');
@@ -104,7 +104,7 @@ async function tickTestDevices(testDevices: TestDevice[]): Promise<void> {
   }
 }
 
-export async function waitForMappingControlsReady(testDevice: TestDevice, spaceId: string): Promise<void> {
+export async function waitForMappingControls(testDevice: TestDevice, spaceId: string): Promise<void> {
   await pollUntil(`${testDevice.slug} mapping controls ready`, async () => {
     const checkbox = testDevice.page.locator(spaceCheckboxSelector(spaceId));
     if ((await checkbox.count()) === 0) {

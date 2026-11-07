@@ -35,34 +35,35 @@ export interface SyncedTestDevice {
   identity: DeviceIdentity;
 }
 
-export interface EnsureSyncedTestDevicesOptions {
-  pairViaUi?: boolean;
+export interface PairTestDevicesOptions {
+  pairInUi?: boolean;
   timeoutMs?: number;
   syncTicks?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-export async function ensureSyncedTestDevices(
+/** Pairs each two test devices if they are not paired, and waits until each lists the others. */
+export async function pairTestDevices(
   testDevices: TestDevice[],
-  options: EnsureSyncedTestDevicesOptions = {},
+  options: PairTestDevicesOptions = {},
 ): Promise<SyncedTestDevice[]> {
   if (testDevices.length < 2) {
-    throw new Error(`ensureSyncedTestDevices requires at least two testDevices, got ${testDevices.length}`);
+    throw new Error(`pairTestDevices needs two test devices or more, got ${testDevices.length}`);
   }
 
-  const pairViaUi = options.pairViaUi ?? true;
+  const pairInUi = options.pairInUi ?? true;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const syncTicks = options.syncTicks ?? 3;
-  const syncedTestDevices = await waitForTestDevicesReady(testDevices, timeoutMs);
+  const syncedTestDevices = await waitForTestDevicesStarted(testDevices, timeoutMs);
 
-  if (pairViaUi) {
+  if (pairInUi) {
     for (let i = 0; i < syncedTestDevices.length; i += 1) {
       for (let j = i + 1; j < syncedTestDevices.length; j += 1) {
         const left = syncedTestDevices[i];
         const right = syncedTestDevices[j];
         if (!(await areTestDevicesPaired(left.testDevice, right.identity.device_id))) {
-          await pairTestDevicesViaUi(left, right, timeoutMs);
+          await pairTestDevicesInUi(left, right, timeoutMs);
         }
       }
     }
@@ -70,13 +71,14 @@ export async function ensureSyncedTestDevices(
 
   await waitForPairedDevices(syncedTestDevices, timeoutMs);
   await waitForPresence(syncedTestDevices, timeoutMs);
-  await driveSyncReadiness(syncedTestDevices, syncTicks);
+  await runSyncTicks(syncedTestDevices, syncTicks);
   await waitForPairedDeviceNames(syncedTestDevices, timeoutMs);
 
   return syncedTestDevices;
 }
 
-export async function waitForTestDevicesReady(
+/** Waits until each test device shows the app, and reads its identity. */
+export async function waitForTestDevicesStarted(
   testDevices: TestDevice[],
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<SyncedTestDevice[]> {
@@ -91,12 +93,13 @@ export async function waitForTestDevicesReady(
   }
 
   const ids = new Set(syncedTestDevices.map((item) => item.identity.device_id));
-  expect(ids.size, 'testDevice device ids should be unique').toBe(syncedTestDevices.length);
+  expect(ids.size, 'each test device has a different device id').toBe(syncedTestDevices.length);
 
   return syncedTestDevices;
 }
 
-export async function pairTestDevicesViaUi(
+/** Pairs two test devices through Add Device, as a person does. */
+export async function pairTestDevicesInUi(
   requester: SyncedTestDevice,
   accepter: SyncedTestDevice,
   timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -107,21 +110,19 @@ export async function pairTestDevicesViaUi(
   const requesterPage = requester.testDevice.page;
   const accepterPage = accepter.testDevice.page;
 
-  // The channel is an explicit choice now, asked before discovery runs --
-  // it is no longer inferred from whichever radio found the peer first.
-  // Both sides pick Network: the testDevices harness has no radio. A device is
-  // in Add Device mode, and so can be found, only once its channel is chosen.
+  // The person selects the channel before the search starts. The two sides
+  // select Network: a virtual Linux test device has no radio. A device is in
+  // Add Device mode, and other devices can find it, only after this step.
   await requesterPage.click('[data-testid="pair-channel-network"]');
   await accepterPage.click('[data-testid="pair-channel-network"]');
 
-  const targetSelector = nearbyDeviceRequestSelector(accepter.identity.hostname);
+  const targetSelector = pairButtonSelector(accepter.identity.hostname);
   await requesterPage.waitForSelector(targetSelector, timeoutMs);
   await requesterPage.click(targetSelector);
 
-  // The accepter's dialog switches itself to the incoming request the
-  // moment one arrives, whichever step it was showing -- someone waiting on
-  // an answer outranks whatever this side was doing.
-  const incomingSelector = incomingRequestAcceptSelector();
+  // The dialog of the accepter shows the pair start immediately when it
+  // comes, at each step: a person waits for the answer.
+  const incomingSelector = acceptButtonSelector();
   await accepterPage.waitForSelector(incomingSelector, timeoutMs);
   await accepterPage.click(incomingSelector);
 
@@ -145,9 +146,8 @@ export async function pairTestDevicesViaUi(
     return (await areTestDevicesPaired(accepter.testDevice, requester.identity.device_id)) || false;
   }, timeoutMs);
 
-  // Dismiss the dialog on both sides before leaving: it stays mounted with
-  // the Settings page behind it, and leaving it open would also leave both
-  // devices sitting in add mode.
+  // Close the dialog on the two sides. It stays on the Settings page, and an
+  // open dialog keeps the two devices in Add Device mode.
   await closePairDialog(requesterPage, timeoutMs);
   await closePairDialog(accepterPage, timeoutMs);
 
@@ -157,23 +157,20 @@ export async function pairTestDevicesViaUi(
   await accepterPage.waitForSelector('[data-testid="settings-devices"]', timeoutMs);
 }
 
-// Closes the pairing dialog by its backdrop, which is present in every step
-// -- the footer's own dismiss changes label ("Cancel", "Close", "Done") as
-// the flow progresses, so keying off it would make this depend on which
-// step pairing happened to end on.
+// Closes the pairing dialog with its backdrop, which each step has. The
+// button in the footer changes its text ("Cancel", "Close", "Done") at each
+// step.
 async function closePairDialog(page: TestDevice['page'], timeoutMs: number): Promise<void> {
   const selector = '[data-testid="pair-dialog-backdrop"]';
   await page.waitForSelector(selector, timeoutMs);
   await page.click(selector);
 }
 
-// Adding a device is a dialog on the Settings page rather than its own page,
-// and opening it is what puts this device into add mode -- which is what
-// makes it discoverable to the other one.
+// Add Device is a dialog on the Settings page. When it opens, this device
+// goes into Add Device mode, and the other device can find it.
 //
-// Driven by clicking the row a person clicks. There is no route to navigate
-// to any more, and that is the point: the only way in is the one the product
-// actually offers, so this cannot pass while the button is broken.
+// The test clicks the row that a person clicks. There is no route to the
+// dialog, so this test fails when the button does not operate.
 async function openAddDevice(testDevice: TestDevice, timeoutMs: number): Promise<void> {
   await testDevice.page.waitForSelector('nav.nav a[href="#/settings"]', timeoutMs);
   await testDevice.page.click('nav.nav a[href="#/settings"]');
@@ -193,8 +190,8 @@ async function waitForPairedDevices(
 ): Promise<void> {
   for (const current of syncedTestDevices) {
     const peerIds = syncedTestDevices
-      .filter((candidate) => candidate.identity.device_id !== current.identity.device_id)
-      .map((candidate) => candidate.identity.device_id);
+      .filter((other) => other.identity.device_id !== current.identity.device_id)
+      .map((other) => other.identity.device_id);
 
     await pollUntil(`${current.testDevice.slug} paired devices`, async () => {
       const paired = await current.testDevice.invoke<PairedDevice[]>('device_paired_devices');
@@ -210,8 +207,8 @@ async function waitForPresence(
 ): Promise<void> {
   for (const current of syncedTestDevices) {
     const peerIds = syncedTestDevices
-      .filter((candidate) => candidate.identity.device_id !== current.identity.device_id)
-      .map((candidate) => candidate.identity.device_id);
+      .filter((other) => other.identity.device_id !== current.identity.device_id)
+      .map((other) => other.identity.device_id);
 
     await pollUntil(`${current.testDevice.slug} presence`, async () => {
       const present = await current.testDevice.invoke<DiscoveredDevice[]>('device_heard_devices');
@@ -221,7 +218,7 @@ async function waitForPresence(
   }
 }
 
-async function driveSyncReadiness(syncedTestDevices: SyncedTestDevice[], syncTicks: number): Promise<void> {
+async function runSyncTicks(syncedTestDevices: SyncedTestDevice[], syncTicks: number): Promise<void> {
   for (let tick = 0; tick < syncTicks; tick += 1) {
     for (const synced of syncedTestDevices) {
       await synced.testDevice.invoke<SyncTickResult>('space_sync_tick');
@@ -259,14 +256,13 @@ async function waitForPairedDeviceNames(
   }
 }
 
-function nearbyDeviceRequestSelector(hostname: string): string {
+function pairButtonSelector(hostname: string): string {
   return `[data-testid="nearby-device-row"][data-device-hostname="${cssString(hostname)}"] [data-testid="request-pair"]`;
 }
 
-// Accepting happens inside the pairing dialog, which shows one request at a
-// time -- so this no longer keys off the sender's hostname the way the old
-// per-row Accept button did.
-function incomingRequestAcceptSelector(): string {
+// The person accepts in the pairing dialog, which shows one pair start at a
+// time, so the selector does not need the hostname of the sender.
+function acceptButtonSelector(): string {
   return '[data-testid="pair-device-dialog"] [data-testid="accept-incoming-request"]';
 }
 

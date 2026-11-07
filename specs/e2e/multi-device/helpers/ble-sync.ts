@@ -1,7 +1,7 @@
 import { expect, TestDevicePlatform } from '../test-device.ts';
 import type { TestDevice } from '../test-device.ts';
 import { pollUntil } from './dom.ts';
-import { waitForTestDevicesReady, type SyncedTestDevice } from './device-sync.ts';
+import { waitForTestDevicesStarted, type SyncedTestDevice } from './device-sync.ts';
 import { openDeviceDetailsFromSettings } from './personal-sync.ts';
 import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/channel.ts';
 
@@ -9,7 +9,7 @@ import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/c
  * The pairing for specs with the `testDeviceChannel` option
  * `ChannelKind.Bluetooth`. The harness starts virtual Linux test devices with
  * `FINI_DISCOVERY_DISABLED=1`, so they find nothing on the network, and the
- * pairing through the UI of `ensureSyncedTestDevices` cannot work. The
+ * pairing through the UI of `pairTestDevices` cannot work. The
  * Bluetooth code of the app runs as on a phone: `ble.rs` connects, accepts
  * and claims the session, on the mock radio of `ble-gatt`. The pair is saved
  * with `viaBluetooth: true`, so the Bluetooth channel is on for the pair. See
@@ -28,23 +28,23 @@ function fakeBluetoothAddress(index: number): string {
   return `AA:BB:CC:00:00:${(index + 1).toString(16).padStart(2, '0').toUpperCase()}`;
 }
 
-export async function ensureBlePairedTestDevices(
+export async function pairTestDevicesOverBluetooth(
   testDevices: TestDevice[],
   timeoutMs = 60_000,
 ): Promise<SyncedTestDevice[]> {
   if (testDevices.length !== 2) {
-    throw new Error(`ensureBlePairedTestDevices expects exactly two testDevices, got ${testDevices.length}`);
+    throw new Error(`pairTestDevicesOverBluetooth expects exactly two testDevices, got ${testDevices.length}`);
   }
 
-  const [a, b] = await waitForTestDevicesReady(testDevices, timeoutMs);
+  const [a, b] = await waitForTestDevicesStarted(testDevices, timeoutMs);
 
   // A test device with the physical source, and a virtual Android test
   // device, have a pairing made through the app. A fake address would
   // overwrite it. Thus this path only asserts the pairing, and switches on
   // the Bluetooth channel of the pair (one boolean since ADR-0006).
   if (!a.testDevice.isVirtual(TestDevicePlatform.Linux) || !b.testDevice.isVirtual(TestDevicePlatform.Linux)) {
-    await ensureBluetoothEnabledForPeer(a, b.identity.device_id);
-    await ensureBluetoothEnabledForPeer(b, a.identity.device_id);
+    await switchOnBluetoothForPeer(a, b.identity.device_id);
+    await switchOnBluetoothForPeer(b, a.identity.device_id);
     return [a, b];
   }
 
@@ -96,7 +96,7 @@ interface ChannelStatusRow {
  * connect to it, and a phone that advertises with a changing address has no
  * fixed one.
  */
-async function ensureBluetoothEnabledForPeer(
+async function switchOnBluetoothForPeer(
   testDevice: SyncedTestDevice,
   peerDeviceId: string,
 ): Promise<void> {

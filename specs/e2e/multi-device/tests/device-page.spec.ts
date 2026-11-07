@@ -1,14 +1,14 @@
 import { test, expect } from '../test-device.ts';
-import { ensureSyncedTestDevices } from '../helpers/device-sync.ts';
+import { pairTestDevices } from '../helpers/device-sync.ts';
 import {
-  ensurePersonalSpaceSync,
+  syncPersonalSpace,
   openDeviceDetailsFromSettings,
-  waitForMappingControlsReady,
+  waitForMappingControls,
 } from '../helpers/personal-sync.ts';
 import {
   anyChannelConnected,
   deviceDotConnected,
-  toggleChannel,
+  switchChannel,
   waitForChannelColor,
   waitForSyncQueue,
 } from '../helpers/device-page.ts';
@@ -27,8 +27,8 @@ test('a channel switched off stops the data, and not only the color of the row',
   testDeviceA,
   testDeviceB,
 }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
-  await ensurePersonalSpaceSync(
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
+  await syncPersonalSpace(
     testDeviceA,
     syncedB.identity.device_id,
     testDeviceB,
@@ -39,7 +39,7 @@ test('a channel switched off stops the data, and not only the color of the row',
 
   // Off. A grey row with an open session would show an incorrect state, so
   // the test asserts that the session is closed, not only the row.
-  await toggleChannel(testDeviceA, ChannelKind.Network);
+  await switchChannel(testDeviceA, ChannelKind.Network);
   await waitForChannelColor(testDeviceA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Off);
 
   // The test checks 10 times, not one time. One check immediately after the
@@ -61,7 +61,7 @@ test('a channel switched off stops the data, and not only the color of the row',
   }
 
   // On again: the switch must also switch the channel on.
-  await toggleChannel(testDeviceA, ChannelKind.Network);
+  await switchChannel(testDeviceA, ChannelKind.Network);
   await waitForChannelColor(testDeviceA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Green, 60_000);
 });
 
@@ -78,12 +78,12 @@ test('the app rejects Bluetooth on with no radio, and names this device', async 
   testDeviceA,
   testDeviceB,
 }) => {
-  const [, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
 
   await openDeviceDetailsFromSettings(testDeviceA, syncedB.identity.device_id);
   await waitForChannelColor(testDeviceA, syncedB.identity.device_id, ChannelKind.Bluetooth, ChannelColor.Off);
 
-  await toggleChannel(testDeviceA, ChannelKind.Bluetooth);
+  await switchChannel(testDeviceA, ChannelKind.Bluetooth);
   await testDeviceA.page.waitForSelector('[data-testid="channel-error"]', 30_000);
   const failure = ((await testDeviceA.page.getByTestId('channel-error').textContent()) ?? '').trim();
   expect(failure, 'the error names this device').toContain('this device');
@@ -103,8 +103,8 @@ test('the sync queue shows the changes that wait, then that they are synced', as
   testDeviceA,
   testDeviceB,
 }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
-  await ensurePersonalSpaceSync(
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
+  await syncPersonalSpace(
     testDeviceA,
     syncedB.identity.device_id,
     testDeviceB,
@@ -112,7 +112,7 @@ test('the sync queue shows the changes that wait, then that they are synced', as
   );
 
   await waitForChannelColor(testDeviceA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Green);
-  await toggleChannel(testDeviceA, ChannelKind.Network);
+  await switchChannel(testDeviceA, ChannelKind.Network);
   await waitForChannelColor(testDeviceA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Off);
 
   const title = `queued quest ${Date.now()}`;
@@ -128,7 +128,7 @@ test('the sync queue shows the changes that wait, then that they are synced', as
   );
   expect(stalled).toContain('waiting');
 
-  await toggleChannel(testDeviceA, ChannelKind.Network);
+  await switchChannel(testDeviceA, ChannelKind.Network);
   await waitForChannelColor(testDeviceA, syncedB.identity.device_id, ChannelKind.Network, ChannelColor.Green, 60_000);
 
   const drained = await waitForSyncQueue(
@@ -150,8 +150,8 @@ test('the unpair dialog names the spaces that stop their sync, and says that not
   testDeviceA,
   testDeviceB,
 }) => {
-  const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
-  await ensurePersonalSpaceSync(
+  const [syncedA, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
+  await syncPersonalSpace(
     testDeviceA,
     syncedB.identity.device_id,
     testDeviceB,
@@ -162,7 +162,7 @@ test('the unpair dialog names the spaces that stop their sync, and says that not
   // The page shows its space rows from the space list, which comes before
   // the mappings of the pair. Without this wait, the test read the names too
   // early, and usually found none.
-  await waitForMappingControlsReady(testDeviceA, '1');
+  await waitForMappingControls(testDeviceA, '1');
   await testDeviceA.page.waitForSelector('[data-testid="unlink-device"]', 30_000);
   await testDeviceA.page.click('[data-testid="unlink-device"]');
 
@@ -184,7 +184,7 @@ test('the unpair dialog names the spaces that stop their sync, and says that not
  * not agree. Two fixed values would let them become different again.
  */
 test('the devices list dot agrees with the channel rows', async ({ testDeviceA, testDeviceB }) => {
-  const [, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
+  const [, syncedB] = await pairTestDevices([testDeviceA, testDeviceB], { pairInUi: true });
   const peerId = syncedB.identity.device_id;
 
   await waitForChannelColor(testDeviceA, peerId, ChannelKind.Network, ChannelColor.Green);
@@ -194,7 +194,7 @@ test('the devices list dot agrees with the channel rows', async ({ testDeviceA, 
   // No channel is connected. The dot shows the channels: when the only
   // channel is off, nothing is green, also when the app hears the beacon.
   await openDeviceDetailsFromSettings(testDeviceA, peerId);
-  await toggleChannel(testDeviceA, ChannelKind.Network);
+  await switchChannel(testDeviceA, ChannelKind.Network);
   await waitForChannelColor(testDeviceA, peerId, ChannelKind.Network, ChannelColor.Off);
 
   expect(await anyChannelConnected(testDeviceA, peerId), 'no channel row is connected').toBe(false);
@@ -212,6 +212,6 @@ test('the devices list dot agrees with the channel rows', async ({ testDeviceA, 
   expect(detail.hasInfo, 'a channel switched off is not a problem to explain').toBe(false);
 
   await openDeviceDetailsFromSettings(testDeviceA, peerId);
-  await toggleChannel(testDeviceA, ChannelKind.Network);
+  await switchChannel(testDeviceA, ChannelKind.Network);
   await waitForChannelColor(testDeviceA, peerId, ChannelKind.Network, ChannelColor.Green, 60_000);
 });
