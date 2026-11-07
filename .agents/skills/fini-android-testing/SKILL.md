@@ -85,10 +85,11 @@ node ... 9224 "(async () => { const p = await invoke('device_paired_devices');
    return p.length; })()"
 ```
 
-## Two virtual phones: the `android` lane
+## Virtual Android test devices: the `device-support` project
 
-For Bluetooth between two Android stacks without hardware, use the e2e lane
-on two virtual phones (ADR-0013), not this skill's physical phone:
+For Bluetooth between two Android stacks without hardware, use the
+`device-support` specs on two virtual Android test devices (ADR-0013), not
+this skill's physical phone:
 
 ```bash
 npm run build:android:e2e          # x86_64 debug APK with devtools (make android-build-emulator-e2e)
@@ -96,7 +97,7 @@ npm run test:e2e:android           # podman image, two emulators on one netsim r
 ```
 
 `docs/e2e-android.md` has the details. The bridge above also works on such a phone:
-the lane forwards phone A to host port 9223 and phone B to 9225 while a test
+the run forwards phone A to host port 9223 and phone B to 9225 while a test
 runs (inside the container).
 
 **It deliberately has no verbs.** Compose the expression for the task at

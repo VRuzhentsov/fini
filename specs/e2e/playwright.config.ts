@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { E2eProject } from './e2e-project.ts';
 
 export default defineConfig({
   testDir: '.',
@@ -10,38 +11,28 @@ export default defineConfig({
   globalTeardown: './multi-device/global-teardown.ts',
   projects: [
     {
-      name: 'cli',
+      name: E2eProject.Cli,
       testMatch: ['reminder-bridge.spec.ts', 'feature-plane-cli.spec.ts'],
     },
     {
-      name: 'ui',
+      name: E2eProject.Ui,
       testMatch: ['ui/tests/**/*.spec.ts'],
       use: { mode: 'tauri' } as any,
     },
     {
-      // Desktop processes over the Network channel.
-      name: 'multi-device',
+      // What Fini does with two or more devices (ADR-0013 D11). By default two
+      // virtual Linux test devices over Network; a spec names other platforms
+      // or another channel with `test.use`.
+      name: E2eProject.MultiDevice,
       testMatch: ['multi-device/tests/**/*.spec.ts'],
-      // The BLE spec needs FINI_E2E_TRANSPORT=ble for all processes of the
-      // worker; it runs in 'multi-device-ble-mock'. See `specs/e2e/transports.md`.
-      testIgnore: ['multi-device/tests/peer-sync-over-ble.spec.ts'],
     },
     {
-      // Desktop processes on the ble-gatt mock radio. Runs only when selected,
-      // with FINI_E2E_TRANSPORT=ble. See `helpers/ble-sync.ts` and
-      // `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in ble-gatt.
-      name: 'multi-device-ble-mock',
-      testMatch: ['multi-device/tests/peer-sync-over-ble.spec.ts'],
-    },
-    {
-      // Two virtual phones on one virtual Bluetooth medium (ADR-0013). The
-      // phones start on the first test that needs them.
-      // FINI_E2E_TEST_DEVICES=a=tcp:9224,b=tcp:9223 runs it on physical devices.
-      name: 'android',
-      testMatch: ['multi-device/tests/android-app-start.spec.ts', 'multi-device/tests/bluetooth-pair-from-zero.spec.ts'],
-      // The phone boot (up to 360 s) is part of the first test.
+      // Checks that a platform and its channels work (ADR-0013 D11). Each spec
+      // names its test devices with `test.use`.
+      name: E2eProject.DeviceSupport,
+      testMatch: ['device-support/tests/**/*.spec.ts'],
+      // A phone boot (up to 360 s) is part of the first test.
       timeout: 900_000,
-      use: { testDeviceKinds: 'a=android-phone,b=android-phone', phoneCount: 2 } as any,
     },
   ],
 });

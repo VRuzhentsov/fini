@@ -1,4 +1,4 @@
-// A test device that is a desktop `fini-app` process. The harness starts it,
+// A virtual Linux test device: a `fini-app` process. The harness starts it,
 // gives it all its configuration through the environment, and talks to it
 // over a unix socket at a path that the harness chose.
 
@@ -6,7 +6,9 @@ import { PluginClient } from '@srsholmes/tauri-playwright';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { ChannelKind } from '../../../../src/utils/channel.ts';
 import type { TestDeviceProvider } from '../test-device-set.ts';
+import { TestDevicePlatform, TestDeviceSource } from '../test-device-platform.ts';
 import { REPO_ROOT } from '../run-root.ts';
 import { stopProcess } from './stop-process.ts';
 
@@ -15,15 +17,13 @@ const DEFAULT_WAIT_SECS = 60;
 const DEFAULT_BASE_DISCOVERY_PORT = 46_000 + Math.floor(Math.random() * 500);
 
 /**
- * How desktop processes reach each other. 'network' is the real Network
- * channel. 'ble' turns the Network channel off (`FINI_DISCOVERY_DISABLED=1`)
- * and gives each process the `ble-gatt` mock radio. See
- * `specs/e2e/transports.md`.
+ * What the virtual Linux test devices of one run share: the binary, folders,
+ * ports and the channel. With `ChannelKind.Network` they use the real Network
+ * channel. With `ChannelKind.Bluetooth` the Network channel is off
+ * (`FINI_DISCOVERY_DISABLED=1`) and each process uses the `ble-gatt` mock
+ * radio, because a container has no Bluetooth. See `specs/e2e/transports.md`.
  */
-export type Transport = 'network' | 'ble';
-
-/** What the desktop processes of one run share: the binary, folders and ports. */
-export class DesktopRun {
+export class LinuxRun {
   readonly binaryPath: string;
   readonly baseDiscoveryPort: number;
   readonly socketDir: string;
@@ -32,7 +32,7 @@ export class DesktopRun {
   constructor(
     readonly runDir: string,
     readonly slugs: string[],
-    readonly transport: Transport,
+    readonly channel: ChannelKind,
   ) {
     this.binaryPath = process.env.FINI_APP_BINARY ?? DEFAULT_APP_BINARY;
     if (!existsSync(this.binaryPath)) throw new Error(`Fini GUI binary not found: ${this.binaryPath}`);
@@ -50,8 +50,9 @@ export class DesktopRun {
   }
 }
 
-export class DesktopProcessProvider implements TestDeviceProvider {
-  readonly kind = 'desktop-process' as const;
+export class LinuxProvider implements TestDeviceProvider {
+  readonly platform = TestDevicePlatform.Linux;
+  readonly source = TestDeviceSource.Virtual;
   private child: ChildProcess | null = null;
   private spawnError: Error | null = null;
   private readonly dataDir: string;
@@ -62,7 +63,7 @@ export class DesktopProcessProvider implements TestDeviceProvider {
   constructor(
     readonly slug: string,
     private readonly index: number,
-    private readonly run: DesktopRun,
+    private readonly run: LinuxRun,
   ) {
     const testDeviceDir = join(run.runDir, 'test-devices');
     this.dataDir = join(testDeviceDir, `${slug}-data`);
@@ -91,7 +92,7 @@ export class DesktopProcessProvider implements TestDeviceProvider {
         HOSTNAME: this.slug,
         TZ: 'UTC',
         XDG_DATA_HOME: this.dataDir,
-        ...this.transportEnv(),
+        ...this.channelEnv(),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -118,8 +119,8 @@ export class DesktopProcessProvider implements TestDeviceProvider {
     if (this.child) await stopProcess(this.child);
   }
 
-  private transportEnv(): Record<string, string> {
-    if (this.run.transport !== 'ble') return {};
+  private channelEnv(): Record<string, string> {
+    if (this.run.channel !== ChannelKind.Bluetooth) return {};
     return {
       FINI_DISCOVERY_DISABLED: '1',
       FINI_BLE_MOCK_BROKER: `127.0.0.1:${this.run.brokerPort}`,
@@ -162,7 +163,7 @@ export class DesktopProcessProvider implements TestDeviceProvider {
   }
 }
 
-/** The fake Bluetooth address of the desktop process at `index` in the `ble` lane. */
+/** The fake Bluetooth address of the virtual Linux test device at `index` on the mock radio. */
 export function fakeBluetoothAddress(index: number): string {
   return `AA:BB:CC:00:00:${(index + 1).toString(16).padStart(2, '0').toUpperCase()}`;
 }

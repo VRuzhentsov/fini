@@ -1234,7 +1234,8 @@ impl BluetoothAdapter {
     }
 }
 
-/// The `multi-device-ble-mock` e2e project's radio: a `MockDriver` talking to a
+/// The radio of the e2e specs with `testDeviceChannel: ChannelKind.Bluetooth`
+/// on virtual Linux test devices: a `MockDriver` talking to a
 /// cross-process broker instead of BlueZ, so two real `fini-app` processes
 /// can prove this file's dial/peripheral/session-claim code path without
 /// hardware. See `specs/e2e/multi-device/helpers/ble-sync.ts` and ble-gatt's
@@ -1569,7 +1570,7 @@ mod tests {
     /// `tests/mock_broker.rs` exercises, but through fini's injection point
     /// (`FINI_BLE_MOCK_BROKER`/`FINI_LOCAL_BLUETOOTH_ADDRESS`) instead of
     /// calling `MockNetwork::remote` directly. This is what the
-    /// `multi-device-ble-mock` project's two real `fini-app` processes each do at startup.
+    /// two virtual Linux test devices of `peer-sync-over-ble.spec.ts` each do at startup.
     #[cfg(all(target_os = "linux", feature = "devtools"))]
     #[tokio::test]
     async fn mock_driver_connects_to_a_broker_and_reports_full_capabilities() {

@@ -1,5 +1,6 @@
-// Runs the android e2e lane (ADR-0013 D8). The same command locally and
-// in CI: `npm run test:e2e:android [-- <playwright args>]`.
+// Runs the project `device-support` with virtual Android test devices
+// (ADR-0013 D8, D11). The same command locally and in CI:
+// `npm run test:e2e:android [-- <playwright args>]`.
 //
 // On the host it builds the `android-phones-runner` image and runs this same
 // script in it, with /dev/kvm and the repo mounted. The container has its own
@@ -12,12 +13,16 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { E2eEnv, E2eProject } from '../specs/e2e/e2e-project.ts';
+import { TestDevicePlatform } from '../specs/e2e/multi-device/test-device-platform.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const IMAGE = process.env.FINI_ANDROID_PHONES_IMAGE ?? 'fini-android-phones-runner';
 const ENGINE = process.env.CONTAINER ?? 'podman';
+// This runner can start virtual Linux and virtual Android test devices.
+process.env[E2eEnv.VirtualPlatforms] ??= [TestDevicePlatform.Linux, TestDevicePlatform.Android].join(',');
 const PASSED_ENV = [
-  'FINI_E2E_TEST_DEVICES', 'FINI_E2E_ROOT', 'FINI_E2E_KEEP', 'FINI_E2E_KEEP_PHONES',
+  E2eEnv.TestDevices, E2eEnv.VirtualPlatforms, E2eEnv.Keep, 'FINI_E2E_ROOT', 'FINI_E2E_KEEP_PHONES',
   'FINI_E2E_ANDROID_APK', 'FINI_E2E_EMULATOR_GPU', 'FINI_E2E_RUN_ID', 'CI',
 ];
 
@@ -29,14 +34,17 @@ function run(command: string, commandArgs: string[]): number {
   return result.status ?? 1;
 }
 
-// Physical devices only (`a=tcp:9224,b=tcp:9223`): no phone starts, so
-// Playwright runs here and reaches the forwarded ports of the host.
-const physicalOnly = (process.env.FINI_E2E_TEST_DEVICES ?? '')
-  .split(',').filter(Boolean).every((entry) => /=tcp:\d+$/.test(entry.trim()))
-  && Boolean(process.env.FINI_E2E_TEST_DEVICES);
+// Only test devices with the physical source (`a=linux@tcp:9224,b=android@tcp:9223`):
+// no phone starts, so Playwright runs here and reaches the forwarded ports of
+// the host.
+const testDevices = process.env[E2eEnv.TestDevices] ?? '';
+const physicalOnly = testDevices !== ''
+  && testDevices.split(',').filter(Boolean).every((entry) => /@tcp:\d+$/.test(entry.trim()));
 
 if (process.env.FINI_E2E_CONTAINER_RUNNER === '1' || physicalOnly) {
-  process.exit(run('npx', ['playwright', 'test', '--config', 'specs/e2e/playwright.config.ts', '--project=android', ...args]));
+  process.exit(run('npx', [
+    'playwright', 'test', '--config', 'specs/e2e/playwright.config.ts', `--project=${E2eProject.DeviceSupport}`, ...args,
+  ]));
 }
 
 // CI keeps the image in GHCR (FINI_ANDROID_PHONES_CACHE_PREFIX), with the

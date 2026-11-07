@@ -50,7 +50,7 @@ test('ending and re-enabling Personal sync records end then bootstraps again', a
   await testDeviceB.invoke('space_sync_tick');
 
   // Polled, not asserted straight after the ticks above: one tick each is
-  // enough for co-located desktop processes, but not for a physical device
+  // enough for co-located virtual Linux test devices, but not for the physical source
   // -- the end-of-sync frame has an actual network hop to make.
   // Measured on a physical phone: still mapped at +0ms, cleared by +3s. The
   // assertion is unchanged, it just stops assuming the hop is instant.

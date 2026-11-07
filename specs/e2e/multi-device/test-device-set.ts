@@ -1,35 +1,39 @@
 // TestDeviceSet starts and stops the test devices of one worker. It reads
 // which test devices to use, makes one provider for each, and owns the shared
-// parts: the run folder and, in the `ble` lane, the mock broker.
+// parts: the run folder and, for Bluetooth on virtual Linux test devices, the
+// mock broker.
 
 import type { PluginClient } from '@srsholmes/tauri-playwright';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { ChannelKind } from '../../../src/utils/channel.ts';
+import { E2eEnv } from '../e2e-project.ts';
 import { BleMockBroker } from './providers/ble-mock-broker.ts';
-import { DesktopProcessProvider, DesktopRun, type Transport } from './providers/desktop-process.ts';
-import { AndroidPhoneProvider } from './providers/android-phone.ts';
-import { PhysicalDeviceProvider } from './providers/physical-device.ts';
+import { LinuxProvider, LinuxRun } from './providers/linux.ts';
+import { AndroidProvider } from './providers/android.ts';
+import { TcpProvider } from './providers/tcp.ts';
 import { PhoneGroup } from './phones/phone-group.ts';
 import { RUN_ROOT } from './run-root.ts';
-
-export type TestDeviceKind = 'desktop-process' | 'android-phone' | 'physical-device';
+import { TestDevicePlatform, TestDeviceSource } from './test-device-platform.ts';
 
 /** How one test device is started, connected to and stopped. */
 export interface TestDeviceProvider {
   readonly slug: string;
-  readonly kind: TestDeviceKind;
+  readonly platform: TestDevicePlatform;
+  readonly source: TestDeviceSource;
   /** Brings the app to a state where `connect` can succeed. */
   prepare(): Promise<void>;
   connect(): Promise<PluginClient>;
   /** Releases only what this provider made. Keeps the logs when `keepFiles` is true. */
   dispose(keepFiles: boolean): Promise<void>;
-  /** Runs a shell command on the phone and gives its output. Only `android-phone` has it. */
+  /** Runs a shell command on the phone and gives its output. Only a virtual Android test device has it. */
   shell?(command: string): Promise<string>;
 }
 
 interface TestDeviceEntry {
   slug: string;
-  kind: TestDeviceKind;
+  platform: TestDevicePlatform;
+  source: TestDeviceSource;
   port?: number;
 }
 
@@ -39,6 +43,9 @@ interface StartableTestDevice {
   stop(keepFiles: boolean): Promise<void>;
 }
 
+const DEFAULT_VIRTUAL_PLATFORMS: TestDevicePlatform[] = [TestDevicePlatform.Linux];
+const PLATFORMS = Object.values(TestDevicePlatform);
+
 export class TestDeviceSet {
   readonly testDevices: Record<string, StartableTestDevice> = {};
   private readonly started: StartableTestDevice[] = [];
@@ -47,18 +54,39 @@ export class TestDeviceSet {
 
   private constructor(
     private readonly entries: TestDeviceEntry[],
-    private readonly phoneCount: number,
+    private readonly channel: ChannelKind,
     private readonly runDir: string,
-    private readonly transport: Transport,
   ) {}
 
-  /** Reads `slug=kind,...` (see `testDeviceKinds` in test-device.ts). */
-  static fromEnv(spec: string, phoneCount: number): TestDeviceSet {
-    const entries = spec.split(',').map((item) => item.trim()).filter(Boolean).map(parseEntry);
-    if (entries.length < 2) throw new Error(`a multi-device test needs at least two test devices, got "${spec}"`);
+  /**
+   * The test devices of `FINI_E2E_TEST_DEVICES` when it is set, else the
+   * virtual test devices of `platforms` (slug → platform).
+   */
+  static fromEnv(platforms: Record<string, TestDevicePlatform>, channel: ChannelKind): TestDeviceSet {
+    const fromEnv = process.env[E2eEnv.TestDevices];
+    const entries = fromEnv
+      ? fromEnv.split(',').map((item) => item.trim()).filter(Boolean).map(parseEntry)
+      : Object.entries(platforms).map(([slug, platform]) => ({ slug, platform, source: TestDeviceSource.Virtual }));
+    if (entries.length < 2) throw new Error(`a multi-device test needs at least two test devices, got ${entries.length}`);
     const runId = process.env.FINI_E2E_RUN_ID ?? `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`;
-    const transport: Transport = process.env.FINI_E2E_TRANSPORT === 'ble' ? 'ble' : 'network';
-    return new TestDeviceSet(entries, phoneCount, join(RUN_ROOT, runId), transport);
+    return new TestDeviceSet(entries, channel, join(RUN_ROOT, runId));
+  }
+
+  /**
+   * Why this job cannot start the set, or null when it can. A job starts only
+   * the virtual platforms in `FINI_E2E_VIRTUAL_PLATFORMS`; a test device with
+   * the physical source runs already.
+   */
+  missingPlatformReason(): string | null {
+    const listed = process.env[E2eEnv.VirtualPlatforms];
+    const available = listed
+      ? listed.split(',').map((item) => item.trim()).filter(Boolean)
+      : DEFAULT_VIRTUAL_PLATFORMS;
+    const missing = [...new Set(this.entries
+      .filter((entry) => entry.source === TestDeviceSource.Virtual && !available.includes(entry.platform))
+      .map((entry) => entry.platform))];
+    if (missing.length === 0) return null;
+    return `needs a virtual ${missing.join(', ')}; this job starts ${available.join(', ')} (${E2eEnv.VirtualPlatforms})`;
   }
 
   async start<T extends StartableTestDevice>(make: (provider: TestDeviceProvider) => T): Promise<void> {
@@ -81,7 +109,7 @@ export class TestDeviceSet {
   async stop(keepFiles = false): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    const keep = keepFiles || process.env.FINI_E2E_KEEP === '1' || (process.exitCode ?? 0) !== 0;
+    const keep = keepFiles || process.env[E2eEnv.Keep] === '1' || (process.exitCode ?? 0) !== 0;
     for (const testDevice of [...this.started].reverse()) {
       await testDevice.stop(keep).catch(() => undefined);
     }
@@ -95,44 +123,53 @@ export class TestDeviceSet {
   }
 
   private async providers(): Promise<TestDeviceProvider[]> {
-    const desktop = this.entries.filter((entry) => entry.kind === 'desktop-process');
-    const phones = this.entries.filter((entry) => entry.kind === 'android-phone');
+    const virtual = (platform: TestDevicePlatform) => this.entries.filter(
+      (entry) => entry.source === TestDeviceSource.Virtual && entry.platform === platform,
+    );
+    const linux = virtual(TestDevicePlatform.Linux);
+    const phones = virtual(TestDevicePlatform.Android);
 
-    let desktopRun: DesktopRun | null = null;
-    if (desktop.length > 0) {
-      desktopRun = new DesktopRun(this.runDir, this.entries.map((entry) => entry.slug), this.transport);
-      if (this.transport === 'ble') {
-        this.broker = new BleMockBroker(this.runDir, desktopRun.brokerPort);
+    let linuxRun: LinuxRun | null = null;
+    if (linux.length > 0) {
+      linuxRun = new LinuxRun(this.runDir, this.entries.map((entry) => entry.slug), this.channel);
+      if (this.channel === ChannelKind.Bluetooth) {
+        this.broker = new BleMockBroker(this.runDir, linuxRun.brokerPort);
         await this.broker.start();
       }
     }
 
-    // Only here does a phone start, and only when a test device is a phone
-    // (ADR-0013 D7).
-    const phoneSerials = phones.length > 0
-      ? await PhoneGroup.shared().serials(Math.max(this.phoneCount, phones.length))
-      : [];
+    // Only here does a phone start, and only when a test device is a virtual
+    // Android (ADR-0013 D7).
+    const phoneSerials = phones.length > 0 ? await PhoneGroup.shared().serials(phones.length) : [];
 
     return this.entries.map((entry, index) => {
-      switch (entry.kind) {
-        case 'desktop-process':
-          return new DesktopProcessProvider(entry.slug, index, desktopRun!);
-        case 'android-phone': {
+      if (entry.source === TestDeviceSource.Physical) return new TcpProvider(entry.slug, entry.platform, entry.port!);
+      switch (entry.platform) {
+        case TestDevicePlatform.Linux:
+          return new LinuxProvider(entry.slug, index, linuxRun!);
+        case TestDevicePlatform.Android: {
           const phoneIndex = phones.indexOf(entry);
-          return new AndroidPhoneProvider(entry.slug, phoneSerials[phoneIndex], phoneIndex, this.runDir);
+          return new AndroidProvider(entry.slug, phoneSerials[phoneIndex], phoneIndex, this.runDir);
         }
-        case 'physical-device':
-          return new PhysicalDeviceProvider(entry.slug, entry.port!);
       }
     });
   }
 }
 
+/** Reads `slug=<platform>` (virtual) or `slug=<platform>@tcp:<port>` (physical). */
 function parseEntry(item: string): TestDeviceEntry {
-  const [slug, kind] = item.split('=').map((part) => part.trim());
-  if (!slug || !kind) throw new Error(`a test device must be "slug=kind", got "${item}"`);
-  if (kind === 'desktop-process' || kind === 'android-phone') return { slug, kind };
-  const tcp = /^tcp:(\d+)$/.exec(kind);
-  if (tcp) return { slug, kind: 'physical-device', port: Number(tcp[1]) };
-  throw new Error(`unknown test device kind "${kind}" in "${item}" (use desktop-process, android-phone or tcp:<port>)`);
+  const [slug, value] = item.split('=').map((part) => part.trim());
+  if (!slug || !value) throw new Error(`a test device must be "slug=<platform>[@tcp:<port>]", got "${item}"`);
+  const [platform, address] = value.split('@');
+  if (!isPlatform(platform)) {
+    throw new Error(`unknown platform "${platform}" in "${item}" (use ${PLATFORMS.join(', ')})`);
+  }
+  if (address === undefined) return { slug, platform, source: TestDeviceSource.Virtual };
+  const tcp = /^tcp:(\d+)$/.exec(address);
+  if (!tcp) throw new Error(`a physical test device must be "${slug}=${platform}@tcp:<port>", got "${item}"`);
+  return { slug, platform, source: TestDeviceSource.Physical, port: Number(tcp[1]) };
+}
+
+function isPlatform(value: string): value is TestDevicePlatform {
+  return (PLATFORMS as string[]).includes(value);
 }

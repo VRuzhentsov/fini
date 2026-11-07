@@ -1,23 +1,24 @@
 # E2E on virtual Android phones
 
-The project `android` runs the Fini APK on two virtual Android phones. Its
-largest test is Fini Bluetooth between the two Android Bluetooth stacks. The
-phones are Android Emulators that share one virtual Bluetooth
-medium (netsim). The decisions are in `docs/adr/0013-e2e-test-devices.md`.
-The fixture and the other projects are in `docs/e2e.md`.
+Virtual Android test devices run the Fini APK on virtual Android phones. The
+`device-support` specs that name `TestDevicePlatform.Android` run on them; the
+largest is Fini Bluetooth between two Android Bluetooth stacks. The phones are
+Android Emulators that share one virtual Bluetooth medium (netsim). The
+decisions are in `docs/adr/0013-e2e-test-devices.md`. The fixture and the
+projects are in `docs/e2e.md`.
 
-This lane tests the app start on Android, the notification channel, the
-Android Bluetooth API, GATT, pairing, permissions and the Fini protocol. It
-does not test radio chips, radio interference, battery use or the address
+These specs test the app start on Android, the notification channel, the
+Android Bluetooth API, GATT, pairing, permissions and the Fini protocol. They
+do not test radio chips, radio interference, battery use or the address
 rotation of each vendor.
 
-| Spec | What it proves |
+| Spec (`specs/e2e/device-support/tests/`) | What it proves |
 |---|---|
 | `android-app-start.spec.ts` | The app process runs, and the notification channel `fini.reminders` exists. |
 | `bluetooth-pair-from-zero.spec.ts` | A new pair over Bluetooth through Add Device, until the Bluetooth row is green on both phones. |
 
 A spec runs shell commands on its phone with `testDevice.shell(command)`. Only
-an `android-phone` test device has it.
+a virtual Android test device has it.
 
 ## Parts
 
@@ -26,13 +27,14 @@ npm run test:e2e:android [-- <playwright args>]
 └── scripts/e2e-android.mts
     ├── on the host: podman pull of the GHCR image (CI), or podman build --target android-phones-runner
     │               podman run --device /dev/kvm --shm-size=2g -v <repo>:/work:Z
-    └── in the container (FINI_E2E_CONTAINER_RUNNER=1): npx playwright test --project=android
-        └── fixture testDevices: a=android-phone, b=android-phone
+    └── in the container (FINI_E2E_CONTAINER_RUNNER=1, FINI_E2E_VIRTUAL_PLATFORMS=linux,android):
+        npx playwright test --project=device-support
+        └── fixture testDevices: the spec's testDevicePlatforms (a: Android, b: Android)
             ├── PhoneGroup (phones/phone-group.ts)
             │   ├── android-phones.json    the serials, in RUN_ROOT
             │   └── AndroidEmulator (phones/android-emulator.ts), a PhoneTool
             │       └── emulator-5554, emulator-5556 on one netsimd
-            ├── AndroidPhoneProvider (providers/android-phone.ts), one for each phone
+            ├── AndroidProvider (providers/android.ts), one for each phone
             │   └── devtools bridge: app TCP 9223 → adb forward → host port 9223, 9225
             └── global-teardown.ts → PhoneGroup.stopRunning()
 ```
@@ -51,12 +53,13 @@ comes in through the mount.
 
 ## When the phones start
 
-Phones start only when a test that runs has an `android-phone` test device
-(ADR-0013 D7). `--project ui`, `--project multi-device`, and runs with
-physical devices only start no phone.
+Phones start only when a test that runs has a virtual Android test device
+(ADR-0013 D7). `--project ui`, the `multi-device` specs on Linux, runs with
+only the physical source, and jobs without `android` in
+`FINI_E2E_VIRTUAL_PLATFORMS` start no phone.
 
 1. The first request calls `PhoneGroup.shared().serials(n)`. `n` is the
-   project option `phoneCount` (2).
+   number of virtual Android test devices in the set.
 2. `AndroidEmulator.up(n)` starts each emulator with `-read-only`, 5 s after
    the one before it. Two starts in the same second on one read-only AVD can
    fail.
@@ -71,7 +74,7 @@ physical devices only start no phone.
 
 ## How the app starts on a phone
 
-`AndroidPhoneProvider.prepare()`, for each test file:
+`AndroidProvider.prepare()`, for each test file:
 
 1. `_android.devices({ omitDriverInstall: true })` finds the phone by serial.
    The driver app of Playwright stopped a phone that had just booted.
@@ -105,10 +108,11 @@ the logcat and removes the port forward. The phone stays on.
 1. Build the x86_64 debug APK with devtools: `npm run build:android:e2e`
    (local shortcut: `make android-build-emulator-e2e`). Another APK:
    `FINI_E2E_ANDROID_APK=<path>`.
-2. Run the lane: `npm run test:e2e:android`.
+2. Run `device-support`: `npm run test:e2e:android`.
 
-On physical devices, `FINI_E2E_TEST_DEVICES=a=tcp:9224,b=tcp:9223` runs
-Playwright on the host, with no container and no emulator.
+With only the physical source,
+`FINI_E2E_TEST_DEVICES=a=linux@tcp:9224,b=android@tcp:9223` runs Playwright on
+the host, with no container and no emulator.
 
 CI: the job `android-e2e` in `.github/workflows/android-e2e.yml` builds
 the APK, enables KVM and runs the same command. It uploads

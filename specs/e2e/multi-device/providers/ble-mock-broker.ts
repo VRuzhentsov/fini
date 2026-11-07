@@ -1,5 +1,6 @@
-// The shared mock radio of the `ble` lane: one `ble-mock-broker` process for
-// each worker, started before the desktop processes. See ble-gatt
+// The shared mock radio for `testDeviceChannel: ChannelKind.Bluetooth` on
+// virtual Linux test devices: one `ble-mock-broker` process for each worker,
+// started before the Linux processes. See ble-gatt
 // `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
 
 import { spawn, type ChildProcess } from 'node:child_process';

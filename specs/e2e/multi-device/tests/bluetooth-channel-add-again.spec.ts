@@ -1,4 +1,4 @@
-import { expect, test } from '../test-device.ts';
+import { expect, test, TestDevicePlatform } from '../test-device.ts';
 import { DevicePage } from '../../components/device-page.ts';
 import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
 
@@ -14,7 +14,8 @@ import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
  * the other steps are recorded as annotations.
  *
  * Starts from a pair that has Bluetooth on (run `bluetooth-pair-from-zero`
- * first, or pair by hand). Needs two radios; run as in that spec.
+ * first, or pair by hand). Needs two Bluetooth stacks; run as in that spec
+ * (`specs/e2e/device-support/tests/bluetooth-pair-from-zero.spec.ts`).
  */
 
 const DISCOVERY_STANDARD_MS = 10_000;
@@ -33,8 +34,8 @@ function note(step: string, startedAt: number): number {
 
 test('Bluetooth switched off and on again on a pair', async ({ testDeviceA, testDeviceB }) => {
   test.skip(
-    testDeviceA.kind === 'desktop-process' || testDeviceB.kind === 'desktop-process',
-    'needs two radios: run on virtual phones or physical devices',
+    testDeviceA.isVirtual(TestDevicePlatform.Linux) || testDeviceB.isVirtual(TestDevicePlatform.Linux),
+    'needs two Bluetooth stacks: virtual Android or the physical source',
   );
   test.setTimeout(10 * 60_000);
 

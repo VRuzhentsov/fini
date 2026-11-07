@@ -14,6 +14,10 @@ import {
 import { pollUntil } from '../helpers/dom.ts';
 import { ChannelKind } from '../../../../src/utils/channel.ts';
 
+// Virtual Linux test devices on the ble-gatt mock radio, with the Network
+// channel off. A worker option: Playwright starts a new worker for this file.
+test.use({ testDeviceChannel: ChannelKind.Bluetooth });
+
 const TIMEOUT_MS = 60_000;
 
 interface Quest {
@@ -22,9 +26,9 @@ interface Quest {
 }
 
 /**
- * Happy-path-only Phase 1 of the BLE e2e lane: two real `fini-app`
+ * A happy path of `multi-device` over Bluetooth: two real `fini-app`
  * processes, network transport made genuinely unavailable
- * (`FINI_E2E_TRANSPORT=ble` -> `FINI_DISCOVERY_DISABLED=1`), dial the real
+ * (`testDeviceChannel: ChannelKind.Bluetooth` -> `FINI_DISCOVERY_DISABLED=1`), dial the real
  * `ble.rs` code path (search coordinator, peripheral accept, exchange) against
  * a cross-process mock radio instead of hardware -- the same acceptance
  * shape the network lane proves for its own channel, one layer

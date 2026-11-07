@@ -1,4 +1,4 @@
-import { expect } from '../test-device.ts';
+import { expect, TestDevicePlatform } from '../test-device.ts';
 import type { TestDevice } from '../test-device.ts';
 import { pollUntil } from './dom.ts';
 import { waitForTestDevicesReady, type SyncedTestDevice } from './device-sync.ts';
@@ -6,8 +6,8 @@ import { openDeviceDetailsFromSettings } from './personal-sync.ts';
 import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/channel.ts';
 
 /**
- * Readiness + pairing for the BLE-transport testDevice suite
- * (`FINI_E2E_TRANSPORT=ble`). TestDevices are spawned with
+ * Readiness + pairing for specs with the `testDeviceChannel` option
+ * `ChannelKind.Bluetooth`. Virtual Linux test devices are spawned with
  * `FINI_DISCOVERY_DISABLED=1`, so there is nothing to discover by design and
  * the normal `ensureSyncedTestDevices` UI-pair flow doesn't apply. What is
  * underneath is the real thing: these
@@ -16,13 +16,13 @@ import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/c
  * stand-in, and pairing is marked `viaBluetooth: true` so the Bluetooth
  * channel is switched on for the pair -- which is what
  * `bluetooth_connect_candidates` actually reads. See
- * `fakeBluetoothAddress` in `providers/desktop-process.ts` and
+ * `fakeBluetoothAddress` in `providers/linux.ts` and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  */
 
 /**
  * Every testDevice's fake address is deterministic from its index alone (see
- * `fakeBluetoothAddress` in `providers/desktop-process.ts`) -- duplicated here rather than
+ * `fakeBluetoothAddress` in `providers/linux.ts`) -- duplicated here rather than
  * exported/imported so this helper stays a pure consumer of what the
  * harness already put in each testDevice's environment (`FINI_LOCAL_BLUETOOTH_
  * ADDRESS`), not a second source of truth for it. Tests never need to
@@ -43,12 +43,12 @@ export async function ensureBlePairedTestDevices(
 
   const [a, b] = await waitForTestDevicesReady(testDevices, timeoutMs);
 
-  // Physical devices and virtual phones are real apps carrying a real pairing.
-  // Seeding a fake address over that would overwrite the thing the run
-  // depends on, so the hardware path asserts the pairing rather than
-  // manufacturing it -- and only ensures the per-pair Bluetooth toggle is on,
-  // which since ADR-0006 costs one boolean and no bond.
-  if (a.testDevice.kind !== 'desktop-process' || b.testDevice.kind !== 'desktop-process') {
+  // Test devices with the physical source and virtual Android test devices are
+  // real apps carrying a real pairing. Seeding a fake address over that would
+  // overwrite the thing the run depends on, so that path asserts the pairing
+  // rather than manufacturing it -- and only ensures the per-pair Bluetooth
+  // toggle is on, which since ADR-0006 costs one boolean and no bond.
+  if (!a.testDevice.isVirtual(TestDevicePlatform.Linux) || !b.testDevice.isVirtual(TestDevicePlatform.Linux)) {
     await ensureBluetoothEnabledForPeer(a, b.identity.device_id);
     await ensureBluetoothEnabledForPeer(b, a.identity.device_id);
     return [a, b];
@@ -167,7 +167,7 @@ export async function expectNetworkChannelUnavailable(
   // A spawned testDevice was launched with FINI_DISCOVERY_DISABLED=1 and can see
   // nothing at all, so assert exactly that -- it is the stronger claim, and
   // weakening it for both lanes would quietly stop proving the flag works.
-  if (testDevice.kind === 'desktop-process' || peerDeviceId === undefined) {
+  if (testDevice.isVirtual(TestDevicePlatform.Linux) || peerDeviceId === undefined) {
     const presence = await testDevice.invoke<unknown[]>('device_heard_devices');
     expect(presence, `${testDevice.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
     return;

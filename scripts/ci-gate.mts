@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { E2eEnv } from '../specs/e2e/e2e-project.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const env = process.env;
@@ -36,9 +37,9 @@ const settings = {
   e2eCachePrefix: env.FINI_E2E_CACHE_IMAGE_PREFIX ?? '',
   e2eCachePush: env.FINI_E2E_CACHE_PUSH === '1',
   runId: env.FINI_E2E_CI_RUN_ID ?? 'pr-gate',
-  testDevices: env.FINI_E2E_CI_TEST_DEVICES ?? 'a=desktop-process,b=desktop-process',
+  // Empty: each spec runs on its own test devices (`testDevicePlatforms`).
+  testDevices: env.FINI_E2E_CI_TEST_DEVICES ?? '',
   testDeviceWaitSecs: env.FINI_E2E_CI_TEST_DEVICE_WAIT_SECS ?? '180',
-  lanes: env.FINI_E2E_LANES ?? '',
   keep: env.FINI_E2E_KEEP ?? '',
 };
 const scratchDir = env.FINI_SCRATCH_DIR ?? join(REPO_ROOT, 'tmp');
@@ -140,12 +141,11 @@ const steps: Record<string, () => unknown> = {
     run(containerEngine, ['rm', '-f', runnerName], { allowFailure: true });
     run(containerEngine, [
       'run', '--rm', '--name', runnerName,
-      '-e', `FINI_E2E_TEST_DEVICES=${settings.testDevices}`,
+      ...(settings.testDevices ? ['-e', `${E2eEnv.TestDevices}=${settings.testDevices}`] : []),
       '-e', `FINI_E2E_CI_RUN_ID=${settings.runId}`,
       '-e', `FINI_E2E_RUN_ID=${settings.runId}`,
       '-e', `FINI_E2E_TEST_DEVICE_WAIT_SECS=${settings.testDeviceWaitSecs}`,
-      '-e', `FINI_E2E_LANES=${settings.lanes}`,
-      '-e', `FINI_E2E_KEEP=${settings.keep}`,
+      '-e', `${E2eEnv.Keep}=${settings.keep}`,
       '-v', `${resultsDir}:/app/test-results:Z`,
       settings.devRunnerImage,
     ]);

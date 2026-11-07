@@ -347,14 +347,25 @@ the delivery of an alarm, not the alarm.
 
 ### TestDevice
 
-**One running Fini app that an e2e test drives** (ADR-0013). It is a desktop
-process, a virtual phone, or a physical device. The fixture `testDevices`
-gives the test its test devices by slug: `testDevices.a`, `testDevices.b`
-(`docs/e2e.md`). A `TestDevice` is not a Fini *device*: a Fini device is a
-paired peer.
+**One running Fini app that an e2e test drives** (ADR-0013). A test device is
+a platform (`TestDevicePlatform`: Linux, Android), and it has a *source*. The
+fixture `testDevices` gives the test its test devices by slug:
+`testDevices.a`, `testDevices.b` (`docs/e2e.md`). A `TestDevice` is not a Fini
+*device*: a Fini device is a paired peer.
 
 *Elsewhere:* an `AndroidDevice` with a label in a Mobly testbed; an
 `AndroidDevice` in Playwright `_android`; a session in Appium.
+
+### Source (of a test device)
+
+**Where a test device comes from** (`TestDeviceSource`, ADR-0013 D4).
+*Virtual*: the harness starts it, as a `fini-app` process on Linux or on a
+virtual phone on Android. *Physical*: it runs already, on any platform, and
+the harness only connects to its TCP port (`a=android@tcp:9223` in
+`FINI_E2E_TEST_DEVICES`).
+
+*Elsewhere:* `avd` (an emulator) against `udid` (an attached device) in
+Appium; `android.emulator` against `android.attached` in Detox.
 
 ### Phone tool
 
@@ -406,7 +417,8 @@ screen, headful.
 | **`DeviceConnectionState`** | read as a state or an enum; the services are built and registered one by one (ADR-0010 D5) |
 | **sticky handoff**, **transport selection** | older names for the rule of one session for each channel (see *Session*) and for the channel order (see *Primary*) |
 | **`Auth`**, **`AuthOk`**, **`AuthFail`** | removed frames; the TLS handshake proves the key (see *Session*) |
-| **actor**, **external** (e2e) | older e2e names; Fini uses *TestDevice*, and *physical device* for a device that a person connects (ADR-0013 D4) |
+| **actor**, **external** (e2e) | older e2e names; Fini uses *TestDevice*, and the *physical* source for a test device that a person connects (ADR-0013 D4) |
+| **desktop process**, **android phone**, **physical device** (as a test device kind) | older e2e kinds; a test device is a platform (`TestDevicePlatform`) with a source (`TestDeviceSource`) (ADR-0013 D4) |
 
 ### Radio
 

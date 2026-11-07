@@ -1,4 +1,4 @@
-import { test, expect } from '../test-device.ts';
+import { test, expect, TestDevicePlatform } from '../test-device.ts';
 
 interface DeviceIdentity {
   device_id: string;
@@ -18,13 +18,14 @@ test('runner controls two isolated test devices with different identities', asyn
   expect(identityB.device_id).toBeTruthy();
   expect(identityA.device_id).not.toBe(identityB.device_id);
 
-  // The harness sets HOSTNAME to the slug only for a desktop process that it
-  // starts. A phone has its own name, so the test asserts only that it has one.
+  // The harness sets HOSTNAME to the slug only for a virtual Linux test device.
+  // Each other test device has its own name, so the test asserts only that it
+  // has one.
   for (const [testDevice, identity] of [
     [testDeviceA, identityA],
     [testDeviceB, identityB],
   ] as const) {
-    if (testDevice.kind === 'desktop-process') {
+    if (testDevice.isVirtual(TestDevicePlatform.Linux)) {
       expect(identity.hostname).toBe(testDevice.slug);
     } else {
       expect(identity.hostname).toBeTruthy();

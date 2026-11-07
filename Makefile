@@ -11,7 +11,9 @@ FINI_E2E_CI_RUN_ID ?= pr-gate
 FINI_SCRATCH_DIR ?= $(CURDIR)/tmp
 FINI_E2E_CI_RUN_DIR ?= $(FINI_SCRATCH_DIR)/fini-e2e-$(FINI_E2E_CI_RUN_ID)
 FINI_E2E_CI_RESULTS_DIR ?= $(FINI_E2E_CI_RUN_DIR)/test-results
-FINI_E2E_CI_TEST_DEVICES ?= a=desktop-process,b=desktop-process
+# Empty: each spec runs on its own test devices. Set it to give other ones,
+# for example `a=linux,b=android@tcp:9223`.
+FINI_E2E_CI_TEST_DEVICES ?=
 FINI_E2E_CI_TEST_DEVICE_WAIT_SECS ?= 180
 FINI_DEV_RUNNER_IMAGE ?= fini-dev-runner-ci
 FINI_E2E_CACHE_IMAGE_PREFIX ?=
@@ -46,7 +48,6 @@ help:
 	@echo "  make e2e-build        Build dev-runner image and run E2E inside it"
 	@echo "  make e2e-headed       Run visible local E2E (UI + multi-actor) alongside make dev"
 	@echo "  make pr-gate-e2e      Run containerized full E2E suite in dev-runner"
-	@echo "  FINI_E2E_LANES=ble make pr-gate-e2e  Run one lane (main|ble) on its own"
 	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
 	@echo "  make runtime-image    Build/update the runtime container image"
 	@echo "  make runtime-smoke    Run a runtime container smoke check"
@@ -182,8 +183,7 @@ e2e-headed:
 	trap - EXIT INT TERM; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
 	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path ble-mock-broker/Cargo.toml; \
-	FINI_E2E_ROOT="$$run_root" FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project multi-device; \
-	FINI_E2E_ROOT="$$run_root" FINI_E2E_TRANSPORT=ble FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project multi-device-ble-mock
+	FINI_E2E_ROOT="$$run_root" FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project multi-device
 
 # "Fini Debug": a genuinely separate desktop application that lives beside the
 # production "Fini" install instead of replacing it -- the desktop counterpart
@@ -350,7 +350,7 @@ e2e-devices:
 	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices}"; \
 	mkdir -p "$$run_root"; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_TEST_DEVICES="desktop=tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=tcp:$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="desktop=linux@tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=android@tcp:$(E2E_PHONE_PORT)" \
 	TZ=UTC \
 	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device $(if $(E2E_DEVICES_SPEC),-g "$(E2E_DEVICES_SPEC)",)
 
@@ -358,9 +358,9 @@ e2e-devices:
 # mock-radio lane runs, but driving the two already-running debug apps instead
 # of spawning any -- so the radio is a real one.
 #
-# Deliberately no FINI_E2E_TRANSPORT=ble here. That flag exists to launch
-# *spawned* actors with FINI_DISCOVERY_DISABLED=1 and a mock broker; neither
-# applies to apps that are already running. On hardware the pair itself rules
+# The spec's `testDeviceChannel: ChannelKind.Bluetooth` launches virtual Linux test
+# devices with FINI_DISCOVERY_DISABLED=1 and a mock broker; neither applies to
+# apps that are already running (the physical source). On hardware the pair itself rules
 # the network out: it must have no Network channel on, which the spec asserts,
 # so Bluetooth is the only path its sessions can take even with Wi-Fi on. That
 # also lets the phone run under `make android-dev`, whose frontend comes over
@@ -379,9 +379,9 @@ e2e-devices-ble:
 	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-devices-ble}"; \
 	mkdir -p "$$run_root"; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_TEST_DEVICES="desktop=tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=tcp:$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="desktop=linux@tcp:$(DESKTOP_DEBUG_PORT),$(E2E_PHONE_SLUG)=android@tcp:$(E2E_PHONE_PORT)" \
 	TZ=UTC \
-	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device-ble-mock
+	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device peer-sync-over-ble
 
 E2E_PHONE_SLUG ?= phone
 E2E_PHONE_PORT ?= 9223
@@ -405,7 +405,7 @@ e2e-phone:
 	trap - EXIT INT TERM; \
 	adb forward tcp:$(E2E_PHONE_PORT) tcp:$(E2E_PHONE_PORT) >/dev/null; \
 	FINI_E2E_ROOT="$$run_root" \
-	FINI_E2E_TEST_DEVICES="a=desktop-process,$(E2E_PHONE_SLUG)=tcp:$(E2E_PHONE_PORT)" \
+	FINI_E2E_TEST_DEVICES="a=linux,$(E2E_PHONE_SLUG)=android@tcp:$(E2E_PHONE_PORT)" \
 	FINI_APP_BINARY="$$app_bin_path" TZ=UTC \
 	npx playwright test --config specs/e2e/playwright.config.ts --project multi-device -g "$(E2E_PHONE_SPEC)"
 

@@ -56,7 +56,7 @@ For GitHub issue or ticket work, inspect the ticket labels before choosing the d
 | Use, validate, or reason about the Fini app binary, CLI mode, app launch mode, or runtime container CLI behavior | `fini-cli` |
 | Populate data, seed state, or exercise a feature against the running/installed app for dev or testing | `fini-cli` |
 | Validate Android behavior, prove Android navigation/state, or debug Android-only behavior | `fini-android-testing` |
-| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-app UI e2e, multi-device e2e (desktop processes, virtual phones), or CLI e2e. For Android on a physical phone, use `fini-android-testing` instead | `fini-test` |
+| Run, write, debug, or organize unit, integration, or e2e tests across frontend Jest, backend cargo, single-app UI e2e, multi-device and device-support e2e (virtual Linux and virtual Android test devices), or CLI e2e. For Android on a physical phone, use `fini-android-testing` instead | `fini-test` |
 | Ticket has GitHub label `design`, or work designs/refines native Figma components, variants, screens, visual systems, or Fini UI surfaces | `fini-design` |
 | Change Vue frontend code under `src/`, especially view components, templates, conditional rendering, lists, or frontend tests | `fini-frontend`; also load `fini-test` for test authoring/execution |
 | Any code change (Rust, TypeScript, Vue, tests or e2e helpers) — always, not only when style seems to matter | `fini-code-style`, alongside whichever domain skill governs the surface being touched |

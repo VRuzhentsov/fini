@@ -1,5 +1,5 @@
-// A test device that is the Fini debug app on a virtual phone of the phone
-// group (ADR-0013 D2). Playwright `_android` finds the phone and runs the
+// A virtual Android test device: the Fini debug app on a virtual phone of the
+// phone group (ADR-0013 D2). Playwright `_android` finds the phone and runs the
 // shell commands; the app actions go through the devtools bridge on TCP 9223,
 // which `adb forward` makes available on a host port for each phone.
 
@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { TestDeviceProvider } from '../test-device-set.ts';
 import { REPO_ROOT } from '../run-root.ts';
-import { connectOverTcp } from './physical-device.ts';
+import { TestDevicePlatform, TestDeviceSource } from '../test-device-platform.ts';
+import { connectOverTcp } from './tcp.ts';
 
 const run = promisify(execFile);
 
@@ -28,8 +29,9 @@ const INSTALL_TIMEOUT_MS = 180_000;
 const INSTALL_ATTEMPTS = 3;
 const PERMISSIONS = ['BLUETOOTH_SCAN', 'BLUETOOTH_CONNECT', 'BLUETOOTH_ADVERTISE', 'POST_NOTIFICATIONS'];
 
-export class AndroidPhoneProvider implements TestDeviceProvider {
-  readonly kind = 'android-phone' as const;
+export class AndroidProvider implements TestDeviceProvider {
+  readonly platform = TestDevicePlatform.Android;
+  readonly source = TestDeviceSource.Virtual;
   private device: AndroidDevice | null = null;
   private readonly hostPort: number;
 

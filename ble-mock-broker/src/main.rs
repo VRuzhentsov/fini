@@ -1,7 +1,7 @@
 //! Standalone broker for `ble-gatt`'s `mock-broker` feature: the shared
 //! "radio" state that separate `fini-app` e2e test device processes connect to
-//! over a socket instead of a real Bluetooth adapter, so the
-//! `multi-device-ble-mock` Playwright project can prove `ble.rs`'s
+//! over a socket instead of a real Bluetooth adapter, so the `multi-device`
+//! specs with `testDeviceChannel: ChannelKind.Bluetooth` can prove the Bluetooth channel's
 //! dial/peripheral/session-claim code path without hardware. See
 //! `specs/e2e/multi-device/helpers/ble-sync.ts` and
 //! `ble-gatt`'s `docs/adr/0004-mock-broker-for-cross-process-e2e.md`.
@@ -12,7 +12,7 @@
 //! Reads `FINI_BLE_MOCK_BROKER_LISTEN` (host:port, e.g. `127.0.0.1:47600`)
 //! and serves until the process is killed. The harness assigns this port
 //! deterministically (see `brokerPort` in
-//! `specs/e2e/multi-device/providers/desktop-process.ts`) rather than letting
+//! `specs/e2e/multi-device/providers/linux.ts`) rather than letting
 //! the OS pick one, since every test device needs to know it up front.
 
 #[tokio::main]

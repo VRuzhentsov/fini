@@ -1,15 +1,20 @@
-// A test device that is an app that already runs on a physical device, for
-// example a phone through `adb forward`. The harness only connects to it over
-// TCP: it does not start, configure or stop it. Its pairs and data are what
-// the device has.
+// A test device with the physical source, on any platform: an app that runs
+// already, for example on a phone through `adb forward`. The harness only
+// connects to it over TCP: it does not start, configure or stop it. Its pairs
+// and data are what the device has.
 
 import { PluginClient } from '@srsholmes/tauri-playwright';
 import type { TestDeviceProvider } from '../test-device-set.ts';
+import { TestDeviceSource, type TestDevicePlatform } from '../test-device-platform.ts';
 
-export class PhysicalDeviceProvider implements TestDeviceProvider {
-  readonly kind = 'physical-device' as const;
+export class TcpProvider implements TestDeviceProvider {
+  readonly source = TestDeviceSource.Physical;
 
-  constructor(readonly slug: string, private readonly port: number) {}
+  constructor(
+    readonly slug: string,
+    readonly platform: TestDevicePlatform,
+    private readonly port: number,
+  ) {}
 
   async prepare(): Promise<void> {
     // The person who started the app prepared it.

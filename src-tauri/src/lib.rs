@@ -311,14 +311,15 @@ pub fn run() {
         None,
     ));
     // Desktop: a unix socket by default, whose path the e2e harness hands
-    // each desktop-process test device (`TAURI_PLAYWRIGHT_SOCKET`, see
-    // specs/e2e/multi-device/providers/desktop-process.ts) -- the harness
+    // each virtual Linux test device (`TAURI_PLAYWRIGHT_SOCKET`, see
+    // specs/e2e/multi-device/providers/linux.ts) -- the harness
     // spawns those processes, so it can pick a path and know when the socket
     // appears.
     //
     // `FINI_DEVTOOLS_TCP_PORT` switches this instance to TCP instead, for a
-    // long-lived debug app the harness does *not* spawn: a physical device
-    // (`tcp:<port>` in FINI_E2E_TEST_DEVICES) is addressed by port, exactly like a phone reached over `adb forward`, so
+    // long-lived debug app the harness does *not* spawn: a test device with the
+    // physical source (`linux@tcp:<port>` in FINI_E2E_TEST_DEVICES) is
+    // addressed by port, exactly like a phone reached over `adb forward`, so
     // a desktop and a device end up equally reachable rather than needing two
     // different connection styles. Note `socket_path` must be cleared, not
     // merely accompanied by `tcp_port` -- see the Android arm below for why.
@@ -355,7 +356,7 @@ pub fn run() {
     // default path lives outside the app sandbox, so binding it fails with
     // "unix server error: Permission denied (os error 13)", and there is no
     // way to hand the process a different path anyway (`am start` cannot set
-    // environment variables, unlike the desktop-process spawn). TCP
+    // environment variables, unlike the spawn of a virtual Linux test device). TCP
     // on loopback is reachable from a host via `adb forward tcp:9223
     // tcp:9223`, and 9223 is what the tauri-mcp `driver_session` tool
     // already defaults to.

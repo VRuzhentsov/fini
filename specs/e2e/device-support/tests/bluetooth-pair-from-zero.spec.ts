@@ -1,8 +1,9 @@
-import { expect, test } from '../test-device.ts';
-import type { TestDevice } from '../test-device.ts';
+import { expect, test, TestDevicePlatform } from '../../multi-device/test-device.ts';
+import type { TestDevice } from '../../multi-device/test-device.ts';
 import { AddDeviceDialog } from '../../components/add-device-dialog.ts';
 import { DevicePage } from '../../components/device-page.ts';
 import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
+import { supportsChannel } from '../supported-devices.ts';
 
 /**
  * A new pair over Bluetooth, from zero, the way a person makes it: both
@@ -14,13 +15,15 @@ import { ChannelColor, ChannelKind } from '../../../../src/utils/channel.ts';
  * The other steps have no fixed limit; their times are recorded as test
  * annotations, so a run shows how long a person waits at each step.
  *
- * Needs two radios: the `android` project runs it on two virtual phones
- * (`npm run test:e2e:android`, docs/e2e-android.md). On physical devices, for
- * example the desktop and phone dev apps (`make desktop-debug-dev`,
+ * Needs two Bluetooth stacks: it runs on two virtual Android test devices
+ * (`npm run test:e2e:android`, docs/e2e-android.md). With the physical source,
+ * for example the desktop and phone dev apps (`make desktop-debug-dev`,
  * `make android-dev` and `adb forward tcp:9223 tcp:9223`):
- *   FINI_E2E_TEST_DEVICES=desktop=tcp:9224,phone=tcp:9223 \
+ *   FINI_E2E_TEST_DEVICES=desktop=linux@tcp:9224,phone=android@tcp:9223 \
  *   npm run test:e2e:android -- bluetooth-pair-from-zero
  */
+
+test.use({ testDevicePlatforms: { a: TestDevicePlatform.Android, b: TestDevicePlatform.Android } });
 
 const DISCOVERY_STANDARD_MS = 10_000;
 const STEP_TIMEOUT_MS = 120_000;
@@ -66,9 +69,12 @@ async function unpairIfPaired(testDevice: TestDevice, peer: Identity): Promise<v
 }
 
 test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, testDeviceB }) => {
+  test.skip(!supportsChannel([testDeviceA, testDeviceB], ChannelKind.Bluetooth), 'a platform has no Bluetooth');
+  // A virtual Linux test device has only the mock radio, and pairing through
+  // Add Device is not proved on it.
   test.skip(
-    testDeviceA.kind === 'desktop-process' || testDeviceB.kind === 'desktop-process',
-    'needs two radios: run on virtual phones or physical devices',
+    testDeviceA.isVirtual(TestDevicePlatform.Linux) || testDeviceB.isVirtual(TestDevicePlatform.Linux),
+    'needs two Bluetooth stacks: virtual Android or the physical source',
   );
   test.setTimeout(10 * 60_000);
 

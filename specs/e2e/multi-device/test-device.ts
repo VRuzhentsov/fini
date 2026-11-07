@@ -4,25 +4,34 @@
 
 import { expect, test as base } from '@playwright/test';
 import { TauriPage, type PluginClient } from '@srsholmes/tauri-playwright';
+import { ChannelKind } from '../../../src/utils/channel.ts';
 import { resetTestDevicesUi } from './helpers/teardown.ts';
-import { TestDeviceSet, type TestDeviceKind, type TestDeviceProvider } from './test-device-set.ts';
+import { TestDeviceSet, type TestDeviceProvider } from './test-device-set.ts';
+import { TestDevicePlatform, TestDeviceSource } from './test-device-platform.ts';
 
-export type { TestDeviceKind };
+export { TestDevicePlatform, TestDeviceSource };
 
 const PAGE_TIMEOUT_MS = 15_000;
 const READY_TIMEOUT_MS = 180_000;
 
 export class TestDevice {
   readonly slug: string;
-  readonly kind: TestDeviceKind;
+  readonly platform: TestDevicePlatform;
+  readonly source: TestDeviceSource;
   private readonly provider: TestDeviceProvider;
   private client: PluginClient | null = null;
   private tauriPage: TauriPage | null = null;
 
   constructor(provider: TestDeviceProvider) {
     this.slug = provider.slug;
-    this.kind = provider.kind;
+    this.platform = provider.platform;
+    this.source = provider.source;
     this.provider = provider;
+  }
+
+  /** True for a test device that the harness started on `platform`. */
+  isVirtual(platform: TestDevicePlatform): boolean {
+    return this.source === TestDeviceSource.Virtual && this.platform === platform;
   }
 
   get page(): TauriPage {
@@ -67,9 +76,9 @@ export class TestDevice {
     })()`);
   }
 
-  /** Runs a shell command on the phone of an `android-phone` test device. */
+  /** Runs a shell command on the phone of a virtual Android test device. */
   shell(command: string): Promise<string> {
-    if (!this.provider.shell) throw new Error(`Test device "${this.slug}" (${this.kind}) has no shell`);
+    if (!this.provider.shell) throw new Error(`Test device "${this.slug}" (${this.source} ${this.platform}) has no shell`);
     return this.provider.shell(command);
   }
 
@@ -85,13 +94,16 @@ export class TestDevice {
 
 interface TestDeviceOptions {
   /**
-   * The test devices of a project when `FINI_E2E_TEST_DEVICES` is not set, as
-   * `slug=kind,...`. A kind is `desktop-process`, `android-phone` or
-   * `tcp:<port>` (a physical device).
+   * The virtual test devices of a spec, slug → platform. Set it at the top of
+   * a spec file with `test.use`. `FINI_E2E_TEST_DEVICES` gives other test
+   * devices in place of it.
    */
-  testDeviceKinds: string;
-  /** How many virtual phones start in one group, for projects with `android-phone` test devices. */
-  phoneCount: number;
+  testDevicePlatforms: Record<string, TestDevicePlatform>;
+  /**
+   * The channel that the test devices use. Bluetooth on virtual Linux is the
+   * mock radio. (Playwright has its own `channel` option, for the browser.)
+   */
+  testDeviceChannel: ChannelKind;
 }
 
 interface TestDeviceFixtures {
@@ -100,26 +112,39 @@ interface TestDeviceFixtures {
   testDeviceB: TestDevice;
 }
 
+/** The started set, or why this job cannot start it. */
+type StartedSet = { set: TestDeviceSet; skipReason: null } | { set: null; skipReason: string };
+
 interface TestDeviceWorkerFixtures {
-  testDeviceSet: TestDeviceSet;
+  testDeviceSet: StartedSet;
 }
 
 export const test = base.extend<TestDeviceFixtures, TestDeviceWorkerFixtures & TestDeviceOptions>({
-  testDeviceKinds: ['a=desktop-process,b=desktop-process', { scope: 'worker', option: true }],
-  phoneCount: [2, { scope: 'worker', option: true }],
+  testDevicePlatforms: [{ a: TestDevicePlatform.Linux, b: TestDevicePlatform.Linux }, { scope: 'worker', option: true }],
+  testDeviceChannel: [ChannelKind.Network, { scope: 'worker', option: true }],
 
-  testDeviceSet: [async ({ testDeviceKinds, phoneCount }, use) => {
-    const set = TestDeviceSet.fromEnv(process.env.FINI_E2E_TEST_DEVICES ?? testDeviceKinds, phoneCount);
+  testDeviceSet: [async ({ testDevicePlatforms, testDeviceChannel }, use) => {
+    const set = TestDeviceSet.fromEnv(testDevicePlatforms, testDeviceChannel);
+    // A worker fixture cannot skip a test, so the test fixture below does it.
+    const skipReason = set.missingPlatformReason();
+    if (skipReason) {
+      await use({ set: null, skipReason });
+      return;
+    }
     await set.start((provider) => new TestDevice(provider));
     try {
-      await use(set);
+      await use({ set, skipReason: null });
     } finally {
       await set.stop();
     }
   }, { scope: 'worker' }],
 
-  testDevices: async ({ testDeviceSet }, use) => {
-    const testDevices = testDeviceSet.testDevices as Record<string, TestDevice>;
+  testDevices: async ({ testDeviceSet }, use, testInfo) => {
+    if (!testDeviceSet.set) {
+      testInfo.skip(true, testDeviceSet.skipReason);
+      return;
+    }
+    const testDevices = testDeviceSet.set.testDevices as Record<string, TestDevice>;
     try {
       await use(testDevices);
     } finally {
