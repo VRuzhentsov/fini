@@ -1,11 +1,15 @@
 import { test, expect, TestDevicePlatform } from '../test-device.ts';
+import { E2eTag } from '../../e2e-project.ts';
 
 interface DeviceIdentity {
   device_id: string;
   hostname: string;
 }
 
-test('runner controls two isolated test devices with different identities', async ({ testDeviceA, testDeviceB }) => {
+test('runner controls two isolated test devices with different identities', { tag: E2eTag.Smoke }, async ({
+  testDeviceA,
+  testDeviceB,
+}) => {
   await testDeviceA.page.waitForSelector('nav.nav', 30_000);
   await testDeviceB.page.waitForSelector('nav.nav', 30_000);
   await expect(await hasIncomingSyncDialog(testDeviceA.page)).toBe(false);

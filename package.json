@@ -11,6 +11,7 @@
     "test:e2e": "make e2e-headed",
     "test:e2e:ci": "if [ \"$FINI_E2E_CONTAINER_RUNNER\" = \"1\" ]; then npx playwright test --config specs/e2e/playwright.config.ts --project cli --project ui --project multi-device; else CI=1 make pr-gate-e2e; fi",
     "test:e2e:android": "node scripts/e2e-android.mts",
+    "test:e2e:smoke": "npx playwright test --config specs/e2e/playwright.config.ts --grep @smoke",
     "gate:fe-unit": "node scripts/ci-gate.mts fe-unit",
     "gate:be-compile": "node scripts/ci-gate.mts be-compile",
     "gate:be-unit": "node scripts/ci-gate.mts be-unit",

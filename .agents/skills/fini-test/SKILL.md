@@ -116,6 +116,14 @@ Needs the x86_64 APK with devtools first: `npm run build:android:e2e`. The image
 
 The projects in `specs/e2e/playwright.config.ts`: `cli`, `ui`, `multi-device` (what Fini does with two or more devices; by default two virtual Linux test devices over Network), `device-support` (that a platform and its channels work). See `docs/e2e.md`, "Projects". Pass `--project=<name>` to `npx playwright test --config specs/e2e/playwright.config.ts`.
 
+### Running only the smoke tests
+
+```sh
+npm run test:e2e:smoke
+```
+
+Runs the tests with the tag `E2eTag.Smoke` (`@smoke`) in all projects: quick checks that the harness starts the test devices and the app answers.
+
 ### Do not invent targets
 
 `make test`, `make lint`, `make check` do not exist. Use the named commands above. If the desired check has no Makefile target, say so explicitly.
@@ -233,14 +241,15 @@ Helpers live in `specs/e2e/multi-device/helpers/`:
 - `dom.ts` — shared DOM probes.
 - `teardown.ts` — `resetTestDevicesUi(...)` runs after every test.
 
-Skeleton from `specs/e2e/multi-device/tests/multi-device-smoke.spec.ts`:
+Skeleton from `specs/e2e/multi-device/tests/two-test-devices.spec.ts`:
 
 ```ts
 import { test, expect } from '../test-device.ts';
+import { E2eTag } from '../../e2e-project.ts';
 
 interface DeviceIdentity { device_id: string; hostname: string; }
 
-test('runner controls two isolated test devices with different identities', async ({ testDeviceA, testDeviceB }) => {
+test('runner controls two isolated test devices with different identities', { tag: E2eTag.Smoke }, async ({ testDeviceA, testDeviceB }) => {
   const identityA = await testDeviceA.invoke<DeviceIdentity>('device_get_identity');
   const identityB = await testDeviceB.invoke<DeviceIdentity>('device_get_identity');
   expect(identityA.device_id).not.toBe(identityB.device_id);
@@ -254,6 +263,7 @@ Conventions:
 - Talk to the backend through `testDevice.invoke<T>(command, args)`; use `testDevice.page.evaluate` only for DOM probes.
 - A spec that needs two Bluetooth stacks skips when a test device is virtual Linux (`testDevice.isVirtual(TestDevicePlatform.Linux)`; see `bluetooth-pair-from-zero.spec.ts`).
 - Use the consts (`TestDevicePlatform`, `TestDeviceSource`, `ChannelKind`), never their string values.
+- Mark a group of tests with a Playwright tag, not with a word in the file name. Name the file for what it checks (`two-test-devices.spec.ts`, not `multi-device-smoke.spec.ts`). Give a quick check that the harness and the app answer `{ tag: E2eTag.Smoke }` (`specs/e2e/e2e-project.ts`); a new tag goes into `E2eTag` first, never as a string in a spec. Run them with `npm run test:e2e:smoke` (`--grep @smoke`), or leave them out with `--grep-invert`.
 - With virtual Android test devices, obey the rules in `docs/e2e-android.md`, "Rules for the specs".
 
 ## Writing CLI e2e

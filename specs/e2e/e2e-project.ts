@@ -9,6 +9,12 @@ export const E2eProject = {
 } as const;
 export type E2eProject = (typeof E2eProject)[keyof typeof E2eProject];
 
+/** Playwright test tags (`{ tag: E2eTag.Smoke }`); select them with `--grep`. */
+export const E2eTag = {
+  /** A quick check that the harness and the app answer: `npm run test:e2e:smoke`. */
+  Smoke: '@smoke',
+} as const;
+
 export const E2eEnv = {
   /** Test devices in place of the ones of the spec: `a=linux,b=android@tcp:9223`. */
   TestDevices: 'FINI_E2E_TEST_DEVICES',

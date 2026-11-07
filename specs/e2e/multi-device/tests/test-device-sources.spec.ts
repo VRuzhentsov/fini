@@ -1,4 +1,5 @@
 import { expect, test } from '../test-device.ts';
+import { E2eTag } from '../../e2e-project.ts';
 
 /**
  * Proves that each source of test device answers the same `invoke` surface: a
@@ -17,7 +18,7 @@ import { expect, test } from '../test-device.ts';
  */
 // Uses the test devices by position (testDeviceA, testDeviceB), not by slug,
 // so the same spec runs on each mix of test devices.
-test('both test devices answer the same invoke surface', async ({ testDeviceA, testDeviceB }) => {
+test('both test devices answer the same invoke surface', { tag: E2eTag.Smoke }, async ({ testDeviceA, testDeviceB }) => {
   const identityA = await testDeviceA.invoke<{ device_id: string }>('device_get_identity');
   const identityB = await testDeviceB.invoke<{ device_id: string }>('device_get_identity');
 

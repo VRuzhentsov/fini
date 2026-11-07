@@ -126,6 +126,7 @@ the same scripts (ADR-0013 D9).
 | `cli`, `ui`, `multi-device`, in the e2e container | `make pr-gate-e2e` | `npm run gate:e2e:build-image`, `npm run gate:e2e:run` |
 | `device-support` on virtual Android | `npm run test:e2e:android` | the same command, job `android-e2e` |
 | a virtual Linux and your phone | `make e2e-phone` | – |
+| the smoke tests (tag `E2eTag.Smoke`), in all projects | `npm run test:e2e:smoke` | – |
 
 `scripts/ci-gate.mts` holds the gate steps. The e2e container starts one Xvfb
 (glossary) for the run, and each app draws on it.
