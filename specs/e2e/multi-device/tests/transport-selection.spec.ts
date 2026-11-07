@@ -9,8 +9,8 @@ import { ChannelKind } from '../../../../src/utils/channel.ts';
  * of channel selection in the real app. Two test devices on one network have
  * work to move, so an exchange opens (ADR-0008 D10), and it must run over the
  * Network channel. Together the two specs prove selection end-to-end:
- * network wins whenever the peer is present on it. See
- * `specs/e2e/transports.md`.
+ * network wins whenever the peer is present on it. See `docs/e2e.md`,
+ * "What each project proves for each channel".
  */
 test('an exchange between paired test devices on one network runs over the network channel', async ({
   testDeviceA,

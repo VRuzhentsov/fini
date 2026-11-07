@@ -422,8 +422,8 @@ runtime-smoke:
 
 # Real-Bluetooth transport verification: local/manual only, never CI (no
 # radio on GitHub-hosted runners). Lands with the real Bluetooth adapter —
-# see docs/adr/0001-transport-neutral-peer-protocol.md and
-# specs/e2e/transports.md.
+# see docs/adr/0001-transport-neutral-peer-protocol.md and docs/e2e.md,
+# "What each project proves for each channel".
 e2e-bt-local:
 	@echo "e2e-bt-local: real Bluetooth adapter not implemented yet (follow-up PR)." >&2; \
 	echo "This target will pair over real Bluetooth with LAN disabled once it lands." >&2; \

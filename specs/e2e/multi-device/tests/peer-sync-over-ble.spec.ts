@@ -32,7 +32,8 @@ interface Quest {
  * `ble.rs` code path (search coordinator, peripheral accept, exchange) against
  * a cross-process mock radio instead of hardware -- the same acceptance
  * shape the network lane proves for its own channel, one layer
- * more real. See `helpers/ble-sync.ts`, `specs/e2e/transports.md`, and
+ * more real. See `helpers/ble-sync.ts`, `docs/e2e.md` ("What each project
+ * proves for each channel"), and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  *
  * Deliberately stronger than a bare transport-selection check: proves both

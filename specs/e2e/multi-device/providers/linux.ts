@@ -21,7 +21,8 @@ const DEFAULT_BASE_DISCOVERY_PORT = 46_000 + Math.floor(Math.random() * 500);
  * ports and the channel. With `ChannelKind.Network` they use the real Network
  * channel. With `ChannelKind.Bluetooth` the Network channel is off
  * (`FINI_DISCOVERY_DISABLED=1`) and each process uses the `ble-gatt` mock
- * radio, because a container has no Bluetooth. See `specs/e2e/transports.md`.
+ * radio, because a container has no Bluetooth. See `docs/e2e.md`, "The
+ * `testDeviceChannel` option".
  */
 export class LinuxRun {
   readonly binaryPath: string;

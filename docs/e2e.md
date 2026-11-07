@@ -4,7 +4,7 @@ The e2e tests drive the real Fini app: the CLI, one desktop window, or two or
 more apps that pair and sync. Playwright Test is the one runner. The decisions
 are in `docs/adr/0013-e2e-test-devices.md`. The virtual Android phones are in
 `docs/e2e-android.md`. What each project proves for each channel is in
-`specs/e2e/transports.md`.
+"What each project proves for each channel" below.
 
 ## Parts
 
@@ -140,8 +140,35 @@ FINI_E2E_TEST_DEVICES=desktop=linux@tcp:9224,phone=android@tcp:9223 \
   --config specs/e2e/playwright.config.ts --project=multi-device
 ```
 
+## What each project proves for each channel
+
+The channels are in `docs/adr/0001-transport-neutral-peer-protocol.md` and
+`docs/architecture/communication.md`.
+
+| Layer | What it proves | Where it runs |
+|---|---|---|
+| Rust tests of `channel.service.rs` and `space-sync.service.rs` | The frames, the session and the sync rules. The same Rust code runs on each platform, so this proof is the same for each pair. | Each pull request (`npm run gate:be-unit`) |
+| `multi-device`, `transport-selection.spec.ts` | Two virtual Linux test devices on one network use the Network channel (QUIC over iroh). | Each pull request (Quality Gates) |
+| `multi-device`, `peer-sync-over-ble.spec.ts` (`testDeviceChannel: ChannelKind.Bluetooth`) | Two virtual Linux test devices with the Network channel off, on the `ble-gatt` mock radio (`FINI_BLE_MOCK_BROKER`). The real code of `bluetooth-channel.service.rs` runs: the dial, the advertising and accepting side, the session, and the GATT roles. Both rows go green, and one quest syncs in both directions. It proves the protocol, the session and the UI, not the radio. | Each pull request (Quality Gates) |
+| `device-support`, `bluetooth-pair-from-zero.spec.ts` | Two virtual Android test devices on one virtual Bluetooth medium (netsim): the Android Bluetooth stack, GATT and the APK. A new pair through Add Device until the Bluetooth row is green on both, with the 10 s standard for the listing. It does not prove the radio. | Local and CI (`npm run test:e2e:android`, job `android-e2e`; not a required check yet) |
+| `device-support`, `android-app-start.spec.ts` | One virtual Android test device: the app starts and makes the notification channel `fini.reminders`. | Local and CI (job `android-e2e`) |
+| The same specs with the physical source | `FINI_E2E_TEST_DEVICES=a=linux@tcp:9224,b=android@tcp:9223`: the same flows on a desktop and a phone with real radios. `bluetooth-channel-add-again.spec.ts` runs only like this: Bluetooth off and on again on a pair, both rows green in the 10 s standard (ADR-0011). | Local only |
+
+A real radio is not a check in CI:
+
+- GitHub-hosted runners have no Bluetooth radio. The mock radio and netsim
+  prove the protocol, the session and GATT. No virtual Bluetooth medium
+  (Bumble, `btvirt`, netsim) shows real radio faults, for example radio
+  interference or a fault of one adapter. These stay a test on physical
+  devices.
+- Virtual phones need KVM, which only the Linux runners have. Windows runners
+  cannot run the Android emulator, so a Windows and Android pair has no CI
+  path.
+
 ## Not done yet
 
+- A test of real radios in CI (a device lab or a self-hosted runner). Now
+  only the physical source on your desk tests them.
 - The device-support checks for each channel: sync a quest in both
   directions, restart and connect again, unpair.
 - Happy paths on more pairs and chains (for example Linux and Android over
