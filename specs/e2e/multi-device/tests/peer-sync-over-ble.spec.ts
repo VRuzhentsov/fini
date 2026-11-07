@@ -44,7 +44,7 @@ interface Quest {
  * is a question for the frontend, not for this test. `get_quests` also
  * compares the id, not only the text.
  */
-test('happy-path-BLE: both sides go green over BLE alone, and a single quest converges both ways', async ({
+test('over Bluetooth only, the two sides become green, and one quest syncs in the two directions', async ({
   testDeviceA,
   testDeviceB,
 }) => {
