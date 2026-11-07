@@ -265,7 +265,7 @@ Choose verification based on touched area:
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
 - E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
 - Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-release-deploy-debugsigned` when an installed APK check is needed. Use `make android-debug-deploy` (separate `com.fini.app.debug` id) instead when diagnosing silent plugin failures — this enables Tauri Kotlin logging (`BuildConfig.DEBUG=true`, suppressed in the release profile) and is safe to install alongside a Play Store `com.fini.app` without conflict.
-- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e ui/multi-device/android/cli): load `fini-test` for the canonical command + authoring guide.
+- Test execution or test authoring across any surface (FE Jest, BE cargo, e2e cli/ui/multi-device/device-support): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.

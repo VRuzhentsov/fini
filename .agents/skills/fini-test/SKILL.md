@@ -162,7 +162,7 @@ Conventions:
 
 - Mount components with `@vue/test-utils` `mount()` when the test needs DOM behavior; otherwise prefer pure store/composable tests.
 - Reset every `invoke` mock in `beforeEach`. Tests run with `--runInBand`, but mock state still leaks across `it` blocks unless explicitly reset.
-- Match the file path of the production code: `src/stores/device.ts` ↔ `src/spec/stores/device.store.spec.ts`, `src/views/settings/DeviceView.vue` ↔ `src/spec/views/DeviceView.spec.ts`.
+- Match the file path of the production code: `src/stores/device.store.ts` ↔ `src/spec/stores/device.store.spec.ts`, `src/views/settings/DeviceView.vue` ↔ `src/spec/views/DeviceView.spec.ts`.
 
 ## Writing BE unit tests
 
@@ -207,12 +207,12 @@ Layout: `specs/e2e/ui/tests/<feature>.spec.ts`. Fixture: `specs/e2e/ui/fixtures.
 
 App data is isolated under the task-scoped `FINI_E2E_ROOT` (default: the repository's ignored `tmp/fini-e2e-ui/`) so the user's normal data directory is untouched. The app is launched with `--features devtools`.
 
-Skeleton from `specs/e2e/ui/tests/context-menu-submenu-hover.spec.ts`:
+Skeleton from `specs/e2e/ui/tests/context-menu-accordion.spec.ts`:
 
 ```ts
 import { test, expect } from '../fixtures.ts';
 
-test('context-menu submenu stays open during hover-to-submenu cursor traversal', async ({ tauriPage }) => {
+test('wide: Move to space opens as in-place accordion, not a flyout', async ({ tauriPage }) => {
   await tauriPage.waitForSelector('nav.nav a[href="#/main"]', 30_000);
   await tauriPage.click('nav.nav a[href="#/main"]');
   await tauriPage.waitForSelector('[data-testid="chat-input"]', 30_000);

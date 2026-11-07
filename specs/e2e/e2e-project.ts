@@ -1,5 +1,5 @@
-// The names of the Playwright projects and of the environment variables that
-// more than one file reads. No runtime imports, so scripts can import it.
+// The names of the Playwright projects, the test tags, and the environment
+// variables that more than one file reads. No runtime imports, so scripts can import it.
 
 export const E2eProject = {
   Cli: 'cli',

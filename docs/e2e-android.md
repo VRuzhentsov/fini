@@ -54,9 +54,9 @@ comes in through the mount.
 ## When the phones start
 
 Phones start only when a test that runs has a virtual Android test device
-(ADR-0013 D7). `--project ui`, the `multi-device` specs on Linux, runs with
-only the physical source, and jobs without `android` in
-`FINI_E2E_VIRTUAL_PLATFORMS` start no phone.
+(ADR-0013 D7). These start no phone: `--project ui`, the `multi-device`
+specs on virtual Linux, runs with only the physical source, and jobs without
+`android` in `FINI_E2E_VIRTUAL_PLATFORMS`.
 
 1. The first request calls `PhoneGroup.shared().serials(n)`. `n` is the
    number of virtual Android test devices in the set.
