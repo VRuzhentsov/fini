@@ -4,7 +4,7 @@
 
 Accepted. Written during the design discussion of 2026-10-28. The spike of
 D1 chose the Android Emulator on 2026-10-30 (see "Spike results"). Updated
-with the project owner on 2026-11-05: the lane is the Android e2e lane, with
+with the project owner on 2026-11-05: the job is the Android e2e job, with
 Bluetooth as one of its tests (D3, D5, D8, D10). Updated with the project
 owner on 2026-11-06: a test device is a platform with a source (D4), and the
 projects `multi-device` and `device-support` (D11).
@@ -14,7 +14,7 @@ projects `multi-device` and `device-support` (D11).
 The e2e harness in `specs/e2e/actors/fixtures.ts` starts two desktop
 `fini-app` processes, or it connects to a TCP port of an app that runs on
 another device ("external"). It does not install, start or stop an app on a
-phone. The Bluetooth lane `actors-ble` uses the `ble-gatt` mock broker
+phone. The Bluetooth project `actors-ble` uses the `ble-gatt` mock broker
 between two desktop processes. The Android CI job starts one emulator and
 checks only that the app starts.
 
@@ -60,7 +60,7 @@ the phones by serial and runs `pm grant` through `shell`, with
 - The port forward. `_android` has no port forward.
 
 **D3 — Scope of the first pull request.** The spike, the new fixture, and
-the Android lane with two phones, local and in CI. The Android tests are in
+the Android job with two phones, local and in CI. The Android tests are in
 the project `device-support` (D11): the app start with the notification
 channel, and Android-to-Android Bluetooth. The test with three phones (A to B
 to C) comes later.
@@ -86,7 +86,7 @@ names its platform: `a=linux@tcp:9224,b=android@tcp:9223`. The providers:
 platform). Appium does the same: `platformName` is one setting, and `avd` or
 `udid` another.
 
-**D5 — CI runs the lane, but it is not a required check at first.** The job
+**D5 — CI runs the job, but it is not a required check at first.** The job
 `android-e2e` (`.github/workflows/android-e2e.yml`) runs `device-support` with
 virtual Android test devices on each pull request
 that is not a draft. It uploads the logcat of each phone, the emulator logs
@@ -108,7 +108,7 @@ source starts no phone, and a job without `android` in
 `FINI_E2E_VIRTUAL_PLATFORMS` skips the test. The first use starts the phones
 of the set in one group; their number is the number of virtual Android test
 devices in the set. Cuttlefish shared the radio only in one group. The group
-writes `android-phones.json` in the run folder. After Playwright restarts a
+writes `android-phones.json` in `RUN_ROOT`, the folder of all run folders. After Playwright restarts a
 worker, the group connects to the phones that run. `globalTeardown` stops
 the phones only when this file exists.
 
@@ -157,7 +157,7 @@ not test each pair, and no project is made for each pair.
 - A CI matrix from `SUPPORTED_DEVICES` comes when a second platform can run in
   CI. Until then the job `android-e2e` runs `device-support`.
 
-## Rules for the Android lane
+## Rules for the Android specs
 
 - Pair through the Add Device screen (`AddDeviceDialog`). Do not call
   `device_save_paired_device`.
@@ -169,10 +169,10 @@ not test each pair, and no project is made for each pair.
 ## Consequences
 
 - One runner, in TypeScript, for desktop and Android. There is no Python.
-- The `ble-gatt` mock broker lane stays. It is fast, and it tests the
+- The tests on the `ble-gatt` mock radio stay. It is fast, and it tests the
   protocol.
 - Virtual Bluetooth tests the Android Bluetooth API, GATT, pairing,
-  permissions and the Fini protocol. It does not test real radio chips, radio
+  permissions and the Fini protocol. It does not test radio chips, radio
   interference, battery use or the address rotation of each vendor.
 
 ## Spike results
@@ -215,7 +215,7 @@ What the spike found:
   - The ping proves only the Rust side of the bridge. The provider waits
     for the page.
   - `_android.devices()` installs a driver app on each phone unless
-    `omitDriverInstall` is set. On an emulator that had just booted, this
+    `omitDriverInstall` is set. Immediately after the boot of an emulator, this
     stopped the second phone.
   - `adb forward` accepts a connection also when the app does not listen
     yet, so each ping has a time limit.

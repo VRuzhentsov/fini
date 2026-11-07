@@ -38,14 +38,14 @@ Decide before writing the test:
 - Single Fini app, real GUI flow, single user view → **E2E single-app UI** (`specs/e2e/ui/`).
 - Two or more Fini apps (device pairing, personal/space sync, multi-device behavior) → **E2E multi-device** (`specs/e2e/multi-device/`), on two virtual Linux test devices over Network. A happy path on another pair or channel names it at the top of the file (`test.use({ testDevicePlatforms, testDeviceChannel })`).
 - That a platform and its channels work (the Android app start, Bluetooth between two Android stacks) → project `device-support` (`specs/e2e/device-support/`).
-- CLI behavior or backend bridge with no GUI need → **E2E CLI** (`specs/e2e/*.spec.ts`, project `cli`).
+- CLI behavior, or the bridge to the Rust side with no GUI → **E2E CLI** (`specs/e2e/*.spec.ts`, project `cli`).
 - Android-only behavior → load `fini-android-testing` instead.
 
 If a behavior fits more than one surface, pick the cheapest to run and the most isolated. Multi-device is expensive, and `device-support` on virtual Android the most expensive — use them only for behaviors that need two apps.
 
 ## When to run tests
 
-Run unit tests and e2e lanes in a PR's wrap-up stage, after its happy flow has been proven and the PR has left draft (`fini-dev`, "PR Lifecycle"). While a PR is a draft, prove behaviour on the running HMR apps instead.
+Run unit tests and e2e projects in a PR's wrap-up stage, after its happy flow has been proven and the PR has left draft (`fini-dev`, "PR Lifecycle"). While a PR is a draft, prove behaviour on the running HMR apps instead.
 
 ## Driving the running apps
 
@@ -238,7 +238,7 @@ Helpers live in `specs/e2e/multi-device/helpers/`:
 - `device-sync.ts` — `ensureSyncedTestDevices(...)` for paired-device setup.
 - `personal-sync.ts` — `ensurePersonalSpaceSync(...)` for personal-space replication setup.
 - `ble-sync.ts` — `ensureBlePairedTestDevices(...)` for specs with `testDeviceChannel: ChannelKind.Bluetooth`.
-- `dom.ts` — shared DOM probes.
+- `dom.ts` — shared DOM checks.
 - `teardown.ts` — `resetTestDevicesUi(...)` runs after every test.
 
 Skeleton from `specs/e2e/multi-device/tests/two-test-devices.spec.ts`:
@@ -260,7 +260,7 @@ Conventions:
 
 - Use a helper from `helpers/` instead of re-implementing pairing or sync inline. If a helper is missing, add it next to the others rather than embedding the setup in the test.
 - Prefix late-running test files with `zz-` (see `zz-personal-space-live-quest-sync.spec.ts`) when the test depends on state established by earlier tests in the same project — Playwright runs files in lexical order with `fullyParallel: false, workers: 1`.
-- Talk to the backend through `testDevice.invoke<T>(command, args)`; use `testDevice.page.evaluate` only for DOM probes.
+- Talk to the Rust side through `testDevice.invoke<T>(command, args)`; use `testDevice.page.evaluate` only for DOM checks.
 - A spec that needs two Bluetooth stacks skips when a test device is virtual Linux (`testDevice.isVirtual(TestDevicePlatform.Linux)`; see `bluetooth-pair-from-zero.spec.ts`).
 - Use the consts (`TestDevicePlatform`, `TestDeviceSource`, `ChannelKind`), never their string values.
 - Mark a group of tests with a Playwright tag, not with a word in the file name. Name the file for what it checks (`two-test-devices.spec.ts`, not `multi-device-smoke.spec.ts`). Give a quick check that the harness and the app answer `{ tag: E2eTag.Smoke }` (`specs/e2e/e2e-project.ts`); a new tag goes into `E2eTag` first, never as a string in a spec. Run them with `npm run test:e2e:smoke` (`--grep @smoke`), or leave them out with `--grep-invert`.

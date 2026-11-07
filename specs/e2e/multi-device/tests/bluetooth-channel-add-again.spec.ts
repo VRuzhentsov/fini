@@ -26,7 +26,7 @@ interface Identity {
   device_id: string;
 }
 
-function note(step: string, startedAt: number): number {
+function recordStepTime(step: string, startedAt: number): number {
   const ms = Date.now() - startedAt;
   test.info().annotations.push({ type: 'step time', description: `${step}: ${(ms / 1000).toFixed(1)} s` });
   return ms;
@@ -53,14 +53,14 @@ test('Bluetooth switched off and on again on a pair', async ({ testDeviceA, test
   await rowB.switchOff();
   const switchedOff = Date.now();
   await rowA.waitForColor(ChannelColor.Grey, FOLLOW_TIMEOUT_MS);
-  note(`${testDeviceA.slug} grey after the switch-off`, switchedOff);
+  recordStepTime(`${testDeviceA.slug} grey after the switch-off`, switchedOff);
 
   // The clock starts when the second test device switches on.
   await rowB.switchOn();
   const switchedOn = Date.now();
   const [greenA, greenB] = await Promise.all([
-    rowA.waitForColor(ChannelColor.Green, STEP_TIMEOUT_MS).then(() => note(`${testDeviceA.slug} green`, switchedOn)),
-    rowB.waitForColor(ChannelColor.Green, STEP_TIMEOUT_MS).then(() => note(`${testDeviceB.slug} green`, switchedOn)),
+    rowA.waitForColor(ChannelColor.Green, STEP_TIMEOUT_MS).then(() => recordStepTime(`${testDeviceA.slug} green`, switchedOn)),
+    rowB.waitForColor(ChannelColor.Green, STEP_TIMEOUT_MS).then(() => recordStepTime(`${testDeviceB.slug} green`, switchedOn)),
   ]);
   expect(greenA, `${testDeviceA.slug} green in the standard time`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
   expect(greenB, `${testDeviceB.slug} green in the standard time`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);

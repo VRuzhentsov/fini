@@ -6,28 +6,23 @@ import { openDeviceDetailsFromSettings } from './personal-sync.ts';
 import { ChannelColor, ChannelKind, ChannelState } from '../../../../src/utils/channel.ts';
 
 /**
- * Readiness + pairing for specs with the `testDeviceChannel` option
- * `ChannelKind.Bluetooth`. Virtual Linux test devices are spawned with
- * `FINI_DISCOVERY_DISABLED=1`, so there is nothing to discover by design and
- * the normal `ensureSyncedTestDevices` UI-pair flow doesn't apply. What is
- * underneath is the real thing: these
- * testDevices dial the real `ble.rs` code path (dial loop, peripheral accept,
- * session claim) against a cross-process mock radio instead of a plain TCP
- * stand-in, and pairing is marked `viaBluetooth: true` so the Bluetooth
- * channel is switched on for the pair -- which is what
- * `bluetooth_connect_candidates` actually reads. See
+ * The pairing for specs with the `testDeviceChannel` option
+ * `ChannelKind.Bluetooth`. The harness starts virtual Linux test devices with
+ * `FINI_DISCOVERY_DISABLED=1`, so they find nothing on the network, and the
+ * pairing through the UI of `ensureSyncedTestDevices` cannot work. The
+ * Bluetooth code of the app runs as on a phone: `ble.rs` connects, accepts
+ * and claims the session, on the mock radio of `ble-gatt`. The pair is saved
+ * with `viaBluetooth: true`, so the Bluetooth channel is on for the pair. See
  * `fakeBluetoothAddress` in `providers/linux.ts` and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  */
 
 /**
- * Every testDevice's fake address is deterministic from its index alone (see
- * `fakeBluetoothAddress` in `providers/linux.ts`) -- duplicated here rather than
- * exported/imported so this helper stays a pure consumer of what the
- * harness already put in each testDevice's environment (`FINI_LOCAL_BLUETOOTH_
- * ADDRESS`), not a second source of truth for it. Tests never need to
- * compute an address themselves; they only need to hand the *other*
- * testDevice's known address to `device_save_paired_device`.
+ * The fake address of a test device comes only from its position (see
+ * `fakeBluetoothAddress` in `providers/linux.ts`). This helper calculates it
+ * again and does not import it: it uses only what the harness gave to each
+ * test device (`FINI_LOCAL_BLUETOOTH_ADDRESS`). A test gives the address of
+ * the other test device to `device_save_paired_device`.
  */
 function fakeBluetoothAddress(index: number): string {
   return `AA:BB:CC:00:00:${(index + 1).toString(16).padStart(2, '0').toUpperCase()}`;
@@ -43,11 +38,10 @@ export async function ensureBlePairedTestDevices(
 
   const [a, b] = await waitForTestDevicesReady(testDevices, timeoutMs);
 
-  // Test devices with the physical source and virtual Android test devices are
-  // real apps carrying a real pairing. Seeding a fake address over that would
-  // overwrite the thing the run depends on, so that path asserts the pairing
-  // rather than manufacturing it -- and only ensures the per-pair Bluetooth
-  // toggle is on, which since ADR-0006 costs one boolean and no bond.
+  // A test device with the physical source, and a virtual Android test
+  // device, have a pairing made through the app. A fake address would
+  // overwrite it. Thus this path only asserts the pairing, and switches on
+  // the Bluetooth channel of the pair (one boolean since ADR-0006).
   if (!a.testDevice.isVirtual(TestDevicePlatform.Linux) || !b.testDevice.isVirtual(TestDevicePlatform.Linux)) {
     await ensureBluetoothEnabledForPeer(a, b.identity.device_id);
     await ensureBluetoothEnabledForPeer(b, a.identity.device_id);
@@ -59,8 +53,8 @@ export async function ensureBlePairedTestDevices(
     displayName: b.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(1),
     viaBluetooth: true,
-    // The key a real pairing pins (ADR-0009 D8); without it every
-    // Bluetooth session is refused.
+    // The key that a pairing pins (ADR-0009 D8). Without it, the app
+    // rejects each Bluetooth session.
     endpointId: b.identity.endpoint_id,
   });
   await b.testDevice.invoke('device_save_paired_device', {
@@ -68,8 +62,8 @@ export async function ensureBlePairedTestDevices(
     displayName: a.identity.hostname,
     bluetoothAddress: fakeBluetoothAddress(0),
     viaBluetooth: true,
-    // The key a real pairing pins (ADR-0009 D8); without it every
-    // Bluetooth session is refused.
+    // The key that a pairing pins (ADR-0009 D8). Without it, the app
+    // rejects each Bluetooth session.
     endpointId: a.identity.endpoint_id,
   });
 
@@ -87,27 +81,20 @@ interface ChannelStatusRow {
 }
 
 /**
- * Asserts the pairing this run depends on, then makes sure Bluetooth is
- * actually switched on for it.
+ * Asserts the pairing that the run uses, then makes sure that its Bluetooth
+ * channel is on.
  *
- * The pairing itself is still only asserted, never manufactured: these are
- * real apps on physical devices or virtual phones, and inventing a pair would replace the thing the
- * run is supposed to exercise.
+ * The test asserts the pairing and does not make it: the pairing on a phone
+ * or a physical test device is the item that the run tests.
  *
- * Enablement is different, and ADR-0006 is why. It used to be an assertion
- * too, on the reasoning that the flag stood for a real OS-level bond that a
- * test had no business fabricating. There is no bond any more -- enabling
- * writes one boolean and needs no address -- so asserting it only made the
- * lane fail for a reason the lane could fix. It also failed for real: a
- * device that had run an older build could arrive with the flag cleared by
- * the self-report path that used to switch Bluetooth *off* when it found no
- * bond, leaving a permanently red lane and a peer reporting
- * `auth rejected: bluetooth disabled for this pair` with nothing naming the
- * cause.
+ * The test can switch on the channel, because since ADR-0006 the switch is
+ * one boolean and there is no bond of the operating system. An older build
+ * sometimes switched Bluetooth off when it found no bond. Then the peer
+ * rejected each session (`auth rejected: bluetooth disabled for this pair`).
  *
- * A stored address is deliberately not required. Since ADR-0006 nothing
- * dials it, and a phone that advertises under a rotating address will not
- * have one that means anything.
+ * The test does not need a stored address. Since ADR-0006 the app does not
+ * connect to it, and a phone that advertises with a changing address has no
+ * fixed one.
  */
 async function ensureBluetoothEnabledForPeer(
   testDevice: SyncedTestDevice,
@@ -119,9 +106,8 @@ async function ensureBluetoothEnabledForPeer(
     `${testDevice.testDevice.slug} should already be paired with ${peerDeviceId}`,
   ).toBe(true);
 
-  // The switch lives in `channels` now, not on the paired row: a pair made
-  // over the network has no Bluetooth row at all, so asking the paired row
-  // whether Bluetooth is on can only ever answer "no".
+  // The switch is in `channels`, not on the paired row. A pair made over the
+  // network has no Bluetooth row, so the paired row always says "off".
   const statuses = await testDevice.testDevice.invoke<ChannelStatusRow[]>(
     'device_channel_statuses',
     { peerDeviceId },
@@ -130,12 +116,11 @@ async function ensureBluetoothEnabledForPeer(
   if (bluetooth?.state === ChannelState.On) {
     return;
   }
-  // A channel that does not exist can only be set up with the peer, in the
-  // setup dialog on both devices (ADR-0008 D1); a test cannot switch it into
-  // being.
+  // Only the two devices together can add a channel, in the dialog on each
+  // device (ADR-0008 D1). A test cannot switch on a channel that is not there.
   expect(
     bluetooth?.state,
-    `${testDevice.testDevice.slug} has no Bluetooth channel with ${peerDeviceId} -- set it up in the app first`,
+    `${testDevice.testDevice.slug} has no Bluetooth channel with ${peerDeviceId}: add it in the app first`,
   ).toBe(ChannelState.Off);
 
   const after = await testDevice.testDevice.invoke<ChannelStatusRow[]>(
@@ -149,24 +134,20 @@ async function ensureBluetoothEnabledForPeer(
 }
 
 /**
- * Proves the network transport genuinely cannot carry this session, so a
- * Bluetooth result is not one the network quietly produced.
+ * Proves that the Network channel cannot carry the session, so that a
+ * Bluetooth result does not come from the network.
  *
- * Two shapes, because the two lanes rule the network out in different ways.
- * Spawned testDevices are launched with `FINI_DISCOVERY_DISABLED=1`, so they see no
- * presence at all and the global assertion is the strongest one available.
- * External testDevices are real apps that cannot be relaunched with that flag, and
- * may well hear each other over Wi-Fi: there, what must hold is that this pair
- * has no Network channel switched on, so no session can run over it whatever
- * the network can reach.
+ * There are two checks. The harness starts a virtual Linux test device with
+ * `FINI_DISCOVERY_DISABLED=1`, so it hears no device: the test asserts that.
+ * Each other test device can hear its peer over Wi-Fi. There, the test
+ * asserts that the Network channel of the pair is not on.
  */
 export async function expectNetworkChannelUnavailable(
   testDevice: TestDevice,
   peerDeviceId?: string,
 ): Promise<void> {
-  // A spawned testDevice was launched with FINI_DISCOVERY_DISABLED=1 and can see
-  // nothing at all, so assert exactly that -- it is the stronger claim, and
-  // weakening it for both lanes would quietly stop proving the flag works.
+  // A virtual Linux test device started with FINI_DISCOVERY_DISABLED=1 and
+  // hears no device. This check is stronger, and it also proves the flag.
   if (testDevice.isVirtual(TestDevicePlatform.Linux) || peerDeviceId === undefined) {
     const presence = await testDevice.invoke<unknown[]>('device_heard_devices');
     expect(presence, `${testDevice.slug} should have no network presence (FINI_DISCOVERY_DISABLED)`).toHaveLength(0);
@@ -177,21 +158,21 @@ export async function expectNetworkChannelUnavailable(
   const network = statuses.find((status) => status.kind === ChannelKind.Network);
   expect(
     network?.state,
-    `${testDevice.slug} has the Network channel on with ${peerDeviceId} -- ` +
-      'this lane needs a pair whose only channel is Bluetooth',
+    `${testDevice.slug} has the Network channel on with ${peerDeviceId}: ` +
+      'this test needs a pair that has only the Bluetooth channel',
   ).not.toBe(ChannelState.On);
 }
 
 /**
- * Green is the backend's own verdict (ADR-0008 D9): the peer was heard on
- * this channel within its timeout, or an exchange with it is open.
+ * The Rust side of the app sets green (ADR-0008 D9): the app heard the peer
+ * on this channel in its time limit, or an exchange with it is open.
  */
 export async function waitForGreenChannel(
   testDevice: TestDevice,
   peerDeviceId: string,
   timeoutMs = 60_000,
 ): Promise<void> {
-  await pollUntil(`${testDevice.slug} bluetooth transport reports green`, async () => {
+  await pollUntil(`${testDevice.slug} Bluetooth channel is green`, async () => {
     await testDevice.invoke('space_sync_tick');
     const statuses = await testDevice.invoke<ChannelStatusRow[]>('device_channel_statuses', {
       peerDeviceId,
@@ -202,12 +183,12 @@ export async function waitForGreenChannel(
 }
 
 /**
- * The UI-facing half of "green": the Device page's Bluetooth row draws the
- * colour the backend reports. Reads `data-channel-color` rather than the
- * row's text, which is copy and moves with the design.
+ * Green on the screen: the Bluetooth row of the Device page shows the color
+ * that the Rust side sets. The test reads `data-channel-color`, not the text
+ * of the row, because the text changes with the design.
  *
- * Orange aborts the poll at once: it is a problem on this device (the radio)
- * that no amount of waiting in the test will clear.
+ * Orange stops the test at once: it is a problem of the radio on this
+ * device, and more time does not change it.
  */
 export async function waitForBluetoothRowConnectedInUi(
   testDevice: TestDevice,
@@ -216,9 +197,10 @@ export async function waitForBluetoothRowConnectedInUi(
 ): Promise<void> {
   const selector = `[data-testid="channel-status-row"][data-channel-kind="${ChannelKind.Bluetooth}"]`;
 
-  // Opened once and left open: the open page is what runs the status search
-  // (ADR-0008 D12), and it re-reads its rows every few seconds. Re-opening it
-  // on every poll restarted the search each time, too briefly to hear anyone.
+  // The test opens the page one time and keeps it open. The open page runs
+  // the status search (ADR-0008 D12) and reads its rows again each few
+  // seconds. When the test opened it at each check, the search started again
+  // each time, and it did not run for sufficient time to hear the peer.
   await openDeviceDetailsFromSettings(testDevice, peerDeviceId);
   await pollUntil(`${testDevice.slug} bluetooth row is green in the UI`, async () => {
     await testDevice.invoke('space_sync_tick');

@@ -77,7 +77,7 @@ specs on virtual Linux, runs with only the physical source, and jobs without
 `AndroidProvider.prepare()`, for each test file:
 
 1. `_android.devices({ omitDriverInstall: true })` finds the phone by serial.
-   The driver app of Playwright stopped a phone that had just booted.
+   The driver app of Playwright stopped a phone immediately after its boot.
 2. `adb install -r -g` installs the APK (180 s limit, 3 tries).
    `installApk` sends the 455 MB debug APK in one write, which fails with
    EPIPE.

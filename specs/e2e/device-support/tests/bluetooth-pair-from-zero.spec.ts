@@ -37,7 +37,7 @@ interface PairedDevice {
   peer_device_id: string;
 }
 
-function note(step: string, startedAt: number): number {
+function recordStepTime(step: string, startedAt: number): number {
   const ms = Date.now() - startedAt;
   test.info().annotations.push({ type: 'step time', description: `${step}: ${(ms / 1000).toFixed(1)} s` });
   return ms;
@@ -90,16 +90,16 @@ test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, test
 
   const searching = Date.now();
   const [listedByA, listedByB] = await Promise.all([
-    dialogA.waitForDevice(identityB.hostname).then(() => note(`${testDeviceA.slug} lists ${testDeviceB.slug}`, searching)),
-    dialogB.waitForDevice(identityA.hostname).then(() => note(`${testDeviceB.slug} lists ${testDeviceA.slug}`, searching)),
+    dialogA.waitForDevice(identityB.hostname).then(() => recordStepTime(`${testDeviceA.slug} lists ${testDeviceB.slug}`, searching)),
+    dialogB.waitForDevice(identityA.hostname).then(() => recordStepTime(`${testDeviceB.slug} lists ${testDeviceA.slug}`, searching)),
   ]);
-  expect(listedByA, `${testDeviceA.slug} lists ${testDeviceB.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
-  expect(listedByB, `${testDeviceB.slug} lists ${testDeviceA.slug} within the standard`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
+  expect(listedByA, `${testDeviceA.slug} lists ${testDeviceB.slug} in the standard time`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
+  expect(listedByB, `${testDeviceB.slug} lists ${testDeviceA.slug} in the standard time`).toBeLessThanOrEqual(DISCOVERY_STANDARD_MS);
 
   const pairPressed = Date.now();
   await dialogA.pair(identityB.hostname);
   await dialogB.waitForRequest();
-  note(`Pair -> request on ${testDeviceB.slug}`, pairPressed);
+  recordStepTime(`Pair -> request on ${testDeviceB.slug}`, pairPressed);
 
   await dialogB.accept();
   const code = await dialogA.code();
@@ -108,15 +108,15 @@ test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, test
   const codeTyped = Date.now();
   await dialogB.typeCode(code);
   await Promise.all([dialogA.waitForPaired(), dialogB.waitForPaired()]);
-  note('code -> Paired on both', codeTyped);
+  recordStepTime('code -> Paired on both', codeTyped);
 
-  // The first session runs over the pairing's link, so the channel turns
-  // green while the dialogs still show Paired. Read from the backend: the
-  // row is behind the dialog.
+  // The first session uses the link of the pairing, so the channel becomes
+  // green while the dialogs still show Paired. The test reads the Rust side,
+  // because the row is behind the dialog.
   const paired = Date.now();
   await Promise.all([
-    waitForGreen(testDeviceA, identityB.device_id).then(() => note(`Paired -> ${testDeviceA.slug} green`, paired)),
-    waitForGreen(testDeviceB, identityA.device_id).then(() => note(`Paired -> ${testDeviceB.slug} green`, paired)),
+    waitForGreen(testDeviceA, identityB.device_id).then(() => recordStepTime(`Paired -> ${testDeviceA.slug} green`, paired)),
+    waitForGreen(testDeviceB, identityA.device_id).then(() => recordStepTime(`Paired -> ${testDeviceB.slug} green`, paired)),
   ]);
 
   await Promise.all([dialogA.done(), dialogB.done()]);
@@ -125,7 +125,7 @@ test('a new pair over Bluetooth, from zero to green', async ({ testDeviceA, test
   const pageB = new DevicePage(testDeviceB.page, STEP_TIMEOUT_MS);
   await Promise.all([pageA.open(identityB.device_id), pageB.open(identityA.device_id)]);
   await Promise.all([
-    pageA.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => note(`Done -> ${testDeviceA.slug} green`, done)),
-    pageB.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => note(`Done -> ${testDeviceB.slug} green`, done)),
+    pageA.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => recordStepTime(`Done -> ${testDeviceA.slug} green`, done)),
+    pageB.channel(ChannelKind.Bluetooth).waitForColor(ChannelColor.Green).then(() => recordStepTime(`Done -> ${testDeviceB.slug} green`, done)),
   ]);
 });

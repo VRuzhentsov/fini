@@ -26,29 +26,23 @@ interface Quest {
 }
 
 /**
- * A happy path of `multi-device` over Bluetooth: two real `fini-app`
- * processes, network transport made genuinely unavailable
- * (`testDeviceChannel: ChannelKind.Bluetooth` -> `FINI_DISCOVERY_DISABLED=1`), dial the real
- * `ble.rs` code path (search coordinator, peripheral accept, exchange) against
- * a cross-process mock radio instead of hardware -- the same acceptance
- * shape the network lane proves for its own channel, one layer
- * more real. See `helpers/ble-sync.ts`, `docs/e2e.md` ("What each project
- * proves for each channel"), and
+ * A happy path of `multi-device` over Bluetooth. Two `fini-app` processes
+ * have the Network channel off (`testDeviceChannel: ChannelKind.Bluetooth`
+ * gives `FINI_DISCOVERY_DISABLED=1`). The Bluetooth code of `ble.rs` runs
+ * (the search, the peripheral accept, the exchange) on the mock radio of
+ * `ble-gatt`, not on a hardware radio. See `helpers/ble-sync.ts`,
+ * `docs/e2e.md` ("What each project proves for each channel"), and
  * `docs/adr/0004-mock-broker-for-cross-process-e2e.md` in `ble-gatt`.
  *
- * Deliberately stronger than a bare transport-selection check: proves both
- * sides see each other (green, ADR-0008 D9), and that a
- * *single* quest converges correctly when edited from both ends, not just
- * that traffic flows one direction.
+ * The test proves more than the channel order: the two sides hear each other
+ * (green, ADR-0008 D9), and one quest gets the same value on the two sides
+ * when each side changes it.
  *
- * Quest convergence is asserted via `get_quests` (backend truth), not by
- * polling the Focus view's DOM: the actual sync -- create, deliver, edit,
- * re-deliver -- was confirmed to complete in ~1-2s every time during this
- * spec's development; what was unreliable was the Focus view picking up
- * the change fast enough under repeated polling, a frontend-refetch timing
- * question this transport lane has no reason to answer. `get_quests` is
- * strictly more precise anyway (exact id, not scraped text) for verifying
- * "the same entity converged."
+ * The test reads the quests with `get_quests` (the database of the app), not
+ * from the Focus view. The sync (create, send, edit, send again) took 1 to
+ * 2 s in each run. The Focus view sometimes showed the change later; that
+ * is a question for the frontend, not for this test. `get_quests` also
+ * compares the id, not only the text.
  */
 test('happy-path-BLE: both sides go green over BLE alone, and a single quest converges both ways', async ({
   testDeviceA,
@@ -56,22 +50,22 @@ test('happy-path-BLE: both sides go green over BLE alone, and a single quest con
 }) => {
   const [syncedA, syncedB] = await ensureBlePairedTestDevices([testDeviceA, testDeviceB]);
 
-  // Peer-scoped, so the same spec covers both lanes: spawned testDevices see no
-  // presence at all, while on hardware this pair has no Network channel on.
+  // For each peer, so the spec works on each source: a virtual Linux test
+  // device hears no device, and on hardware the pair has no Network channel on.
   await expectNetworkChannelUnavailable(testDeviceA, syncedB.identity.device_id);
   await expectNetworkChannelUnavailable(testDeviceB, syncedA.identity.device_id);
 
-  // Green on both, first as the Device page draws it -- opening the page is
-  // what runs the status search that hears the peer (ADR-0008 D12) -- then
-  // as the backend reports it. An idle pair holds no session, so presence,
-  // not a session, is what green means (D9).
+  // Green on the two sides: first on the Device page, then from the Rust
+  // side. The open page runs the status search that hears the peer
+  // (ADR-0008 D12). A pair with no work has no session, so green means that
+  // the app hears the peer, not that a session is open (D9).
   await waitForBluetoothRowConnectedInUi(testDeviceA, syncedB.identity.device_id);
   await waitForBluetoothRowConnectedInUi(testDeviceB, syncedA.identity.device_id);
   await waitForGreenChannel(testDeviceA, syncedB.identity.device_id);
   await waitForGreenChannel(testDeviceB, syncedA.identity.device_id);
 
-  // Saving the mapping is the first work, and it opens the first exchange --
-  // over Bluetooth, the only channel these two can use.
+  // The saved mapping is the first work, and it opens the first exchange,
+  // over Bluetooth: the only channel that these two can use.
   await ensurePersonalSpaceSync(
     testDeviceA,
     syncedB.identity.device_id,
@@ -82,25 +76,25 @@ test('happy-path-BLE: both sides go green over BLE alone, and a single quest con
   await expectNoIncomingSpaceSyncDialog(testDeviceA);
   await expectNoIncomingSpaceSyncDialog(testDeviceB);
 
-  // `ensurePersonalSpaceSync` only proves the mapping was recorded/approved
-  // locally, not that a full sync round-trip has happened -- matches
-  // `zz-personal-space-live-quest-sync.spec.ts`'s own use of this same call
-  // as an extra readiness gate before creating anything, so a quest created
-  // immediately after approval doesn't race the very first backfill tick.
+  // `ensurePersonalSpaceSync` proves only that each device recorded the
+  // mapping, not that a sync went in the two directions. Thus the test waits
+  // for the first sync, as `zz-personal-space-live-quest-sync.spec.ts` does,
+  // before it makes a quest. Else the new quest and the first sync can occur
+  // at the same time.
   await waitForPersonalLastSyncedLabel(testDeviceB, syncedA.identity.device_id);
   await sleep(1_100);
 
   const originalTitle = `BLE sync ${Date.now()}`;
   const editedTitle = `${originalTitle} (edited on B)`;
 
-  const createdOnA = await createQuestViaChat(testDeviceA, originalTitle);
-  const questOnB = await waitForQuestConverged(testDeviceA, testDeviceB, originalTitle);
-  expect(questOnB.id, 'the synced quest must be the same entity, not a new one').toBe(createdOnA.id);
+  const createdOnA = await createQuestInChat(testDeviceA, originalTitle);
+  const questOnB = await waitForQuestSynced(testDeviceA, testDeviceB, originalTitle);
+  expect(questOnB.id, 'the synced quest has the same id: it is not a new quest').toBe(createdOnA.id);
 
   await testDeviceB.invoke('update_quest', { id: questOnB.id, input: { title: editedTitle } });
 
-  const questOnA = await waitForQuestConverged(testDeviceB, testDeviceA, editedTitle);
-  expect(questOnA.id, 'the edit must land on the same entity, not create a second quest').toBe(createdOnA.id);
+  const questOnA = await waitForQuestSynced(testDeviceB, testDeviceA, editedTitle);
+  expect(questOnA.id, 'the edit changes the same quest: there is no second quest').toBe(createdOnA.id);
 });
 
 async function sleep(ms: number): Promise<void> {
@@ -112,8 +106,8 @@ async function openFocus(testDevice: TestDevice): Promise<void> {
   await testDevice.page.waitForSelector('[data-testid="chat-input"]', TIMEOUT_MS);
 }
 
-/** Creates a quest through the real chat-input UI, then confirms it landed locally via `get_quests`. */
-async function createQuestViaChat(testDevice: TestDevice, title: string): Promise<Quest> {
+/** Makes a quest through the chat input of the app, then finds it with `get_quests`. */
+async function createQuestInChat(testDevice: TestDevice, title: string): Promise<Quest> {
   await openFocus(testDevice);
   await testDevice.page.fill('[data-testid="chat-input"]', title);
   await testDevice.page.click('[data-testid="chat-submit"]');
@@ -121,9 +115,9 @@ async function createQuestViaChat(testDevice: TestDevice, title: string): Promis
   return findQuestByTitle(testDevice, title);
 }
 
-/** Ticks both testDevices and polls the receiver's own `get_quests` until the given title lands there. */
-async function waitForQuestConverged(sender: TestDevice, receiver: TestDevice, title: string): Promise<Quest> {
-  return pollUntil(`${receiver.slug} converges on quest titled "${title}"`, async () => {
+/** Runs a sync tick on the two test devices until `get_quests` of the receiver has the title. */
+async function waitForQuestSynced(sender: TestDevice, receiver: TestDevice, title: string): Promise<Quest> {
+  return pollUntil(`${receiver.slug} has the quest "${title}"`, async () => {
     await sender.invoke('space_sync_tick');
     await receiver.invoke('space_sync_tick');
     const quests = await receiver.invoke<Quest[]>('get_quests');
@@ -132,7 +126,7 @@ async function waitForQuestConverged(sender: TestDevice, receiver: TestDevice, t
 }
 
 async function findQuestByTitle(testDevice: TestDevice, title: string): Promise<Quest> {
-  return pollUntil(`${testDevice.slug} finds quest titled "${title}" via get_quests`, async () => {
+  return pollUntil(`${testDevice.slug} has the quest "${title}" in get_quests`, async () => {
     const quests = await testDevice.invoke<Quest[]>('get_quests');
     return quests.find((quest) => quest.title === title) ?? false;
   }, TIMEOUT_MS, 1_000);

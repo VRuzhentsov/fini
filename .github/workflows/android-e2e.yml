@@ -10,7 +10,7 @@ on:
   workflow_call:
     inputs:
       non_blocking:
-        description: A failure of the lane shows as a warning and does not fail the caller.
+        description: A failure of the job shows as a warning and does not fail the caller.
         type: boolean
         default: false
       push_cache:
@@ -32,14 +32,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Setup Java
+      - name: Install Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
           cache: gradle
 
-      - name: Setup Android SDK
+      - name: Install the Android SDK
         uses: android-actions/setup-android@v3
         with:
           # The action's default set is `tools platform-tools`. Google removed
@@ -49,13 +49,13 @@ jobs:
           # and NDK.
           packages: platform-tools
 
-      - name: Setup Node.js
+      - name: Install Node.js
         uses: actions/setup-node@v5
         with:
           node-version: "24"
           cache: npm
 
-      - name: Setup Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add x86_64 Android Rust target
@@ -96,7 +96,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Run the android lane
+      - name: Run device-support on virtual Android
         # The same command as on a developer's computer (ADR-0013 D8). It
         # pulls the android-phones-runner image from GHCR, or builds and
         # pushes it when the Dockerfile changed, and runs Playwright in it.
@@ -108,7 +108,7 @@ jobs:
 
       - name: Show the free disk space
         # The runner disk was too small for Quality Gates before; this records
-        # what the lane leaves.
+        # what the job leaves.
         if: always()
         run: df -h /
 

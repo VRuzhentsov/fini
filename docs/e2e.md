@@ -152,13 +152,13 @@ The channels are in `docs/adr/0001-transport-neutral-peer-protocol.md` and
 | `multi-device`, `peer-sync-over-ble.spec.ts` (`testDeviceChannel: ChannelKind.Bluetooth`) | Two virtual Linux test devices with the Network channel off, on the `ble-gatt` mock radio (`FINI_BLE_MOCK_BROKER`). The real code of `bluetooth-channel.service.rs` runs: the dial, the advertising and accepting side, the session, and the GATT roles. Both rows go green, and one quest syncs in both directions. It proves the protocol, the session and the UI, not the radio. | Each pull request (Quality Gates) |
 | `device-support`, `bluetooth-pair-from-zero.spec.ts` | Two virtual Android test devices on one virtual Bluetooth medium (netsim): the Android Bluetooth stack, GATT and the APK. A new pair through Add Device until the Bluetooth row is green on both, with the 10 s standard for the listing. It does not prove the radio. | Local and CI (`npm run test:e2e:android`, job `android-e2e`; not a required check yet) |
 | `device-support`, `android-app-start.spec.ts` | On a virtual Android test device (`testDeviceA` of the two phones): the app starts and makes the notification channel `fini.reminders`. | Local and CI (job `android-e2e`) |
-| The same specs with the physical source | `FINI_E2E_TEST_DEVICES=a=linux@tcp:9224,b=android@tcp:9223`: the same flows on a desktop and a phone with real radios. `bluetooth-channel-add-again.spec.ts` runs only like this: Bluetooth off and on again on a pair, both rows green in the 10 s standard (ADR-0011). | Local only |
+| The same specs with the physical source | `FINI_E2E_TEST_DEVICES=a=linux@tcp:9224,b=android@tcp:9223`: the same flows on a desktop and a phone with hardware radios. `bluetooth-channel-add-again.spec.ts` runs only like this: Bluetooth off and on again on a pair, both rows green in the 10 s standard (ADR-0011). | Local only |
 
-A real radio is not a check in CI:
+CI does not test a hardware radio:
 
 - GitHub-hosted runners have no Bluetooth radio. The mock radio and netsim
   prove the protocol, the session and GATT. No virtual Bluetooth medium
-  (Bumble, `btvirt`, netsim) shows real radio faults, for example radio
+  (Bumble, `btvirt`, netsim) shows the faults of a hardware radio, for example radio
   interference or a fault of one adapter. These stay a test on physical
   devices.
 - Virtual phones need KVM, which only the Linux runners have. Windows runners
@@ -167,7 +167,7 @@ A real radio is not a check in CI:
 
 ## Not done yet
 
-- A test of real radios in CI (a device lab or a self-hosted runner). Now
+- A test of hardware radios in CI (a device lab or a self-hosted runner). Now
   only the physical source on your desk tests them.
 - The device-support checks for each channel: sync a quest in both
   directions, restart and connect again, unpair.

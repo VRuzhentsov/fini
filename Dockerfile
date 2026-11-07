@@ -204,7 +204,7 @@ ENV FINI_E2E_SOCKET_DIR=/var/run/fini-e2e \
 
 CMD ["sh", "./scripts/e2e-runner.sh"]
 
-# Virtual phones for the android e2e lane (ADR-0013 D8): Node, adb and the
+# Virtual phones for the Android e2e job (ADR-0013 D8): Node, adb and the
 # Android Emulator in one image, so a local run and CI run the same thing. The
 # repo is mounted at run time; nothing of the project is copied in. The
 # emulator needs only /dev/kvm.

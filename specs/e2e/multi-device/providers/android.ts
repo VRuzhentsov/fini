@@ -22,7 +22,7 @@ const DEFAULT_APK = join(REPO_ROOT, 'src-tauri/gen/android/app/build/outputs/apk
 /** The port of the devtools bridge in the app (`DEVTOOLS_ANDROID_TCP_PORT`, src-tauri/src/lib.rs). */
 const APP_BRIDGE_PORT = 9223;
 const FIRST_HOST_PORT = 9223;
-// The first app start on a phone that has just booted can take minutes.
+// The first app start after the boot of a phone can take minutes.
 const CONNECT_TIMEOUT_MS = 180_000;
 const APP_CHECK_INTERVAL_MS = 30_000;
 const INSTALL_TIMEOUT_MS = 180_000;
@@ -82,7 +82,7 @@ export class AndroidProvider implements TestDeviceProvider {
         return await connectOverTcp(this.slug, this.hostPort);
       } catch (error) {
         lastError = error;
-        // On an emulator that has just booted, the first app start failed
+        // Immediately after the boot of an emulator, the first app start failed
         // once in two runs (the bridge never answered, cause not found).
         // Start the app again when its process is not there.
         if (Date.now() > nextAppCheck) {

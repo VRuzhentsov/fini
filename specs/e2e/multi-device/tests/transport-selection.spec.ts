@@ -5,12 +5,12 @@ import { pollUntil } from '../helpers/dom.ts';
 import { ChannelKind } from '../../../../src/utils/channel.ts';
 
 /**
- * Companion to `peer-sync-over-ble.spec.ts`: proves the network-first half
- * of channel selection in the real app. Two test devices on one network have
- * work to move, so an exchange opens (ADR-0008 D10), and it must run over the
- * Network channel. Together the two specs prove selection end-to-end:
- * network wins whenever the peer is present on it. See `docs/e2e.md`,
- * "What each project proves for each channel".
+ * Proves the first part of the channel order in the app; the other part is
+ * in `peer-sync-over-ble.spec.ts`. Two test devices on one network have work
+ * to send, so an exchange opens (ADR-0008 D10). It must use the Network
+ * channel. The two specs together prove the channel order: the app uses
+ * Network when it hears the peer there. See `docs/e2e.md`, "What each
+ * project proves for each channel".
  */
 test('an exchange between paired test devices on one network runs over the network channel', async ({
   testDeviceA,
@@ -18,8 +18,8 @@ test('an exchange between paired test devices on one network runs over the netwo
 }) => {
   const [syncedA, syncedB] = await ensureSyncedTestDevices([testDeviceA, testDeviceB], { pairViaUi: true });
 
-  // An idle pair holds no exchange; saving a mapping is work, and the
-  // exchange that carries it stays open until it has been idle for a while.
+  // A pair with no work has no exchange. A saved mapping is work, and its
+  // exchange stays open for some time after the work stops.
   await ensurePersonalSpaceSync(testDeviceA, syncedB.identity.device_id, testDeviceB, syncedA.identity.device_id);
   await testDeviceA.invoke('create_quest', {
     input: { title: `network exchange ${Date.now()}`, description: null, space_id: '1', is_checklist: false },

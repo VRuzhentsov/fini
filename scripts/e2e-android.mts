@@ -66,8 +66,8 @@ if (cacheImage && run(ENGINE, ['pull', cacheImage]) === 0) {
   const built = run(ENGINE, ['build', '--target', 'android-phones-runner', ...tags, '.']);
   if (built !== 0) process.exit(built);
   if (cacheImage && process.env.FINI_ANDROID_PHONES_CACHE_PUSH === '1') {
-    // A failed push costs only the next run's build, so the lane goes on.
-    if (run(ENGINE, ['push', cacheImage]) !== 0) console.warn(`Could not push ${cacheImage}; the lane goes on.`);
+    // After a failed push, only the next run must build the image again, so the job continues.
+    if (run(ENGINE, ['push', cacheImage]) !== 0) console.warn(`Could not push ${cacheImage}; the job continues.`);
   }
 }
 

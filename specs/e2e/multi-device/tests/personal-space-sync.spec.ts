@@ -49,11 +49,11 @@ test('ending and re-enabling Personal sync records end then bootstraps again', a
   await testDeviceA.invoke('space_sync_tick');
   await testDeviceB.invoke('space_sync_tick');
 
-  // Polled, not asserted straight after the ticks above: one tick each is
-  // enough for co-located virtual Linux test devices, but not for the physical source
-  // -- the end-of-sync frame has an actual network hop to make.
-  // Measured on a physical phone: still mapped at +0ms, cleared by +3s. The
-  // assertion is unchanged, it just stops assuming the hop is instant.
+  // The test checks again until the time limit, not one time after the
+  // ticks. One tick on each is sufficient for two virtual Linux test devices
+  // on one computer. With the physical source, the frame that ends the sync
+  // goes over the network. On a physical phone, the mapping was there at
+  // +0 ms and not there at +3 s.
   const endedStatus = await pollUntil(
     'peer records the end of Personal sync',
     async () => {
