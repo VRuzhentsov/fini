@@ -39,7 +39,9 @@ export default defineConfig(async () => ({
       // real one. Observed in a dev session: an unrelated worktree's build
       // wrote its `dist/index.html` and this app full-page reloaded, twice,
       // mid-session. A reload is not HMR -- it throws away the state you were
-      // looking at, which is the thing HMR exists to keep.
+      // looking at, which is the thing HMR exists to keep. Linked git
+      // worktrees live in `.worktrees/` (git-workflow) and are excluded for
+      // the same reason.
       //
       // `dist` and `tmp` are this checkout's own outputs, for the same
       // reason: nothing in dev is served from either, and the only thing
@@ -47,6 +49,7 @@ export default defineConfig(async () => ({
       ignored: [
         "**/src-tauri/**",
         "**/.claude/worktrees/**",
+        "**/.worktrees/**",
         "**/dist/**",
         "**/tmp/**",
         "**/builddir/**",
