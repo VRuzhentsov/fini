@@ -3,8 +3,10 @@
 //! one UDP port. One QUIC connection carries one session or one frame
 //! before a session.
 //!
-//! iroh's own mDNS lookup (`iroh-mdns-address-lookup`) finds the other Fini
-//! devices and gives their addresses. The key to connect to is the one
+//! Fini's own iroh address lookup over mDNS (`mdns_lookup`, on the
+//! `mdns-sd` crate) finds the other Fini devices and gives their
+//! addresses. It uses every IPv4 interface, not only the one of the
+//! default route. The key to connect to is the one
 //! pinned for the pair, or for a pair request the one the other device
 //! publishes; TLS proves it either way.
 
@@ -38,10 +40,6 @@ const REBIND_INTERVAL: Duration = Duration::from_secs(5);
 /// before the next, so that a peer that cannot take a session does not turn
 /// every tick into another connection.
 pub const FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
-
-/// The mDNS service name for Fini's Network channel. Only Fini endpoints
-/// use it, so other iroh apps on the network are not heard.
-const MDNS_SERVICE_NAME: &str = "fini";
 
 /// How long a device's last mDNS record keeps it on the network.
 const HEARD_TIMEOUT: Duration = Duration::from_secs(150);
@@ -284,12 +282,11 @@ impl NetworkChannelService {
             .await;
     }
 
-    /// Finds other Fini devices on the network with iroh's own mDNS lookup,
+    /// Finds other Fini devices on the network with Fini's mDNS lookup,
     /// and announces this one. The test switch (debug builds) stops the
     /// lookup while the network is off, and starts a new one when it is on.
     async fn run_discovery(self: Arc<Self>) {
-        use futures_util::StreamExt;
-        use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
+        use mdns_lookup::{MdnsEvent, MdnsLookup};
 
         let endpoint = loop {
             match self.endpoint().await {
@@ -310,8 +307,9 @@ impl NetworkChannelService {
             while self.switched_off() || !self.wants_lookup() {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            let mdns = match MdnsAddressLookup::builder().service_name(MDNS_SERVICE_NAME).build(endpoint.id()) {
-                Ok(mdns) => mdns,
+            let port = endpoint.bound_sockets().first().map(|addr| addr.port()).unwrap_or(self.port);
+            let (mdns, mut events) = match MdnsLookup::new(endpoint.id(), port, self.user_data()) {
+                Ok((mdns, events)) => (Arc::new(mdns), events),
                 Err(err) => {
                     log::warn!("[transport][network] mDNS lookup failed to start: {err}");
                     self.discovery_stopped.store(true, Ordering::SeqCst);
@@ -330,14 +328,13 @@ impl NetworkChannelService {
             self.discovery_stopped.store(false, Ordering::SeqCst);
             log::info!("[transport][network] mDNS lookup started");
 
-            let mut events = mdns.subscribe().await;
             // Which device each endpoint is, to forget it when it expires.
             let mut devices: HashMap<EndpointId, String> = HashMap::new();
             let mut tick = tokio::time::interval(Duration::from_millis(500));
             loop {
                 tokio::select! {
-                    event = events.next() => match event {
-                        Some(DiscoveryEvent::Discovered { endpoint_info, .. }) => {
+                    event = events.recv() => match event {
+                        Some(MdnsEvent::Discovered(endpoint_info)) => {
                             let endpoint_id = endpoint_info.endpoint_id;
                             let Some((add_device, device_id, name)) = endpoint_info
                                 .data
@@ -355,12 +352,11 @@ impl NetworkChannelService {
                             devices.insert(endpoint_id, device_id.clone());
                             self.record_heard(&device_id, &name, addr, &endpoint_id.to_string(), add_device);
                         }
-                        Some(DiscoveryEvent::Expired { endpoint_id }) => {
+                        Some(MdnsEvent::Expired(endpoint_id)) => {
                             if let Some(device_id) = devices.remove(&endpoint_id) {
                                 self.remove_heard(&device_id);
                             }
                         }
-                        Some(_) => {}
                         None => break,
                     },
                     _ = tick.tick() => {
@@ -370,6 +366,7 @@ impl NetworkChannelService {
                         // Add Device opened or closed: publish the new flag.
                         let wanted = self.user_data();
                         if wanted != published {
+                            mdns.set_user_data(wanted.clone());
                             endpoint.set_user_data_for_address_lookup(wanted.clone());
                             published = wanted;
                         }
@@ -563,7 +560,7 @@ impl NetworkChannelService {
         tokio::task::block_in_place(|| DeviceRepository::new(&mut *self.pool.connection()).pinned_key(peer_id))
     }
 
-    /// The user data this device publishes with its iroh mDNS record: a
+    /// The user data this device publishes with its mDNS record: a
     /// version, the Add Device flag, the device id and the name, as
     /// `fini1;a=<0|1>;d=<device id>;n=<name>`. iroh limits it to 245 bytes,
     /// so the name is cut to fit.
@@ -692,6 +689,261 @@ fn parse_user_data(data: &str) -> Option<(bool, String, String)> {
 
 fn is_cooling_down(cooldown: &HashMap<String, Instant>, peer_id: &str, now: Instant) -> bool {
     cooldown.get(peer_id).is_some_and(|until| now < *until)
+}
+
+/// Fini's iroh address lookup over mDNS, on the `mdns-sd` crate.
+///
+/// It announces this endpoint as `<endpoint id>._fini._udp.local.` and
+/// looks for the other Fini endpoints. `mdns-sd` sends and receives on
+/// every IPv4 interface, and gives on each interface the addresses of that
+/// interface. `iroh-mdns-address-lookup` (swarm-discovery) used only the
+/// interface of the default route, so a Windows host with WSL announced on
+/// `vEthernet (WSL)` and not on Wi-Fi (n0-computer/iroh#3533).
+///
+/// The record: the instance name is the endpoint id in lower-case base32,
+/// the SRV port is the endpoint's UDP port, and the TXT record has
+/// `user-data=<the iroh user data>`.
+mod mdns_lookup {
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use futures_util::stream::{self, BoxStream};
+    use iroh::address_lookup::{AddressLookup, EndpointData, EndpointInfo, Error, Item};
+    use iroh::endpoint_info::UserData;
+    use iroh::EndpointId;
+    use mdns_sd::{IfKind, ResolvedService, ServiceDaemon, ServiceEvent, ServiceInfo};
+    use tokio::sync::mpsc;
+
+    /// The mDNS service type of Fini's Network channel. Only Fini endpoints
+    /// use it, so other iroh apps on the network are not heard.
+    pub const SERVICE_TYPE: &str = "_fini._udp.local.";
+
+    /// The TXT key of the iroh user data.
+    const USER_DATA_KEY: &str = "user-data";
+
+    /// The name of this lookup in the iroh `Item`s it gives.
+    const PROVENANCE: &str = "fini-mdns";
+
+    /// How often the lookup sends again the endpoints that it still has.
+    /// A record stays until its SRV record expires (`mdns-sd` asks for it
+    /// again before that), so this keeps the Network channel's "last heard"
+    /// time current.
+    const REPEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+    /// What the lookup heard.
+    #[derive(Debug, Clone)]
+    pub enum MdnsEvent {
+        /// An endpoint is on the network, or its record changed.
+        Discovered(EndpointInfo),
+        /// The record of the endpoint expired, or the endpoint removed its record.
+        Expired(EndpointId),
+    }
+
+    /// The record this endpoint announces.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Record {
+        port: u16,
+        user_data: Option<String>,
+    }
+
+    pub struct MdnsLookup {
+        daemon: ServiceDaemon,
+        /// The instance name: the endpoint id in lower-case base32.
+        instance: String,
+        /// The record that is registered now.
+        record: Mutex<Record>,
+        /// The endpoints heard and not expired, for `resolve`.
+        peers: Arc<Mutex<HashMap<EndpointId, EndpointInfo>>>,
+        browse_task: tokio::task::JoinHandle<()>,
+    }
+
+    impl std::fmt::Debug for MdnsLookup {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MdnsLookup").field("instance", &self.instance).finish_non_exhaustive()
+        }
+    }
+
+    impl MdnsLookup {
+        /// Starts the mDNS daemon, announces this endpoint on `port` with
+        /// `user_data`, and looks for the other Fini endpoints. Call it in
+        /// a tokio runtime. The receiver gets what the lookup hears.
+        pub fn new(
+            endpoint_id: EndpointId,
+            port: u16,
+            user_data: Option<UserData>,
+        ) -> Result<(Self, mpsc::Receiver<MdnsEvent>), String> {
+            let daemon = ServiceDaemon::new().map_err(|err| format!("the mDNS daemon did not start: {err}"))?;
+            // The endpoint binds IPv4 only, so IPv6 records are of no use.
+            daemon.disable_interface(IfKind::IPv6).map_err(|err| err.to_string())?;
+            let browse = daemon.browse(SERVICE_TYPE).map_err(|err| format!("mDNS browse failed: {err}"))?;
+            let (sender, events) = mpsc::channel(64);
+            let peers = Arc::new(Mutex::new(HashMap::new()));
+            let browse_task = tokio::spawn(run_browse(browse, endpoint_id, peers.clone(), sender));
+            let record = Record { port, user_data: user_data.map(|data| data.to_string()) };
+            let lookup = Self {
+                daemon,
+                instance: instance_name(&endpoint_id),
+                record: Mutex::new(record.clone()),
+                peers,
+                browse_task,
+            };
+            lookup.register(&record)?;
+            Ok((lookup, events))
+        }
+
+        /// Announces the new user data, if it changed.
+        pub fn set_user_data(&self, user_data: Option<UserData>) {
+            self.update(|record| record.user_data = user_data.map(|data| data.to_string()));
+        }
+
+        /// Changes the record and registers it again, if it changed.
+        fn update(&self, change: impl FnOnce(&mut Record)) {
+            let mut record = self.record.lock().unwrap();
+            let mut wanted = record.clone();
+            change(&mut wanted);
+            if wanted == *record {
+                return;
+            }
+            match self.register(&wanted) {
+                Ok(()) => *record = wanted,
+                Err(err) => log::warn!("[transport][network] {err}"),
+            }
+        }
+
+        /// Registers the record. A second registration of the same instance
+        /// replaces the first one and announces it again.
+        fn register(&self, record: &Record) -> Result<(), String> {
+            let mut properties = HashMap::new();
+            if let Some(user_data) = &record.user_data {
+                properties.insert(USER_DATA_KEY.to_string(), user_data.clone());
+            }
+            let host = format!("{}.local.", self.instance);
+            let info = ServiceInfo::new(SERVICE_TYPE, &self.instance, &host, (), record.port, properties)
+                .map_err(|err| format!("the mDNS record is not valid: {err}"))?
+                // The daemon gives on each interface the address of that
+                // interface, and follows address changes.
+                .enable_addr_auto();
+            self.daemon.register(info).map_err(|err| format!("mDNS register failed: {err}"))
+        }
+
+        fn fullname(&self) -> String {
+            format!("{}.{SERVICE_TYPE}", self.instance)
+        }
+    }
+
+    impl Drop for MdnsLookup {
+        /// Removes this record from the network and stops the daemon.
+        fn drop(&mut self) {
+            self.browse_task.abort();
+            let _ = self.daemon.unregister(&self.fullname());
+            let _ = self.daemon.shutdown();
+        }
+    }
+
+    impl AddressLookup for MdnsLookup {
+        /// iroh publishes the endpoint's data: only the user data goes into
+        /// the record. The port is the bound port, and the daemon finds the
+        /// addresses of each interface.
+        fn publish(&self, data: &EndpointData) {
+            let user_data = data.user_data().map(|data| data.to_string());
+            self.update(|record| record.user_data = user_data);
+        }
+
+        fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<'static, Result<Item, Error>>> {
+            let info = self.peers.lock().unwrap().get(&endpoint_id).cloned()?;
+            Some(Box::pin(stream::once(async move { Ok(Item::new(info, PROVENANCE, None)) })))
+        }
+    }
+
+    /// Reads the browse events of the daemon until the receiver of `sender`
+    /// closes.
+    async fn run_browse(
+        browse: mdns_sd::Receiver<ServiceEvent>,
+        own_id: EndpointId,
+        peers: Arc<Mutex<HashMap<EndpointId, EndpointInfo>>>,
+        sender: mpsc::Sender<MdnsEvent>,
+    ) {
+        let mut repeat = tokio::time::interval(REPEAT_INTERVAL);
+        loop {
+            let events = tokio::select! {
+                event = browse.recv_async() => match event {
+                    Ok(ServiceEvent::ServiceResolved(service)) => {
+                        let Some(info) = endpoint_info(&service).filter(|info| info.endpoint_id != own_id) else {
+                            continue;
+                        };
+                        peers.lock().unwrap().insert(info.endpoint_id, info.clone());
+                        vec![MdnsEvent::Discovered(info)]
+                    }
+                    Ok(ServiceEvent::ServiceRemoved(_, fullname)) => {
+                        let Some(endpoint_id) = endpoint_id_of(&fullname) else {
+                            continue;
+                        };
+                        if peers.lock().unwrap().remove(&endpoint_id).is_none() {
+                            continue;
+                        }
+                        vec![MdnsEvent::Expired(endpoint_id)]
+                    }
+                    Ok(_) => continue,
+                    Err(_) => {
+                        log::warn!("[transport][network] the mDNS daemon stopped");
+                        return;
+                    }
+                },
+                _ = repeat.tick() => peers.lock().unwrap().values().cloned().map(MdnsEvent::Discovered).collect(),
+            };
+            for event in events {
+                if sender.send(event).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The endpoint id in lower-case base32, as `iroh-mdns-address-lookup`
+    /// writes it.
+    fn instance_name(endpoint_id: &EndpointId) -> String {
+        data_encoding::BASE32_NOPAD.encode(endpoint_id.as_bytes()).to_ascii_lowercase()
+    }
+
+    /// The endpoint id in a full instance name
+    /// (`<endpoint id>._fini._udp.local.`).
+    fn endpoint_id_of(fullname: &str) -> Option<EndpointId> {
+        let instance = fullname.strip_suffix(SERVICE_TYPE)?.strip_suffix('.')?;
+        instance.parse().ok()
+    }
+
+    /// The iroh endpoint info in a resolved record: the IPv4 addresses with
+    /// the SRV port, other than loopback first, and the user data.
+    fn endpoint_info(service: &ResolvedService) -> Option<EndpointInfo> {
+        let endpoint_id = endpoint_id_of(service.get_fullname())?;
+        let mut ips: Vec<Ipv4Addr> = service.get_addresses_v4().into_iter().collect();
+        ips.sort_by_key(|ip| (ip.is_loopback(), *ip));
+        let addrs = to_socket_addrs(ips, service.get_port());
+        if addrs.is_empty() {
+            return None;
+        }
+        let user_data = service.get_property_val_str(USER_DATA_KEY).and_then(|value| value.parse().ok());
+        Some(EndpointInfo::new(endpoint_id).with_ip_addrs(addrs).with_user_data(user_data))
+    }
+
+    fn to_socket_addrs(ips: Vec<Ipv4Addr>, port: u16) -> Vec<SocketAddr> {
+        ips.into_iter().map(|ip| SocketAddr::new(IpAddr::V4(ip), port)).collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_instance_name_gives_the_endpoint_id_back() {
+            let endpoint_id = iroh::SecretKey::from_bytes(&[7; 32]).public();
+            let fullname = format!("{}.{SERVICE_TYPE}", instance_name(&endpoint_id));
+            assert_eq!(endpoint_id_of(&fullname), Some(endpoint_id));
+            assert_eq!(endpoint_id_of("other._http._tcp.local."), None);
+        }
+    }
 }
 
 #[cfg(test)]
