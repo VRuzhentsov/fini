@@ -266,7 +266,7 @@ impl NetworkChannelService {
     #[cfg(test)]
     pub(crate) async fn spawn_server_on_free_port(self: Arc<Self>) -> u16 {
         let endpoint = self.bind(0).await.expect("bind the network endpoint");
-        let port = bound_port(&endpoint);
+        let port = bound_port(&endpoint).expect("the network endpoint has an IPv4 socket");
         tokio::spawn(async move { self.serve(endpoint).await });
         port
     }
@@ -307,7 +307,12 @@ impl NetworkChannelService {
             while self.switched_off() || !self.wants_lookup() {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            let port = endpoint.bound_sockets().first().map(|addr| addr.port()).unwrap_or(self.port);
+            let Some(port) = bound_port(&endpoint) else {
+                log::warn!("[transport][network] mDNS lookup waits: the endpoint has no IPv4 socket");
+                self.discovery_stopped.store(true, Ordering::SeqCst);
+                tokio::time::sleep(REBIND_INTERVAL).await;
+                continue;
+            };
             let (mdns, mut events) = match MdnsLookup::new(endpoint.id(), port, self.user_data()) {
                 Ok((mdns, events)) => (Arc::new(mdns), events),
                 Err(err) => {
@@ -673,10 +678,9 @@ impl ChannelService for NetworkChannelService {
     }
 }
 
-/// The UDP port the Network endpoint is bound to.
-#[cfg(test)]
-pub(crate) fn bound_port(endpoint: &Endpoint) -> u16 {
-    endpoint.bound_sockets().first().map(|addr| addr.port()).expect("the network endpoint has a socket")
+/// The UDP port of the endpoint's IPv4 socket; the endpoint binds only 0.0.0.0:port.
+pub(crate) fn bound_port(endpoint: &Endpoint) -> Option<u16> {
+    endpoint.bound_sockets().into_iter().find(|addr| addr.is_ipv4()).map(|addr| addr.port())
 }
 
 /// What another device's user data says: Add Device flag, device id, name.
