@@ -137,7 +137,7 @@ is used through an interface.
 - Put each new module in a new file, and write only the `mod` declaration in
   the parent file. Only the `tests` module of a file stays inline in that
   file. Give the new file a name as [`docs/naming.md`](../naming.md) tells
-  ("Names", "Case").
+  ("Names in code", "Case").
   ([The Rust Book, "Separating Modules into Different Files"](https://doc.rust-lang.org/book/ch07-05-separating-modules-into-different-files.html);
   [The Rust Book, "Unit Tests"](https://doc.rust-lang.org/book/ch11-03-test-organization.html#unit-tests))
 
