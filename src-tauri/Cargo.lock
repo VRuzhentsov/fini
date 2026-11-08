@@ -526,7 +526,7 @@ dependencies = [
 [[package]]
 name = "ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8dbb4f0#8dbb4f0fb1fcd85cd7c229ff596fbc99eb14b563"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=cefb7a05f727682f0b8bc98bf99d0f0d0c98e79c#cefb7a05f727682f0b8bc98bf99d0f0d0c98e79c"
 dependencies = [
  "async-trait",
  "bluer",
@@ -543,12 +543,13 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "uuid",
+ "windows 0.62.2",
 ]
 
 [[package]]
 name = "ble-gatt-iroh"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8dbb4f0#8dbb4f0fb1fcd85cd7c229ff596fbc99eb14b563"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=cefb7a05f727682f0b8bc98bf99d0f0d0c98e79c#cefb7a05f727682f0b8bc98bf99d0f0d0c98e79c"
 dependencies = [
  "ble-gatt",
  "iroh",
@@ -7095,7 +7096,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-ble-gatt"
 version = "0.1.0"
-source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=8dbb4f0#8dbb4f0fb1fcd85cd7c229ff596fbc99eb14b563"
+source = "git+https://github.com/VRuzhentsov/ble-gatt?rev=cefb7a05f727682f0b8bc98bf99d0f0d0c98e79c#cefb7a05f727682f0b8bc98bf99d0f0d0c98e79c"
 dependencies = [
  "async-trait",
  "ble-gatt",
