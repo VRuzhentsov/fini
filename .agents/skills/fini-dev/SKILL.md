@@ -274,8 +274,6 @@ Choose verification based on touched area:
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
 - Release work: load `fini-release`, follow release tag rules in `AGENTS.md`, and do not create or push tags unless explicitly requested.
 
-Before each commit, read each changed line for a value that the code picks or sets to a default with no rule. Choose the value by an explicit rule ("the IPv4 socket", not "the first socket"); when the value is missing, log it and use the existing error path instead of a silent default.
-
 If a command cannot be run, say why, what evidence is missing, and the exact command the user can run.
 
 ## Reporting Pattern
