@@ -14,6 +14,9 @@ export interface SupportedDevice {
 export const SUPPORTED_DEVICES: SupportedDevice[] = [
   { platform: TestDevicePlatform.Linux, channels: [ChannelKind.Network, ChannelKind.Bluetooth] },
   { platform: TestDevicePlatform.Android, channels: [ChannelKind.Network, ChannelKind.Bluetooth] },
+  // Only the app start for now (`windows-app-start.spec.ts`). Add a channel
+  // when a device-support check proves it on Windows.
+  { platform: TestDevicePlatform.Windows, channels: [] },
 ];
 
 /** True when the platform of each test device supports `channel`. */

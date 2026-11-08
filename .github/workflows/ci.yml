@@ -290,6 +290,27 @@ jobs:
       - name: Build Windows CLI
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target x86_64-pc-windows-msvc
 
+      # device-support on a virtual Windows test device (ADR-0013): the
+      # harness starts the debug app with devtools, and the app must show its
+      # window and answer a command. The Android specs of the project skip.
+      - name: Build Windows e2e app
+        run: npm run build:windows:e2e
+
+      - name: Run device-support on virtual Windows
+        env:
+          FINI_E2E_KEEP: "1"
+        run: npm run test:e2e:windows
+
+      - name: Upload Windows e2e results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-e2e-results
+          path: |
+            tmp/fini-e2e-multi-device/
+            specs/e2e/test-results/
+          if-no-files-found: ignore
+
   # Two virtual phones on one virtual Bluetooth medium (ADR-0013); the job is
   # in android-e2e.yml, which the release calls too.
   android-e2e:

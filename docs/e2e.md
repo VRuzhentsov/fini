@@ -24,6 +24,7 @@ specs/e2e/
 │   ├── providers/
 │   │   ├── linux.ts              LinuxProvider: a virtual Linux test device (starts fini-app, unix socket bridge)
 │   │   ├── android.ts            AndroidProvider: a virtual Android test device (the APK on a virtual phone)
+│   │   ├── windows.ts            WindowsProvider: a virtual Windows test device (starts fini-app.exe, TCP bridge)
 │   │   ├── tcp.ts                TcpProvider: the physical source, each platform (an app that runs already)
 │   │   └── ble-mock-broker.ts    BleMockBroker: the mock radio of virtual Linux test devices
 │   ├── phones/                   virtual phones (docs/e2e-android.md)
@@ -42,7 +43,8 @@ not the Fini `Device` model. A `TestDevice` has:
 
 - `page`: a `TauriPage` for the screen.
 - `invoke<T>(command, args)`: a call to a Tauri command.
-- `platform`: `TestDevicePlatform.Linux` or `TestDevicePlatform.Android`.
+- `platform`: `TestDevicePlatform.Linux`, `TestDevicePlatform.Android` or
+  `TestDevicePlatform.Windows`.
 - `source`: `TestDeviceSource.Virtual` (the harness starts it) or
   `TestDeviceSource.Physical` (it runs already; the harness connects to its
   TCP port). Each platform can have each source.
@@ -64,6 +66,7 @@ fixture testDevices (test-scoped)
         ├── FINI_E2E_TEST_DEVICES set? its entries, else the virtual test devices of testDevicePlatforms
         ├── a virtual platform not in FINI_E2E_VIRTUAL_PLATFORMS? → the test skips, with the reason
         ├── virtual Linux    → LinuxProvider     (and BleMockBroker when testDeviceChannel is Bluetooth)
+        ├── virtual Windows  → WindowsProvider
         ├── virtual Android  → PhoneGroup.shared().serials(<number of virtual Android>) → AndroidProvider
         └── physical source  → TcpProvider
             each provider: prepare() → connect() → TestDevice waits for the page
@@ -71,13 +74,14 @@ fixture testDevices (test-scoped)
 
 - A spec names its test devices at the top of the file:
   `test.use({ testDevicePlatforms: { a: TestDevicePlatform.Android, b: TestDevicePlatform.Android } })`.
-  The default is two virtual Linux test devices. A set has two test devices or
+  The default is two virtual Linux test devices. A set has one test device or
   more.
 - `FINI_E2E_TEST_DEVICES` gives other test devices in place of the ones of the
   spec: `slug=<platform>` (virtual) or `slug=<platform>@tcp:<port>` (physical),
   for example `a=linux,b=android@tcp:9223`.
 - `FINI_E2E_VIRTUAL_PLATFORMS` lists the platforms that the job can start as
-  virtual test devices (default `linux`). A test that needs another one skips.
+  virtual test devices (default: the desktop platform of the host, `linux` or
+  `windows`). A test that needs another one skips.
   The physical source is always allowed.
 - `dispose()` releases only what the provider made. A test device with the
   physical source stays as it is.
@@ -102,7 +106,7 @@ for that file. (Playwright has its own `channel` option, for the browser.)
 | `cli` | the `fini` binary | none | `reminder-bridge.spec.ts`, `feature-plane-cli.spec.ts` |
 | `ui` | one desktop app | one desktop app for each test | `ui/tests/` |
 | `multi-device` | what Fini does with two or more devices | most specs: two virtual Linux over Network; a happy path names its own (`peer-sync-over-ble.spec.ts`: Bluetooth on the mock radio) | `multi-device/tests/` |
-| `device-support` | that a platform and its channels work | each spec names its own (now: two virtual Android) | `device-support/tests/` |
+| `device-support` | that a platform and its channels work | each spec names its own (now: two virtual Android, or one virtual Windows) | `device-support/tests/` |
 
 `multi-device` holds most tests. They run on the pair with the fewest
 problems: two virtual Linux test devices over Network. Popular pairs and
@@ -125,6 +129,7 @@ the same scripts (ADR-0013 D9).
 | `ui`, `multi-device`, on your screen | `make e2e-headed` (`make e2e`) | – |
 | `cli`, `ui`, `multi-device`, in the e2e container | `make pr-gate-e2e` | `npm run gate:e2e:build-image`, `npm run gate:e2e:run` |
 | `device-support` on virtual Android | `npm run test:e2e:android` | the same command, job `android-e2e` |
+| `device-support` on virtual Windows | `npm run build:windows:e2e`, then `npm run test:e2e:windows` (on Windows) | the same commands, job `desktop-bundle-windows` |
 | a virtual Linux and your phone | `make e2e-phone` | – |
 | the smoke tests (tag `E2eTag.Smoke`), in all projects | `npm run test:e2e:smoke` | – |
 
@@ -152,6 +157,7 @@ The channels are in `docs/adr/0001-transport-neutral-peer-protocol.md` and
 | `multi-device`, `peer-sync-over-ble.spec.ts` (`testDeviceChannel: ChannelKind.Bluetooth`) | Two virtual Linux test devices with the Network channel off, on the `ble-gatt` mock radio (`FINI_BLE_MOCK_BROKER`). The real code of `bluetooth-channel.service.rs` runs: the dial, the advertising and accepting side, the session, and the GATT roles. Both rows go green, and one quest syncs in both directions. It proves the protocol, the session and the UI, not the radio. | Each pull request (Quality Gates) |
 | `device-support`, `bluetooth-pair-from-zero.spec.ts` | Two virtual Android test devices on one virtual Bluetooth medium (netsim): the Android Bluetooth stack, GATT and the APK. A new pair through Add Device until the Bluetooth row is green on both, with the 10 s standard for the listing. It does not prove the radio. | Local and CI (`npm run test:e2e:android`, job `android-e2e`; not a required check yet) |
 | `device-support`, `android-app-start.spec.ts` | On a virtual Android test device (`testDeviceA` of the two phones): the app starts and makes the notification channel `fini.reminders`. | Local and CI (job `android-e2e`) |
+| `device-support`, `windows-app-start.spec.ts` | On a virtual Windows test device: the desktop app shows its window and answers a command (`get_quests`). No channel yet: `SUPPORTED_DEVICES` lists none for Windows. | Local on Windows and CI (job `desktop-bundle-windows`) |
 | The same specs with the physical source | `FINI_E2E_TEST_DEVICES=a=linux@tcp:9224,b=android@tcp:9223`: the same flows on a desktop and a phone with hardware radios. `bluetooth-channel-add-again.spec.ts` runs only like this: Bluetooth off and on again on a pair, both rows green in the 10 s standard (ADR-0011). | Local only |
 
 CI does not test a hardware radio:

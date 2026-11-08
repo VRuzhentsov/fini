@@ -5,12 +5,13 @@
 export const TestDevicePlatform = {
   Linux: 'linux',
   Android: 'android',
+  Windows: 'windows',
 } as const;
 export type TestDevicePlatform = (typeof TestDevicePlatform)[keyof typeof TestDevicePlatform];
 
 /** Where a test device comes from. */
 export const TestDeviceSource = {
-  /** The harness starts it: a fini-app process on Linux, an emulator on Android. */
+  /** The harness starts it: a fini-app process on Linux or Windows, an emulator on Android. */
   Virtual: 'virtual',
   /** It runs already; the harness connects to its TCP port. */
   Physical: 'physical',

@@ -25,7 +25,8 @@ const restore = () => {
 };
 
 copyFileSync(DEVTOOLS_CAPABILITY, CAPABILITY);
-const child = spawn(command, args, { stdio: 'inherit' });
+// On Windows, npm and npx are .cmd files, which only a shell can start.
+const child = spawn(command, args, { stdio: 'inherit', shell: process.platform === 'win32' });
 
 // Put the file back first: a stop can end this process before the command.
 // A SIGKILL (for example a container that is killed) still leaves the
