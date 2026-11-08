@@ -134,6 +134,24 @@ is used through an interface.
   }
   ```
 
+- Put each new module in a new file, and write only the `mod` declaration in
+  the parent file. Only the `tests` module of a file stays inline in that
+  file. Give the new file a name as [`docs/naming.md`](../naming.md) tells
+  ("Names", "Case").
+  ([The Rust Book, "Separating Modules into Different Files"](https://doc.rust-lang.org/book/ch07-05-separating-modules-into-different-files.html);
+  [The Rust Book, "Unit Tests"](https://doc.rust-lang.org/book/ch11-03-test-organization.html#unit-tests))
+
+  ```rust
+  // GOOD: src/lib.rs
+  mod front_of_house;
+  // BAD: src/lib.rs
+  mod front_of_house {
+      pub mod hosting {
+          pub fn add_to_waitlist() {}
+      }
+  }
+  ```
+
 ## Remove what your change makes unused
 
 - When your change makes a function, a method, a field, an import, or a
