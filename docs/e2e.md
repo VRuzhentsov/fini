@@ -129,7 +129,7 @@ the same scripts (ADR-0013 D9).
 | `ui`, `multi-device`, on your screen | `make e2e-headed` (`make e2e`) | – |
 | `cli`, `ui`, `multi-device`, in the e2e container | `make pr-gate-e2e` | `npm run gate:e2e:build-image`, `npm run gate:e2e:run` |
 | `device-support` on virtual Android | `npm run test:e2e:android` | the same command, job `android-e2e` |
-| `device-support` on virtual Windows | `npm run build:windows:e2e`, then `npm run test:e2e:windows` (on Windows) | the same commands, job `desktop-bundle-windows` |
+| `device-support` on a Windows host (specs for other platforms skip) | `npm run build:windows:e2e`, then `npm run test:e2e:device-support` (on Windows) | the same commands, job `desktop-bundle-windows` |
 | a virtual Linux and your phone | `make e2e-phone` | – |
 | the smoke tests (tag `E2eTag.Smoke`), in all projects | `npm run test:e2e:smoke` | – |
 

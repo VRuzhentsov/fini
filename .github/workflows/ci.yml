@@ -290,16 +290,18 @@ jobs:
       - name: Build Windows CLI
         run: cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin fini --features cli-plane --target x86_64-pc-windows-msvc
 
-      # device-support on a virtual Windows test device (ADR-0013): the
-      # harness starts the debug app with devtools, and the app must show its
-      # window and answer a command. The Android specs of the project skip.
+      # device-support (ADR-0013): this job runs the whole project. On a
+      # virtual Windows test device, the harness starts the debug app with
+      # devtools, and the app must show its window and answer a command. A
+      # spec that needs a platform which this host cannot start skips with
+      # the reason.
       - name: Build Windows e2e app
         run: npm run build:windows:e2e
 
-      - name: Run device-support on virtual Windows
+      - name: Run device-support
         env:
           FINI_E2E_KEEP: "1"
-        run: npm run test:e2e:windows
+        run: npm run test:e2e:device-support
 
       - name: Upload Windows e2e results
         if: always()
