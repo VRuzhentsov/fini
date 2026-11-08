@@ -15,6 +15,17 @@ repeat them.
   ([`SKILL.md`](../.agents/skills/fini-dev/SKILL.md)): the STE check of each
   diff before you commit.
 
+## Rules
+
+- Write a rule in general words. Do not name the incident that caused it.
+- Do not add a condition that the rule does not need.
+- Keep facts that code or config already holds in that code or config. The
+  document links to it.
+- Base each rule on a source or on a decision that was made. Do not invent
+  rules.
+- Put a rule in the document that owns its topic: development rules go in
+  the development guidelines, not in a skill.
+
 ## Examples
 
 - Add an example only when the reader cannot understand the rule from the
