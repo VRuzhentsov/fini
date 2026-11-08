@@ -428,22 +428,9 @@ jobs:
       - name: Verify Windows desktop app
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           $setup = Get-ChildItem -Path "src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
           if (-not $setup) { throw "Expected Windows installer was not produced" }
-          $install = Start-Process -FilePath $setup.FullName -ArgumentList "/S" -PassThru -Wait
-          if ($install.ExitCode -ne 0) { throw "Windows installer failed with exit code $($install.ExitCode)" }
-          $app = Join-Path $env:LOCALAPPDATA "Fini/fini-app.exe"
-          if (!(Test-Path -LiteralPath $app)) { throw "Installer did not put the desktop app at $app" }
-          # PE subsystem: 2 is a window program, 3 is a console program.
-          $bytes = [IO.File]::ReadAllBytes($app)
-          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
-          $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 24 + 68)
-          if ($subsystem -ne 2) { throw "Desktop app is a console program (PE subsystem $subsystem): the installer contains the CLI" }
-          $process = Start-Process -FilePath $app -PassThru
-          Start-Sleep -Seconds 15
-          if ($process.HasExited) { throw "Desktop app stopped after start with exit code $($process.ExitCode)" }
-          Stop-Process -Id $process.Id -Force
+          ./scripts/verify-windows-desktop-installer.ps1 -Installer $setup.FullName
 
       - name: Build Windows CLI
         env:
