@@ -32,8 +32,8 @@ specs/e2e/
 │   ├── helpers/                  pairing and sync set-up (device-sync, personal-sync, ble-sync, ...)
 │   └── tests/                    the multi-device specs
 └── device-support/
-    ├── supported-devices.ts      SUPPORTED_DEVICES: each platform and its channels; supportsChannel()
-    └── tests/                    the device-support specs
+    ├── supported-devices.ts      SUPPORTED_DEVICES: each platform, its channels and its app-start check; supportsChannel()
+    └── tests/                    the device-support specs (app-start.spec.ts runs for each platform)
 ```
 
 ## TestDevice
@@ -106,15 +106,16 @@ for that file. (Playwright has its own `channel` option, for the browser.)
 | `cli` | the `fini` binary | none | `reminder-bridge.spec.ts`, `feature-plane-cli.spec.ts` |
 | `ui` | one desktop app | one desktop app for each test | `ui/tests/` |
 | `multi-device` | what Fini does with two or more devices | most specs: two virtual Linux over Network; a happy path names its own (`peer-sync-over-ble.spec.ts`: Bluetooth on the mock radio) | `multi-device/tests/` |
-| `device-support` | that a platform and its channels work | each spec names its own (now: two virtual Android, or one virtual Windows) | `device-support/tests/` |
+| `device-support` | that each platform and channel in `SUPPORTED_DEVICES` works | the app start: the test devices of the matrix entry; a channel spec names its own | `device-support/tests/` |
 
 `multi-device` holds most tests. They run on the pair with the fewest
 problems: two virtual Linux test devices over Network. Popular pairs and
 chains on other platforms or channels are happy paths only.
-`device-support` has the checks of each platform and channel, from the list
-`SUPPORTED_DEVICES`. The list only says which channels each platform
-supports. A check skips when a platform of its test devices does not support
-its channel (`supportsChannel`). No project is made for each pair.
+`device-support` checks each platform and channel in the matrix
+`SUPPORTED_DEVICES` (`device-support/supported-devices.ts`). Only that file
+says which platforms and channels are in the matrix. A check skips when the
+job cannot start that platform, or when the platform does not support the
+channel (`supportsChannel`). No project is made for each pair.
 
 Playwright runs one worker, and the files in name order. A file that needs
 the state of earlier files starts with `zz-`.
@@ -128,8 +129,8 @@ the same scripts (ADR-0013 D9).
 |---|---|---|
 | `ui`, `multi-device`, on your screen | `make e2e-headed` (`make e2e`) | – |
 | `cli`, `ui`, `multi-device`, in the e2e container | `make pr-gate-e2e` | `npm run gate:e2e:build-image`, `npm run gate:e2e:run` |
-| `device-support` on virtual Android | `npm run test:e2e:android` | the same command, job `android-e2e` |
-| `device-support` on a Windows host (specs for other platforms skip) | `npm run build:windows:e2e`, then `npm run test:e2e:device-support` (on Windows) | the same commands, job `desktop-bundle-windows` |
+| `device-support` | `npm run test:e2e:device-support` | the same command |
+| `device-support` with virtual phones | `npm run test:e2e:android` | the same command, job `android-e2e` |
 | a virtual Linux and your phone | `make e2e-phone` | – |
 | the smoke tests (tag `E2eTag.Smoke`), in all projects | `npm run test:e2e:smoke` | – |
 
@@ -156,8 +157,7 @@ The channels are in `docs/adr/0001-transport-neutral-peer-protocol.md` and
 | `multi-device`, `channel-order.spec.ts` | Two virtual Linux test devices on one network use the Network channel (QUIC over iroh). | Each pull request (Quality Gates) |
 | `multi-device`, `peer-sync-over-ble.spec.ts` (`testDeviceChannel: ChannelKind.Bluetooth`) | Two virtual Linux test devices with the Network channel off, on the `ble-gatt` mock radio (`FINI_BLE_MOCK_BROKER`). The real code of `bluetooth-channel.service.rs` runs: the dial, the advertising and accepting side, the session, and the GATT roles. Both rows go green, and one quest syncs in both directions. It proves the protocol, the session and the UI, not the radio. | Each pull request (Quality Gates) |
 | `device-support`, `bluetooth-pair-from-zero.spec.ts` | Two virtual Android test devices on one virtual Bluetooth medium (netsim): the Android Bluetooth stack, GATT and the APK. A new pair through Add Device until the Bluetooth row is green on both, with the 10 s standard for the listing. It does not prove the radio. | Local and CI (`npm run test:e2e:android`, job `android-e2e`; not a required check yet) |
-| `device-support`, `android-app-start.spec.ts` | On a virtual Android test device (`testDeviceA` of the two phones): the app starts and makes the notification channel `fini.reminders`. | Local and CI (job `android-e2e`) |
-| `device-support`, `windows-app-start.spec.ts` | On a virtual Windows test device: the desktop app shows its window and answers a command (`get_quests`). No channel yet: `SUPPORTED_DEVICES` lists none for Windows. | Local on Windows and CI (job `desktop-bundle-windows`) |
+| `device-support`, `app-start.spec.ts` | For each platform in `SUPPORTED_DEVICES`: the app shows its window and answers a command (`get_quests`), then the check of its matrix entry (`appStart`), if it has one. | Each job that runs `device-support`; a platform that the job cannot start skips |
 | The same specs with the physical source | `FINI_E2E_TEST_DEVICES=a=linux@tcp:9224,b=android@tcp:9223`: the same flows on a desktop and a phone with hardware radios. `bluetooth-channel-add-again.spec.ts` runs only like this: Bluetooth off and on again on a pair, both rows green in the 10 s standard (ADR-0011). | Local only |
 
 CI does not test a hardware radio:

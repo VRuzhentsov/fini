@@ -19,8 +19,9 @@ import { TestDevicePlatform } from '../specs/e2e/multi-device/test-device-platfo
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const IMAGE = process.env.FINI_ANDROID_PHONES_IMAGE ?? 'fini-android-phones-runner';
 const ENGINE = process.env.CONTAINER ?? 'podman';
-// This runner can start virtual Linux and virtual Android test devices.
-process.env[E2eEnv.VirtualPlatforms] ??= [TestDevicePlatform.Linux, TestDevicePlatform.Android].join(',');
+// By default this runner starts only virtual Android test devices: the job
+// builds no Linux app, so a check of virtual Linux skips here.
+process.env[E2eEnv.VirtualPlatforms] ??= TestDevicePlatform.Android;
 const PASSED_ENV = [
   E2eEnv.TestDevices, E2eEnv.VirtualPlatforms, E2eEnv.Keep, 'FINI_E2E_ROOT', 'FINI_E2E_KEEP_PHONES',
   'FINI_E2E_ANDROID_APK', 'FINI_E2E_EMULATOR_GPU', 'FINI_E2E_RUN_ID', 'CI',

@@ -14,7 +14,7 @@ rotation of each vendor.
 
 | Spec (`specs/e2e/device-support/tests/`) | What it proves |
 |---|---|
-| `android-app-start.spec.ts` | The app process runs, and the notification channel `fini.reminders` exists. |
+| `app-start.spec.ts` | The app starts. The check of the Android entry in `SUPPORTED_DEVICES` (`appStart`): the app process runs, and the notification channel `fini.reminders` exists. |
 | `bluetooth-pair-from-zero.spec.ts` | A new pair over Bluetooth through Add Device, until the Bluetooth row is green on both phones. |
 
 A spec runs shell commands on its phone with `testDevice.shell(command)`. Only
@@ -27,7 +27,7 @@ npm run test:e2e:android [-- <playwright args>]
 └── scripts/e2e-android.mts
     ├── on the host: podman pull of the GHCR image (CI), or podman build --target android-phones-runner
     │               podman run --device /dev/kvm --shm-size=2g -v <repo>:/work:Z
-    └── in the container (FINI_E2E_CONTAINER_RUNNER=1, FINI_E2E_VIRTUAL_PLATFORMS=linux,android):
+    └── in the container (FINI_E2E_CONTAINER_RUNNER=1, FINI_E2E_VIRTUAL_PLATFORMS=android):
         npx playwright test --project=device-support
         └── fixture testDevices: the spec's testDevicePlatforms (a: Android, b: Android)
             ├── PhoneGroup (phones/phone-group.ts)
