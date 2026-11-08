@@ -69,6 +69,71 @@ is used through an interface.
 - When you find two copies of the same behavior, merge them into one, on the
   object or the interface that owns the behavior.
 
+## Code structure
+
+- Put a long condition in a local variable with a name that tells what the
+  condition means. Then use the variable in the `if` or the `match`.
+  ([rust-analyzer style, "Helper Variables"](https://github.com/rust-lang/rust-analyzer/blob/master/docs/book/src/contributing/style.md#helper-variables))
+
+  ```rust
+  // GOOD
+  let rustfmt_not_installed =
+      captured_stderr.contains("not installed") || captured_stderr.contains("not available");
+  match output.status.code() {
+      Some(1) if !rustfmt_not_installed => Ok(None),
+      _ => Err(format_err!("rustfmt failed:\n{}", captured_stderr)),
+  };
+  // BAD
+  match output.status.code() {
+      Some(1)
+          if !captured_stderr.contains("not installed")
+             && !captured_stderr.contains("not available") => Ok(None),
+      _ => Err(format_err!("rustfmt failed:\n{}", captured_stderr)),
+  };
+  ```
+
+- Do the check of a precondition in the caller, and give the function a type
+  that shows the result of the check. Keep the `if` and `match` statements in
+  the parent function, and keep the helper functions without branches. A
+  branch on the state of an object stays in the method of that object (see
+  "Objects own their state and their behavior").
+  ([rust-analyzer style, "Function Preconditions"](https://github.com/rust-lang/rust-analyzer/blob/master/docs/book/src/contributing/style.md#function-preconditions);
+  [matklad, "Push Ifs Up"](https://matklad.github.io/2023/11/15/push-ifs-up-and-fors-down.html#Push-Ifs-Up);
+  [TigerStyle, "Safety"](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md#safety))
+
+  ```rust
+  // GOOD
+  fn frobnicate(walrus: Walrus) {
+      ...
+  }
+  // BAD
+  fn frobnicate(walrus: Option<Walrus>) {
+      let walrus = match walrus {
+          Some(it) => it,
+          None => return,
+      };
+      ...
+  }
+  ```
+
+- When a function checks a value, it returns what it found, and the caller
+  uses that value. Do not check in one function and calculate the same value
+  again in a different function. This is a value in one call, not stored
+  state.
+  ([rust-analyzer style, "Function Preconditions"](https://github.com/rust-lang/rust-analyzer/blob/master/docs/book/src/contributing/style.md#function-preconditions);
+  [Alexis King, "The power of parsing"](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/#the-power-of-parsing))
+
+  ```rust
+  // GOOD
+  if let Some(contents) = string_literal_contents(s) {
+      ...
+  }
+  // BAD
+  if is_string_literal(s) {
+      let contents = &s[1..s.len() - 1];
+  }
+  ```
+
 ## Remove what your change makes unused
 
 - When your change makes a function, a method, a field, an import, or a
