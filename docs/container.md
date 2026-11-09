@@ -12,8 +12,10 @@ developer's computer. Which CI job uses which image is in
 - Use one base version for all images: `debian:bookworm-slim`. The Linux, the
   Android and the CLI images all start from it. Bookworm gives glibc 2.36, the
   oldest glibc that the Linux desktop app needs.
-- Use podman as the container engine. Each image is in a file with the name
-  `Containerfile`.
+- CI uses podman as the container engine. Local development uses docker or
+  podman: the scripts find the engine (podman first, then docker), and
+  `CONTAINER_ENGINE=podman|docker` sets it. Each image is in a file with the
+  name `Containerfile`.
 - Build Windows and macOS/iOS on native runners, not in a container. Tauri
   builds them only on their own operating system: Windows on
   `windows-latest`, macOS on `macos-latest`.
@@ -81,8 +83,8 @@ Examine this pin again when a stable emulator newer than 37.2.13 is released.
 ## How CI and a developer get an image
 
 No file holds an image reference. CI and a developer always build the image
-from its `Containerfile` with `podman build`. A layer cache in GHCR makes the
-build fast:
+from its `Containerfile`. CI uses `podman build`, and a layer cache in GHCR
+makes the build fast:
 
 ```
 podman build --layers \
@@ -92,6 +94,12 @@ podman build --layers \
   --retry 5 --retry-delay 5s \
   -f containers/<platform>/Containerfile --target <stage> .
 ```
+
+With podman, a developer's build uses the same flags. With docker, the build
+is `docker build -f containers/<platform>/Containerfile --target <stage> .`
+with the local cache of docker only. The flags `--layers`, `--cache-ttl`,
+`--retry`, `--cache-from`/`--cache-to` with a GHCR repository, and the `:Z`
+mount option are for podman only.
 
 Fini does not pull a prebuilt image by name. It has no digest file, no hash
 tag, no version tag file, no bot pull request, and no scheduled rebuild.
@@ -133,7 +141,8 @@ The results:
   different host JDK (for example the JBR 25 of a host Android Studio) does
   not stop the Gradle build.
 - **`containers/run.sh`** (proposal): the local wrapper. It does
-  `podman run` with the repo mounted, and it keeps named volumes for the
+  `podman run` or `docker run` (the engine rule in "Rules") with the repo
+  mounted, and it keeps named volumes for the
   cargo registry, the cargo target directory, Gradle and npm.
 
 ## CLI
@@ -191,7 +200,8 @@ It uses the android image. It does not have an image of its own.
   (`debian:trixie-slim`) and `android-build` (`eclipse-temurin:21-jdk`).
 - The Makefile and the scripts find the engine as docker first, then podman
   (`CONTAINER_ENGINE` in the `Makefile`, `engine()` in
-  `scripts/ci-gate.mts`). `scripts/e2e-android.mts` uses podman.
+  `scripts/ci-gate.mts`), not podman first. `scripts/e2e-android.mts` uses
+  podman only (`CONTAINER` can change it).
 - `scripts/ci-gate.mts` and `scripts/e2e-android.mts` pull images from GHCR
   with a hash tag (`cachedBuild`, and the hash of the `Dockerfile`).
 - The `android-build` stage has only JDK 21 and Node. `ANDROID_BUILD_RUN` in

@@ -45,6 +45,10 @@ release job that publishes the CLI image gets it too. Release runs
 requests from a fork read the cache only. The cache packages are public, so a
 read needs no GHCR login.
 
+CI uses podman. Local development uses docker or podman: the scripts find
+the engine (podman first, then docker), and `CONTAINER_ENGINE=podman|docker`
+sets it. Only podman uses the GHCR layer cache; docker uses its local cache.
+
 | File | Today | After |
 |---|---|---|
 | `ci.yml`, job `changes` | The filter `app` has `Dockerfile` | The filter has `containers/**` |
@@ -65,8 +69,8 @@ The scripts that the workflows call change too:
 
 | Script | Today | After |
 |---|---|---|
-| `scripts/e2e-android.mts` | Pulls `<prefix>-android-phones-runner-cache:<hash of the Dockerfile>` from GHCR, or builds the stage `android-phones-runner` and pushes it | Builds the `android` `e2e` stage with the GHCR layer cache; no hash tag |
-| `scripts/ci-gate.mts` | `cachedBuild` pulls or pushes GHCR images with a hash of the inputs; `engine()` uses docker first | Builds from the `Containerfile` with the GHCR layer cache; podman |
+| `scripts/e2e-android.mts` | Pulls `<prefix>-android-phones-runner-cache:<hash of the Dockerfile>` from GHCR, or builds the stage `android-phones-runner` and pushes it | Builds the `android` `e2e` stage; with podman, with the GHCR layer cache; no hash tag. The engine: `CONTAINER_ENGINE`, else podman, else docker |
+| `scripts/ci-gate.mts` | `cachedBuild` pulls or pushes GHCR images with a hash of the inputs; `engine()` uses docker first | Builds from the `Containerfile`; with podman, with the GHCR layer cache. `engine()`: `CONTAINER_ENGINE`, else podman, else docker |
 
 ## Not done yet
 
