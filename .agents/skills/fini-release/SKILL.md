@@ -53,18 +53,17 @@ Treat this as mandatory release behavior, not optional preflight. The command mu
 
 `make pre-release-check` must run the local equivalent of release-tag `Quality Gates` from `.github/workflows/release-tag.yml`. Keep the command list minimal and avoid duplicated expensive work when one target already includes another.
 
-- backend unit tests, using the target that already compiles backend tests
-- runtime container image
-- runtime smoke check
-- E2E actor image compatibility alias, still built for cache/tag parity
-- E2E runner image, which owns the Playwright run and spawns actor processes internally
-- E2E network/start/wait/run/cleanup, where network/start/wait are compatibility no-ops around the runner-owned actor lifecycle
+- backend unit tests (`make pr-gate-be-unit`), in the `linux` `build` image; `cargo test` compiles the tests first
+- CLI runtime image (`make runtime-image`), from `containers/linux/Containerfile`, stage `runtime`
+- CLI runtime smoke check (`make runtime-smoke`)
+- E2E image (`make pr-gate-e2e-build-dev-runner`), the `linux` `e2e` stage
+- E2E run (`make pr-gate-e2e-run`), which owns the Playwright run and starts the test devices in the container; cleanup runs on exit
 
-When changing `make pre-release-check`, verify each command is still necessary against the current Makefile/Dockerfile behavior and update this section if the composition changes.
+When changing `make pre-release-check`, verify each command is still necessary against the current Makefile and `containers/*/Containerfile` behavior and update this section if the composition changes.
 
 Security scan, signing readiness, platform package builds, Play upload, Docker publication, and GitHub release publication remain GitHub CI responsibilities and are not part of the local release Quality Gate.
 
-The local gate uses the Makefile's container-engine detection: Docker when available, otherwise Podman. CI can still force `CONTAINER=docker`. If no usable container engine is available, stop before creating the release commit or pushing anything.
+The local gate uses docker or podman (CI uses podman). The Makefile picks podman when it is installed, else docker; `CONTAINER_ENGINE=docker|podman` overrides it, and `make require-container` checks that the chosen engine exists. If no usable container engine is available, stop before creating the release commit or pushing anything.
 
 If `make pre-release-check` cannot complete because of ENOSPC, missing Docker/Podman, missing dependencies, failed E2E, missing logs, or missing diagnostics, hard stop. Do not commit, push `main`, push a tag, retarget a tag, or ask the user to accept partial evidence.
 

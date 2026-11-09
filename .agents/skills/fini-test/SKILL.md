@@ -102,7 +102,7 @@ Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--feature
 npm run gate:e2e:build-image && npm run gate:e2e:run
 ```
 
-The dev-runner image starts the virtual Linux test devices. `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
+The `linux` `e2e` image starts the virtual Linux test devices. `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
 
 ### E2E — `device-support` on virtual Android
 
