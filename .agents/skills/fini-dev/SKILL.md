@@ -170,25 +170,25 @@ Two limits to state rather than work around silently:
   (`make e2e-devices-ble`). When a task needs both, say so and let the user
   choose which half to give up.
 
-Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
+On your own computer, prefer these Makefile targets over raw `npm`, `tauri`, or container commands. Make is for local development only (`fini-scripting`, "Make is local only"): for CI, a release, a container or CI-parity evidence, use what the last column names.
 
-| Need | Command |
-|---|---|
-| Desktop dev app | `make dev` |
-| Release desktop build | `make build` |
-| Visible local two-app E2E | `make e2e` or `make e2e-headed` |
-| Containerized CI-style E2E | `make e2e-ci` |
-| Build/update E2E images | `make e2e-image` |
-| Full containerized E2E | `make pr-gate-e2e` |
-| Runtime container image | `make runtime-image` |
-| Runtime CLI smoke | `make runtime-smoke` |
-| Android device list | `make android-devices` |
-| Android Wi-Fi connect | `make android-connect` once after `make android-devices`; if it times out, stop and ask the user to re-authorize wireless debugging or use USB/emulator |
-| Android hot reload | `make android-dev` |
-| Android build | `make android-build` |
-| Android debug-signed release deploy (shares `com.fini.app`'s id) | `make android-release-deploy-debugsigned` |
-| Android debug deploy (separate `com.fini.app.debug` id, Tauri logs enabled) | `make android-debug-deploy` |
-| Android local release deploy | `make android-release-deploy-local` |
+| Need | Local command | What CI runs |
+|---|---|---|
+| Desktop dev app | `make dev` | – |
+| Local release-profile desktop build (not a release) | `make build` | `npm run tauri build` in the `linux` `build` image (`release-tag.yml`, `build-linux`) |
+| Visible local two-app E2E | `make e2e` or `make e2e-headed` | – |
+| Containerized E2E, as CI runs it | `make e2e-ci` | `npm run gate:e2e:run` in the `linux` `e2e` image (job Quality Gates) |
+| Build/update E2E images | `make e2e-image` | `.github/actions/container-stage`, `linux` `e2e` |
+| Full containerized E2E | `make pr-gate-e2e` | `npm run gate:e2e:run` (job Quality Gates) |
+| Runtime container image | `make runtime-image` | `linux` `runtime` stage (job Quality Gates; `release-tag.yml`, `build-docker-image`) |
+| Runtime CLI smoke | `make runtime-smoke` | `<engine> run --rm <image> --help` (job Quality Gates) |
+| Android device list | `make android-devices` | – |
+| Android Wi-Fi connect | `make android-connect` once after `make android-devices`; if it times out, stop and ask the user to re-authorize wireless debugging or use USB/emulator | – |
+| Android hot reload | `make android-dev` | – |
+| Android build | `make android-build` | `npm run tauri android build` in the `android` `build` image (`release-tag.yml`, `build-android`) |
+| Android debug-signed release deploy (shares `com.fini.app`'s id) | `make android-release-deploy-debugsigned` | – |
+| Android debug deploy (separate `com.fini.app.debug` id, Tauri logs enabled) | `make android-debug-deploy` | – |
+| Android local release deploy | `make android-release-deploy-local` | – |
 
 A release has no Make target. Releases run only in CI: the user starts the Release Button GitHub Action (`.github/workflows/release-button.yml`), and its tag push starts `release-tag.yml` (`fini-release`).
 
@@ -267,11 +267,11 @@ Choose verification based on touched area:
 - Frontend-only logic or UI: run the narrowest available unit/type/build check; use browser/QA skill when visual behavior matters.
 - Backend Rust or Tauri command changes: run the narrowest Rust or app build check available; include command output evidence.
 - Cross-process, sync, or persistence changes: verify write path, storage/outbox/database effects, and read path.
-- E2E-sensitive flows: use `make e2e-headed` for local visible debugging or `make e2e-ci` for CI parity.
+- E2E-sensitive flows: use `make e2e-headed` for local visible debugging. For CI-parity evidence, run what CI runs: `npm run gate:e2e:build-image` and `npm run gate:e2e:run`.
 - Android behavior: load `fini-android-testing`; use `make android-devices`, one bounded `make android-connect` attempt when needed, and `make android-dev` for dev-runtime verification, or `make android-release-deploy-debugsigned` when an installed APK check is needed. Use `make android-debug-deploy` (separate `com.fini.app.debug` id) instead when diagnosing silent plugin failures — this enables Tauri Kotlin logging (`BuildConfig.DEBUG=true`, suppressed in the release profile) and is safe to install alongside a Play Store `com.fini.app` without conflict.
 - Test execution or test authoring across any surface (FE Jest, BE cargo, e2e cli/ui/multi-device/device-support): load `fini-test` for the canonical command + authoring guide.
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
-- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
+- Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for a local release-profile binary (a release runs only in CI: `fini-release`). Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
 - Release work: load `fini-release`. Releases run only in CI, through the Release Button that the user starts. Verify them with `gh run list` and `gh run view` on `release-button.yml` and `release-tag.yml`. Follow the release tag rules in `AGENTS.md`, and do not create or push tags.
 
