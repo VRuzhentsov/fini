@@ -17,9 +17,10 @@ else
   # With docker, scripts/ci-gate.mts runs this script with the uid of the
   # user, and only root can start a bus with the system bus rules. Start a
   # bus with the session rules at a path that this user can write, and give
-  # it to the app as the system bus.
+  # it to the app as the system bus. Xvfb also needs /tmp/.X11-unix, and
+  # only root can make it there.
   bus_path=/tmp/fini-e2e-dbus/system_bus_socket
-  mkdir -p /tmp/fini-e2e-dbus
+  mkdir -p /tmp/fini-e2e-dbus /tmp/.X11-unix
   DBUS_SYSTEM_BUS_ADDRESS="unix:path=$bus_path"
   export DBUS_SYSTEM_BUS_ADDRESS
   dbus-daemon --session --nofork --nopidfile --address="$DBUS_SYSTEM_BUS_ADDRESS" &
