@@ -25,8 +25,9 @@ a virtual Android test device has it.
 ```
 npm run test:e2e:android [-- <playwright args>]
 └── scripts/e2e-android.mts
-    ├── on the host: podman pull of the GHCR image (CI), or podman build --target android-phones-runner
-    │               podman run --device /dev/kvm --shm-size=2g -v <repo>:/work:Z
+    ├── on the host: podman or docker build -f containers/android/Containerfile --target e2e
+    │               podman or docker run --device /dev/kvm --shm-size=2g -v <repo>:/work:z
+    │               (CI: .github/actions/podman-stage builds the stage and runs the script in it)
     └── in the container (FINI_E2E_CONTAINER_RUNNER=1, FINI_E2E_VIRTUAL_PLATFORMS=android):
         npx playwright test --project=device-support
         └── fixture testDevices: the spec's testDevicePlatforms (a: Android, b: Android)
@@ -41,9 +42,11 @@ npm run test:e2e:android [-- <playwright args>]
 
 ## The image
 
-The `Dockerfile` stage `android-phones-runner` (Debian trixie) has Node 24,
-the Android command-line tools, platform-tools (adb), the system image
-`android-34;google_apis;x86_64`, and one AVD `fini-e2e` (`pixel_6`). The
+The `e2e` stage of `containers/android/Containerfile` (`debian:bookworm-slim`,
+[`container.md`](container.md)) is the android `build` stage (JDK 21, the
+Android SDK and NDK, Rust, Node 24, platform-tools with adb) with the
+emulator, the system image `android-34;google_apis;x86_64`, and one AVD
+`fini-e2e` (`pixel_6`) in `ANDROID_AVD_HOME=/opt/android-avd`. The
 emulator version is fixed: build 14788078 (36.4.9). Emulator 37.2.13 stops
 with SIGSEGV on some hosts (Bazzite).
 
@@ -114,16 +117,14 @@ With only the physical source,
 `FINI_E2E_TEST_DEVICES=a=linux@tcp:9224,b=android@tcp:9223` runs Playwright on
 the host, with no container and no emulator.
 
-CI: the job `android-e2e` in `.github/workflows/android-e2e.yml` builds
-the APK, enables KVM and runs the same command. It uploads
+CI: the job `android-e2e` in `.github/workflows/android-e2e.yml` frees disk
+space, builds the APK in the android `build` stage, enables KVM and runs the
+same command in the `e2e` stage. It uploads
 `tmp/fini-e2e-multi-device/` and `specs/e2e/test-results/`, and shows the free
 disk space at the end. It is not a required check yet (ADR-0013 D5).
-The image is kept in GHCR as
-`ghcr.io/<owner>/fini-android-phones-runner-cache:<sha256 of the Dockerfile>`
-(`FINI_ANDROID_PHONES_CACHE_PREFIX`). The script pulls it. When the
-Dockerfile changed, it builds the image and pushes it
-(`FINI_ANDROID_PHONES_CACHE_PUSH=1`; not for pull requests from forks).
-Local runs set no prefix and use the layer cache of podman.
+CI builds the image with the GHCR layer cache `fini-cache/android`
+([`container.md`](container.md), "How CI and a developer get an image").
+Local runs use the local layer cache of the engine.
 `ci.yml` calls it for each pull request. `release-tag.yml` calls it with
 `non_blocking: true`: no publish job waits for it, and a failure does not fail
 the release.

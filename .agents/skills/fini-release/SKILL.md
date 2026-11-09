@@ -67,7 +67,7 @@ The local gate uses docker or podman (CI uses podman). The Makefile picks podman
 
 If `make pre-release-check` cannot complete because of ENOSPC, missing Docker/Podman, missing dependencies, failed E2E, missing logs, or missing diagnostics, hard stop. Do not commit, push `main`, push a tag, retarget a tag, or ask the user to accept partial evidence.
 
-The release-tag Quality Gates use `FINI_E2E_CI_ACTOR_WAIT_SECS=180` by default through the Makefile. Do not lower that timeout for release evidence. If actor sockets do not appear, use the preserved runner output and actor log files under the mounted results tree to fix the startup failure before any release push.
+The release-tag Quality Gates use `FINI_E2E_CI_TEST_DEVICE_WAIT_SECS=180` by default through the Makefile. Do not lower that timeout for release evidence. If the test devices do not start, use the preserved runner output and test device log files under the mounted results tree to fix the startup failure before any release push.
 
 ## Release Command Policy
 

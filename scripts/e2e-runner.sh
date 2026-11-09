@@ -9,7 +9,7 @@ set -eu
 # shows the usual "adapter unavailable" error. This script starts the bus.
 echo "[e2e-runner] starting D-Bus system bus"
 if [ "$(id -u)" = 0 ]; then
-  bus_socket=/run/dbus/system_bus_socket
+  bus_path=/run/dbus/system_bus_socket
   mkdir -p /run/dbus
   dbus-uuidgen --ensure || echo "[e2e-runner] WARNING: dbus-uuidgen --ensure failed (exit=$?)" >&2
   dbus-daemon --system --nofork --nopidfile &
@@ -18,9 +18,9 @@ else
   # user, and only root can start a bus with the system bus rules. Start a
   # bus with the session rules at a path that this user can write, and give
   # it to the app as the system bus.
-  bus_socket=/tmp/fini-e2e-dbus/system_bus_socket
+  bus_path=/tmp/fini-e2e-dbus/system_bus_socket
   mkdir -p /tmp/fini-e2e-dbus
-  DBUS_SYSTEM_BUS_ADDRESS="unix:path=$bus_socket"
+  DBUS_SYSTEM_BUS_ADDRESS="unix:path=$bus_path"
   export DBUS_SYSTEM_BUS_ADDRESS
   dbus-daemon --session --nofork --nopidfile --address="$DBUS_SYSTEM_BUS_ADDRESS" &
 fi
@@ -28,7 +28,7 @@ dbus_pid=$!
 
 dbus_ready=0
 for _ in $(seq 1 50); do
-  if [ -S "$bus_socket" ]; then
+  if [ -S "$bus_path" ]; then
     dbus_ready=1
     break
   fi

@@ -1,7 +1,5 @@
 # Containers
 
-> This file gives the decided design. It is not implemented yet: today the root `Dockerfile` holds all stages (see "Not done yet").
-
 How Fini builds and tests its code in container images, on CI and on a
 developer's computer. Which CI job uses which image is in
 [`ci.md`](ci.md).
@@ -9,8 +7,8 @@ developer's computer. Which CI job uses which image is in
 ## Rules
 
 - Use one container image for each platform where possible.
-- Use one base version for all images: `debian:bookworm-slim`. The Linux, the
-  Android and the CLI images all start from it. Bookworm gives glibc 2.36, the
+- Use one base version for all images: `debian:bookworm-slim`. The Linux and
+  the Android images, and the CLI runtime stage, all start from it. Bookworm gives glibc 2.36, the
   oldest glibc that the Linux desktop app needs.
 - CI uses podman as the container engine. Local development uses docker or
   podman: the scripts find the engine (podman first, then docker), and
@@ -23,21 +21,21 @@ developer's computer. Which CI job uses which image is in
 
 ## Images and stages
 
-The root `Dockerfile` is divided into these files, and then deleted. The file
-names are proposals until the change is implemented.
+The images are in these files:
 
 ```
 containers/
 ├── linux/Containerfile       FROM debian:bookworm-slim
-│   └── build                 Rust 1.91 (rustup), Node 24, webkit2gtk-4.1 and GTK -dev packages,
-│       │                     build-essential, pkg-config, musl-tools, Rust target x86_64-unknown-linux-musl
-│       └── e2e               build + Playwright browsers, Xvfb, GUI runtime libraries
+│   ├── build                 Rust 1.91 (rustup), Node 24, webkit2gtk-4.1 and GTK -dev packages,
+│   │   │                     build-essential, pkg-config, musl-tools, Rust target x86_64-unknown-linux-musl
+│   │   ├── e2e               build + Playwright browsers, Xvfb, GUI runtime libraries
+│   │   └── cli-build         build + the static musl CLI (x86_64 only)
+│   └── runtime               FROM debian:bookworm-slim again, with only the `fini` CLI binary of cli-build
 ├── android/Containerfile     FROM debian:bookworm-slim
 │   └── build                 JDK 21 (temurin-21-jdk from the Adoptium apt repository), cmdline-tools,
-│       │                     platform-tools, NDK r29, build-tools 36.x, platform 36,
+│       │                     platform-tools, NDK r29, build-tools 36.x and 35.0.0 (AGP), platform 36,
 │       │                     Rust 1.91 with the Android targets, Node 24
-│       └── e2e               build + Android Emulator, system image API 34 (needs /dev/kvm)
-├── cli/Containerfile         FROM debian:bookworm-slim, with the `fini` CLI binary
+│       └── e2e               build + Android Emulator, system image API 34, AVD fini-e2e (needs /dev/kvm)
 └── run.sh                    local wrapper (see "Development")
 ```
 
@@ -51,7 +49,8 @@ image adds the Adoptium apt repository (`packages.adoptium.net`) and installs
 | `linux`, `e2e` | CI and local: the desktop e2e tests ([`e2e.md`](e2e.md)) |
 | `android`, `build` | CI: the Android builds. Local: `make android-dev` and the other Android build targets |
 | `android`, `e2e` | CI and local: the e2e tests on virtual phones ([`e2e-android.md`](e2e-android.md)) |
-| `cli` | The release runtime image of the `fini` CLI, published to GHCR |
+| `linux`, `cli-build` | Only the build of the CLI for the `runtime` stage |
+| `linux`, `runtime` | The release runtime image of the `fini` CLI, published to GHCR. Local: `make runtime-image`, `make runtime-smoke` |
 
 Android development needs no stage of its own. It uses the android `build`
 stage.
@@ -59,7 +58,8 @@ stage.
 ## Versions
 
 Pin the minor version. The build gets the newest patch at build time. The
-Android Emulator is the one exception (see below).
+exceptions have an exact pin: the Android Emulator (see below), the
+cmdline-tools and the build-tools of AGP.
 
 | Item | Pin | Newest patch comes from |
 |---|---|---|
@@ -69,22 +69,24 @@ Android Emulator is the one exception (see below).
 | JDK | 21 | apt, package `temurin-21-jdk` |
 | Android NDK | r29 | sdkmanager (newest 29.x) |
 | Android build-tools | 36 | sdkmanager (newest 36.x) |
+| Android build-tools of AGP | 35.0.0, exact | no newest patch: the pin of AGP 8.11. It is the default build-tools of AGP for each module that does not set `buildToolsVersion`, also for the Tauri plugin modules. `AGP_BUILD_TOOLS` in `containers/android/Containerfile` changes with the AGP version |
+| Android cmdline-tools | the exact zip 11076708 (12.0) | no newest patch: no download URL gives the newest patch, only one exact zip (`ANDROID_CMDLINE_TOOLS`) |
 | Gradle | 8.14.6, in the repo | `src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties` |
 | Android Gradle Plugin (AGP) | 8.11.1, in the repo | `src-tauri/gen/android/build.gradle.kts` and `src-tauri/gen/android/buildSrc/build.gradle.kts` |
 | Kotlin | 1.9.25, in the repo | `src-tauri/gen/android/build.gradle.kts`; Kotlin stays 1.9.25 until the Tauri 2.12 migration |
 | Android Emulator | the exact build 14788078 (36.4.9) | no newest patch: the exception below |
 
-The Android Emulator is the one exception to "newest patch". It stays at the
-exact build 14788078. The stable emulator 37.2.13 stops with SIGSEGV at start
+The Android Emulator stays at the exact build 14788078. The stable emulator 37.2.13 stops with SIGSEGV at start
 on Bazzite, and it does not know `-gpu angle_indirect` (the comment above
-`ANDROID_EMULATOR_BUILD` in the `Dockerfile`, stage `android-phones-runner`).
+`ANDROID_EMULATOR_BUILD` in `containers/android/Containerfile`, stage `e2e`).
 Examine this pin again when a stable emulator newer than 37.2.13 is released.
 
 ## How CI and a developer get an image
 
 No file holds an image reference. CI and a developer always build the image
-from its `Containerfile`. CI uses `podman build`, and a layer cache in GHCR
-makes the build fast:
+from its `Containerfile`. CI uses `podman build` (`.github/actions/podman-stage`), and a layer cache
+in GHCR makes the build fast. The cache repositories are
+`ghcr.io/<owner>/fini-cache/linux` and `ghcr.io/<owner>/fini-cache/android`:
 
 ```
 podman build --layers \
@@ -98,8 +100,8 @@ podman build --layers \
 With podman, a developer's build uses the same flags. With docker, the build
 is `docker build -f containers/<platform>/Containerfile --target <stage> .`
 with the local cache of docker only. The flags `--layers`, `--cache-ttl`,
-`--retry`, `--cache-from`/`--cache-to` with a GHCR repository, and the `:Z`
-mount option are for podman only.
+`--retry`, `--cache-from`/`--cache-to` with a GHCR repository, and the `:z`
+mount option (a shared SELinux label) are for podman only.
 
 Fini does not pull a prebuilt image by name. It has no digest file, no hash
 tag, no version tag file, no bot pull request, and no scheduled rebuild.
@@ -118,7 +120,8 @@ The cache rules:
 - All runs use `--cache-ttl=168h`. The build does not use a cache layer that
   is older than 7 days. It builds that layer again and gets the newest
   patches. For this reason, Fini needs no scheduled rebuild.
-- A GHCR cleanup job deletes old cache tags.
+- A GHCR cleanup job (`.github/workflows/ghcr-cleanup.yml`, on a push to
+  `main` or by hand) deletes the cache tags that are older than 7 days.
 
 The results:
 
@@ -136,14 +139,25 @@ The results:
 - **Desktop**: development runs on the host, as Tauri expects
   (`make desktop-debug-dev`). The host toolchain can be different from the
   toolchain in CI.
-- **Android**: development runs in the android `build` image. The repo is
-  mounted, and adb connects to the phone. The image gives one JDK, so a
+- **Android**: development runs in the android `build` image
+  (`make android-dev`, `make android-build` and the other Android targets,
+  through `containers/run.sh`). The repo is mounted, and the adb client in
+  the container uses the adb server of the host (host network). The image gives one JDK, so a
   different host JDK (for example the JBR 25 of a host Android Studio) does
   not stop the Gradle build.
-- **`containers/run.sh`** (proposal): the local wrapper. It does
-  `podman run` or `docker run` (the engine rule in "Rules") with the repo
-  mounted, and it keeps named volumes for the
-  cargo registry, the cargo target directory, Gradle and npm.
+- **`containers/run.sh linux|android <command>`**: the local wrapper. It
+  builds the `build` stage of the platform (local name
+  `fini-<platform>-build`), and then does `podman run` or `docker run` (the
+  engine rule in "Rules") with the repo mounted at `/work`. It keeps named
+  volumes for the cargo registry, the cargo target directory, Gradle, npm and
+  `$HOME` (below `/cache`). It passes the host variables `CI`, `FINI_*`,
+  `TAURI_*`, `ANDROID_KEY_*` and `ANDROID_KEYSTORE_*`. With docker, the
+  command runs with the uid and gid of the user (`--user`), so that the
+  files in the repo do not belong to root. `scripts/ci-gate.mts` and
+  `scripts/e2e-android.mts` start their containers in the same way.
+- A `CONTAINER_ENGINE` that is empty, `missing` or not installed stops
+  `containers/run.sh`, `scripts/ci-gate.mts`, `scripts/e2e-android.mts` and
+  `make require-container` with one message.
 
 ## CLI
 
@@ -161,7 +175,7 @@ The results:
   with the musl triple: `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`.
   The release has no `SHA256SUMS` file. The CLI update checks the zipsign
   signature of the asset, and that is sufficient.
-- The CLI update accepts the musl triple too
+- The CLI update looks for the musl triple
   (`cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`).
   A person installs a CLI from before this change again by hand, one time.
 - The Windows CLI stays as it is today: `ci.yml` builds it, and the release
@@ -191,35 +205,15 @@ It uses the android image. It does not have an image of its own.
 
 ## Not done yet
 
-- The `containers/` files and `containers/run.sh` do not exist. The root
-  `Dockerfile` has all stages: `node-deps`, `playwright-browsers`,
-  `fe-unit-test`, `rust-builder-base` (`rust:1.91-bookworm`),
-  `be-test-compile`, `be-unit-test`, `app-build-cli-prod`,
-  `app-build-cli-dev`, `app-build-ui-dev`, `runtime-base` and `runtime`
-  (`ubuntu:24.04`), `dev-runner`, `android-phones-runner`
-  (`debian:trixie-slim`) and `android-build` (`eclipse-temurin:21-jdk`).
-- The Makefile and the scripts find the engine as docker first, then podman
-  (`CONTAINER_ENGINE` in the `Makefile`, `engine()` in
-  `scripts/ci-gate.mts`), not podman first. `scripts/e2e-android.mts` uses
-  podman only (`CONTAINER` can change it).
-- `scripts/ci-gate.mts` and `scripts/e2e-android.mts` pull images from GHCR
-  with a hash tag (`cachedBuild`, and the hash of the `Dockerfile`).
-- The `android-build` stage has only JDK 21 and Node. `ANDROID_BUILD_RUN` in
-  the `Makefile` mounts the Android SDK, the NDK, `~/.cargo` and `~/.rustup`
-  of the host. `make android-dev` runs on the host, not in a container. The
-  `Makefile` comment above `ANDROID_BUILD_RUN` refers to an
-  `android-build.Containerfile` that does not exist.
-- No build uses the GHCR layer cache with the cache rules (`--cache-ttl`,
-  `--retry`, `--cache-to` only from pull requests from branches in this
-  repository), and the GHCR cleanup job for old cache tags does not exist.
-  The cache packages do not exist, so they are not public yet.
-- The Linux CLI is a glibc build (`x86_64-unknown-linux-gnu`). The CLI update
-  (`cli_asset_target_substrings`) does not accept the musl triple.
-- `release-tag.yml` builds, packs, signs and uploads an arm64 Linux CLI too
-  (job `build-linux`, matrix entry `arm64`, `aarch64-unknown-linux-gnu`).
-  `cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`
-  still finds the arm64 Linux CLI asset (`cli-linux-aarch64` to
-  `aarch64-unknown-linux-gnu`).
-- In `src-tauri/Cargo.toml`, `ble-gatt` and `ble-gatt-iroh` are Linux
-  dependencies of all builds, also of the CLI. `src-tauri/src/services/cli.rs`
-  creates `BluetoothChannelService`. `cpal` is not optional.
+- The cache packages `fini-cache/linux` and `fini-cache/android` are not
+  public yet. The first pull request run that writes the cache makes them.
+  Then set each one public by hand, one time (see "How CI and a developer get
+  an image").
+- The CLI build (`cli-plane`) has 50 dead-code warnings (58 before the CLI
+  lost Bluetooth). 17 of them come from the path that accepts and serves
+  links (`LinkAcceptor`, `accept`, `serve`): the Network channel shares this
+  path, and the CLI does not use it. A follow-up gates it with
+  `#[cfg(any(feature = "ui-plane", test))]`. The other 33 were there before.
+- `cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`
+  still maps `cli-linux-aarch64` to `aarch64-unknown-linux-gnu`. The release
+  has no such asset, so an arm64 Linux CLI finds no update.

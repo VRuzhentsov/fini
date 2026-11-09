@@ -116,7 +116,7 @@ Build planes are explicit:
 
 - Desktop GUI builds use `ui-plane`.
 - Mobile builds use `ui-plane` only; CLI code is not compiled into mobile bundles.
-- Docker/runtime builds use `cli-plane` only and expose `/usr/local/bin/fini`.
+- The container runtime image (stage `runtime` of `containers/linux/Containerfile`) uses `cli-plane` only and exposes `/usr/local/bin/fini`.
 - Release artifacts keep GUI and CLI distribution separate. Linux and Windows releases publish standalone CLI archives alongside GUI installers.
 
 The CLI binary is built separately from the desktop app binary:
@@ -131,10 +131,12 @@ archive for the wrong ABI:
 
 | Platform | CLI artifact |
 |---|---|
-| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-gnu-cli.tar.gz` |
-| Linux arm64 | `fini-vX.Y.Z-linux-aarch64-unknown-linux-gnu-cli.tar.gz` |
+| Linux x64 | `fini-vX.Y.Z-linux-x86_64-unknown-linux-musl-cli.tar.gz` |
 | Windows x64 | `fini-vX.Y.Z-windows-x86_64-pc-windows-msvc-cli.zip` |
 | Windows arm64 | `fini-vX.Y.Z-windows-aarch64-pc-windows-msvc-cli.zip` |
+
+The Linux CLI is a static musl binary with no Bluetooth, for x86_64 only. The
+release has no arm64 Linux CLI; the arm64 Linux desktop app is still released.
 
 `fini update` explicitly downloads, zipsign-verifies, validates, and installs the
 matching standalone archive. `fini update --dry-run` checks the matching release
@@ -170,7 +172,8 @@ updater key and `latest.json` desktop manifest.
 - Rust (via rustup)
 - Node.js + npm
 - Linux: webkit2gtk4.1-devel and related packages
-- Android: Android Studio, JDK, NDK (see `src-tauri/gen/android/README.md`)
+- Android: podman or docker (the android build image has the JDK, the SDK and the NDK), and adb on the host to deploy (see `src-tauri/gen/android/README.md`)
+- Container gates and e2e: podman or docker
 
 ### Run (desktop)
 
@@ -228,6 +231,11 @@ The `make release` flow requires a clean `main` branch that matches `origin/main
 
 ### Build (Android)
 
+The Android builds run in the `build` stage of `containers/android/Containerfile`
+(JDK 21, the Android SDK and NDK, Rust and Node), through `containers/run.sh`
+with podman or docker. The host needs only the container engine, and adb for
+the deploy targets.
+
 ```bash
 make android-build
 
@@ -278,22 +286,28 @@ flatpak run org.flatpak.Builder --force-clean --user --install flatpak-build com
 flatpak run com.fini.app
 ```
 
-### Build (Docker runtime)
+### Build (container runtime)
 
-Use the official headless runtime target when you want to run the CLI inside a container:
+Use the CLI runtime image when you want to run the CLI inside a container. It
+is the `runtime` stage of `containers/linux/Containerfile`: `debian:bookworm-slim`
+with the static musl CLI only. The Make targets use podman when it is
+installed, else docker; `CONTAINER_ENGINE=podman|docker` sets the engine.
 
 ```bash
 make runtime-image
+make runtime-smoke
 
 # default CLI behavior
 podman run --rm fini-runtime
 
-# explicit CLI commands
+# explicit CLI commands (the data is in /data)
 podman run --rm fini-runtime --help
-podman run --rm -v fini-data:/data fini-runtime app
+podman run --rm -v fini-data:/data fini-runtime --json space list
 ```
 
-The published container image is CLI-first and uses the release binary. The e2e image is built from a separate `test` target and is not published as the runtime artifact.
+The published container image has only the release CLI binary. The images for
+the builds and the e2e tests are the other stages of `containers/linux/` and
+`containers/android/` (`docs/container.md`); they are not published.
 
 ## Status
 
