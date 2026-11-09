@@ -56,7 +56,8 @@ stage.
 
 ## Versions
 
-Pin the minor version. The build gets the newest patch at build time.
+Pin the minor version. The build gets the newest patch at build time. The
+Android Emulator is the one exception (see below).
 
 | Item | Pin | Newest patch comes from |
 |---|---|---|
@@ -68,6 +69,13 @@ Pin the minor version. The build gets the newest patch at build time.
 | Android build-tools | 36 | sdkmanager (newest 36.x) |
 | Gradle | in the repo | `src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties` |
 | Kotlin | in the repo | `src-tauri/gen/android/build.gradle.kts`; it moves to 2.2.x together with JDK 21 |
+| Android Emulator | the exact build 14788078 (36.4.9) | no newest patch: the exception below |
+
+The Android Emulator is the one exception to "newest patch". It stays at the
+exact build 14788078. The stable emulator 37.2.13 stops with SIGSEGV at start
+on Bazzite, and it does not know `-gpu angle_indirect` (the comment above
+`ANDROID_EMULATOR_BUILD` in the `Dockerfile`, stage `android-phones-runner`).
+Examine this pin again when a stable emulator newer than 37.2.13 is released.
 
 ## How CI and a developer get an image
 
@@ -79,11 +87,25 @@ build fast:
 podman build --layers \
   --cache-from ghcr.io/<owner>/<cache repository> \
   --cache-to   ghcr.io/<owner>/<cache repository> \
+  --cache-ttl=168h \
+  --retry 5 --retry-delay 5s \
   -f containers/<platform>/Containerfile --target <stage> .
 ```
 
 Fini does not pull a prebuilt image by name. It has no digest file, no hash
 tag, no version tag file, no bot pull request, and no scheduled rebuild.
+
+The cache rules:
+
+- All runs use `--cache-from`.
+- Only runs on `main` and on branches in this repository use `--cache-to`. A
+  pull request from a fork gets a read-only token, so it cannot write to
+  GHCR. It reads the cache only.
+- All runs use `--retry 5 --retry-delay 5s` for the pulls and pushes to GHCR.
+- All runs use `--cache-ttl=168h`. The build does not use a cache layer that
+  is older than 7 days. It builds that layer again and gets the newest
+  patches. For this reason, Fini needs no scheduled rebuild.
+- A GHCR cleanup job deletes old cache tags.
 
 The results:
 
@@ -92,8 +114,9 @@ The results:
 - When a line near the top of a `Containerfile` changes, the next build
   builds the image again one time. For the android image, this build is done
   in approximately 10 to 15 minutes.
-- A new patch version comes in only when the cache does not have the layer,
-  or when a person builds with `--no-cache`.
+- A new patch version comes in when the cache layer is older than 7 days,
+  when the cache does not have the layer, or when a person builds with
+  `--no-cache`.
 
 ## Development
 
@@ -122,7 +145,8 @@ The results:
   a comment in `lib.rs`), and `alsa-sys` stops a musl build.
 - The release asset keeps the name `fini-<tag>-linux-<triple>-cli.tar.gz`,
   with the musl triple: `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`.
-  A `SHA256SUMS` file gives the checksum of each asset.
+  The release has no `SHA256SUMS` file. The CLI update checks the zipsign
+  signature of the asset, and that is sufficient.
 - The CLI update accepts the musl triple too
   (`cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`).
   A person installs a CLI from before this change again by hand, one time.
@@ -171,8 +195,9 @@ It uses the android image. It does not have an image of its own.
   `Makefile` comment above `ANDROID_BUILD_RUN` refers to an
   `android-build.Containerfile` that does not exist.
 - Kotlin is 1.9.25 and Gradle is 8.14.3.
-- The emulator is a fixed build (14788078), not the newest patch. The reason
-  is in [`e2e-android.md`](e2e-android.md), "The image".
+- No build uses the GHCR layer cache with the cache rules (`--cache-ttl`,
+  `--retry`, `--cache-to` only from `main` and branches in this repository),
+  and the GHCR cleanup job for old cache tags does not exist.
 - The Linux CLI is a glibc build (`x86_64-unknown-linux-gnu`). The CLI update
   (`cli_asset_target_substrings`) does not accept the musl triple.
 - `release-tag.yml` builds, packs, signs and uploads an arm64 Linux CLI too

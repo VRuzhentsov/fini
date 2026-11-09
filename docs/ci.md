@@ -30,9 +30,13 @@ wrapper of the same npm script.
 
 ## What changes in GitHub Actions
 
-The runner is `ubuntu-latest` (Ubuntu 24.04). It has podman 4.9.3. Each
-Linux and Android job does `podman build` of its image with the GHCR layer
-cache, and then runs its `npm run` script in the image.
+The runner of the Linux and Android container jobs is `ubuntu-26.04`. It has
+Podman 5.7.0 and Buildah 1.42.1. These jobs do not use `ubuntu-24.04`: its
+Podman 4.9.3 has bugs in the layer cache. The images stay on
+`debian:bookworm-slim`. The runner gives only the Podman version. Each Linux
+and Android job does `podman build` of its image with the GHCR layer cache
+(the cache rules are in [`container.md`](container.md), "How CI and a
+developer get an image"), and then runs its `npm run` script in the image.
 
 | File | Today | After |
 |---|---|---|
@@ -60,5 +64,7 @@ The scripts that the workflows call change too:
 ## Not done yet
 
 - All rows of "What changes in GitHub Actions" and of the script table.
+- The x86_64 Linux jobs and the Android jobs run on `ubuntu-latest` (Ubuntu
+  24.04, Podman 4.9.3), not on `ubuntu-26.04`.
 - The `containers/` files: see [`container.md`](container.md), "Not done
   yet".
