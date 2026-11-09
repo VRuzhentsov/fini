@@ -514,7 +514,7 @@ ANDROID_RELEASE_SIGNED_APK = bin/fini-release.apk
 APKSIGNER = $(lastword $(sort $(wildcard $(ANDROID_HOME)/build-tools/*/apksigner)))
 ADB_CONNECT_TIMEOUT ?= 15
 
-# Gradle half of the Android build runs in a JDK 17 container (see
+# Gradle half of the Android build runs in a JDK 21 container (see
 # android-build.Containerfile for why). Only the build is containerised: adb
 # stays on the host, where the USB device and adb server are.
 #
@@ -594,7 +594,7 @@ android-build: android-require-build-image
 	$(ANDROID_BUILD_RUN) npm run tauri android build -- --features ui-plane --target "$(ANDROID_TARGET)"
 
 # Local shortcut for the npm script that CI calls directly. Locally it runs in
-# the JDK 17 build container; CI gets the JDK from setup-java.
+# the JDK 21 build container; CI gets the JDK from setup-java.
 android-build-emulator-e2e: android-require-build-image
 	$(ANDROID_BUILD_RUN) npm run build:android:e2e
 

@@ -156,13 +156,13 @@ It uses the android image. It does not have an image of its own.
   `be-test-compile`, `be-unit-test`, `app-build-cli-prod`,
   `app-build-cli-dev`, `app-build-ui-dev`, `runtime-base` and `runtime`
   (`ubuntu:24.04`), `dev-runner`, `android-phones-runner`
-  (`debian:trixie-slim`) and `android-build` (`eclipse-temurin:17-jdk`).
+  (`debian:trixie-slim`) and `android-build` (`eclipse-temurin:21-jdk`).
 - The Makefile and the scripts find the engine as docker first, then podman
   (`CONTAINER_ENGINE` in the `Makefile`, `engine()` in
   `scripts/ci-gate.mts`). `scripts/e2e-android.mts` uses podman.
 - `scripts/ci-gate.mts` and `scripts/e2e-android.mts` pull images from GHCR
   with a hash tag (`cachedBuild`, and the hash of the `Dockerfile`).
-- The `android-build` stage has only JDK 17 and Node. `ANDROID_BUILD_RUN` in
+- The `android-build` stage has only JDK 21 and Node. `ANDROID_BUILD_RUN` in
   the `Makefile` mounts the Android SDK, the NDK, `~/.cargo` and `~/.rustup`
   of the host. `make android-dev` runs on the host, not in a container. The
   `Makefile` comment above `ANDROID_BUILD_RUN` refers to an

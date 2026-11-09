@@ -255,7 +255,7 @@ RUN set -eux; \
 
 WORKDIR /work
 
-# Local Android build environment: JDK 17 plus Node, for hosts whose system JDK
+# Local Android build environment: JDK 21 plus Node, for hosts whose system JDK
 # is too new for the Gradle version this project pins -- Gradle's bundled Kotlin
 # DSL compiler fails to parse some newer JDK version strings before it ever
 # reads our build files. The concrete failure, on a host whose `java` resolves
@@ -272,7 +272,7 @@ WORKDIR /work
 # far more device access than a build needs.
 #
 # Built on its own: make android-build-image
-FROM docker.io/library/eclipse-temurin:17-jdk AS android-build
+FROM docker.io/library/eclipse-temurin:21-jdk AS android-build
 
 # build-essential is required even though nothing here targets the host: cargo
 # compiles each crate's *build script* for the host triple first, and those need
