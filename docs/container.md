@@ -45,7 +45,7 @@ image adds the Adoptium apt repository (`packages.adoptium.net`) and installs
 
 | Image, stage | Used for |
 |---|---|
-| `linux`, `build` | CI: the Linux desktop app (glibc), the Linux CLI (static musl), the frontend and backend unit tests |
+| `linux`, `build` | CI: the Linux desktop app (glibc), the Linux CLI (static musl), the FE and BE unit tests |
 | `linux`, `e2e` | CI and local: the desktop e2e tests ([`e2e.md`](e2e.md)) |
 | `android`, `build` | CI: the Android builds. Local: `make android-dev` and the other Android build targets |
 | `android`, `e2e` | CI and local: the e2e tests on virtual phones ([`e2e-android.md`](e2e-android.md)) |
@@ -110,11 +110,22 @@ The results:
 
 ## CLI
 
-- The Linux CLI is a static musl binary (`x86_64-unknown-linux-musl`). The CLI
-  does not use Bluetooth.
-- Release assets have the name `fini-<target-triple>.tar.gz`. A `SHA256SUMS`
-  file gives the checksum of each asset.
-- macOS and Windows CLIs are not in this change.
+- The Linux CLI is a static musl binary (`x86_64-unknown-linux-musl`).
+- **CLI without Bluetooth.** `ble-gatt` and `ble-gatt-iroh` belong to the
+  `ui-plane` feature only. The CLI build (`cli-plane`) does not include them,
+  and it does not create `BluetoothChannelService`. Thus the musl CLI links
+  no `libdbus`.
+- `cpal` is an optional dependency. Voice is not in the build (`mod voice` is
+  a comment in `lib.rs`), and `alsa-sys` stops a musl build.
+- The release asset keeps the name `fini-<tag>-linux-<triple>-cli.tar.gz`,
+  with the musl triple: `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz`.
+  A `SHA256SUMS` file gives the checksum of each asset.
+- The CLI update accepts the musl triple too
+  (`cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`).
+  A person installs a CLI from before this change again by hand, one time.
+- The Windows CLI stays as it is today: `ci.yml` builds it, and the release
+  ships it. This change adds nothing for it.
+- A macOS CLI is not in this change.
 
 ## Meta Quest
 
@@ -159,10 +170,8 @@ It uses the android image. It does not have an image of its own.
 - Kotlin is 1.9.25 and Gradle is 8.14.3.
 - The emulator is a fixed build (14788078), not the newest patch. The reason
   is in [`e2e-android.md`](e2e-android.md), "The image".
-- The Linux CLI is a glibc build. Its asset has the name
-  `fini-<tag>-linux-<triple>-cli.tar.gz`, and the CLI update
-  (`cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`)
-  looks for `x86_64-unknown-linux-gnu` in the asset name.
-- `ble-gatt` is a dependency of all Linux builds of the crate, also of the CLI
-  (`src-tauri/Cargo.toml`). On Linux it links `libdbus`. A static musl CLI
-  needs it out of the CLI build, or a static `libdbus`.
+- The Linux CLI is a glibc build (`x86_64-unknown-linux-gnu`). The CLI update
+  (`cli_asset_target_substrings`) does not accept the musl triple.
+- In `src-tauri/Cargo.toml`, `ble-gatt` and `ble-gatt-iroh` are Linux
+  dependencies of all builds, also of the CLI. `src-tauri/src/services/cli.rs`
+  creates `BluetoothChannelService`. `cpal` is not optional.

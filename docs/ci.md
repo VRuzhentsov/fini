@@ -16,15 +16,15 @@ wrapper of the same npm script.
 | Target | CI | Local development | Supported | Today |
 |---|---|---|---|---|
 | Frontend unit tests | `linux` image, stage `build`: `npm run test:unit` | `npm run test:unit` on the host | ✅ | `npm run gate:fe-unit` builds the `Dockerfile` stage `fe-unit-test` with docker |
-| Backend unit tests | `linux` image, stage `build`: `cargo test` with the features `cli-plane,ui-plane,desktop-updater` | `make backend-test` on the host | ✅ | `npm run gate:be-compile` and `npm run gate:be-unit` build the stages `be-test-compile` and `be-unit-test` with docker |
+| BE unit tests | `linux` image, stage `build`: `cargo test` with the features `cli-plane,ui-plane,desktop-updater` | `make backend-test` on the host | ✅ | `npm run gate:be-compile` and `npm run gate:be-unit` build the stages `be-test-compile` and `be-unit-test` with docker |
 | Linux desktop app (glibc) | `linux` image, stage `build`: `npm run tauri build` with the bundles `appimage,deb,rpm` | `make desktop-debug-dev` or `make dev` on the host | ✅ | Built on the runner host with apt packages and `dtolnay/rust-toolchain@stable`; the release also builds arm64 on `ubuntu-24.04-arm` |
-| Linux CLI (static musl) | `linux` image, stage `build`: `cargo build --bin fini --features cli-plane --target x86_64-unknown-linux-musl` | `cargo build` on the host | ✅ | A glibc build on the runner host (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) |
+| Linux CLI (static musl) | `linux` image, stage `build`: `cargo build --bin fini --features cli-plane --target x86_64-unknown-linux-musl`, with no Bluetooth ([`container.md`](container.md), "CLI") | `cargo build` on the host | ✅ | A glibc build on the runner host (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) |
 | CLI container image | `podman build -f containers/cli/Containerfile`; the release publishes it to GHCR | `make runtime-image` | ✅ | `Dockerfile` stage `runtime` (`ubuntu:24.04`), built with docker buildx |
 | Desktop e2e | `linux` image, stage `e2e` ([`e2e.md`](e2e.md)) | `make e2e` on the host, on the real screen | ✅ | `Dockerfile` stage `dev-runner`, with a GHCR image for each hash of its inputs |
 | Android app | `android` image, stage `build`: `npm run tauri android build` | `make android-dev`, `make android-debug-deploy` in the `android` image; adb connects to the phone | ✅ | On the runner host: `actions/setup-java` (JDK 17), `android-actions/setup-android`, `dtolnay/rust-toolchain@stable` |
 | Android e2e (emulator) | `android` image, stage `e2e`: `npm run test:e2e:android` (needs /dev/kvm) | `npm run test:e2e:android` | ✅ | `Dockerfile` stage `android-phones-runner`; the APK is built on the runner host |
 | Windows desktop app | `windows-latest` runner, no container: `npm run tauri build` with the bundle `nsis` | A Windows host | ✅ | As in the CI column; the release also builds on `windows-11-arm` |
-| Windows CLI | — | — | ❌ | `ci.yml` and `release-tag.yml` still build it, and the release ships it |
+| Windows CLI | `windows-latest` runner, no container: `cargo build --bin fini --features cli-plane --target x86_64-pc-windows-msvc`; the release also builds on `windows-11-arm` | A Windows host | ✅ | As in the CI column. It is built and shipped, but no check makes sure that it runs |
 | macOS / iOS | — | — | ❌ | No workflow builds it |
 | Meta Quest | — | — | ❌ | No workflow builds it. When it comes, it is a variant of the Android build ([`container.md`](container.md), "Meta Quest") |
 
@@ -43,7 +43,7 @@ cache, and then runs its `npm run` script in the image.
 | `ci.yml`, job `android-e2e` | Calls `android-e2e.yml` | No change |
 | `quality-gates.yml` | docker buildx; `npm run gate:be-compile` and `npm run gate:be-unit` with GHCR hash-tag images; the stage `runtime` with the GitHub Actions cache; `npm run gate:e2e:build-image` and `npm run gate:e2e:run` with the stage `dev-runner` | podman; the backend tests in the `linux` `build` image; the CLI image from `containers/cli/Containerfile`; the desktop e2e in the `linux` `e2e` image |
 | `android-e2e.yml` | `actions/setup-java` (JDK 17), `android-actions/setup-android`, `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache` and a Gradle cache on the host; `npm run build:android:e2e` on the host; `npm run test:e2e:android` pulls a GHCR hash-tag image | `npm run build:android:e2e` in the `android` `build` image; `npm run test:e2e:android` in the `android` `e2e` image; no setup-java, setup-android or Rust steps |
-| `release-tag.yml`, job `build-linux` | apt packages and `dtolnay/rust-toolchain@stable` on the host; a glibc CLI | The `linux` `build` image; a static musl CLI with the asset name `fini-<target-triple>.tar.gz` and `SHA256SUMS` |
+| `release-tag.yml`, job `build-linux` | apt packages and `dtolnay/rust-toolchain@stable` on the host; a glibc CLI | The `linux` `build` image; a static musl CLI, with the asset name `fini-<tag>-linux-x86_64-unknown-linux-musl-cli.tar.gz` |
 | `release-tag.yml`, job `build-android` | `actions/setup-java` (JDK 17), `android-actions/setup-android`, `dtolnay/rust-toolchain@stable` on the host | `npm run tauri android build` in the `android` `build` image |
 | `release-tag.yml`, job `build-docker-image` | `docker/build-push-action` with `./Dockerfile`, target `runtime` | `podman build` of `containers/cli/Containerfile`, then push to GHCR |
 | `release-tag.yml`, job `build-windows` | `windows-latest` and `windows-11-arm` | No change |
