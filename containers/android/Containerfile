@@ -21,8 +21,11 @@
 
 ARG DEBIAN_IMAGE=docker.io/library/debian:bookworm-slim
 # The e2e system image: the android-system-image stage installs it, and the
-# e2e stage makes the AVD from it.
-ARG ANDROID_SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
+# e2e stage makes the AVD from it. API 34 `default` (AOSP), with no Google
+# Play services: in google_apis, an ANR of Google Play services stops its font
+# provider (FontsProvider), and Android then stops each WebView app that uses
+# it, also Fini (docs/e2e-android.md, "The image").
+ARG ANDROID_SYSTEM_IMAGE="system-images;android-34;default;x86_64"
 
 # The JDK, and the tools to download the other tools. sdkmanager runs on the
 # JDK, so the Android tool stages and build start from this stage. Bookworm

@@ -138,6 +138,7 @@ cmdline-tools and the build-tools of AGP.
 | Android Gradle Plugin (AGP) | 8.11.1, in the repo | `src-tauri/gen/android/build.gradle.kts` and `src-tauri/gen/android/buildSrc/build.gradle.kts` |
 | Kotlin | 1.9.25, in the repo | `src-tauri/gen/android/build.gradle.kts`; Kotlin stays 1.9.25 until the Tauri 2.12 migration |
 | Android Emulator | the exact build 14788078 (36.4.9) | no newest patch: the exception below |
+| Android system image (e2e) | API 34, `default` (AOSP), x86_64 | sdkmanager (newest revision). Not `google_apis`: an ANR of Google Play services stops its FontsProvider, and Android then stops each WebView app that uses it, also Fini |
 
 The Android Emulator stays at the exact build 14788078. The stable emulator 37.2.13 stops with SIGSEGV at start
 on Bazzite, and it does not know `-gpu angle_indirect` (the comment above
