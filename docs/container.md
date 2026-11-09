@@ -67,8 +67,9 @@ Android Emulator is the one exception (see below).
 | JDK | 21 | apt, package `temurin-21-jdk` |
 | Android NDK | r29 | sdkmanager (newest 29.x) |
 | Android build-tools | 36 | sdkmanager (newest 36.x) |
-| Gradle | in the repo | `src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties` |
-| Kotlin | in the repo | `src-tauri/gen/android/build.gradle.kts`; it moves to 2.2.x together with JDK 21 |
+| Gradle | 8.14.6, in the repo | `src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties` |
+| Android Gradle Plugin (AGP) | 8.11.1, in the repo | `src-tauri/gen/android/build.gradle.kts` and `src-tauri/gen/android/buildSrc/build.gradle.kts` |
+| Kotlin | 1.9.25, in the repo | `src-tauri/gen/android/build.gradle.kts`; Kotlin stays 1.9.25 until the Tauri 2.12 migration |
 | Android Emulator | the exact build 14788078 (36.4.9) | no newest patch: the exception below |
 
 The Android Emulator is the one exception to "newest patch". It stays at the
@@ -194,7 +195,6 @@ It uses the android image. It does not have an image of its own.
   of the host. `make android-dev` runs on the host, not in a container. The
   `Makefile` comment above `ANDROID_BUILD_RUN` refers to an
   `android-build.Containerfile` that does not exist.
-- Kotlin is 1.9.25 and Gradle is 8.14.3.
 - No build uses the GHCR layer cache with the cache rules (`--cache-ttl`,
   `--retry`, `--cache-to` only from `main` and branches in this repository),
   and the GHCR cleanup job for old cache tags does not exist.
