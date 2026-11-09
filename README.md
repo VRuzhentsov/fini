@@ -195,9 +195,9 @@ details. This only affects local builds — CI release builds are unaffected.
 
 ### Release
 
-Release workflow is GitOps: pushing a signed annotated `v*` tag starts CI. The release command first commits the npm, Rust, and Tauri version metadata on `main`, then tags and pushes that exact commit. CI owns tests, builds, signing checks, packaging, and artifacts.
+Releases run only in CI (GitOps): a signed annotated `v*` tag on the version commit starts the release workflow `release-tag.yml`. CI owns tests, builds, signing checks, packaging, artifacts and publication. The Makefile is for local development only; no `make` target is a release step.
 
-The one-click release path is the `Release Button` GitHub Actions workflow. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes `main` and a `release/vX.Y.Z` trace branch, and creates a signed annotated tag. The tag push starts the release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create a commit, tag, or release pipeline run.
+The only release path is the `Release Button` GitHub Actions workflow, which the project owner starts by hand. It compares the latest `v*` tag with `origin/main`, chooses the next version from Conventional Commit subjects, creates one `chore: release vX.Y.Z` metadata commit, pushes `main` and a `release/vX.Y.Z` trace branch, and creates a signed annotated tag. The tag push starts the release pipeline. If there are no commits since the latest release tag, it exits successfully as a skipped no-op and does not create a commit, tag, or release pipeline run.
 
 Because `main` is protected, the button needs an automation token that can update protected branches for the repository:
 
@@ -220,14 +220,6 @@ read -rsp 'GPG passphrase: ' RELEASE_TAG_GPG_PASSPHRASE; printf '\n'
 gh secret set RELEASE_TAG_GPG_PASSPHRASE --body "$RELEASE_TAG_GPG_PASSPHRASE"
 unset RELEASE_TAG_GPG_PASSPHRASE
 ```
-
-The local release path remains available:
-
-```bash
-make release VERSION=0.1.12
-```
-
-The `make release` flow requires a clean `main` branch that matches `origin/main`, updates `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`, creates a `chore: release vX.Y.Z` commit, pushes `main`, then creates and verifies a GPG-signed annotated tag before pushing it. It does not build local release bundles; the tag-triggered CI workflow builds release artifacts.
 
 ### Build (Android)
 

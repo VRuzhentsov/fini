@@ -55,8 +55,8 @@ help:
 	@echo "  make runtime-smoke    Run a CLI runtime image smoke check"
 	@echo "  make play-store-screenshots  Validate Play Store screenshots and write manifest"
 	@echo "  make flatpak-install-local  Build release binary and reinstall local Flatpak"
-	@echo "  make pre-release-check  Run pre-release checks locally with trace log"
-	@echo "  make release VERSION=x.y.z  Run pre-release check, bump versions, push main, and push signed tag vX.Y.Z"
+	@echo "  make pre-release-check  Run the Quality Gates commands locally, with a log (a local check, not a release step)"
+	@echo "  Releases run only in CI: the Release Button GitHub Action (see fini-release)"
 	@echo ""
 	@echo "Android"
 	@echo "  make android-connect  Auto-discover and connect to device via adb mdns"
@@ -426,6 +426,8 @@ e2e-bt-local:
 	echo "This target will pair over real Bluetooth with LAN disabled once it lands." >&2; \
 	exit 1
 
+# A local check for a developer: the Quality Gates commands of CI. It is not
+# a release step. Releases run only in CI (fini-release).
 pre-release-check:
 	@set -eu; \
 	log_dir="$${PRE_RELEASE_LOG_DIR:-$(FINI_SCRATCH_DIR)/fini-pre-release}"; \
@@ -449,6 +451,8 @@ pre-release-check:
 	  step "E2E run"; \
 	  $(MAKE) pr-gate-e2e-run' 2>&1 | tee "$$log_file"
 
+# Not the release path. Releases run only in CI, through the Release Button
+# GitHub Action that the project owner starts (fini-release).
 release:
 	@test -n "$(VERSION)" || (echo "VERSION is required. Use: make release VERSION=x.y.z" && exit 1)
 	@printf '%s\n' "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || (echo "VERSION must match x.y.z" && exit 1)

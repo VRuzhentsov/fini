@@ -68,7 +68,8 @@ sets it. Only podman uses the GHCR layer cache; docker uses its local cache.
 | `release-tag.yml` | `build-windows` | `windows-latest` and `windows-11-arm`; no container |
 | `release-dry-run.yml` | all | The same jobs as `release-tag.yml`, with no publish |
 | `ghcr-cleanup.yml` | cleanup | Deletes the cache tags that are older than 7 days, on a push to `main` or by hand |
-| `release-button.yml`, `security.yml` | all | No build of the app |
+| `release-button.yml` | release | The only start of a release. The user starts it by hand: it commits the version on `main` (`cargo xtask release-version`) and pushes the signed tag `vX.Y.Z`, and the tag push starts `release-tag.yml`. No build of the app |
+| `security.yml` | all | No build of the app |
 
 The scripts that build the same stages on a developer's computer:
 

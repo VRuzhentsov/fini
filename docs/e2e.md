@@ -128,7 +128,7 @@ the same scripts (ADR-0013 D9).
 | Job | Local | CI |
 |---|---|---|
 | `ui`, `multi-device`, on your screen | `make e2e-headed` (`make e2e`) | – |
-| `cli`, `ui`, `multi-device`, in the e2e container | `make pr-gate-e2e` | `npm run gate:e2e:build-image`, `npm run gate:e2e:run` |
+| `cli`, `ui`, `multi-device`, in the e2e container | `make pr-gate-e2e` | job Quality Gates (`quality-gates.yml`): `.github/actions/podman-stage` builds the `linux` `e2e` stage, then `npm run gate:e2e:run` in it |
 | `device-support` | `npm run test:e2e:device-support` | the same command |
 | `device-support` with virtual phones | `npm run test:e2e:android` | the same command, job `android-e2e` |
 | a virtual Linux and your phone | `make e2e-phone` | – |

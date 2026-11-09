@@ -19,10 +19,10 @@ Make every test claim defensible:
 
 | Surface | Runner | Entry point | Location |
 |---|---|---|---|
-| FE unit | Jest + `@vue/test-utils` + jsdom | `npm run test:unit` (no Makefile wrapper) | `src/spec/**/*.spec.ts` |
-| BE unit | `cargo test` | `npm run gate:be-unit` (local shortcut `make pr-gate-be-unit`) | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
-| E2E single-app UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
-| E2E multi-device | Playwright + the `testDevices` fixture (ADR-0013) | local: `make e2e-headed`; CI: `npm run gate:e2e:run` (project `multi-device`) | `specs/e2e/multi-device/tests/*.spec.ts` |
+| FE unit | Jest + `@vue/test-utils` + jsdom | local: `npm run test:unit`; CI: job `fe-unit-tests` (`ci.yml`), `npm run test:unit` in the `linux` `build` image | `src/spec/**/*.spec.ts` |
+| BE unit | `cargo test` | local: `npm run gate:be-unit` (local shortcut `make pr-gate-be-unit`); CI: job Quality Gates (`quality-gates.yml`), `cargo test` in the `linux` `build` image | inline `#[cfg(test)]` modules in `src-tauri/src/**/*.rs` |
+| E2E single-app UI | Playwright + `@srsholmes/tauri-playwright` | local: `make e2e-headed`; CI: job Quality Gates (`quality-gates.yml`), `npm run gate:e2e:run` (project `ui`) | `specs/e2e/ui/tests/*.spec.ts` |
+| E2E multi-device | Playwright + the `testDevices` fixture (ADR-0013) | local: `make e2e-headed`; CI: job Quality Gates (`quality-gates.yml`), `npm run gate:e2e:run` (project `multi-device`) | `specs/e2e/multi-device/tests/*.spec.ts` |
 | E2E device support (now: Android) | project `device-support`, virtual Android test devices | `npm run test:e2e:android`, local and CI (job `android-e2e`) | `specs/e2e/device-support/tests/*.spec.ts` |
 | E2E CLI-only | Playwright + `createCliClient()` | project `cli` in `specs/e2e/playwright.config.ts` | `specs/e2e/*.spec.ts` (e.g. `reminder-bridge.spec.ts`) |
 | Android on a physical phone | manual device automation | route to `fini-android-testing` | covered by that skill |
@@ -102,7 +102,7 @@ Builds `fini-app` with `--features ui-plane,devtools` and `fini` with `--feature
 npm run gate:e2e:build-image && npm run gate:e2e:run
 ```
 
-The `linux` `e2e` image starts the virtual Linux test devices. `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
+The `linux` `e2e` image starts the virtual Linux test devices. CI runs `npm run gate:e2e:run` in the job Quality Gates (`quality-gates.yml`). On a developer's computer, `make pr-gate-e2e` (or `make e2e-ci`) runs the same two steps.
 
 ### E2E — `device-support` on virtual Android
 

@@ -189,7 +189,8 @@ Prefer these Makefile targets over raw `npm`, `tauri`, or container commands:
 | Android debug-signed release deploy (shares `com.fini.app`'s id) | `make android-release-deploy-debugsigned` |
 | Android debug deploy (separate `com.fini.app.debug` id, Tauri logs enabled) | `make android-debug-deploy` |
 | Android local release deploy | `make android-release-deploy-local` |
-| GitOps release commit + signed tag | `make release VERSION=x.y.z` |
+
+A release has no Make target. Releases run only in CI: the user starts the Release Button GitHub Action (`.github/workflows/release-button.yml`), and its tag push starts `release-tag.yml` (`fini-release`).
 
 Use package scripts directly only when no Makefile target exists or when a narrower check is clearly better, such as `npm run build` for frontend type/build validation.
 
@@ -272,7 +273,7 @@ Choose verification based on touched area:
 - Manual feature verification or scenario setup: drive state via `fini-cli`; reserve the UI for visual confirmation of the result.
 - Fini CLI or app binary behavior: load `fini-cli`; use `make runtime-smoke` for runtime container CLI checks or `make build` for release binary creation. Use CLI for all programmatic interaction with the app; do not use webview or IPC MCP tooling to drive the app.
 - Runtime/container behavior beyond the CLI surface: use `make runtime-smoke` or the relevant image target.
-- Release work: load `fini-release`, follow release tag rules in `AGENTS.md`, and do not create or push tags unless explicitly requested.
+- Release work: load `fini-release`. Releases run only in CI, through the Release Button that the user starts. Verify them with `gh run list` and `gh run view` on `release-button.yml` and `release-tag.yml`. Follow the release tag rules in `AGENTS.md`, and do not create or push tags.
 
 If a command cannot be run, say why, what evidence is missing, and the exact command the user can run.
 
