@@ -15,58 +15,37 @@ on:
         default: false
       push_cache:
         description: >-
-          Whether this caller may push the android-phones-runner image to GHCR.
-          False for pull requests from forks, whose token cannot write packages.
+          Whether this run writes the GHCR layer cache of the android image.
+          True only for a pull request from a branch of this repository;
+          release, dispatch and fork runs only read the cache. The caller that
+          gives true also gives `packages: write`.
         type: boolean
-        default: true
+        default: false
 
 jobs:
   android-e2e:
     name: Android E2E
-    runs-on: ubuntu-latest
+    # The JDK, the Android SDK and NDK, Rust with the Android targets, Node
+    # and the emulator come from the `android` image
+    # (containers/android/Containerfile), not from the runner.
+    runs-on: ubuntu-26.04
     continue-on-error: ${{ inputs.non_blocking }}
-    permissions:
-      contents: read
-      packages: write
+    # No `permissions:` here: the job gets the ones of the caller. ci.yml gives
+    # `packages: write` for the cache; release-tag.yml gives read only.
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Java
-        uses: actions/setup-java@v4
+      # The android images are large (build about 8.4 GB, e2e about 10.8 GB),
+      # and the APK compiles from scratch in the container; the runner's
+      # preinstalled SDKs leave too little disk for that. The Android SDK of
+      # the runner is not used: the image has its own.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
         with:
-          distribution: temurin
-          java-version: "21"
-          cache: gradle
-
-      - name: Install the Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          # The action's default set is `tools platform-tools`. Google removed
-          # the old `tools` package from the SDK repository, so sdkmanager
-          # exits 1 with "Failed to find package 'tools'". Ask for
-          # `platform-tools` only; the runner image has the SDK, build-tools
-          # and NDK.
-          packages: platform-tools
-
-      - name: Install Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: npm
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add x86_64 Android Rust target
-        run: rustup target add x86_64-linux-android
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            src-tauri -> target
-          shared-key: android-e2e-rust
+          tool-cache: false
+          docker-images: false
+          large-packages: false
 
       - name: Restore Android project cache
         uses: actions/cache@v4
@@ -76,11 +55,13 @@ jobs:
           restore-keys: |
             android-e2e-${{ runner.os }}-
 
-      - name: Install npm dependencies
-        run: npm ci
-
       - name: Build x86_64 debug APK with devtools
-        run: npm run build:android:e2e
+        uses: ./.github/actions/podman-stage
+        with:
+          image: android
+          stage: build
+          push-cache: ${{ inputs.push_cache }}
+          run: npm ci && npm run build:android:e2e
 
       - name: Enable KVM
         run: |
@@ -88,23 +69,24 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      # Podman reads the credentials that this action writes for Docker.
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
       - name: Run device-support on virtual Android
-        # The same command as on a developer's computer (ADR-0013 D8). It
-        # pulls the android-phones-runner image from GHCR, or builds and
-        # pushes it when the Dockerfile changed, and runs Playwright in it.
+        # The same command as on a developer's computer (ADR-0013 D8), in the
+        # `android` `e2e` stage. FINI_E2E_CONTAINER_RUNNER=1 makes
+        # scripts/e2e-android.mts run Playwright at once, as it does in the
+        # container that it starts on a developer's computer.
+        uses: ./.github/actions/podman-stage
         env:
           FINI_E2E_KEEP: "1"
-          FINI_ANDROID_PHONES_CACHE_PREFIX: ghcr.io/${{ github.repository }}
-          FINI_ANDROID_PHONES_CACHE_PUSH: ${{ inputs.push_cache && '1' || '0' }}
-        run: npm run test:e2e:android
+          FINI_E2E_CONTAINER_RUNNER: "1"
+        with:
+          image: android
+          stage: e2e
+          push-cache: ${{ inputs.push_cache }}
+          pass-env: FINI_E2E_KEEP FINI_E2E_CONTAINER_RUNNER
+          # --shm-size: with the default 64 MB of /dev/shm the emulator crashes
+          # (SIGSEGV) at start.
+          podman-args: --device /dev/kvm --shm-size=2g
+          run: npm run test:e2e:android
 
       - name: Show the free disk space
         # The runner disk was too small for Quality Gates before; this records

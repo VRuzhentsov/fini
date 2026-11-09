@@ -40,7 +40,8 @@ jobs:
               # pull request that changes only the gate reads as "no app
               # change" and skips every check -- including the gate it edits.
               - '.github/workflows/quality-gates.yml'
-              - 'Dockerfile'
+              - '.github/actions/**'
+              - 'containers/**'
               - 'Makefile'
               - 'com.fini.app.yml'
               - 'index.html'
@@ -60,15 +61,23 @@ jobs:
     name: FE Unit Tests
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Run frontend unit tests
-        env:
-          CONTAINER: docker
-        run: npm run gate:fe-unit
+        uses: ./.github/actions/podman-stage
+        with:
+          image: linux
+          stage: build
+          # Only a pull request from a branch of this repository writes the
+          # cache; dispatch and fork runs only read it.
+          push-cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+          run: npm ci && npm run test:unit
 
   # The release's own gate, run here so a green pull request means a green
   # release rather than something close to it.
@@ -89,54 +98,22 @@ jobs:
       packages: write
     uses: ./.github/workflows/quality-gates.yml
     with:
-      # A fork's token cannot write packages, so it reads the cache without
-      # pushing to it.
-      push_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # Only a pull request from a branch of this repository writes the
+      # cache; dispatch and fork runs only read it.
+      push_cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
       run_id_prefix: ci
 
   desktop-bundle-linux:
     name: Desktop Bundle (Linux x64)
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            xdg-utils \
-            patchelf
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-
-      - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            src-tauri -> target
-          shared-key: pr-desktop-bundle-linux
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Prepare AppImage GTK bundler
-        run: scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
 
       # `createUpdaterArtifacts: true` in tauri.conf.json means `tauri build`
       # requires *some* signing key to be present or it refuses to bundle at
@@ -150,19 +127,14 @@ jobs:
       # checked-out code (via beforeBuildCommand) executes before a human
       # reviews it, so wiring the real key in here would let a PR exfiltrate
       # it.
-      - name: Generate ephemeral signing key (PR bundle check only)
-        # `tauri build`'s own updater-artifact auto-signing step only reads
-        # TAURI_SIGNING_PRIVATE_KEY as literal key content (confirmed: the
-        # _PATH variant is accepted by the standalone `tauri signer sign`
-        # command but not by this step -- "A public key has been found, but
-        # no private key" even with _PATH set to a valid file). No exposure
-        # concern threading this one through $GITHUB_ENV: it's regenerated
-        # every run and never used for anything but this job.
-        run: |
-          set -euo pipefail
-          CI=1 npx tauri signer generate --ci -w "$RUNNER_TEMP/pr-bundle-verify.key" -p ""
-          { echo "TAURI_SIGNING_PRIVATE_KEY<<KEYEOF"; cat "$RUNNER_TEMP/pr-bundle-verify.key"; echo; echo "KEYEOF"; } >> "$GITHUB_ENV"
-
+      #
+      # `tauri build`'s own updater-artifact auto-signing step only reads
+      # TAURI_SIGNING_PRIVATE_KEY as literal key content (confirmed: the
+      # _PATH variant is accepted by the standalone `tauri signer sign`
+      # command but not by this step -- "A public key has been found, but
+      # no private key" even with _PATH set to a valid file). The key is
+      # generated in the container, for this command only.
+      #
       # Same command release-tag.yml/release-dry-run.yml use to build the
       # real Linux desktop bundle, so any binary this crate declares (see
       # src-tauri/Cargo.toml's `[[bin]]` list) that can't actually be
@@ -175,9 +147,23 @@ jobs:
       # its own crate (see ble-mock-broker/Cargo.toml); this job exists so
       # the next binary like it fails a PR instead of a release.
       - name: Build Linux bundles
+        uses: ./.github/actions/podman-stage
         env:
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm -- --bin fini-app
+          # The container has no FUSE; linuxdeploy extracts itself instead.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        with:
+          image: linux
+          stage: build
+          # Only a pull request from a branch of this repository writes the
+          # cache; dispatch and fork runs only read it.
+          push-cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+          pass-env: APPIMAGE_EXTRACT_AND_RUN
+          run: |
+            npm ci
+            scripts/prepare-tauri-linuxdeploy-gtk-plugin.sh
+            CI=1 npx tauri signer generate --ci -w /tmp/pr-bundle-verify.key -p ""
+            TAURI_SIGNING_PRIVATE_KEY="$(cat /tmp/pr-bundle-verify.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+              npm run tauri build -- --features ui-plane,desktop-updater --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm -- --bin fini-app
 
       - name: Verify AppImage host runtime boundary
         run: |
@@ -311,6 +297,6 @@ jobs:
       packages: write
     uses: ./.github/workflows/android-e2e.yml
     with:
-      # A fork's token cannot write packages, so it reads the cache without
-      # pushing to it.
-      push_cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      # Only a pull request from a branch of this repository writes the
+      # cache; dispatch and fork runs only read it.
+      push_cache: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}

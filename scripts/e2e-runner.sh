@@ -8,14 +8,27 @@ set -eu
 # NET_ADMIN and NET_RAW). Thus `org.bluez` is not on this bus, and the app
 # shows the usual "adapter unavailable" error. This script starts the bus.
 echo "[e2e-runner] starting D-Bus system bus"
-mkdir -p /run/dbus
-dbus-uuidgen --ensure || echo "[e2e-runner] WARNING: dbus-uuidgen --ensure failed (exit=$?)" >&2
-dbus-daemon --system --nofork --nopidfile &
+if [ "$(id -u)" = 0 ]; then
+  bus_socket=/run/dbus/system_bus_socket
+  mkdir -p /run/dbus
+  dbus-uuidgen --ensure || echo "[e2e-runner] WARNING: dbus-uuidgen --ensure failed (exit=$?)" >&2
+  dbus-daemon --system --nofork --nopidfile &
+else
+  # With docker, scripts/ci-gate.mts runs this script with the uid of the
+  # user, and only root can start a bus with the system bus rules. Start a
+  # bus with the session rules at a path that this user can write, and give
+  # it to the app as the system bus.
+  bus_socket=/tmp/fini-e2e-dbus/system_bus_socket
+  mkdir -p /tmp/fini-e2e-dbus
+  DBUS_SYSTEM_BUS_ADDRESS="unix:path=$bus_socket"
+  export DBUS_SYSTEM_BUS_ADDRESS
+  dbus-daemon --session --nofork --nopidfile --address="$DBUS_SYSTEM_BUS_ADDRESS" &
+fi
 dbus_pid=$!
 
 dbus_ready=0
 for _ in $(seq 1 50); do
-  if [ -S /run/dbus/system_bus_socket ]; then
+  if [ -S "$bus_socket" ]; then
     dbus_ready=1
     break
   fi
@@ -59,6 +72,6 @@ DISPLAY=:99 npm run test:e2e:ci || status=$?
 # The run stops its own app processes. A fixture that failed before its
 # teardown, or a test killed by its own time limit, can leave some; they
 # keep their listeners, so stop them before the container ends.
-pkill -f '/usr/local/bin/fini-app' 2>/dev/null || true
-pkill -f '/usr/local/bin/ble-mock-broker' 2>/dev/null || true
+pkill -f "${FINI_APP_BINARY:-/usr/local/bin/fini-app}" 2>/dev/null || true
+pkill -f "${FINI_BLE_MOCK_BROKER_BINARY:-/usr/local/bin/ble-mock-broker}" 2>/dev/null || true
 exit "$status"

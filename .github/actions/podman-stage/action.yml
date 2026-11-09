@@ -1,0 +1,150 @@
+name: Podman stage
+description: >-
+  Builds one stage of containers/<image>/Containerfile with podman and the
+  GHCR layer cache (docs/container.md, "How CI and a developer get an
+  image"), and then runs one command in it, with the repo mounted at /work.
+  A second call for the same image and stage in the same job does not build
+  again: it only runs its command.
+
+# The cache is read with no login. For this, the cache packages
+# ghcr.io/<owner>/<repo>-cache/linux and /android must be public: after
+# the first push creates a package, set it public one time by hand (GitHub,
+# the package, "Package settings", "Change visibility", Public).
+
+inputs:
+  image:
+    description: >-
+      The directory under containers/: linux or android. The CLI runtime image
+      is the `runtime` stage of linux.
+    required: true
+  stage:
+    description: The stage of the Containerfile (--target).
+    required: true
+  run:
+    description: >-
+      The bash command to run in the stage, in /work (the repo). It runs with
+      `set -euo pipefail`. Empty: build the stage only.
+    required: false
+    default: ""
+  push-cache:
+    description: >-
+      'true' writes the layer cache to GHCR (--cache-to), and logs in to GHCR
+      for it. Only a pull request from a branch of this repository gives
+      'true' (and `packages: write`); release, dispatch and fork runs only
+      read the cache.
+    required: false
+    default: "false"
+  pass-env:
+    description: >-
+      Names of environment variables of the step to give to the container,
+      separated by spaces or new lines. CI and the GITHUB_* values of the run
+      are always given.
+    required: false
+    default: ""
+  podman-args:
+    description: More arguments for `podman run`, for example `--device /dev/kvm --shm-size=2g`.
+    required: false
+    default: ""
+  tags:
+    description: More image names for the built stage, one on each line.
+    required: false
+    default: ""
+  labels:
+    description: Image labels (key=value), one on each line.
+    required: false
+    default: ""
+  token:
+    description: The token for the GHCR login when push-cache is 'true'.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  image:
+    description: The local name of the built stage.
+    value: ${{ steps.names.outputs.local }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve image names
+      id: names
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        STAGE: ${{ inputs.stage }}
+      run: |
+        set -euo pipefail
+        # An image name must be lowercase; GitHub gives the owner as `VRuzhentsov`.
+        owner="${GITHUB_REPOSITORY_OWNER,,}"
+        repo="${GITHUB_REPOSITORY#*/}"
+        echo "cache=ghcr.io/${owner}/${repo,,}-cache/${IMAGE}" >> "$GITHUB_OUTPUT"
+        # A plain name, the same one as scripts/ci-gate.mts and
+        # scripts/e2e-android.mts give on a developer's computer.
+        echo "local=fini-${IMAGE}-${STAGE}" >> "$GITHUB_OUTPUT"
+
+    # Podman reads the credentials that this action writes for Docker.
+    - name: Login to GHCR
+      if: inputs.push-cache == 'true'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.token }}
+
+    - name: Build ${{ inputs.image }} stage ${{ inputs.stage }}
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        STAGE: ${{ inputs.stage }}
+        CACHE: ${{ steps.names.outputs.cache }}
+        LOCAL: ${{ steps.names.outputs.local }}
+        PUSH_CACHE: ${{ inputs.push-cache }}
+        TAGS: ${{ inputs.tags }}
+        LABELS: ${{ inputs.labels }}
+      run: |
+        set -euo pipefail
+        if podman image exists "$LOCAL"; then
+          echo "$LOCAL is already built in this job."
+          exit 0
+        fi
+        args=(--layers --cache-from "$CACHE")
+        if [ "$PUSH_CACHE" = "true" ]; then
+          args+=(--cache-to "$CACHE")
+        fi
+        while IFS= read -r tag; do
+          if [ -n "$tag" ]; then args+=(-t "$tag"); fi
+        done <<< "$TAGS"
+        while IFS= read -r label; do
+          if [ -n "$label" ]; then args+=(--label "$label"); fi
+        done <<< "$LABELS"
+        podman build "${args[@]}" \
+          --cache-ttl=168h \
+          --retry 5 --retry-delay 5s \
+          -f "containers/${IMAGE}/Containerfile" --target "$STAGE" \
+          -t "$LOCAL" \
+          .
+
+    - name: Run in ${{ inputs.image }} stage ${{ inputs.stage }}
+      if: inputs.run != ''
+      shell: bash
+      env:
+        LOCAL: ${{ steps.names.outputs.local }}
+        RUN_COMMAND: ${{ inputs.run }}
+        PASS_ENV: ${{ inputs.pass-env }}
+        PODMAN_ARGS: ${{ inputs.podman-args }}
+      run: |
+        set -euo pipefail
+        env_args=()
+        # shellcheck disable=SC2086 # PASS_ENV is a list of names.
+        for name in CI GITHUB_ACTIONS GITHUB_REF GITHUB_REF_NAME GITHUB_SHA GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT $PASS_ENV; do
+          env_args+=(-e "$name")
+        done
+        # shellcheck disable=SC2206 # PODMAN_ARGS is a list of arguments.
+        extra_args=($PODMAN_ARGS)
+        # Rootless podman: root in the container is the runner user on the
+        # host, so the files that the command writes in /work belong to it.
+        # `:z` gives the mount a shared SELinux label.
+        podman run --rm \
+          -v "${GITHUB_WORKSPACE}:/work:z" -w /work \
+          "${env_args[@]}" "${extra_args[@]}" \
+          "$LOCAL" bash -euo pipefail -c "$RUN_COMMAND"
