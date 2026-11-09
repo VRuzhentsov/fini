@@ -49,7 +49,7 @@ help:
 	@echo "  make e2e-image        Build/update the linux e2e image"
 	@echo "  make e2e-build        Same as make pr-gate-e2e"
 	@echo "  make e2e-headed       Run visible local E2E (UI + multi-actor) alongside make dev"
-	@echo "  FINI_E2E_REBUILD=1 npm run test:e2e  Force E2E image rebuild before running"
+	@echo "  npm run test:e2e     The npm script that make e2e-headed calls"
 	@echo "  CONTAINER_ENGINE=docker|podman  Engine for the image targets (default: podman, else docker; now $(CONTAINER_ENGINE))"
 	@echo "  make runtime-image    Build/update the CLI runtime image (linux runtime stage)"
 	@echo "  make runtime-smoke    Run a CLI runtime image smoke check"
@@ -121,12 +121,14 @@ pr-gate-be-compile:
 pr-gate-be-unit:
 	npm run gate:be-unit
 
+# The same npm scripts as the host branch of `npm run test:e2e:ci`, with a
+# cleanup of the runner container at the end.
 pr-gate-e2e:
 	@set -eu; \
-	cleanup() { $(MAKE) pr-gate-e2e-cleanup >/dev/null 2>&1 || true; }; \
+	cleanup() { npm run gate:e2e:cleanup >/dev/null 2>&1 || true; }; \
 	trap cleanup EXIT INT TERM; \
-	$(MAKE) pr-gate-e2e-build-dev-runner; \
-	$(MAKE) pr-gate-e2e-run
+	npm run gate:e2e:build-image; \
+	npm run gate:e2e:run
 
 pr-gate-e2e-build-dev-runner:
 	npm run gate:e2e:build-image
@@ -157,28 +159,12 @@ e2e-image:
 e2e-build:
 	$(MAKE) pr-gate-e2e
 
-# Run the visible local E2E suite (UI single-actor + multi-actor) against the host desktop display.
-# Builds the local binaries, then lets the Playwright fixtures spawn the real app processes.
+# Run the visible local E2E suite (projects ui and multi-device) against the
+# host desktop display. `npm run test:e2e` builds the local binaries
+# (`npm run build:desktop:e2e`), then the Playwright fixtures start the real
+# app processes.
 e2e-headed:
-	@set -eu; \
-	run_root="$${FINI_E2E_ROOT:-$(FINI_SCRATCH_DIR)/fini-e2e-headed}"; \
-	e2e_target_dir="$$(pwd)/src-tauri/target/debug-e2e"; \
-	app_bin_path="$$e2e_target_dir/debug/fini-app"; \
-	cli_bin_path="$$e2e_target_dir/debug/fini"; \
-	ble_broker_bin_path="$$e2e_target_dir/debug/ble-mock-broker"; \
-	mkdir -p "$(FINI_SCRATCH_DIR)"; \
-	capability_backup="$$(mktemp "$(FINI_SCRATCH_DIR)/fini-default-capability.XXXXXX")"; \
-	cp src-tauri/capabilities/default.json "$$capability_backup"; \
-	restore_capability() { cp "$$capability_backup" src-tauri/capabilities/default.json; rm -f "$$capability_backup"; }; \
-	trap restore_capability EXIT INT TERM; \
-	mkdir -p "$$run_root"; \
-	cp src-tauri/devtools-capabilities/default.json src-tauri/capabilities/default.json; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" npm run tauri -- build --debug --features ui-plane,desktop-updater,devtools --no-bundle -- --bin fini-app; \
-	restore_capability; \
-	trap - EXIT INT TERM; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path src-tauri/Cargo.toml --bin fini --features cli-plane; \
-	CARGO_TARGET_DIR="$$e2e_target_dir" cargo build --manifest-path ble-mock-broker/Cargo.toml; \
-	FINI_E2E_ROOT="$$run_root" FINI_APP_BINARY="$$app_bin_path" FINI_CLI_BINARY="$$cli_bin_path" FINI_BLE_MOCK_BROKER_BINARY="$$ble_broker_bin_path" TZ=UTC npx playwright test --config specs/e2e/playwright.config.ts --project ui --project multi-device
+	npm run test:e2e
 
 # "Fini Debug": a genuinely separate desktop application that lives beside the
 # production "Fini" install instead of replacing it -- the desktop counterpart
