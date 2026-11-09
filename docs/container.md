@@ -111,6 +111,9 @@ The results:
 ## CLI
 
 - The Linux CLI is a static musl binary (`x86_64-unknown-linux-musl`).
+- The release has an x86_64 Linux CLI only. For now, it has no arm64 Linux
+  CLI (`aarch64-unknown-linux-gnu`). The arm64 Linux desktop app does not
+  change.
 - **CLI without Bluetooth.** `ble-gatt` and `ble-gatt-iroh` belong to the
   `ui-plane` feature only. The CLI build (`cli-plane`) does not include them,
   and it does not create `BluetoothChannelService`. Thus the musl CLI links
@@ -172,6 +175,11 @@ It uses the android image. It does not have an image of its own.
   is in [`e2e-android.md`](e2e-android.md), "The image".
 - The Linux CLI is a glibc build (`x86_64-unknown-linux-gnu`). The CLI update
   (`cli_asset_target_substrings`) does not accept the musl triple.
+- `release-tag.yml` builds, packs, signs and uploads an arm64 Linux CLI too
+  (job `build-linux`, matrix entry `arm64`, `aarch64-unknown-linux-gnu`).
+  `cli_asset_target_substrings` in `src-tauri/src/services/cli_update.rs`
+  still finds the arm64 Linux CLI asset (`cli-linux-aarch64` to
+  `aarch64-unknown-linux-gnu`).
 - In `src-tauri/Cargo.toml`, `ble-gatt` and `ble-gatt-iroh` are Linux
   dependencies of all builds, also of the CLI. `src-tauri/src/services/cli.rs`
   creates `BluetoothChannelService`. `cpal` is not optional.
