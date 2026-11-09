@@ -73,6 +73,51 @@ image adds the Adoptium apt repository (`packages.adoptium.net`) and installs
 Android development needs no stage of its own. It uses the android `build`
 stage.
 
+## Layer order
+
+A change to one tool must not build the other tools again. For this reason:
+
+- Each large tool installs in a stage of its own. The stages that callers use
+  (`build`, `e2e`, `cli-build`, `runtime`) install their apt packages, and
+  then copy each tool with `COPY --from=<tool stage>`.
+- The COPY lines are in this order: the tool that changes least comes first.
+  A changed tool builds its own stage and the steps after its COPY again. The
+  stages of the other tools stay in the cache.
+- Declare each `ARG` just before the RUN that uses it, in the stage that uses
+  it. A changed `ARG` makes all the steps after its declaration build again.
+- One RUN for each large download or install. Each RUN removes its temporary
+  files (`/var/lib/apt/lists/*`, the `.temp` folder of sdkmanager).
+
+```
+containers/linux/Containerfile
+├── fetch                     curl, xz-utils, jq
+│   ├── rust                  rustup, Rust 1.91, the musl target
+│   └── node                  Node 24
+│       └── playwright        Chromium of the Playwright version in package-lock.json
+├── build                     apt -dev packages, then COPY rust, node
+│   ├── e2e                   apt GUI libraries, then COPY playwright
+│   └── cli-build             the static musl CLI
+└── runtime                   COPY the CLI of cli-build
+
+containers/android/Containerfile
+└── jdk                       JDK 21 (sdkmanager needs it), curl, unzip
+    ├── android-cmdline-tools
+    │   ├── android-sdk       one RUN each: platform 36, build-tools 35.0.0, build-tools 36.x, platform-tools
+    │   ├── android-ndk       NDK r29
+    │   ├── android-emulator  the emulator build 14788078
+    │   └── android-system-image  API 34
+    ├── rust                  rustup, Rust 1.91, the Android targets
+    ├── node                  Node 24
+    └── build                 apt packages, then COPY android-ndk, android-sdk, rust, node
+        └── e2e               apt emulator libraries, then COPY android-emulator,
+                              android-system-image, and the AVD fini-e2e
+```
+
+Thus a new Rust version builds the `rust` stage and the COPY steps after it
+again. It does not run sdkmanager, and it does not download the NDK, the
+emulator or Node again. A change of the JDK builds all of the android image
+again, because sdkmanager runs on it.
+
 ## Versions
 
 Pin the minor version. The build gets the newest patch at build time. The
@@ -83,7 +128,7 @@ cmdline-tools and the build-tools of AGP.
 |---|---|---|
 | Base distribution | `debian:bookworm-slim` | the tag |
 | Rust | 1.91 | rustup (newest 1.91.x) |
-| Node | 24 | the Node 24 package |
+| Node | 24 | nodejs.org, `latest-v24.x` (newest 24.x), checked against its `SHASUMS256.txt` |
 | JDK | 21 | apt, package `temurin-21-jdk` |
 | Android NDK | r29 | sdkmanager (newest 29.x) |
 | Android build-tools | 36 | sdkmanager (newest 36.x) |

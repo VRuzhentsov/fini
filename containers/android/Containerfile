@@ -1,28 +1,75 @@
 # The Android image (docs/container.md).
 #
+# The stages that callers use:
 #   build  JDK 21, the Android SDK and NDK, Rust with the Android targets and
 #          Node. For the CI Android builds and for a local
 #          `tauri android dev` (repo mounted, see containers/run.sh).
 #   e2e    build + the Android Emulator and a system image, for the e2e
 #          tests on virtual phones. It needs /dev/kvm at run time.
 #
-# Build from the repo root:
+# Each large tool installs in a stage of its own (jdk, android-cmdline-tools,
+# android-sdk, android-ndk, android-emulator, android-system-image, rust,
+# node), and build and e2e copy it from there. Thus a new Rust version builds
+# only the `rust` stage and the steps after its COPY again: sdkmanager does
+# not run, and the NDK does not download again (docs/container.md, "Layer
+# order"). Declare each ARG just before the RUN that uses it.
+#
+# Build from the repo root (docker: the same command, without --layers):
 #   podman build --layers -f containers/android/Containerfile --target build .
 #
 # Nothing of the repo is copied in. The repo is mounted at run time.
 
-FROM docker.io/library/debian:bookworm-slim AS build
+ARG DEBIAN_IMAGE=docker.io/library/debian:bookworm-slim
+# The e2e system image: the android-system-image stage installs it, and the
+# e2e stage makes the AVD from it.
+ARG ANDROID_SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
 
-# Pin the minor version. The build gets the newest patch.
-ARG RUST_VERSION=1.91
-ARG NODE_MAJOR=24
+# The JDK, and the tools to download the other tools. sdkmanager runs on the
+# JDK, so the Android tool stages and build start from this stage. Bookworm
+# has JDK 17 only, so JDK 21 comes from the Adoptium apt repository.
+FROM ${DEBIAN_IMAGE} AS jdk
+ENV JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
 ARG JDK_PACKAGE=temurin-21-jdk
-ARG NDK_MAJOR=29
-ARG BUILD_TOOLS_MAJOR=36
-ARG PLATFORM=android-36
+RUN set -eux; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
+      ca-certificates curl unzip xz-utils; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL --retry 5 -o /etc/apt/keyrings/adoptium.asc \
+      https://packages.adoptium.net/artifactory/api/gpg/key/public; \
+    echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb bookworm main" \
+      > /etc/apt/sources.list.d/adoptium.list; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends "$JDK_PACKAGE"; \
+    rm -rf /var/lib/apt/lists/*; \
+    java -version
+
+FROM jdk AS android-cmdline-tools
+ENV ANDROID_HOME=/opt/android-sdk \
+    ANDROID_SDK_ROOT=/opt/android-sdk
+ENV PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
 # cmdline-tools has no "newest patch" download: the URL names one exact zip.
 # This build number is the one of the old Dockerfile (cmdline-tools 12.0).
 ARG ANDROID_CMDLINE_TOOLS=11076708
+RUN set -eux; \
+    mkdir -p "$ANDROID_HOME/cmdline-tools"; \
+    curl -fsSL --retry 5 -o /tmp/cmdline-tools.zip \
+      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS}_latest.zip"; \
+    unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"; \
+    mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"; \
+    rm /tmp/cmdline-tools.zip; \
+    yes | sdkmanager --licenses > /dev/null
+
+# The SDK packages of the builds. One RUN for each package, the package that
+# changes least first. The newest build-tools and NDK of the pinned major
+# version come from the list of sdkmanager; release candidates (-rc) do not
+# match. `rm -rf "$ANDROID_HOME/.temp"` removes the files that sdkmanager
+# downloads.
+FROM android-cmdline-tools AS android-sdk
+ARG PLATFORM=android-36
+RUN set -eux; \
+    sdkmanager --install "platforms;${PLATFORM}" > /dev/null; \
+    rm -rf "$ANDROID_HOME/.temp"
 # The pin of the Android Gradle Plugin (AGP), not of Fini. AGP 8.11 (8.11.1 in
 # src-tauri/gen/android/build.gradle.kts and buildSrc/build.gradle.kts) uses
 # build-tools 35.0.0 for each module that does not set `buildToolsVersion`,
@@ -31,38 +78,62 @@ ARG ANDROID_CMDLINE_TOOLS=11076708
 # "The SDK directory is not writable". When the AGP version changes, change
 # this value to the default build-tools of the new AGP.
 ARG AGP_BUILD_TOOLS=35.0.0
-
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo \
-    JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64 \
-    ANDROID_HOME=/opt/android-sdk \
-    ANDROID_SDK_ROOT=/opt/android-sdk \
-    CARGO_INCREMENTAL=0 \
-    CARGO_PROFILE_DEV_DEBUG=line-tables-only
-ENV PATH=$CARGO_HOME/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
-
-# Bookworm has JDK 17 only, so JDK 21 comes from the Adoptium apt repository.
-# Node comes from the NodeSource apt repository. build-essential gives the
-# host linker `cc`: cargo builds the build scripts for the host first.
 RUN set -eux; \
-    apt-get update -o Acquire::Retries=5; \
-    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
-      ca-certificates curl git unzip file xz-utils build-essential pkg-config python3; \
-    install -d -m 0755 /etc/apt/keyrings; \
-    curl -fsSL --retry 5 -o /etc/apt/keyrings/adoptium.asc \
-      https://packages.adoptium.net/artifactory/api/gpg/key/public; \
-    echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb bookworm main" \
-      > /etc/apt/sources.list.d/adoptium.list; \
-    curl -fsSL --retry 5 -o /etc/apt/keyrings/nodesource.asc \
-      https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key; \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
-      > /etc/apt/sources.list.d/nodesource.list; \
-    apt-get update -o Acquire::Retries=5; \
-    apt-get install -y -o Acquire::Retries=5 --no-install-recommends "$JDK_PACKAGE" nodejs; \
-    rm -rf /var/lib/apt/lists/*; \
-    java -version
+    sdkmanager --install "build-tools;${AGP_BUILD_TOOLS}" > /dev/null; \
+    rm -rf "$ANDROID_HOME/.temp"
+ARG BUILD_TOOLS_MAJOR=36
+RUN set -eux; \
+    tools="$(sdkmanager --list | awk '{print $1}' | grep -E "^build-tools;${BUILD_TOOLS_MAJOR}\.[0-9]+\.[0-9]+$" | sort -uV | tail -n 1)"; \
+    test -n "$tools"; \
+    sdkmanager --install "$tools" > /dev/null; \
+    rm -rf "$ANDROID_HOME/.temp"
+RUN set -eux; \
+    sdkmanager --install platform-tools > /dev/null; \
+    rm -rf "$ANDROID_HOME/.temp"; \
+    sdkmanager --list_installed
 
-# rustup-init is checked against its published SHA-256.
+FROM android-cmdline-tools AS android-ndk
+ARG NDK_MAJOR=29
+RUN set -eux; \
+    ndk="$(sdkmanager --list | awk '{print $1}' | grep -E "^ndk;${NDK_MAJOR}\.[0-9]+\.[0-9]+$" | sort -uV | tail -n 1)"; \
+    test -n "$ndk"; \
+    sdkmanager --install "$ndk" > /dev/null; \
+    rm -rf "$ANDROID_HOME/.temp"; \
+    ls "$ANDROID_HOME/ndk"
+
+# The Android Emulator, for e2e. sdkmanager installs the newest emulator.
+# Replace its files with the fixed build, and keep its package.xml:
+# avdmanager needs the package entry.
+FROM android-cmdline-tools AS android-emulator
+# Emulator 36.4.9. A fixed build, not the newest patch: 37.2.13 crashes
+# (SIGSEGV) at start on some hosts (Bazzite) with each GPU mode, and it does
+# not know `-gpu angle_indirect`.
+ARG ANDROID_EMULATOR_BUILD=14788078
+RUN set -eux; \
+    sdkmanager --install emulator > /dev/null; \
+    curl -fsSL --retry 5 -o /tmp/emulator.zip \
+      "https://dl.google.com/android/repository/emulator-linux_x64-${ANDROID_EMULATOR_BUILD}.zip"; \
+    cp "$ANDROID_HOME/emulator/package.xml" /tmp/emulator-package.xml; \
+    rm -rf "$ANDROID_HOME/emulator" "$ANDROID_HOME/.temp"; \
+    unzip -q /tmp/emulator.zip -d "$ANDROID_HOME"; \
+    cp /tmp/emulator-package.xml "$ANDROID_HOME/emulator/package.xml"; \
+    rm /tmp/emulator.zip /tmp/emulator-package.xml
+
+# The system image of the virtual phones, for e2e. sdkmanager installs the
+# emulator with it; the e2e stage copies only the system image.
+FROM android-cmdline-tools AS android-system-image
+ARG ANDROID_SYSTEM_IMAGE
+RUN set -eux; \
+    sdkmanager --install "$ANDROID_SYSTEM_IMAGE" > /dev/null; \
+    rm -rf "$ANDROID_HOME/.temp"
+
+# rustup and the toolchain with the Android targets. rustup-init is checked
+# against its published SHA-256.
+FROM jdk AS rust
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo
+# Pin the minor version. The build gets the newest patch.
+ARG RUST_VERSION=1.91
 RUN set -eux; \
     url=https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init; \
     curl -fsSL --retry 5 -o /tmp/rustup-init "$url"; \
@@ -73,48 +144,64 @@ RUN set -eux; \
       --target aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android; \
     rm /tmp/rustup-init; \
     rm -rf "$CARGO_HOME/registry"; \
-    rustc --version
+    "$CARGO_HOME/bin/rustc" --version
 
-# Find the newest NDK and build-tools of the pinned major version in the
-# list of sdkmanager. Release candidates (-rc) do not match.
+# Node, the newest patch of the major version, from nodejs.org. The archive
+# is checked against SHASUMS256.txt of the same release.
+FROM jdk AS node
+ARG NODE_MAJOR=24
 RUN set -eux; \
-    mkdir -p "$ANDROID_HOME/cmdline-tools"; \
-    curl -fsSL --retry 5 -o /tmp/cmdline-tools.zip \
-      "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS}_latest.zip"; \
-    unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"; \
-    mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"; \
-    rm /tmp/cmdline-tools.zip; \
-    yes | sdkmanager --licenses > /dev/null; \
-    sdkmanager --list > /tmp/sdk-list.txt; \
-    ndk="$(awk '{print $1}' /tmp/sdk-list.txt | grep -E "^ndk;${NDK_MAJOR}\.[0-9]+\.[0-9]+$" | sort -uV | tail -n 1)"; \
-    tools="$(awk '{print $1}' /tmp/sdk-list.txt | grep -E "^build-tools;${BUILD_TOOLS_MAJOR}\.[0-9]+\.[0-9]+$" | sort -uV | tail -n 1)"; \
-    test -n "$ndk"; test -n "$tools"; \
-    rm /tmp/sdk-list.txt; \
-    sdkmanager --install platform-tools "platforms;${PLATFORM}" "$tools" "$ndk" \
-      "build-tools;${AGP_BUILD_TOOLS}" > /dev/null; \
-    ln -s "$ANDROID_HOME/ndk/${ndk#ndk;}" /opt/android-ndk; \
-    ln -s "$ANDROID_HOME/build-tools/${tools#build-tools;}" /opt/android-build-tools; \
-    sdkmanager --list_installed
+    base="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x"; \
+    curl -fsSL --retry 5 -o /tmp/SHASUMS256.txt "$base/SHASUMS256.txt"; \
+    file="$(grep -oE "node-v${NODE_MAJOR}\.[0-9]+\.[0-9]+-linux-x64\.tar\.xz" /tmp/SHASUMS256.txt | head -n 1)"; \
+    test -n "$file"; \
+    curl -fsSL --retry 5 -o "/tmp/$file" "$base/$file"; \
+    (cd /tmp && grep " $file\$" SHASUMS256.txt | sha256sum -c -); \
+    mkdir -p /opt/node; \
+    tar -xJf "/tmp/$file" -C /opt/node --strip-components=1; \
+    rm "/tmp/$file" /tmp/SHASUMS256.txt; \
+    /opt/node/bin/node --version
 
-# Tauri reads NDK_HOME. The links point to the NDK and the build-tools that
-# the step above found. The build-tools (apksigner, zipalign) are on PATH.
-# The links are outside $ANDROID_HOME: sdkmanager warns about a link in the
-# SDK.
-ENV NDK_HOME=/opt/android-ndk \
+FROM jdk AS build
+
+# build-essential gives the host linker `cc`: cargo builds the build scripts
+# for the host first.
+RUN set -eux; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
+      git file build-essential pkg-config python3; \
+    rm -rf /var/lib/apt/lists/*
+
+# The tools, the one that changes least first (docs/container.md, "Layer
+# order"): the NDK and the SDK, then Rust and Node.
+COPY --from=android-ndk /opt/android-sdk/ndk /opt/android-sdk/ndk
+COPY --from=android-sdk /opt/android-sdk /opt/android-sdk
+# Tauri reads NDK_HOME. The links point to the NDK and the newest
+# build-tools. The build-tools (apksigner, zipalign) are on PATH. The links
+# are outside $ANDROID_HOME: sdkmanager warns about a link in the SDK.
+RUN set -eux; \
+    ln -s "$(ls -d /opt/android-sdk/ndk/* | sort -V | tail -n 1)" /opt/android-ndk; \
+    ln -s "$(ls -d /opt/android-sdk/build-tools/* | sort -V | tail -n 1)" /opt/android-build-tools; \
+    ls -l /opt/android-ndk /opt/android-build-tools
+COPY --from=rust /usr/local/rustup /usr/local/rustup
+COPY --from=rust /usr/local/cargo /usr/local/cargo
+COPY --from=node /opt/node /opt/node
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    ANDROID_HOME=/opt/android-sdk \
+    ANDROID_SDK_ROOT=/opt/android-sdk \
+    NDK_HOME=/opt/android-ndk \
     ANDROID_NDK_HOME=/opt/android-ndk \
-    PATH=/opt/android-build-tools:$PATH
+    CARGO_INCREMENTAL=0 \
+    CARGO_PROFILE_DEV_DEBUG=line-tables-only
+ENV PATH=$CARGO_HOME/bin:/opt/node/bin:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:/opt/android-build-tools:$PATH
 
 # CI mounts the repo here.
 WORKDIR /work
 
 # Virtual phones for the Android e2e job (ADR-0013 D8).
 FROM build AS e2e
-
-ARG ANDROID_SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
-# Emulator 36.4.9. A fixed build, not the newest patch: 37.2.13 crashes
-# (SIGSEGV) at start on some hosts (Bazzite) with each GPU mode, and it does
-# not know `-gpu angle_indirect`.
-ARG ANDROID_EMULATOR_BUILD=14788078
 
 ENV PATH=$ANDROID_HOME/emulator:$PATH \
     FINI_E2E_CONTAINER_RUNNER=1 \
@@ -130,23 +217,16 @@ RUN set -eux; \
       libgl1 libdrm2 libgbm1 libxkbfile1 libsm6 libice6; \
     rm -rf /var/lib/apt/lists/*
 
+COPY --from=android-emulator /opt/android-sdk/emulator /opt/android-sdk/emulator
+COPY --from=android-system-image /opt/android-sdk/system-images /opt/android-sdk/system-images
+
 # The virtual phone is outside $HOME, so that the emulator finds it for each
 # user: root with podman, the user of the host with docker (--user).
 # avdmanager does not read ANDROID_AVD_HOME: it makes the AVD in
 # $ANDROID_USER_HOME/avd. The emulator reads ANDROID_AVD_HOME.
 ENV ANDROID_AVD_HOME=/opt/android-user/avd
-
+ARG ANDROID_SYSTEM_IMAGE
 RUN set -eux; \
-    sdkmanager --install "$ANDROID_SYSTEM_IMAGE" > /dev/null; \
-    curl -fsSL --retry 5 -o /tmp/emulator.zip \
-      "https://dl.google.com/android/repository/emulator-linux_x64-${ANDROID_EMULATOR_BUILD}.zip"; \
-    # sdkmanager installs the newest emulator with the system image. Replace
-    # its files. Keep its package.xml: avdmanager needs the package entry.
-    cp "$ANDROID_HOME/emulator/package.xml" /tmp/emulator-package.xml; \
-    rm -rf "$ANDROID_HOME/emulator"; \
-    unzip -q /tmp/emulator.zip -d "$ANDROID_HOME"; \
-    cp /tmp/emulator-package.xml "$ANDROID_HOME/emulator/package.xml"; \
-    rm /tmp/emulator.zip /tmp/emulator-package.xml; \
     mkdir -p /opt/android-user; \
     echo no | ANDROID_USER_HOME=/opt/android-user \
       avdmanager create avd -n fini-e2e -k "$ANDROID_SYSTEM_IMAGE" -d pixel_6; \

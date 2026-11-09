@@ -1,59 +1,46 @@
 # The Linux image (docs/container.md).
 #
-#   build  Rust, Node and the -dev packages for the desktop app (glibc), the
-#          static musl CLI and the unit tests.
+# The stages that callers use:
+#   build      Rust, Node and the -dev packages for the desktop app (glibc),
+#              the static musl CLI and the unit tests.
 #   e2e        build + Playwright Chromium, Xvfb and the GUI runtime
 #              libraries for the desktop e2e tests.
 #   cli-build  build + the static musl CLI (x86_64 only).
 #   runtime    bookworm-slim with only the CLI: the release runtime image of
 #              the `fini` CLI, published to GHCR.
 #
+# Each large tool installs in a stage of its own (fetch, rust, node,
+# playwright), and the stages above copy it from there. Thus a new Rust
+# version builds only the `rust` stage and the steps after its COPY again
+# (docs/container.md, "Layer order"). Declare each ARG just before the RUN
+# that uses it.
+#
 # Build from the repo root (docker: the same command, without --layers):
 #   podman build --layers -f containers/linux/Containerfile --target build .
 #   podman build --layers -f containers/linux/Containerfile --target runtime .
 #
-# The repo is mounted at run time. Only the e2e stage (package-lock.json, for
-# the Playwright version) and the cli-build stage (the Rust inputs of the CLI)
-# copy files from it.
+# The repo is mounted at run time. Only the playwright stage
+# (package-lock.json, for the Playwright version) and the cli-build stage (the
+# Rust inputs of the CLI) copy files from it.
 
-FROM docker.io/library/debian:bookworm-slim AS build
+ARG DEBIAN_IMAGE=docker.io/library/debian:bookworm-slim
 
-# Pin the minor version. The build gets the newest patch.
-ARG RUST_VERSION=1.91
-ARG NODE_MAJOR=24
-
-# A build from scratch gains nothing from incremental files, and line tables
-# are enough for test panics. Both keep the build inside the disk of the CI
-# runner.
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH \
-    CARGO_INCREMENTAL=0 \
-    CARGO_PROFILE_DEV_DEBUG=line-tables-only
-
-# The -dev packages are the ones of the Rust stages in the old Dockerfile and
-# of the Linux jobs in ci.yml, plus libxdo-dev and libssl-dev from the Tauri
-# prerequisites for Debian. file, patchelf and xdg-utils are for the Tauri
-# bundles (AppImage, deb, rpm). musl-tools gives musl-gcc for the static CLI.
+# The tools to download the other tools.
+FROM ${DEBIAN_IMAGE} AS fetch
 RUN set -eux; \
     apt-get update -o Acquire::Retries=5; \
     apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
-      ca-certificates curl git file xz-utils \
-      build-essential pkg-config musl-tools \
-      libasound2-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-      libxdo-dev libssl-dev patchelf xdg-utils; \
-    install -d -m 0755 /etc/apt/keyrings; \
-    curl -fsSL --retry 5 -o /etc/apt/keyrings/nodesource.asc \
-      https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key; \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
-      > /etc/apt/sources.list.d/nodesource.list; \
-    apt-get update -o Acquire::Retries=5; \
-    apt-get install -y -o Acquire::Retries=5 --no-install-recommends nodejs; \
+      ca-certificates curl xz-utils jq; \
     rm -rf /var/lib/apt/lists/*
 
-# The image builds on x86_64 and on arm64 (the arm64 desktop app). The musl
-# target is for the x86_64 CLI only. rustup-init is checked against its
-# published SHA-256.
+# rustup and the toolchain. The image builds on x86_64 and on arm64 (the
+# arm64 desktop app). The musl target is for the x86_64 CLI only. rustup-init
+# is checked against its published SHA-256.
+FROM fetch AS rust
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo
+# Pin the minor version. The build gets the newest patch.
+ARG RUST_VERSION=1.91
 RUN set -eux; \
     arch="$(uname -m)"; \
     url="https://static.rust-lang.org/rustup/dist/${arch}-unknown-linux-gnu/rustup-init"; \
@@ -66,7 +53,68 @@ RUN set -eux; \
       --default-toolchain "$RUST_VERSION" $targets; \
     rm /tmp/rustup-init; \
     rm -rf "$CARGO_HOME/registry"; \
-    rustc --version; cargo --version
+    "$CARGO_HOME/bin/rustc" --version
+
+# Node, the newest patch of the major version, from nodejs.org. The archive
+# is checked against SHASUMS256.txt of the same release.
+FROM fetch AS node
+ARG NODE_MAJOR=24
+RUN set -eux; \
+    case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac; \
+    base="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x"; \
+    curl -fsSL --retry 5 -o /tmp/SHASUMS256.txt "$base/SHASUMS256.txt"; \
+    file="$(grep -oE "node-v${NODE_MAJOR}\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" /tmp/SHASUMS256.txt | head -n 1)"; \
+    test -n "$file"; \
+    curl -fsSL --retry 5 -o "/tmp/$file" "$base/$file"; \
+    (cd /tmp && grep " $file\$" SHASUMS256.txt | sha256sum -c -); \
+    mkdir -p /opt/node; \
+    tar -xJf "/tmp/$file" -C /opt/node --strip-components=1; \
+    rm "/tmp/$file" /tmp/SHASUMS256.txt; \
+    /opt/node/bin/node --version
+
+# Playwright Chromium, of the Playwright version in package-lock.json. This
+# stage is built again only when the lock file or Node changes. The browsers
+# are outside $HOME, so that the Playwright of the mounted repo finds them for
+# each user.
+FROM node AS playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    PATH=/opt/node/bin:$PATH
+COPY package-lock.json /tmp/package-lock.json
+RUN set -eux; \
+    version="$(jq -r '.packages["node_modules/playwright"].version' /tmp/package-lock.json)"; \
+    test "$version" != null; \
+    npx --yes "playwright@$version" install chromium; \
+    rm -rf /tmp/package-lock.json /root/.npm
+
+FROM ${DEBIAN_IMAGE} AS build
+
+# The -dev packages are the ones of the Rust stages in the old Dockerfile and
+# of the Linux jobs in ci.yml, plus libxdo-dev and libssl-dev from the Tauri
+# prerequisites for Debian. file, patchelf and xdg-utils are for the Tauri
+# bundles (AppImage, deb, rpm). musl-tools gives musl-gcc for the static CLI.
+RUN set -eux; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y -o Acquire::Retries=5 --no-install-recommends \
+      ca-certificates curl git file xz-utils \
+      build-essential pkg-config musl-tools \
+      libasound2-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+      libxdo-dev libssl-dev patchelf xdg-utils; \
+    rm -rf /var/lib/apt/lists/*
+
+# The tools, the one that changes least first (docs/container.md, "Layer
+# order").
+COPY --from=rust /usr/local/rustup /usr/local/rustup
+COPY --from=rust /usr/local/cargo /usr/local/cargo
+COPY --from=node /opt/node /opt/node
+
+# A build from scratch gains nothing from incremental files, and line tables
+# are enough for test panics. Both keep the build inside the disk of the CI
+# runner.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:/opt/node/bin:$PATH \
+    CARGO_INCREMENTAL=0 \
+    CARGO_PROFILE_DEV_DEBUG=line-tables-only
 
 # linuxdeploy (the AppImage bundle) is an AppImage. A container has no FUSE,
 # so it must extract itself and run.
@@ -89,20 +137,11 @@ RUN set -eux; \
       fonts-liberation xvfb xauth dbus; \
     rm -rf /var/lib/apt/lists/*
 
-# Put the browsers outside $HOME, so that the Playwright of the mounted repo
-# finds them for each user.
+COPY --from=playwright /opt/ms-playwright /opt/ms-playwright
+
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
     FINI_E2E_CONTAINER_RUNNER=1 \
     TZ=UTC
-
-# Install the Chromium of the Playwright version in package-lock.json. This
-# layer is built again only when the lock file changes.
-COPY package-lock.json /tmp/package-lock.json
-RUN set -eux; \
-    version="$(jq -r '.packages["node_modules/playwright"].version' /tmp/package-lock.json)"; \
-    test "$version" != null; \
-    npx --yes "playwright@$version" install chromium; \
-    rm -rf /tmp/package-lock.json /root/.npm
 
 FROM build AS cli-build
 
@@ -120,7 +159,7 @@ RUN set -eux; \
     cp src-tauri/target/x86_64-unknown-linux-musl/release/fini /usr/local/bin/fini; \
     rm -rf src-tauri/target "$CARGO_HOME/registry" "$CARGO_HOME/git"
 
-FROM docker.io/library/debian:bookworm-slim AS runtime
+FROM ${DEBIAN_IMAGE} AS runtime
 
 # The CLI is static, so the image needs no libraries. ca-certificates is for
 # the HTTPS calls of the CLI (for example the CLI update).
