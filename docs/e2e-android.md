@@ -46,7 +46,7 @@ The `e2e` stage of `containers/android/Containerfile` (`debian:bookworm-slim`,
 [`container.md`](container.md)) is the android `build` stage (JDK 21, the
 Android SDK and NDK, Rust, Node 24, platform-tools with adb) with the
 emulator, the system image `android-34;google_apis;x86_64`, and one AVD
-`fini-e2e` (`pixel_6`) in `ANDROID_AVD_HOME=/opt/android-avd`. The
+`fini-e2e` (`pixel_6`) in `ANDROID_AVD_HOME=/opt/android-user/avd`. The
 emulator version is fixed: build 14788078 (36.4.9). Emulator 37.2.13 stops
 with SIGSEGV on some hosts (Bazzite).
 

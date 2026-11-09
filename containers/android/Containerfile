@@ -132,7 +132,9 @@ RUN set -eux; \
 
 # The virtual phone is outside $HOME, so that the emulator finds it for each
 # user: root with podman, the user of the host with docker (--user).
-ENV ANDROID_AVD_HOME=/opt/android-avd
+# avdmanager does not read ANDROID_AVD_HOME: it makes the AVD in
+# $ANDROID_USER_HOME/avd. The emulator reads ANDROID_AVD_HOME.
+ENV ANDROID_AVD_HOME=/opt/android-user/avd
 
 RUN set -eux; \
     sdkmanager --install "$ANDROID_SYSTEM_IMAGE" > /dev/null; \
@@ -145,6 +147,8 @@ RUN set -eux; \
     unzip -q /tmp/emulator.zip -d "$ANDROID_HOME"; \
     cp /tmp/emulator-package.xml "$ANDROID_HOME/emulator/package.xml"; \
     rm /tmp/emulator.zip /tmp/emulator-package.xml; \
-    echo no | avdmanager create avd -n fini-e2e -k "$ANDROID_SYSTEM_IMAGE" -d pixel_6; \
+    mkdir -p /opt/android-user; \
+    echo no | ANDROID_USER_HOME=/opt/android-user \
+      avdmanager create avd -n fini-e2e -k "$ANDROID_SYSTEM_IMAGE" -d pixel_6; \
     test -f "$ANDROID_AVD_HOME/fini-e2e.ini"; \
-    chmod -R a+rwX "$ANDROID_AVD_HOME"
+    chmod -R a+rwX /opt/android-user
