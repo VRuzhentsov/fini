@@ -38,6 +38,13 @@ and Android job does `podman build` of its image with the GHCR layer cache
 (the cache rules are in [`container.md`](container.md), "How CI and a
 developer get an image"), and then runs its `npm run` script in the image.
 
+Only a pull request from a branch in this repository writes the cache
+(`--cache-to`). For the cache, only these jobs get `packages: write`; the
+release job that publishes the CLI image gets it too. Release runs
+(`release-tag.yml`, `release-dry-run.yml`), `workflow_dispatch` runs and pull
+requests from a fork read the cache only. The cache packages are public, so a
+read needs no GHCR login.
+
 | File | Today | After |
 |---|---|---|
 | `ci.yml`, job `changes` | The filter `app` has `Dockerfile` | The filter has `containers/**` |

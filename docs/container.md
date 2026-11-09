@@ -99,9 +99,13 @@ tag, no version tag file, no bot pull request, and no scheduled rebuild.
 The cache rules:
 
 - All runs use `--cache-from`.
-- Only runs on `main` and on branches in this repository use `--cache-to`. A
-  pull request from a fork gets a read-only token, so it cannot write to
-  GHCR. It reads the cache only.
+- The cache packages in GHCR are public. Thus all runs read the cache with
+  no login. Set each cache package public by hand one time, after the first
+  push makes it (the package, "Package settings", "Change visibility").
+- Only a pull request from a branch in this repository uses `--cache-to`.
+  Release runs, `workflow_dispatch` runs and pull requests from a fork read
+  the cache only. A pull request from a fork gets a read-only token, so it
+  cannot write to GHCR.
 - All runs use `--retry 5 --retry-delay 5s` for the pulls and pushes to GHCR.
 - All runs use `--cache-ttl=168h`. The build does not use a cache layer that
   is older than 7 days. It builds that layer again and gets the newest
@@ -196,8 +200,9 @@ It uses the android image. It does not have an image of its own.
   `Makefile` comment above `ANDROID_BUILD_RUN` refers to an
   `android-build.Containerfile` that does not exist.
 - No build uses the GHCR layer cache with the cache rules (`--cache-ttl`,
-  `--retry`, `--cache-to` only from `main` and branches in this repository),
-  and the GHCR cleanup job for old cache tags does not exist.
+  `--retry`, `--cache-to` only from pull requests from branches in this
+  repository), and the GHCR cleanup job for old cache tags does not exist.
+  The cache packages do not exist, so they are not public yet.
 - The Linux CLI is a glibc build (`x86_64-unknown-linux-gnu`). The CLI update
   (`cli_asset_target_substrings`) does not accept the musl triple.
 - `release-tag.yml` builds, packs, signs and uploads an arm64 Linux CLI too
